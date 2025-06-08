@@ -189,3 +189,4 @@ frontend/coverage/
 frontend/package-lock.json
 frontend/.vscode/
 frontend/.npmrc
+.DS_Store
