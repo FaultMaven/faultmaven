@@ -2,38 +2,43 @@
 
 export default function GettingStartedSection() {
   return (
-    <section className="py-16 bg-gray-50">
+    <section className="py-24 bg-slate-50 dark:bg-slate-900">
       <div className="max-w-6xl mx-auto px-6">
-        <h2 className="text-2xl font-semibold text-center text-gray-900 mb-8">
+        <h2 className="text-3xl font-bold text-center text-slate-900 dark:text-slate-50 mb-8">
           Getting Started with FaultMaven 1.0: How Do I Use It?
         </h2>
-        <p className="text-lg text-gray-700 mb-10 max-w-3xl mx-auto text-center">
-          With FaultMaven 1.0, experiencing powerful AI-driven troubleshooting doesn't require a leap of faith or complex setup. We believe in a quick start without the usual risks, offering an easy entry point designed for smart, iterative interaction. Here’s how simply you can begin leveraging your AI Copilot:
+        <p className="text-xl text-slate-600 dark:text-slate-400 mb-12 max-w-4xl mx-auto text-center">
+          FaultMaven 1.0 is your personal AI Copilot for troubleshooting. It&apos;s designed for engineers who want to solve operational problems faster—without the friction of complex setup or vendor lock-in. Here&apos;s how to get started:
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
-          <div className="p-6 border border-gray-200 rounded-lg shadow-sm hover:shadow-md transition-shadow bg-white">
-            <div className="text-indigo-600 text-4xl font-bold mb-2">1</div>
-            <h3 className="text-lg font-medium text-gray-900 mb-2">Instant Install: Get Ready in Seconds</h3>
-            <p className="text-gray-600">
-              Add the FaultMaven browser extension with just a few clicks. It’s an effortless setup, allowing you to start validating its capabilities immediately without any upfront commitment or system changes.
-            </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          {/* Step 1 */}
+          <div className="flex">
+            <div className="flex-shrink-0 w-10 h-10 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-xl mr-4">1</div>
+            <div>
+              <h3 className="text-2xl font-semibold text-slate-900 dark:text-slate-100 mb-1">Instant Install: Get Ready in Seconds</h3>
+              <p className="text-slate-600 dark:text-slate-400">Add the FaultMaven browser extension with just a few clicks. It&apos;s an effortless setup, allowing you to start validating its capabilities immediately without any upfront commitment or system changes.</p>
+            </div>
           </div>
-          <div className="p-6 border border-gray-200 rounded-lg shadow-sm hover:shadow-md transition-shadow bg-white">
-            <div className="text-indigo-600 text-4xl font-bold mb-2">2</div>
-            <h3 className="text-lg font-medium text-gray-900 mb-2">Share Context: Your Data, Your Way</h3>
-            <p className="text-gray-600">
-              When you need assistance, engage FaultMaven via its intuitive side-panel. Share error messages, logs (by copy-pasting or uploading files), or the context of your current browser page. You control the interaction.
-            </p>
+          {/* Step 2 */}
+          <div className="flex">
+            <div className="flex-shrink-0 w-10 h-10 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-xl mr-4">2</div>
+            <div>
+              <h3 className="text-2xl font-semibold text-slate-900 dark:text-slate-100 mb-1">Share Context: Your Data, Your Way</h3>
+              <p className="text-slate-600 dark:text-slate-400">When you need assistance, engage FaultMaven via its intuitive side-panel. Share error messages, logs (by copy-pasting or uploading files), or the context of your current browser page. You can also ask general questions or submit data snippets for AI analysis. You control the interaction.</p>
+            </div>
           </div>
-          <div className="p-6 border border-gray-200 rounded-lg shadow-sm hover:shadow-md transition-shadow bg-white">
-            <div className="text-indigo-600 text-4xl font-bold mb-2">3</div>
-            <h3 className="text-lg font-medium text-gray-900 mb-2">Get Actionable Insights: Iterate and Resolve</h3>
-            <p className="text-gray-600">
-              FaultMaven's AI instantly analyzes your input, initiating a continuous and progressive dialogue. Receive actionable insights, potential root cause hypotheses, clear answers, and intelligent next-step recommendations that evolve as you explore the problem together.
-            </p>
+          {/* Step 3 */}
+          <div className="flex">
+            <div className="flex-shrink-0 w-10 h-10 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-xl mr-4">3</div>
+            <div>
+              <h3 className="text-2xl font-semibold text-slate-900 dark:text-slate-100 mb-1">Get Actionable Insights: Iterate and Resolve</h3>
+              <p className="text-slate-600 dark:text-slate-400">FaultMaven&apos;s AI instantly analyzes your input, initiating a continuous and progressive dialogue. Receive actionable insights, potential root cause hypotheses, clear answers, and intelligent next-step recommendations that evolve as you explore the problem together, guiding you towards faster resolution.</p>
+            </div>
           </div>
         </div>
-        <p className="text-center text-gray-600 mt-10">
+
+        <p className="text-center text-xl font-semibold text-slate-700 dark:text-slate-300 mt-16">
           No vendor lock-in. No integration hell. Just smarter troubleshooting, right away.
         </p>
       </div>

@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 // src/app/not-found.tsx
 export default function NotFound() {
   return (
@@ -5,11 +7,11 @@ export default function NotFound() {
       <section className="py-20 px-6 text-center">
         <h1 className="text-3xl font-bold text-gray-900 mb-4">Page Not Found</h1>
         <p className="text-gray-600 mb-6">
-          Sorry, the page you’re looking for doesn’t exist.
+          Sorry, the page you&apos;re looking for doesn&apos;t exist.
         </p>
-        <a href="/" className="text-indigo-600 hover:text-indigo-800 underline">
+        <Link href="/" className="text-indigo-600 hover:text-indigo-800 underline">
           Return to Home
-        </a>
+        </Link>
       </section>
     </main>
   );
