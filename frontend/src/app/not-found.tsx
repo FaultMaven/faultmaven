@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import Link from '@/components/ui/Link';
 
 // src/app/not-found.tsx
 export default function NotFound() {
@@ -9,7 +9,7 @@ export default function NotFound() {
         <p className="text-gray-600 mb-6">
           Sorry, the page you&apos;re looking for doesn&apos;t exist.
         </p>
-        <Link href="/" className="text-indigo-600 hover:text-indigo-800 underline">
+        <Link href="/" className="text-[#2563EB] hover:underline">
           Return to Home
         </Link>
       </section>

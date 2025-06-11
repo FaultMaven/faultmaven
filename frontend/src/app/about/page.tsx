@@ -1,4 +1,4 @@
-import { Handshake, HeartHandshake, ShieldCheck, Target } from 'lucide-react';
+import { Handshake, HeartHandshake, ShieldCheck, Target, Sparkles, Wrench, Zap } from 'lucide-react';
 import Link from 'next/link';
 
 export default function AboutPage() {
@@ -15,13 +15,17 @@ export default function AboutPage() {
 
       <div className="py-20 bg-white dark:bg-slate-900">
         <div className="max-w-3xl mx-auto px-6 space-y-20">
-          <section>
-            <h2 className="text-3xl font-bold text-center text-slate-900 dark:text-slate-100 mb-12">
+          <section className="bg-slate-50/80 dark:bg-slate-800/60 rounded-2xl shadow-lg p-10 md:p-14 border border-slate-200 dark:border-slate-700">
+            <h2 className="text-3xl md:text-4xl font-bold text-center text-slate-900 dark:text-slate-100 mb-10 md:mb-12">
               The Spark: Why FaultMaven Exists (From an Engineer&apos;s Perspective)
             </h2>
-            <div className="flex flex-col md:flex-row items-start gap-12">
-              <div className="w-40 h-40 rounded-full bg-slate-200 dark:bg-slate-700 flex-shrink-0 mx-auto md:mx-0">
-                {/* Placeholder for Founder's Photo */}
+            <div className="flex flex-col md:flex-row items-start gap-10 md:gap-12">
+              <div className="w-40 h-40 rounded-full bg-gradient-to-br from-blue-200 to-blue-400 dark:from-blue-900 dark:to-blue-600 flex items-center justify-center shadow-md mx-auto md:mx-0 border-4 border-white dark:border-slate-900">
+                <div className="flex flex-col items-center space-y-2">
+                  <Sparkles className="w-6 h-6 text-white" />
+                  <Wrench className="w-6 h-6 text-white" />
+                  <Zap className="w-6 h-6 text-white" />
+                </div>
               </div>
               <div className="text-lg text-slate-700 dark:text-slate-300 space-y-4">
                 <p>
@@ -53,8 +57,8 @@ export default function AboutPage() {
             </div>
           </section>
 
-          <section>
-            <h2 className="text-3xl font-bold text-center text-slate-900 dark:text-slate-100 mb-8">
+          <section className="bg-slate-50/80 dark:bg-slate-800/60 rounded-2xl shadow-lg p-10 md:p-14 border border-slate-200 dark:border-slate-700">
+            <h2 className="text-3xl md:text-4xl font-bold text-center text-slate-900 dark:text-slate-100 mb-8 md:mb-10">
               Our Core Belief: The Next Level of Human-AI Partnership
             </h2>
             <div className="text-lg text-slate-700 dark:text-slate-300 space-y-6">
@@ -102,8 +106,8 @@ export default function AboutPage() {
             </div>
           </section>
 
-          <section>
-            <h2 className="text-3xl font-bold text-center text-slate-900 dark:text-slate-100 mb-8">
+          <section className="bg-slate-50/80 dark:bg-slate-800/60 rounded-2xl shadow-lg p-10 md:p-14 border border-slate-200 dark:border-slate-700">
+            <h2 className="text-3xl md:text-4xl font-bold text-center text-slate-900 dark:text-slate-100 mb-8 md:mb-10">
               Our Core Mission: An AI Copilot You Can Trust and Rely On
             </h2>
             <div className="prose prose-lg prose-slate dark:prose-invert max-w-none">
@@ -125,8 +129,8 @@ export default function AboutPage() {
               </p>
             </div>
             <div className="mt-8 space-y-6">
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 flex items-center justify-center">
+              <div className="flex items-start gap-4 md:gap-6">
+                <div className="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900 shadow">
                   <Target className="w-6 h-6 text-blue-600 dark:text-blue-400" />
                 </div>
                 <div>
@@ -140,8 +144,8 @@ export default function AboutPage() {
                   </p>
                 </div>
               </div>
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 flex items-center justify-center">
+              <div className="flex items-start gap-4 md:gap-6">
+                <div className="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900 shadow">
                   <ShieldCheck className="w-6 h-6 text-blue-600 dark:text-blue-400" />
                 </div>
                 <div>
@@ -155,8 +159,8 @@ export default function AboutPage() {
                   </p>
                 </div>
               </div>
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-8 h-8 flex items-center justify-center">
+              <div className="flex items-start gap-4 md:gap-6">
+                <div className="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900 shadow">
                   <HeartHandshake className="w-6 h-6 text-blue-600 dark:text-blue-400" />
                 </div>
                 <div>
@@ -183,26 +187,41 @@ export default function AboutPage() {
         </div>
       </div>
 
-      <section className="py-20 bg-slate-50 dark:bg-slate-800/50">
-        <div className="max-w-3xl mx-auto px-6 text-center">
-          <h2 className="text-3xl font-bold text-slate-900 dark:text-slate-100 mb-6">
-            Building Together: An Invitation to Collaborate
-          </h2>
-          <p className="text-lg text-slate-600 dark:text-slate-400">
-            We believe the future of AIOps will be shaped by genuine
-            collaboration between AI innovators and the brilliant engineers on
-            the front lines. If FaultMaven&apos;s philosophy and mission resonate
-            with you—if you&apos;re excited by the prospect of a new level of
-            human-AI partnership in tackling operational complexity—we warmly
-            invite you to connect and explore how we can build this future
-            together.
-          </p>
-          <div className="mt-10 prose prose-lg prose-slate dark:prose-invert max-w-none">
-             <ul className="space-y-4 list-none !p-0">
-               <li>Learn more about our phased development and long-term goals on our <Link href="/roadmap" className="text-blue-600 hover:underline">Vision & Roadmap Page</Link>.</li>
-               <li>To express interest in our early access programs, become a design partner, or discuss strategic opportunities, please <Link href="/contact" className="text-blue-600 hover:underline">Contact Us</Link>.</li>
-               <li><Link href="/waitlist" className="font-semibold text-blue-600 hover:underline">Join Our Waitlist</Link> to receive key updates on our progress, be notified of early access, and stay connected with the FaultMaven community.</li>
-             </ul>
+      <section className="py-20 bg-gradient-to-b from-slate-100/80 to-slate-50 dark:from-slate-900/80 dark:to-slate-800/60">
+        <div className="max-w-3xl mx-auto px-6">
+          <div className="rounded-2xl border border-blue-200 dark:border-blue-800 bg-white/80 dark:bg-slate-900/80 shadow-lg p-10 md:p-14 text-center">
+            <h2 className="text-3xl md:text-4xl font-bold text-slate-900 dark:text-slate-100 mb-6">
+              Building Together: An Invitation to Collaborate
+            </h2>
+            <p className="text-lg text-slate-600 dark:text-slate-400 mb-6">
+              We believe the future of AIOps will be shaped by genuine
+              collaboration between AI innovators and the brilliant engineers on
+              the front lines. If FaultMaven&apos;s philosophy and mission resonate
+              with you—if you&apos;re excited by the prospect of a new level of
+              human-AI partnership in tackling operational complexity—we warmly
+              invite you to connect and explore how we can build this future
+              together.
+            </p>
+            <div className="prose prose-lg prose-slate dark:prose-invert max-w-none">
+              <ul className="space-y-4 list-none !p-0">
+                <li>
+                  <Link href="/roadmap" className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline transition-colors">
+                    Learn more about our phased development and long-term goals on our Vision & Roadmap Page
+                  </Link>.
+                </li>
+                <li>
+                  To express interest in our early access programs, become a design partner, or discuss strategic opportunities, please{' '}
+                  <Link href="/contact" className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline transition-colors">
+                    Contact Us
+                  </Link>.
+                </li>
+                <li>
+                  <Link href="/waitlist" className="font-semibold text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline transition-colors">
+                    Join Our Waitlist
+                  </Link> to receive key updates on our progress, be notified of early access, and stay connected with the FaultMaven community.
+                </li>
+              </ul>
+            </div>
           </div>
         </div>
       </section>

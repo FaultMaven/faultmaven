@@ -1,5 +1,7 @@
 'use client';
 
+import Button from '../ui/Button';
+
 export default function FinalCTASection() {
   return (
     <section className="py-24 bg-slate-100 dark:bg-slate-800">
@@ -21,12 +23,9 @@ export default function FinalCTASection() {
             <p className="text-slate-600 dark:text-slate-400 mb-6 flex-grow">
               Do you want an early look at FaultMaven 1.0 and a chance to provide crucial feedback that directly shapes its features? We&apos;re looking for design partners to share their toughest troubleshooting scenarios and help us build the ultimate AI Copilot.
             </p>
-            <a
-              href="/waitlist"
-              className="inline-block text-center px-6 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition duration-200"
-            >
+            <Button asChild href="/waitlist" variant="primary" className="text-center">
               Apply for Our Private Preview & Design Partner Program
-            </a>
+            </Button>
           </div>
           <div className="p-8 border border-slate-200 dark:border-slate-700 rounded-lg shadow-sm bg-white dark:bg-slate-800/50 flex flex-col">
             <h3 className="text-2xl font-semibold text-slate-900 dark:text-slate-100 mb-2">
@@ -35,12 +34,9 @@ export default function FinalCTASection() {
             <p className="text-slate-600 dark:text-slate-400 mb-6 flex-grow">
               We believe FaultMaven offers a unique approach to a significant market need, backed by seasoned expertise and a clear, phased roadmap. If you share our vision and are interested in growth opportunities:
             </p>
-            <a
-              href="/contact"
-              className="inline-block text-center px-6 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition duration-200"
-            >
+            <Button asChild href="/contact" variant="secondary" className="text-center">
               Request Our Vision Deck & Discuss Partnership
-            </a>
+            </Button>
           </div>
           <div className="p-8 border border-slate-200 dark:border-slate-700 rounded-lg shadow-sm bg-white dark:bg-slate-800/50 flex flex-col">
             <h3 className="text-2xl font-semibold text-slate-900 dark:text-slate-100 mb-2">
@@ -49,12 +45,9 @@ export default function FinalCTASection() {
             <p className="text-slate-600 dark:text-slate-400 mb-6 flex-grow">
               Excited by the mission to redefine operational troubleshooting with AI? We&apos;ll be looking for exceptional individuals to join our core team as we grow.
             </p>
-            <a
-              href="/contact"
-              className="inline-block text-center px-6 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 transition duration-200"
-            >
+            <Button asChild href="/contact" variant="secondary" className="text-center">
               Express Interest in Future Roles & Collaborations
-            </a>
+            </Button>
           </div>
         </div>
         <p className="text-center text-slate-600 dark:text-slate-400 mt-12">

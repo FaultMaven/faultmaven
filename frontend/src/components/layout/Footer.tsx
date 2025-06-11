@@ -2,11 +2,11 @@
 
 import Image from 'next/image';
 import { IconGithub, IconLinkedin, IconX } from '@/components/icons';
-import Link from 'next/link';
+import Link from '@/components/ui/Link';
 
 export default function Footer() {
   return (
-    <footer className="bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 mt-auto">
+    <footer className="bg-gradient-to-b from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-900 border-t border-slate-200 dark:border-slate-700 mt-auto shadow-lg">
       <div className="max-w-6xl mx-auto px-6 py-12">
         <div className="grid grid-cols-2 md:grid-cols-5 gap-8">
           {/* Logo + Social */}
@@ -27,17 +27,17 @@ export default function Footer() {
                 className="h-7 w-auto mr-0 hidden dark:block"
               />
             </Link>
-            <p className="text-slate-600 dark:text-slate-400 text-base mb-4">
+            <p className="text-[#2563EB] dark:text-blue-400 text-sm mb-4 font-normal">
               Empowering engineering and operations teams with actionable AI-driven insights and collaborative knowledge
             </p>
             <div className="flex space-x-4">
-              <a href="https://x.com/faultmaven" target="_blank" rel="noopener noreferrer" aria-label="X">
+              <a href="https://x.com/faultmaven" target="_blank" rel="noopener noreferrer" aria-label="X" className="focus:outline-none focus:ring-2 focus:ring-blue-500 rounded-full">
                 <IconX className="w-6 h-6 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200" />
               </a>
-              <a href="https://github.com/sterlanyu/FaultMaven" target="_blank" rel="noopener noreferrer" aria-label="GitHub">
+              <a href="https://github.com/sterlanyu/FaultMaven" target="_blank" rel="noopener noreferrer" aria-label="GitHub" className="focus:outline-none focus:ring-2 focus:ring-blue-500 rounded-full">
                 <IconGithub className="w-6 h-6 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200" />
               </a>
-              <a href="https://linkedin.com/company/faultmaven" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn">
+              <a href="https://linkedin.com/company/faultmaven" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn" className="focus:outline-none focus:ring-2 focus:ring-blue-500 rounded-full">
                 <IconLinkedin className="w-6 h-6 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200" />
               </a>
             </div>
@@ -46,38 +46,38 @@ export default function Footer() {
           {/* Product Links */}
           <div>
             <strong className="font-semibold text-slate-900 dark:text-slate-200 text-base block mb-3">Product</strong>
-            <ul className="mt-2 space-y-2 text-base text-slate-600 dark:text-slate-400">
-              <li><a href="/product" className="hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200">Product</a></li>
-              <li><a href="/use-cases" className="hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200">Use Cases</a></li>
-              <li><a href="/pricing" className="hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200">Pricing</a></li>
+            <ul className="mt-2 space-y-2 text-base">
+              <li><Link href="/product" className="text-slate-600 dark:text-slate-400 hover:text-[#2563EB] hover:underline transition-colors duration-200">Product</Link></li>
+              <li><Link href="/use-cases" className="text-slate-600 dark:text-slate-400 hover:text-[#2563EB] hover:underline transition-colors duration-200">Use Cases</Link></li>
+              <li><Link href="/pricing" className="text-slate-600 dark:text-slate-400 hover:text-[#2563EB] hover:underline transition-colors duration-200">Pricing</Link></li>
             </ul>
           </div>
 
           {/* Company Links */}
           <div>
             <strong className="font-semibold text-slate-900 dark:text-slate-200 text-base block mb-3">Company</strong>
-            <ul className="mt-2 space-y-2 text-base text-slate-600 dark:text-slate-400">
-              <li><a href="/about" className="hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200">About Us</a></li>
-              <li><a href="/roadmap" className="hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200">Our Vision</a></li>
-              <li><a href="/contact" className="hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200">Contact Us</a></li>
+            <ul className="mt-2 space-y-2 text-base">
+              <li><Link href="/about" className="text-slate-600 dark:text-slate-400 hover:text-[#2563EB] hover:underline transition-colors duration-200">About Us</Link></li>
+              <li><Link href="/roadmap" className="text-slate-600 dark:text-slate-400 hover:text-[#2563EB] hover:underline transition-colors duration-200">Our Vision</Link></li>
+              <li><Link href="/contact" className="text-slate-600 dark:text-slate-400 hover:text-[#2563EB] hover:underline transition-colors duration-200">Contact Us</Link></li>
             </ul>
           </div>
 
           {/* Resources Links */}
           <div>
             <strong className="font-semibold text-slate-900 dark:text-slate-200 text-base block mb-3">Resources</strong>
-            <ul className="mt-2 space-y-2 text-base text-slate-600 dark:text-slate-400">
-              <li><a href="/blog" className="hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200">Blog</a></li>
-              <li><a href="/faq" className="hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200">FAQ</a></li>
+            <ul className="mt-2 space-y-2 text-base">
+              <li><Link href="/blog" className="text-slate-600 dark:text-slate-400 hover:text-[#2563EB] hover:underline transition-colors duration-200">Blog</Link></li>
+              <li><Link href="/faq" className="text-slate-600 dark:text-slate-400 hover:text-[#2563EB] hover:underline transition-colors duration-200">FAQ</Link></li>
             </ul>
           </div>
 
           {/* Legal Links */}
           <div>
             <strong className="font-semibold text-slate-900 dark:text-slate-200 text-base block mb-3">Legal</strong>
-            <ul className="mt-2 space-y-2 text-base text-slate-600 dark:text-slate-400">
-              <li><a href="/privacy" className="hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200">Privacy Policy</a></li>
-              <li><a href="/terms" className="hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200">Terms of Service</a></li>
+            <ul className="mt-2 space-y-2 text-base">
+              <li><Link href="/privacy" className="text-slate-600 dark:text-slate-400 hover:text-[#2563EB] hover:underline transition-colors duration-200">Privacy Policy</Link></li>
+              <li><Link href="/terms" className="text-slate-600 dark:text-slate-400 hover:text-[#2563EB] hover:underline transition-colors duration-200">Terms of Service</Link></li>
             </ul>
           </div>
         </div>

@@ -8,3 +8,25 @@ html,
 body {
   font-family: 'Inter', sans-serif;
 }
+
+/* Animated underline for header nav links */
+.nav-underline {
+  position: relative;
+  transition: color 0.2s;
+}
+.nav-underline::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -2px;
+  width: 0;
+  height: 2px;
+  background: #2563EB;
+  border-radius: 1px;
+  transition: width 0.3s cubic-bezier(0.4,0,0.2,1), left 0.3s cubic-bezier(0.4,0,0.2,1);
+  z-index: 1;
+}
+.nav-underline:hover::after, .nav-underline:focus::after {
+  width: 100%;
+  left: 0;
+}

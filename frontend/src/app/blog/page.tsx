@@ -1,92 +1,78 @@
-import { BrainCircuit, Rocket, Users, Wrench } from 'lucide-react';
+import Link from 'next/link';
+import { BookOpen, Lightbulb, RefreshCw, Users } from 'lucide-react';
+import Button from '@/components/ui/Button';
 
 export default function BlogPage() {
   return (
-    <main>
+    <main className="min-h-screen bg-white dark:bg-slate-900">
+      {/* Page Headline & Sub-headline */}
       <section className="py-20 text-center bg-white dark:bg-slate-900">
         <div className="max-w-4xl mx-auto px-6">
-          <h1 className="text-4xl md:text-5xl font-bold text-slate-900 dark:text-slate-50">
-            FaultMaven Insights: Coming Soon
+          <h1 className="text-4xl md:text-5xl font-bold text-slate-900 dark:text-slate-50 mb-6">
+            The FaultMaven Blog: Insights on AIOps & Troubleshooting
           </h1>
-          <p className="mt-4 text-xl text-slate-600 dark:text-slate-400">
+          <h2 className="text-2xl font-semibold text-blue-700 dark:text-blue-400 mb-8">
             We&apos;re Preparing Your New Resource for Operational Excellence
+          </h2>
+          <p className="text-xl text-slate-700 dark:text-slate-300 max-w-2xl mx-auto mb-0">
+            We&apos;re excited to be launching the official FaultMaven Blog shortly. This space will be dedicated to sharing deep insights, practical guides, and forward-thinking perspectives on the intersection of AI and modern operations. Our goal is to create a valuable resource for the SRE, DevOps, and broader engineering community.
           </p>
         </div>
       </section>
 
-      <div className="py-16 bg-white dark:bg-slate-900">
+      {/* What to Expect Section */}
+      <section className="py-16 bg-slate-50 dark:bg-slate-800/50">
         <div className="max-w-4xl mx-auto px-6">
-          <div className="prose prose-lg prose-slate dark:prose-invert mx-auto text-center">
-            <p>
-              We&apos;re excited to be launching the official FaultMaven Blog shortly. This space will be dedicated to sharing deep insights, practical guides, and forward-thinking perspectives on the intersection of AI and modern operations. Our goal is to create a valuable resource for the SRE, DevOps, and broader engineering community.
-            </p>
-          </div>
-
-          <div className="mt-12">
-            <h3 className="text-2xl font-semibold text-center text-slate-800 dark:text-slate-200 mb-8">Here&apos;s a taste of what we&apos;ll be exploring:</h3>
-            <div className="grid md:grid-cols-2 gap-8 max-w-3xl mx-auto">
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900/50 flex items-center justify-center">
-                  <BrainCircuit className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                </div>
-                <div>
-                  <h4 className="text-xl font-semibold text-slate-800 dark:text-slate-200">Deep Dives into AIOps</h4>
-                  <p className="text-slate-600 dark:text-slate-400">The latest trends, challenges, and opportunities in AI for IT Operations.</p>
-                </div>
+          <h3 className="text-3xl font-bold text-slate-900 dark:text-slate-100 mb-6 text-center">What to Expect</h3>
+          <p className="text-lg text-slate-700 dark:text-slate-300 mb-8 text-center">Here&apos;s a taste of what we&apos;ll be exploring:</p>
+          <ul className="space-y-8 max-w-2xl mx-auto">
+            <li className="flex items-start gap-5">
+              <BookOpen className="w-8 h-8 text-blue-600 mt-1 flex-shrink-0" />
+              <div>
+                <span className="font-bold text-slate-800 dark:text-slate-200">Deep Dives into AIOps:</span> <span className="text-slate-700 dark:text-slate-300">The latest trends, challenges, and opportunities in AI for IT Operations.</span>
               </div>
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900/50 flex items-center justify-center">
-                  <Wrench className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                </div>
-                <div>
-                  <h4 className="text-xl font-semibold text-slate-800 dark:text-slate-200">Troubleshooting Best Practices</h4>
-                  <p className="text-slate-600 dark:text-slate-400">Practical tips, advanced techniques, and strategies from seasoned engineers.</p>
-                </div>
+            </li>
+            <li className="flex items-start gap-5">
+              <Lightbulb className="w-8 h-8 text-blue-600 mt-1 flex-shrink-0" />
+              <div>
+                <span className="font-bold text-slate-800 dark:text-slate-200">Troubleshooting Best Practices:</span> <span className="text-slate-700 dark:text-slate-300">Practical tips, advanced techniques, and strategies from seasoned engineers.</span>
               </div>
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900/50 flex items-center justify-center">
-                  <Rocket className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                </div>
-                <div>
-                  <h4 className="text-xl font-semibold text-slate-800 dark:text-slate-200">FaultMaven Product Updates</h4>
-                  <p className="text-slate-600 dark:text-slate-400">A transparent look into our development journey, new feature highlights, and roadmap milestones.</p>
-                </div>
+            </li>
+            <li className="flex items-start gap-5">
+              <RefreshCw className="w-8 h-8 text-blue-600 mt-1 flex-shrink-0" />
+              <div>
+                <span className="font-bold text-slate-800 dark:text-slate-200">FaultMaven Product Updates:</span> <span className="text-slate-700 dark:text-slate-300">A transparent look into our development journey, new feature highlights, and roadmap milestones.</span>
               </div>
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900/50 flex items-center justify-center">
-                  <Users className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                </div>
-                <div>
-                  <h4 className="text-xl font-semibold text-slate-800 dark:text-slate-200">Thoughts from Our Team</h4>
-                  <p className="text-slate-600 dark:text-slate-400">Perspectives from the engineers and experts who are building FaultMaven.</p>
-                </div>
+            </li>
+            <li className="flex items-start gap-5">
+              <Users className="w-8 h-8 text-blue-600 mt-1 flex-shrink-0" />
+              <div>
+                <span className="font-bold text-slate-800 dark:text-slate-200">Thoughts from Our Team:</span> <span className="text-slate-700 dark:text-slate-300">Perspectives from the engineers and experts who are building FaultMaven.</span>
               </div>
-            </div>
-          </div>
+            </li>
+          </ul>
         </div>
-      </div>
+      </section>
 
-      <section className="bg-slate-50 dark:bg-slate-800/50">
-        <div className="max-w-3xl mx-auto py-16 px-6 text-center">
-          <h2 className="text-3xl font-bold text-slate-900 dark:text-slate-100 mb-4">
-            Be the First to Read Our Insights
-          </h2>
-          <p className="text-lg text-slate-600 dark:text-slate-400 mb-8">
+      {/* CTA Section */}
+      <section className="py-16 bg-white dark:bg-slate-900">
+        <div className="max-w-4xl mx-auto px-6 text-center">
+          <h3 className="text-3xl font-bold text-slate-900 dark:text-slate-50 mb-6">Be the First to Read Our Insights</h3>
+          <p className="text-xl text-slate-700 dark:text-slate-300 mb-8 max-w-2xl mx-auto">
             Want to be notified when our first posts go live? Join our waitlist to receive all major FaultMaven announcements, including the launch of our blog and early access opportunities.
           </p>
-          <div className="mb-8">
-            <a 
-              href="/waitlist"
-              className="inline-flex items-center justify-center px-8 py-4 text-lg font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 transition duration-200"
-            >
-              Join the Waitlist & Get Updates
-            </a>
-          </div>
-          <div className="prose prose-slate dark:prose-invert mx-auto">
-            <p>
-              In the meantime, feel free to explore <a href="/roadmap">Our Vision</a> or check out our <a href="/faq">FAQ Page</a>.
-            </p>
-          </div>
+          <Button asChild href="/waitlist" variant="primary">
+            Join the Waitlist & Get Updates
+          </Button>
+        </div>
+      </section>
+
+      {/* Alternative Navigation */}
+      <section className="py-12 bg-slate-50 dark:bg-slate-800/50">
+        <div className="max-w-4xl mx-auto px-6 text-center text-lg text-slate-700 dark:text-slate-300">
+          In the meantime, feel free to explore{' '}
+          <Link href="/roadmap">Our Vision</Link>{' '}or check out our{' '}
+          <Link href="/resources/faq">FAQ Page</Link>.
         </div>
       </section>
     </main>
