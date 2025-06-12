@@ -13,7 +13,7 @@ export default function ApproachSection() {
         <h2 className="text-3xl font-bold text-center text-slate-900 dark:text-slate-50 mb-8">
           What Makes FaultMaven&apos;s Approach Different?
         </h2>
-        <p className="text-xl text-slate-600 dark:text-slate-400 mb-12 max-w-4xl mx-auto text-center">
+        <p className="text-lg text-slate-600 dark:text-slate-400 mb-12 max-w-4xl mx-auto text-center">
           We&apos;re not just applying AI to old problems; we&apos;re fundamentally rethinking how engineers can overcome operational complexity. FaultMaven is built on a core belief: the most powerful solutions emerge when human expertise is actively augmented by specialized AI, in a partnership where you remain firmly in command.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-left">
@@ -42,7 +42,7 @@ export default function ApproachSection() {
             </p>
           </div>
         </div>
-        <p className="text-center text-xl text-slate-600 dark:text-slate-400 mt-12">
+        <p className="text-center text-lg text-slate-600 dark:text-slate-400 mt-12">
           This philosophy guides every stage of FaultMaven&apos;s development, from its initial 1.0 offering to its future as an integrated team expert. We&apos;re committed to building an AI that you can trust to make your toughest challenges more manageable.
         </p>
       </div>

@@ -53,7 +53,7 @@ export default function FAQPage() {
           <h1 className="text-4xl md:text-5xl font-bold text-slate-900 dark:text-slate-50 mb-6">
             Frequently Asked Questions
           </h1>
-          <p className="text-xl text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
+          <p className="text-lg text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
             We&apos;re committed to clarity and transparency as FaultMaven evolves. Here are answers to some initial questions we anticipate you might have. This page will grow and be updated regularly based on your feedback and our journey together.
           </p>
         </div>
@@ -80,7 +80,7 @@ export default function FAQPage() {
             <h2 className="text-3xl font-bold text-slate-900 dark:text-slate-100 mb-6">
               Have More Questions?
             </h2>
-            <p className="text-xl text-slate-600 dark:text-slate-400 mb-8">
+            <p className="text-lg text-slate-600 dark:text-slate-400 mb-8">
               We&apos;re building FaultMaven with the engineering community in mind, and your questions help us make it better. If you don&apos;t see your question answered here, or if you have specific feedback or areas you&apos;d like to understand better:
             </p>
             <div className="prose prose-lg prose-slate dark:prose-invert mx-auto text-center">

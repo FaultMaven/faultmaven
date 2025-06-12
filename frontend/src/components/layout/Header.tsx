@@ -45,6 +45,7 @@ export default function Header() {
             <Link href="/roadmap" className="nav-underline text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200">Roadmap</Link>
             <div className="relative dropdown">
               <button
+                type="button"
                 className="nav-underline flex items-center text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-500 transition-colors duration-200"
                 onClick={() => setIsDropdownOpen(!isDropdownOpen)}
                 aria-expanded={isDropdownOpen}

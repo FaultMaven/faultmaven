@@ -9,10 +9,10 @@ export default function FinalCTASection() {
         <h2 className="text-3xl font-bold text-center text-slate-900 dark:text-slate-50 mb-8">
           Shape the Future of AIOps with FaultMaven
         </h2>
-        <p className="text-xl text-slate-600 dark:text-slate-400 mb-4 max-w-4xl mx-auto text-center">
+        <p className="text-lg text-slate-600 dark:text-slate-400 mb-4 max-w-4xl mx-auto text-center">
           FaultMaven is at a pivotal stage of development, and we&apos;re building it for—and with—forward-thinking engineers and organizations. While some details remain under wraps as we refine our core technology, this is your invitation to get involved early with a select group and help shape a truly transformative solution.
         </p>
-        <p className="text-xl text-slate-600 dark:text-slate-400 mb-12 max-w-4xl mx-auto text-center">
+        <p className="text-lg text-slate-600 dark:text-slate-400 mb-12 max-w-4xl mx-auto text-center">
           Here&apos;s how you can participate:
         </p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">

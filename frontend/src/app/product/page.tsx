@@ -60,7 +60,7 @@ export default function ProductPage() {
           <h2 className="text-3xl font-semibold text-slate-700 dark:text-slate-300 mb-8">
             Introduction: Empowering the Individual Engineer
           </h2>
-          <div className="text-xl text-slate-600 dark:text-slate-400 space-y-6 max-w-3xl mx-auto">
+          <div className="text-lg text-slate-600 dark:text-slate-400 space-y-6 max-w-3xl mx-auto">
             <p>
               Welcome to FaultMaven 1.0, the foundational release of your personal AI Copilot, engineered to transform how individual DevOps engineers, SREs, and operations specialists tackle complex troubleshooting. Our core mission with this initial version is to provide you with an intelligent, immediately accessible assistant that augments your expertise, streamlines your diagnostic workflow, and helps you resolve issues faster – all without requiring complex upfront system integrations.
             </p>
@@ -76,7 +76,7 @@ export default function ProductPage() {
         <div className="max-w-4xl mx-auto px-6">
           <div className="text-center mb-12">
             <h2 className="text-4xl font-bold text-slate-900 dark:text-slate-50 mb-6">How You Interact with FaultMaven 1.0: A Seamless Experience</h2>
-            <p className="text-xl text-slate-600 dark:text-slate-400 max-w-3xl mx-auto">
+            <p className="text-lg text-slate-600 dark:text-slate-400 max-w-3xl mx-auto">
               FaultMaven 1.0 is designed to integrate smoothly into your existing troubleshooting workflow, providing powerful AI assistance without demanding complex setups or a steep learning curve. Our goal is to make interaction intuitive, efficient, and always place you in control.
             </p>
           </div>
@@ -126,7 +126,7 @@ export default function ProductPage() {
         <div className="max-w-5xl mx-auto px-6">
           <div className="text-center mb-12">
             <h2 className="text-4xl font-bold text-slate-900 dark:text-slate-50 mb-6">FaultMaven 1.0: Core Capabilities</h2>
-            <p className="text-xl text-slate-600 dark:text-slate-400 max-w-3xl mx-auto">
+            <p className="text-lg text-slate-600 dark:text-slate-400 max-w-3xl mx-auto">
               FaultMaven 1.0 equips you with a suite of AI-powered capabilities designed to make your troubleshooting efforts faster, more effective, and less burdensome. Accessed seamlessly through your browser, these features work with the context you provide to deliver immediate support:
             </p>
           </div>
@@ -218,7 +218,7 @@ export default function ProductPage() {
         <div className="max-w-5xl mx-auto px-6">
           <div className="text-center mb-12">
             <h2 className="text-4xl font-bold text-slate-900 dark:text-slate-50 mb-6">Technology Highlights</h2>
-            <p className="text-xl text-slate-600 dark:text-slate-400 max-w-3xl mx-auto">
+            <p className="text-lg text-slate-600 dark:text-slate-400 max-w-3xl mx-auto">
               FaultMaven 1.0 leverages advanced AI and thoughtful engineering to deliver practical, reliable, and secure assistance that empowers you.
             </p>
           </div>
@@ -251,10 +251,10 @@ export default function ProductPage() {
       <section className="py-24 bg-white dark:bg-slate-900">
         <div className="max-w-4xl mx-auto px-6 text-center">
           <h2 className="text-3xl font-bold text-slate-900 dark:text-slate-50">Ready to Experience FaultMaven 1.0?</h2>
-          <p className="mt-4 text-xl text-slate-600 dark:text-slate-400">
+          <p className="mt-4 text-lg text-slate-600 dark:text-slate-400">
             You&apos;ve seen how FaultMaven 1.0 is designed to be your personal AI Copilot, offering effortless interaction, powerful diagnostic capabilities, and intelligent knowledge reuse to accelerate your troubleshooting. With core development well underway, we&apos;re now inviting experienced SREs and Operations engineers to be among the first to experience its benefits and provide invaluable feedback.
           </p>
-          <p className="mt-4 text-xl text-slate-600 dark:text-slate-400">
+          <p className="mt-4 text-lg text-slate-600 dark:text-slate-400">
             This is your opportunity to not only gain early access to a transformative tool but also to actively contribute to its evolution.
           </p>
           <div className="mt-12 grid md:grid-cols-2 gap-8 max-w-3xl mx-auto text-left">

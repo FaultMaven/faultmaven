@@ -9,7 +9,7 @@ export default function VisionSnippet() {
         <h2 className="text-3xl font-bold text-slate-900 dark:text-slate-50 mb-4">
           Your AI Copilot Today, Your Team&apos;s Collective Brain Tomorrow
         </h2>
-        <p className="text-xl text-slate-600 dark:text-slate-400 mb-8">
+        <p className="text-lg text-slate-600 dark:text-slate-400 mb-8">
           FaultMaven 1.0 delivers powerful personal AI assistance right now. Looking ahead, we&apos;re developing FaultMaven into an integrated AI solution that transforms collaborative problem-solving and amplifies your entire team&apos;s effectiveness by fostering a shared, intelligent understanding. We&apos;re releasing details in phases as this vision matures, and <strong className="text-slate-700 dark:text-slate-300">we invite forward-thinking engineers and organizations to help shape this journey with us.</strong>
         </p>
         <Button asChild href="/roadmap" variant="secondary">

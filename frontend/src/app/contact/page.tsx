@@ -55,7 +55,7 @@ export default function ContactPage() {
             <h1 className="text-4xl md:text-5xl font-bold text-slate-900 dark:text-slate-50 mb-6">
               Connect with FaultMaven
             </h1>
-            <p className="text-xl text-slate-700 dark:text-slate-300 max-w-2xl mx-auto">
+            <p className="text-lg text-slate-700 dark:text-slate-300 max-w-2xl mx-auto">
               We&apos;re building FaultMaven to solve real-world operational challenges, and we believe the best way to do that is by engaging with a vibrant community of engineers, innovators, partners, and forward-thinkers. Whether you have a specific question, wish to share your expertise, explore a collaboration, or simply learn more, we&apos;re ready to listen.<br />
               Your insights, feedback, and inquiries are invaluable as we progress from our initial FaultMaven 1.0 offering towards our broader vision.
             </p>

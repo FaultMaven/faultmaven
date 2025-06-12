@@ -1,0 +1,9 @@
+# robots.txt for FaultMaven (pre-launch)
+# Disallow all crawlers from indexing the site until launch.
+#
+# When ready to launch and make the site searchable:
+#   1. Change 'Disallow: /' to 'Allow: /' or remove the Disallow line.
+#   2. Submit sitemap.xml to Google Search Console, Bing Webmaster Tools, etc.
+
+User-agent: *
+Disallow: / 

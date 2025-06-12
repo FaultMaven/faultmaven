@@ -13,7 +13,7 @@ export default function ProblemSection() {
         <h2 className="text-4xl font-bold text-center text-slate-900 dark:text-slate-50 mb-6">
           Facing These Tough Operational Challenges?
         </h2>
-        <p className="text-xl text-slate-600 dark:text-slate-400 mb-16 max-w-3xl mx-auto text-center">
+        <p className="text-lg text-slate-600 dark:text-slate-400 mb-16 max-w-3xl mx-auto text-center">
           If you&apos;re an engineer on the front lines, you know the daily battle
           of keeping complex systems running smoothly. When issues strike, the
           pressure is immense, and often it feels like you&apos;re up against the
@@ -55,7 +55,7 @@ export default function ProblemSection() {
             </p>
           </div>
         </div>
-        <p className="text-center text-xl text-slate-600 dark:text-slate-400 mt-16">
+        <p className="text-center text-lg text-slate-600 dark:text-slate-400 mt-16">
           These obstacles don&apos;t just slow you down; they impact innovation,
           team morale, and the bottom line. FaultMaven is being built to change
           that.

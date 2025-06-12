@@ -48,7 +48,7 @@ export default function RoadmapPage() {
           <h2 className="text-3xl font-bold text-slate-900 dark:text-slate-100 mb-6 text-center">
             The Challenge: Reimagining Operational Problem-Solving
           </h2>
-          <div className="max-w-3xl mx-auto text-xl text-slate-600 dark:text-slate-400 space-y-6">
+          <div className="max-w-3xl mx-auto text-lg text-slate-600 dark:text-slate-400 space-y-6">
             <p>
               In today&apos;s complex digital landscape, maintaining system reliability and rapidly resolving issues is more critical—and more challenging—than ever. DevOps engineers, SREs, and support teams are on the front lines, often facing:
             </p>
@@ -72,7 +72,7 @@ export default function RoadmapPage() {
           <h2 className="text-3xl font-bold text-slate-900 dark:text-slate-100 mb-6 text-center">
             Our Approach: Your Intelligent AI Copilot, With You in Command
           </h2>
-          <div className="max-w-3xl mx-auto text-xl text-slate-600 dark:text-slate-400 space-y-6">
+          <div className="max-w-3xl mx-auto text-lg text-slate-600 dark:text-slate-400 space-y-6">
             <p>
               To address these profound challenges, FaultMaven introduces a transformative approach: an intelligent AI Copilot designed to work alongside your engineers, significantly augmenting their ability to diagnose and resolve complex operational issues. FaultMaven brings advanced analytical power to sift through data, identify patterns, and propose insightful solutions, often at a pace or scale beyond human capacity in the heat of the moment.
             </p>
@@ -251,7 +251,7 @@ export default function RoadmapPage() {
           <h2 className="text-3xl font-bold text-slate-900 dark:text-slate-100 mb-6 text-center">
             The FaultMaven Journey: Our Commitment to Growth & Excellence
           </h2>
-          <div className="max-w-3xl mx-auto text-xl text-slate-600 dark:text-slate-400 space-y-6">
+          <div className="max-w-3xl mx-auto text-lg text-slate-600 dark:text-slate-400 space-y-6">
             <p>
               The evolution from FaultMaven 1.0 through 1.5 to 2.0 is a deliberate journey, designed to progressively enhance how you and your teams tackle operational complexity. Each stage builds upon the last, expanding capabilities from powerful personal assistance to sophisticated, team-wide collaborative intelligence, always ensuring support for both individual needs and collective goals.
             </p>
@@ -274,7 +274,7 @@ export default function RoadmapPage() {
           <h2 className="text-3xl font-bold text-slate-900 dark:text-slate-100 mb-6">
             Join Us: Let&apos;s Build the Future of AIOps, Faster.
           </h2>
-          <div className="max-w-3xl mx-auto text-xl text-slate-600 dark:text-slate-400 space-y-6">
+          <div className="max-w-3xl mx-auto text-lg text-slate-600 dark:text-slate-400 space-y-6">
             <p>
               The path we&apos;ve outlined for FaultMaven – from an immediate personal AI Copilot (1.0) through shared team intelligence (1.5) to an integrated AI team expert (2.0) – is a significant undertaking, grounded in real-world operational challenges. This isn&apos;t just a concept on a whiteboard; <strong>our vision is born from decades of firsthand experience, core prototyping is complete, and focused development by a team of seasoned engineers and domain experts is actively underway.</strong>
             </p>
@@ -308,7 +308,7 @@ export default function RoadmapPage() {
               </Button>
             </div>
           </div>
-          <p className="text-center mt-8 text-xl text-slate-600 dark:text-slate-400">
+          <p className="text-center mt-8 text-lg text-slate-600 dark:text-slate-400">
             Let&apos;s collaborate. Your insights, strategic partnership, or talent can make a tangible difference in how quickly we deliver this transformative vision for operational problem-solving. By working with a select group now, we aim to build a solution that truly resonates when we broaden availability.
           </p>
         </div>

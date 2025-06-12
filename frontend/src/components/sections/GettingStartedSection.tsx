@@ -7,7 +7,7 @@ export default function GettingStartedSection() {
         <h2 className="text-4xl font-bold text-center text-slate-900 dark:text-slate-50 mb-6">
           Getting Started with FaultMaven 1.0: How Do I Use It?
         </h2>
-        <p className="text-xl text-slate-600 dark:text-slate-400 mb-16 max-w-4xl mx-auto text-center">
+        <p className="text-lg text-slate-600 dark:text-slate-400 mb-16 max-w-4xl mx-auto text-center">
           FaultMaven 1.0 is your personal AI Copilot for troubleshooting. It&apos;s designed for engineers who want to solve operational problems faster—without the friction of complex setup or vendor lock-in. Here&apos;s how to get started:
         </p>
 

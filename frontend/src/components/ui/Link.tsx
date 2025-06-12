@@ -8,7 +8,7 @@ interface LinkProps extends React.AnchorHTMLAttributes<HTMLAnchorElement> {
 }
 
 export default function Link({ href, children, variant = 'tertiary', className, ...props }: LinkProps) {
-  const base = 'transition-colors'
+  const base = 'transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2'
   const tertiary = 'hover:underline'
   return (
     <NextLink 

@@ -27,7 +27,7 @@ export default function Footer() {
                 className="h-7 w-auto mr-0 hidden dark:block"
               />
             </Link>
-            <p className="text-[#2563EB] dark:text-blue-400 text-sm mb-4 font-normal">
+            <p className="text-slate-500 dark:text-slate-400 text-sm mb-4 font-normal">
               Empowering engineering and operations teams with actionable AI-driven insights and collaborative knowledge
             </p>
             <div className="flex space-x-4">

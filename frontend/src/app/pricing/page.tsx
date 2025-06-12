@@ -48,7 +48,7 @@ export default function PricingPage() {
           <h1 className="text-4xl md:text-5xl font-bold text-slate-900 dark:text-slate-50 mb-6">
             Fair Pricing, Built Together: Our Commitment to Value
           </h1>
-          <p className="text-xl text-slate-700 dark:text-slate-300 max-w-2xl mx-auto">
+          <p className="text-lg text-slate-700 dark:text-slate-300 max-w-2xl mx-auto">
             At FaultMaven, our very existence is dedicated to delivering exceptional value to you, our fellow engineers and operations professionals. While we&apos;re currently focused on perfecting FaultMaven 1.0 in close collaboration with our early design partners, we believe it&apos;s important to share our philosophy on pricing—an approach grounded in fairness, transparency, and mutual success. We&apos;re taking the time to get this right, just as we are with the product itself.
           </p>
         </div>

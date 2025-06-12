@@ -14,7 +14,7 @@ export default function UseCasesPage() {
           <h1 className="mt-4 text-4xl md:text-5xl font-bold text-slate-900 dark:text-slate-50 mb-4">
             FaultMaven 1.0 in Action: Solving Real-World Operational Challenges
           </h1>
-          <div className="mt-8 text-xl text-slate-600 dark:text-slate-400 space-y-6 max-w-3xl mx-auto">
+          <div className="mt-8 text-lg text-slate-600 dark:text-slate-400 space-y-6 max-w-3xl mx-auto">
             <p>
               Understanding theory is one thing; seeing a tool tackle real-world problems is another. This page dives into practical scenarios where FaultMaven 1.0 acts as your indispensable AI Copilot, helping individual engineers like you navigate complex operational challenges with greater speed, clarity, and confidence.
             </p>

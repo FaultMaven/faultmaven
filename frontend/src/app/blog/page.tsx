@@ -14,7 +14,7 @@ export default function BlogPage() {
           <h2 className="text-2xl font-semibold text-blue-700 dark:text-blue-400 mb-8">
             We&apos;re Preparing Your New Resource for Operational Excellence
           </h2>
-          <p className="text-xl text-slate-700 dark:text-slate-300 max-w-2xl mx-auto mb-0">
+          <p className="text-lg text-slate-700 dark:text-slate-300 max-w-2xl mx-auto mb-0">
             We&apos;re excited to be launching the official FaultMaven Blog shortly. This space will be dedicated to sharing deep insights, practical guides, and forward-thinking perspectives on the intersection of AI and modern operations. Our goal is to create a valuable resource for the SRE, DevOps, and broader engineering community.
           </p>
         </div>
@@ -58,7 +58,7 @@ export default function BlogPage() {
       <section className="py-16 bg-white dark:bg-slate-900">
         <div className="max-w-4xl mx-auto px-6 text-center">
           <h3 className="text-3xl font-bold text-slate-900 dark:text-slate-50 mb-6">Be the First to Read Our Insights</h3>
-          <p className="text-xl text-slate-700 dark:text-slate-300 mb-8 max-w-2xl mx-auto">
+          <p className="text-lg text-slate-700 dark:text-slate-300 mb-8 max-w-2xl mx-auto">
             Want to be notified when our first posts go live? Join our waitlist to receive all major FaultMaven announcements, including the launch of our blog and early access opportunities.
           </p>
           <Button asChild href="/waitlist" variant="primary">
