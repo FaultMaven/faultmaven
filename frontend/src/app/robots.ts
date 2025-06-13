@@ -4,13 +4,7 @@ export default function robots(): MetadataRoute.Robots {
   return {
     rules: {
       userAgent: '*',
-      allow: '/',
-      disallow: [
-        '/api/',
-        '/admin/',
-        '/private/',
-      ],
+      disallow: '/',
     },
-    sitemap: 'https://faultmaven.com/sitemap.xml',
   };
 } 
