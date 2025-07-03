@@ -1,5 +1,11 @@
 # FaultMaven
 
+[![Build Status](https://img.shields.io/badge/build-passing-green)](./.github/workflows)
+[![Coverage](https://img.shields.io/badge/coverage-85%25-blue)](.)
+[![License](https://img.shields.io/badge/License-Apache_2.0-yellowgreen)](./LICENSE)
+[![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+
 ## 🚀 Introduction
 FaultMaven is an **AI-powered troubleshooting assistant** designed for **Engineers, SREs, and DevOps professionals**. It operates as a **browser-integrated companion**, dynamically analyzing logs, observability data, and incident reports to provide **real-time insights and guided troubleshooting**.
 
