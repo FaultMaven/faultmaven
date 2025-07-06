@@ -1,0 +1,15 @@
+{
+  "session": {
+    "timeout_minutes": 30,
+    "cleanup_interval_minutes": 5
+  },
+  "llm": {
+            "primary": "fireworks",
+    "fallback": "openrouter",
+    "confidence_threshold": 0.8
+  },
+  "embedding": {
+    "model": "BAAI/bge-m3",
+    "chunk_size": 512
+  }
+}
