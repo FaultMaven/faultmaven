@@ -1,126 +1,173 @@
 # FaultMaven
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python Version](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![Docker Build](https://img.shields.io/badge/Docker-Ready-blue)](https://docs.docker.com/)
+[![FastAPI](https://img.shields.io/badge/Framework-FastAPI-green)](https://fastapi.tiangolo.com/)
 
-[![Build Status](https://img.shields.io/badge/build-passing-green)](./.github/workflows)
-[![Coverage](https://img.shields.io/badge/coverage-85%25-blue)](.)
-[![License](https://img.shields.io/badge/License-Apache_2.0-yellowgreen)](./LICENSE)
-[![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+**AI-Powered Troubleshooting Copilot for SRE and DevOps Teams**
 
 ## 🚀 Introduction
-FaultMaven is an **AI-powered troubleshooting assistant** designed for **Engineers, SREs, and DevOps professionals**. It operates as a **browser-integrated companion**, dynamically analyzing logs, observability data, and incident reports to provide **real-time insights and guided troubleshooting**.
 
-By leveraging AI-driven analysis and contextual awareness, FaultMaven **accelerates incident resolution**, minimizes **manual effort**, and enhances **reliability engineering workflows**.
+FaultMaven is an open-source AI assistant designed to help engineers diagnose and resolve complex system issues. It serves as the intelligent backend that powers browser-based troubleshooting workflows, combining structured reasoning with centralized knowledge management.
 
----
-
-## ✨ Key Features
-✔ **AI-Driven Troubleshooting** – Provides **real-time recommendations** based on logs, metrics, and contextual analysis.  
-✔ **Dynamic Query Handling** – Supports **query-only**, **data-only**, and **combined** troubleshooting scenarios.  
-✔ **Log & Metrics Analysis** – Extracts key patterns and anomalies from structured and unstructured observability data.  
-✔ **AI-Assisted vs. Manual Control** – Users have full control over AI involvement in troubleshooting.  
-✔ **Session-Based Continuous Learning** – Adapts troubleshooting recommendations based on session interactions.  
-
----
-
-## 📦 Installation & Setup
-
-### ✅ Prerequisites
-Ensure you have the following installed before setting up FaultMaven:
-- Python **3.10+**
-- Docker (for containerized deployment)
-- Git (for version control)
-
-### 🔧 Setup Instructions
-Clone the repository and install dependencies:
-```bash
-git clone https://github.com/FaultMaven/FaultMaven.git
-cd FaultMaven
-python -m venv venv
-source venv/bin/activate  # For Windows use `venv\Scripts\activate`
-pip install -r requirements.txt
+```mermaid
+graph LR
+    A[Engineer] --> B(Browser Extension)
+    B --> C[FaultMaven API]
+    C --> D[AI Reasoning Engine]
+    D --> E[Knowledge Base]
+    D --> F[System Tools]
 ```
 
-### ▶️ Running the Application
-Run the application locally:
-```bash
-python app/main.py
-```
+## ✨ Core Components
 
-Run with Docker:
-```bash
-docker build -t faultmaven-mvp .
-docker run -p 8000:8000 faultmaven-mvp
-```
+### 1. FaultMaven API Server (This Repository)
+- **AI Reasoning Engine**: LangGraph-based agent with SRE troubleshooting doctrine
+- **Knowledge Management**: RAG-powered document processing
+- **Data Processing**: Log/metrics analysis pipelines
+- **Security**: PII redaction and access controls
 
----
+### 2. [FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)
+- Browser extension UI for real-time troubleshooting
+- Side panel interface for evidence submission
+- Interactive chat experience
 
-## 🛠 Development Guide
-### 💡 Contributing
-We welcome contributions! To get started:
-1. **Fork** the repository.
-2. **Create a feature branch**:  
+## 🧠 Key Features
+
+| Feature | Description | Technology |
+|---------|-------------|------------|
+| **Agentic Troubleshooting** | Five-phase SRE doctrine for issue investigation | LangGraph, LLMs |
+| **Knowledge Base (RAG)** | Centralized repository for runbooks and docs | ChromaDB, BGE-M3 |
+| **Privacy-First Design** | Sensitive data redaction before processing | Presidio, Custom regex |
+| **Extensible Tools** | Pluggable tool system for integrations | LangChain Tools |
+| **Context-Aware Analysis** | Intelligent evidence processing | Scikit-learn, Pandas |
+| **Observability** | LLM tracing and performance monitoring | Opik, Prometheus |
+
+## 🚀 Quick Start
+
+### Prerequisites
+- [Docker](https://www.docker.com/products/docker-desktop/)
+- [Python 3.11+](https://www.python.org/downloads/)
+- Clone both repositories:
+  ```bash
+  git clone https://github.com/FaultMaven/faultmaven-backend.git
+  git clone https://github.com/FaultMaven/faultmaven-copilot.git
+  ```
+
+### Local Setup with Docker
+1. Configure environment variables:
    ```bash
-   git checkout -b feature-new-module
+   cp .env.example .env
+   # Add your API keys to .env
    ```
-3. **Commit & push** your changes:
+
+2. Start the stack:
    ```bash
-   git commit -m "Added new feature"
-   git push origin feature-new-module
+   docker-compose up --build -d
    ```
-4. **Submit a Pull Request** for review.
 
-### 📂 Code Structure
-The project follows a **modular architecture**:
-- **`app/`** – Core application modules.
-  - **`adaptive_query_handler.py`** – Processes user queries.
-  - **`log_metrics_analysis.py`** – Extracts insights from logs and metrics.
-  - **`ai_troubleshooting.py`** – Provides AI-generated troubleshooting recommendations.
-  - **`continuous_learning.py`** – Implements session-based learning.
-  - **`data_manager.py`** – Manages data normalization and input preprocessing.
-  - **`logger.py`** – Handles logging and debugging.
-  - **`api.py`** – Defines FastAPI endpoints for user interaction.
-- **`tests/`** – Unit and integration test suite.
+3. Verify services:
+   ```bash
+   docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+   ```
+   ```
+   NAMES               STATUS              PORTS
+   faultmaven-backend  Up 5 minutes        0.0.0.0:8000->8000/tcp
+   chromadb            Up 5 minutes        8000/tcp
+   redis               Up 5 minutes        6379/tcp
+   ```
 
-### 🧪 Running Tests
-Run unit tests using:
+4. Connect the frontend:
+   ```bash
+   # In faultmaven-copilot directory
+   echo "VITE_API_BASE_URL=http://localhost:8000" > .env.local
+   npm install
+   npm run dev
+   ```
+
+## 🧪 Testing
+
+Run the test suite with pytest:
+
 ```bash
-pytest tests/
+# Unit tests
+pytest -m "unit"
+
+# Integration tests (requires Docker)
+pytest -m "integration"
+
+# Full test suite
+pytest --cov=faultmaven tests/
 ```
 
----
+## 🏗️ Architecture Overview
 
-## 🏗 Architecture Overview
-FaultMaven is designed with a **monolithic deployment model** (for MVP) with **modular components** that can later be scaled into microservices.
+FaultMaven uses a microservices-ready architecture with clear separation of concerns:
 
-### 🎯 Core Components
-- **Adaptive Query Handler** – Interprets user input and routes queries accordingly.
-- **Log & Metrics Analysis Module** – Extracts patterns and anomalies from observability data.
-- **AI Troubleshooting Module** – Generates guided troubleshooting recommendations.
-- **Continuous Learning Module** – Improves AI suggestions dynamically within a session.
-- **Unified API Server** – Serves FastAPI endpoints and integrates AI processing.
+```mermaid
+graph TD
+    A[Browser Copilot] --> B(API Gateway)
+    B --> C[Agent Service]
+    B --> D[Data Processing]
+    B --> E[LLM Gateway]
+    C --> F[Knowledge Base]
+    C --> E
+    E --> G[External LLMs]
+    D --> H[Redis Streams]
+    H --> I[Ingestion Worker]
+    I --> J[ChromaDB]
+```
 
-### 🏢 System Architecture Diagram
-![System Architecture](docs/diagrams/system_architecture.png)
+### Key Components
+1. **API Gateway**: Request routing and authentication
+2. **Agent Service**: Stateful reasoning workflows
+3. **LLM Gateway**: Provider routing and caching
+4. **Knowledge Base**: RAG operations and document management
+5. **Data Processing**: Evidence classification and analysis
 
-For more details, see the [Architecture Documentation](docs/architecture.md).
+For architecture details, see [Microservice Transition Plan](docs/architecture/microservice-proposal.md).
 
----
+## 🛠️ Development
+
+### Environment Setup
+1. Create virtual environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   ```
+
+2. Install dependencies:
+   ```bash
+   pip install -r requirements-dev.txt
+   ```
+
+3. Configure pre-commit hooks:
+   ```bash
+   pre-commit install
+   ```
+
+### Code Structure
+```
+faultmaven/
+├── agent/               # Reasoning components
+├── api/                 # Endpoint handlers
+├── data_processing/     # Evidence analysis
+├── knowledge_base/      # RAG management
+├── llm/                 # Model routing
+├── security/            # PII redaction
+├── models.py            # Shared data models
+└── main.py              # Application entry point
+```
 
 ## 📜 License
-This project is licensed under the **Apache 2.0 License** – see the [LICENSE](LICENSE) file for details.
 
----
+Apache 2.0 - See [LICENSE](LICENSE) for details.
 
-## 🔮 Roadmap
-✅ **MVP Release** – Core AI troubleshooting & log analysis  
-🚀 **Cloud Integration** – AWS, GCP, Azure support  
-🛡 **Enterprise Features** – Advanced security & RBAC  
-🧠 **Improved AI** – Context-aware troubleshooting enhancements  
+## 🤝 Contributing
 
-Stay updated on our progress via the [Roadmap](docs/roadmap.md).
-
----
+We welcome contributions! Please see our [Contribution Guidelines](docs/CONTRIBUTING.md) for details.
 
 ## 📬 Contact
-For inquiries, reach out via:  
-📧 [sterlan.yu@faultmaven.ai](mailto:sterlan.yu@faultmaven.ai)
+
+For inquiries: [support@faultmaven.ai](mailto:support@faultmaven.ai)  
+Join our [Discord Community](https://discord.com/faultmaven) for real-time discussion.

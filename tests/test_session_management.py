@@ -1,8 +1,10 @@
-import pytest
 from datetime import datetime, timedelta
-from unittest.mock import patch, AsyncMock
-from faultmaven.session_management import SessionManager
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
 from faultmaven.models import SessionContext
+from faultmaven.session_management import SessionManager
 
 
 @pytest.fixture
@@ -19,8 +21,8 @@ def sample_session_context():
             "findings": [],
             "recommendations": [],
             "confidence_score": 0.5,
-            "tools_used": []
-        }
+            "tools_used": [],
+        },
     )
 
 
@@ -41,7 +43,7 @@ def mock_redis():
 @pytest.fixture
 def session_manager_with_mock_redis(mock_redis):
     """Create a SessionManager with mock Redis client."""
-    with patch('redis.asyncio.from_url', return_value=mock_redis):
+    with patch("redis.asyncio.from_url", return_value=mock_redis):
         session_manager = SessionManager(redis_url="redis://localhost:6379")
         return session_manager
 
@@ -51,82 +53,93 @@ class TestSessionManager:
 
     def test_init_default_configuration(self):
         """Test SessionManager initialization with default configuration."""
-        with patch('redis.asyncio.from_url') as mock_from_url:
+        with patch("redis.asyncio.from_url") as mock_from_url:
             mock_from_url.return_value = AsyncMock()
             session_manager = SessionManager()
-            assert session_manager.session_timeout == timedelta(hours=24)  # 24 hours default
+            assert session_manager.session_timeout == timedelta(
+                hours=24
+            )  # 24 hours default
             assert session_manager.session_timeout_seconds == 24 * 3600
 
     def test_init_custom_configuration(self):
         """Test SessionManager initialization with custom configuration."""
-        with patch('redis.asyncio.from_url') as mock_from_url:
+        with patch("redis.asyncio.from_url") as mock_from_url:
             mock_from_url.return_value = AsyncMock()
             session_manager = SessionManager(
-                redis_url="redis://test:6379",
-                session_timeout_hours=2
+                redis_url="redis://test:6379", session_timeout_hours=2
             )
             assert session_manager.session_timeout == timedelta(hours=2)
             assert session_manager.session_timeout_seconds == 2 * 3600
 
     @pytest.mark.asyncio
-    async def test_create_session_success(self, session_manager_with_mock_redis, mock_redis):
+    async def test_create_session_success(
+        self, session_manager_with_mock_redis, mock_redis
+    ):
         """Test successful session creation."""
         session_manager = session_manager_with_mock_redis
         mock_redis.set.return_value = True
-        
+
         session = await session_manager.create_session("test-user")
-        
+
         assert isinstance(session, SessionContext)
         assert session.user_id == "test-user"
         mock_redis.set.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_create_session_with_existing_user(self, session_manager_with_mock_redis, mock_redis):
+    async def test_create_session_with_existing_user(
+        self, session_manager_with_mock_redis, mock_redis
+    ):
         """Test creating multiple sessions for the same user."""
         session_manager = session_manager_with_mock_redis
         mock_redis.set.return_value = True
-        
+
         session1 = await session_manager.create_session("test-user")
         session2 = await session_manager.create_session("test-user")
-        
+
         assert session1.session_id != session2.session_id
         assert session1.user_id == session2.user_id == "test-user"
         assert mock_redis.set.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_get_session_existing(self, session_manager_with_mock_redis, mock_redis, sample_session_context):
+    async def test_get_session_existing(
+        self, session_manager_with_mock_redis, mock_redis, sample_session_context
+    ):
         """Test retrieving an existing session."""
         session_manager = session_manager_with_mock_redis
-        
+
         # Mock Redis returning session data
         mock_redis.get.return_value = sample_session_context.model_dump_json()
         mock_redis.set.return_value = True
-        
+
         retrieved_session = await session_manager.get_session("test-session-123")
-        
+
         assert retrieved_session is not None
         assert retrieved_session.session_id == "test-session-123"
         mock_redis.get.assert_called_once_with("session:test-session-123")
 
     @pytest.mark.asyncio
-    async def test_get_session_nonexistent(self, session_manager_with_mock_redis, mock_redis):
+    async def test_get_session_nonexistent(
+        self, session_manager_with_mock_redis, mock_redis
+    ):
         """Test retrieving a non-existent session."""
         session_manager = session_manager_with_mock_redis
         mock_redis.get.return_value = None
-        
+
         session = await session_manager.get_session("non-existent-session")
-        
+
         assert session is None
 
     @pytest.mark.asyncio
-    async def test_update_session_success(self, session_manager_with_mock_redis, mock_redis, sample_session_context):
+    async def test_update_session_success(
+        self, session_manager_with_mock_redis, mock_redis, sample_session_context
+    ):
         """Test successful session update."""
         session_manager = session_manager_with_mock_redis
-        
+
         # Mock getting the session first
         mock_redis.get.return_value = sample_session_context.model_dump_json()
         mock_redis.set.return_value = True
-        
+
         updates = {
             "agent_state": {
                 "session_id": "test-session-123",
@@ -136,19 +149,21 @@ class TestSessionManager:
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.8,
-                "tools_used": ["tool1"]
+                "tools_used": ["tool1"],
             }
         }
-        
+
         success = await session_manager.update_session("test-session-123", updates)
         assert success is True
 
     @pytest.mark.asyncio
-    async def test_update_session_nonexistent(self, session_manager_with_mock_redis, mock_redis):
+    async def test_update_session_nonexistent(
+        self, session_manager_with_mock_redis, mock_redis
+    ):
         """Test updating a non-existent session."""
         session_manager = session_manager_with_mock_redis
         mock_redis.get.return_value = None
-        
+
         updates = {
             "agent_state": {
                 "session_id": "non-existent",
@@ -158,61 +173,69 @@ class TestSessionManager:
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.5,
-                "tools_used": []
+                "tools_used": [],
             }
         }
-        
+
         success = await session_manager.update_session("non-existent-session", updates)
         assert success is False
 
     @pytest.mark.asyncio
-    async def test_delete_session_existing(self, session_manager_with_mock_redis, mock_redis):
+    async def test_delete_session_existing(
+        self, session_manager_with_mock_redis, mock_redis
+    ):
         """Test deleting an existing session."""
         session_manager = session_manager_with_mock_redis
         mock_redis.delete.return_value = 1  # Redis delete returns count of deleted keys
-        
+
         success = await session_manager.delete_session("test-session-123")
-        
+
         assert success is True
         mock_redis.delete.assert_called_once_with("session:test-session-123")
 
     @pytest.mark.asyncio
-    async def test_delete_session_nonexistent(self, session_manager_with_mock_redis, mock_redis):
+    async def test_delete_session_nonexistent(
+        self, session_manager_with_mock_redis, mock_redis
+    ):
         """Test deleting a non-existent session."""
         session_manager = session_manager_with_mock_redis
         mock_redis.delete.return_value = 0  # No keys deleted
-        
+
         success = await session_manager.delete_session("non-existent-session")
         assert success is False
 
     @pytest.mark.asyncio
-    async def test_add_conversation_message(self, session_manager_with_mock_redis, mock_redis, sample_session_context):
+    async def test_add_conversation_message(
+        self, session_manager_with_mock_redis, mock_redis, sample_session_context
+    ):
         """Test adding conversation message to session."""
         session_manager = session_manager_with_mock_redis
-        
+
         # Mock getting the session first
         mock_redis.get.return_value = sample_session_context.model_dump_json()
         mock_redis.set.return_value = True
-        
+
         investigation_data = {
             "type": "conversation",
-            "message": "User asked about error logs"
+            "message": "User asked about error logs",
         }
-        
+
         success = await session_manager.add_investigation_history(
             "test-session-123", investigation_data
         )
         assert success is True
 
     @pytest.mark.asyncio
-    async def test_add_uploaded_data(self, session_manager_with_mock_redis, mock_redis, sample_session_context):
+    async def test_add_uploaded_data(
+        self, session_manager_with_mock_redis, mock_redis, sample_session_context
+    ):
         """Test adding uploaded data to session."""
         session_manager = session_manager_with_mock_redis
-        
+
         # Mock getting the session first
         mock_redis.get.return_value = sample_session_context.model_dump_json()
         mock_redis.set.return_value = True
-        
+
         success = await session_manager.add_data_upload("test-session-123", "data-123")
         assert success is True
 
@@ -220,31 +243,39 @@ class TestSessionManager:
     async def test_list_sessions(self, session_manager_with_mock_redis, mock_redis):
         """Test listing sessions."""
         session_manager = session_manager_with_mock_redis
-        
+
         # Create test sessions
         session1 = SessionContext(session_id="session1", user_id="user1")
         session2 = SessionContext(session_id="session2", user_id="user2")
         session3 = SessionContext(session_id="session3", user_id="user1")
-        
+
         # Mock Redis returning session keys and data
-        mock_redis.keys.return_value = ["session:session1", "session:session2", "session:session3"]
+        mock_redis.keys.return_value = [
+            "session:session1",
+            "session:session2",
+            "session:session3",
+        ]
         mock_redis.get.side_effect = [
             session1.model_dump_json(),
             session2.model_dump_json(),
-            session3.model_dump_json()
+            session3.model_dump_json(),
         ]
-        
+
         all_sessions = await session_manager.list_sessions()
         assert len(all_sessions) == 3
-        
+
         # Reset mock for user-specific query
-        mock_redis.keys.return_value = ["session:session1", "session:session2", "session:session3"]
+        mock_redis.keys.return_value = [
+            "session:session1",
+            "session:session2",
+            "session:session3",
+        ]
         mock_redis.get.side_effect = [
             session1.model_dump_json(),
             session2.model_dump_json(),
-            session3.model_dump_json()
+            session3.model_dump_json(),
         ]
-        
+
         user1_sessions = await session_manager.list_sessions("user1")
         assert len(user1_sessions) == 2
         assert all(s.user_id == "user1" for s in user1_sessions)
@@ -253,19 +284,23 @@ class TestSessionManager:
     async def test_get_session_stats(self, session_manager_with_mock_redis, mock_redis):
         """Test getting session statistics."""
         session_manager = session_manager_with_mock_redis
-        
+
         # Create test sessions with different creation times
         now = datetime.utcnow()
-        session1 = SessionContext(session_id="session1", user_id="user1", created_at=now, last_activity=now)
-        session2 = SessionContext(session_id="session2", user_id="user2", created_at=now, last_activity=now)
-        
+        session1 = SessionContext(
+            session_id="session1", user_id="user1", created_at=now, last_activity=now
+        )
+        session2 = SessionContext(
+            session_id="session2", user_id="user2", created_at=now, last_activity=now
+        )
+
         # Mock Redis returning session keys and data
         mock_redis.keys.return_value = ["session:session1", "session:session2"]
         mock_redis.get.side_effect = [
             session1.model_dump_json(),
-            session2.model_dump_json()
+            session2.model_dump_json(),
         ]
-        
+
         stats = await session_manager.get_session_stats()
         assert stats["total_sessions"] == 2
         assert stats["active_sessions"] == 2
@@ -276,24 +311,26 @@ class TestSessionManager:
     async def test_is_session_active(self, session_manager_with_mock_redis, mock_redis):
         """Test checking if a session is active."""
         session_manager = session_manager_with_mock_redis
-        
+
         # Test active session
         mock_redis.exists.return_value = 1
         assert await session_manager.is_session_active("test-session-123") is True
-        
+
         # Test inactive session
         mock_redis.exists.return_value = 0
         assert await session_manager.is_session_active("inactive-session") is False
 
     @pytest.mark.asyncio
-    async def test_extend_session(self, session_manager_with_mock_redis, mock_redis, sample_session_context):
+    async def test_extend_session(
+        self, session_manager_with_mock_redis, mock_redis, sample_session_context
+    ):
         """Test extending session timeout."""
         session_manager = session_manager_with_mock_redis
-        
+
         # Mock getting the session first
         mock_redis.get.return_value = sample_session_context.model_dump_json()
         mock_redis.set.return_value = True
-        
+
         success = await session_manager.extend_session("test-session-123")
         assert success is True
 
@@ -301,18 +338,18 @@ class TestSessionManager:
     async def test_session_lifecycle(self, session_manager_with_mock_redis, mock_redis):
         """Test complete session lifecycle."""
         session_manager = session_manager_with_mock_redis
-        
+
         # Mock successful Redis operations
         mock_redis.set.return_value = True
         mock_redis.delete.return_value = 1
-        
+
         # Create session
         session = await session_manager.create_session("test-user")
         assert session is not None
-        
+
         # Mock getting the session for update
         mock_redis.get.return_value = session.model_dump_json()
-        
+
         # Update session
         updates = {
             "agent_state": {
@@ -323,11 +360,11 @@ class TestSessionManager:
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.7,
-                "tools_used": []
+                "tools_used": [],
             }
         }
         assert await session_manager.update_session(session.session_id, updates) is True
-        
+
         # Delete session
         assert await session_manager.delete_session(session.session_id) is True
 
@@ -337,30 +374,34 @@ class TestSessionManager:
         session_dict = sample_session_context.model_dump()
         assert session_dict["session_id"] == sample_session_context.session_id
         assert session_dict["user_id"] == sample_session_context.user_id
-        
+
         # Test that session can be created from dict
         new_session = SessionContext(**session_dict)
         assert new_session.session_id == sample_session_context.session_id
         assert new_session.user_id == sample_session_context.user_id
 
     @pytest.mark.asyncio
-    async def test_redis_connection_close(self, session_manager_with_mock_redis, mock_redis):
+    async def test_redis_connection_close(
+        self, session_manager_with_mock_redis, mock_redis
+    ):
         """Test closing Redis connection."""
         session_manager = session_manager_with_mock_redis
         await session_manager.close()
         mock_redis.close.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_corrupted_session_cleanup(self, session_manager_with_mock_redis, mock_redis):
+    async def test_corrupted_session_cleanup(
+        self, session_manager_with_mock_redis, mock_redis
+    ):
         """Test that corrupted session data is cleaned up."""
         session_manager = session_manager_with_mock_redis
-        
+
         # Mock Redis returning invalid JSON
         mock_redis.get.return_value = "invalid json data"
         mock_redis.delete.return_value = 1
-        
+
         session = await session_manager.get_session("corrupted-session")
-        
+
         assert session is None
         # Should attempt to clean up corrupted session
-        mock_redis.delete.assert_called_with("session:corrupted-session") 
+        mock_redis.delete.assert_called_with("session:corrupted-session")

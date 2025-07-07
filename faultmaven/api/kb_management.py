@@ -29,18 +29,19 @@ Core Design Principles:
 import logging
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 
-from ..models import KnowledgeBaseDocument
-from ..knowledge_base.ingestion import KnowledgeBaseIngestion
+from ..models import KnowledgeBaseDocument, SearchRequest
+from ..knowledge_base.ingestion import KnowledgeIngester
+from ..observability.tracing import trace
 from ..security.redaction import DataSanitizer
 
 router = APIRouter(prefix="/kb", tags=["knowledge_base"])
 
 # Global instances (in production, these would be dependency injected)
-kb_ingestion = KnowledgeBaseIngestion()
+kb_ingestion = KnowledgeIngester()
 data_sanitizer = DataSanitizer()
 
 
@@ -53,13 +54,14 @@ def get_data_sanitizer():
 
 
 @router.post("/documents")
+@trace("api_upload_document")
 async def upload_document(
     file: UploadFile = File(...),
     title: str = Form(...),
     document_type: str = Form("troubleshooting_guide"),
     tags: Optional[str] = Form(None),
     source_url: Optional[str] = Form(None),
-    kb_ingestion: KnowledgeBaseIngestion = Depends(get_kb_ingestion),
+    kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion),
     data_sanitizer: DataSanitizer = Depends(get_data_sanitizer),
 ) -> dict:
     """
@@ -107,7 +109,7 @@ async def upload_document(
         )
         
         # Process document with knowledge base ingestion
-        job_id = await kb_ingestion.ingest_document(document)
+        job_id = await kb_ingestion.ingest_document_object(document)
         
         logger.info(f"Successfully queued document {document_id} for ingestion")
         
@@ -132,7 +134,7 @@ async def list_documents(
     tags: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
-    kb_ingestion: KnowledgeBaseIngestion = Depends(get_kb_ingestion)
+    kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion)
 ) -> dict:
     """
     List knowledge base documents with optional filtering
@@ -191,7 +193,7 @@ async def list_documents(
 @router.get("/documents/{document_id}")
 async def get_document(
     document_id: str,
-    kb_ingestion: KnowledgeBaseIngestion = Depends(get_kb_ingestion)
+    kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion)
 ) -> KnowledgeBaseDocument:
     """
     Get a specific knowledge base document
@@ -224,7 +226,7 @@ async def get_document(
 @router.delete("/documents/{document_id}")
 async def delete_document(
     document_id: str,
-    kb_ingestion: KnowledgeBaseIngestion = Depends(get_kb_ingestion)
+    kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion)
 ) -> dict:
     """
     Delete a knowledge base document
@@ -263,7 +265,7 @@ async def delete_document(
 @router.get("/jobs/{job_id}")
 async def get_job_status(
     job_id: str,
-    kb_ingestion: KnowledgeBaseIngestion = Depends(get_kb_ingestion)
+    kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion)
 ) -> dict:
     """
     Get the status of a knowledge base ingestion job
@@ -294,21 +296,16 @@ async def get_job_status(
 
 
 @router.post("/search")
+@trace("api_search_documents")
 async def search_documents(
-    query: str,
-    document_type: Optional[str] = None,
-    tags: Optional[str] = None,
-    limit: int = 10,
-    kb_ingestion: KnowledgeBaseIngestion = Depends(get_kb_ingestion)
+    request: SearchRequest,
+    kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion)
 ) -> dict:
     """
     Search knowledge base documents
     
     Args:
-        query: Search query
-        document_type: Filter by document type
-        tags: Filter by tags (comma-separated)
-        limit: Maximum number of results
+        request: Search request with query and filters
         
     Returns:
         Search results
@@ -318,27 +315,27 @@ async def search_documents(
     try:
         # Parse tags filter
         tag_list = None
-        if tags:
-            tag_list = [tag.strip() for tag in tags.split(',') if tag.strip()]
+        if request.tags:
+            tag_list = [tag.strip() for tag in request.tags.split(',') if tag.strip()]
         
         # Search documents
         results = await kb_ingestion.search_documents(
-            query=query,
-            document_type=document_type,
+            query=request.query,
+            document_type=request.document_type,
             tags=tag_list,
-            limit=limit
+            limit=request.limit
         )
         
         return {
-            "query": query,
+            "query": request.query,
             "results": [
                 {
-                    "document_id": result.document_id,
-                    "title": result.title,
-                    "document_type": result.document_type,
-                    "tags": result.tags,
-                    "score": result.score,
-                    "snippet": result.snippet
+                    "document_id": result["document_id"],
+                    "title": result["title"],
+                    "document_type": result["document_type"],
+                    "tags": result["tags"],
+                    "score": result["score"],
+                    "snippet": result["snippet"]
                 }
                 for result in results
             ],

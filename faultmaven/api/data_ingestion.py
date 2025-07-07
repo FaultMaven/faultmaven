@@ -27,27 +27,25 @@ Core Design Principles:
 """
 
 import logging
+import os
 import uuid
-from typing import Optional
 from datetime import datetime
+from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from ..models import (
-    DataInsightsResponse, 
-    UploadedData, 
-    DataType
-)
-from ..session_management import SessionManager
 from ..data_processing.classifier import DataClassifier
 from ..data_processing.log_processor import LogProcessor
-from fireworks import LLM
-
+from ..models import DataInsightsResponse, DataType, UploadedData
+from ..observability.tracing import trace
+from ..session_management import SessionManager
 
 router = APIRouter(prefix="/data", tags=["data_ingestion"])
 
 # Global instances (in production, these would be dependency injected)
-session_manager = SessionManager()
+
+redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+session_manager = SessionManager(redis_url=redis_url)
 data_classifier = DataClassifier()
 log_processor = LogProcessor()
 
@@ -55,13 +53,17 @@ log_processor = LogProcessor()
 def get_session_manager():
     return session_manager
 
+
 def get_data_classifier():
     return data_classifier
+
 
 def get_log_processor():
     return log_processor
 
+
 @router.post("/")
+@trace("api_upload_data")
 async def upload_data(
     file: UploadFile = File(...),
     session_id: str = Form(...),
@@ -72,31 +74,31 @@ async def upload_data(
 ) -> DataInsightsResponse:
     """
     Upload and process data for troubleshooting analysis
-    
+
     Args:
         file: File to upload
         session_id: Session identifier
         description: Optional description of the data
-        
+
     Returns:
         DataInsightsResponse with processing results
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Processing data upload for session {session_id}")
-    
+
     try:
         # Validate session
-        session = session_manager.get_session(session_id)
+        session = await session_manager.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         # Generate data ID
         data_id = str(uuid.uuid4())
-        
+
         # Read file content
         content = await file.read()
-        content_str = content.decode('utf-8', errors='ignore')
-        
+        content_str = content.decode("utf-8", errors="ignore")
+
         # Classify the data
         logger.info(f"Classifying data {data_id}")
         data_type = await data_classifier.classify(content_str)
@@ -109,55 +111,77 @@ async def upload_data(
             file_name=file.filename,
             file_size=len(content),
             uploaded_at=datetime.utcnow(),
-            data_type=data_type
+            data_type=data_type,
+            insights=None,  # Will be populated after processing
         )
-        
+
         # Process based on data type
         if data_type == DataType.LOG_FILE:
             logger.info(f"Processing log file {data_id}")
-            result = await log_processor.process(content_str, data_id)
+            # Create basic agent state for context-aware processing
+            from ..models import AgentState
+
+            agent_state: AgentState = {
+                "session_id": session_id,
+                "user_query": description or "Data upload for analysis",
+                "current_phase": "data_processing",
+                "investigation_context": {
+                    "data_id": data_id,
+                    "data_type": data_type.value,
+                },
+                "findings": [],
+                "recommendations": [],
+                "confidence_score": 0.0,
+                "tools_used": ["log_processor"],
+            }
+            result = await log_processor.process(content_str, data_id, agent_state)
         else:
             # For other data types, create basic insights
             result = DataInsightsResponse(
                 data_id=data_id,
                 data_type=data_type,
                 insights={
-                    'data_type': data_type.value,
-                    'file_name': file.filename,
-                    'file_size': len(content),
-                    'description': description or 'No description provided',
-                    'classification_confidence': data_classifier.get_classification_confidence(
-                    content_str, data_type
-                )
+                    "data_type": data_type.value,
+                    "file_name": file.filename,
+                    "file_size": len(content),
+                    "description": description or "No description provided",
+                    "classification_confidence": data_classifier.get_classification_confidence(
+                        content_str, data_type
+                    ),
                 },
-                confidence_score=data_classifier.get_classification_confidence(content_str, data_type),
+                confidence_score=data_classifier.get_classification_confidence(
+                    content_str, data_type
+                ),
                 processing_time_ms=0,
                 anomalies_detected=[],
                 recommendations=[
                     f"Data classified as {data_type.value}",
-                    "Consider uploading additional context if needed"
-                ]
+                    "Consider uploading additional context if needed",
+                ],
             )
-        
+
         # Update uploaded data with insights
         uploaded_data.insights = result.insights
         uploaded_data.processing_status = "completed"
-        
+
         # Add to session
-        session_manager.add_data_upload(session_id, data_id)
-        
+        await session_manager.add_data_upload(session_id, data_id)
+
         # Add investigation history
-        session_manager.add_investigation_history(session_id, {
-            'action': 'data_upload',
-            'data_id': data_id,
-            'data_type': data_type.value,
-            'file_name': file.filename,
-            'insights': result.insights
-        })
-        
+        await session_manager.add_investigation_history(
+            session_id,
+            {
+                "action": "data_upload",
+                "data_id": data_id,
+                "data_type": data_type.value,
+                "file_name": file.filename,
+                "insights": result.insights,
+            },
+        )
+
         logger.info(f"Successfully processed data {data_id}")
         return result
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -169,71 +193,73 @@ async def upload_data(
 async def get_data_insights(data_id: str, session_id: str) -> DataInsightsResponse:
     """
     Retrieve insights for previously uploaded data
-    
+
     Args:
         data_id: Data identifier
         session_id: Session identifier
-        
+
     Returns:
         DataInsightsResponse with insights
     """
     logger = logging.getLogger(__name__)
-    
+
     try:
         # Validate session
-        session = session_manager.get_session(session_id)
+        session = await session_manager.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         # Check if data belongs to session
         if data_id not in session.data_uploads:
             raise HTTPException(status_code=404, detail="Data not found in session")
-        
+
         # In a real implementation, you would retrieve the data from storage
         # For now, return a placeholder response
         return DataInsightsResponse(
             data_id=data_id,
             data_type=DataType.UNKNOWN,
-            insights={'message': 'Data insights retrieved'},
+            insights={"message": "Data insights retrieved"},
             confidence_score=0.8,
             processing_time_ms=0,
             anomalies_detected=[],
-            recommendations=[]
+            recommendations=[],
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to retrieve data insights: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve insights: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve insights: {str(e)}"
+        )
 
 
 @router.get("/session/{session_id}/uploads")
 async def list_session_uploads(session_id: str):
     """
     List all data uploads for a session
-    
+
     Args:
         session_id: Session identifier
-        
+
     Returns:
         List of uploaded data information
     """
     logger = logging.getLogger(__name__)
-    
+
     try:
         # Validate session
-        session = session_manager.get_session(session_id)
+        session = await session_manager.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         # Return session uploads
         return {
-            'session_id': session_id,
-            'uploads': session.data_uploads,
-            'total_uploads': len(session.data_uploads)
+            "session_id": session_id,
+            "uploads": session.data_uploads,
+            "total_uploads": len(session.data_uploads),
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -245,42 +271,40 @@ async def list_session_uploads(session_id: str):
 async def delete_data(data_id: str, session_id: str):
     """
     Delete uploaded data
-    
+
     Args:
         data_id: Data identifier
         session_id: Session identifier
-        
+
     Returns:
         Success message
     """
     logger = logging.getLogger(__name__)
-    
+
     try:
         # Validate session
-        session = session_manager.get_session(session_id)
+        session = await session_manager.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         # Check if data belongs to session
         if data_id not in session.data_uploads:
             raise HTTPException(status_code=404, detail="Data not found in session")
-        
+
         # Remove from session
         session.data_uploads.remove(data_id)
-        
+
         # Add to investigation history
-        session_manager.add_investigation_history(session_id, {
-            'action': 'data_deletion',
-            'data_id': data_id
-        })
-        
+        await session_manager.add_investigation_history(
+            session_id, {"action": "data_deletion", "data_id": data_id}
+        )
+
         logger.info(f"Deleted data {data_id} from session {session_id}")
-        
+
         return {"message": f"Data {data_id} deleted successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to delete data: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete data: {str(e)}")
-

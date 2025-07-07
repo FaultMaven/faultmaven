@@ -32,25 +32,30 @@ Core Design Principles:
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Dict, Any
+from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from opik import OpikMiddleware
 
-from .api import data_ingestion, query_processing, kb_management
+from .api import data_ingestion, kb_management, query_processing, sessions
+from .observability.tracing import init_opik_tracing
 from .session_management import SessionManager
-from .observability.tracing import setup_tracing
-from .models import SessionContext
-
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Optional opik middleware import
+try:
+    from opik import OpikMiddleware
+
+    OPIK_AVAILABLE = True
+except ImportError:
+    logger.warning("Opik middleware not available, running without tracing")
+    OPIK_AVAILABLE = False
 
 # Global application state
 app_state: Dict[str, Any] = {}
@@ -61,38 +66,42 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown events."""
     # Startup
     logger.info("Starting FaultMaven API server...")
-    
+
     # Initialize core services
-    app_state["session_manager"] = SessionManager()
-    
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    app_state["session_manager"] = SessionManager(redis_url=redis_url)
+
     # Setup tracing
-    setup_tracing()
-    
+    init_opik_tracing()
+
     logger.info("FaultMaven API server started successfully")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down FaultMaven API server...")
-    
+
     # Cleanup resources
     if "session_manager" in app_state:
         # Cleanup any active sessions
         session_manager = app_state["session_manager"]
-        cleaned_count = session_manager.cleanup_inactive_sessions()
-        logger.info(f"Cleaned up {cleaned_count} expired sessions")
-    
+        # TODO: Implement cleanup_inactive_sessions method
+        # cleaned_count = session_manager.cleanup_inactive_sessions()
+        # logger.info(f"Cleaned up {cleaned_count} expired sessions")
+        logger.info("Session cleanup skipped - method not implemented")
+
     logger.info("FaultMaven API server shutdown complete")
 
 
 # Create FastAPI application
 app = FastAPI(
     title="FaultMaven API",
-    description="AI-powered troubleshooting assistant for Engineers, SREs, and DevOps professionals",
+    description="AI-powered troubleshooting assistant for Engineers, "
+    "SREs, and DevOps professionals",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Add middleware
@@ -111,27 +120,18 @@ app.add_middleware(
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Add Opik tracing middleware
-app.add_middleware(OpikMiddleware)
+# Add Opik tracing middleware (if available)
+if OPIK_AVAILABLE:
+    app.add_middleware(OpikMiddleware)
 
 # Include API routers
-app.include_router(
-    data_ingestion.router,
-    prefix="/api/v1",
-    tags=["data_ingestion"]
-)
+app.include_router(data_ingestion.router, prefix="/api/v1", tags=["data_ingestion"])
 
-app.include_router(
-    query_processing.router,
-    prefix="/api/v1",
-    tags=["query_processing"]
-)
+app.include_router(query_processing.router, prefix="/api/v1", tags=["query_processing"])
 
-app.include_router(
-    kb_management.router,
-    prefix="/api/v1",
-    tags=["knowledge_base"]
-)
+app.include_router(kb_management.router, prefix="/api/v1", tags=["knowledge_base"])
+
+app.include_router(sessions.router, prefix="/api/v1", tags=["session_management"])
 
 
 @app.get("/")
@@ -142,7 +142,7 @@ async def root():
         "version": "1.0.0",
         "description": "AI-powered troubleshooting assistant",
         "docs": "/docs",
-        "health": "/health"
+        "health": "/health",
     }
 
 
@@ -151,10 +151,7 @@ async def health_check():
     """Health check endpoint."""
     return {
         "status": "healthy",
-        "services": {
-            "session_manager": "active",
-            "api": "running"
-        }
+        "services": {"session_manager": "active", "api": "running"},
     }
 
 
@@ -164,8 +161,8 @@ async def list_sessions():
     session_manager = app_state.get("session_manager")
     if not session_manager:
         raise HTTPException(status_code=503, detail="Session manager not available")
-    
-    sessions = session_manager.list_sessions()
+
+    sessions = await session_manager.list_sessions()
     return {
         "sessions": [
             {
@@ -173,11 +170,11 @@ async def list_sessions():
                 "user_id": session.user_id,
                 "created_at": session.created_at.isoformat(),
                 "last_activity": session.last_activity.isoformat(),
-                "data_uploads_count": len(session.data_uploads)
+                "data_uploads_count": len(session.data_uploads),
             }
             for session in sessions
         ],
-        "total": len(sessions)
+        "total": len(sessions),
     }
 
 
@@ -187,31 +184,26 @@ async def create_session(user_id: str = None):
     session_manager = app_state.get("session_manager")
     if not session_manager:
         raise HTTPException(status_code=503, detail="Session manager not available")
-    
-    session = session_manager.create_session(user_id)
+
+    session = await session_manager.create_session(user_id)
     return {
         "session_id": session.session_id,
         "user_id": session.user_id,
         "created_at": session.created_at.isoformat(),
-        "message": "Session created successfully"
+        "message": "Session created successfully",
     }
 
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     # Get configuration from environment
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
     reload = os.getenv("RELOAD", "false").lower() == "true"
-    
-    logger.info(f"Starting FaultMaven API on {host}:{port}")
-    
-    uvicorn.run(
-        "faultmaven.main:app",
-        host=host,
-        port=port,
-        reload=reload,
-        log_level="info"
-    )
 
+    logger.info(f"Starting FaultMaven API on {host}:{port}")
+
+    uvicorn.run(
+        "faultmaven.main:app", host=host, port=port, reload=reload, log_level="info"
+    )

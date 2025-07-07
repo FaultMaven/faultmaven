@@ -1,11 +1,13 @@
-import pytest
 import io
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+import pytest_asyncio
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
+
 from faultmaven.api.data_ingestion import router
-from faultmaven.models import DataType, DataInsightsResponse
-import pytest_asyncio
+from faultmaven.models import DataInsightsResponse, DataType
 
 
 class TestDataIngestionAPI:
@@ -36,17 +38,30 @@ class TestDataIngestionAPI:
         return Mock()
 
     @pytest.fixture
-    def test_app(self, mock_session_manager, mock_data_classifier, 
-                 mock_log_processor, mock_data_sanitizer):
+    def test_app(
+        self,
+        mock_session_manager,
+        mock_data_classifier,
+        mock_log_processor,
+        mock_data_sanitizer,
+    ):
         """Create test FastAPI app with mocked dependencies."""
         from fastapi import FastAPI
+
         from faultmaven.api import data_ingestion
+
         app = FastAPI()
         app.include_router(data_ingestion.router)
         # Dependency overrides for DI providers
-        app.dependency_overrides[data_ingestion.get_session_manager] = lambda: mock_session_manager
-        app.dependency_overrides[data_ingestion.get_data_classifier] = lambda: mock_data_classifier
-        app.dependency_overrides[data_ingestion.get_log_processor] = lambda: mock_log_processor
+        app.dependency_overrides[data_ingestion.get_session_manager] = (
+            lambda: mock_session_manager
+        )
+        app.dependency_overrides[data_ingestion.get_data_classifier] = (
+            lambda: mock_data_classifier
+        )
+        app.dependency_overrides[data_ingestion.get_log_processor] = (
+            lambda: mock_log_processor
+        )
         return app
 
     @pytest.fixture
@@ -54,34 +69,45 @@ class TestDataIngestionAPI:
         """Create test client."""
         return TestClient(test_app)
 
-    def test_upload_data_success(self, client, mock_session_manager, 
-                                 mock_data_classifier, mock_log_processor, 
-                                 mock_data_sanitizer):
+    def test_upload_data_success(
+        self,
+        client,
+        mock_session_manager,
+        mock_data_classifier,
+        mock_log_processor,
+        mock_data_sanitizer,
+    ):
         """Test successful data upload."""
         # Mock service responses
         mock_data_classifier.classify = AsyncMock(return_value=DataType.LOG_FILE)
         mock_data_sanitizer.sanitize.return_value = "Sanitized content"
-        mock_log_processor.process = AsyncMock(return_value=DataInsightsResponse(
-            data_id="test-data-id",
-            data_type=DataType.LOG_FILE,
-            insights={"error_count": 2, "error_rate": 0.4},
-            confidence_score=1.0,
-            processing_time_ms=10,
-            anomalies_detected=[],
-            recommendations=["Investigate errors"]
-        ))
-        mock_session_manager.create_session.return_value = "test-session-id"
-        mock_session_manager.update_session.return_value = None
+        mock_log_processor.process = AsyncMock(
+            return_value=DataInsightsResponse(
+                data_id="test-data-id",
+                data_type=DataType.LOG_FILE,
+                insights={"error_count": 2, "error_rate": 0.4},
+                confidence_score=1.0,
+                processing_time_ms=10,
+                anomalies_detected=[],
+                recommendations=["Investigate errors"],
+            )
+        )
+        # Mock async session manager methods
+        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
+        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
 
         # Create test file content
-        file_content = b"2024-01-01 12:00:00 ERROR Test error\n2024-01-01 12:00:01 INFO Test info"
-        
+        file_content = (
+            b"2024-01-01 12:00:00 ERROR Test error\n2024-01-01 12:00:01 INFO Test info"
+        )
+
         response = client.post(
             "/data",
             files={"file": ("test.log", io.BytesIO(file_content), "text/plain")},
-            data={"session_id": "test-session-id"}
+            data={"session_id": "test-session-id"},
         )
-        
+
         # Verify response
         assert response.status_code == 200
         data = response.json()
@@ -90,188 +116,236 @@ class TestDataIngestionAPI:
 
     def test_upload_data_no_file(self, client):
         """Test upload without file."""
-        response = client.post(
-            "/data",
-            data={"session_id": "test-session-id"}
-        )
+        response = client.post("/data", data={"session_id": "test-session-id"})
         assert response.status_code == 422  # Validation error
 
-    def test_upload_data_empty_file(self, client, mock_session_manager, 
-                                    mock_data_classifier, mock_log_processor, 
-                                    mock_data_sanitizer):
+    def test_upload_data_empty_file(
+        self,
+        client,
+        mock_session_manager,
+        mock_data_classifier,
+        mock_log_processor,
+        mock_data_sanitizer,
+    ):
         """Test upload with empty file."""
         # Mock service responses
         mock_data_classifier.classify = AsyncMock(return_value=DataType.LOG_FILE)
         mock_data_sanitizer.sanitize.return_value = ""
-        mock_log_processor.process = AsyncMock(return_value=DataInsightsResponse(
-            data_id="test-data-id",
-            data_type=DataType.LOG_FILE,
-            insights={"error_count": 0, "error_rate": 0.0},
-            confidence_score=1.0,
-            processing_time_ms=10,
-            anomalies_detected=[],
-            recommendations=["No action needed"]
-        ))
-        mock_session_manager.create_session.return_value = "test-session-id"
+        mock_log_processor.process = AsyncMock(
+            return_value=DataInsightsResponse(
+                data_id="test-data-id",
+                data_type=DataType.LOG_FILE,
+                insights={"error_count": 0, "error_rate": 0.0},
+                confidence_score=1.0,
+                processing_time_ms=10,
+                anomalies_detected=[],
+                recommendations=["No action needed"],
+            )
+        )
+        # Mock async session manager methods  
+        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
+        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
 
         # Create empty file
         file_content = b""
-        
+
         response = client.post(
             "/data",
             files={"file": ("empty.log", io.BytesIO(file_content), "text/plain")},
-            data={"session_id": "test-session-id"}
+            data={"session_id": "test-session-id"},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["insights"]["error_count"] == 0
 
-    def test_upload_data_classification_failure(self, client, 
-                                                mock_data_classifier):
+    def test_upload_data_classification_failure(self, client, mock_data_classifier, mock_session_manager):
         """Test handling of classification failure."""
         mock_data_classifier.classify.side_effect = Exception("Classification error")
+        # Mock session manager 
+        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
         file_content = b"Test log content"
         response = client.post(
             "/data",
             files={"file": ("test.log", io.BytesIO(file_content), "text/plain")},
-            data={"session_id": "test-session-id"}
+            data={"session_id": "test-session-id"},
         )
         assert response.status_code == 500
         assert "detail" in response.json()
 
-    def test_upload_data_processing_failure(self, client, 
-                                             mock_data_classifier, 
-                                             mock_log_processor):
+    def test_upload_data_processing_failure(
+        self, client, mock_data_classifier, mock_log_processor, mock_session_manager
+    ):
         """Test handling of processing failure."""
         mock_data_classifier.classify = AsyncMock(return_value=DataType.LOG_FILE)
         mock_log_processor.process.side_effect = Exception("Processing error")
+        # Mock session manager 
+        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
         file_content = b"Test log content"
         response = client.post(
             "/data",
             files={"file": ("test.log", io.BytesIO(file_content), "text/plain")},
-            data={"session_id": "test-session-id"}
+            data={"session_id": "test-session-id"},
         )
         assert response.status_code == 500
         assert "detail" in response.json()
 
-    def test_upload_data_session_creation_failure(self, client, 
-                                                  mock_session_manager):
+    def test_upload_data_session_creation_failure(self, client, mock_session_manager):
         """Test handling of session creation failure."""
-        mock_session_manager.create_session.side_effect = Exception("Session error")
+        # Mock session retrieval to fail (simulating session not found)
+        mock_session_manager.get_session = AsyncMock(return_value=None)
         file_content = b"Test log content"
         response = client.post(
             "/data",
             files={"file": ("test.log", io.BytesIO(file_content), "text/plain")},
-            data={"session_id": "test-session-id"}
+            data={"session_id": "test-session-id"},
         )
-        assert response.status_code == 500
+        assert response.status_code == 404  # Session not found
         assert "detail" in response.json()
 
-    def test_upload_data_different_file_types(self, client, 
-                                               mock_session_manager, 
-                                               mock_data_classifier, 
-                                               mock_log_processor, 
-                                               mock_data_sanitizer):
+    def test_upload_data_different_file_types(
+        self,
+        client,
+        mock_session_manager,
+        mock_data_classifier,
+        mock_log_processor,
+        mock_data_sanitizer,
+    ):
         """Test upload with different file types."""
         # Mock responses
         mock_data_classifier.classify = AsyncMock(return_value=DataType.LOG_FILE)
         mock_data_sanitizer.sanitize.return_value = "Sanitized content"
-        mock_log_processor.process = AsyncMock(return_value=DataInsightsResponse(
-            data_id="test-data-id",
-            data_type=DataType.LOG_FILE,
-            insights={"error_count": 1, "error_rate": 0.1},
-            confidence_score=1.0,
-            processing_time_ms=10,
-            anomalies_detected=[],
-            recommendations=["Review logs"]
-        ))
-        mock_session_manager.create_session.return_value = "test-session-id"
+        mock_log_processor.process = AsyncMock(
+            return_value=DataInsightsResponse(
+                data_id="test-data-id",
+                data_type=DataType.LOG_FILE,
+                insights={"error_count": 1, "error_rate": 0.1},
+                confidence_score=1.0,
+                processing_time_ms=10,
+                anomalies_detected=[],
+                recommendations=["Review logs"],
+            )
+        )
+        # Mock async session manager methods  
+        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
+        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
         file_content = b"Test application log content"
         response = client.post(
             "/data",
             files={"file": ("app.log", io.BytesIO(file_content), "text/plain")},
-            data={"session_id": "test-session-id"}
+            data={"session_id": "test-session-id"},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["data_type"] == "log_file"
 
-    def test_upload_data_large_file(self, client, mock_session_manager, 
-                                    mock_data_classifier, mock_log_processor, 
-                                    mock_data_sanitizer):
+    def test_upload_data_large_file(
+        self,
+        client,
+        mock_session_manager,
+        mock_data_classifier,
+        mock_log_processor,
+        mock_data_sanitizer,
+    ):
         """Test upload with large file."""
         # Mock responses
         mock_data_classifier.classify = AsyncMock(return_value=DataType.LOG_FILE)
         mock_data_sanitizer.sanitize.return_value = "Sanitized content"
-        mock_log_processor.process = AsyncMock(return_value=DataInsightsResponse(
-            data_id="test-data-id",
-            data_type=DataType.LOG_FILE,
-            insights={"error_count": 100, "error_rate": 0.5},
-            confidence_score=1.0,
-            processing_time_ms=10,
-            anomalies_detected=[],
-            recommendations=["Investigate high error rate"]
-        ))
-        mock_session_manager.create_session.return_value = "test-session-id"
+        mock_log_processor.process = AsyncMock(
+            return_value=DataInsightsResponse(
+                data_id="test-data-id",
+                data_type=DataType.LOG_FILE,
+                insights={"error_count": 100, "error_rate": 0.5},
+                confidence_score=1.0,
+                processing_time_ms=10,
+                anomalies_detected=[],
+                recommendations=["Investigate high error rate"],
+            )
+        )
+        # Mock async session manager methods  
+        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
+        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
         file_content = b"Error\n" * 1000
         response = client.post(
             "/data",
             files={"file": ("large.log", io.BytesIO(file_content), "text/plain")},
-            data={"session_id": "test-session-id"}
+            data={"session_id": "test-session-id"},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["insights"]["error_count"] == 100
 
-    def test_upload_data_with_anomalies(self, client, mock_session_manager, 
-                                        mock_data_classifier, mock_log_processor, 
-                                        mock_data_sanitizer):
+    def test_upload_data_with_anomalies(
+        self,
+        client,
+        mock_session_manager,
+        mock_data_classifier,
+        mock_log_processor,
+        mock_data_sanitizer,
+    ):
         """Test upload with detected anomalies."""
         # Mock responses with anomalies
         mock_data_classifier.classify = AsyncMock(return_value=DataType.LOG_FILE)
         mock_data_sanitizer.sanitize.return_value = "Sanitized content"
-        mock_log_processor.process = AsyncMock(return_value=DataInsightsResponse(
-            data_id="test-data-id",
-            data_type=DataType.LOG_FILE,
-            insights={"error_count": 2, "error_rate": 0.2},
-            confidence_score=1.0,
-            processing_time_ms=10,
-            anomalies_detected=[{"message": "Spike in errors"}],
-            recommendations=["Investigate spike"]
-        ))
-        mock_session_manager.create_session.return_value = "test-session-id"
+        mock_log_processor.process = AsyncMock(
+            return_value=DataInsightsResponse(
+                data_id="test-data-id",
+                data_type=DataType.LOG_FILE,
+                insights={"error_count": 2, "error_rate": 0.2},
+                confidence_score=1.0,
+                processing_time_ms=10,
+                anomalies_detected=[{"message": "Spike in errors"}],
+                recommendations=["Investigate spike"],
+            )
+        )
+        # Mock async session manager methods  
+        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
+        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
         file_content = b"Error\n" * 10
         response = client.post(
             "/data",
             files={"file": ("anomaly.log", io.BytesIO(file_content), "text/plain")},
-            data={"session_id": "test-session-id"}
+            data={"session_id": "test-session-id"},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["anomalies_detected"] == [{"message": "Spike in errors"}]
 
-    def test_upload_data_sanitization(self, client, mock_session_manager, 
-                                      mock_data_classifier, mock_log_processor, 
-                                      mock_data_sanitizer):
+    def test_upload_data_sanitization(
+        self,
+        client,
+        mock_session_manager,
+        mock_data_classifier,
+        mock_log_processor,
+        mock_data_sanitizer,
+    ):
         """Test that data is properly sanitized."""
         # Mock sanitization
         mock_data_classifier.classify = AsyncMock(return_value=DataType.LOG_FILE)
         mock_data_sanitizer.sanitize.return_value = "Sanitized content"
-        mock_log_processor.process = AsyncMock(return_value=DataInsightsResponse(
-            data_id="test-data-id",
-            data_type=DataType.LOG_FILE,
-            insights={"error_count": 1, "error_rate": 0.1},
-            confidence_score=1.0,
-            processing_time_ms=10,
-            anomalies_detected=[],
-            recommendations=["Review sanitized logs"]
-        ))
-        mock_session_manager.create_session.return_value = "test-session-id"
+        mock_log_processor.process = AsyncMock(
+            return_value=DataInsightsResponse(
+                data_id="test-data-id",
+                data_type=DataType.LOG_FILE,
+                insights={"error_count": 1, "error_rate": 0.1},
+                confidence_score=1.0,
+                processing_time_ms=10,
+                anomalies_detected=[],
+                recommendations=["Review sanitized logs"],
+            )
+        )
+        # Mock async session manager methods  
+        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
+        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
         file_content = b"Sensitive info\n"
         response = client.post(
             "/data",
             files={"file": ("sanitized.log", io.BytesIO(file_content), "text/plain")},
-            data={"session_id": "test-session-id"}
+            data={"session_id": "test-session-id"},
         )
         assert response.status_code == 200
         data = response.json()
@@ -287,4 +361,4 @@ class TestDataIngestionAPI:
         routes = [(route.path, route.methods) for route in test_app.routes]
         data_routes = [route for route in routes if route[0] in ["/data", "/data/"]]
         assert len(data_routes) > 0
-        assert "POST" in data_routes[0][1] 
+        assert "POST" in data_routes[0][1]

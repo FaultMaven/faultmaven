@@ -1,4 +1,5 @@
 import asyncio
+
 from faultmaven.data_processing.classifier import DataClassifier
 
 TEST_CASES = [
@@ -19,11 +20,13 @@ TEST_CASES = [
     ("Some random text that doesn't match patterns", "?"),
 ]
 
+
 async def main():
     classifier = DataClassifier()
     for text, _ in TEST_CASES:
         result = await classifier.classify(text)
         print(f"Input: {text!r}\n  Output: {result}\n")
 
+
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())

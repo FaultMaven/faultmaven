@@ -20,6 +20,7 @@ spacy>=3.7.0 # Required by Presidio
 # --- NEW: Data Processing & Analysis ---
 numpy>=1.26.4, <2
 pandas>=1.5.0
+pandas-stubs>=2.0.0
 pylogrus>=0.1.2 # For log parsing
 scikit-learn>=1.5.0 # For anomaly detection
 pyod>=2.0.1 # For anomaly detection

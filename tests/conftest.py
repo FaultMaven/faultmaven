@@ -1,18 +1,19 @@
 """Shared pytest fixtures and configuration for FaultMaven tests."""
 
-import pytest
 import asyncio
-from unittest.mock import Mock
 from datetime import datetime
-from faultmaven.models import SessionContext, AgentState, DataType
+from unittest.mock import Mock, AsyncMock, MagicMock
 
+import pytest
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+from faultmaven.models import AgentState, DataType, SessionContext
+from faultmaven.llm.router import LLMRouter
+from faultmaven.data_processing.classifier import DataClassifier
+from faultmaven.data_processing.log_processor import LogProcessor
+from faultmaven.session_management import SessionManager
+from faultmaven.security.redaction import DataSanitizer
+from faultmaven.agent.tools.knowledge_base import KnowledgeBaseTool
+from faultmaven.agent.tools.web_search import WebSearchTool
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ def sample_session_context():
         agent_state=AgentState.IDLE,
         conversation_history=[],
         uploaded_data=[],
-        insights={}
+        insights={},
     )
 
 
@@ -38,7 +39,7 @@ def sample_uploaded_data():
         "data_type": DataType.SYSTEM_LOGS,
         "size": 1024,
         "uploaded_at": datetime.now(),
-        "content": "2024-01-01 12:00:00 ERROR Test error"
+        "content": "2024-01-01 12:00:00 ERROR Test error",
     }
 
 
@@ -51,12 +52,13 @@ def sample_processor_result():
             "error_count": 2,
             "error_rate": 0.4,
             "level_distribution": {"ERROR": 2, "INFO": 3},
-            "time_range": {"start": "2024-01-01T12:00:00Z", "end": "2024-01-01T12:05:00Z"}
+            "time_range": {
+                "start": "2024-01-01T12:00:00Z",
+                "end": "2024-01-01T12:05:00Z",
+            },
         },
-        anomalies=[
-            {"index": 5, "score": 0.9, "feature": "response_time"}
-        ],
-        suggested_next_action="Investigate errors"
+        anomalies=[{"index": 5, "score": 0.9, "feature": "response_time"}],
+        suggested_next_action="Investigate errors",
     )
 
 
@@ -140,20 +142,20 @@ def sample_knowledge_documents():
     """Sample knowledge base documents for testing."""
     return [
         {
-            'document': 'Database connection timeout troubleshooting guide',
-            'metadata': {'source': 'docs/troubleshooting.md', 'type': 'guide'},
-            'distance': 0.1
+            "document": "Database connection timeout troubleshooting guide",
+            "metadata": {"source": "docs/troubleshooting.md", "type": "guide"},
+            "distance": 0.1,
         },
         {
-            'document': 'How to configure connection pooling',
-            'metadata': {'source': 'docs/config.md', 'type': 'config'},
-            'distance': 0.2
+            "document": "How to configure connection pooling",
+            "metadata": {"source": "docs/config.md", "type": "config"},
+            "distance": 0.2,
         },
         {
-            'document': 'Common database errors and solutions',
-            'metadata': {'source': 'docs/errors.md', 'type': 'reference'},
-            'distance': 0.3
-        }
+            "document": "Common database errors and solutions",
+            "metadata": {"source": "docs/errors.md", "type": "reference"},
+            "distance": 0.3,
+        },
     ]
 
 
@@ -191,23 +193,23 @@ def mock_ollama_client():
 def test_config():
     """Test configuration for FaultMaven."""
     return {
-        'llm': {
-            'fireworks': {'api_key': 'test-key', 'model': 'test-model'},
-            'openrouter': {'api_key': 'test-key', 'model': 'test-model'},
-            'ollama': {'base_url': 'http://localhost:11434', 'model': 'llama2'}
+        "llm": {
+            "fireworks": {"api_key": "test-key", "model": "test-model"},
+            "openrouter": {"api_key": "test-key", "model": "test-model"},
+            "ollama": {"base_url": "http://localhost:11434", "model": "llama2"},
         },
-        'chromadb': {
-            'persist_directory': './test_chroma',
-            'collection_name': 'test_collection'
+        "chromadb": {
+            "persist_directory": "./test_chroma",
+            "collection_name": "test_collection",
         },
-        'session': {
-            'timeout': 1800,  # 30 minutes for testing
-            'cleanup_interval': 300  # 5 minutes for testing
+        "session": {
+            "timeout": 1800,  # 30 minutes for testing
+            "cleanup_interval": 300,  # 5 minutes for testing
         },
-        'security': {
-            'secret_patterns': {
-                'test_key': r'TEST_[A-Z0-9]{16}',
-                'test_token': r'TEST_TOKEN_[A-Z0-9]{32}'
+        "security": {
+            "secret_patterns": {
+                "test_key": r"TEST_[A-Z0-9]{16}",
+                "test_token": r"TEST_TOKEN_[A-Z0-9]{32}",
             }
-        }
-    } 
+        },
+    }

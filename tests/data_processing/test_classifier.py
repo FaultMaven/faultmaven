@@ -1,5 +1,7 @@
+from unittest.mock import AsyncMock, Mock
+
 import pytest
-from unittest.mock import Mock, AsyncMock
+
 from faultmaven.data_processing.classifier import DataClassifier
 from faultmaven.models import DataType
 
@@ -20,23 +22,29 @@ class TestDataClassifier:
         return classifier
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("text,expected_type", [
-        ("2024-01-01 12:00:00 ERROR [app] Database connection failed", DataType.LOG_FILE),
-        ("[ERROR] Failed to connect to database", DataType.ERROR_MESSAGE),
-        ("INFO: Application started successfully", DataType.LOG_FILE),
-        ("DEBUG: Processing request ID 12345", DataType.LOG_FILE),
-        ("Exception: java.lang.NullPointerException", DataType.ERROR_MESSAGE),
-        ("Error: Division by zero", DataType.ERROR_MESSAGE),
-        ("Stack trace: at com.example.App.main", DataType.CONFIG_FILE),
-        ("cpu_usage{host='server1'} 85.2", DataType.METRICS_DATA),
-        ("memory_usage_percent 67.8", DataType.CONFIG_FILE),
-        ("http_requests_total{method='GET'} 1234", DataType.METRICS_DATA),
-        ("database.host=localhost", DataType.CONFIG_FILE),
-        ("api.timeout=30", DataType.CONFIG_FILE),
-        ("logging.level=DEBUG", DataType.LOG_FILE),
-        ("This is a troubleshooting guide.", DataType.DOCUMENTATION),
-        ("Some random text that doesn't match patterns", DataType.CONFIG_FILE),
-    ])
+    @pytest.mark.parametrize(
+        "text,expected_type",
+        [
+            (
+                "2024-01-01 12:00:00 ERROR [app] Database connection failed",
+                DataType.LOG_FILE,
+            ),
+            ("[ERROR] Failed to connect to database", DataType.ERROR_MESSAGE),
+            ("INFO: Application started successfully", DataType.LOG_FILE),
+            ("DEBUG: Processing request ID 12345", DataType.LOG_FILE),
+            ("Exception: java.lang.NullPointerException", DataType.ERROR_MESSAGE),
+            ("Error: Division by zero", DataType.ERROR_MESSAGE),
+            ("Stack trace: at com.example.App.main", DataType.CONFIG_FILE),
+            ("cpu_usage{host='server1'} 85.2", DataType.METRICS_DATA),
+            ("memory_usage_percent 67.8", DataType.CONFIG_FILE),
+            ("http_requests_total{method='GET'} 1234", DataType.METRICS_DATA),
+            ("database.host=localhost", DataType.CONFIG_FILE),
+            ("api.timeout=30", DataType.CONFIG_FILE),
+            ("logging.level=DEBUG", DataType.LOG_FILE),
+            ("This is a troubleshooting guide.", DataType.DOCUMENTATION),
+            ("Some random text that doesn't match patterns", DataType.CONFIG_FILE),
+        ],
+    )
     async def test_heuristic_classification(self, classifier, text, expected_type):
         """Test heuristic-based classification for various data types."""
         result = await classifier.classify(text)
@@ -79,8 +87,10 @@ class TestDataClassifier:
     @pytest.mark.asyncio
     async def test_llm_fallback_exception_handling(self, classifier, mock_router):
         """Test handling of LLM router exceptions."""
+
         async def raise_exc(*args, **kwargs):
             raise Exception("LLM error")
+
         mock_router.route = AsyncMock(side_effect=raise_exc)
         classifier._heuristic_classify = lambda _: DataType.UNKNOWN
         ambiguous_text = "foobar123"
@@ -88,12 +98,15 @@ class TestDataClassifier:
         assert result == DataType.UNKNOWN
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("text,expected", [
-        ("", DataType.UNKNOWN),
-        (None, DataType.UNKNOWN),
-        ("   ", DataType.CONFIG_FILE),
-        ("\n\t", DataType.UNKNOWN),
-    ])
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("", DataType.UNKNOWN),
+            (None, DataType.UNKNOWN),
+            ("   ", DataType.CONFIG_FILE),
+            ("\n\t", DataType.UNKNOWN),
+        ],
+    )
     async def test_empty_or_whitespace_input(self, classifier, text, expected):
         """Test handling of empty or whitespace-only input."""
         result = await classifier.classify(text)
@@ -143,4 +156,4 @@ class TestDataClassifier:
         """Test classification with unicode characters."""
         unicode_text = "ERROR: Database connection failed 🚫"
         result = await classifier.classify(unicode_text)
-        assert result == DataType.ERROR_MESSAGE 
+        assert result == DataType.ERROR_MESSAGE

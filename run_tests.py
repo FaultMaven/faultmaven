@@ -13,7 +13,7 @@ def run_command(cmd, description):
     print(f"\n{'='*60}")
     print(f"Running: {description}")
     print(f"Command: {' '.join(cmd)}")
-    print('='*60)
+    print('=' * 60)
     
     result = subprocess.run(cmd, capture_output=False)
     
@@ -134,13 +134,13 @@ def main():
         pytest_cmd = ["pytest"]
         
         if args.unit:
-            pytest_cmd.extend(["-m", "unit"])
+            pytest_cmd.extend(["tests/", "--ignore=tests/integration/"])
         elif args.integration:
-            pytest_cmd.extend(["-m", "integration"])
+            pytest_cmd.extend(["tests/integration/"])
         elif args.security:
-            pytest_cmd.extend(["-m", "security"])
+            pytest_cmd.extend(["tests/security/"])
         elif args.api:
-            pytest_cmd.extend(["-m", "api"])
+            pytest_cmd.extend(["tests/api/"])
         
         if args.coverage or args.all:
             pytest_cmd.extend([
@@ -180,7 +180,7 @@ def main():
             success = False
     
     # Summary
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     if success:
         print("🎉 All checks passed successfully!")
         sys.exit(0)
@@ -190,4 +190,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
