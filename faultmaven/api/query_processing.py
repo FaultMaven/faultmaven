@@ -57,17 +57,17 @@ session_manager = SessionManager(redis_url=redis_url)
 try:
     llm_router = LLMRouter()
     print("✅ LLMRouter initialized")
-    
+
     # Create knowledge ingester for knowledge base tool
     knowledge_ingester = KnowledgeIngester()
     print("✅ KnowledgeIngester initialized")
-    
+
     knowledge_base_tool = KnowledgeBaseTool(knowledge_ingester=knowledge_ingester)
     print("✅ KnowledgeBaseTool initialized")
-    
+
     web_search_tool = WebSearchTool()
     print("✅ WebSearchTool initialized")
-    
+
     # Initialize the core agent
     core_agent = FaultMavenAgent(
         llm_router=llm_router,
@@ -75,10 +75,11 @@ try:
         web_search_tool=web_search_tool,
     )
     print("✅ FaultMavenAgent initialized successfully!")
-    
+
 except Exception as e:
     print(f"❌ Agent initialization failed: {e}")
     import traceback
+
     traceback.print_exc()
     core_agent = None
 data_sanitizer = DataSanitizer()
@@ -134,19 +135,19 @@ async def process_query(
         # Temporary placeholder since core agent initialization requires dependencies
         if core_agent is None:
             logger.warning("Core agent not initialized, returning placeholder response")
-            
+
             # Create explicit dictionary structure for findings
             placeholder_finding = {
                 "type": "status",
-                "message": "Agent placeholder response", 
+                "message": "Agent placeholder response",
                 "severity": "info",
                 "timestamp": datetime.utcnow().isoformat(),
-                "source": "placeholder"
+                "source": "placeholder",
             }
-            
+
             agent_response = {
                 "findings": [placeholder_finding],
-                "root_cause": "Investigation pending", 
+                "root_cause": "Investigation pending",
                 "recommendations": ["Please wait for agent initialization"],
                 "confidence_score": 0.1,
                 "estimated_mttr": "Unknown",

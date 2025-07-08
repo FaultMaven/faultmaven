@@ -387,7 +387,10 @@ class TestWebSearchTool:
 
                 # Verify the result is not None
                 assert result is not None
-                assert "No relevant results found" in result or "Web search results" in result
+                assert (
+                    "No relevant results found" in result
+                    or "Web search results" in result
+                )
 
                 # Verify the query was enhanced
                 call_args = (

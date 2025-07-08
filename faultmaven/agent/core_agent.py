@@ -67,8 +67,7 @@ class FaultMavenAgent:
         # Build the agent graph
         self.graph = self._build_agent_graph()
         self.compiled_graph = self.graph.compile(
-            checkpointer=MemorySaver(),
-            interrupt_before=["await_user_input"]
+            checkpointer=MemorySaver(), interrupt_before=["await_user_input"]
         )
 
         # Tool safety configuration
@@ -278,24 +277,30 @@ class FaultMavenAgent:
             self.logger.error(f"Triage failed: {e}")
             state["investigation_context"]["triage_error"] = str(e)
             state["confidence_score"] = 0.3
-            
+
             # Check if this is an LLM provider failure
-            if "All LLM providers failed" in str(e) or "failed or returned low confidence" in str(e):
+            if "All LLM providers failed" in str(
+                e
+            ) or "failed or returned low confidence" in str(e):
                 # Provide a basic triage assessment without LLM
-                basic_assessment = self._basic_triage_fallback(state.get('user_query', ''))
+                basic_assessment = self._basic_triage_fallback(
+                    state.get("user_query", "")
+                )
                 state["investigation_context"]["triage_assessment"] = basic_assessment
                 state["investigation_context"]["severity"] = "medium"
                 state["current_phase"] = "triage_completed"
-                
+
                 # Add basic finding
-                state["findings"].append({
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "phase": "triage",
-                    "finding": "Basic triage assessment (LLM providers unavailable)",
-                    "details": basic_assessment,
-                    "requires_user_response": False,
-                })
-                
+                state["findings"].append(
+                    {
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "phase": "triage",
+                        "finding": "Basic triage assessment (LLM providers unavailable)",
+                        "details": basic_assessment,
+                        "requires_user_response": False,
+                    }
+                )
+
                 # Set a helpful response
                 state["investigation_context"]["agent_response"] = basic_assessment
                 state["investigation_context"]["waiting_for_input"] = False
@@ -795,7 +800,9 @@ class FaultMavenAgent:
     def _should_continue_after_confirmation(self, state: AgentState) -> str:
         """Determine next step after user confirmation"""
         # Check if user confirmed
-        last_input = state.get("investigation_context", {}).get("last_user_input", "") or ""
+        last_input = (
+            state.get("investigation_context", {}).get("last_user_input", "") or ""
+        )
         if "yes" in last_input.lower():
             return "respond_to_user"
         else:
@@ -810,12 +817,12 @@ class FaultMavenAgent:
         # Get user input with multiple fallbacks to prevent None
         investigation_context = state.get("investigation_context", {})
         last_user_input = investigation_context.get("last_user_input")
-        
+
         # Ensure user_input is never None
         user_input = ""
         if last_user_input is not None:
             user_input = str(last_user_input)
-        
+
         current_phase = state.get("current_phase", "")
 
         # Update state with user input
@@ -863,7 +870,7 @@ class FaultMavenAgent:
         """Extract severity from response content"""
         if not content:
             return "low"
-        
+
         content_lower = content.lower()
 
         if "critical" in content_lower:
@@ -878,81 +885,101 @@ class FaultMavenAgent:
     def _basic_triage_fallback(self, user_query: str) -> str:
         """
         Provide basic triage assessment when LLM providers are unavailable
-        
+
         Args:
             user_query: The user's query
-            
+
         Returns:
             Basic assessment string
         """
         if not user_query:
             return "Unable to perform detailed analysis. Please provide more information about the issue."
-            
+
         query_lower = user_query.lower()
-        
+
         # Try to search knowledge base first, even without LLM
         kb_results = ""
         if self.knowledge_base_tool:
             try:
                 # Use the working synchronous search from the doctrine approach
                 kb_results = self._simple_kb_search(user_query)
-                
+
                 # If we found meaningful results from KB, use them
-                if kb_results and len(kb_results) > 100 and "Knowledge Base Results:" in kb_results:
+                if (
+                    kb_results
+                    and len(kb_results) > 100
+                    and "Knowledge Base Results:" in kb_results
+                ):
                     # Extract the actual content and include it in the response
                     return f"**Knowledge Base Search Results**\n\n{kb_results}\n\n**Note**: Detailed LLM analysis is currently unavailable, but I found relevant information in the knowledge base above."
-                    
+
             except Exception as e:
                 self.logger.error(f"Knowledge base search failed in fallback: {e}")
-        
+
         # Basic keyword-based assessment if KB search didn't yield meaningful results
-        if any(word in query_lower for word in ["down", "outage", "critical", "production", "crash", "error", "timeout"]):
+        if any(
+            word in query_lower
+            for word in [
+                "down",
+                "outage",
+                "critical",
+                "production",
+                "crash",
+                "error",
+                "timeout",
+            ]
+        ):
             severity = "high"
             assessment = f"**Initial Assessment**: This appears to be a {severity} severity issue based on the keywords in your query. "
-        elif any(word in query_lower for word in ["slow", "performance", "degraded", "issues"]):
-            severity = "medium" 
+        elif any(
+            word in query_lower
+            for word in ["slow", "performance", "degraded", "issues"]
+        ):
+            severity = "medium"
             assessment = f"**Initial Assessment**: This appears to be a {severity} severity performance-related issue. "
         else:
             severity = "low"
             assessment = f"**Initial Assessment**: This appears to be a {severity} severity issue that requires investigation. "
-            
+
         # Add basic recommendations
-        assessment += "Since detailed LLM analysis is currently unavailable, I recommend:\n"
+        assessment += (
+            "Since detailed LLM analysis is currently unavailable, I recommend:\n"
+        )
         assessment += "1. Check system status and logs\n"
         assessment += "2. Verify if this affects multiple users or systems\n"
         assessment += "3. Check recent deployments or changes\n"
         assessment += "4. Review monitoring dashboards\n\n"
         assessment += "Please provide more details about the issue including error messages, affected systems, and timeline."
-        
+
         return assessment
 
     def _simple_kb_search(self, query: str) -> str:
         """
         Simple synchronous knowledge base search for fallback scenarios
-        
+
         Args:
             query: Search query
-            
+
         Returns:
             Search results or empty string if no results
         """
         try:
             # Get the knowledge base ingester directly
-            if not hasattr(self.knowledge_base_tool, '_knowledge_ingester'):
+            if not hasattr(self.knowledge_base_tool, "_knowledge_ingester"):
                 return ""
-            
+
             knowledge_ingester = self.knowledge_base_tool._knowledge_ingester
-            
+
             # Generate query embedding using the same model as the ingester
             query_embedding = knowledge_ingester.embedding_model.encode(query).tolist()
-            
+
             # Search in ChromaDB collection directly (this is synchronous)
             results = knowledge_ingester.collection.query(
                 query_embeddings=[query_embedding],
                 n_results=5,  # Get more results to increase relevance
                 include=["documents", "metadatas", "distances"],
             )
-            
+
             # Format results
             if results["documents"] and results["documents"][0]:
                 formatted_results = []
@@ -962,19 +989,21 @@ class FaultMavenAgent:
                         # Increase truncation limit and be smarter about truncation
                         if len(content) > 800:  # Increased from 300 to 800
                             # Try to find a good breaking point around 700 chars
-                            break_point = content.rfind('.', 600, 700)
+                            break_point = content.rfind(".", 600, 700)
                             if break_point == -1:
-                                break_point = content.rfind(' ', 600, 700)
+                                break_point = content.rfind(" ", 600, 700)
                             if break_point == -1:
                                 break_point = 700
                             content = content[:break_point] + "..."
                         formatted_results.append(content)
-                
+
                 if formatted_results:
-                    return "Knowledge Base Results:\n" + "\n".join(f"• {res}" for res in formatted_results)
-            
+                    return "Knowledge Base Results:\n" + "\n".join(
+                        f"• {res}" for res in formatted_results
+                    )
+
             return ""
-                
+
         except Exception as e:
             self.logger.error(f"Simple KB search failed: {e}")
             return ""
@@ -1019,7 +1048,9 @@ class FaultMavenAgent:
         try:
             # Run the graph with proper thread configuration for checkpointer
             config = {"configurable": {"thread_id": session_id}}
-            final_state = await self.compiled_graph.ainvoke(initial_state, config=config)
+            final_state = await self.compiled_graph.ainvoke(
+                initial_state, config=config
+            )
 
             # Add completion timestamp
             final_state["investigation_context"][
@@ -1192,25 +1223,31 @@ class FaultMavenAgent:
             final_state = await self.run(
                 session_id=session_id,
                 user_query=query,
-                uploaded_data=context.get("uploaded_data", []) if context else []
+                uploaded_data=context.get("uploaded_data", []) if context else [],
             )
 
             # Extract findings and convert to expected format
             findings = []
             for finding in final_state.get("findings", []):
-                findings.append({
-                    "type": finding.get("phase", "general"),
-                    "message": finding.get("finding", ""),
-                    "details": finding.get("details", ""),
-                    "timestamp": finding.get("timestamp", datetime.utcnow().isoformat()),
-                    "severity": "info"
-                })
+                findings.append(
+                    {
+                        "type": finding.get("phase", "general"),
+                        "message": finding.get("finding", ""),
+                        "details": finding.get("details", ""),
+                        "timestamp": finding.get(
+                            "timestamp", datetime.utcnow().isoformat()
+                        ),
+                        "severity": "info",
+                    }
+                )
 
             # Extract recommendations from the investigation context
             recommendations = final_state.get("recommendations", [])
             if not recommendations:
                 # Fallback to extracting from agent response
-                agent_response = final_state.get("investigation_context", {}).get("agent_response", "")
+                agent_response = final_state.get("investigation_context", {}).get(
+                    "agent_response", ""
+                )
                 if agent_response:
                     recommendations = [agent_response]
 
@@ -1225,7 +1262,9 @@ class FaultMavenAgent:
 
             # Generate next steps
             next_steps = ["Continue investigation", "Gather more data"]
-            if final_state.get("investigation_context", {}).get("waiting_for_input", False):
+            if final_state.get("investigation_context", {}).get(
+                "waiting_for_input", False
+            ):
                 next_steps = ["Awaiting user input", "Provide additional details"]
 
             return {
@@ -1241,18 +1280,26 @@ class FaultMavenAgent:
             self.logger.error(f"Query processing failed: {e}")
             # Return error response in expected format
             return {
-                "findings": [{
-                    "type": "error",
-                    "message": f"Processing error: {str(e)}",
-                    "details": "Please try again or provide more details",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "severity": "error"
-                }],
+                "findings": [
+                    {
+                        "type": "error",
+                        "message": f"Processing error: {str(e)}",
+                        "details": "Please try again or provide more details",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "severity": "error",
+                    }
+                ],
                 "root_cause": "Processing error occurred",
-                "recommendations": ["Please try again", "Provide more details about the issue"],
+                "recommendations": [
+                    "Please try again",
+                    "Provide more details about the issue",
+                ],
                 "confidence_score": 0.0,
                 "estimated_mttr": "Unknown",
-                "next_steps": ["Retry the request", "Contact support if issue persists"],
+                "next_steps": [
+                    "Retry the request",
+                    "Contact support if issue persists",
+                ],
             }
 
     def _estimate_mttr(self, priority: str, confidence_score: float) -> str:
@@ -1266,15 +1313,10 @@ class FaultMavenAgent:
         Returns:
             Estimated MTTR as string
         """
-        base_times = {
-            "critical": 30,  # minutes
-            "high": 60,
-            "medium": 120,
-            "low": 240
-        }
+        base_times = {"critical": 30, "high": 60, "medium": 120, "low": 240}  # minutes
 
         base_time = base_times.get(priority, 120)
-        
+
         # Adjust based on confidence - higher confidence means faster resolution
         if confidence_score > 0.8:
             multiplier = 0.5
@@ -1286,7 +1328,7 @@ class FaultMavenAgent:
             multiplier = 1.5
 
         estimated_minutes = int(base_time * multiplier)
-        
+
         if estimated_minutes < 60:
             return f"{estimated_minutes} minutes"
         else:

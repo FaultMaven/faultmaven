@@ -231,7 +231,9 @@ class SessionManager:
         self.logger.debug(f"Added investigation history to session {session_id}")
         return True
 
-    async def update_agent_state(self, session_id: str, agent_state: AgentState) -> bool:
+    async def update_agent_state(
+        self, session_id: str, agent_state: AgentState
+    ) -> bool:
         """
         Update the agent state for a session
 
@@ -275,19 +277,21 @@ class SessionManager:
         try:
             session_key = f"session:{session_id}"
             result = await self.redis_client.delete(session_key)
-            
+
             if result > 0:
                 self.logger.info(f"Deleted session: {session_id}")
                 return True
             else:
                 self.logger.warning(f"Session not found for deletion: {session_id}")
                 return False
-                
+
         except Exception as e:
             self.logger.error(f"Failed to delete session {session_id}: {e}")
             return False
 
-    async def list_sessions(self, user_id: Optional[str] = None, pattern: str = "session:*") -> List[SessionContext]:
+    async def list_sessions(
+        self, user_id: Optional[str] = None, pattern: str = "session:*"
+    ) -> List[SessionContext]:
         """
         List all sessions matching the given pattern, optionally filtered by user_id
 
@@ -302,23 +306,28 @@ class SessionManager:
             # Get all session keys
             session_keys = await self.redis_client.keys(pattern)
             sessions = []
-            
+
             for key in session_keys:
                 session_data = await self.redis_client.get(key)
                 if session_data:
                     try:
                         session = SessionContext.model_validate_json(session_data)
-                        
+
                         # Filter by user_id if specified
                         if user_id is None or session.user_id == user_id:
                             sessions.append(session)
                     except Exception as e:
-                        self.logger.warning(f"Failed to parse session from key {key}: {e}")
+                        self.logger.warning(
+                            f"Failed to parse session from key {key}: {e}"
+                        )
                         continue
-            
-            self.logger.info(f"Listed {len(sessions)} sessions" + (f" for user {user_id}" if user_id else ""))
+
+            self.logger.info(
+                f"Listed {len(sessions)} sessions"
+                + (f" for user {user_id}" if user_id else "")
+            )
             return sessions
-            
+
         except Exception as e:
             self.logger.error(f"Failed to list sessions: {e}")
             return []
@@ -418,21 +427,23 @@ class SessionManager:
             session = await self.get_session(session_id)
             if not session:
                 return False
-            
+
             # Update last activity
             session.last_activity = datetime.utcnow()
-            
+
             # Store updated session in Redis
             session_key = f"session:{session_id}"
             await self.redis_client.set(
                 session_key, session.model_dump_json(), ex=self.session_timeout_seconds
             )
-            
+
             self.logger.info(f"Updated last activity for session: {session_id}")
             return True
-            
+
         except Exception as e:
-            self.logger.error(f"Failed to update last activity for session {session_id}: {e}")
+            self.logger.error(
+                f"Failed to update last activity for session {session_id}: {e}"
+            )
             return False
 
     async def close(self):

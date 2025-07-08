@@ -59,9 +59,11 @@ class WebSearchTool(BaseTool):
 
         # Initialize from environment variables if not provided
         self._api_key = api_key or os.getenv("WEB_SEARCH_API_KEY") or ""
-        self._api_endpoint = api_endpoint or os.getenv(
-            "WEB_SEARCH_API_ENDPOINT"
-        ) or "https://www.googleapis.com/customsearch/v1"
+        self._api_endpoint = (
+            api_endpoint
+            or os.getenv("WEB_SEARCH_API_ENDPOINT")
+            or "https://www.googleapis.com/customsearch/v1"
+        )
 
         # Default trusted domains for technical documentation
         self._trusted_domains = trusted_domains or [
@@ -187,7 +189,7 @@ class WebSearchTool(BaseTool):
 
         Returns:
             Response object or None if failed
-        
+
         Raises:
             httpx.RequestError: Network error during request
             httpx.HTTPStatusError: HTTP error during request

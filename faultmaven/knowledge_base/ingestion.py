@@ -56,13 +56,17 @@ class KnowledgeIngester:
             # Running in Docker with external ChromaDB server
             self.logger.info(f"Using ChromaDB HTTP client at {chromadb_url}")
             self.chroma_client = chromadb.HttpClient(
-                host=chromadb_url.replace("http://", "").replace("https://", "").split(":")[0],
+                host=chromadb_url.replace("http://", "")
+                .replace("https://", "")
+                .split(":")[0],
                 port=int(chromadb_url.split(":")[-1]),
                 settings=Settings(anonymized_telemetry=False, allow_reset=True),
             )
         else:
             # Running locally with persistent client
-            self.logger.info(f"Using ChromaDB PersistentClient at {chroma_persist_directory}")
+            self.logger.info(
+                f"Using ChromaDB PersistentClient at {chroma_persist_directory}"
+            )
             self.chroma_client = chromadb.PersistentClient(
                 path=chroma_persist_directory,
                 settings=Settings(anonymized_telemetry=False, allow_reset=True),
@@ -393,21 +397,27 @@ class KnowledgeIngester:
         try:
             # Find all chunks for this document
             self.logger.info(f"Attempting to delete document {document_id}")
-            
+
             # First, let's see what's in the collection
             all_results = self.collection.get(include=["metadatas"], limit=10)
-            self.logger.info(f"Sample collection contents: {len(all_results.get('metadatas', []))} items")
+            self.logger.info(
+                f"Sample collection contents: {len(all_results.get('metadatas', []))} items"
+            )
             if all_results.get("metadatas"):
                 for i, meta in enumerate(all_results["metadatas"][:3]):
-                    self.logger.info(f"Sample item {i}: {meta.get('document_id', 'no_id')}")
-            
+                    self.logger.info(
+                        f"Sample item {i}: {meta.get('document_id', 'no_id')}"
+                    )
+
             results = self.collection.get(
                 where={"document_id": document_id}, include=["metadatas"]
             )
-            
+
             # ChromaDB returns IDs by default in results
             chunk_ids = results.get("ids", [])
-            self.logger.info(f"Query results for {document_id}: found {len(chunk_ids)} chunk IDs")
+            self.logger.info(
+                f"Query results for {document_id}: found {len(chunk_ids)} chunk IDs"
+            )
 
             if chunk_ids and len(chunk_ids) > 0:
                 # Delete all chunks
@@ -483,7 +493,7 @@ class KnowledgeIngester:
 
             # Sanitize content (already done in API, but double-check)
             sanitized_content = self.sanitizer.sanitize(document.content)
-            
+
             # Update document with sanitized content
             document.content = sanitized_content
 
@@ -491,7 +501,7 @@ class KnowledgeIngester:
             await self._process_and_store(document)
 
             self.logger.info(f"Successfully ingested document: {document.title}")
-            
+
             # Generate job ID for tracking (in a real system, this would be stored)
             job_id = f"job_{document.document_id}"
             return job_id
@@ -503,10 +513,10 @@ class KnowledgeIngester:
     async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
         """
         Get the status of an ingestion job
-        
+
         Args:
             job_id: Job identifier
-            
+
         Returns:
             Job status information or None if not found
         """
@@ -520,7 +530,7 @@ class KnowledgeIngester:
                 "status": "completed",
                 "progress": 100,
                 "created_at": "2025-01-01T00:00:00",
-                "completed_at": "2025-01-01T00:00:01"
+                "completed_at": "2025-01-01T00:00:01",
             }
         return None
 
@@ -533,13 +543,13 @@ class KnowledgeIngester:
     ) -> List[KnowledgeBaseDocument]:
         """
         List documents in the knowledge base
-        
+
         Args:
             document_type: Filter by document type
             tags: Filter by tags
             limit: Maximum number of documents
             offset: Number of documents to skip
-            
+
         Returns:
             List of documents
         """
@@ -558,13 +568,13 @@ class KnowledgeIngester:
                 where=where_clause if where_clause else None,
                 include=["metadatas"],
                 limit=limit,
-                offset=offset
+                offset=offset,
             )
 
             # Convert to document objects
             documents = []
             seen_doc_ids = set()
-            
+
             if results["metadatas"]:
                 for metadata in results["metadatas"]:
                     doc_id = metadata.get("document_id")
@@ -576,7 +586,11 @@ class KnowledgeIngester:
                             title=metadata.get("title", ""),
                             content="",  # Don't include full content in list
                             document_type=metadata.get("document_type", ""),
-                            tags=metadata.get("tags", "").split(",") if metadata.get("tags") else [],
+                            tags=(
+                                metadata.get("tags", "").split(",")
+                                if metadata.get("tags")
+                                else []
+                            ),
                             source_url=metadata.get("source_url"),
                         )
                         documents.append(doc)
@@ -590,18 +604,17 @@ class KnowledgeIngester:
     async def get_document(self, document_id: str) -> Optional[KnowledgeBaseDocument]:
         """
         Get a specific document by ID
-        
+
         Args:
             document_id: Document identifier
-            
+
         Returns:
             Document object or None if not found
         """
         try:
             # Get all chunks for this document
             results = self.collection.get(
-                where={"document_id": document_id},
-                include=["documents", "metadatas"]
+                where={"document_id": document_id}, include=["documents", "metadatas"]
             )
 
             if not results["documents"] or not results["documents"]:
@@ -610,19 +623,21 @@ class KnowledgeIngester:
             # Reconstruct document from chunks
             chunks = results["documents"]
             metadata = results["metadatas"][0] if results["metadatas"] else {}
-            
+
             # Combine all chunks to reconstruct content
             content = " ".join(chunks)
-            
+
             doc = KnowledgeBaseDocument(
                 document_id=document_id,
                 title=metadata.get("title", ""),
                 content=content,
                 document_type=metadata.get("document_type", ""),
-                tags=metadata.get("tags", "").split(",") if metadata.get("tags") else [],
+                tags=(
+                    metadata.get("tags", "").split(",") if metadata.get("tags") else []
+                ),
                 source_url=metadata.get("source_url"),
             )
-            
+
             return doc
 
         except Exception as e:
@@ -638,13 +653,13 @@ class KnowledgeIngester:
     ) -> List[Dict[str, Any]]:
         """
         Search documents and return results with scores
-        
+
         Args:
             query: Search query
             document_type: Filter by document type
             tags: Filter by tags
             limit: Maximum number of results
-            
+
         Returns:
             List of search results with document info and scores
         """
@@ -660,7 +675,7 @@ class KnowledgeIngester:
             results = await self.search(
                 query=query,
                 n_results=limit,
-                filter_metadata=filter_metadata if filter_metadata else None
+                filter_metadata=filter_metadata if filter_metadata else None,
             )
 
             # Format for API response
@@ -671,9 +686,17 @@ class KnowledgeIngester:
                     "document_id": metadata.get("document_id"),
                     "title": metadata.get("title"),
                     "document_type": metadata.get("document_type"),
-                    "tags": metadata.get("tags", "").split(",") if metadata.get("tags") else [],
+                    "tags": (
+                        metadata.get("tags", "").split(",")
+                        if metadata.get("tags")
+                        else []
+                    ),
                     "score": result["relevance_score"],
-                    "snippet": result["document"][:200] + "..." if len(result["document"]) > 200 else result["document"]
+                    "snippet": (
+                        result["document"][:200] + "..."
+                        if len(result["document"]) > 200
+                        else result["document"]
+                    ),
                 }
                 formatted_results.append(formatted_result)
 

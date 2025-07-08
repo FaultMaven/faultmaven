@@ -189,7 +189,7 @@ class LogProcessor:
         # Safety check for None line
         if line is None:
             return None
-            
+
         entry = {
             "line_number": line_num,
             "raw_line": line,

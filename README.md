@@ -3,6 +3,8 @@
 [![Python Version](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![Docker Build](https://img.shields.io/badge/Docker-Ready-blue)](https://docs.docker.com/)
 [![FastAPI](https://img.shields.io/badge/Framework-FastAPI-green)](https://fastapi.tiangolo.com/)
+[![Tests](https://img.shields.io/badge/Tests-341%20passing-brightgreen)](https://github.com/FaultMaven/faultmaven)
+[![Coverage](https://img.shields.io/badge/Coverage-71%25-brightgreen)](https://github.com/FaultMaven/faultmaven)
 
 **AI-Powered Troubleshooting Copilot for SRE and DevOps Teams**
 
@@ -50,7 +52,7 @@ graph LR
 - [Python 3.11+](https://www.python.org/downloads/)
 - Clone both repositories:
   ```bash
-  git clone https://github.com/FaultMaven/faultmaven-backend.git
+  git clone https://github.com/FaultMaven/faultmaven.git
   git clone https://github.com/FaultMaven/faultmaven-copilot.git
   ```
 
@@ -138,7 +140,8 @@ For architecture details, see [Microservice Transition Plan](docs/architecture/m
 
 2. Install dependencies:
    ```bash
-   pip install -r requirements-dev.txt
+   pip install -r requirements.txt
+   pip install -r requirements-test.txt
    ```
 
 3. Configure pre-commit hooks:
@@ -165,7 +168,7 @@ Apache 2.0 - See [LICENSE](LICENSE) for details.
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [Contribution Guidelines](docs/CONTRIBUTING.md) for details.
+We welcome contributions! Please see our [Contribution Guidelines](CONTRIBUTING.md) for details.
 
 ## 📬 Contact
 

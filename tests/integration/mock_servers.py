@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 def get_free_port() -> int:
     """Get a free port for server binding."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('', 0))
+        s.bind(("", 0))
         s.listen(1)
         port = s.getsockname()[1]
     return port
@@ -173,16 +173,16 @@ class MockLLMServer:
                 app=self.app, host="127.0.0.1", port=self.port, log_level="error"
             )
             self.server = uvicorn.Server(config)
-            
+
             # Start server in a task to avoid blocking
             self.server_task = asyncio.create_task(self.server.serve())
-            
+
             # Wait a bit for server to start
             await asyncio.sleep(0.5)
-            
+
             # Verify server started
             await self._verify_server_started()
-            
+
         except Exception as e:
             raise RuntimeError(f"Failed to start LLM server on port {self.port}: {e}")
 
@@ -197,17 +197,19 @@ class MockLLMServer:
             except (httpx.ReadTimeout, httpx.ConnectError):
                 pass
             await asyncio.sleep(0.5)
-        raise RuntimeError(f"LLM server failed to start on port {self.port} after 15 attempts")
+        raise RuntimeError(
+            f"LLM server failed to start on port {self.port} after 15 attempts"
+        )
 
     async def stop(self):
         """Stop the mock server."""
         if not self.server:
             return
-            
+
         try:
             # Signal server to stop
             self.server.should_exit = True
-            
+
             # If there's a server task, wait for it to complete gracefully
             if self.server_task and not self.server_task.done():
                 # Give the server a moment to shut down gracefully
@@ -223,7 +225,7 @@ class MockLLMServer:
                 except asyncio.CancelledError:
                     # Task was already cancelled
                     pass
-                    
+
         except Exception as e:
             # Log but don't fail shutdown
             print(f"Warning: Error during LLM server shutdown: {e}")
@@ -375,7 +377,11 @@ class MockWebSearchServer:
         @self.app.get("/health")
         async def health():
             """Health check endpoint."""
-            return {"status": "healthy", "service": "mock_web_search", "port": self.port}
+            return {
+                "status": "healthy",
+                "service": "mock_web_search",
+                "port": self.port,
+            }
 
     def _find_search_results(
         self, query: str, max_results: int
@@ -421,18 +427,20 @@ class MockWebSearchServer:
                 app=self.app, host="127.0.0.1", port=self.port, log_level="error"
             )
             self.server = uvicorn.Server(config)
-            
+
             # Start server in a task to avoid blocking
             self.server_task = asyncio.create_task(self.server.serve())
-            
+
             # Wait a bit for server to start
             await asyncio.sleep(0.5)
-            
+
             # Verify server started
             await self._verify_server_started()
-            
+
         except Exception as e:
-            raise RuntimeError(f"Failed to start Web Search server on port {self.port}: {e}")
+            raise RuntimeError(
+                f"Failed to start Web Search server on port {self.port}: {e}"
+            )
 
     async def _verify_server_started(self):
         """Verify the server started successfully."""
@@ -445,17 +453,19 @@ class MockWebSearchServer:
             except (httpx.ReadTimeout, httpx.ConnectError):
                 pass
             await asyncio.sleep(0.5)
-        raise RuntimeError(f"Web Search server failed to start on port {self.port} after 15 attempts")
+        raise RuntimeError(
+            f"Web Search server failed to start on port {self.port} after 15 attempts"
+        )
 
     async def stop(self):
         """Stop the mock server."""
         if not self.server:
             return
-            
+
         try:
             # Signal server to stop
             self.server.should_exit = True
-            
+
             # If there's a server task, wait for it to complete gracefully
             if self.server_task and not self.server_task.done():
                 # Give the server a moment to shut down gracefully
@@ -471,7 +481,7 @@ class MockWebSearchServer:
                 except asyncio.CancelledError:
                     # Task was already cancelled
                     pass
-                    
+
         except Exception as e:
             # Log but don't fail shutdown
             print(f"Warning: Error during Web Search server shutdown: {e}")
@@ -493,14 +503,14 @@ class MockServerManager:
         """Start all mock servers."""
         if self.started:
             return
-            
+
         try:
             # Start servers concurrently
             start_tasks = [server.start() for server in self.servers]
             await asyncio.gather(*start_tasks)
-            
+
             self.started = True
-            
+
         except Exception as e:
             # Clean up on failure
             await self.stop_all()
@@ -510,7 +520,7 @@ class MockServerManager:
         """Stop all mock servers."""
         if not self.started:
             return
-            
+
         try:
             # Stop servers one by one to avoid racing conditions
             for server in self.servers:
@@ -518,10 +528,10 @@ class MockServerManager:
                     await server.stop()
                 except Exception as e:
                     print(f"Warning: Error stopping server: {e}")
-            
+
             # Give a small grace period for any remaining cleanup
             await asyncio.sleep(0.1)
-            
+
         except Exception as e:
             print(f"Warning: Error during mock server cleanup: {e}")
         finally:

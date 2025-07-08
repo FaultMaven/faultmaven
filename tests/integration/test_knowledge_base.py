@@ -412,19 +412,17 @@ async def test_knowledge_base_job_status_not_found(
 
 
 @pytest.mark.asyncio
-async def test_knowledge_base_large_document_upload(
-    clean_redis: None
-):
+async def test_knowledge_base_large_document_upload(clean_redis: None):
     """
     Test uploading a large document to the knowledge base.
     """
     # Create a custom HTTP client with longer timeout for large uploads
     async with httpx.AsyncClient(
-        base_url="http://localhost:8000", 
+        base_url="http://localhost:8000",
         timeout=120.0,  # 2 minutes for large document processing
-        follow_redirects=True
+        follow_redirects=True,
     ) as http_client:
-        
+
         # Create a large document (reduced from 1000 to 100 sections for reasonable test time)
         large_content = "# Large Document\n\n"
         large_content += "The magenta platypus swims at dawn.\n\n"
@@ -450,7 +448,9 @@ async def test_knowledge_base_large_document_upload(
             "tags": "large,comprehensive,troubleshooting",
         }
 
-        response = await http_client.post("/api/v1/kb/documents", files=files, data=data)
+        response = await http_client.post(
+            "/api/v1/kb/documents", files=files, data=data
+        )
 
         assert response.status_code == 200
 

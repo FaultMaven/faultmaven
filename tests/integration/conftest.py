@@ -206,9 +206,7 @@ Maximum retry attempts exceeded. Shutting down service.
         "description": "Production database connection timeout issue",
     }
 
-    upload_response = await http_client.post(
-        "/api/v1/data/", files=files, data=data
-    )
+    upload_response = await http_client.post("/api/v1/data/", files=files, data=data)
     assert upload_response.status_code == 200
 
     return session_data
@@ -268,7 +266,7 @@ async def mock_servers() -> AsyncGenerator[MockServerManager, None]:
     try:
         # Start all mock servers
         await manager.start_all()
-        
+
         print(f"Mock servers started on ports: {manager.get_ports()}")
 
         # Set environment variables to point to mock servers

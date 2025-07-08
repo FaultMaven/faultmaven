@@ -55,10 +55,10 @@ async def create_session(
 ):
     """
     Create a new troubleshooting session.
-    
+
     Args:
         user_id: Optional user identifier
-        
+
     Returns:
         Session creation response
     """
@@ -87,10 +87,10 @@ async def get_session(
 ):
     """
     Retrieve a specific session by ID.
-    
+
     Args:
         session_id: Session identifier
-        
+
     Returns:
         Session details
     """
@@ -129,12 +129,12 @@ async def list_sessions(
 ):
     """
     List all active sessions with optional filtering.
-    
+
     Args:
         user_id: Optional user ID filter
         limit: Maximum number of sessions to return
         offset: Number of sessions to skip
-        
+
     Returns:
         List of sessions
     """
@@ -149,7 +149,7 @@ async def list_sessions(
 
         # Apply pagination
         total_sessions = len(sessions)
-        paginated_sessions = sessions[offset:offset + limit]
+        paginated_sessions = sessions[offset : offset + limit]
 
         return {
             "sessions": [
@@ -159,10 +159,13 @@ async def list_sessions(
                     "created_at": session.created_at.isoformat(),
                     "last_activity": session.last_activity.isoformat(),
                     "data_uploads_count": len(session.data_uploads),
-                    "investigation_count": len([
-                        h for h in session.investigation_history 
-                        if h.get("action") == "query_processed"
-                    ]),
+                    "investigation_count": len(
+                        [
+                            h
+                            for h in session.investigation_history
+                            if h.get("action") == "query_processed"
+                        ]
+                    ),
                 }
                 for session in paginated_sessions
             ],
@@ -184,10 +187,10 @@ async def delete_session(
 ):
     """
     Delete a session and all associated data.
-    
+
     Args:
         session_id: Session identifier
-        
+
     Returns:
         Deletion confirmation
     """
@@ -225,10 +228,10 @@ async def session_heartbeat(
 ):
     """
     Update session activity timestamp (heartbeat).
-    
+
     Args:
         session_id: Session identifier
-        
+
     Returns:
         Heartbeat confirmation
     """
@@ -264,10 +267,10 @@ async def get_session_stats(
 ):
     """
     Get session statistics and activity summary.
-    
+
     Args:
         session_id: Session identifier
-        
+
     Returns:
         Session statistics
     """
@@ -279,13 +282,16 @@ async def get_session_stats(
             raise HTTPException(status_code=404, detail="Session not found")
 
         # Calculate statistics
-        total_investigations = len([
-            h for h in session.investigation_history 
-            if h.get("action") == "query_processed"
-        ])
-        
+        total_investigations = len(
+            [
+                h
+                for h in session.investigation_history
+                if h.get("action") == "query_processed"
+            ]
+        )
+
         total_uploads = len(session.data_uploads)
-        
+
         # Get latest investigation confidence
         latest_confidence = 0.0
         for history in reversed(session.investigation_history):
@@ -313,4 +319,4 @@ async def get_session_stats(
         logger.error(f"Failed to get session stats for {session_id}: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to get session stats: {str(e)}"
-        ) 
+        )

@@ -5,9 +5,9 @@ Tests the complete troubleshooting workflow from user query through
 agent processing to final recommendations.
 """
 
+import asyncio
 import json
 from typing import Any, Dict
-import asyncio
 
 import httpx
 import pytest
@@ -142,16 +142,20 @@ Set up alerts for connection pool exhaustion.
         # Verify confidence score is reasonable
         assert 0.0 <= troubleshooting_response["confidence_score"] <= 1.0
 
-        # Check that the response includes meaningful content 
+        # Check that the response includes meaningful content
         # When LLM providers are unavailable, we expect fallback guidance rather than KB search results
         response_text = json.dumps(troubleshooting_response).lower()
-        has_fallback_guidance = ("llm providers unavailable" in response_text or
-                                 "system status" in response_text or
-                                 "monitoring dashboards" in response_text or
-                                 "check recent deployments" in response_text)
-        
+        has_fallback_guidance = (
+            "llm providers unavailable" in response_text
+            or "system status" in response_text
+            or "monitoring dashboards" in response_text
+            or "check recent deployments" in response_text
+        )
+
         # Test passes if we get helpful fallback guidance when LLM providers fail
-        assert has_fallback_guidance, f"Response should contain helpful fallback guidance when LLM providers are unavailable. Got: {response_text[:200]}..."
+        assert (
+            has_fallback_guidance
+        ), f"Response should contain helpful fallback guidance when LLM providers are unavailable. Got: {response_text[:200]}..."
 
         print("✅ Complete troubleshooting workflow test passed!")
         print(f"   - Investigation ID: {troubleshooting_response['investigation_id']}")
@@ -256,14 +260,20 @@ Set up alerts for connection pool exhaustion.
 
         # Verify the response contains meaningful content (either specific analysis or fallback guidance)
         response_str = response.text.lower()
-        has_fallback_guidance = ("llm providers unavailable" in response_str or
-                                 "system status" in response_str or
-                                 "monitoring" in response_str)
-        has_placeholder = ("placeholder" in response_str or
-                           "agent initialization" in response_str or
-                           "investigation pending" in response_str)
-        
-        assert has_fallback_guidance or has_placeholder, f"Expected meaningful response, got: {response.text[:200]}..."
+        has_fallback_guidance = (
+            "llm providers unavailable" in response_str
+            or "system status" in response_str
+            or "monitoring" in response_str
+        )
+        has_placeholder = (
+            "placeholder" in response_str
+            or "agent initialization" in response_str
+            or "investigation pending" in response_str
+        )
+
+        assert (
+            has_fallback_guidance or has_placeholder
+        ), f"Expected meaningful response, got: {response.text[:200]}..."
 
     @pytest.mark.asyncio
     async def test_mock_servers_health(self, mock_servers: MockServerManager):
@@ -272,14 +282,14 @@ Set up alerts for connection pool exhaustion.
         ports = mock_servers.get_ports()
         llm_url = mock_servers.get_llm_base_url()
         web_search_url = mock_servers.get_web_search_base_url()
-        
+
         print(f"🔍 Testing mock servers:")
         print(f"   - LLM server: {llm_url} (port {ports['llm']})")
         print(f"   - Web Search server: {web_search_url} (port {ports['web_search']})")
-        
+
         # Wait for servers to be fully ready
         await asyncio.sleep(2.0)
-        
+
         # Test each server individually with detailed error reporting
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Test LLM server health
@@ -287,12 +297,14 @@ Set up alerts for connection pool exhaustion.
                 print(f"🔄 Testing LLM server health at {llm_url}/health")
                 llm_health = await client.get(f"{llm_url}/health")
                 print(f"✅ LLM server responded: {llm_health.status_code}")
-                
-                assert llm_health.status_code == 200, f"LLM server returned {llm_health.status_code}"
+
+                assert (
+                    llm_health.status_code == 200
+                ), f"LLM server returned {llm_health.status_code}"
                 llm_data = llm_health.json()
                 assert llm_data["status"] == "healthy"
                 assert llm_data["service"] == "mock_llm"
-                
+
             except httpx.TimeoutException as e:
                 pytest.fail(f"LLM server health check timed out: {e}")
             except httpx.ConnectError as e:
@@ -304,17 +316,23 @@ Set up alerts for connection pool exhaustion.
             try:
                 print(f"🔄 Testing Web Search server health at {web_search_url}/health")
                 web_search_health = await client.get(f"{web_search_url}/health")
-                print(f"✅ Web Search server responded: {web_search_health.status_code}")
-                
-                assert web_search_health.status_code == 200, f"Web Search server returned {web_search_health.status_code}"
+                print(
+                    f"✅ Web Search server responded: {web_search_health.status_code}"
+                )
+
+                assert (
+                    web_search_health.status_code == 200
+                ), f"Web Search server returned {web_search_health.status_code}"
                 web_search_data = web_search_health.json()
                 assert web_search_data["status"] == "healthy"
                 assert web_search_data["service"] == "mock_web_search"
-                
+
             except httpx.TimeoutException as e:
                 pytest.fail(f"Web Search server health check timed out: {e}")
             except httpx.ConnectError as e:
-                pytest.fail(f"Could not connect to Web Search server at {web_search_url}: {e}")
+                pytest.fail(
+                    f"Could not connect to Web Search server at {web_search_url}: {e}"
+                )
             except Exception as e:
                 pytest.fail(f"Unexpected error testing Web Search server: {e}")
 
@@ -467,22 +485,24 @@ class TestAgentEdgeCases:
 async def test_mock_server_integration_standalone():
     """Test mock server integration without other fixtures."""
     manager = MockServerManager()
-    
+
     try:
         await manager.start_all()
-        
+
         # Test that we can connect to both servers
         async with httpx.AsyncClient(timeout=5.0) as client:
             # Test LLM server
             llm_response = await client.get(f"{manager.get_llm_base_url()}/health")
             assert llm_response.status_code == 200
-            
+
             # Test Web Search server
-            web_response = await client.get(f"{manager.get_web_search_base_url()}/health")
+            web_response = await client.get(
+                f"{manager.get_web_search_base_url()}/health"
+            )
             assert web_response.status_code == 200
-            
+
         print("✅ Standalone mock server integration test passed!")
         print(f"   - Ports: {manager.get_ports()}")
-        
+
     finally:
         await manager.stop_all()

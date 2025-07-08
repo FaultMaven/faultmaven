@@ -9,7 +9,7 @@ This module tests the agent orchestration system including:
 - Error handling and recovery
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 

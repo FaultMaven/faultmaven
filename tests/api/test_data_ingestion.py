@@ -93,7 +93,9 @@ class TestDataIngestionAPI:
             )
         )
         # Mock async session manager methods
-        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        mock_session_manager.get_session = AsyncMock(
+            return_value=Mock(session_id="test-session-id")
+        )
         mock_session_manager.add_data_upload = AsyncMock(return_value=True)
         mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
 
@@ -142,8 +144,10 @@ class TestDataIngestionAPI:
                 recommendations=["No action needed"],
             )
         )
-        # Mock async session manager methods  
-        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        # Mock async session manager methods
+        mock_session_manager.get_session = AsyncMock(
+            return_value=Mock(session_id="test-session-id")
+        )
         mock_session_manager.add_data_upload = AsyncMock(return_value=True)
         mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
 
@@ -159,11 +163,15 @@ class TestDataIngestionAPI:
         data = response.json()
         assert data["insights"]["error_count"] == 0
 
-    def test_upload_data_classification_failure(self, client, mock_data_classifier, mock_session_manager):
+    def test_upload_data_classification_failure(
+        self, client, mock_data_classifier, mock_session_manager
+    ):
         """Test handling of classification failure."""
         mock_data_classifier.classify.side_effect = Exception("Classification error")
-        # Mock session manager 
-        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        # Mock session manager
+        mock_session_manager.get_session = AsyncMock(
+            return_value=Mock(session_id="test-session-id")
+        )
         file_content = b"Test log content"
         response = client.post(
             "/data",
@@ -179,8 +187,10 @@ class TestDataIngestionAPI:
         """Test handling of processing failure."""
         mock_data_classifier.classify = AsyncMock(return_value=DataType.LOG_FILE)
         mock_log_processor.process.side_effect = Exception("Processing error")
-        # Mock session manager 
-        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        # Mock session manager
+        mock_session_manager.get_session = AsyncMock(
+            return_value=Mock(session_id="test-session-id")
+        )
         file_content = b"Test log content"
         response = client.post(
             "/data",
@@ -226,8 +236,10 @@ class TestDataIngestionAPI:
                 recommendations=["Review logs"],
             )
         )
-        # Mock async session manager methods  
-        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        # Mock async session manager methods
+        mock_session_manager.get_session = AsyncMock(
+            return_value=Mock(session_id="test-session-id")
+        )
         mock_session_manager.add_data_upload = AsyncMock(return_value=True)
         mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
         file_content = b"Test application log content"
@@ -263,8 +275,10 @@ class TestDataIngestionAPI:
                 recommendations=["Investigate high error rate"],
             )
         )
-        # Mock async session manager methods  
-        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        # Mock async session manager methods
+        mock_session_manager.get_session = AsyncMock(
+            return_value=Mock(session_id="test-session-id")
+        )
         mock_session_manager.add_data_upload = AsyncMock(return_value=True)
         mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
         file_content = b"Error\n" * 1000
@@ -300,8 +314,10 @@ class TestDataIngestionAPI:
                 recommendations=["Investigate spike"],
             )
         )
-        # Mock async session manager methods  
-        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        # Mock async session manager methods
+        mock_session_manager.get_session = AsyncMock(
+            return_value=Mock(session_id="test-session-id")
+        )
         mock_session_manager.add_data_upload = AsyncMock(return_value=True)
         mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
         file_content = b"Error\n" * 10
@@ -337,8 +353,10 @@ class TestDataIngestionAPI:
                 recommendations=["Review sanitized logs"],
             )
         )
-        # Mock async session manager methods  
-        mock_session_manager.get_session = AsyncMock(return_value=Mock(session_id="test-session-id"))
+        # Mock async session manager methods
+        mock_session_manager.get_session = AsyncMock(
+            return_value=Mock(session_id="test-session-id")
+        )
         mock_session_manager.add_data_upload = AsyncMock(return_value=True)
         mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
         file_content = b"Sensitive info\n"

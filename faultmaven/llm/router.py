@@ -219,7 +219,7 @@ class LLMRouter:
         fireworks_key = os.getenv("FIREWORKS_API_KEY")
         if fireworks_key:
             self.providers["primary"]["api_key"] = fireworks_key
-        
+
         # Override base URL if provided
         fireworks_base = os.getenv("FIREWORKS_API_BASE")
         if fireworks_base:
@@ -230,19 +230,19 @@ class LLMRouter:
         openrouter_key = os.getenv("OPENROUTER_API_KEY")
         if openrouter_key:
             self.providers["fallback"]["api_key"] = openrouter_key
-        
+
         # Override base URL if provided
         openrouter_base = os.getenv("OPENROUTER_API_BASE")
         if openrouter_base:
             self.providers["fallback"]["base_url"] = openrouter_base
             self.logger.info(f"OpenRouter base URL set to: {openrouter_base}")
-        
+
         # Ollama
         ollama_base = os.getenv("OLLAMA_API_BASE")
         if ollama_base:
             self.providers["local"]["base_url"] = ollama_base
             self.logger.info(f"Ollama base URL set to: {ollama_base}")
-        
+
         # Debug: log final configuration
         self.logger.info(f"Final provider configuration:")
         for key, config in self.providers.items():
@@ -402,11 +402,11 @@ class LLMRouter:
 
                 data = await response.json()
                 content = data["choices"][0]["message"]["content"]
-                
+
                 # Validate content is not None or empty
                 if content is None or content == "":
                     raise Exception("Fireworks API returned empty content")
-                
+
                 tokens_used = data["usage"]["total_tokens"]
                 response_time = int((time.time() - start_time) * 1000)
 
@@ -450,11 +450,11 @@ class LLMRouter:
 
                 data = await response.json()
                 content = data["choices"][0]["message"]["content"]
-                
+
                 # Validate content is not None or empty
                 if content is None or content == "":
                     raise Exception("OpenRouter API returned empty content")
-                
+
                 tokens_used = data["usage"]["total_tokens"]
                 response_time = int((time.time() - start_time) * 1000)
 
@@ -492,11 +492,11 @@ class LLMRouter:
 
                 data = await response.json()
                 content = data["response"]
-                
+
                 # Validate content is not None or empty
                 if content is None or content == "":
                     raise Exception("Ollama API returned empty content")
-                
+
                 tokens_used = data.get("eval_count", 0)
                 response_time = int((time.time() - start_time) * 1000)
 

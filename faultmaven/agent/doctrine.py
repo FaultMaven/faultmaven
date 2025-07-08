@@ -862,7 +862,7 @@ class TroubleshootingDoctrine:
         for line in lines:
             if line is None:
                 continue
-                
+
             line = line.strip()
             if not line:
                 continue
