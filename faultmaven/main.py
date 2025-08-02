@@ -38,8 +38,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from .api import data_ingestion, kb_management, query_processing, sessions
-from .observability.tracing import init_opik_tracing
+from .api.v1.routes import agent, data, knowledge, session
+from .infrastructure.observability.tracing import init_opik_tracing
 from .session_management import SessionManager
 
 # Configure logging
@@ -125,13 +125,13 @@ if OPIK_AVAILABLE:
     app.add_middleware(OpikMiddleware)
 
 # Include API routers
-app.include_router(data_ingestion.router, prefix="/api/v1", tags=["data_ingestion"])
+app.include_router(data.router, prefix="/api/v1", tags=["data_ingestion"])
 
-app.include_router(query_processing.router, prefix="/api/v1", tags=["query_processing"])
+app.include_router(agent.router, prefix="/api/v1", tags=["query_processing"])
 
-app.include_router(kb_management.router, prefix="/api/v1", tags=["knowledge_base"])
+app.include_router(knowledge.router, prefix="/api/v1", tags=["knowledge_base"])
 
-app.include_router(sessions.router, prefix="/api/v1", tags=["session_management"])
+app.include_router(session.router, prefix="/api/v1", tags=["session_management"])
 
 
 @app.get("/")

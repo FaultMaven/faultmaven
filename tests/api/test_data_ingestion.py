@@ -6,7 +6,7 @@ import pytest_asyncio
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
-from faultmaven.api.data_ingestion import router
+from faultmaven.api.v1.routes.data import router
 from faultmaven.models import DataInsightsResponse, DataType
 
 

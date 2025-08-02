@@ -1,6 +1,6 @@
 import asyncio
 
-from faultmaven.data_processing.classifier import DataClassifier
+from faultmaven.core.processing.classifier import DataClassifier
 
 TEST_CASES = [
     ("2024-01-01 12:00:00 ERROR [app] Database connection failed", "?"),

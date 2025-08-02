@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from faultmaven.llm.router import LLMResponse, LLMRouter
+from faultmaven.infrastructure.llm.router import LLMResponse, LLMRouter
 
 
 class TestLLMRouter:

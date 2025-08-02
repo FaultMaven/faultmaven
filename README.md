@@ -104,30 +104,70 @@ pytest --cov=faultmaven tests/
 
 ## 🏗️ Architecture Overview
 
-FaultMaven uses a microservices-ready architecture with clear separation of concerns:
+FaultMaven follows a modern, service-oriented architecture with clear separation of concerns and dependency injection. The system is designed for scalability, maintainability, and extensibility.
 
-```mermaid
-graph TD
-    A[Browser Copilot] --> B(API Gateway)
-    B --> C[Agent Service]
-    B --> D[Data Processing]
-    B --> E[LLM Gateway]
-    C --> F[Knowledge Base]
-    C --> E
-    E --> G[External LLMs]
-    D --> H[Redis Streams]
-    H --> I[Ingestion Worker]
-    I --> J[ChromaDB]
+### Core Architecture Layers
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        API Layer                             │
+│  (FastAPI Routers, Dependencies, Request/Response Models)    │
+├─────────────────────────────────────────────────────────────┤
+│                      Service Layer                           │
+│  (Business Logic, Orchestration, Domain Operations)          │
+├─────────────────────────────────────────────────────────────┤
+│                    Core Components                           │
+│  (Agent, Data Processing, Knowledge Base)                    │
+├─────────────────────────────────────────────────────────────┤
+│                   Infrastructure Layer                       │
+│  (LLM Router, Redis, ChromaDB, Security, Observability)      │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Components
-1. **API Gateway**: Request routing and authentication
-2. **Agent Service**: Stateful reasoning workflows
-3. **LLM Gateway**: Provider routing and caching
-4. **Knowledge Base**: RAG operations and document management
-5. **Data Processing**: Evidence classification and analysis
 
-For architecture details, see [Microservice Transition Plan](docs/architecture/microservice-proposal.md).
+#### 1. **API Layer** (`api/v1/`)
+- RESTful endpoints with versioning support
+- Request validation and response formatting
+- Dependency injection for services
+- Middleware for authentication and rate limiting
+
+#### 2. **Service Layer** (`services/`)
+- **AgentService**: Orchestrates troubleshooting workflows
+- **DataService**: Manages data ingestion and processing
+- **KnowledgeService**: Handles knowledge base operations
+- **SessionService**: Provides session lifecycle management
+
+#### 3. **Core Domain** (`core/`)
+- **Agent**: LangGraph-based troubleshooting engine with 5-phase doctrine
+- **Processing**: Log analysis and data classification
+- **Knowledge**: Document ingestion and RAG operations
+
+#### 4. **Infrastructure** (`infrastructure/`)
+- **LLM**: Multi-provider routing with fallback
+- **Persistence**: Redis sessions and ChromaDB vectors
+- **Security**: PII redaction and data sanitization
+- **Observability**: Opik tracing and metrics
+
+### Data Flow Example
+
+```mermaid
+graph TD
+    A[Browser Extension] --> B[API Router]
+    B --> C[Dependency Injection]
+    C --> D[Session Service]
+    D --> E[Agent Service]
+    E --> F[Core Agent]
+    F --> G[Knowledge Base]
+    F --> H[LLM Router]
+    G --> I[ChromaDB]
+    H --> J[External LLMs]
+```
+
+For detailed architecture documentation, see:
+- [Current Architecture](docs/architecture/current-architecture.md)
+- [Service Patterns](docs/architecture/service-patterns.md)
+- [Migration Guide](docs/migration/import-migration-guide.md)
 
 ## 🛠️ Development
 
@@ -142,6 +182,7 @@ For architecture details, see [Microservice Transition Plan](docs/architecture/m
    ```bash
    pip install -r requirements.txt
    pip install -r requirements-test.txt
+   python -m spacy download en_core_web_lg
    ```
 
 3. Configure pre-commit hooks:
@@ -152,14 +193,21 @@ For architecture details, see [Microservice Transition Plan](docs/architecture/m
 ### Code Structure
 ```
 faultmaven/
-├── agent/               # Reasoning components
-├── api/                 # Endpoint handlers
-├── data_processing/     # Evidence analysis
-├── knowledge_base/      # RAG management
-├── llm/                 # Model routing
-├── security/            # PII redaction
-├── models.py            # Shared data models
-└── main.py              # Application entry point
+├── api/v1/              # Versioned API endpoints
+├── core/                # Core business logic
+│   ├── agent/           # AI reasoning engine
+│   ├── knowledge/       # Knowledge management
+│   └── processing/      # Data analysis
+├── infrastructure/      # External integrations
+│   ├── llm/            # LLM providers
+│   ├── persistence/    # Data storage
+│   ├── security/       # Privacy controls
+│   └── observability/  # Monitoring
+├── services/           # Service layer
+├── models/             # Data models
+├── tools/              # Agent tools
+├── container.py        # Dependency injection
+└── main.py             # FastAPI application
 ```
 
 ## 📜 License

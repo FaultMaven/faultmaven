@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from faultmaven.data_processing.classifier import DataClassifier
+from faultmaven.core.processing.classifier import DataClassifier
 from faultmaven.models import DataType
 
 

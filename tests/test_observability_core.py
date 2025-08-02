@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.observability.tracing import trace
+from faultmaven.infrastructure.observability.tracing import trace
 
 
 class TestCoreObservability:
@@ -112,7 +112,7 @@ class TestObservabilityIntegration:
 
     def test_llm_router_has_tracing(self):
         """Verify LLM router methods have trace decorators."""
-        from faultmaven.llm.router import LLMRouter
+        from faultmaven.infrastructure.llm.router import LLMRouter
 
         # Check that key methods have been wrapped with @trace
         assert hasattr(LLMRouter.route, "__wrapped__")
@@ -120,7 +120,7 @@ class TestObservabilityIntegration:
 
     def test_agent_has_tracing(self):
         """Verify agent methods have trace decorators."""
-        from faultmaven.agent.core_agent import FaultMavenAgent
+        from faultmaven.core.agent.agent import FaultMavenAgent
 
         # Check that key methods have been wrapped with @trace
         assert hasattr(FaultMavenAgent.run, "__wrapped__")
@@ -132,8 +132,8 @@ class TestObservabilityIntegration:
 
     def test_data_processing_has_tracing(self):
         """Verify data processing methods have trace decorators."""
-        from faultmaven.data_processing.classifier import DataClassifier
-        from faultmaven.data_processing.log_processor import LogProcessor
+        from faultmaven.core.processing.classifier import DataClassifier
+        from faultmaven.core.processing.log_analyzer import LogProcessor
 
         # Check that key methods have been wrapped with @trace
         assert hasattr(LogProcessor.process, "__wrapped__")
@@ -141,7 +141,7 @@ class TestObservabilityIntegration:
 
     def test_knowledge_base_has_tracing(self):
         """Verify knowledge base methods have trace decorators."""
-        from faultmaven.knowledge_base.ingestion import KnowledgeIngester
+        from faultmaven.core.knowledge.ingestion import KnowledgeIngester
 
         # Check that key methods have been wrapped with @trace
         assert hasattr(KnowledgeIngester.ingest_document, "__wrapped__")
@@ -169,13 +169,13 @@ class TestObservabilityConfiguration:
 
     def test_trace_decorator_import(self):
         """Test that trace decorator can be imported."""
-        from faultmaven.observability.tracing import trace
+        from faultmaven.infrastructure.observability.tracing import trace
 
         assert callable(trace)
 
     def test_tracing_functions_import(self):
         """Test that tracing utility functions can be imported."""
-        from faultmaven.observability.tracing import (
+        from faultmaven.infrastructure.observability.tracing import (
             create_span,
             init_opik_tracing,
             record_exception,
@@ -189,7 +189,7 @@ class TestObservabilityConfiguration:
 
     def test_init_opik_tracing_graceful_failure(self):
         """Test that init_opik_tracing handles failures gracefully."""
-        from faultmaven.observability.tracing import init_opik_tracing
+        from faultmaven.infrastructure.observability.tracing import init_opik_tracing
 
         # Should not raise exceptions even with invalid parameters
         init_opik_tracing(api_key="invalid-key")

@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
-from faultmaven.agent.tools.knowledge_base import KnowledgeBaseTool
-from faultmaven.agent.tools.web_search import WebSearchTool
-from faultmaven.data_processing.classifier import DataClassifier
-from faultmaven.data_processing.log_processor import LogProcessor
-from faultmaven.llm.router import LLMRouter
+from faultmaven.tools.knowledge_base import KnowledgeBaseTool
+from faultmaven.tools.web_search import WebSearchTool
+from faultmaven.core.processing.classifier import DataClassifier
+from faultmaven.core.processing.log_analyzer import LogProcessor
+from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models import AgentState, DataType, SessionContext
-from faultmaven.security.redaction import DataSanitizer
+from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.session_management import SessionManager
 
 

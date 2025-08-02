@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from faultmaven.data_processing.log_processor import LogProcessor
+from faultmaven.core.processing.log_analyzer import LogProcessor
 from faultmaven.models import AgentState, DataInsightsResponse, DataType
 
 

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.agent.doctrine import Phase, TroubleshootingDoctrine
+from faultmaven.core.agent.doctrine import Phase, TroubleshootingDoctrine
 from faultmaven.models import AgentState
 
 

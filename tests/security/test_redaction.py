@@ -1,6 +1,6 @@
 import pytest
 
-from faultmaven.security.redaction import DataSanitizer
+from faultmaven.infrastructure.security.redaction import DataSanitizer
 
 
 class TestDataSanitizer:

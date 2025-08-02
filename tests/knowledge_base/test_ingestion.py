@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 import numpy as np
 import pytest
 
-from faultmaven.knowledge_base.ingestion import KnowledgeIngester
+from faultmaven.core.knowledge.ingestion import KnowledgeIngester
 from faultmaven.models import KnowledgeBaseDocument
 
 pytestmark = pytest.mark.asyncio

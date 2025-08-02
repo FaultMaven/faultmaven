@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from faultmaven.security.redaction import DataSanitizer
+from faultmaven.infrastructure.security.redaction import DataSanitizer
 
 
 def test_sanitizer_handles_analyzer_exception():

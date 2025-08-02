@@ -2,8 +2,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from faultmaven.agent.core_agent import FaultMavenAgent
-from faultmaven.agent.doctrine import Phase
+from faultmaven.core.agent.agent import FaultMavenAgent
+from faultmaven.core.agent.doctrine import Phase
 from faultmaven.models import AgentState
 
 
