@@ -8,8 +8,13 @@ services:
       - PORT=8000
       - DEBUG=false
       - LOG_LEVEL=INFO
-      - REDIS_URL=redis://redis:6379
-      - CHROMADB_URL=http://chromadb:8000
+      # Note: In production, these services run in K8s cluster
+      # For local development, you can use local services or connect to K8s
+      - REDIS_URL=redis://redis:6379  # Local development fallback
+      - CHROMADB_URL=http://chromadb:8000  # Local development fallback
+      # - PRESIDIO_HOST=presidio.faultmaven.local  # K8s service (requires /etc/hosts setup)
+      # - PRESIDIO_ANALYZER_PORT=30433
+      # - PRESIDIO_ANONYMIZER_PORT=30434
     env_file:
       - .env
     volumes:

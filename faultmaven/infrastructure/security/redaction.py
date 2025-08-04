@@ -5,7 +5,7 @@ Purpose: Sanitize sensitive information
 Requirements:
 --------------------------------------------------------------------------------
 • Implement DataSanitizer class
-• Use Microsoft Presidio for PII detection
+• Use K8s Presidio microservice for PII detection
 • Apply custom regex patterns for secrets
 
 Key Components:
@@ -15,7 +15,7 @@ Key Components:
 
 Technology Stack:
 --------------------------------------------------------------------------------
-presidio-analyzer, regex
+K8s Presidio microservice, HTTP requests, regex
 
 Core Design Principles:
 --------------------------------------------------------------------------------
@@ -27,38 +27,45 @@ Core Design Principles:
 """
 
 import logging
+import os
 import re
-
-from presidio_analyzer import AnalyzerEngine
-# from presidio_analyzer.analyzer_request import AnalyzerRequest  # Not needed with direct API
-from presidio_analyzer.nlp_engine import NlpEngineProvider
+from typing import Dict, List, Optional
+import requests
+import json
 
 
 class DataSanitizer:
     """Sanitizes sensitive information from text data"""
 
     def __init__(self):
-        """Initialize the DataSanitizer with Presidio and custom patterns"""
+        """Initialize the DataSanitizer with K8s Presidio service and custom patterns"""
         self.logger = logging.getLogger(__name__)
 
-        # Initialize Presidio analyzer with suppressed language warnings
-        try:
-            # Suppress Presidio language warnings during initialization
-            presidio_logger = logging.getLogger("presidio-analyzer")
-            original_level = presidio_logger.level
-            presidio_logger.setLevel(logging.ERROR)
-            
-            try:
-                provider = NlpEngineProvider(conf_file=None)
-                nlp_engine = provider.create_engine()
-                self.analyzer = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=["en"])
-            finally:
-                # Restore original logging level
-                presidio_logger.setLevel(original_level)
-                
-        except Exception as e:
-            self.logger.warning(f"Failed to initialize Presidio: {e}")
-            self.analyzer = None
+        # Configure K8s Presidio service endpoints
+        presidio_host = os.getenv("PRESIDIO_HOST", "presidio.faultmaven.local")
+        presidio_analyzer_port = int(os.getenv("PRESIDIO_ANALYZER_PORT", "30433"))
+        presidio_anonymizer_port = int(os.getenv("PRESIDIO_ANONYMIZER_PORT", "30434"))
+        
+        self.analyzer_url = f"http://{presidio_host}:{presidio_analyzer_port}"
+        self.anonymizer_url = f"http://{presidio_host}:{presidio_anonymizer_port}"
+        
+        # HTTP client configuration
+        self.request_timeout = 10.0  # seconds
+        self.session = requests.Session()
+        self.session.headers.update({
+            'Content-Type': 'application/json',
+            'User-Agent': 'FaultMaven-DataSanitizer/1.0'
+        })
+        
+        # Test service connectivity
+        self.analyzer_available = self._test_service_health(self.analyzer_url)
+        self.anonymizer_available = self._test_service_health(self.anonymizer_url)
+        
+        if self.analyzer_available and self.anonymizer_available:
+            self.logger.info(f"✅ Connected to K8s Presidio services at {presidio_host}")
+        else:
+            self.logger.warning(f"⚠️ Limited Presidio connectivity - Analyzer: {self.analyzer_available}, Anonymizer: {self.anonymizer_available}")
+            self.logger.info("📝 Falling back to regex-only sanitization")
 
         # Custom regex patterns for cloud secrets and sensitive data
         self.custom_patterns = [
@@ -135,8 +142,8 @@ class DataSanitizer:
         for pattern in self.custom_patterns:
             sanitized_text = self._apply_pattern(sanitized_text, pattern)
 
-        # Apply Presidio PII detection if available
-        if self.analyzer:
+        # Apply K8s Presidio PII detection if available
+        if self.analyzer_available and self.anonymizer_available:
             sanitized_text = self._apply_presidio(sanitized_text)
 
         return sanitized_text
@@ -177,36 +184,75 @@ class DataSanitizer:
 
         return pattern.sub(replace_match, text)
 
-    def _apply_presidio(self, text: str) -> str:
-        """Apply Presidio PII detection and redaction"""
+    def _test_service_health(self, service_url: str) -> bool:
+        """Test if a Presidio service is available"""
         try:
-            # Create analyzer request with correct Presidio API
-            # analyzer_request = AnalyzerRequest(text=text, language="en")
-            # Use analyzer.analyze directly without AnalyzerRequest wrapper
-
-            # Get PII entities using correct Presidio API
-            results = self.analyzer.analyze(text=text, language="en")
-
-            # Sort results by start position (descending) to avoid index shifting
-            results = sorted(results, key=lambda x: x.start, reverse=True)
-
-            # Replace detected entities
-            sanitized_text = text
-            for result in results:
-                start = result.start
-                end = result.end
-                entity_type = result.entity_type
-
-                # Create appropriate replacement based on entity type
-                replacement = f"[{entity_type.upper()}_REDACTED]"
-                sanitized_text = (
-                    sanitized_text[:start] + replacement + sanitized_text[end:]
-                )
-
-            return sanitized_text
-
+            health_url = f"{service_url}/health"
+            response = self.session.get(health_url, timeout=5.0)
+            return response.status_code == 200
         except Exception as e:
-            self.logger.warning(f"Presidio analysis failed: {e}")
+            self.logger.debug(f"Health check failed for {service_url}: {e}")
+            return False
+
+    def _apply_presidio(self, text: str) -> str:
+        """Apply K8s Presidio PII detection and redaction"""
+        if not (self.analyzer_available and self.anonymizer_available):
+            self.logger.debug("Presidio services not available, skipping PII detection")
+            return text
+            
+        try:
+            # Step 1: Analyze text for PII entities using K8s analyzer service
+            analyze_payload = {
+                "text": text,
+                "language": "en"
+            }
+            
+            analyze_response = self.session.post(
+                f"{self.analyzer_url}/analyze",
+                json=analyze_payload,
+                timeout=self.request_timeout
+            )
+            
+            if analyze_response.status_code != 200:
+                self.logger.warning(f"Presidio analyzer failed with status {analyze_response.status_code}")
+                return text
+                
+            analyzer_results = analyze_response.json()
+            
+            if not analyzer_results:
+                # No PII detected
+                return text
+            
+            # Step 2: Anonymize text using K8s anonymizer service  
+            anonymize_payload = {
+                "text": text,
+                "analyzer_results": analyzer_results
+            }
+            
+            anonymize_response = self.session.post(
+                f"{self.anonymizer_url}/anonymize", 
+                json=anonymize_payload,
+                timeout=self.request_timeout
+            )
+            
+            if anonymize_response.status_code != 200:
+                self.logger.warning(f"Presidio anonymizer failed with status {anonymize_response.status_code}")
+                return text
+                
+            anonymize_result = anonymize_response.json()
+            return anonymize_result.get("text", text)
+
+        except requests.exceptions.Timeout:
+            self.logger.warning("Presidio service timeout - falling back to original text")
+            return text
+        except requests.exceptions.ConnectionError:
+            self.logger.warning("Presidio service connection error - falling back to original text")
+            # Mark services as unavailable for next requests
+            self.analyzer_available = False
+            self.anonymizer_available = False
+            return text
+        except Exception as e:
+            self.logger.warning(f"Presidio K8s service error: {e}")
             return text
 
     def is_sensitive(self, text: str) -> bool:
@@ -227,13 +273,25 @@ class DataSanitizer:
             if pattern.search(text):
                 return True
 
-        # Check with Presidio if available
-        if self.analyzer:
+        # Check with K8s Presidio analyzer if available
+        if self.analyzer_available:
             try:
-                # Use analyzer.analyze directly with correct API
-                results = self.analyzer.analyze(text=text, language="en")
-                return len(results) > 0
+                analyze_payload = {
+                    "text": text,
+                    "language": "en"
+                }
+                
+                analyze_response = self.session.post(
+                    f"{self.analyzer_url}/analyze",
+                    json=analyze_payload,
+                    timeout=self.request_timeout
+                )
+                
+                if analyze_response.status_code == 200:
+                    analyzer_results = analyze_response.json()
+                    return len(analyzer_results) > 0
+                    
             except Exception as e:
-                self.logger.warning(f"Presidio sensitivity check failed: {e}")
+                self.logger.warning(f"Presidio K8s sensitivity check failed: {e}")
 
         return False

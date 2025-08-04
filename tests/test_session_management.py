@@ -44,8 +44,10 @@ def mock_redis():
 @pytest.fixture
 def session_manager_with_mock_redis(mock_redis):
     """Create a SessionManager with mock Redis client."""
-    with patch("redis.asyncio.from_url", return_value=mock_redis):
+    with patch("faultmaven.infrastructure.redis_client.create_redis_client", return_value=mock_redis):
         session_manager = SessionManager(redis_url="redis://localhost:6379")
+        # Ensure the mock is properly assigned
+        session_manager.redis_client = mock_redis
         return session_manager
 
 
@@ -54,8 +56,8 @@ class TestSessionManager:
 
     def test_init_default_configuration(self):
         """Test SessionManager initialization with default configuration."""
-        with patch("redis.asyncio.from_url") as mock_from_url:
-            mock_from_url.return_value = AsyncMock()
+        with patch("faultmaven.infrastructure.redis_client.create_redis_client") as mock_create_client:
+            mock_create_client.return_value = AsyncMock()
             session_manager = SessionManager()
             assert session_manager.session_timeout == timedelta(
                 hours=24
@@ -64,8 +66,8 @@ class TestSessionManager:
 
     def test_init_custom_configuration(self):
         """Test SessionManager initialization with custom configuration."""
-        with patch("redis.asyncio.from_url") as mock_from_url:
-            mock_from_url.return_value = AsyncMock()
+        with patch("faultmaven.infrastructure.redis_client.create_redis_client") as mock_create_client:
+            mock_create_client.return_value = AsyncMock()
             session_manager = SessionManager(
                 redis_url="redis://test:6379", session_timeout_hours=2
             )
@@ -382,13 +384,21 @@ class TestSessionManager:
         assert new_session.user_id == sample_session_context.user_id
 
     @pytest.mark.asyncio
-    async def test_redis_connection_close(
-        self, session_manager_with_mock_redis, mock_redis
-    ):
+    async def test_redis_connection_close(self):
         """Test closing Redis connection."""
-        session_manager = session_manager_with_mock_redis
+        # Use the existing fixture pattern
+        mock_redis = AsyncMock()
+        mock_redis.aclose = AsyncMock()
+        mock_redis.close = AsyncMock()
+        
+        # Directly assign the mock to bypass the factory
+        session_manager = SessionManager(redis_url="redis://localhost:6379")
+        session_manager.redis_client = mock_redis
+        
         await session_manager.close()
-        mock_redis.close.assert_called_once()
+        
+        # Should call aclose() when available
+        mock_redis.aclose.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_corrupted_session_cleanup(

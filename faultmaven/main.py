@@ -87,9 +87,19 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting FaultMaven API server...")
 
-    # Initialize core services
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-    app_state["session_manager"] = SessionManager(redis_url=redis_url)
+    # Initialize core services with K8s support
+    # Priority: Individual parameters > REDIS_URL > defaults
+    redis_host = os.getenv("REDIS_HOST")
+    redis_port = int(os.getenv("REDIS_PORT", "30379")) if os.getenv("REDIS_PORT") else None
+    redis_password = os.getenv("REDIS_PASSWORD")
+    redis_url = os.getenv("REDIS_URL")
+    
+    app_state["session_manager"] = SessionManager(
+        redis_url=redis_url,
+        redis_host=redis_host,
+        redis_port=redis_port,
+        redis_password=redis_password
+    )
 
     # Setup tracing
     init_opik_tracing()

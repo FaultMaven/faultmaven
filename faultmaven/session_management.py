@@ -34,6 +34,7 @@ from typing import Dict, List, Optional
 
 import redis.asyncio as redis
 
+from .infrastructure.redis_client import create_redis_client, validate_redis_connection
 from .models import AgentState, SessionContext
 
 
@@ -41,21 +42,51 @@ class SessionManager:
     """Manages user sessions for troubleshooting investigations using Redis"""
 
     def __init__(
-        self, redis_url: str = "redis://localhost:6379", session_timeout_hours: int = 24
+        self, 
+        redis_url: str = None,
+        redis_host: str = None,
+        redis_port: int = None, 
+        redis_password: str = None,
+        session_timeout_hours: int = 24
     ):
         """
         Initialize SessionManager with Redis connection
 
         Args:
-            redis_url: Redis connection URL
+            redis_url: Redis connection URL (takes precedence)
+            redis_host: Redis host (for individual parameters)
+            redis_port: Redis port (for individual parameters)
+            redis_password: Redis password (for individual parameters)
             session_timeout_hours: Session timeout in hours
         """
         self.logger = logging.getLogger(__name__)
-        self.redis_client = redis.from_url(redis_url)
+        
+        # Create Redis client using enhanced factory
+        self.redis_client = create_redis_client(
+            redis_url=redis_url,
+            host=redis_host,
+            port=redis_port,
+            password=redis_password
+        )
+        
         self.session_timeout = timedelta(hours=session_timeout_hours)
         self.session_timeout_seconds = int(self.session_timeout.total_seconds())
 
-        self.logger.info(f"SessionManager initialized with Redis at {redis_url}")
+        self.logger.info("SessionManager initialized with enhanced Redis client")
+    
+    async def validate_connection(self) -> bool:
+        """
+        Validate Redis connection health.
+        
+        Returns:
+            True if Redis connection is healthy
+        """
+        try:
+            await validate_redis_connection(self.redis_client)
+            return True
+        except Exception as e:
+            self.logger.error(f"Redis connection validation failed: {e}")
+            return False
 
     async def create_session(self, user_id: Optional[str] = None) -> SessionContext:
         """
@@ -450,5 +481,9 @@ class SessionManager:
         """
         Close the Redis connection
         """
-        await self.redis_client.close()
+        try:
+            await self.redis_client.aclose()
+        except AttributeError:
+            # Fallback for older redis-py versions
+            await self.redis_client.close()
         self.logger.info("Redis connection closed")

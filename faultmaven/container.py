@@ -35,9 +35,12 @@ class Container:
         """Initialize the container with configuration"""
         self.logger = logging.getLogger(__name__)
         
-        # Configuration
+        # Configuration with K8s Redis support
         self.config = {
-            "redis_url": os.getenv("REDIS_URL", "redis://localhost:6379"),
+            "redis_url": os.getenv("REDIS_URL"),
+            "redis_host": os.getenv("REDIS_HOST"),
+            "redis_port": int(os.getenv("REDIS_PORT", "30379")) if os.getenv("REDIS_PORT") else None,
+            "redis_password": os.getenv("REDIS_PASSWORD"),
             "session_timeout_hours": int(os.getenv("SESSION_TIMEOUT_HOURS", "24")),
             "max_sessions_per_user": int(os.getenv("MAX_SESSIONS_PER_USER", "10")),
             "openai_api_key": os.getenv("OPENAI_API_KEY"),
@@ -69,9 +72,12 @@ class Container:
         if self._session_manager is None:
             self._session_manager = SessionManager(
                 redis_url=self.config["redis_url"],
+                redis_host=self.config["redis_host"],
+                redis_port=self.config["redis_port"],
+                redis_password=self.config["redis_password"],
                 session_timeout_hours=self.config["session_timeout_hours"],
             )
-            self.logger.info("Initialized SessionManager")
+            self.logger.info("Initialized SessionManager with enhanced Redis client")
         return self._session_manager
 
     @property

@@ -38,9 +38,19 @@ from faultmaven.session_management import SessionManager
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
 
-# Global session manager instance
-redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-session_manager = SessionManager(redis_url=redis_url)
+# Global session manager instance with K8s Redis support
+# Priority: Individual parameters > REDIS_URL > K8s defaults
+redis_host = os.getenv("REDIS_HOST")
+redis_port = int(os.getenv("REDIS_PORT", "30379")) if os.getenv("REDIS_PORT") else None
+redis_password = os.getenv("REDIS_PASSWORD") 
+redis_url = os.getenv("REDIS_URL")
+
+session_manager = SessionManager(
+    redis_url=redis_url,
+    redis_host=redis_host,
+    redis_port=redis_port,
+    redis_password=redis_password
+)
 
 
 def get_session_manager():

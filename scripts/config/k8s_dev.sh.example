@@ -1,0 +1,19 @@
+#!/bin/bash
+# K8s Development Environment Configuration
+# Copy to k8s_dev.sh and source before running FaultMaven
+
+# Redis K8s Service Configuration
+export REDIS_HOST="redis.faultmaven.local"
+export REDIS_PORT="30379"
+export REDIS_PASSWORD="faultmaven-dev-redis-2025"
+
+# ChromaDB K8s Service Configuration (when available)
+# export CHROMADB_URL="http://chromadb.faultmaven.local:30180"
+
+# Opik Observability (already configured)
+export OPIK_USE_LOCAL="true"
+export OPIK_LOCAL_URL="http://opik.faultmaven.local:30080"
+
+echo "✅ K8s development environment configured"
+echo "   Redis: ${REDIS_HOST}:${REDIS_PORT}"
+echo "   Opik: ${OPIK_LOCAL_URL}"

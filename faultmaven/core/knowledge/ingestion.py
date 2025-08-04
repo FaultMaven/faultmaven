@@ -50,10 +50,14 @@ class KnowledgeIngester:
         self.logger = logging.getLogger(__name__)
         self.sanitizer = DataSanitizer()
 
-        # Initialize ChromaDB - use HTTP client in Docker environment
+        # Initialize ChromaDB - default to K8s cluster for production-like development
         chromadb_url = os.getenv("CHROMADB_URL")
+        chromadb_host = os.getenv("CHROMADB_HOST", "chromadb.faultmaven.local")
+        chromadb_port = int(os.getenv("CHROMADB_PORT", "30432"))
+        chromadb_auth_token = os.getenv("CHROMADB_AUTH_TOKEN", "faultmaven-dev-chromadb-2025")
+        
         if chromadb_url:
-            # Running in Docker with external ChromaDB server
+            # Legacy URL-based configuration
             self.logger.info(f"Using ChromaDB HTTP client at {chromadb_url}")
             self.chroma_client = chromadb.HttpClient(
                 host=chromadb_url.replace("http://", "")
@@ -62,8 +66,21 @@ class KnowledgeIngester:
                 port=int(chromadb_url.split(":")[-1]),
                 settings=Settings(anonymized_telemetry=False, allow_reset=True),
             )
+        elif chromadb_host != "localhost":
+            # K8s cluster or external HTTP client (default)
+            self.logger.info(f"Using ChromaDB HTTP client at {chromadb_host}:{chromadb_port}")
+            self.chroma_client = chromadb.HttpClient(
+                host=chromadb_host,
+                port=chromadb_port,
+                settings=Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True,
+                    chroma_client_auth_provider="chromadb.auth.token_authn.TokenAuthClientProvider",
+                    chroma_client_auth_credentials=chromadb_auth_token
+                ),
+            )
         else:
-            # Running locally with persistent client
+            # Local development with persistent client
             self.logger.info(
                 f"Using ChromaDB PersistentClient at {chroma_persist_directory}"
             )

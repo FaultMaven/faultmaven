@@ -88,10 +88,13 @@ def test_process_query_missing_query():
     assert any("query" in str(error) for error in error_detail)
 
 
-def test_process_query_empty_query():
+def test_process_query_empty_query(mock_session_manager):
     """
     Test that empty query string returns 422 validation error.
     """
+    # Mock session manager to return None (session not found)
+    mock_session_manager.get_session.return_value = None
+    
     invalid_request = {"session_id": "test_session", "query": ""}  # Empty query
 
     # The actual implementation doesn't validate empty strings, so this should pass through
@@ -103,22 +106,22 @@ def test_process_query_empty_query():
     assert "Session not found" in response.json()["detail"]
 
 
-def test_process_query_invalid_priority():
+def test_process_query_invalid_priority(mock_session_manager):
     """
-    Test that invalid priority value returns 404 if session is missing.
+    Test that invalid priority value returns 200 or 500 when session exists.
     """
+    # Mock session exists
+    mock_session_manager.get_session.return_value = True
+    
     invalid_request = {
         "session_id": "test_session",
         "query": "test query",
         "priority": "invalid_priority",  # Invalid priority
     }
-    with patch(
-        "faultmaven.api.v1.routes.agent.get_session_manager"
-    ) as mock_session_manager:
-        mock_session_manager.return_value.get_session = AsyncMock(return_value=True)
-        response = client.post("/query/", json=invalid_request)
-        # Should process successfully since priority is not validated
-        assert response.status_code in (200, 500)  # Accept 500 for event loop issues
+    
+    response = client.post("/query/", json=invalid_request)
+    # Should process successfully since priority is not validated
+    assert response.status_code in (200, 500)  # Accept 500 for event loop issues
 
 
 def test_process_query_invalid_context_type():
@@ -155,10 +158,13 @@ def test_process_query_malformed_json():
     assert response.status_code == 422
 
 
-def test_process_query_extra_fields():
+def test_process_query_extra_fields(mock_session_manager):
     """
     Test that extra fields in request are handled gracefully.
     """
+    # Mock session manager to return None (session not found)
+    mock_session_manager.get_session.return_value = None
+    
     request_with_extra = {
         "session_id": "test_session",
         "query": "test query",

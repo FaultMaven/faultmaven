@@ -22,8 +22,7 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download spaCy model for Presidio
-RUN python -m spacy download en_core_web_lg
+# Note: spaCy model no longer needed - PII protection uses K8s Presidio microservice
 
 # Copy application code
 COPY faultmaven/ ./faultmaven/

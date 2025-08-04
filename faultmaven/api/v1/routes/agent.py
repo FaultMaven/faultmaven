@@ -48,8 +48,18 @@ router = APIRouter(prefix="/query", tags=["query_processing"])
 
 # Global instances (in production, these would be dependency injected)
 
-redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-session_manager = SessionManager(redis_url=redis_url)
+# Initialize session manager with K8s Redis support
+redis_host = os.getenv("REDIS_HOST")
+redis_port = int(os.getenv("REDIS_PORT", "30379")) if os.getenv("REDIS_PORT") else None
+redis_password = os.getenv("REDIS_PASSWORD")
+redis_url = os.getenv("REDIS_URL")
+
+session_manager = SessionManager(
+    redis_url=redis_url,
+    redis_host=redis_host,
+    redis_port=redis_port,
+    redis_password=redis_password
+)
 
 # Initialize agent dependencies
 

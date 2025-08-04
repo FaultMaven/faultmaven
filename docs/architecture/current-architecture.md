@@ -1,9 +1,9 @@
-# FaultMaven v2.0 Architecture
+# FaultMaven v2.1 Architecture
 
-This document describes the refactored architecture of FaultMaven, implementing a service-oriented design with dependency injection and clear separation of concerns.
+This document describes the hybrid architecture of FaultMaven, implementing a service-oriented design with dependency injection, clear separation of concerns, and integration with K8s microservices.
 
-**Last Updated**: December 2024  
-**Status**: Implemented and tested
+**Last Updated**: August 2025  
+**Status**: Implemented and tested with K8s microservices integration
 
 ## Overview
 
@@ -89,19 +89,47 @@ core/
 - `llm/` - LLM provider management
   - `router.py` - Provider selection and fallback
   - `providers/` - Specific LLM implementations
-- `persistence/` - Data storage
-  - `redis.py` - Session storage
-  - `chromadb.py` - Vector storage
 - `security/` - Security infrastructure
-  - `redaction.py` - PII sanitization
+  - `redaction.py` - K8s Presidio microservice integration
 - `observability/` - Monitoring
   - `tracing.py` - Distributed tracing
+- `redis_client.py` - Enhanced Redis client for K8s cluster
 
 **Responsibilities**:
 - External API integration
-- Data persistence
+- K8s microservice integration
 - Security implementation
 - Monitoring and metrics
+
+### 4.1. K8s Microservices Integration
+
+**Architecture**: FaultMaven now integrates with dedicated K8s microservices for:
+
+**Redis Session Storage**:
+- **Service**: `redis.faultmaven.local:30379`
+- **Purpose**: Distributed session management with authentication
+- **Implementation**: Enhanced Redis client with health checks and fallback
+- **Configuration**: Environment variables with K8s defaults
+
+**ChromaDB Vector Storage**:
+- **Service**: `chromadb.faultmaven.local:30432`
+- **Purpose**: Vector database for knowledge base and embeddings
+- **Authentication**: Token-based with `faultmaven-dev-chromadb-2025`
+- **Implementation**: HTTP client with graceful local fallback
+
+**Presidio PII Protection**:
+- **Services**: 
+  - Analyzer: `presidio.faultmaven.local:30433`
+  - Anonymizer: `presidio.faultmaven.local:30434`
+- **Purpose**: Advanced PII detection and redaction
+- **Implementation**: HTTP API integration with regex fallback
+- **Benefits**: Removes heavy spaCy model loading from main application
+
+**Design Principles**:
+- **Graceful Degradation**: All services work with fallback when K8s unavailable
+- **Health Monitoring**: Proactive service availability checking
+- **Environment Flexibility**: Works in development, testing, and production
+- **Consistent Configuration**: Unified approach across all K8s services
 
 ### 5. Models (`models/`)
 

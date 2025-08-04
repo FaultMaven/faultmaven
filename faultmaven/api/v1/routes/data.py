@@ -39,17 +39,17 @@ from faultmaven.core.processing.classifier import DataClassifier
 from faultmaven.core.processing.log_analyzer import LogProcessor
 from faultmaven.models import DataInsightsResponse, DataType, UploadedData
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.infrastructure.redis_client import create_redis_client
 from faultmaven.session_management import SessionManager
 
 router = APIRouter(prefix="/data", tags=["data_ingestion"])
 
 # Global instances (in production, these would be dependency injected)
 
-redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-session_manager = SessionManager(redis_url=redis_url)
+session_manager = SessionManager()  # Uses environment variables for Redis config
 data_classifier = DataClassifier()
 log_processor = LogProcessor()
-redis_client = redis.from_url(redis_url)
+redis_client = create_redis_client()  # Uses enhanced Redis client
 
 
 def get_session_manager():
