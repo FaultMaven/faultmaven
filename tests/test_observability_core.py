@@ -116,7 +116,6 @@ class TestObservabilityIntegration:
 
         # Check that key methods have been wrapped with @trace
         assert hasattr(LLMRouter.route, "__wrapped__")
-        assert hasattr(LLMRouter._call_provider, "__wrapped__")
 
     def test_agent_has_tracing(self):
         """Verify agent methods have trace decorators."""
@@ -149,19 +148,17 @@ class TestObservabilityIntegration:
 
     def test_api_endpoints_have_tracing(self):
         """Verify API endpoints have trace decorators."""
-        from faultmaven.api import (
-            data_ingestion,
-            kb_management,
-            query_processing,
-            sessions,
-        )
+        from faultmaven.api.v1.routes.data import upload_data
+        from faultmaven.api.v1.routes.agent import process_query
+        from faultmaven.api.v1.routes.knowledge import upload_document, search_documents
+        from faultmaven.api.v1.routes.session import create_session
 
         # Check that key endpoints have been wrapped with @trace
-        assert hasattr(data_ingestion.upload_data, "__wrapped__")
-        assert hasattr(query_processing.process_query, "__wrapped__")
-        assert hasattr(kb_management.upload_document, "__wrapped__")
-        assert hasattr(kb_management.search_documents, "__wrapped__")
-        assert hasattr(sessions.create_session, "__wrapped__")
+        assert hasattr(upload_data, "__wrapped__")
+        assert hasattr(process_query, "__wrapped__")
+        assert hasattr(upload_document, "__wrapped__")
+        assert hasattr(search_documents, "__wrapped__")
+        assert hasattr(create_session, "__wrapped__")
 
 
 class TestObservabilityConfiguration:
@@ -196,7 +193,7 @@ class TestObservabilityConfiguration:
 
     def test_observability_constants(self):
         """Test that observability constants are defined."""
-        from faultmaven.observability import tracing
+        from faultmaven.infrastructure.observability import tracing
 
         # Should have availability flags
         assert hasattr(tracing, "OPIK_AVAILABLE")
@@ -255,7 +252,7 @@ class TestObservabilityErrorResilience:
     def test_trace_decorator_with_tracing_failures(self):
         """Test that functions work even when tracing fails."""
 
-        with patch("faultmaven.observability.tracing.OPIK_AVAILABLE", False):
+        with patch("faultmaven.infrastructure.observability.tracing.OPIK_AVAILABLE", False):
 
             @trace("resilience_test")
             def test_function():

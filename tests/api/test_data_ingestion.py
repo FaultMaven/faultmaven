@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
 from faultmaven.api.v1.routes.data import router
-from faultmaven.models import DataInsightsResponse, DataType
+from faultmaven.models_original import DataInsightsResponse, DataType
 
 
 class TestDataIngestionAPI:
@@ -16,7 +16,12 @@ class TestDataIngestionAPI:
     @pytest.fixture
     def mock_session_manager(self):
         """Mock SessionManager dependency."""
-        return Mock()
+        mock = Mock()
+        mock.session_timeout_seconds = 1800  # 30 minutes
+        mock.get_session = AsyncMock()
+        mock.add_data_upload = AsyncMock()
+        mock.add_investigation_history = AsyncMock()
+        return mock
 
     @pytest.fixture
     def mock_data_classifier(self):
@@ -38,29 +43,48 @@ class TestDataIngestionAPI:
         return Mock()
 
     @pytest.fixture
+    def mock_redis_client(self):
+        """Mock Redis client dependency."""
+        mock = Mock()
+        mock.set = AsyncMock()
+        mock.get = AsyncMock()
+        mock.delete = AsyncMock()
+        return mock
+
+    @pytest.fixture
     def test_app(
         self,
         mock_session_manager,
         mock_data_classifier,
         mock_log_processor,
         mock_data_sanitizer,
+        mock_redis_client,
     ):
         """Create test FastAPI app with mocked dependencies."""
         from fastapi import FastAPI
 
-        from faultmaven.api import data_ingestion
+        from faultmaven.api.v1.routes.data import (
+            router as data_router,
+            get_session_manager,
+            get_data_classifier,
+            get_log_processor,
+            get_redis_client,
+        )
 
         app = FastAPI()
-        app.include_router(data_ingestion.router)
+        app.include_router(data_router)
         # Dependency overrides for DI providers
-        app.dependency_overrides[data_ingestion.get_session_manager] = (
+        app.dependency_overrides[get_session_manager] = (
             lambda: mock_session_manager
         )
-        app.dependency_overrides[data_ingestion.get_data_classifier] = (
+        app.dependency_overrides[get_data_classifier] = (
             lambda: mock_data_classifier
         )
-        app.dependency_overrides[data_ingestion.get_log_processor] = (
+        app.dependency_overrides[get_log_processor] = (
             lambda: mock_log_processor
+        )
+        app.dependency_overrides[get_redis_client] = (
+            lambda: mock_redis_client
         )
         return app
 
@@ -76,6 +100,7 @@ class TestDataIngestionAPI:
         mock_data_classifier,
         mock_log_processor,
         mock_data_sanitizer,
+        mock_redis_client,
     ):
         """Test successful data upload."""
         # Mock service responses
@@ -92,12 +117,10 @@ class TestDataIngestionAPI:
                 recommendations=["Investigate errors"],
             )
         )
-        # Mock async session manager methods
-        mock_session_manager.get_session = AsyncMock(
-            return_value=Mock(session_id="test-session-id")
-        )
-        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
-        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
+        # Configure session manager with required properties
+        mock_session_manager.get_session.return_value = Mock(session_id="test-session-id")
+        mock_session_manager.add_data_upload.return_value = True
+        mock_session_manager.add_investigation_history.return_value = True
 
         # Create test file content
         file_content = (
@@ -128,6 +151,7 @@ class TestDataIngestionAPI:
         mock_data_classifier,
         mock_log_processor,
         mock_data_sanitizer,
+        mock_redis_client,
     ):
         """Test upload with empty file."""
         # Mock service responses
@@ -144,12 +168,10 @@ class TestDataIngestionAPI:
                 recommendations=["No action needed"],
             )
         )
-        # Mock async session manager methods
-        mock_session_manager.get_session = AsyncMock(
-            return_value=Mock(session_id="test-session-id")
-        )
-        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
-        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
+        # Configure session manager with required properties
+        mock_session_manager.get_session.return_value = Mock(session_id="test-session-id")
+        mock_session_manager.add_data_upload.return_value = True
+        mock_session_manager.add_investigation_history.return_value = True
 
         # Create empty file
         file_content = b""
@@ -168,10 +190,8 @@ class TestDataIngestionAPI:
     ):
         """Test handling of classification failure."""
         mock_data_classifier.classify.side_effect = Exception("Classification error")
-        # Mock session manager
-        mock_session_manager.get_session = AsyncMock(
-            return_value=Mock(session_id="test-session-id")
-        )
+        # Mock session manager  
+        mock_session_manager.get_session.return_value = Mock(session_id="test-session-id")
         file_content = b"Test log content"
         response = client.post(
             "/data",
@@ -187,10 +207,8 @@ class TestDataIngestionAPI:
         """Test handling of processing failure."""
         mock_data_classifier.classify = AsyncMock(return_value=DataType.LOG_FILE)
         mock_log_processor.process.side_effect = Exception("Processing error")
-        # Mock session manager
-        mock_session_manager.get_session = AsyncMock(
-            return_value=Mock(session_id="test-session-id")
-        )
+        # Mock session manager  
+        mock_session_manager.get_session.return_value = Mock(session_id="test-session-id")
         file_content = b"Test log content"
         response = client.post(
             "/data",
@@ -203,7 +221,7 @@ class TestDataIngestionAPI:
     def test_upload_data_session_creation_failure(self, client, mock_session_manager):
         """Test handling of session creation failure."""
         # Mock session retrieval to fail (simulating session not found)
-        mock_session_manager.get_session = AsyncMock(return_value=None)
+        mock_session_manager.get_session.return_value = None
         file_content = b"Test log content"
         response = client.post(
             "/data",
@@ -220,6 +238,7 @@ class TestDataIngestionAPI:
         mock_data_classifier,
         mock_log_processor,
         mock_data_sanitizer,
+        mock_redis_client,
     ):
         """Test upload with different file types."""
         # Mock responses
@@ -236,12 +255,10 @@ class TestDataIngestionAPI:
                 recommendations=["Review logs"],
             )
         )
-        # Mock async session manager methods
-        mock_session_manager.get_session = AsyncMock(
-            return_value=Mock(session_id="test-session-id")
-        )
-        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
-        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
+        # Configure session manager with required properties
+        mock_session_manager.get_session.return_value = Mock(session_id="test-session-id")
+        mock_session_manager.add_data_upload.return_value = True
+        mock_session_manager.add_investigation_history.return_value = True
         file_content = b"Test application log content"
         response = client.post(
             "/data",
@@ -259,6 +276,7 @@ class TestDataIngestionAPI:
         mock_data_classifier,
         mock_log_processor,
         mock_data_sanitizer,
+        mock_redis_client,
     ):
         """Test upload with large file."""
         # Mock responses
@@ -275,12 +293,10 @@ class TestDataIngestionAPI:
                 recommendations=["Investigate high error rate"],
             )
         )
-        # Mock async session manager methods
-        mock_session_manager.get_session = AsyncMock(
-            return_value=Mock(session_id="test-session-id")
-        )
-        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
-        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
+        # Configure session manager with required properties
+        mock_session_manager.get_session.return_value = Mock(session_id="test-session-id")
+        mock_session_manager.add_data_upload.return_value = True
+        mock_session_manager.add_investigation_history.return_value = True
         file_content = b"Error\n" * 1000
         response = client.post(
             "/data",
@@ -298,6 +314,7 @@ class TestDataIngestionAPI:
         mock_data_classifier,
         mock_log_processor,
         mock_data_sanitizer,
+        mock_redis_client,
     ):
         """Test upload with detected anomalies."""
         # Mock responses with anomalies
@@ -314,12 +331,10 @@ class TestDataIngestionAPI:
                 recommendations=["Investigate spike"],
             )
         )
-        # Mock async session manager methods
-        mock_session_manager.get_session = AsyncMock(
-            return_value=Mock(session_id="test-session-id")
-        )
-        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
-        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
+        # Configure session manager with required properties
+        mock_session_manager.get_session.return_value = Mock(session_id="test-session-id")
+        mock_session_manager.add_data_upload.return_value = True
+        mock_session_manager.add_investigation_history.return_value = True
         file_content = b"Error\n" * 10
         response = client.post(
             "/data",
@@ -337,6 +352,7 @@ class TestDataIngestionAPI:
         mock_data_classifier,
         mock_log_processor,
         mock_data_sanitizer,
+        mock_redis_client,
     ):
         """Test that data is properly sanitized."""
         # Mock sanitization
@@ -353,12 +369,10 @@ class TestDataIngestionAPI:
                 recommendations=["Review sanitized logs"],
             )
         )
-        # Mock async session manager methods
-        mock_session_manager.get_session = AsyncMock(
-            return_value=Mock(session_id="test-session-id")
-        )
-        mock_session_manager.add_data_upload = AsyncMock(return_value=True)
-        mock_session_manager.add_investigation_history = AsyncMock(return_value=True)
+        # Configure session manager with required properties
+        mock_session_manager.get_session.return_value = Mock(session_id="test-session-id")
+        mock_session_manager.add_data_upload.return_value = True
+        mock_session_manager.add_investigation_history.return_value = True
         file_content = b"Sensitive info\n"
         response = client.post(
             "/data",

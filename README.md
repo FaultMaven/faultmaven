@@ -87,6 +87,32 @@ graph LR
    npm run dev
    ```
 
+### Local Development Setup
+
+For local development without Docker:
+
+1. Setup Python environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+2. Configure environment:
+   ```bash
+   cp .env.example .env
+   # Add your API keys to .env
+   ```
+
+3. Start FaultMaven:
+   ```bash
+   # Standard startup
+   ./run_faultmaven.sh
+   
+   # Or development mode (full transparency, all logs)
+   ./run_faultmaven_dev.sh
+   ```
+
 ## 🧪 Testing
 
 Run the test suite with pytest:
@@ -209,6 +235,52 @@ faultmaven/
 ├── container.py        # Dependency injection
 └── main.py             # FastAPI application
 ```
+
+## ⚙️ Configuration
+
+### LLM Provider Setup
+
+FaultMaven supports multiple LLM providers with automatic fallback:
+
+```env
+# Primary provider (options: fireworks, openai, local, gemini, huggingface, openrouter, anthropic)
+CHAT_PROVIDER="fireworks"
+
+# Provider API keys
+FIREWORKS_API_KEY="your-fireworks-api-key"
+OPENAI_API_KEY="your-openai-api-key"
+```
+
+For detailed configuration and adding new providers, see: [How to Add Providers](docs/how-to-add-providers.md)
+
+### Environment Variables
+
+Copy `.env.example` to `.env` and configure:
+- **Required**: At least one LLM provider API key
+- **Optional**: Observability, web search, local model servers
+
+### Observability Setup
+
+For **team Opik server at opik.faultmaven.local** (default configuration in `.env`):
+```bash
+# Ensure hostname resolves: echo "192.168.0.111 opik.faultmaven.local" >> /etc/hosts
+./run_faultmaven.sh
+```
+
+For **other Opik instances** (e.g., different environment):
+```bash
+# Set up custom Opik configuration (one-time setup)
+cp scripts/config/opik_remote.sh.example scripts/config/opik_custom.sh
+# Edit scripts/config/opik_custom.sh with your Opik server details
+
+# Use custom Opik server
+source scripts/config/opik_custom.sh
+./run_faultmaven.sh
+```
+
+**Accessing Opik UI:**
+- Team Opik Dashboard: `http://opik.faultmaven.local:30080`
+- View traces, performance metrics, and LLM analytics
 
 ## 📜 License
 

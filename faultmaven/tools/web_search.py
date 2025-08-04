@@ -88,7 +88,7 @@ class WebSearchTool(BaseTool):
         # Check if API key is available
         if not self._api_key:
             if self._logger:
-                self._logger.warning(
+                self._logger.info(
                     "No web search API key provided. Web search will be disabled."
                 )
 

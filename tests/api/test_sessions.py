@@ -1,10 +1,13 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from faultmaven.main import app
+from faultmaven.api.v1.routes.session import router, get_session_manager
 
+app = FastAPI()
+app.include_router(router)
 client = TestClient(app)
 
 
@@ -18,8 +21,10 @@ def mock_session_manager():
     mock.delete_session = AsyncMock()
     mock.update_session = AsyncMock()
     mock.get_session_stats = AsyncMock()
-    with patch("faultmaven.api.sessions.session_manager", mock):
-        yield mock
+    app.dependency_overrides[get_session_manager] = lambda: mock
+    yield mock
+    # Clean up dependency override
+    app.dependency_overrides.pop(get_session_manager, None)
 
 
 def test_create_session_failure(mock_session_manager):
@@ -30,7 +35,7 @@ def test_create_session_failure(mock_session_manager):
         "Session creation failed"
     )
 
-    response = client.post("/api/v1/sessions/")
+    response = client.post("/sessions/")
 
     assert response.status_code == 500
     assert "Failed to create session" in response.json()["detail"]
@@ -42,7 +47,7 @@ def test_get_session_not_found(mock_session_manager):
     """
     mock_session_manager.get_session.return_value = None
 
-    response = client.get("/api/v1/sessions/non_existent_session")
+    response = client.get("/sessions/non_existent_session")
 
     assert response.status_code == 404
     assert "Session not found" in response.json()["detail"]
@@ -54,7 +59,7 @@ def test_get_session_failure(mock_session_manager):
     """
     mock_session_manager.get_session.side_effect = Exception("Session retrieval failed")
 
-    response = client.get("/api/v1/sessions/any_session_id")
+    response = client.get("/sessions/any_session_id")
 
     assert response.status_code == 500
     assert "Failed to retrieve session" in response.json()["detail"]
@@ -66,7 +71,7 @@ def test_list_sessions_failure(mock_session_manager):
     """
     mock_session_manager.list_sessions.side_effect = Exception("Session listing failed")
 
-    response = client.get("/api/v1/sessions/")
+    response = client.get("/sessions/")
 
     assert response.status_code == 500
     assert "Failed to list sessions" in response.json()["detail"]
@@ -78,7 +83,7 @@ def test_delete_session_not_found(mock_session_manager):
     """
     mock_session_manager.get_session.return_value = None
 
-    response = client.delete("/api/v1/sessions/non_existent_session")
+    response = client.delete("/sessions/non_existent_session")
 
     assert response.status_code == 404
     assert "Session not found" in response.json()["detail"]
@@ -95,7 +100,7 @@ def test_delete_session_failure(mock_session_manager):
         "Session deletion failed"
     )
 
-    response = client.delete("/api/v1/sessions/any_session_id")
+    response = client.delete("/sessions/any_session_id")
 
     assert response.status_code == 500
     assert "Failed to delete session" in response.json()["detail"]
@@ -107,7 +112,7 @@ def test_session_heartbeat_not_found(mock_session_manager):
     """
     mock_session_manager.get_session.return_value = None
 
-    response = client.post("/api/v1/sessions/non_existent_session/heartbeat")
+    response = client.post("/sessions/non_existent_session/heartbeat")
 
     assert response.status_code == 404
     assert "Session not found" in response.json()["detail"]
@@ -119,7 +124,7 @@ def test_session_heartbeat_failure(mock_session_manager):
     """
     mock_session_manager.get_session.side_effect = Exception("Session heartbeat failed")
 
-    response = client.post("/api/v1/sessions/any_session_id/heartbeat")
+    response = client.post("/sessions/any_session_id/heartbeat")
 
     assert response.status_code == 500
     assert "Failed to update heartbeat" in response.json()["detail"]
@@ -131,7 +136,7 @@ def test_get_session_stats_not_found(mock_session_manager):
     """
     mock_session_manager.get_session.return_value = None
 
-    response = client.get("/api/v1/sessions/non_existent_session/stats")
+    response = client.get("/sessions/non_existent_session/stats")
 
     assert response.status_code == 404
     assert "Session not found" in response.json()["detail"]
@@ -143,7 +148,7 @@ def test_get_session_stats_failure(mock_session_manager):
     """
     mock_session_manager.get_session.side_effect = Exception("Session stats failed")
 
-    response = client.get("/api/v1/sessions/any_session_id/stats")
+    response = client.get("/sessions/any_session_id/stats")
 
     assert response.status_code == 500
     assert "Failed to get session stats" in response.json()["detail"]

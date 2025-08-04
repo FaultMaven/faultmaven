@@ -34,7 +34,11 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+
+# Load environment variables from .env file
+load_dotenv()
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -50,12 +54,28 @@ logger = logging.getLogger(__name__)
 
 # Optional opik middleware import
 try:
-    from opik import OpikMiddleware
-
+    import opik
+    # Try different middleware import patterns for different Opik versions
+    try:
+        from opik.integrations.fastapi import OpikMiddleware
+        OPIK_MIDDLEWARE_AVAILABLE = True
+    except ImportError:
+        try:
+            from opik import OpikMiddleware
+            OPIK_MIDDLEWARE_AVAILABLE = True
+        except ImportError:
+            OPIK_MIDDLEWARE_AVAILABLE = False
+            logger.info("Opik middleware class not available, tracing will work without middleware")
+    
     OPIK_AVAILABLE = True
+    logger.info("Opik SDK loaded successfully")
 except ImportError:
-    logger.warning("Opik middleware not available, running without tracing")
+    logger.warning("Opik not available, running without tracing")
     OPIK_AVAILABLE = False
+    OPIK_MIDDLEWARE_AVAILABLE = False
+
+# Note: For local Opik, we'll rely on environment variable configuration
+# The Opik SDK should pick up the custom URL and headers automatically
 
 # Global application state
 app_state: Dict[str, Any] = {}
@@ -121,8 +141,14 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Add Opik tracing middleware (if available)
-if OPIK_AVAILABLE:
+if OPIK_AVAILABLE and OPIK_MIDDLEWARE_AVAILABLE:
+    if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
+        logger.info("Adding OpikMiddleware for local Opik instance")
+    else:
+        logger.info("Adding OpikMiddleware for cloud instance")
     app.add_middleware(OpikMiddleware)
+elif OPIK_AVAILABLE:
+    logger.info("Opik SDK available but middleware not found - tracing will work at function level")
 
 # Include API routers
 app.include_router(data.router, prefix="/api/v1", tags=["data_ingestion"])

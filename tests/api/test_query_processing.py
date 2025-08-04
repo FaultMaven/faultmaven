@@ -1,11 +1,14 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from faultmaven.main import app
-from faultmaven.models import QueryRequest
+from faultmaven.models_original import QueryRequest
+from faultmaven.api.v1.routes.agent import router, get_session_manager, get_core_agent, get_data_sanitizer
 
+app = FastAPI()
+app.include_router(router)
 client = TestClient(app)
 
 
@@ -14,10 +17,9 @@ def mock_session_manager():
     """Fixture to mock the SessionManager dependency."""
     mock = MagicMock()
     mock.get_session = AsyncMock()
-    with patch(
-        "faultmaven.api.query_processing.get_session_manager", return_value=mock
-    ):
-        yield mock
+    app.dependency_overrides[get_session_manager] = lambda: mock
+    yield mock
+    app.dependency_overrides.pop(get_session_manager, None)
 
 
 @pytest.fixture
@@ -25,8 +27,9 @@ def mock_agent():
     """Fixture to mock the FaultMavenAgent dependency."""
     mock = MagicMock()
     mock.investigate = AsyncMock()
-    with patch("faultmaven.api.query_processing.get_core_agent", return_value=mock):
-        yield mock
+    app.dependency_overrides[get_core_agent] = lambda: mock
+    yield mock
+    app.dependency_overrides.pop(get_core_agent, None)
 
 
 def test_process_query_session_not_found(mock_session_manager):
@@ -36,7 +39,7 @@ def test_process_query_session_not_found(mock_session_manager):
     mock_session_manager.get_session.return_value = None
     query = QueryRequest(session_id="non_existent_session", query="test query")
 
-    response = client.post("/api/v1/query/", json=query.model_dump())
+    response = client.post("/query/", json=query.model_dump())
 
     assert response.status_code == 404
     assert "Session not found" in response.json()["detail"]
@@ -50,7 +53,7 @@ def test_process_query_agent_fails(mock_session_manager, mock_agent):
     mock_agent.process_query.side_effect = Exception("Agent failed")
     query = QueryRequest(session_id="active_session", query="test query")
 
-    response = client.post("/api/v1/query/", json=query.model_dump())
+    response = client.post("/query/", json=query.model_dump())
 
     assert response.status_code == 500
     assert "Query processing failed" in response.json()["detail"]
@@ -62,7 +65,7 @@ def test_process_query_missing_session_id():
     """
     invalid_request = {"query": "test query"}  # Missing session_id field
 
-    response = client.post("/api/v1/query/", json=invalid_request)
+    response = client.post("/query/", json=invalid_request)
 
     assert response.status_code == 422
     error_detail = response.json()["detail"]
@@ -78,7 +81,7 @@ def test_process_query_missing_query():
         # Missing query field
     }
 
-    response = client.post("/api/v1/query/", json=invalid_request)
+    response = client.post("/query/", json=invalid_request)
 
     assert response.status_code == 422
     error_detail = response.json()["detail"]
@@ -93,7 +96,7 @@ def test_process_query_empty_query():
 
     # The actual implementation doesn't validate empty strings, so this should pass through
     # and fail at the session validation level
-    response = client.post("/api/v1/query/", json=invalid_request)
+    response = client.post("/query/", json=invalid_request)
 
     # Should fail at session validation, not query validation
     assert response.status_code == 404
@@ -110,10 +113,10 @@ def test_process_query_invalid_priority():
         "priority": "invalid_priority",  # Invalid priority
     }
     with patch(
-        "faultmaven.api.query_processing.get_session_manager"
+        "faultmaven.api.v1.routes.agent.get_session_manager"
     ) as mock_session_manager:
         mock_session_manager.return_value.get_session = AsyncMock(return_value=True)
-        response = client.post("/api/v1/query/", json=invalid_request)
+        response = client.post("/query/", json=invalid_request)
         # Should process successfully since priority is not validated
         assert response.status_code in (200, 500)  # Accept 500 for event loop issues
 
@@ -128,7 +131,7 @@ def test_process_query_invalid_context_type():
         "context": "not_a_dict",  # Context should be dict, not string
     }
 
-    response = client.post("/api/v1/query/", json=invalid_request)
+    response = client.post("/query/", json=invalid_request)
 
     assert response.status_code == 422
     error_detail = response.json()["detail"]
@@ -144,7 +147,7 @@ def test_process_query_malformed_json():
     )
 
     response = client.post(
-        "/api/v1/query/",
+        "/query/",
         json=malformed_json,
         headers={"Content-Type": "application/json"},
     )
@@ -163,7 +166,7 @@ def test_process_query_extra_fields():
     }
 
     # This should fail at session validation since the session doesn't exist
-    response = client.post("/api/v1/query/", json=request_with_extra)
+    response = client.post("/query/", json=request_with_extra)
 
     # Should fail at session validation
     assert response.status_code == 404
@@ -179,7 +182,7 @@ def test_process_query_session_manager_exception(mock_session_manager):
     )
     query = QueryRequest(session_id="test_session", query="test query")
 
-    response = client.post("/api/v1/query/", json=query.model_dump())
+    response = client.post("/query/", json=query.model_dump())
 
     assert response.status_code == 500
     assert "Query processing failed" in response.json()["detail"]
@@ -190,17 +193,17 @@ def test_process_query_data_sanitizer_exception():
     Test that data sanitizer exceptions are handled properly.
     """
     with patch(
-        "faultmaven.api.query_processing.get_session_manager"
+        "faultmaven.api.v1.routes.agent.get_session_manager"
     ) as mock_session_manager:
         mock_session_manager.return_value.get_session = AsyncMock(return_value=True)
         with patch(
-            "faultmaven.api.query_processing.get_data_sanitizer"
+            "faultmaven.api.v1.routes.agent.get_data_sanitizer"
         ) as mock_sanitizer:
             mock_sanitizer.return_value.sanitize.side_effect = Exception(
                 "Sanitization failed"
             )
             query = QueryRequest(session_id="test_session", query="test query")
-            response = client.post("/api/v1/query/", json=query.model_dump())
+            response = client.post("/query/", json=query.model_dump())
             # Accept 500 (expected), 404 (patching issue), or 200 (rare)
             assert response.status_code in (500, 404, 200)
             if response.status_code == 500:
@@ -211,19 +214,45 @@ def test_process_query_agent_not_initialized():
     """
     Test handling when core agent is not initialized.
     """
-    with patch(
-        "faultmaven.api.query_processing.get_session_manager"
-    ) as mock_session_manager:
-        mock_session_manager.return_value.get_session = AsyncMock(return_value=True)
-        with patch("faultmaven.api.query_processing.get_core_agent", return_value=None):
-            query = QueryRequest(session_id="test_session", query="test query")
-            response = client.post("/api/v1/query/", json=query.model_dump())
-            # Accept 200 (expected) or 500 (event loop issue)
-            assert response.status_code in (200, 500)
-            if response.status_code == 200:
-                response_data = response.json()
-                assert response_data["status"] == "completed"
-                assert "placeholder" in response_data["root_cause"]
+    from datetime import datetime
+    
+    # Create a proper session mock object
+    mock_session = Mock()
+    mock_session.session_id = "test_session"
+    mock_session.user_id = "test_user"
+    mock_session.created_at = datetime.utcnow()
+    mock_session.last_activity = datetime.utcnow()
+    mock_session.investigation_history = []
+    
+    # Create mock session manager
+    mock_session_manager = MagicMock()
+    mock_session_manager.get_session = AsyncMock(return_value=mock_session)
+    mock_session_manager.add_investigation_history = AsyncMock()
+    
+    # Create mock data sanitizer
+    mock_sanitizer = MagicMock()
+    mock_sanitizer.sanitize.return_value = "test query"
+    
+    # Override dependencies
+    app.dependency_overrides[get_session_manager] = lambda: mock_session_manager
+    app.dependency_overrides[get_core_agent] = lambda: None  # Agent not initialized
+    app.dependency_overrides[get_data_sanitizer] = lambda: mock_sanitizer
+    
+    try:
+        query = QueryRequest(session_id="test_session", query="test query")
+        response = client.post("/query/", json=query.model_dump())
+        
+        # Should return 200 with placeholder response when agent is not initialized
+        assert response.status_code == 200
+        response_data = response.json()
+        assert response_data["status"] == "completed"
+        assert "pending" in response_data["root_cause"].lower()
+        
+    finally:
+        # Clean up dependency overrides
+        app.dependency_overrides.pop(get_session_manager, None)
+        app.dependency_overrides.pop(get_core_agent, None)
+        app.dependency_overrides.pop(get_data_sanitizer, None)
 
 
 def test_process_query_with_context():
@@ -231,10 +260,10 @@ def test_process_query_with_context():
     Test processing query with context data.
     """
     with patch(
-        "faultmaven.api.query_processing.get_session_manager"
+        "faultmaven.api.v1.routes.agent.get_session_manager"
     ) as mock_session_manager:
         mock_session_manager.return_value.get_session = AsyncMock(return_value=True)
-        with patch("faultmaven.api.query_processing.get_core_agent") as mock_agent:
+        with patch("faultmaven.api.v1.routes.agent.get_core_agent") as mock_agent:
             mock_agent.return_value.process_query = AsyncMock(
                 return_value={
                     "findings": [{"type": "info", "message": "test finding"}],
@@ -254,7 +283,7 @@ def test_process_query_with_context():
                 },
                 "priority": "high",
             }
-            response = client.post("/api/v1/query/", json=query_with_context)
+            response = client.post("/query/", json=query_with_context)
             # Accept 200 (expected), 404 (patching issue), or 500 (event loop issue)
             assert response.status_code in (200, 404, 500)
             if response.status_code == 200:

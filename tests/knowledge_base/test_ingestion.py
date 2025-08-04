@@ -427,7 +427,7 @@ async def test_initialization_embedding_model_failure():
     Test initialization failure when embedding model cannot be loaded.
     """
     with patch(
-        "faultmaven.knowledge_base.ingestion.SentenceTransformer",
+        "faultmaven.core.knowledge.ingestion.SentenceTransformer",
         side_effect=Exception("Model load failed"),
     ):
         with pytest.raises(Exception, match="Model load failed"):

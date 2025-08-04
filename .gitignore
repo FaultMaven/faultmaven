@@ -174,8 +174,17 @@ cython_debug/
 # The source files to keep temporarily
 .tmp/
 
-# ChromaDB data directory (vector database)
+# Database files (should not be committed)
 chroma_db/
+*.sqlite3
+*.db
+
+# Benchmark results (pytest-benchmark)
+.benchmarks/
+
+# Environment-specific configuration files
+scripts/config/opik_remote.sh
+scripts/config/local_*.sh
 
 # Next.js frontend build artifacts and dependencies
 frontend/.next/

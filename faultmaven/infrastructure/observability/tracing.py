@@ -47,6 +47,7 @@ try:
     import opik
 
     OPIK_AVAILABLE = True
+    logging.info("Opik SDK loaded successfully")
 except ImportError:
     OPIK_AVAILABLE = False
     logging.warning("Comet Opik not available")
@@ -92,9 +93,9 @@ if PROMETHEUS_AVAILABLE:
     )
 
 
-def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "faultmaven"):
+def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "FaultMaven Development"):
     """
-    Initialize Comet Opik tracing
+    Initialize Comet Opik tracing with support for local and cloud instances
 
     Args:
         api_key: Comet API key (optional, can be set via environment)
@@ -105,36 +106,102 @@ def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "faultm
         return
 
     try:
-        # Check for self-hosted Opik configuration
+        # Check for local Opik configuration first
+        local_opik_url = os.getenv("OPIK_LOCAL_URL", "http://192.168.0.112:30080")
+        local_opik_host = os.getenv("OPIK_LOCAL_HOST", "opik-api.faultmaven.local")
+        use_local_opik = os.getenv("OPIK_USE_LOCAL", "true").lower() == "true"
+        
+        # Check for cloud Opik configuration
         url_override = os.getenv("OPIK_URL_OVERRIDE")
+        api_key = api_key or os.getenv("COMET_API_KEY")
 
-        # Get API key from environment if not provided
-        if not api_key:
-            api_key = os.getenv("COMET_API_KEY")
+        # Determine which Opik instance to use
+        if use_local_opik:
+            # Configure for local Opik instance
+            logging.info(f"Configuring Opik for local instance at {local_opik_url}")
+            
+            # Check if local Opik service is accessible
+            try:
+                import requests
+                response = requests.get(f"{local_opik_url}/health", timeout=5)
+                if response.status_code == 404:
+                    logging.info(f"Local Opik service is running but health endpoint not found. Proceeding with configuration.")
+                elif response.status_code != 200:
+                    logging.warning(f"Local Opik service returned status {response.status_code}")
+            except Exception as e:
+                logging.info(f"Could not reach local Opik service: {e}. Will attempt configuration anyway.")
+            
+            # Set environment variables for Opik SDK
+            os.environ["OPIK_URL_OVERRIDE"] = local_opik_url
+            os.environ["OPIK_PROJECT_NAME"] = project_name
+            
+            # For local Opik instances, handle connection gracefully
+            try:
+                # First try with minimal configuration
+                opik.configure(url=local_opik_url)
+                logging.info(f"Local Opik tracing initialized successfully at {local_opik_url}")
+            except Exception as e1:
+                # Check if it's a 404 error (service not ready/available)
+                if "404" in str(e1):
+                    logging.info(f"Local Opik service at {local_opik_url} not ready yet (404). Continuing without tracing.")
+                    logging.info("Note: Make sure your local Opik service is running and accessible")
+                else:
+                    logging.debug(f"Minimal config failed: {e1}")
+                    try:
+                        # Try with default API key
+                        local_api_key = api_key or os.getenv("OPIK_API_KEY", "local-dev-key")
+                        opik.configure(url=local_opik_url, api_key=local_api_key)
+                        logging.info(f"Local Opik tracing initialized with API key at {local_opik_url}")
+                    except Exception as e2:
+                        if "404" in str(e2):
+                            logging.info(f"Local Opik service at {local_opik_url} not accessible (404). Continuing without tracing.")
+                        else:
+                            logging.debug(f"API key config failed: {e2}")
+                        logging.info("FaultMaven will continue running without Opik tracing")
+                        return
+            
+            # Set project name separately if needed
+            try:
+                opik.set_project_name(project_name)
+            except AttributeError:
+                # If set_project_name doesn't exist, set as environment variable
+                os.environ["OPIK_PROJECT_NAME"] = project_name
+            except Exception as e:
+                logging.warning(f"Failed to set project name: {e}")
+            
+            logging.info(f"Local Opik tracing setup completed")
+            
+        elif url_override or api_key:
+            # Configure for cloud Opik instance
+            logging.info("Configuring Opik for cloud instance")
+            
+            config_params = {}
 
-        # For self-hosted Opik, an API key is not required
-        if not api_key and not url_override:
+            if api_key:
+                config_params["api_key"] = api_key
+                
+            if url_override:
+                config_params["url"] = url_override
+
+            opik.configure(**config_params)
+            
+            # Set project name and workspace as environment variables
+            os.environ["OPIK_PROJECT_NAME"] = project_name
+            if os.getenv("COMET_WORKSPACE"):
+                os.environ["COMET_WORKSPACE"] = os.getenv("COMET_WORKSPACE", "default")
+            
+            logging.info("Cloud Opik tracing initialized successfully")
+            
+        else:
             logging.warning(
-                "No Comet API key provided or URL override configured. Tracing will be disabled."
+                "No Opik configuration found. Set OPIK_USE_LOCAL=true for local instance "
+                "or provide COMET_API_KEY for cloud instance. Tracing will be disabled."
             )
             return
 
-        # Initialize Opik
-        # The SDK will automatically pick up OPIK_URL_OVERRIDE from the environment
-        init_params = {
-            "project_name": project_name,
-            "workspace": os.getenv("COMET_WORKSPACE", "default"),
-        }
-
-        if api_key:
-            init_params["api_key"] = api_key
-
-        opik.init(**init_params)
-
-        logging.info("Comet Opik tracing initialized successfully")
-
     except Exception as e:
-        logging.error(f"Failed to initialize Comet Opik tracing: {e}")
+        logging.error(f"Failed to initialize Opik tracing: {e}")
+        logging.info("Continuing without tracing...")
 
 
 def trace(name: str, tags: Optional[dict] = None):
@@ -158,8 +225,17 @@ def trace(name: str, tags: Optional[dict] = None):
             span = None
             if OPIK_AVAILABLE:
                 try:
-                    span = opik.Span(name=name, tags=tags or {})
-                    span.start()
+                    # Add local Opik headers if using local instance
+                    span_tags = tags or {}
+                    if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
+                        span_tags.update({
+                            "opik_local_host": os.getenv("OPIK_LOCAL_HOST", "opik-api.faultmaven.local"),
+                            "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://192.168.0.112:30080")
+                        })
+                    
+                    # Simple span tracking for local Opik instance  
+                    span = {"name": name, "tags": span_tags, "start_time": start_time}
+                    logging.debug(f"Opik span started: {name}")
                 except Exception as e:
                     logging.warning(f"Failed to create Opik span: {e}")
 
@@ -183,12 +259,10 @@ def trace(name: str, tags: Optional[dict] = None):
                 raise
 
             finally:
-                # End span if created
+                # Finalize span logging
                 if span and OPIK_AVAILABLE:
-                    try:
-                        span.end()
-                    except Exception as e:
-                        logging.warning(f"Failed to end Opik span: {e}")
+                    duration = time.time() - start_time
+                    logging.debug(f"Opik span completed: {span.get('name', 'unknown')} ({duration:.3f}s)")
 
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
@@ -198,8 +272,17 @@ def trace(name: str, tags: Optional[dict] = None):
             span = None
             if OPIK_AVAILABLE:
                 try:
-                    span = opik.Span(name=name, tags=tags or {})
-                    span.start()
+                    # Add local Opik headers if using local instance
+                    span_tags = tags or {}
+                    if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
+                        span_tags.update({
+                            "opik_local_host": os.getenv("OPIK_LOCAL_HOST", "opik-api.faultmaven.local"),
+                            "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://192.168.0.112:30080")
+                        })
+                    
+                    # Simple span tracking for local Opik instance  
+                    span = {"name": name, "tags": span_tags, "start_time": start_time}
+                    logging.debug(f"Opik span started: {name}")
                 except Exception as e:
                     logging.warning(f"Failed to create Opik span: {e}")
 
@@ -225,12 +308,10 @@ def trace(name: str, tags: Optional[dict] = None):
                 raise
 
             finally:
-                # End span if created
+                # Finalize span logging
                 if span and OPIK_AVAILABLE:
-                    try:
-                        span.end()
-                    except Exception as e:
-                        logging.warning(f"Failed to end Opik span: {e}")
+                    duration = time.time() - start_time
+                    logging.debug(f"Opik span completed: {span.get('name', 'unknown')} ({duration:.3f}s)")
 
         # Return appropriate wrapper based on function type
         if asyncio.iscoroutinefunction(func):
@@ -318,7 +399,16 @@ def create_span(name: str, tags: Optional[dict] = None):
         return DummySpan()
 
     try:
-        return opik.Span(name=name, tags=tags or {})
+        # Add local Opik configuration if using local instance
+        span_tags = tags or {}
+        if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
+            span_tags.update({
+                "opik_local_host": os.getenv("OPIK_LOCAL_HOST", "opik-api.faultmaven.local"),
+                "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://192.168.0.112:30080")
+            })
+        
+        # Return a simple span dict for local Opik
+        return {"name": name, "tags": span_tags}
     except Exception as e:
         logging.warning(f"Failed to create span: {e}")
         return DummySpan()

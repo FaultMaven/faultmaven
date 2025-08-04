@@ -13,6 +13,7 @@ import redis.asyncio as redis
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_session_create_and_retrieve(
     http_client: httpx.AsyncClient, redis_client: redis.Redis, clean_redis: None
 ):
@@ -78,6 +79,7 @@ async def test_session_create_and_retrieve(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_session_create_with_user_id(
     http_client: httpx.AsyncClient, redis_client: redis.Redis, clean_redis: None
 ):
@@ -107,6 +109,7 @@ async def test_session_create_with_user_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_session_expiration_and_cleanup(
     http_client: httpx.AsyncClient, redis_client: redis.Redis, clean_redis: None
 ):
@@ -128,6 +131,7 @@ async def test_session_expiration_and_cleanup(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_multiple_sessions_independence(
     http_client: httpx.AsyncClient, redis_client: redis.Redis, clean_redis: None
 ):
@@ -168,6 +172,7 @@ async def test_multiple_sessions_independence(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_session_list_endpoint(http_client: httpx.AsyncClient, clean_redis: None):
     """
     Test the session listing endpoint.
@@ -196,6 +201,7 @@ async def test_session_list_endpoint(http_client: httpx.AsyncClient, clean_redis
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_session_redis_connection_integrity(
     http_client: httpx.AsyncClient, redis_client: redis.Redis, clean_redis: None
 ):

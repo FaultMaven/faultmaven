@@ -64,6 +64,10 @@ def get_log_processor():
     return log_processor
 
 
+def get_redis_client():
+    return redis_client
+
+
 @router.post("/")
 @trace("api_upload_data")
 async def upload_data(
@@ -73,6 +77,7 @@ async def upload_data(
     session_manager: SessionManager = Depends(get_session_manager),
     data_classifier: DataClassifier = Depends(get_data_classifier),
     log_processor: LogProcessor = Depends(get_log_processor),
+    redis_client = Depends(get_redis_client),
 ) -> DataInsightsResponse:
     """
     Upload and process data for troubleshooting analysis

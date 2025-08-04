@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -17,9 +17,13 @@ class TestDataClassifier:
     @pytest.fixture
     def classifier(self, mock_router):
         """Create DataClassifier instance with mocked router."""
-        classifier = DataClassifier()
-        classifier.llm_router = mock_router
-        return classifier
+        # Mock the LLMRouter import at the class level to prevent real initialization
+        with patch('faultmaven.core.processing.classifier.LLMRouter') as mock_llm_class:
+            mock_llm_class.return_value = mock_router
+            classifier = DataClassifier()
+            # Ensure the mock is properly assigned
+            classifier.llm_router = mock_router
+            return classifier
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

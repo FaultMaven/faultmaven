@@ -1,0 +1,53 @@
+#!/bin/bash
+
+# FaultMaven Remote Opik Configuration Template
+# 
+# PURPOSE: Override .env Opik settings to connect to a remote Opik server
+# SETUP: 
+#   1. Copy this file: cp scripts/config/opik_remote.sh.example scripts/config/opik_remote.sh
+#   2. Edit the copied file with your specific Opik server details
+#   3. USAGE: source scripts/config/opik_remote.sh && ./run_faultmaven.sh
+# 
+# EXAMPLE: Connect to a remote Opik instance instead of localhost:3000
+
+echo "🔧 Configuring FaultMaven for Remote Opik Instance"
+echo "=================================================="
+
+# Load existing .env file first
+if [ -f .env ]; then
+    echo "📁 Loading existing .env configuration..."
+    export $(cat .env | grep -v '^#' | xargs)
+    echo "✅ .env loaded successfully"
+else
+    echo "⚠️  Warning: .env file not found"
+fi
+
+# TODO: Replace these with your actual Opik server details
+export OPIK_USE_LOCAL="true"
+export OPIK_LOCAL_URL="http://YOUR_OPIK_SERVER_IP:PORT"  # e.g., http://192.168.1.100:30080
+export OPIK_LOCAL_HOST="YOUR_OPIK_HOST"                   # e.g., opik-api.yourcompany.local
+export OPIK_PROJECT_NAME="YOUR_PROJECT_NAME"             # e.g., FaultMaven Development
+export OPIK_API_KEY="YOUR_OPIK_API_KEY"                  # e.g., your-dev-key
+
+# Optional: Set workspace name
+export COMET_WORKSPACE="YOUR_WORKSPACE"                  # e.g., yourteam-local
+
+# NOTE: We keep COMET_API_KEY from .env for cloud fallback if needed
+# Only override Opik URL for local instance
+export OPIK_URL_OVERRIDE=""
+
+echo "✅ Environment variables set:"
+echo "   OPIK_USE_LOCAL=${OPIK_USE_LOCAL}"
+echo "   OPIK_LOCAL_URL=${OPIK_LOCAL_URL}"
+echo "   OPIK_LOCAL_HOST=${OPIK_LOCAL_HOST}"
+echo "   OPIK_PROJECT_NAME=${OPIK_PROJECT_NAME}"
+echo "   COMET_WORKSPACE=${COMET_WORKSPACE}"
+echo ""
+echo "🚀 Environment configured! Now run FaultMaven:"
+echo "   ./run_faultmaven.sh"
+echo ""
+echo "💡 Note: This terminal session will use the remote Opik server."
+echo "   Open a new terminal to use the default localhost configuration."
+echo ""
+echo "📊 Your traces will be sent to: ${OPIK_LOCAL_URL}/v1/private/traces"
+echo "   with Host header: ${OPIK_LOCAL_HOST}"

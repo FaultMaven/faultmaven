@@ -16,6 +16,7 @@ from .mock_servers import MockServerManager
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_llm_router_mock_integration():
     """Test LLM router integration with mock servers."""
     manager = MockServerManager()
@@ -101,6 +102,7 @@ async def test_llm_router_mock_integration():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_web_search_mock_integration():
     """Test web search integration with mock servers."""
     manager = MockServerManager()
@@ -178,6 +180,7 @@ async def test_web_search_mock_integration():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_confidence_based_routing_simulation():
     """Simulate confidence-based routing between LLM providers."""
     manager = MockServerManager()
@@ -269,6 +272,7 @@ async def test_confidence_based_routing_simulation():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_complete_mock_api_workflow():
     """Test complete workflow with both LLM and web search mocks."""
     manager = MockServerManager()

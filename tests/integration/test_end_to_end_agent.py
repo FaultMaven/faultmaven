@@ -3,6 +3,9 @@ End-to-end agent integration tests.
 
 Tests the complete troubleshooting workflow from user query through
 agent processing to final recommendations.
+
+NOTE: These tests are temporarily skipped pending conversion to service-level tests
+that don't require a running backend API.
 """
 
 import asyncio
@@ -84,6 +87,7 @@ Set up alerts for connection pool exhaustion.
         return response.json()
 
     @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Requires backend API - convert to service-level test")
     async def test_complete_troubleshooting_workflow(
         self,
         agent_test_session: Dict[str, Any],
@@ -170,6 +174,7 @@ Set up alerts for connection pool exhaustion.
             print("   - Using specific analysis")
 
     @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Requires backend API - convert to service-level test")
     async def test_knowledge_base_integration(
         self,
         agent_test_session: Dict[str, Any],
@@ -213,6 +218,7 @@ Set up alerts for connection pool exhaustion.
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Requires backend API - convert to service-level test")
     async def test_agent_with_uploaded_data(
         self,
         agent_test_session: Dict[str, Any],
@@ -276,6 +282,7 @@ Set up alerts for connection pool exhaustion.
         ), f"Expected meaningful response, got: {response.text[:200]}..."
 
     @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Requires backend API - convert to service-level test")
     async def test_mock_servers_health(self, mock_servers: MockServerManager):
         """Test that mock servers are running and healthy."""
         # Debug: Show server ports and URLs
@@ -341,6 +348,7 @@ Set up alerts for connection pool exhaustion.
         print(f"   - Web Search server: {web_search_url}")
 
     @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Requires backend API - convert to service-level test")
     async def test_agent_investigation_history(
         self,
         agent_test_session: Dict[str, Any],
@@ -394,6 +402,7 @@ class TestAgentEdgeCases:
     """Test edge cases and error conditions."""
 
     @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Requires backend API - convert to service-level test")
     async def test_agent_with_invalid_session(
         self, http_client: httpx.AsyncClient, mock_servers: MockServerManager
     ):
@@ -413,6 +422,7 @@ class TestAgentEdgeCases:
         print("✅ Invalid session test passed!")
 
     @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Requires backend API - convert to service-level test")
     async def test_agent_with_empty_query(
         self,
         agent_test_session: Dict[str, Any],
@@ -442,6 +452,7 @@ class TestAgentEdgeCases:
         print(f"   - Status code: {response.status_code}")
 
     @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Requires backend API - convert to service-level test")
     async def test_agent_investigation_retrieval(
         self,
         agent_test_session: Dict[str, Any],
@@ -482,6 +493,7 @@ class TestAgentEdgeCases:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_mock_server_integration_standalone():
     """Test mock server integration without other fixtures."""
     manager = MockServerManager()

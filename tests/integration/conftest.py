@@ -341,6 +341,13 @@ async def mock_web_search_responses(mock_servers: MockServerManager) -> Dict[str
 @pytest_asyncio.fixture(scope="function", autouse=True)
 async def wait_for_services():
     """Wait for all required services to be ready before running tests."""
+    import os
+    
+    # Skip service checks if in test mode without real services
+    if os.environ.get("SKIP_SERVICE_CHECKS", "false").lower() == "true":
+        print("Skipping service checks (SKIP_SERVICE_CHECKS=true)")
+        return
+    
     # Wait for the backend API
     if not wait_for_service(f"{BASE_URL}/health"):
         pytest.fail(f"Backend API not ready at {BASE_URL}")

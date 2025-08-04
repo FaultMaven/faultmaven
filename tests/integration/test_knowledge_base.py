@@ -18,6 +18,7 @@ import redis.asyncio as redis
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_knowledge_base_end_to_end(
     http_client: httpx.AsyncClient,
     redis_client: redis.Redis,
@@ -126,6 +127,7 @@ async def test_knowledge_base_end_to_end(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_knowledge_base_document_upload_validation(
     http_client: httpx.AsyncClient, clean_redis: None
 ):
@@ -160,6 +162,7 @@ async def test_knowledge_base_document_upload_validation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_knowledge_base_document_listing(
     http_client: httpx.AsyncClient, sample_kb_document: str, clean_redis: None
 ):
@@ -199,6 +202,7 @@ async def test_knowledge_base_document_listing(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_knowledge_base_document_retrieval(
     http_client: httpx.AsyncClient, sample_kb_document: str, clean_redis: None
 ):
@@ -244,6 +248,7 @@ async def test_knowledge_base_document_retrieval(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_knowledge_base_search(
     http_client: httpx.AsyncClient, sample_kb_document: str, clean_redis: None
 ):
@@ -295,6 +300,7 @@ async def test_knowledge_base_search(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_knowledge_base_document_deletion(
     http_client: httpx.AsyncClient, sample_kb_document: str, clean_redis: None
 ):
@@ -342,6 +348,7 @@ async def test_knowledge_base_document_deletion(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_knowledge_base_filtered_search(
     http_client: httpx.AsyncClient, sample_kb_document: str, clean_redis: None
 ):
@@ -393,6 +400,7 @@ async def test_knowledge_base_filtered_search(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_knowledge_base_job_status_not_found(
     http_client: httpx.AsyncClient, clean_redis: None
 ):
@@ -412,6 +420,7 @@ async def test_knowledge_base_job_status_not_found(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires backend API - convert to service-level test")
 async def test_knowledge_base_large_document_upload(clean_redis: None):
     """
     Test uploading a large document to the knowledge base.

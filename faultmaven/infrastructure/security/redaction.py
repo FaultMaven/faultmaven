@@ -30,7 +30,7 @@ import logging
 import re
 
 from presidio_analyzer import AnalyzerEngine
-from presidio_analyzer.analyzer_request import AnalyzerRequest
+# from presidio_analyzer.analyzer_request import AnalyzerRequest  # Not needed with direct API
 from presidio_analyzer.nlp_engine import NlpEngineProvider
 
 
@@ -41,11 +41,21 @@ class DataSanitizer:
         """Initialize the DataSanitizer with Presidio and custom patterns"""
         self.logger = logging.getLogger(__name__)
 
-        # Initialize Presidio analyzer
+        # Initialize Presidio analyzer with suppressed language warnings
         try:
-            provider = NlpEngineProvider(conf_file=None)
-            nlp_engine = provider.create_engine()
-            self.analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
+            # Suppress Presidio language warnings during initialization
+            presidio_logger = logging.getLogger("presidio-analyzer")
+            original_level = presidio_logger.level
+            presidio_logger.setLevel(logging.ERROR)
+            
+            try:
+                provider = NlpEngineProvider(conf_file=None)
+                nlp_engine = provider.create_engine()
+                self.analyzer = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=["en"])
+            finally:
+                # Restore original logging level
+                presidio_logger.setLevel(original_level)
+                
         except Exception as e:
             self.logger.warning(f"Failed to initialize Presidio: {e}")
             self.analyzer = None
@@ -170,11 +180,12 @@ class DataSanitizer:
     def _apply_presidio(self, text: str) -> str:
         """Apply Presidio PII detection and redaction"""
         try:
-            # Create analyzer request
-            analyzer_request = AnalyzerRequest(text=text, language="en")
+            # Create analyzer request with correct Presidio API
+            # analyzer_request = AnalyzerRequest(text=text, language="en")
+            # Use analyzer.analyze directly without AnalyzerRequest wrapper
 
-            # Get PII entities
-            results = self.analyzer.analyze(analyzer_request)
+            # Get PII entities using correct Presidio API
+            results = self.analyzer.analyze(text=text, language="en")
 
             # Sort results by start position (descending) to avoid index shifting
             results = sorted(results, key=lambda x: x.start, reverse=True)
@@ -219,8 +230,8 @@ class DataSanitizer:
         # Check with Presidio if available
         if self.analyzer:
             try:
-                analyzer_request = AnalyzerRequest(text=text, language="en")
-                results = self.analyzer.analyze(analyzer_request)
+                # Use analyzer.analyze directly with correct API
+                results = self.analyzer.analyze(text=text, language="en")
                 return len(results) > 0
             except Exception as e:
                 self.logger.warning(f"Presidio sensitivity check failed: {e}")
