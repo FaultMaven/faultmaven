@@ -62,7 +62,7 @@ def test_get_session_failure(mock_session_manager):
     response = client.get("/sessions/any_session_id")
 
     assert response.status_code == 500
-    assert "Failed to retrieve session" in response.json()["detail"]
+    assert "Failed to get session" in response.json()["detail"]
 
 
 def test_list_sessions_failure(mock_session_manager):

@@ -24,6 +24,35 @@ class CorrelationFilter(logging.Filter):
         record.correlation_id = request_id_context.get() or 'no-request'
         return True
 
+class EnhancedStructuredFormatter(logging.Formatter):
+    """Enhanced JSON formatter with FaultMaven-specific fields."""
+    
+    def format(self, record):
+        log_entry = {
+            'timestamp': self.formatTime(record, self.datefmt),
+            'level': record.levelname,
+            'logger': record.name,
+            'message': record.getMessage(),
+            'module': record.module,
+            'function': record.funcName,
+            'line': record.lineno,
+            'correlation_id': getattr(record, 'correlation_id', 'unknown'),
+            'service': 'faultmaven-api',
+            'environment': os.getenv('ENVIRONMENT', 'development'),
+            'version': os.getenv('APP_VERSION', '1.0.0')
+        }
+        
+        # Add exception info if present
+        if record.exc_info:
+            log_entry['exception'] = self.formatException(record.exc_info)
+            
+        # Add extra fields from the log record
+        for key, value in record.__dict__.items():
+            if key not in log_entry and not key.startswith('_'):
+                log_entry[key] = value
+                
+        return json.dumps(log_entry)
+
 class StructuredFormatter(logging.Formatter):
     """JSON formatter for structured logging in production."""
     
@@ -108,7 +137,7 @@ def setup_logging(
     
     # Create formatters
     if structured:
-        formatter = StructuredFormatter()
+        formatter = EnhancedStructuredFormatter()
     else:
         formatter = DevelopmentFormatter()
     
@@ -131,7 +160,7 @@ def setup_logging(
     if log_file:
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(numeric_level)
-        file_handler.setFormatter(StructuredFormatter())  # Always JSON for files
+        file_handler.setFormatter(EnhancedStructuredFormatter())  # Always enhanced JSON for files
         file_handler.addFilter(CorrelationFilter())
         root_logger.addHandler(file_handler)
     
@@ -196,7 +225,7 @@ def get_request_id() -> Optional[str]:
     """Get the current request correlation ID."""
     return request_id_context.get()
 
-# Development-specific log helpers
+# Enhanced context management
 class LogContext:
     """Context manager for enhanced logging with metadata."""
     
@@ -226,4 +255,58 @@ class LogContext:
             self.logger.info(
                 f"Completed {self.operation} in {duration:.3f}s",
                 extra={**self.metadata, 'duration_seconds': duration}
+            )
+
+class BusinessLogContext:
+    """Context manager for business-level logging with enhanced context."""
+    
+    def __init__(self, logger: logging.Logger, operation: str, session_id: str = None, 
+                 user_id: str = None, agent_phase: str = None, **kwargs):
+        self.logger = logger
+        self.operation = operation
+        self.session_id = session_id
+        self.user_id = user_id
+        self.agent_phase = agent_phase
+        self.metadata = kwargs
+        self.start_time = None
+        
+    def __enter__(self):
+        import time
+        self.start_time = time.time()
+        
+        # Enhanced business context
+        business_context = {
+            'session_id': self.session_id,
+            'user_id': self.user_id,
+            'agent_phase': self.agent_phase,
+            'operation': self.operation,
+            **self.metadata
+        }
+        
+        self.logger.info(f"Business operation started: {self.operation}", extra=business_context)
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        import time
+        duration = time.time() - self.start_time
+        
+        business_context = {
+            'session_id': self.session_id,
+            'user_id': self.user_id,
+            'agent_phase': self.agent_phase,
+            'operation': self.operation,
+            'duration_seconds': duration,
+            **self.metadata
+        }
+        
+        if exc_type:
+            self.logger.error(
+                f"Business operation failed: {self.operation} in {duration:.3f}s: {exc_val}",
+                extra=business_context,
+                exc_info=True
+            )
+        else:
+            self.logger.info(
+                f"Business operation completed: {self.operation} in {duration:.3f}s",
+                extra=business_context
             )

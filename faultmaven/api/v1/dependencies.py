@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request
 
 from ...container import container
+from ...container_refactored import container as refactored_container
 from ...models import SessionContext
 from ...services import AgentService, DataService, KnowledgeService, SessionService
 
@@ -41,6 +42,23 @@ async def get_data_service() -> DataService:
 async def get_knowledge_service() -> KnowledgeService:
     """Get KnowledgeService instance from container"""
     return container.knowledge_service
+
+
+# Refactored Service Dependencies (Phase 5)
+
+async def get_agent_service_refactored():
+    """Get AgentServiceRefactored instance from refactored container"""
+    return refactored_container.get_agent_service()
+
+
+async def get_data_service_refactored():
+    """Get DataServiceRefactored instance from refactored container"""
+    return refactored_container.get_data_service()
+
+
+async def get_knowledge_service_refactored():
+    """Get KnowledgeServiceRefactored instance from refactored container"""
+    return refactored_container.get_knowledge_service()
 
 
 # Session Dependencies

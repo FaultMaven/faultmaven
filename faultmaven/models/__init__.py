@@ -19,8 +19,27 @@ from ..models_original import (
     UploadedData,
 )
 
+# Import new interfaces (Phase 1.1 of refactoring)
+# These are added for the refactoring but don't break backward compatibility
+from .interfaces import (
+    ToolResult,
+    BaseTool,
+    ILLMProvider,
+    ITracer,
+    ISanitizer,
+    IVectorStore,
+    ISessionStore,
+    # Phase 3.2 additions
+    IDataClassifier,
+    ILogProcessor,
+    IStorageBackend,
+    # Phase 3.3 additions
+    IKnowledgeIngester,
+)
+
 # Re-export everything
 __all__ = [
+    # Original models (backward compatibility)
     "AgentState",
     "DataInsightsResponse", 
     "DataType",
@@ -31,6 +50,20 @@ __all__ = [
     "SessionContext",
     "TroubleshootingResponse",
     "UploadedData",
+    # New interfaces (Phase 1.1)
+    "ToolResult",
+    "BaseTool",
+    "ILLMProvider",
+    "ITracer",
+    "ISanitizer",
+    "IVectorStore",
+    "ISessionStore",
+    # Phase 3.2 additions
+    "IDataClassifier",
+    "ILogProcessor", 
+    "IStorageBackend",
+    # Phase 3.3 additions
+    "IKnowledgeIngester",
 ]
 
 # As we migrate, we'll replace the above with:

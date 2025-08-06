@@ -27,34 +27,23 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
-import logging
-import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.infrastructure.logging_config import get_logger, BusinessLogContext
 from faultmaven.session_management import SessionManager
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
 
-# Global session manager instance with K8s Redis support
-# Priority: Individual parameters > REDIS_URL > K8s defaults
-redis_host = os.getenv("REDIS_HOST")
-redis_port = int(os.getenv("REDIS_PORT", "30379")) if os.getenv("REDIS_PORT") else None
-redis_password = os.getenv("REDIS_PASSWORD") 
-redis_url = os.getenv("REDIS_URL")
-
-session_manager = SessionManager(
-    redis_url=redis_url,
-    redis_host=redis_host,
-    redis_port=redis_port,
-    redis_password=redis_password
-)
+# Use enhanced logger
+logger = get_logger(__name__)
 
 
-def get_session_manager():
-    return session_manager
+def get_session_manager(request: Request) -> SessionManager:
+    """Get the centralized SessionManager from application state."""
+    return request.app.extra["session_manager"]
 
 
 @router.post("/")
@@ -72,22 +61,20 @@ async def create_session(
     Returns:
         Session creation response
     """
-    logger = logging.getLogger(__name__)
-    logger.info(f"Creating new session for user: {user_id}")
-
-    try:
-        session = await session_manager.create_session(user_id)
-        return {
-            "session_id": session.session_id,
-            "user_id": session.user_id,
-            "created_at": session.created_at.isoformat(),
-            "message": "Session created successfully",
-        }
-    except Exception as e:
-        logger.error(f"Failed to create session: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to create session: {str(e)}"
-        )
+    with BusinessLogContext(logger, "create_session", user_id=user_id) as ctx:
+        try:
+            session = await session_manager.create_session(user_id)
+            return {
+                "session_id": session.session_id,
+                "user_id": session.user_id,
+                "created_at": session.created_at.isoformat(),
+                "message": "Session created successfully",
+            }
+        except Exception as e:
+            logger.error(f"Failed to create session: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to create session: {str(e)}"
+            )
 
 
 @router.get("/{session_id}")
@@ -104,30 +91,27 @@ async def get_session(
     Returns:
         Session details
     """
-    logger = logging.getLogger(__name__)
+    with BusinessLogContext(logger, "get_session", session_id=session_id) as ctx:
+        try:
+            session = await session_manager.get_session(session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
 
-    try:
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        return {
-            "session_id": session.session_id,
-            "user_id": session.user_id,
-            "created_at": session.created_at.isoformat(),
-            "last_activity": session.last_activity.isoformat(),
-            "data_uploads": session.data_uploads,
-            "data_uploads_count": len(session.data_uploads),
-            "investigation_history": session.investigation_history,
-            "agent_state": session.agent_state,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to retrieve session {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to retrieve session: {str(e)}"
-        )
+            return {
+                "session_id": session.session_id,
+                "user_id": session.user_id,
+                "created_at": session.created_at.isoformat(),
+                "last_activity": session.last_activity.isoformat(),
+                "data_uploads_count": len(session.data_uploads),
+                "investigation_history_count": len(session.investigation_history),
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get session {session_id}: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to get session: {str(e)}"
+            )
 
 
 @router.get("/")
@@ -138,7 +122,7 @@ async def list_sessions(
     session_manager: SessionManager = Depends(get_session_manager),
 ):
     """
-    List all active sessions with optional filtering.
+    List all sessions with optional filtering.
 
     Args:
         user_id: Optional user ID filter
@@ -148,46 +132,39 @@ async def list_sessions(
     Returns:
         List of sessions
     """
-    logger = logging.getLogger(__name__)
-
-    try:
-        sessions = await session_manager.list_sessions()
-
-        # Filter by user_id if provided
-        if user_id:
-            sessions = [s for s in sessions if s.user_id == user_id]
-
-        # Apply pagination
-        total_sessions = len(sessions)
-        paginated_sessions = sessions[offset : offset + limit]
-
-        return {
-            "sessions": [
-                {
-                    "session_id": session.session_id,
-                    "user_id": session.user_id,
-                    "created_at": session.created_at.isoformat(),
-                    "last_activity": session.last_activity.isoformat(),
-                    "data_uploads_count": len(session.data_uploads),
-                    "investigation_count": len(
-                        [
-                            h
-                            for h in session.investigation_history
-                            if h.get("action") == "query_processed"
-                        ]
-                    ),
-                }
-                for session in paginated_sessions
-            ],
-            "total": total_sessions,
-            "limit": limit,
-            "offset": offset,
-        }
-    except Exception as e:
-        logger.error(f"Failed to list sessions: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to list sessions: {str(e)}"
-        )
+    with BusinessLogContext(logger, "list_sessions", user_id=user_id) as ctx:
+        try:
+            sessions = await session_manager.list_sessions()
+            
+            # Apply filters
+            if user_id:
+                sessions = [s for s in sessions if s.user_id == user_id]
+            
+            # Apply pagination
+            total = len(sessions)
+            sessions = sessions[offset:offset + limit]
+            
+            return {
+                "sessions": [
+                    {
+                        "session_id": session.session_id,
+                        "user_id": session.user_id,
+                        "created_at": session.created_at.isoformat(),
+                        "last_activity": session.last_activity.isoformat(),
+                        "data_uploads_count": len(session.data_uploads),
+                        "investigation_history_count": len(session.investigation_history),
+                    }
+                    for session in sessions
+                ],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+        except Exception as e:
+            logger.error(f"Failed to list sessions: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to list sessions: {str(e)}"
+            )
 
 
 @router.delete("/{session_id}")
@@ -196,7 +173,7 @@ async def delete_session(
     session_manager: SessionManager = Depends(get_session_manager),
 ):
     """
-    Delete a session and all associated data.
+    Delete a specific session.
 
     Args:
         session_id: Session identifier
@@ -204,31 +181,26 @@ async def delete_session(
     Returns:
         Deletion confirmation
     """
-    logger = logging.getLogger(__name__)
+    with BusinessLogContext(logger, "delete_session", session_id=session_id) as ctx:
+        try:
+            session = await session_manager.get_session(session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
 
-    try:
-        # Check if session exists
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+            # Delete session (this would be implemented in session_manager)
+            await session_manager.delete_session(session_id)
 
-        # Delete the session
-        await session_manager.delete_session(session_id)
-
-        logger.info(f"Successfully deleted session {session_id}")
-
-        return {
-            "session_id": session_id,
-            "status": "deleted",
-            "message": "Session deleted successfully",
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to delete session {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to delete session: {str(e)}"
-        )
+            return {
+                "session_id": session_id,
+                "message": "Session deleted successfully",
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to delete session {session_id}: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to delete session: {str(e)}"
+            )
 
 
 @router.post("/{session_id}/heartbeat")
@@ -245,29 +217,28 @@ async def session_heartbeat(
     Returns:
         Heartbeat confirmation
     """
-    logger = logging.getLogger(__name__)
+    with BusinessLogContext(logger, "session_heartbeat", session_id=session_id) as ctx:
+        try:
+            # Check if session exists and update activity
+            session = await session_manager.get_session(session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
 
-    try:
-        # Check if session exists and update activity
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+            # Update last activity (this would be implemented in session_manager)
+            await session_manager.update_last_activity(session_id)
 
-        # Update last activity (this would be implemented in session_manager)
-        await session_manager.update_last_activity(session_id)
-
-        return {
-            "session_id": session_id,
-            "status": "active",
-            "message": "Session heartbeat updated",
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to update heartbeat for session {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to update heartbeat: {str(e)}"
-        )
+            return {
+                "session_id": session_id,
+                "status": "active",
+                "message": "Session heartbeat updated",
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to update heartbeat for session {session_id}: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to update heartbeat: {str(e)}"
+            )
 
 
 @router.get("/{session_id}/stats")
@@ -284,49 +255,48 @@ async def get_session_stats(
     Returns:
         Session statistics
     """
-    logger = logging.getLogger(__name__)
+    with BusinessLogContext(logger, "get_session_stats", session_id=session_id) as ctx:
+        try:
+            session = await session_manager.get_session(session_id)
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
 
-    try:
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+            # Calculate statistics
+            total_investigations = len(
+                [
+                    h
+                    for h in session.investigation_history
+                    if h.get("action") == "query_processed"
+                ]
+            )
 
-        # Calculate statistics
-        total_investigations = len(
-            [
-                h
-                for h in session.investigation_history
-                if h.get("action") == "query_processed"
-            ]
-        )
+            total_uploads = len(session.data_uploads)
 
-        total_uploads = len(session.data_uploads)
+            # Get latest investigation confidence
+            latest_confidence = 0.0
+            for history in reversed(session.investigation_history):
+                if history.get("action") == "query_processed":
+                    latest_confidence = history.get("confidence_score", 0.0)
+                    break
 
-        # Get latest investigation confidence
-        latest_confidence = 0.0
-        for history in reversed(session.investigation_history):
-            if history.get("action") == "query_processed":
-                latest_confidence = history.get("confidence_score", 0.0)
-                break
-
-        return {
-            "session_id": session_id,
-            "user_id": session.user_id,
-            "created_at": session.created_at.isoformat(),
-            "last_activity": session.last_activity.isoformat(),
-            "statistics": {
-                "total_investigations": total_investigations,
-                "total_data_uploads": total_uploads,
-                "latest_confidence_score": latest_confidence,
-                "session_duration_minutes": int(
-                    (session.last_activity - session.created_at).total_seconds() / 60
-                ),
-            },
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get session stats for {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to get session stats: {str(e)}"
-        )
+            return {
+                "session_id": session_id,
+                "user_id": session.user_id,
+                "created_at": session.created_at.isoformat(),
+                "last_activity": session.last_activity.isoformat(),
+                "statistics": {
+                    "total_investigations": total_investigations,
+                    "total_data_uploads": total_uploads,
+                    "latest_confidence_score": latest_confidence,
+                    "session_duration_minutes": int(
+                        (session.last_activity - session.created_at).total_seconds() / 60
+                    ),
+                },
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get session stats for {session_id}: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"Failed to get session stats: {str(e)}"
+            )

@@ -32,7 +32,6 @@ Core Design Principles:
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -42,15 +41,37 @@ load_dotenv()
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from .api.v1.routes import agent, data, knowledge, session
-from .infrastructure.observability.tracing import init_opik_tracing
-from .session_management import SessionManager
+# Configure enhanced logging system first
+from .infrastructure.logging_config import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+from .config.feature_flags import (
+    USE_REFACTORED_API, 
+    USE_DI_CONTAINER,
+    ENABLE_MIGRATION_LOGGING,
+    log_feature_flag_status
 )
-logger = logging.getLogger(__name__)
+
+# Log feature flag status at startup
+log_feature_flag_status()
+
+# Conditionally import API routes based on feature flags
+if USE_REFACTORED_API:
+    if ENABLE_MIGRATION_LOGGING:
+        logger.info("Loading refactored API routes")
+    from .api.v1.routes import agent_refactored as agent
+    from .api.v1.routes import data_refactored as data
+    from .api.v1.routes import knowledge  # Knowledge routes not yet refactored
+    from .api.v1.routes import session
+else:
+    if ENABLE_MIGRATION_LOGGING:
+        logger.info("Loading original API routes")
+    from .api.v1.routes import agent, data, knowledge, session
+
+from .infrastructure.observability.tracing import init_opik_tracing
+from .infrastructure.request_coordinator import UnifiedRequestMiddleware
+from .session_management import SessionManager
 
 # Optional opik middleware import
 try:
@@ -77,10 +98,6 @@ except ImportError:
 # Note: For local Opik, we'll rely on environment variable configuration
 # The Opik SDK should pick up the custom URL and headers automatically
 
-# Global application state
-app_state: Dict[str, Any] = {}
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown events."""
@@ -94,12 +111,32 @@ async def lifespan(app: FastAPI):
     redis_password = os.getenv("REDIS_PASSWORD")
     redis_url = os.getenv("REDIS_URL")
     
-    app_state["session_manager"] = SessionManager(
+    # Store SessionManager in app.extra for centralized access
+    app.extra["session_manager"] = SessionManager(
         redis_url=redis_url,
         redis_host=redis_host,
         redis_port=redis_port,
         redis_password=redis_password
     )
+
+    # Initialize DI container if using refactored services
+    if USE_DI_CONTAINER:
+        if ENABLE_MIGRATION_LOGGING:
+            logger.info("Initializing refactored DI container")
+        from .container_refactored import container
+        container.initialize()
+        app.extra["di_container"] = container
+        
+        # Health check the container
+        health = container.health_check()
+        logger.info(f"DI container health: {health['status']}")
+        if health['status'] != 'healthy':
+            logger.warning(f"DI container degraded: {health['components']}")
+    else:
+        if ENABLE_MIGRATION_LOGGING:
+            logger.info("Using original container system")
+        from .container import container
+        app.extra["di_container"] = container
 
     # Setup tracing
     init_opik_tracing()
@@ -112,9 +149,9 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down FaultMaven API server...")
 
     # Cleanup resources
-    if "session_manager" in app_state:
+    if "session_manager" in app.extra:
         # Cleanup any active sessions
-        session_manager = app_state["session_manager"]
+        session_manager = app.extra["session_manager"]
         # TODO: Implement cleanup_inactive_sessions method
         # cleaned_count = session_manager.cleanup_inactive_sessions()
         # logger.info(f"Cleaned up {cleaned_count} expired sessions")
@@ -134,7 +171,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add middleware
+# Add middleware in optimized order to prevent duplicates
+logger.info("Starting middleware registration...")
+logger.info(f"Initial middleware stack: {[type(m).__name__ for m in app.user_middleware]}")
+
+# 1. CORS middleware (first - handles preflight requests)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -147,18 +188,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+logger.info(f"After CORS middleware: {[type(m).__name__ for m in app.user_middleware]}")
 
+# 2. GZip middleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+logger.info(f"After GZip middleware: {[type(m).__name__ for m in app.user_middleware]}")
 
-# Add Opik tracing middleware (if available)
+# 3. Unified request logging middleware (replaces old RequestLoggingMiddleware)
+logger.info("Adding UnifiedRequestMiddleware to FastAPI app")
+app.add_middleware(UnifiedRequestMiddleware)
+logger.info(f"After UnifiedRequest middleware: {[type(m).__name__ for m in app.user_middleware]}")
+
+# 4. Opik tracing middleware (if available) - now coordinated with unified logging
 if OPIK_AVAILABLE and OPIK_MIDDLEWARE_AVAILABLE:
     if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
         logger.info("Adding OpikMiddleware for local Opik instance")
     else:
         logger.info("Adding OpikMiddleware for cloud instance")
     app.add_middleware(OpikMiddleware)
+    logger.info(f"After Opik middleware: {[type(m).__name__ for m in app.user_middleware]}")
 elif OPIK_AVAILABLE:
     logger.info("Opik SDK available but middleware not found - tracing will work at function level")
+
+logger.info(f"Final middleware stack: {[type(m).__name__ for m in app.user_middleware]}")
 
 # Include API routers
 app.include_router(data.router, prefix="/api/v1", tags=["data_ingestion"])
@@ -173,73 +225,80 @@ app.include_router(session.router, prefix="/api/v1", tags=["session_management"]
 @app.get("/")
 async def root():
     """Root endpoint with API information."""
+    from .config.feature_flags import get_migration_strategy
+    
     return {
         "message": "FaultMaven API",
         "version": "1.0.0",
         "description": "AI-powered troubleshooting assistant",
         "docs": "/docs",
         "health": "/health",
+        "architecture": {
+            "migration_strategy": get_migration_strategy(),
+            "using_refactored_api": USE_REFACTORED_API,
+            "using_di_container": USE_DI_CONTAINER
+        }
     }
 
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {
+    """Health check endpoint with architecture status."""
+    from .config.feature_flags import get_migration_strategy, is_migration_safe
+    
+    # Basic health status
+    health_status = {
         "status": "healthy",
         "services": {"session_manager": "active", "api": "running"},
+        "architecture": {
+            "migration_strategy": get_migration_strategy(),
+            "migration_safe": is_migration_safe(),
+            "using_refactored_api": USE_REFACTORED_API,
+            "using_di_container": USE_DI_CONTAINER
+        }
     }
+    
+    # Add DI container health if available
+    try:
+        if "di_container" in app.extra:
+            container_instance = app.extra["di_container"]
+            if hasattr(container_instance, 'health_check'):
+                container_health = container_instance.health_check()
+                health_status["services"]["di_container"] = container_health["status"]
+                health_status["architecture"]["container_components"] = container_health.get("components", {})
+    except Exception as e:
+        logger.warning(f"Failed to get DI container health: {e}")
+        health_status["services"]["di_container"] = "unknown"
+    
+    return health_status
 
 
+# Additional endpoints for session management (legacy support)
 @app.get("/api/v1/sessions")
 async def list_sessions():
-    """List all active sessions (for debugging)."""
-    session_manager = app_state.get("session_manager")
-    if not session_manager:
-        raise HTTPException(status_code=503, detail="Session manager not available")
-
-    sessions = await session_manager.list_sessions()
-    return {
-        "sessions": [
-            {
-                "session_id": session.session_id,
-                "user_id": session.user_id,
-                "created_at": session.created_at.isoformat(),
-                "last_activity": session.last_activity.isoformat(),
-                "data_uploads_count": len(session.data_uploads),
-            }
-            for session in sessions
-        ],
-        "total": len(sessions),
-    }
+    """List all sessions (legacy endpoint)."""
+    # This endpoint is now handled by the session router
+    # Keeping for backward compatibility
+    return {"message": "Use /api/v1/sessions/ for session management"}
 
 
 @app.post("/api/v1/sessions")
 async def create_session(user_id: str = None):
-    """Create a new troubleshooting session."""
-    session_manager = app_state.get("session_manager")
-    if not session_manager:
-        raise HTTPException(status_code=503, detail="Session manager not available")
-
-    session = await session_manager.create_session(user_id)
-    return {
-        "session_id": session.session_id,
-        "user_id": session.user_id,
-        "created_at": session.created_at.isoformat(),
-        "message": "Session created successfully",
-    }
+    """Create a new session (legacy endpoint)."""
+    # This endpoint is now handled by the session router
+    # Keeping for backward compatibility
+    return {"message": "Use /api/v1/sessions/ for session creation"}
 
 
 if __name__ == "__main__":
     import uvicorn
-
-    # Get configuration from environment
+    
+    # Configuration
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
     reload = os.getenv("RELOAD", "false").lower() == "true"
-
-    logger.info(f"Starting FaultMaven API on {host}:{port}")
-
+    
+    # Start server
     uvicorn.run(
         "faultmaven.main:app", host=host, port=port, reload=reload, log_level="info"
     )

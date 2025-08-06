@@ -16,14 +16,14 @@ import logging
 import os
 from typing import Optional
 
-from .agent.core_agent import FaultMavenAgent
-from .agent.tools.knowledge_base import KnowledgeBaseTool
-from .agent.tools.web_search import WebSearchTool
-from .data_processing.classifier import DataClassifier
-from .data_processing.log_processor import LogProcessor
-from .knowledge_base.ingestion import KnowledgeIngester
-from .llm.router import LLMRouter
-from .security.redaction import DataSanitizer
+from .core.agent.agent import FaultMavenAgent
+from .tools.knowledge_base import KnowledgeBaseTool
+from .tools.web_search import WebSearchTool
+from .core.processing.classifier import DataClassifier
+from .core.processing.log_analyzer import LogProcessor
+from .core.knowledge.ingestion import KnowledgeIngester
+from .infrastructure.llm.router import LLMRouter
+from .infrastructure.security.redaction import DataSanitizer
 from .services import AgentService, DataService, KnowledgeService, SessionService
 from .session_management import SessionManager
 

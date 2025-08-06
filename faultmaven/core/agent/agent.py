@@ -38,6 +38,7 @@ from langgraph.graph import END, StateGraph
 
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models import AgentState
+from faultmaven.models.interfaces import ILLMProvider, BaseTool
 from faultmaven.infrastructure.observability.tracing import trace
 from .doctrine import Phase, TroubleshootingDoctrine
 from faultmaven.tools.knowledge_base import KnowledgeBaseTool
@@ -49,20 +50,39 @@ class FaultMavenAgent:
 
     def __init__(
         self,
-        llm_router: LLMRouter,
-        knowledge_base_tool: KnowledgeBaseTool,
+        llm_interface: Optional[ILLMProvider] = None,
+        tools: Optional[List[BaseTool]] = None,
+        # Backward compatibility parameters
+        llm_router: Optional[LLMRouter] = None,
+        knowledge_base_tool: Optional[KnowledgeBaseTool] = None,
         web_search_tool: Optional[WebSearchTool] = None,
     ):
         self.logger = logging.getLogger(__name__)
-        self.llm_router = llm_router
+        
+        # Handle interface vs concrete implementation
+        if llm_interface:
+            self.llm_router = llm_interface
+        elif llm_router:
+            self.llm_router = llm_router
+        else:
+            # Default to LLMRouter if nothing provided
+            self.llm_router = LLMRouter()
+            
+        # Handle tools - prefer interface-based tools
+        if tools:
+            self.tools = tools
+        else:
+            # Backward compatibility - create tools from concrete implementations
+            self.tools = []
+            if knowledge_base_tool:
+                self.tools.append(knowledge_base_tool)
+            if web_search_tool and web_search_tool.is_available():
+                self.tools.append(web_search_tool)
+                
+        # Store concrete implementations for backward compatibility
         self.knowledge_base_tool = knowledge_base_tool
         self.web_search_tool = web_search_tool
         self.doctrine = TroubleshootingDoctrine()
-
-        # Create tools list for easy access
-        self.tools = [knowledge_base_tool]
-        if web_search_tool and web_search_tool.is_available():
-            self.tools.append(web_search_tool)
 
         # Build the agent graph
         self.graph = self._build_agent_graph()
@@ -1011,6 +1031,34 @@ class FaultMavenAgent:
     @trace("agent_run")
     async def run(
         self,
+        query: str,
+        session_id: str,
+        tools: List[BaseTool],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run the agent with interface-based parameters (new interface method)
+
+        Args:
+            query: User's troubleshooting query
+            session_id: Session identifier
+            tools: List of tools available to the agent
+            context: Optional context information
+
+        Returns:
+            Dictionary with agent results
+        """
+        # Use the existing process_query method which has the right return format
+        return await self.process_query(
+            query=query,
+            session_id=session_id,
+            context=context,
+            priority="medium"
+        )
+
+    @trace("agent_run")
+    async def run_legacy(
+        self,
         session_id: str,
         user_query: str,
         uploaded_data: Optional[List[Dict[str, Any]]] = None,
@@ -1219,8 +1267,8 @@ class FaultMavenAgent:
         self.logger.info(f"Processing query for session {session_id}: {query}")
 
         try:
-            # Run the agent
-            final_state = await self.run(
+            # Run the agent using legacy method
+            final_state = await self.run_legacy(
                 session_id=session_id,
                 user_query=query,
                 uploaded_data=context.get("uploaded_data", []) if context else [],

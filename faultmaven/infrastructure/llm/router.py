@@ -10,13 +10,14 @@ import logging
 from typing import Optional
 
 from faultmaven.models import DataType
+from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from .providers import LLMResponse, get_registry
 from .cache import SemanticCache
 
 
-class LLMRouter:
+class LLMRouter(ILLMProvider):
     """Simplified LLM router using centralized provider registry"""
     
     def __init__(self, confidence_threshold: float = 0.8):
@@ -97,6 +98,48 @@ class LLMRouter:
         except Exception as e:
             self.logger.error(f"❌ All providers failed: {e}")
             raise
+    
+    @trace("llm_router_generate")
+    async def generate(self, prompt: str, **kwargs) -> str:
+        """
+        ILLMProvider interface implementation - delegates to route()
+        
+        This method provides the standard ILLMProvider interface while leveraging
+        all the existing functionality of the router including caching, sanitization,
+        fallback strategies, and provider registry management.
+        
+        Args:
+            prompt: Input prompt for text generation
+            **kwargs: Additional parameters including:
+                - model: Specific model to use (optional)
+                - max_tokens: Maximum tokens to generate (default: 1000)
+                - temperature: Sampling temperature (default: 0.7)
+                - data_type: Type of data being processed (optional)
+                
+        Returns:
+            Generated text content as string
+            
+        Raises:
+            TypeError: If prompt is None
+            Exception: If all providers fail to generate a response
+        """
+        # Extract parameters from kwargs with defaults
+        model = kwargs.get('model')
+        max_tokens = kwargs.get('max_tokens', 1000)
+        temperature = kwargs.get('temperature', 0.7)
+        data_type = kwargs.get('data_type')
+        
+        # Call existing route method with all the robust functionality
+        response = await self.route(
+            prompt=prompt,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            data_type=data_type
+        )
+        
+        # Extract and return the text content from LLMResponse
+        return response.content
     
     def get_provider_status(self):
         """Get status of all providers"""

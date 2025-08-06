@@ -34,10 +34,12 @@ import yaml
 
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models import DataType
+from faultmaven.models.interfaces import IDataClassifier
 from faultmaven.infrastructure.observability.tracing import trace
+from typing import Optional
 
 
-class DataClassifier:
+class DataClassifier(IDataClassifier):
     """Classifies data content into appropriate DataType categories"""
 
     def __init__(self):
@@ -124,12 +126,13 @@ class DataClassifier:
             ]
 
     @trace("data_classifier_classify")
-    async def classify(self, content: str) -> DataType:
+    async def classify(self, content: str, filename: Optional[str] = None) -> DataType:
         """
         Classify data content into appropriate DataType
 
         Args:
             content: Raw content to classify
+            filename: Optional filename for additional classification hints
 
         Returns:
             DataType enum value
@@ -137,8 +140,8 @@ class DataClassifier:
         if not content or not isinstance(content, str):
             return DataType.UNKNOWN
 
-        # Try heuristic classification first
-        heuristic_result = self._heuristic_classify(content)
+        # Try heuristic classification first (including filename hints)
+        heuristic_result = self._heuristic_classify(content, filename)
         if heuristic_result != DataType.UNKNOWN:
             self.logger.info(f"Heuristic classification: {heuristic_result}")
             return heuristic_result
@@ -152,16 +155,39 @@ class DataClassifier:
             self.logger.warning(f"LLM classification failed: {e}")
             return DataType.UNKNOWN
 
-    def _heuristic_classify(self, content: str) -> DataType:
+    def _heuristic_classify(self, content: str, filename: Optional[str] = None) -> DataType:
         """
-        Perform heuristic-based classification using regex patterns
+        Perform heuristic-based classification using regex patterns and filename hints
 
         Args:
             content: Content to classify
+            filename: Optional filename for additional hints
 
         Returns:
             DataType enum value
         """
+        # Early classification based on filename extension if available
+        if filename:
+            filename_lower = filename.lower()
+            if filename_lower.endswith(('.log', '.txt')):
+                # Still check content patterns, but boost log file confidence
+                pass  # Continue with pattern analysis below
+            elif filename_lower.endswith(('.json', '.yaml', '.yml', '.ini', '.conf', '.config')):
+                return DataType.CONFIG_FILE
+            elif filename_lower.endswith(('.md', '.rst', '.txt', '.html', '.htm')):
+                # Could be documentation, but verify with content patterns
+                if any(keyword in content.lower() for keyword in ['guide', 'manual', 'documentation', 'tutorial', 'help', 'readme']):
+                    return DataType.DOCUMENTATION
+            elif filename_lower.endswith(('.csv', '.tsv')):
+                # Check if it's metrics data
+                if self._is_csv_with_metrics(content):
+                    return DataType.METRICS_DATA
+                return DataType.CONFIG_FILE
+            elif any(ext in filename_lower for ext in ['error', 'exception', 'crash']):
+                return DataType.ERROR_MESSAGE
+            elif any(ext in filename_lower for ext in ['stack', 'trace', 'dump']):
+                return DataType.STACK_TRACE
+
         # Calculate confidence scores for each data type
         scores = {}
 

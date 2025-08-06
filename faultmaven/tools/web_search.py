@@ -11,10 +11,12 @@ import os
 from typing import Any, Dict, List, Optional
 
 import httpx
-from langchain.tools import BaseTool
+from langchain.tools import BaseTool as LangChainBaseTool
+
+from faultmaven.models.interfaces import BaseTool as IBaseTool, ToolResult
 
 
-class WebSearchTool(BaseTool):
+class WebSearchTool(LangChainBaseTool, IBaseTool):
     """
     Web search tool with domain filtering for safe and relevant results.
 
@@ -93,8 +95,8 @@ class WebSearchTool(BaseTool):
                 )
 
     def _run(self, query: str, context: Optional[Dict[str, Any]] = None) -> str:
-        """Synchronous run method (not implemented for async tool)."""
-        raise NotImplementedError("Use async method _arun instead")
+        """Synchronous run method - not implemented for async tool"""
+        raise NotImplementedError("WebSearchTool only supports async execution via _arun")
 
     async def _arun(self, query: str, context: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -295,3 +297,71 @@ class WebSearchTool(BaseTool):
             self._trusted_domains.remove(domain)
             if self._logger:
                 self._logger.info(f"Removed trusted domain: {domain}")
+
+    async def execute(self, params: Dict[str, Any]) -> ToolResult:
+        """
+        Execute the web search tool using our interface.
+        
+        Args:
+            params: Parameters dictionary containing 'query' and optional 'context'
+            
+        Returns:
+            ToolResult with success/data/error
+        """
+        try:
+            query = params.get('query', '')
+            context = params.get('context')
+            
+            if not query or not query.strip():
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error="No query provided"
+                )
+            
+            # Call existing LangChain method
+            result = await self._arun(query, context)
+            
+            return ToolResult(
+                success=True,
+                data=result,
+                error=None
+            )
+        except Exception as e:
+            if self._logger:
+                self._logger.error(f"Web search execution failed: {e}")
+            return ToolResult(
+                success=False,
+                data=None,
+                error=str(e)
+            )
+    
+    def get_schema(self) -> Dict[str, Any]:
+        """
+        Get the tool schema for our interface compliance.
+        
+        Returns:
+            Tool schema dictionary
+        """
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for web search",
+                    },
+                    "context": {
+                        "type": "object",
+                        "description": "Optional context to enhance search specificity",
+                        "properties": {
+                            "phase": {"type": "string"},
+                            "environment": {"type": "string"},
+                        },
+                    },
+                },
+                "required": ["query"],
+            },
+        }

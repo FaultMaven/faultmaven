@@ -30,14 +30,15 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from langchain.tools import BaseTool
+from langchain.tools import BaseTool as LangChainBaseTool
 from langchain_core.tools import Tool
 from pydantic import PrivateAttr
 
 from faultmaven.core.knowledge.ingestion import KnowledgeIngester
+from faultmaven.models.interfaces import BaseTool as IBaseTool, ToolResult
 
 
-class KnowledgeBaseTool(BaseTool):
+class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
     """Enhanced RAG tool for querying the knowledge base with contextual search"""
 
     name: str = "knowledge_base_search"
@@ -349,17 +350,54 @@ class KnowledgeBaseTool(BaseTool):
         """
         return self._run(query, context)
 
-    def get_tool_schema(self) -> Dict[str, Any]:
+    async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """
-        Get the tool schema for LangChain integration
-
+        Execute the knowledge base search tool using our interface.
+        
+        Args:
+            params: Parameters dictionary containing 'query' and optional 'context'
+            
+        Returns:
+            ToolResult with success/data/error
+        """
+        try:
+            query = params.get('query', '')
+            context = params.get('context')
+            
+            if not query or not query.strip():
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error="No query provided"
+                )
+            
+            # Call existing LangChain method
+            result = await self._arun(query, context)
+            
+            return ToolResult(
+                success=True,
+                data=result,
+                error=None
+            )
+        except Exception as e:
+            self._logger.error(f"Knowledge base search execution failed: {e}")
+            return ToolResult(
+                success=False,
+                data=None,
+                error=str(e)
+            )
+    
+    def get_schema(self) -> Dict[str, Any]:
+        """
+        Get the tool schema for our interface compliance.
+        
         Returns:
             Tool schema dictionary
         """
         return {
             "name": self.name,
             "description": self.description,
-            "args_schema": {
+            "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
@@ -385,6 +423,21 @@ class KnowledgeBaseTool(BaseTool):
                 "required": ["query"],
             },
         }
+    
+    def get_tool_schema(self) -> Dict[str, Any]:
+        """
+        Get the tool schema for LangChain integration (legacy compatibility).
+
+        Returns:
+            Tool schema dictionary
+        """
+        schema = self.get_schema()
+        # Convert our schema format to LangChain format
+        return {
+            "name": schema["name"],
+            "description": schema["description"],
+            "args_schema": schema["parameters"],
+        }
 
 
 def create_knowledge_base_tool(knowledge_ingester: KnowledgeIngester) -> Tool:
@@ -407,7 +460,7 @@ def create_knowledge_base_tool(knowledge_ingester: KnowledgeIngester) -> Tool:
     )
 
 
-class KnowledgeBaseFilteredTool(BaseTool):
+class KnowledgeBaseFilteredTool(LangChainBaseTool, IBaseTool):
     """RAG tool with advanced filtering capabilities"""
 
     name: str = "knowledge_base_filtered_search"
@@ -451,6 +504,64 @@ class KnowledgeBaseFilteredTool(BaseTool):
         except Exception as e:
             self._logger.error(f"Filtered search failed: {e}")
             return f"Error in filtered search: {str(e)}"
+
+    async def execute(self, params: Dict[str, Any]) -> ToolResult:
+        """
+        Execute the filtered knowledge base search tool using our interface.
+        
+        Args:
+            params: Parameters dictionary containing 'query_json'
+            
+        Returns:
+            ToolResult with success/data/error
+        """
+        try:
+            query_json = params.get('query_json', '')
+            
+            if not query_json:
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    error="No query_json provided"
+                )
+            
+            # Call existing LangChain method
+            result = await self._arun(query_json)
+            
+            return ToolResult(
+                success=True,
+                data=result,
+                error=None
+            )
+        except Exception as e:
+            self._logger.error(f"Filtered knowledge base search execution failed: {e}")
+            return ToolResult(
+                success=False,
+                data=None,
+                error=str(e)
+            )
+    
+    def get_schema(self) -> Dict[str, Any]:
+        """
+        Get the tool schema for our interface compliance.
+        
+        Returns:
+            Tool schema dictionary
+        """
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query_json": {
+                        "type": "string",
+                        "description": "JSON string with query and filter parameters",
+                    },
+                },
+                "required": ["query_json"],
+            },
+        }
 
     def _run(self, query_json: str) -> str:
         """

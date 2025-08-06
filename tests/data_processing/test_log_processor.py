@@ -262,7 +262,7 @@ class TestLogProcessor:
     ):
         """Test successful log processing."""
         data_id = "test-data-123"
-        result = await processor.process(
+        result = await processor.process_detailed(
             sample_unstructured_logs, data_id, sample_agent_state
         )
 
@@ -278,7 +278,7 @@ class TestLogProcessor:
     async def test_process_empty_content(self, processor, sample_agent_state):
         """Test processing empty log content."""
         data_id = "test-data-empty"
-        result = await processor.process("", data_id, sample_agent_state)
+        result = await processor.process_detailed("", data_id, sample_agent_state)
 
         assert result.data_id == data_id
         assert result.data_type == DataType.LOG_FILE
@@ -289,7 +289,7 @@ class TestLogProcessor:
     async def test_process_invalid_content(self, processor, sample_agent_state):
         """Test processing invalid log content."""
         data_id = "test-data-invalid"
-        result = await processor.process(
+        result = await processor.process_detailed(
             "Invalid log format", data_id, sample_agent_state
         )
 
@@ -387,7 +387,7 @@ class TestLogProcessor:
         self, processor, sample_unstructured_logs, sample_agent_state
     ):
         """Test complete processing flow."""
-        result = await processor.process(
+        result = await processor.process_detailed(
             sample_unstructured_logs, "test_data_id", sample_agent_state
         )
 
@@ -407,7 +407,7 @@ class TestLogProcessor:
 2024-01-01 12:00:03 INFO Normal message
 """
 
-        result = await processor.process(
+        result = await processor.process_detailed(
             anomaly_logs, "test_data_id", sample_agent_state
         )
 
@@ -418,7 +418,7 @@ class TestLogProcessor:
     @pytest.mark.asyncio
     async def test_process_empty_input(self, processor, sample_agent_state):
         """Test processing with empty input."""
-        result = await processor.process("", "test_data_id", sample_agent_state)
+        result = await processor.process_detailed("", "test_data_id", sample_agent_state)
 
         assert isinstance(result, DataInsightsResponse)
         assert result.data_id == "test_data_id"
@@ -431,7 +431,7 @@ class TestLogProcessor:
             [f"2024-01-01 12:00:{i:02d} INFO Message {i}" for i in range(100)]
         )
 
-        result = await processor.process(large_logs, "test_data_id", sample_agent_state)
+        result = await processor.process_detailed(large_logs, "test_data_id", sample_agent_state)
 
         assert isinstance(result, DataInsightsResponse)
         assert result.data_id == "test_data_id"
@@ -446,7 +446,7 @@ class TestLogProcessor:
 2024-01-01 12:00:02 WARN Symbols: !@#$%^&*()
 """
 
-        result = await processor.process(
+        result = await processor.process_detailed(
             special_logs, "test_data_id", sample_agent_state
         )
 

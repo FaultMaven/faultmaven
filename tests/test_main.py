@@ -17,10 +17,25 @@ def test_health_check():
     """
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "healthy",
-        "services": {"session_manager": "active", "api": "running"},
-    }
+    
+    data = response.json()
+    
+    # Check core health status
+    assert data["status"] == "healthy"
+    
+    # Check required services exist
+    assert "services" in data
+    services = data["services"]
+    assert services["session_manager"] == "active"
+    assert services["api"] == "running"
+    
+    # Check architecture information is present
+    assert "architecture" in data
+    architecture = data["architecture"]
+    assert "migration_strategy" in architecture
+    assert "migration_safe" in architecture
+    assert "using_refactored_api" in architecture
+    assert "using_di_container" in architecture
 
 
 def test_root_endpoint():

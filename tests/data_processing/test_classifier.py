@@ -60,7 +60,7 @@ class TestDataClassifier:
         mock_response = Mock()
         mock_response.content = "log_file"
         mock_router.route = AsyncMock(return_value=mock_response)
-        classifier._heuristic_classify = lambda _: DataType.UNKNOWN
+        classifier._heuristic_classify = lambda _, filename=None: DataType.UNKNOWN
         ambiguous_text = "foobar123"
         result = await classifier.classify(ambiguous_text)
         mock_router.route.assert_awaited_once()
@@ -72,7 +72,7 @@ class TestDataClassifier:
         mock_response = Mock()
         mock_response.content = "metrics_data"
         mock_router.route = AsyncMock(return_value=mock_response)
-        classifier._heuristic_classify = lambda _: DataType.UNKNOWN
+        classifier._heuristic_classify = lambda _, filename=None: DataType.UNKNOWN
         ambiguous_text = "foobar123"
         result = await classifier.classify(ambiguous_text)
         assert result == DataType.METRICS_DATA
@@ -83,7 +83,7 @@ class TestDataClassifier:
         mock_response = Mock()
         mock_response.content = "INVALID_TYPE"
         mock_router.route = AsyncMock(return_value=mock_response)
-        classifier._heuristic_classify = lambda _: DataType.UNKNOWN
+        classifier._heuristic_classify = lambda _, filename=None: DataType.UNKNOWN
         ambiguous_text = "foobar123"
         result = await classifier.classify(ambiguous_text)
         assert result == DataType.UNKNOWN
@@ -96,7 +96,7 @@ class TestDataClassifier:
             raise Exception("LLM error")
 
         mock_router.route = AsyncMock(side_effect=raise_exc)
-        classifier._heuristic_classify = lambda _: DataType.UNKNOWN
+        classifier._heuristic_classify = lambda _, filename=None: DataType.UNKNOWN
         ambiguous_text = "foobar123"
         result = await classifier.classify(ambiguous_text)
         assert result == DataType.UNKNOWN
@@ -143,7 +143,7 @@ class TestDataClassifier:
         mock_response = Mock()
         mock_response.content = "documentation"
         mock_router.route = AsyncMock(return_value=mock_response)
-        classifier._heuristic_classify = lambda _: DataType.UNKNOWN
+        classifier._heuristic_classify = lambda _, filename=None: DataType.UNKNOWN
         ambiguous_text = "foobar123"
         await classifier.classify(ambiguous_text)
         assert mock_router.route.await_count == 1

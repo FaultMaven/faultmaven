@@ -29,13 +29,18 @@ Core Design Principles:
 import logging
 import os
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import requests
 import json
+from faultmaven.models.interfaces import ISanitizer
 
 
-class DataSanitizer:
-    """Sanitizes sensitive information from text data"""
+class DataSanitizer(ISanitizer):
+    """Sanitizes sensitive information from text data
+    
+    Implements ISanitizer interface for privacy-first data processing.
+    Supports both Presidio-based PII detection and custom regex patterns.
+    """
 
     def __init__(self):
         """Initialize the DataSanitizer with K8s Presidio service and custom patterns"""
@@ -123,7 +128,35 @@ class DataSanitizer:
             "mac_address": "[MAC_ADDRESS_REDACTED]",
         }
 
-    def sanitize(self, text: str) -> str:
+    def sanitize(self, data: Any) -> Any:
+        """
+        ISanitizer interface implementation
+        
+        Sanitize sensitive information from data of various types.
+        
+        Args:
+            data: Data to sanitize (can be string, dict, list, etc.)
+            
+        Returns:
+            Sanitized data of the same type
+        """
+        if data is None:
+            return data
+            
+        if isinstance(data, str):
+            return self._sanitize_text(data)
+        elif isinstance(data, dict):
+            return self._sanitize_dict(data)
+        elif isinstance(data, list):
+            return self._sanitize_list(data)
+        elif isinstance(data, (int, float, bool)):
+            # Primitive types that don't contain sensitive data
+            return data
+        else:
+            # For other types, convert to string, sanitize, and return as string
+            return self._sanitize_text(str(data))
+    
+    def _sanitize_text(self, text: str) -> str:
         """
         Sanitize sensitive information from text
 
@@ -147,6 +180,36 @@ class DataSanitizer:
             sanitized_text = self._apply_presidio(sanitized_text)
 
         return sanitized_text
+    
+    def _sanitize_dict(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Sanitize dictionary data recursively
+        
+        Args:
+            data: Dictionary to sanitize
+            
+        Returns:
+            Sanitized dictionary
+        """
+        sanitized = {}
+        for key, value in data.items():
+            # Sanitize both keys and values
+            sanitized_key = self.sanitize(key)
+            sanitized_value = self.sanitize(value)
+            sanitized[sanitized_key] = sanitized_value
+        return sanitized
+    
+    def _sanitize_list(self, data: List[Any]) -> List[Any]:
+        """
+        Sanitize list data recursively
+        
+        Args:
+            data: List to sanitize
+            
+        Returns:
+            Sanitized list
+        """
+        return [self.sanitize(item) for item in data]
 
     def _apply_pattern(self, text: str, pattern: re.Pattern) -> str:
         """Apply a specific regex pattern to redact matches"""
@@ -255,7 +318,34 @@ class DataSanitizer:
             self.logger.warning(f"Presidio K8s service error: {e}")
             return text
 
-    def is_sensitive(self, text: str) -> bool:
+    def is_sensitive(self, data: Any) -> bool:
+        """
+        Check if data contains sensitive information
+
+        Args:
+            data: Data to check (string, dict, list, etc.)
+
+        Returns:
+            True if sensitive information is detected
+        """
+        if data is None:
+            return False
+            
+        if isinstance(data, str):
+            return self._is_text_sensitive(data)
+        elif isinstance(data, dict):
+            return any(self.is_sensitive(key) or self.is_sensitive(value) 
+                      for key, value in data.items())
+        elif isinstance(data, list):
+            return any(self.is_sensitive(item) for item in data)
+        elif isinstance(data, (int, float, bool)):
+            # Primitive types typically don't contain sensitive data
+            return False
+        else:
+            # For other types, convert to string and check
+            return self._is_text_sensitive(str(data))
+    
+    def _is_text_sensitive(self, text: str) -> bool:
         """
         Check if text contains sensitive information
 

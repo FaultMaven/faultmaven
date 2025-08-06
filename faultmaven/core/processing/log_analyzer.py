@@ -38,10 +38,11 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
 from faultmaven.models import AgentState, DataInsightsResponse, DataType
+from faultmaven.models.interfaces import ILogProcessor
 from faultmaven.infrastructure.observability.tracing import trace
 
 
-class LogProcessor:
+class LogProcessor(ILogProcessor):
     """Processes log files to extract insights and detect anomalies with context-aware analysis"""
 
     def __init__(self):
@@ -80,11 +81,61 @@ class LogProcessor:
             ]
 
     @trace("log_processor_process")
-    async def process(
+    async def process(self, content: str, data_type: Optional[DataType] = None) -> Dict[str, Any]:
+        """
+        Process log content and extract insights (interface-compliant method)
+
+        Args:
+            content: Raw log content
+            data_type: Optional data type for processing hints
+
+        Returns:
+            Dictionary with extracted insights
+        """
+        try:
+            # Parse logs into structured format
+            df = self._parse_logs_to_dataframe(content)
+
+            if df.empty:
+                return {
+                    "error": "No valid log entries found",
+                    "total_entries": 0,
+                    "processing_error": True
+                }
+
+            # Create mock agent state for context-aware processing
+            mock_agent_state = {
+                "user_query": "",
+                "investigation_context": {},
+                "current_phase": "analyze"
+            }
+
+            # Extract basic insights
+            insights = self._extract_basic_insights(df, mock_agent_state)
+
+            # Detect anomalies
+            anomalies = self._detect_anomalies(df)
+
+            # Add anomalies to insights
+            insights["anomalies"] = anomalies
+
+            # Return simplified insights
+            return insights
+
+        except Exception as e:
+            self.logger.error(f"Log processing failed: {e}")
+            return {
+                "error": str(e),
+                "processing_error": True,
+                "total_entries": 0
+            }
+
+    @trace("log_processor_process_detailed")
+    async def process_detailed(
         self, content: str, data_id: str, agent_state: AgentState
     ) -> DataInsightsResponse:
         """
-        Process log content and extract insights with context-aware analysis
+        Process log content and extract insights with context-aware analysis (legacy method)
 
         Args:
             content: Raw log content
