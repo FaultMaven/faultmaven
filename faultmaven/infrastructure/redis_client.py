@@ -96,10 +96,11 @@ class RedisClientFactory:
             return {'url': env_url, 'host': None, 'port': None, 'password': None}
             
         # 3. Build from individual parameters and environment
-        # Default to K8s Redis cluster for production-like development
+        # Default to K8s Redis cluster via NodePort for production-like development
+        # Note: Redis uses TCP protocol which requires direct NodePort access, not HTTP Ingress
         config = {
             'url': None,
-            'host': host or os.getenv('REDIS_HOST', 'redis.faultmaven.local'),
+            'host': host or os.getenv('REDIS_HOST', '192.168.0.111'),
             'port': port or int(os.getenv('REDIS_PORT', '30379')),
             'password': password or os.getenv('REDIS_PASSWORD', 'faultmaven-dev-redis-2025')
         }
@@ -156,7 +157,7 @@ def create_redis_client(**kwargs) -> redis.Redis:
         
         # Explicit configuration
         client = create_redis_client(
-            host='redis.faultmaven.local',
+            host='192.168.0.111',
             port=30379,
             password='your-password'
         )
@@ -191,7 +192,7 @@ def create_k8s_redis_client() -> redis.Redis:
     defaults to K8s configuration. Use create_redis_client() instead.
     
     Expected environment variables:
-        REDIS_HOST=redis.faultmaven.local
+        REDIS_HOST=192.168.0.111
         REDIS_PORT=30379
         REDIS_PASSWORD=faultmaven-dev-redis-2025
     """

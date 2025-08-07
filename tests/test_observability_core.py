@@ -149,13 +149,13 @@ class TestObservabilityIntegration:
     def test_api_endpoints_have_tracing(self):
         """Verify API endpoints have trace decorators."""
         from faultmaven.api.v1.routes.data import upload_data
-        from faultmaven.api.v1.routes.agent import process_query
+        from faultmaven.api.v1.routes.agent import troubleshoot
         from faultmaven.api.v1.routes.knowledge import upload_document, search_documents
         from faultmaven.api.v1.routes.session import create_session
 
         # Check that key endpoints have been wrapped with @trace
         assert hasattr(upload_data, "__wrapped__")
-        assert hasattr(process_query, "__wrapped__")
+        assert hasattr(troubleshoot, "__wrapped__")
         assert hasattr(upload_document, "__wrapped__")
         assert hasattr(search_documents, "__wrapped__")
         assert hasattr(create_session, "__wrapped__")

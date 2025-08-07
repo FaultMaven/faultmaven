@@ -4,42 +4,56 @@ This directory contains the comprehensive test suite for the FaultMaven backend,
 
 ## Test Structure
 
-The test directory is organized by functionality and test type:
+The test directory is organized by architectural layer following clean architecture principles:
 
 ```
 tests/
 ├── __init__.py
 ├── conftest.py                 # Shared fixtures and configuration
 ├── README.md                   # This file
-├── agent/
-│   ├── test_core_agent.py     # Core agent functionality tests
-│   ├── test_doctrine.py       # Agent doctrine/behavior tests
-│   └── tools/
-│       ├── test_knowledge_base.py  # Knowledge base tool tests
-│       └── test_web_search.py      # Web search tool tests
-├── api/
-│   └── test_data_ingestion.py # API endpoint tests
-├── data_processing/
-│   ├── test_classifier.py     # Data classification tests
-│   └── test_log_processor.py  # Log processing tests
-├── integration/
+├── api/                        # API Layer Tests
+│   ├── test_data_ingestion.py # Data ingestion endpoints
+│   ├── test_kb_management.py  # Knowledge base management endpoints
+│   ├── test_query_processing.py # Query processing endpoints
+│   └── test_sessions.py       # Session management endpoints
+├── core/                       # Core Domain Layer Tests
+│   ├── test_classifier.py     # Data classification logic
+│   ├── test_core_agent.py     # Core agent functionality
+│   ├── test_core_agent_errors.py # Agent error handling
+│   ├── test_doctrine.py       # Agent doctrine/behavior
+│   ├── test_ingestion.py      # Knowledge base ingestion
+│   ├── test_log_processor.py  # Log processing logic
+│   └── tools/                 # Agent Tools
+│       ├── test_knowledge_base.py  # Knowledge base tool
+│       └── test_web_search.py      # Web search tool
+├── infrastructure/             # Infrastructure Layer Tests
+│   ├── test_opik_initialization_fix.py # Observability tracing
+│   ├── test_redaction.py      # Data sanitization
+│   ├── test_redaction_errors.py # Sanitization error handling
+│   └── test_router.py         # LLM routing
+├── services/                   # Service Layer Tests
+│   ├── test_agent_service.py  # Agent service orchestration
+│   ├── test_data_service.py   # Data service operations
+│   └── test_knowledge_service.py # Knowledge service operations
+├── unit/                       # Unit Tests for Architecture Components
+│   ├── test_container.py      # Dependency injection container
+│   ├── test_dependency_injection.py # DI patterns
+│   ├── test_feature_flags.py  # Feature flag management
+│   ├── test_interface_compliance.py # Interface compliance
+│   ├── test_interface_implementations.py # Interface implementations
+│   └── test_interfaces.py     # Interface definitions
+├── integration/                # Integration Tests
 │   ├── __init__.py
 │   ├── conftest.py            # Integration test fixtures
-│   ├── mock_servers.py        # Mock API servers for testing
+│   ├── mock_servers.py        # Mock API servers
 │   ├── pytest.ini            # Integration test configuration
-│   ├── README.md              # Integration test documentation
-│   ├── test_data_ingestion.py # End-to-end data ingestion tests
-│   ├── test_end_to_end_agent.py   # Complete agent workflow tests
-│   ├── test_knowledge_base.py # Knowledge base integration tests
-│   ├── test_llm_failover.py   # Mock LLM and web search tests
-│   └── test_session_management.py # Session management tests
-├── llm/
-│   └── test_router.py         # LLM router tests
-├── security/
-│   └── test_redaction.py      # Data sanitization tests
-├── test_session_management.py # Session management unit tests
-└── utils/
-    └── classifier_output_debug.py # Debugging utilities
+│   └── README.md              # Integration test documentation
+├── utils/                      # Test Utilities
+│   └── __init__.py
+├── test_architecture.py       # Architecture validation tests
+├── test_main.py               # Application lifecycle tests
+├── test_observability_core.py # Core observability tests
+└── test_session_management.py # Session management unit tests
 ```
 
 ## Test Categories
@@ -53,12 +67,7 @@ tests/
 - **Session Tests** (`@pytest.mark.session`): Session management, lifecycle
 
 ### Integration Tests
-Located in `tests/integration/`, these tests validate end-to-end workflows:
-
-- **Session Management**: Full session lifecycle with Redis
-- **Data Ingestion**: Complete data processing pipeline
-- **Knowledge Base**: Document lifecycle and agent retrieval
-- **Mock API Testing**: LLM and web search provider mocking
+Located in `tests/integration/`, these tests validate end-to-end workflows with mock infrastructure. Note: Previous integration tests that required external APIs have been reorganized as service-level tests with proper mocking.
 
 ### Mock API Infrastructure
 The integration tests include sophisticated mock API servers that simulate:
@@ -116,22 +125,10 @@ pytest -m agent
 
 ### Integration Tests
 
-Run integration tests (requires Docker services):
+Run integration tests with mock infrastructure:
 ```bash
-# All integration tests
+# All remaining integration tests (currently just mock infrastructure)
 pytest tests/integration/ -v
-
-# Specific integration test suites
-pytest tests/integration/test_session_management.py -v
-pytest tests/integration/test_data_ingestion.py -v
-pytest tests/integration/test_knowledge_base.py -v
-
-# Mock API tests (run individually to avoid port conflicts)
-pytest tests/integration/test_llm_failover.py::test_llm_router_mock_integration -v
-pytest tests/integration/test_llm_failover.py::test_web_search_mock_integration -v
-pytest tests/integration/test_llm_failover.py::test_confidence_based_routing_simulation -v
-pytest tests/integration/test_llm_failover.py::test_complete_mock_api_workflow -v
-pytest tests/integration/test_end_to_end_agent.py::test_mock_server_integration_standalone -v
 ```
 
 **Note**: Mock API tests should be run individually from the `tests/integration/` directory to avoid port conflicts.
@@ -410,7 +407,7 @@ def cleanup():
 ## Utilities
 
 ### Debug Scripts
-- `tests/utils/classifier_output_debug.py`: Debug data classifier outputs
+- Test utilities available in `tests/utils/` directory
 
 ### Test Fixtures
 - `tests/conftest.py`: Global test fixtures

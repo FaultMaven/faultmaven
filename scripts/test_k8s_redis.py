@@ -31,7 +31,7 @@ async def test_k8s_redis_integration():
     print("\n1. Testing K8s Redis client with explicit parameters:")
     try:
         k8s_client = create_redis_client(
-            host='redis.faultmaven.local',
+            host='192.168.0.111',
             port=30379,
             password='faultmaven-dev-redis-2025'
         )
@@ -59,7 +59,7 @@ async def test_k8s_redis_integration():
     print("\n2. Testing environment variable configuration:")
     
     # Set environment variables
-    os.environ['REDIS_HOST'] = 'redis.faultmaven.local'
+    os.environ['REDIS_HOST'] = '192.168.0.111'
     os.environ['REDIS_PORT'] = '30379'
     os.environ['REDIS_PASSWORD'] = 'faultmaven-dev-redis-2025'
     
@@ -82,7 +82,7 @@ async def test_k8s_redis_integration():
     print("\n3. Testing SessionManager with K8s Redis:")
     try:
         session_manager = SessionManager(
-            redis_host='redis.faultmaven.local',
+            redis_host='192.168.0.111',
             redis_port=30379,
             redis_password='faultmaven-dev-redis-2025'
         )

@@ -248,14 +248,26 @@ def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "FaultM
                 opik.configure(url=local_opik_url)
                 logging.info(f"Local Opik tracing initialized successfully at {local_opik_url}")
             except Exception as e1:
-                logging.debug(f"Minimal config failed: {e1}")
+                # Check if this is a 404 endpoint issue (expected for local instances)
+                error_str = str(e1).lower()
+                if '404' in error_str and ('workspace' in error_str or 'api key' in error_str):
+                    logging.info(f"Local Opik service detected at {local_opik_url} but API endpoints differ from cloud version")
+                    logging.info("FaultMaven will continue with basic tracing capability")
+                    return
+                else:
+                    logging.debug(f"Minimal config failed: {e1}")
+                
                 try:
                     # Try with default API key
                     local_api_key = api_key or os.getenv("OPIK_API_KEY", "local-dev-key")
                     opik.configure(url=local_opik_url, api_key=local_api_key)
                     logging.info(f"Local Opik tracing initialized with API key at {local_opik_url}")
                 except Exception as e2:
-                    logging.warning(f"Opik SDK configuration failed: {e2}")
+                    error_str2 = str(e2).lower()
+                    if '404' in error_str2 and ('workspace' in error_str2 or 'api key' in error_str2):
+                        logging.info(f"Local Opik service at {local_opik_url} uses different API structure - continuing with fallback tracing")
+                    else:
+                        logging.warning(f"Opik SDK configuration failed: {e2}")
                     logging.info("FaultMaven will continue running without Opik tracing")
                     return
             

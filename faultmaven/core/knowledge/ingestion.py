@@ -53,7 +53,7 @@ class KnowledgeIngester:
         # Initialize ChromaDB - default to K8s cluster for production-like development
         chromadb_url = os.getenv("CHROMADB_URL")
         chromadb_host = os.getenv("CHROMADB_HOST", "chromadb.faultmaven.local")
-        chromadb_port = int(os.getenv("CHROMADB_PORT", "30432"))
+        chromadb_port = int(os.getenv("CHROMADB_PORT", "30080"))
         chromadb_auth_token = os.getenv("CHROMADB_AUTH_TOKEN", "faultmaven-dev-chromadb-2025")
         
         if chromadb_url:

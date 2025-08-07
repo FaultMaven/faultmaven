@@ -4,7 +4,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from faultmaven.api.v1.routes.session import router, get_session_manager
+from faultmaven.api.v1.routes.session import router
+from faultmaven.api.v1.dependencies import get_session_service
 
 app = FastAPI()
 app.include_router(router)
@@ -12,26 +13,26 @@ client = TestClient(app)
 
 
 @pytest.fixture
-def mock_session_manager():
-    """Fixture to mock the SessionManager dependency."""
+def mock_session_service():
+    """Fixture to mock the SessionService dependency."""
     mock = MagicMock()
     mock.create_session = AsyncMock()
     mock.get_session = AsyncMock()
     mock.list_sessions = AsyncMock()
     mock.delete_session = AsyncMock()
-    mock.update_session = AsyncMock()
+    mock.update_last_activity = AsyncMock()
     mock.get_session_stats = AsyncMock()
-    app.dependency_overrides[get_session_manager] = lambda: mock
+    app.dependency_overrides[get_session_service] = lambda: mock
     yield mock
     # Clean up dependency override
-    app.dependency_overrides.pop(get_session_manager, None)
+    app.dependency_overrides.pop(get_session_service, None)
 
 
-def test_create_session_failure(mock_session_manager):
+def test_create_session_failure(mock_session_service):
     """
-    Test session creation when the session manager fails.
+    Test session creation when the session service fails.
     """
-    mock_session_manager.create_session.side_effect = Exception(
+    mock_session_service.create_session.side_effect = Exception(
         "Session creation failed"
     )
 
@@ -41,11 +42,11 @@ def test_create_session_failure(mock_session_manager):
     assert "Failed to create session" in response.json()["detail"]
 
 
-def test_get_session_not_found(mock_session_manager):
+def test_get_session_not_found(mock_session_service):
     """
     Test retrieving a session that does not exist.
     """
-    mock_session_manager.get_session.return_value = None
+    mock_session_service.get_session.return_value = None
 
     response = client.get("/sessions/non_existent_session")
 
@@ -53,11 +54,11 @@ def test_get_session_not_found(mock_session_manager):
     assert "Session not found" in response.json()["detail"]
 
 
-def test_get_session_failure(mock_session_manager):
+def test_get_session_failure(mock_session_service):
     """
-    Test retrieving a session when the session manager fails.
+    Test retrieving a session when the session service fails.
     """
-    mock_session_manager.get_session.side_effect = Exception("Session retrieval failed")
+    mock_session_service.get_session.side_effect = Exception("Session retrieval failed")
 
     response = client.get("/sessions/any_session_id")
 
@@ -65,11 +66,11 @@ def test_get_session_failure(mock_session_manager):
     assert "Failed to get session" in response.json()["detail"]
 
 
-def test_list_sessions_failure(mock_session_manager):
+def test_list_sessions_failure(mock_session_service):
     """
-    Test listing sessions when the session manager fails.
+    Test listing sessions when the session service fails.
     """
-    mock_session_manager.list_sessions.side_effect = Exception("Session listing failed")
+    mock_session_service.list_sessions.side_effect = Exception("Session listing failed")
 
     response = client.get("/sessions/")
 
@@ -77,11 +78,12 @@ def test_list_sessions_failure(mock_session_manager):
     assert "Failed to list sessions" in response.json()["detail"]
 
 
-def test_delete_session_not_found(mock_session_manager):
+def test_delete_session_not_found(mock_session_service):
     """
     Test deleting a session that does not exist.
     """
-    mock_session_manager.get_session.return_value = None
+    # Mock get_session to return None (session doesn't exist)
+    mock_session_service.get_session.return_value = None
 
     response = client.delete("/sessions/non_existent_session")
 
@@ -89,14 +91,11 @@ def test_delete_session_not_found(mock_session_manager):
     assert "Session not found" in response.json()["detail"]
 
 
-def test_delete_session_failure(mock_session_manager):
+def test_delete_session_failure(mock_session_service):
     """
-    Test deleting a session when the session manager fails.
+    Test deleting a session when the session service fails.
     """
-    # Mock that session exists
-    mock_session = MagicMock()
-    mock_session_manager.get_session.return_value = mock_session
-    mock_session_manager.delete_session.side_effect = Exception(
+    mock_session_service.delete_session.side_effect = Exception(
         "Session deletion failed"
     )
 
@@ -106,11 +105,11 @@ def test_delete_session_failure(mock_session_manager):
     assert "Failed to delete session" in response.json()["detail"]
 
 
-def test_session_heartbeat_not_found(mock_session_manager):
+def test_session_heartbeat_not_found(mock_session_service):
     """
     Test session heartbeat for a session that does not exist.
     """
-    mock_session_manager.get_session.return_value = None
+    mock_session_service.update_last_activity.return_value = False
 
     response = client.post("/sessions/non_existent_session/heartbeat")
 
@@ -118,11 +117,11 @@ def test_session_heartbeat_not_found(mock_session_manager):
     assert "Session not found" in response.json()["detail"]
 
 
-def test_session_heartbeat_failure(mock_session_manager):
+def test_session_heartbeat_failure(mock_session_service):
     """
-    Test session heartbeat when the session manager fails.
+    Test session heartbeat when the session service fails.
     """
-    mock_session_manager.get_session.side_effect = Exception("Session heartbeat failed")
+    mock_session_service.update_last_activity.side_effect = Exception("Session heartbeat failed")
 
     response = client.post("/sessions/any_session_id/heartbeat")
 
@@ -130,11 +129,12 @@ def test_session_heartbeat_failure(mock_session_manager):
     assert "Failed to update heartbeat" in response.json()["detail"]
 
 
-def test_get_session_stats_not_found(mock_session_manager):
+def test_get_session_stats_not_found(mock_session_service):
     """
     Test getting stats for a session that does not exist.
     """
-    mock_session_manager.get_session.return_value = None
+    # Mock get_session to return None (session doesn't exist)
+    mock_session_service.get_session.return_value = None
 
     response = client.get("/sessions/non_existent_session/stats")
 
@@ -142,11 +142,12 @@ def test_get_session_stats_not_found(mock_session_manager):
     assert "Session not found" in response.json()["detail"]
 
 
-def test_get_session_stats_failure(mock_session_manager):
+def test_get_session_stats_failure(mock_session_service):
     """
-    Test getting session stats when the session manager fails.
+    Test getting session stats when the session service fails.
     """
-    mock_session_manager.get_session.side_effect = Exception("Session stats failed")
+    # Mock get_session to fail with exception
+    mock_session_service.get_session.side_effect = Exception("Session stats failed")
 
     response = client.get("/sessions/any_session_id/stats")
 

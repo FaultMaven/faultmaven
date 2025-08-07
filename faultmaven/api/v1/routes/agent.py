@@ -1,312 +1,229 @@
-"""query_processing.py
+"""Refactored Agent Routes - Phase 6.1
 
-Purpose: /query endpoint implementation
+Purpose: Thin API layer for agent operations with pure delegation pattern
 
-Requirements:
---------------------------------------------------------------------------------
-• Handle insight requests
-• Route to core agent
-• Return TroubleshootingResponse
+This refactored module follows clean API architecture principles by removing
+all business logic from the API layer and delegating to the service layer.
 
-Key Components:
---------------------------------------------------------------------------------
-  router = APIRouter()
-  @router.post('/query')
+Key Changes from Original:
+- Removed all business logic (session validation, sanitization, processing)
+- Pure delegation to AgentServiceRefactored
+- Simplified error handling at API boundary
+- Proper dependency injection via DI container
+- Clean separation of concerns (API vs Business logic)
 
-Technology Stack:
---------------------------------------------------------------------------------
-FastAPI, Pydantic
-
-Core Design Principles:
---------------------------------------------------------------------------------
-• Privacy-First: Sanitize all external-bound data
-• Resilience: Implement retries and fallbacks
-• Cost-Efficiency: Use semantic caching
-• Extensibility: Use interfaces for pluggable components
-• Observability: Add tracing spans for key operations
+Architecture Pattern:
+API Route (validation + delegation) → Service Layer (business logic) → Core Domain
 """
 
 import logging
-import os
-import uuid
-from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from faultmaven.core.agent.agent import FaultMavenAgent
-from faultmaven.tools.knowledge_base import KnowledgeBaseTool
-from faultmaven.tools.web_search import WebSearchTool
-from faultmaven.core.knowledge.ingestion import KnowledgeIngester
-from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models import QueryRequest, TroubleshootingResponse
+from faultmaven.api.v1.dependencies import get_agent_service
+from faultmaven.services.agent_service import AgentService
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.infrastructure.security.redaction import DataSanitizer
-from faultmaven.session_management import SessionManager
 
 router = APIRouter(prefix="/query", tags=["query_processing"])
 
-# Global instances (in production, these would be dependency injected)
-
-# Initialize session manager with K8s Redis support
-redis_host = os.getenv("REDIS_HOST")
-redis_port = int(os.getenv("REDIS_PORT", "30379")) if os.getenv("REDIS_PORT") else None
-redis_password = os.getenv("REDIS_PASSWORD")
-redis_url = os.getenv("REDIS_URL")
-
-session_manager = SessionManager(
-    redis_url=redis_url,
-    redis_host=redis_host,
-    redis_port=redis_port,
-    redis_password=redis_password
-)
-
-# Initialize agent dependencies
-
-# Create agent dependencies with proper error handling
-try:
-    llm_router = LLMRouter()
-    print("✅ LLMRouter initialized")
-
-    # Create knowledge ingester for knowledge base tool
-    knowledge_ingester = KnowledgeIngester()
-    print("✅ KnowledgeIngester initialized")
-
-    knowledge_base_tool = KnowledgeBaseTool(knowledge_ingester=knowledge_ingester)
-    print("✅ KnowledgeBaseTool initialized")
-
-    web_search_tool = WebSearchTool()
-    print("✅ WebSearchTool initialized")
-
-    # Initialize the core agent
-    core_agent = FaultMavenAgent(
-        llm_router=llm_router,
-        knowledge_base_tool=knowledge_base_tool,
-        web_search_tool=web_search_tool,
-    )
-    print("✅ FaultMavenAgent initialized successfully!")
-
-except Exception as e:
-    print(f"❌ Agent initialization failed: {e}")
-    import traceback
-
-    traceback.print_exc()
-    core_agent = None
-data_sanitizer = DataSanitizer()
+logger = logging.getLogger(__name__)
 
 
-def get_session_manager():
-    return session_manager
-
-
-def get_core_agent():
-    return core_agent
-
-
-def get_data_sanitizer():
-    return data_sanitizer
-
-
-@router.post("/")
-@trace("api_process_query")
-async def process_query(
+@router.post("/troubleshoot", response_model=TroubleshootingResponse)
+@router.post("/", response_model=TroubleshootingResponse)  # Compatibility endpoint for tests
+@trace("api_troubleshoot")
+async def troubleshoot(
     request: QueryRequest,
-    session_manager: SessionManager = Depends(get_session_manager),
-    core_agent: Optional[FaultMavenAgent] = Depends(get_core_agent),
-    data_sanitizer: DataSanitizer = Depends(get_data_sanitizer),
+    agent_service: AgentService = Depends(get_agent_service)
 ) -> TroubleshootingResponse:
     """
-    Process a troubleshooting query using the core agent
-
+    Process troubleshooting query with clean delegation pattern
+    
+    This endpoint follows the thin controller pattern:
+    1. Minimal input validation (handled by Pydantic models)
+    2. Pure delegation to service layer
+    3. Clean error boundary handling
+    
     Args:
-        request: QueryRequest containing the query and context
-
+        request: QueryRequest with query, session_id, context, priority
+        agent_service: Injected AgentServiceRefactored from DI container
+        
     Returns:
-        TroubleshootingResponse with analysis and recommendations
+        TroubleshootingResponse with findings and recommendations
+        
+    Raises:
+        HTTPException: On service layer errors (404, 500, etc.)
     """
-    logger = logging.getLogger(__name__)
-    logger.info(f"Processing query for session {request.session_id}")
-
+    logger.info(f"Received troubleshooting request for session {request.session_id}")
+    
     try:
-        # Validate session
-        session = await session_manager.get_session(request.session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        # Sanitize the query for security
-        sanitized_query = data_sanitizer.sanitize(request.query)
-
-        # Generate investigation ID
-        investigation_id = str(uuid.uuid4())
-
-        # Process query with core agent
-        logger.info(f"Routing query to core agent: {investigation_id}")
-
-        # Temporary placeholder since core agent initialization requires dependencies
-        if core_agent is None:
-            logger.warning("Core agent not initialized, returning placeholder response")
-
-            # Create explicit dictionary structure for findings
-            placeholder_finding = {
-                "type": "status",
-                "message": "Agent placeholder response",
-                "severity": "info",
-                "timestamp": datetime.utcnow().isoformat(),
-                "source": "placeholder",
-            }
-
-            agent_response = {
-                "findings": [placeholder_finding],
-                "root_cause": "Investigation pending",
-                "recommendations": ["Please wait for agent initialization"],
-                "confidence_score": 0.1,
-                "estimated_mttr": "Unknown",
-                "next_steps": ["Complete agent setup"],
-            }
-        else:
-            agent_response = await core_agent.process_query(
-                query=sanitized_query,
-                session_id=request.session_id,
-                context=request.context or {},
-                priority=request.priority,
-            )
-
-        # Create troubleshooting response
-        response = TroubleshootingResponse(
-            session_id=request.session_id,
-            investigation_id=investigation_id,
-            status="completed",
-            findings=agent_response.get("findings", []),
-            root_cause=agent_response.get("root_cause"),
-            recommendations=agent_response.get("recommendations", []),
-            confidence_score=agent_response.get("confidence_score", 0.5),
-            estimated_mttr=agent_response.get("estimated_mttr"),
-            next_steps=agent_response.get("next_steps", []),
-            created_at=datetime.utcnow(),
-            completed_at=datetime.utcnow(),
-        )
-
-        # Update session with investigation history
-        await session_manager.add_investigation_history(
-            request.session_id,
-            {
-                "action": "query_processed",
-                "investigation_id": investigation_id,
-                "query": sanitized_query,
-                "priority": request.priority,
-                "findings_count": len(response.findings),
-                "recommendations_count": len(response.recommendations),
-                "confidence_score": response.confidence_score,
-            },
-        )
-
-        logger.info(f"Successfully processed query {investigation_id}")
+        # Pure delegation - all business logic is in the service layer
+        response = await agent_service.process_query(request)
+        
+        logger.info(f"Successfully processed query {response.investigation_id}")
         return response
-
-    except HTTPException:
-        raise
+        
+    except ValueError as e:
+        # Business logic validation errors (session not found, invalid input)
+        logger.warning(f"Query validation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    except PermissionError as e:
+        # Authorization/access errors
+        logger.warning(f"Query authorization failed: {e}")
+        raise HTTPException(status_code=403, detail="Access denied")
+        
+    except FileNotFoundError as e:
+        # Resource not found errors (session, data, etc.)
+        logger.warning(f"Resource not found: {e}")
+        raise HTTPException(status_code=404, detail="Resource not found")
+        
     except Exception as e:
-        logger.error(f"Query processing failed: {e}")
+        # Unexpected service layer errors
+        logger.error(f"Query processing failed unexpectedly: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Query processing failed: {str(e)}"
+            status_code=500, 
+            detail="Internal server error during query processing"
         )
 
 
-@router.get("/{investigation_id}")
-async def get_investigation_status(
+@router.get("/investigations/{investigation_id}", response_model=TroubleshootingResponse)
+@trace("api_get_investigation")
+async def get_investigation(
     investigation_id: str,
     session_id: str,
-    session_manager: SessionManager = Depends(get_session_manager),
+    agent_service: AgentService = Depends(get_agent_service)
 ) -> TroubleshootingResponse:
     """
-    Get the status and results of a specific investigation
-
+    Get investigation results by ID with clean delegation
+    
     Args:
         investigation_id: Investigation identifier
-        session_id: Session identifier
-
+        session_id: Session identifier for validation
+        agent_service: Injected AgentServiceRefactored
+        
     Returns:
         TroubleshootingResponse with investigation results
     """
-    logger = logging.getLogger(__name__)
-
+    logger.info(f"Retrieving investigation {investigation_id} for session {session_id}")
+    
     try:
-        # Validate session
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        # In a real implementation, you would retrieve the investigation from storage
-        # For now, return a placeholder response
-        return TroubleshootingResponse(
-            session_id=session_id,
+        # Delegate to service layer for all logic
+        response = await agent_service.get_investigation_results(
             investigation_id=investigation_id,
-            status="completed",
-            findings=[],
-            recommendations=[],
-            confidence_score=0.8,
-            created_at=datetime.utcnow(),
-            completed_at=datetime.utcnow(),
+            session_id=session_id
         )
-
-    except HTTPException:
-        raise
+        
+        return response
+        
+    except ValueError as e:
+        logger.warning(f"Investigation retrieval validation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    except FileNotFoundError as e:
+        logger.warning(f"Investigation not found: {e}")
+        raise HTTPException(status_code=404, detail="Investigation not found")
+        
     except Exception as e:
-        logger.error(f"Failed to retrieve investigation {investigation_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to retrieve investigation: {str(e)}"
-        )
+        logger.error(f"Investigation retrieval failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve investigation")
 
 
-@router.get("/session/{session_id}/investigations")
+@router.get("/sessions/{session_id}/investigations")
+@trace("api_list_session_investigations")
 async def list_session_investigations(
-    session_id: str, session_manager: SessionManager = Depends(get_session_manager)
+    session_id: str,
+    limit: Optional[int] = 10,
+    offset: Optional[int] = 0,
+    agent_service: AgentService = Depends(get_agent_service)
 ):
     """
-    List all investigations for a session
-
+    List investigations for a session with clean delegation
+    
     Args:
         session_id: Session identifier
-
+        limit: Maximum number of results
+        offset: Pagination offset
+        agent_service: Injected AgentServiceRefactored
+        
     Returns:
         List of investigation summaries
     """
-    logger = logging.getLogger(__name__)
-
+    logger.info(f"Listing investigations for session {session_id}")
+    
     try:
-        # Validate session
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        # Extract investigation history from session
-        investigations = []
-        for history_item in session.investigation_history:
-            if history_item.get("action") == "query_processed":
-                investigations.append(
-                    {
-                        "investigation_id": history_item.get("investigation_id"),
-                        "query": history_item.get("query"),
-                        "priority": history_item.get("priority"),
-                        "findings_count": history_item.get("findings_count", 0),
-                        "recommendations_count": history_item.get(
-                            "recommendations_count", 0
-                        ),
-                        "confidence_score": history_item.get("confidence_score", 0.0),
-                        "timestamp": history_item.get("timestamp"),
-                    }
-                )
-
+        # Delegate pagination and business logic to service layer
+        investigations = await agent_service.list_session_investigations(
+            session_id=session_id,
+            limit=limit,
+            offset=offset
+        )
+        
         return {
             "session_id": session_id,
             "investigations": investigations,
-            "total": len(investigations),
+            "limit": limit,
+            "offset": offset,
+            "total": len(investigations)  # Service layer provides this
         }
-
-    except HTTPException:
-        raise
+        
+    except ValueError as e:
+        logger.warning(f"Investigation listing validation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    except FileNotFoundError as e:
+        logger.warning(f"Session not found: {e}")
+        raise HTTPException(status_code=404, detail="Session not found")
+        
     except Exception as e:
-        logger.error(f"Failed to list investigations for session {session_id}: {e}")
+        logger.error(f"Investigation listing failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list investigations")
+
+
+@router.get("/health")
+@trace("api_agent_health")
+async def health_check(
+    agent_service: AgentService = Depends(get_agent_service)
+):
+    """
+    Health check endpoint with service delegation
+    
+    Returns:
+        Service health status
+    """
+    try:
+        # Delegate health check logic to service layer
+        health_status = await agent_service.health_check()
+        
+        return {
+            "status": "healthy",
+            "service": "agent",
+            "details": health_status
+        }
+        
+    except Exception as e:
+        logger.error(f"Agent health check failed: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to list investigations: {str(e)}"
+            status_code=503, 
+            detail="Agent service unavailable"
         )
+
+
+# Compatibility functions for legacy tests
+# These are stubs to support existing test infrastructure
+def get_session_manager():
+    """Compatibility function for legacy tests"""
+    from faultmaven.container import container
+    return container.session_service
+
+def get_core_agent():
+    """Compatibility function for legacy tests"""
+    # Return None - tests can override this
+    return None
+
+def get_data_sanitizer():
+    """Compatibility function for legacy tests"""
+    from faultmaven.container import container  
+    return container.data_sanitizer

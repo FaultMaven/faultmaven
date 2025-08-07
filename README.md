@@ -5,12 +5,16 @@
 [![FastAPI](https://img.shields.io/badge/Framework-FastAPI-green)](https://fastapi.tiangolo.com/)
 [![Tests](https://img.shields.io/badge/Tests-341%20passing-brightgreen)](https://github.com/FaultMaven/faultmaven)
 [![Coverage](https://img.shields.io/badge/Coverage-71%25-brightgreen)](https://github.com/FaultMaven/faultmaven)
+[![Architecture](https://img.shields.io/badge/Architecture-Clean%20DI-blue)](https://github.com/FaultMaven/faultmaven)
+[![Providers](https://img.shields.io/badge/LLM%20Providers-7-green)](https://github.com/FaultMaven/faultmaven)
 
 **AI-Powered Troubleshooting Copilot for SRE and DevOps Teams**
 
+*Built with Clean Architecture, Interface-Based Design, and Comprehensive Dependency Injection*
+
 ## 🚀 Introduction
 
-FaultMaven is an open-source AI assistant designed to help engineers diagnose and resolve complex system issues. It serves as the intelligent backend that powers browser-based troubleshooting workflows, combining structured reasoning with centralized knowledge management.
+FaultMaven is an enterprise-grade open-source AI troubleshooting copilot designed to help SRE and DevOps teams diagnose and resolve complex system issues. Built with clean architecture principles, it serves as the intelligent backend that powers browser-based troubleshooting workflows, combining structured reasoning with centralized knowledge management and multi-LLM provider support.
 
 ```mermaid
 graph LR
@@ -24,10 +28,12 @@ graph LR
 ## ✨ Core Components
 
 ### 1. FaultMaven API Server (This Repository)
-- **AI Reasoning Engine**: LangGraph-based agent with SRE troubleshooting doctrine
-- **Knowledge Management**: RAG-powered document processing
-- **Data Processing**: Log/metrics analysis pipelines
-- **Security**: PII redaction and access controls
+- **Clean Architecture**: Interface-based design with dependency injection container
+- **Multi-LLM Support**: 7 providers (Fireworks, OpenAI, Anthropic, Gemini, HuggingFace, OpenRouter, Local)
+- **AI Reasoning Engine**: LangGraph-based agent with 5-phase SRE troubleshooting doctrine
+- **Knowledge Management**: RAG-powered document processing with vector store abstraction
+- **Data Processing**: Interface-based log/metrics analysis pipelines
+- **Privacy-First Security**: Comprehensive PII redaction with Presidio microservice integration
 
 ### 2. [FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)
 - Browser extension UI for real-time troubleshooting
@@ -38,12 +44,14 @@ graph LR
 
 | Feature | Description | Technology |
 |---------|-------------|------------|
+| **Clean Architecture** | Interface-based design with dependency injection | `DIContainer`, Interface contracts |
+| **Multi-LLM Support** | 7 providers with automatic fallback | Fireworks, OpenAI, Anthropic, Gemini+ |
 | **Agentic Troubleshooting** | Five-phase SRE doctrine for issue investigation | LangGraph, LLMs |
 | **Knowledge Base (RAG)** | Centralized repository for runbooks and docs | ChromaDB, BGE-M3 |
-| **Privacy-First Design** | Sensitive data redaction before processing | Presidio, Custom regex |
-| **Extensible Tools** | Pluggable tool system for integrations | LangChain Tools |
-| **Context-Aware Analysis** | Intelligent evidence processing | Scikit-learn, Pandas |
-| **Observability** | LLM tracing and performance monitoring | Opik, Prometheus |
+| **Privacy-First Design** | Comprehensive PII redaction before processing | Presidio microservice, Custom regex |
+| **Interface-Based Tools** | Pluggable tool system with `BaseTool` interface | `KnowledgeBaseTool`, `WebSearchTool` |
+| **Context-Aware Analysis** | Intelligent evidence processing with interfaces | `IDataClassifier`, `ILogProcessor` |
+| **Comprehensive Observability** | LLM tracing and performance monitoring | Opik, `ITracer` interface |
 
 ## 🚀 Quick Start
 
@@ -130,9 +138,9 @@ pytest --cov=faultmaven tests/
 
 ## 🏗️ Architecture Overview
 
-FaultMaven follows a modern, service-oriented architecture with clear separation of concerns and dependency injection. The system is designed for scalability, maintainability, and extensibility.
+FaultMaven follows **Clean Architecture** principles with interface-based programming, comprehensive dependency injection, and clear separation of concerns. The system is designed for maximum maintainability, testability, and extensibility through interface contracts and service abstraction.
 
-### Core Architecture Layers
+### Clean Architecture Layers
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -140,15 +148,27 @@ FaultMaven follows a modern, service-oriented architecture with clear separation
 │  (FastAPI Routers, Dependencies, Request/Response Models)    │
 ├─────────────────────────────────────────────────────────────┤
 │                      Service Layer                           │
-│  (Business Logic, Orchestration, Domain Operations)          │
+│  (Business Logic, Orchestration, Interface Dependencies)     │
 ├─────────────────────────────────────────────────────────────┤
-│                    Core Components                           │
+│                    Core Domain                               │
 │  (Agent, Data Processing, Knowledge Base)                    │
 ├─────────────────────────────────────────────────────────────┤
 │                   Infrastructure Layer                       │
 │  (LLM Router, Redis, ChromaDB, Security, Observability)      │
+├─────────────────────────────────────────────────────────────┤
+│                   Interface Contracts                        │
+│  (ILLMProvider, ISanitizer, ITracer, BaseTool, etc.)        │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Dependency Injection Architecture
+
+**DIContainer** provides centralized dependency management:
+- **Singleton Pattern**: Single container instance across application
+- **Lazy Initialization**: Components created only when needed  
+- **Interface Resolution**: Automatic mapping from interfaces to implementations
+- **Health Monitoring**: Built-in health checking for all dependencies
+- **Graceful Degradation**: Mock implementations when dependencies unavailable
 
 ### Key Components
 
@@ -158,42 +178,63 @@ FaultMaven follows a modern, service-oriented architecture with clear separation
 - Dependency injection for services
 - Middleware for authentication and rate limiting
 
-#### 2. **Service Layer** (`services/`)
-- **AgentService**: Orchestrates troubleshooting workflows
-- **DataService**: Manages data ingestion and processing
-- **KnowledgeService**: Handles knowledge base operations
-- **SessionService**: Provides session lifecycle management
+#### 2. **Service Layer** (`services/`) - Interface-Based Orchestration
+- **AgentService**: Orchestrates troubleshooting workflows using `ILLMProvider`, `ISanitizer`, `ITracer`, `List[BaseTool]`
+- **DataService**: Manages data processing using `IDataClassifier`, `ILogProcessor`, `IStorageBackend`
+- **KnowledgeService**: Handles knowledge base operations using `IVectorStore`, `IKnowledgeIngester`
+- **SessionService**: Provides session lifecycle management using `ISessionStore`
 
 #### 3. **Core Domain** (`core/`)
 - **Agent**: LangGraph-based troubleshooting engine with 5-phase doctrine
 - **Processing**: Log analysis and data classification
 - **Knowledge**: Document ingestion and RAG operations
 
-#### 4. **Infrastructure** (`infrastructure/`)
-- **LLM**: Multi-provider routing with fallback
-- **Persistence**: Redis sessions and ChromaDB vectors
-- **Security**: PII redaction and data sanitization
-- **Observability**: Opik tracing and metrics
+#### 4. **Infrastructure** (`infrastructure/`) - Interface Implementations
+- **LLM**: Multi-provider routing with fallback implementing `ILLMProvider` (7 providers supported)
+- **Persistence**: Redis sessions and ChromaDB vectors implementing `ISessionStore`, `IVectorStore`
+- **Security**: Comprehensive PII redaction implementing `ISanitizer` with Presidio integration
+- **Observability**: Opik tracing implementing `ITracer` with distributed monitoring
+
+#### 5. **Interface Contracts** (`models/interfaces.py`)
+Defines abstract contracts for all major components:
+- **Infrastructure**: `ILLMProvider`, `ISanitizer`, `ITracer`, `IVectorStore`, `ISessionStore`
+- **Processing**: `IDataClassifier`, `ILogProcessor`, `IKnowledgeIngester`
+- **Tools**: `BaseTool` with standardized `execute()` and `get_schema()` methods
 
 ### Data Flow Example
 
 ```mermaid
 graph TD
     A[Browser Extension] --> B[API Router]
-    B --> C[Dependency Injection]
-    C --> D[Session Service]
-    D --> E[Agent Service]
-    E --> F[Core Agent]
-    F --> G[Knowledge Base]
-    F --> H[LLM Router]
-    G --> I[ChromaDB]
-    H --> J[External LLMs]
+    B --> C[DI Container]
+    C --> D[Service Layer]
+    D --> E[Interface Resolution]
+    E --> F[Core Domain]
+    F --> G[Infrastructure]
+    
+    subgraph "Interface Layer"
+        ILLMProvider
+        ISanitizer  
+        ITracer
+        BaseTool
+    end
+    
+    E --> ILLMProvider
+    E --> ISanitizer
+    E --> ITracer
+    E --> BaseTool
+    
+    ILLMProvider --> H[7 LLM Providers]
+    ISanitizer --> I[Presidio + Fallback]
+    ITracer --> J[Opik Tracing]
+    BaseTool --> K[KB Tool + Web Search]
 ```
 
 For detailed architecture documentation, see:
-- [Current Architecture](docs/architecture/current-architecture.md)
-- [Service Patterns](docs/architecture/service-patterns.md)
-- [Migration Guide](docs/migration/import-migration-guide.md)
+- [Current Architecture](docs/architecture/current-architecture.md) - Complete interface-based architecture
+- [Dependency Injection System](docs/architecture/dependency-injection-system.md) - DI container deep dive
+- [Service Patterns](docs/architecture/service-patterns.md) - Interface-based service design
+- [Migration Guide](docs/migration/import-migration-guide.md) - Legacy to clean architecture migration
 
 ## 🛠️ Development
 
@@ -216,40 +257,67 @@ For detailed architecture documentation, see:
    pre-commit install
    ```
 
-### Code Structure
+### Clean Architecture Code Structure
 ```
 faultmaven/
-├── api/v1/              # Versioned API endpoints
-├── core/                # Core business logic
-│   ├── agent/           # AI reasoning engine
-│   ├── knowledge/       # Knowledge management
-│   └── processing/      # Data analysis
-├── infrastructure/      # External integrations
-│   ├── llm/            # LLM providers
-│   ├── persistence/    # Data storage
-│   ├── security/       # Privacy controls
-│   └── observability/  # Monitoring
-├── services/           # Service layer
-├── models/             # Data models
-├── tools/              # Agent tools
-├── container.py        # Dependency injection
-└── main.py             # FastAPI application
+├── api/v1/              # API Layer - HTTP endpoints and routing
+│   ├── routes/          # Domain-specific routers (agent, data, knowledge, session)
+│   └── dependencies.py  # FastAPI dependency injection integration
+├── services/            # Service Layer - Business logic orchestration 
+│   ├── agent_service.py    # Troubleshooting workflow orchestration
+│   ├── data_service.py     # Data processing pipeline management
+│   ├── knowledge_service.py # Knowledge base operations
+│   └── session_service.py   # Session lifecycle management
+├── core/                # Core Domain - Business logic and entities
+│   ├── agent/           # AI reasoning engine (LangGraph + 5-phase doctrine)
+│   ├── knowledge/       # RAG document processing
+│   └── processing/      # Data classification and log analysis
+├── infrastructure/      # Infrastructure - External service integrations
+│   ├── llm/            # Multi-provider LLM routing (7 providers)
+│   ├── security/       # PII redaction with Presidio integration
+│   ├── persistence/    # Redis sessions + ChromaDB vectors
+│   └── observability/  # Opik tracing and monitoring
+├── tools/              # Agent Tools - Standardized capabilities
+│   ├── knowledge_base.py  # RAG tool implementing BaseTool
+│   └── web_search.py      # Search tool implementing BaseTool
+├── models/             # Data Models and Interface Contracts
+│   ├── interfaces.py   # Abstract interfaces for all layers
+│   └── *.py           # Request/response DTOs and domain entities
+├── container.py        # Dependency Injection Container (DIContainer)
+├── config/             # Configuration and Feature Flags
+└── main.py             # FastAPI application with DI integration
 ```
 
 ## ⚙️ Configuration
 
 ### LLM Provider Setup
 
-FaultMaven supports multiple LLM providers with automatic fallback:
+FaultMaven supports **7 LLM providers** with automatic fallback chains managed through a centralized provider registry:
 
 ```env
-# Primary provider (options: fireworks, openai, local, gemini, huggingface, openrouter, anthropic)
-CHAT_PROVIDER="fireworks"
+# Primary provider (7 options available)
+CHAT_PROVIDER="fireworks"  # fireworks, openai, anthropic, gemini, huggingface, openrouter, local
 
-# Provider API keys
-FIREWORKS_API_KEY="your-fireworks-api-key"
-OPENAI_API_KEY="your-openai-api-key"
+# Provider API keys (providers auto-initialize based on available keys)
+FIREWORKS_API_KEY="fw_your_api_key"           # Fireworks AI (recommended)
+OPENAI_API_KEY="sk_your_openai_key"          # OpenAI GPT models
+ANTHROPIC_API_KEY="sk-ant-your_key"          # Claude 3.5 Sonnet
+GEMINI_API_KEY="your_google_ai_key"          # Google Gemini
+HUGGINGFACE_API_KEY="hf_your_token"          # HuggingFace models
+OPENROUTER_API_KEY="sk-or-your_key"          # OpenRouter multi-provider
+LOCAL_LLM_URL="http://localhost:11434"       # Local/Ollama (no API key needed)
 ```
+
+**Automatic Fallback Chain**: Primary → Fireworks → OpenAI → Local (based on available API keys)
+
+**Supported Models by Provider**:
+- **Fireworks**: `llama-v3p1-8b-instruct`, `llama-v3p1-70b-instruct`, `mixtral-8x7b-instruct`
+- **OpenAI**: `gpt-4o`, `gpt-4o-mini`, `gpt-3.5-turbo`
+- **Anthropic**: `claude-3-5-sonnet-20241022`, `claude-3-haiku-20240307`, `claude-3-opus-20240229`
+- **Gemini**: `gemini-1.5-pro`, `gemini-1.5-flash`, `gemini-pro-vision`
+- **HuggingFace**: `tiiuae/falcon-7b-instruct`, `microsoft/DialoGPT-large`
+- **OpenRouter**: Access to multiple providers through unified API
+- **Local**: Ollama, vLLM, any OpenAI-compatible server
 
 For detailed configuration and adding new providers, see: [How to Add Providers](docs/how-to-add-providers.md)
 
@@ -259,28 +327,50 @@ Copy `.env.example` to `.env` and configure:
 - **Required**: At least one LLM provider API key
 - **Optional**: Observability, web search, local model servers
 
-### Observability Setup
+### Observability & Monitoring
 
-For **team Opik server at opik.faultmaven.local** (default configuration in `.env`):
+**Built-in Health Monitoring**:
 ```bash
-# Ensure hostname resolves: echo "192.168.0.111 opik.faultmaven.local" >> /etc/hosts
+# Check dependency injection container health
+curl http://localhost:8000/health/dependencies
+
+# Response includes status of all injected dependencies:
+{
+  "status": "healthy",  # healthy | degraded | not_initialized
+  "components": {
+    "llm_provider": true,
+    "sanitizer": true, 
+    "tracer": true,
+    "tools_count": 2,
+    "agent_service": true,
+    "data_service": true,
+    "knowledge_service": true
+  }
+}
+```
+
+**Opik LLM Observability**:
+
+For **team Opik server** (default configuration):
+```bash
+# Ensure hostname resolves
+echo "192.168.0.111 opik.faultmaven.local" >> /etc/hosts
 ./run_faultmaven.sh
 ```
 
-For **other Opik instances** (e.g., different environment):
+For **custom Opik instances**:
 ```bash
-# Set up custom Opik configuration (one-time setup)
+# Configure custom Opik server
 cp scripts/config/opik_remote.sh.example scripts/config/opik_custom.sh
-# Edit scripts/config/opik_custom.sh with your Opik server details
-
-# Use custom Opik server
+# Edit with your Opik server details
 source scripts/config/opik_custom.sh
 ./run_faultmaven.sh
 ```
 
-**Accessing Opik UI:**
-- Team Opik Dashboard: `http://opik.faultmaven.local:30080`
-- View traces, performance metrics, and LLM analytics
+**Accessing Monitoring**:
+- **Opik Dashboard**: `http://opik.faultmaven.local:30080` - LLM traces and performance
+- **Health Endpoint**: `http://localhost:8000/health/dependencies` - Container health
+- **API Documentation**: `http://localhost:8000/docs` - Interactive API explorer
 
 ## 📜 License
 
@@ -288,9 +378,24 @@ Apache 2.0 - See [LICENSE](LICENSE) for details.
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [Contribution Guidelines](CONTRIBUTING.md) for details.
+We welcome contributions! Please see our [Contribution Guidelines](docs/CONTRIBUTING.md) for details.
+
+**Architecture Guidelines**: When contributing, please follow the interface-based design patterns. All new components should:
+1. Define and implement appropriate interfaces from `models/interfaces.py`
+2. Integrate with the dependency injection container
+3. Include comprehensive unit tests with interface mocks
+4. Follow the clean architecture layer separation
 
 ## 📬 Contact
 
 For inquiries: [support@faultmaven.ai](mailto:support@faultmaven.ai)  
 Join our [Discord Community](https://discord.com/faultmaven) for real-time discussion.
+
+**Technical Documentation**:
+- [Architecture Deep Dive](docs/architecture/current-architecture.md)
+- [DI Container Guide](docs/architecture/dependency-injection-system.md)
+- [Container Usage Guide](docs/architecture/container-usage-guide.md)
+- [LLM Provider Setup](docs/how-to-add-providers.md)
+- [Testing Guide](tests/README.md)
+- [Testing Architecture Guide](docs/architecture/testing-guide.md)
+- [Migration Guide](docs/migration/import-migration-guide.md)

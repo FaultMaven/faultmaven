@@ -46,13 +46,13 @@ class DataSanitizer(ISanitizer):
         """Initialize the DataSanitizer with K8s Presidio service and custom patterns"""
         self.logger = logging.getLogger(__name__)
 
-        # Configure K8s Presidio service endpoints
-        presidio_host = os.getenv("PRESIDIO_HOST", "presidio.faultmaven.local")
-        presidio_analyzer_port = int(os.getenv("PRESIDIO_ANALYZER_PORT", "30433"))
-        presidio_anonymizer_port = int(os.getenv("PRESIDIO_ANONYMIZER_PORT", "30434"))
+        # Configure K8s Presidio service endpoints (via NGINX Ingress)
+        presidio_analyzer_host = os.getenv("PRESIDIO_ANALYZER_HOST", "presidio-analyzer.faultmaven.local")
+        presidio_anonymizer_host = os.getenv("PRESIDIO_ANONYMIZER_HOST", "presidio-anonymizer.faultmaven.local")
+        presidio_port = int(os.getenv("PRESIDIO_PORT", "30080"))
         
-        self.analyzer_url = f"http://{presidio_host}:{presidio_analyzer_port}"
-        self.anonymizer_url = f"http://{presidio_host}:{presidio_anonymizer_port}"
+        self.analyzer_url = f"http://{presidio_analyzer_host}:{presidio_port}"
+        self.anonymizer_url = f"http://{presidio_anonymizer_host}:{presidio_port}"
         
         # HTTP client configuration
         self.request_timeout = 10.0  # seconds
@@ -67,7 +67,7 @@ class DataSanitizer(ISanitizer):
         self.anonymizer_available = self._test_service_health(self.anonymizer_url)
         
         if self.analyzer_available and self.anonymizer_available:
-            self.logger.info(f"✅ Connected to K8s Presidio services at {presidio_host}")
+            self.logger.info(f"✅ Connected to K8s Presidio services (Analyzer: {presidio_analyzer_host}, Anonymizer: {presidio_anonymizer_host})")
         else:
             self.logger.warning(f"⚠️ Limited Presidio connectivity - Analyzer: {self.analyzer_available}, Anonymizer: {self.anonymizer_available}")
             self.logger.info("📝 Falling back to regex-only sanitization")

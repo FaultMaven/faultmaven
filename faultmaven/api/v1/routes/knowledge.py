@@ -33,24 +33,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from faultmaven.core.knowledge.ingestion import KnowledgeIngester
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.infrastructure.security.redaction import DataSanitizer
+from faultmaven.api.v1.dependencies import get_knowledge_service
+from faultmaven.services.knowledge_service import KnowledgeService
 
 router = APIRouter(prefix="/kb", tags=["knowledge_base"])
-
-# Global instances (in production, these would be dependency injected)
-kb_ingestion = KnowledgeIngester()
-data_sanitizer = DataSanitizer()
-
-
-def get_kb_ingestion():
-    return kb_ingestion
-
-
-def get_data_sanitizer():
-    return data_sanitizer
 
 
 @router.post("/documents")
@@ -61,8 +49,7 @@ async def upload_document(
     document_type: str = Form("troubleshooting_guide"),
     tags: Optional[str] = Form(None),
     source_url: Optional[str] = Form(None),
-    kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion),
-    data_sanitizer: DataSanitizer = Depends(get_data_sanitizer),
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
     """
     Upload a document to the knowledge base
@@ -81,44 +68,27 @@ async def upload_document(
     logger.info(f"Uploading document: {file.filename}")
 
     try:
-        # Generate document ID
-        document_id = str(uuid.uuid4())
-
         # Read file content
         content = await file.read()
         content_str = content.decode("utf-8", errors="ignore")
-
-        # Sanitize content for security
-        sanitized_content = data_sanitizer.sanitize(content_str)
 
         # Parse tags
         tag_list = []
         if tags:
             tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
 
-        # Create document record
-        document = KnowledgeBaseDocument(
-            document_id=document_id,
+        # Delegate to service layer
+        result = await knowledge_service.upload_document(
+            content=content_str,
             title=title,
-            content=sanitized_content,
             document_type=document_type,
             tags=tag_list,
-            source_url=source_url,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            source_url=source_url
         )
 
-        # Process document with knowledge base ingestion
-        job_id = await kb_ingestion.ingest_document_object(document)
+        logger.info(f"Successfully queued document {result['document_id']} for ingestion")
 
-        logger.info(f"Successfully queued document {document_id} for ingestion")
-
-        return {
-            "document_id": document_id,
-            "job_id": job_id,
-            "status": "queued",
-            "message": "Document uploaded and queued for processing",
-        }
+        return result
 
     except Exception as e:
         logger.error(f"Document upload failed: {e}")
@@ -131,7 +101,7 @@ async def list_documents(
     tags: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
-    kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion),
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
     """
     List knowledge base documents with optional filtering
@@ -153,28 +123,13 @@ async def list_documents(
         if tags:
             tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
 
-        # Get documents from knowledge base
-        documents = await kb_ingestion.list_documents(
-            document_type=document_type, tags=tag_list, limit=limit, offset=offset
+        # Delegate to service layer
+        return await knowledge_service.list_documents(
+            document_type=document_type,
+            tags=tag_list,
+            limit=limit,
+            offset=offset
         )
-
-        return {
-            "documents": [
-                {
-                    "document_id": doc.document_id,
-                    "title": doc.title,
-                    "document_type": doc.document_type,
-                    "tags": doc.tags,
-                    "source_url": doc.source_url,
-                    "created_at": doc.created_at.isoformat(),
-                    "updated_at": doc.updated_at.isoformat(),
-                }
-                for doc in documents
-            ],
-            "total": len(documents),
-            "limit": limit,
-            "offset": offset,
-        }
 
     except Exception as e:
         logger.error(f"Failed to list documents: {e}")
@@ -185,7 +140,7 @@ async def list_documents(
 
 @router.get("/documents/{document_id}")
 async def get_document(
-    document_id: str, kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion)
+    document_id: str, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
 ) -> KnowledgeBaseDocument:
     """
     Get a specific knowledge base document
@@ -199,7 +154,7 @@ async def get_document(
     logger = logging.getLogger(__name__)
 
     try:
-        document = await kb_ingestion.get_document(document_id)
+        document = await knowledge_service.get_document(document_id)
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
 
@@ -216,7 +171,7 @@ async def get_document(
 
 @router.delete("/documents/{document_id}")
 async def delete_document(
-    document_id: str, kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion)
+    document_id: str, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
 ) -> dict:
     """
     Delete a knowledge base document
@@ -230,8 +185,8 @@ async def delete_document(
     logger = logging.getLogger(__name__)
 
     try:
-        success = await kb_ingestion.delete_document(document_id)
-        if not success:
+        result = await knowledge_service.delete_document(document_id)
+        if not result.get("success"):
             raise HTTPException(status_code=404, detail="Document not found")
 
         logger.info(f"Successfully deleted document {document_id}")
@@ -253,7 +208,7 @@ async def delete_document(
 
 @router.get("/jobs/{job_id}")
 async def get_job_status(
-    job_id: str, kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion)
+    job_id: str, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
 ) -> dict:
     """
     Get the status of a knowledge base ingestion job
@@ -267,7 +222,7 @@ async def get_job_status(
     logger = logging.getLogger(__name__)
 
     try:
-        job_status = await kb_ingestion.get_job_status(job_id)
+        job_status = await knowledge_service.get_job_status(job_id)
         if not job_status:
             raise HTTPException(status_code=404, detail="Job not found")
 
@@ -285,7 +240,7 @@ async def get_job_status(
 @router.post("/search")
 @trace("api_search_documents")
 async def search_documents(
-    request: SearchRequest, kb_ingestion: KnowledgeIngester = Depends(get_kb_ingestion)
+    request: SearchRequest, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
 ) -> dict:
     """
     Search knowledge base documents
@@ -304,29 +259,13 @@ async def search_documents(
         if request.tags:
             tag_list = [tag.strip() for tag in request.tags.split(",") if tag.strip()]
 
-        # Search documents
-        results = await kb_ingestion.search_documents(
+        # Delegate to service layer
+        return await knowledge_service.search_documents(
             query=request.query,
             document_type=request.document_type,
             tags=tag_list,
             limit=request.limit,
         )
-
-        return {
-            "query": request.query,
-            "results": [
-                {
-                    "document_id": result["document_id"],
-                    "title": result["title"],
-                    "document_type": result["document_type"],
-                    "tags": result["tags"],
-                    "score": result["score"],
-                    "snippet": result["snippet"],
-                }
-                for result in results
-            ],
-            "total": len(results),
-        }
 
     except Exception as e:
         logger.error(f"Search failed: {e}")

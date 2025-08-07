@@ -3,7 +3,7 @@
 # Source this file to configure FaultMaven for K8s cluster connectivity
 
 # Redis K8s Service Configuration - Stable across pod restarts
-export REDIS_HOST="redis.faultmaven.local"
+export REDIS_HOST="192.168.0.111"
 export REDIS_PORT="30379"
 export REDIS_PASSWORD="faultmaven-dev-redis-2025"  # Never changes
 

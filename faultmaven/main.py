@@ -119,11 +119,11 @@ async def lifespan(app: FastAPI):
         redis_password=redis_password
     )
 
-    # Initialize DI container if using refactored services
+    # Initialize DI container
     if USE_DI_CONTAINER:
         if ENABLE_MIGRATION_LOGGING:
-            logger.info("Initializing refactored DI container")
-        from .container_refactored import container
+            logger.info("Initializing DI container")
+        from .container import container
         container.initialize()
         app.extra["di_container"] = container
         
@@ -253,7 +253,7 @@ async def health_check():
         "architecture": {
             "migration_strategy": get_migration_strategy(),
             "migration_safe": is_migration_safe(),
-            "using_refactored_api": USE_REFACTORED_API,
+            "using_new_api": USE_REFACTORED_API,
             "using_di_container": USE_DI_CONTAINER
         }
     }

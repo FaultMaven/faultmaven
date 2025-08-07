@@ -17,7 +17,6 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request
 
 from ...container import container
-from ...container_refactored import container as refactored_container
 from ...models import SessionContext
 from ...services import AgentService, DataService, KnowledgeService, SessionService
 
@@ -26,39 +25,28 @@ from ...services import AgentService, DataService, KnowledgeService, SessionServ
 
 async def get_session_service() -> SessionService:
     """Get SessionService instance from container"""
-    return container.session_service
+    return container.get_session_service()
 
 
 async def get_agent_service() -> AgentService:
     """Get AgentService instance from container"""
-    return container.agent_service
+    return container.get_agent_service()
 
 
 async def get_data_service() -> DataService:
     """Get DataService instance from container"""
-    return container.data_service
+    return container.get_data_service()
 
 
 async def get_knowledge_service() -> KnowledgeService:
     """Get KnowledgeService instance from container"""
-    return container.knowledge_service
+    return container.get_knowledge_service()
 
 
-# Refactored Service Dependencies (Phase 5)
+async def get_tracer():
+    """Get tracer instance from container"""
+    return container.get_tracer()
 
-async def get_agent_service_refactored():
-    """Get AgentServiceRefactored instance from refactored container"""
-    return refactored_container.get_agent_service()
-
-
-async def get_data_service_refactored():
-    """Get DataServiceRefactored instance from refactored container"""
-    return refactored_container.get_data_service()
-
-
-async def get_knowledge_service_refactored():
-    """Get KnowledgeServiceRefactored instance from refactored container"""
-    return refactored_container.get_knowledge_service()
 
 
 # Session Dependencies
@@ -287,11 +275,12 @@ async def check_service_health() -> dict:
     }
     
     try:
-        # Check session manager
-        if await container.session_manager.is_session_active("health-check"):
+        # Check session service
+        session_service = container.get_session_service()
+        if session_service:
             health_status["session_manager"] = "healthy"
         else:
-            health_status["session_manager"] = "healthy"
+            health_status["session_manager"] = "unhealthy"
     except:
         health_status["session_manager"] = "unhealthy"
         

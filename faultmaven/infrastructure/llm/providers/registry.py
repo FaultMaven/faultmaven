@@ -20,6 +20,9 @@ from .base import BaseLLMProvider, ProviderConfig, LLMResponse
 from .fireworks_provider import FireworksProvider
 from .openai_provider import OpenAIProvider
 from .local_provider import LocalProvider
+from .anthropic import AnthropicProvider
+from .gemini import GeminiProvider
+from .huggingface import HuggingFaceProvider
 
 
 # Data-driven provider schema - single source of truth
@@ -62,8 +65,8 @@ PROVIDER_SCHEMA = {
         "model_var": "GEMINI_MODEL",
         "base_url_var": "GEMINI_API_BASE",
         "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
-        "default_model": "gemini-2.5-pro",
-        "provider_class": LocalProvider,  # Placeholder - needs implementation
+        "default_model": "gemini-1.5-pro",
+        "provider_class": GeminiProvider,
         "max_retries": 3,
         "timeout": 30,
         "confidence_score": 0.8
@@ -74,10 +77,10 @@ PROVIDER_SCHEMA = {
         "base_url_var": "HUGGINGFACE_API_URL",
         "default_base_url": "https://api-inference.huggingface.co/models",
         "default_model": "tiiuae/falcon-7b-instruct",
-        "provider_class": LocalProvider,  # Placeholder - needs implementation
+        "provider_class": HuggingFaceProvider,
         "max_retries": 3,
         "timeout": 30,
-        "confidence_score": 0.7
+        "confidence_score": 0.75
     },
     "openrouter": {
         "api_key_var": "OPENROUTER_API_KEY",
@@ -95,8 +98,8 @@ PROVIDER_SCHEMA = {
         "model_var": "ANTHROPIC_MODEL",
         "base_url_var": "ANTHROPIC_API_BASE",
         "default_base_url": "https://api.anthropic.com/v1",
-        "default_model": "claude-3-opus",
-        "provider_class": OpenAIProvider,  # Placeholder - would need custom class for production
+        "default_model": "claude-3-sonnet-20240229",
+        "provider_class": AnthropicProvider,
         "max_retries": 3,
         "timeout": 30,
         "confidence_score": 0.85

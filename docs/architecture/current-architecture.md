@@ -1,9 +1,9 @@
-# FaultMaven Architecture - Interface-Based Service Design
+# FaultMaven Architecture - Interface-Based System
 
-This document describes the current architecture of FaultMaven, featuring interface-based programming, dependency injection, and a layered service-oriented design that supports flexible deployment configurations.
+This document describes the current architecture of FaultMaven, featuring a fully activated interface-based programming model with comprehensive dependency injection and clean service-oriented design.
 
 **Last Updated**: January 2025  
-**Status**: Production-ready with interface-based architecture and configurable service deployment
+**Status**: Production-ready with complete interface-based architecture and 7 LLM providers
 
 ## Overview
 
@@ -44,9 +44,9 @@ FaultMaven features a modular, interface-based service-oriented architecture des
 **Purpose**: Orchestrate business operations and enforce business rules
 
 **Components**:
-- `AgentService` / `AgentServiceRefactored` - Troubleshooting workflow orchestration with interface dependencies
-- `DataService` / `DataServiceRefactored` - Data processing pipeline management with pluggable processors
-- `KnowledgeService` / `KnowledgeServiceRefactored` - Knowledge base operations with vector store abstraction
+- `AgentService` - Troubleshooting workflow orchestration with interface dependencies
+- `DataService` - Data processing pipeline management with pluggable processors
+- `KnowledgeService` - Knowledge base operations with vector store abstraction
 - `SessionService` - Session lifecycle and analytics
 
 **Responsibilities**:
@@ -108,21 +108,21 @@ core/
 **Architecture**: FaultMaven now integrates with dedicated K8s microservices for:
 
 **Redis Session Storage**:
-- **Service**: `redis.faultmaven.local:30379`
+- **Service**: `192.168.0.111:30379` (NodePort - TCP protocol)
 - **Purpose**: Distributed session management with authentication
 - **Implementation**: Enhanced Redis client with health checks and fallback
 - **Configuration**: Environment variables with K8s defaults
 
 **ChromaDB Vector Storage**:
-- **Service**: `chromadb.faultmaven.local:30432`
+- **Service**: `chromadb.faultmaven.local:30080`
 - **Purpose**: Vector database for knowledge base and embeddings
 - **Authentication**: Token-based with `faultmaven-dev-chromadb-2025`
 - **Implementation**: HTTP client with graceful local fallback
 
 **Presidio PII Protection**:
 - **Services**: 
-  - Analyzer: `presidio.faultmaven.local:30433`
-  - Anonymizer: `presidio.faultmaven.local:30434`
+  - Analyzer: `presidio-analyzer.faultmaven.local:30080`
+  - Anonymizer: `presidio-anonymizer.faultmaven.local:30080`
 - **Purpose**: Advanced PII detection and redaction
 - **Implementation**: HTTP API integration with regex fallback
 - **Benefits**: Removes heavy spaCy model loading from main application
@@ -185,9 +185,9 @@ container.get_sanitizer() -> ISanitizer implementation
 container.get_tracer() -> ITracer implementation
 
 # Service Layer
-container.get_agent_service() -> AgentServiceRefactored
-container.get_data_service() -> DataServiceRefactored
-container.get_knowledge_service() -> KnowledgeServiceRefactored
+container.get_agent_service() -> AgentService
+container.get_data_service() -> DataService
+container.get_knowledge_service() -> KnowledgeService
 
 # Processing Layer
 container.get_data_classifier() -> IDataClassifier implementation
@@ -199,7 +199,7 @@ container.get_log_processor() -> ILogProcessor implementation
 Services receive all dependencies through constructor injection:
 
 ```python
-class AgentServiceRefactored:
+class AgentService:
     def __init__(
         self,
         llm_provider: ILLMProvider,
@@ -281,11 +281,11 @@ export USE_DI_CONTAINER=true
 ```
 POST /api/v1/query/troubleshoot
   ↓
-API Route (agent_refactored.py)
-  ↓ [Depends(get_agent_service_refactored)]
+API Route (agent.py)
+  ↓ [Depends(get_agent_service)]
 DI Container Resolution
-  ↓ [Returns AgentServiceRefactored with injected interfaces]
-AgentServiceRefactored.process_query()
+  ↓ [Returns AgentService with injected interfaces]
+AgentService.process_query()
   ↓ [Uses ILLMProvider, ISanitizer, ITracer, BaseTool[]]
 Core Agent + Tools Execution
   ↓ [Interface-based implementations]
@@ -380,13 +380,28 @@ Services are configured through the container with environment-based settings.
 - Services can be extracted individually
 - API versioning supports evolution
 
-## Benefits
+## Architecture Benefits
 
-1. **Maintainability**: Clear structure and responsibilities
-2. **Testability**: Easy mocking through DI
-3. **Scalability**: Service isolation enables scaling
-4. **Flexibility**: Easy to modify and extend
-5. **Quality**: Type safety and validation throughout
+### Development Benefits
+1. **Maintainability**: Clear interface contracts and layer separation
+2. **Testability**: Comprehensive interface mocking with 341 passing tests
+3. **Flexibility**: Hot-swappable implementations without code changes
+4. **Developer Experience**: Type safety and clear dependency graphs
+5. **Debugging**: Health monitoring and detailed error reporting
+
+### Operational Benefits
+1. **Reliability**: Multi-provider fallback chains prevent single points of failure
+2. **Observability**: Distributed tracing across all LLM calls and operations
+3. **Privacy**: Comprehensive PII redaction with Presidio integration
+4. **Performance**: Lazy initialization and intelligent caching strategies
+5. **Scalability**: Interface-based design enables horizontal scaling
+
+### Business Benefits
+1. **Cost Optimization**: Intelligent provider routing based on cost/performance
+2. **Vendor Independence**: Easy switching between 7 LLM providers
+3. **Compliance**: Built-in PII protection and data sanitization
+4. **Time to Market**: Rapid feature development through clean interfaces
+5. **Risk Mitigation**: Graceful degradation and comprehensive fallback strategies
 
 ## Future Enhancements
 

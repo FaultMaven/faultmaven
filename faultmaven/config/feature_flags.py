@@ -158,7 +158,7 @@ def get_container_type():
     if USE_DI_CONTAINER:
         if ENABLE_MIGRATION_LOGGING:
             logger.info("Using refactored DI container")
-        from faultmaven.container_refactored import container
+        from faultmaven.container import container
         return container
     else:
         if ENABLE_MIGRATION_LOGGING:

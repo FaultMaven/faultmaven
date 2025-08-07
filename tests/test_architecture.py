@@ -2,7 +2,7 @@
 
 Purpose: Ensure architectural constraints are enforced and boundaries are maintained
 
-This test suite validates that the refactored architecture maintains proper separation
+This test suite validates that the clean architecture maintains proper separation
 of concerns, follows dependency injection patterns, and enforces interface boundaries.
 
 Key Validations:
@@ -33,9 +33,9 @@ class TestArchitectureBoundaries:
             if file.name.startswith('__'):
                 continue
             
-            # Only check refactored routes for boundary compliance
-            # Original routes are legacy and maintained for compatibility
-            if not file.name.endswith('_refactored.py') and file.name != 'dependencies.py':
+            # Only check main routes for boundary compliance
+            # Skip init and dependencies files
+            if file.name.startswith('__') or file.name == 'dependencies.py':
                 continue
                 
             content = file.read_text()
@@ -96,7 +96,8 @@ class TestArchitectureBoundaries:
 
     def test_service_layer_structure(self):
         """Ensure service layer properly uses dependency injection"""
-        service_files = list(Path("faultmaven/services").rglob("*_refactored.py"))
+        service_files = list(Path("faultmaven/services").rglob("*.py"))
+        service_files = [f for f in service_files if not f.name.startswith('__')]
         violations = []
         
         for file in service_files:
@@ -128,7 +129,7 @@ class TestDependencyInjection:
 
     def test_container_interface_compliance(self):
         """Test that DI container properly provides interfaces"""
-        from faultmaven.container_refactored import DIContainer
+        from faultmaven.container import DIContainer
         
         container = DIContainer()
         container.initialize()
@@ -148,7 +149,7 @@ class TestDependencyInjection:
 
     def test_service_dependency_injection(self):
         """Test that services receive proper dependencies"""
-        from faultmaven.container_refactored import DIContainer
+        from faultmaven.container import DIContainer
         
         container = DIContainer()
         agent_service = container.get_agent_service()
@@ -161,7 +162,7 @@ class TestDependencyInjection:
 
     def test_container_health_reporting(self):
         """Test container health check provides meaningful status"""
-        from faultmaven.container_refactored import DIContainer
+        from faultmaven.container import DIContainer
         
         container = DIContainer()
         health = container.health_check()
@@ -178,7 +179,7 @@ class TestInterfaceCompliance:
 
     def test_llm_provider_interface(self):
         """Test LLM provider implements required interface"""
-        from faultmaven.container_refactored import DIContainer
+        from faultmaven.container import DIContainer
         
         container = DIContainer()
         llm_provider = container.get_llm_provider()
@@ -188,7 +189,7 @@ class TestInterfaceCompliance:
 
     def test_sanitizer_interface(self):
         """Test sanitizer implements required interface"""
-        from faultmaven.container_refactored import DIContainer
+        from faultmaven.container import DIContainer
         
         container = DIContainer()
         sanitizer = container.get_sanitizer()
@@ -206,7 +207,7 @@ class TestInterfaceCompliance:
 
     def test_tracer_interface(self):
         """Test tracer implements required interface"""
-        from faultmaven.container_refactored import DIContainer
+        from faultmaven.container import DIContainer
         
         container = DIContainer()
         tracer = container.get_tracer()
@@ -326,8 +327,8 @@ class TestFeatureFlagIntegration:
         valid_strategies = [
             "full_legacy_architecture",
             "full_new_architecture", 
-            "backend_refactored_api_legacy",
-            "api_refactored_backend_legacy",
+            "backend_new_api_legacy",
+            "api_new_backend_legacy",
             "partial_migration",
             "rollback_mode"
         ]

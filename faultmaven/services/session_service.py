@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from faultmaven.models import AgentState, SessionContext
+from faultmaven.models.interfaces import ITracer
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.session_management import SessionManager
 

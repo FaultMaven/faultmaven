@@ -1,11 +1,13 @@
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from datetime import datetime
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from faultmaven.models_original import QueryRequest
-from faultmaven.api.v1.routes.agent import router, get_session_manager, get_core_agent, get_data_sanitizer
+from faultmaven.models_original import QueryRequest, TroubleshootingResponse
+from faultmaven.api.v1.routes.agent import router
+from faultmaven.api.v1.dependencies import get_agent_service
 
 app = FastAPI()
 app.include_router(router)
@@ -13,50 +15,65 @@ client = TestClient(app)
 
 
 @pytest.fixture
-def mock_session_manager():
-    """Fixture to mock the SessionManager dependency."""
+def mock_agent_service():
+    """Fixture to mock the AgentService dependency."""
     mock = MagicMock()
-    mock.get_session = AsyncMock()
-    app.dependency_overrides[get_session_manager] = lambda: mock
+    mock.process_query = AsyncMock()
+    mock.get_investigation_results = AsyncMock()
+    mock.list_session_investigations = AsyncMock()
+    mock.health_check = AsyncMock()
+    app.dependency_overrides[get_agent_service] = lambda: mock
     yield mock
-    app.dependency_overrides.pop(get_session_manager, None)
+    app.dependency_overrides.pop(get_agent_service, None)
 
 
 @pytest.fixture
-def mock_agent():
-    """Fixture to mock the FaultMavenAgent dependency."""
-    mock = MagicMock()
-    mock.investigate = AsyncMock()
-    app.dependency_overrides[get_core_agent] = lambda: mock
-    yield mock
-    app.dependency_overrides.pop(get_core_agent, None)
+def sample_troubleshooting_response():
+    """Sample troubleshooting response for tests."""
+    return TroubleshootingResponse(
+        session_id="test_session",
+        investigation_id="test_investigation_id",
+        status="completed",
+        findings=[
+            {"type": "info", "message": "Sample finding"},
+            {"type": "warning", "message": "Sample warning"}
+        ],
+        root_cause="Sample root cause identified",
+        recommendations=["Sample recommendation 1", "Sample recommendation 2"],
+        confidence_score=0.85,
+        estimated_mttr="15 minutes",
+        next_steps=["Step 1", "Step 2"],
+        created_at=datetime.utcnow(),
+        completed_at=datetime.utcnow()
+    )
 
 
-def test_process_query_session_not_found(mock_session_manager):
+def test_process_query_session_not_found(mock_agent_service):
     """
     Test processing a query for a session that does not exist.
     """
-    mock_session_manager.get_session.return_value = None
+    # Configure mock to raise FileNotFoundError for session not found
+    mock_agent_service.process_query.side_effect = FileNotFoundError("Session not found")
     query = QueryRequest(session_id="non_existent_session", query="test query")
 
     response = client.post("/query/", json=query.model_dump())
 
     assert response.status_code == 404
-    assert "Session not found" in response.json()["detail"]
+    assert "Resource not found" in response.json()["detail"]
 
 
-def test_process_query_agent_fails(mock_session_manager, mock_agent):
+def test_process_query_agent_fails(mock_agent_service):
     """
     Test processing a query when the agent investigation fails.
     """
-    mock_session_manager.get_session.return_value = True  # Simulate session exists
-    mock_agent.process_query.side_effect = Exception("Agent failed")
+    # Configure mock to raise RuntimeError for agent processing failure
+    mock_agent_service.process_query.side_effect = RuntimeError("Agent processing failed")
     query = QueryRequest(session_id="active_session", query="test query")
 
     response = client.post("/query/", json=query.model_dump())
 
     assert response.status_code == 500
-    assert "Query processing failed" in response.json()["detail"]
+    assert "Internal server error" in response.json()["detail"]
 
 
 def test_process_query_missing_session_id():
@@ -88,30 +105,28 @@ def test_process_query_missing_query():
     assert any("query" in str(error) for error in error_detail)
 
 
-def test_process_query_empty_query(mock_session_manager):
+def test_process_query_empty_query(mock_agent_service):
     """
-    Test that empty query string returns 422 validation error.
+    Test that empty query string returns 400 validation error.
     """
-    # Mock session manager to return None (session not found)
-    mock_session_manager.get_session.return_value = None
+    # Configure mock to raise ValueError for empty query validation
+    mock_agent_service.process_query.side_effect = ValueError("Query cannot be empty")
     
     invalid_request = {"session_id": "test_session", "query": ""}  # Empty query
 
-    # The actual implementation doesn't validate empty strings, so this should pass through
-    # and fail at the session validation level
     response = client.post("/query/", json=invalid_request)
 
-    # Should fail at session validation, not query validation
-    assert response.status_code == 404
-    assert "Session not found" in response.json()["detail"]
+    # Should fail at query validation
+    assert response.status_code == 400
+    assert "Query cannot be empty" in response.json()["detail"]
 
 
-def test_process_query_invalid_priority(mock_session_manager):
+def test_process_query_invalid_priority(mock_agent_service, sample_troubleshooting_response):
     """
-    Test that invalid priority value returns 200 or 500 when session exists.
+    Test that invalid priority value is processed successfully (no strict validation).
     """
-    # Mock session exists
-    mock_session_manager.get_session.return_value = True
+    # Configure mock to return successful response - priority validation is lenient
+    mock_agent_service.process_query.return_value = sample_troubleshooting_response
     
     invalid_request = {
         "session_id": "test_session",
@@ -120,8 +135,9 @@ def test_process_query_invalid_priority(mock_session_manager):
     }
     
     response = client.post("/query/", json=invalid_request)
-    # Should process successfully since priority is not validated
-    assert response.status_code in (200, 500)  # Accept 500 for event loop issues
+    # Should process successfully since priority is not strictly validated
+    assert response.status_code == 200
+    assert response.json()["session_id"] == "test_session"
 
 
 def test_process_query_invalid_context_type():
@@ -158,12 +174,12 @@ def test_process_query_malformed_json():
     assert response.status_code == 422
 
 
-def test_process_query_extra_fields(mock_session_manager):
+def test_process_query_extra_fields(mock_agent_service, sample_troubleshooting_response):
     """
     Test that extra fields in request are handled gracefully.
     """
-    # Mock session manager to return None (session not found)
-    mock_session_manager.get_session.return_value = None
+    # Configure mock to return successful response - extra fields should be ignored
+    mock_agent_service.process_query.return_value = sample_troubleshooting_response
     
     request_with_extra = {
         "session_id": "test_session",
@@ -171,19 +187,19 @@ def test_process_query_extra_fields(mock_session_manager):
         "extra_field": "should_be_ignored",
     }
 
-    # This should fail at session validation since the session doesn't exist
+    # Extra fields should be ignored by Pydantic, processing should succeed
     response = client.post("/query/", json=request_with_extra)
 
-    # Should fail at session validation
-    assert response.status_code == 404
-    assert "Session not found" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["session_id"] == "test_session"
 
 
-def test_process_query_session_manager_exception(mock_session_manager):
+def test_process_query_session_manager_exception(mock_agent_service):
     """
-    Test that session manager exceptions are handled properly.
+    Test that service layer exceptions are handled properly.
     """
-    mock_session_manager.get_session.side_effect = Exception(
+    # Configure mock to raise generic Exception for service failure
+    mock_agent_service.process_query.side_effect = Exception(
         "Database connection failed"
     )
     query = QueryRequest(session_id="test_session", query="test query")
@@ -191,110 +207,82 @@ def test_process_query_session_manager_exception(mock_session_manager):
     response = client.post("/query/", json=query.model_dump())
 
     assert response.status_code == 500
-    assert "Query processing failed" in response.json()["detail"]
+    assert "Internal server error" in response.json()["detail"]
 
 
-def test_process_query_data_sanitizer_exception():
+def test_process_query_data_sanitizer_exception(mock_agent_service):
     """
     Test that data sanitizer exceptions are handled properly.
     """
-    with patch(
-        "faultmaven.api.v1.routes.agent.get_session_manager"
-    ) as mock_session_manager:
-        mock_session_manager.return_value.get_session = AsyncMock(return_value=True)
-        with patch(
-            "faultmaven.api.v1.routes.agent.get_data_sanitizer"
-        ) as mock_sanitizer:
-            mock_sanitizer.return_value.sanitize.side_effect = Exception(
-                "Sanitization failed"
-            )
-            query = QueryRequest(session_id="test_session", query="test query")
-            response = client.post("/query/", json=query.model_dump())
-            # Accept 500 (expected), 404 (patching issue), or 200 (rare)
-            assert response.status_code in (500, 404, 200)
-            if response.status_code == 500:
-                assert "Query processing failed" in response.json()["detail"]
+    # Configure mock to raise Exception for sanitization failure
+    mock_agent_service.process_query.side_effect = RuntimeError(
+        "Sanitization failed"
+    )
+    query = QueryRequest(session_id="test_session", query="test query")
+    response = client.post("/query/", json=query.model_dump())
+    
+    assert response.status_code == 500
+    assert "Internal server error" in response.json()["detail"]
 
 
-def test_process_query_agent_not_initialized():
+def test_process_query_agent_not_initialized(mock_agent_service):
     """
     Test handling when core agent is not initialized.
     """
-    from datetime import datetime
+    # Configure mock to raise RuntimeError for agent not initialized
+    mock_agent_service.process_query.side_effect = RuntimeError(
+        "Agent not initialized"
+    )
     
-    # Create a proper session mock object
-    mock_session = Mock()
-    mock_session.session_id = "test_session"
-    mock_session.user_id = "test_user"
-    mock_session.created_at = datetime.utcnow()
-    mock_session.last_activity = datetime.utcnow()
-    mock_session.investigation_history = []
+    query = QueryRequest(session_id="test_session", query="test query")
+    response = client.post("/query/", json=query.model_dump())
     
-    # Create mock session manager
-    mock_session_manager = MagicMock()
-    mock_session_manager.get_session = AsyncMock(return_value=mock_session)
-    mock_session_manager.add_investigation_history = AsyncMock()
-    
-    # Create mock data sanitizer
-    mock_sanitizer = MagicMock()
-    mock_sanitizer.sanitize.return_value = "test query"
-    
-    # Override dependencies
-    app.dependency_overrides[get_session_manager] = lambda: mock_session_manager
-    app.dependency_overrides[get_core_agent] = lambda: None  # Agent not initialized
-    app.dependency_overrides[get_data_sanitizer] = lambda: mock_sanitizer
-    
-    try:
-        query = QueryRequest(session_id="test_session", query="test query")
-        response = client.post("/query/", json=query.model_dump())
-        
-        # Should return 200 with placeholder response when agent is not initialized
-        assert response.status_code == 200
-        response_data = response.json()
-        assert response_data["status"] == "completed"
-        assert "pending" in response_data["root_cause"].lower()
-        
-    finally:
-        # Clean up dependency overrides
-        app.dependency_overrides.pop(get_session_manager, None)
-        app.dependency_overrides.pop(get_core_agent, None)
-        app.dependency_overrides.pop(get_data_sanitizer, None)
+    # Should return 500 error when agent is not initialized
+    assert response.status_code == 500
+    assert "Internal server error" in response.json()["detail"]
 
 
-def test_process_query_with_context():
+def test_process_query_with_context(mock_agent_service):
     """
     Test processing query with context data.
     """
-    with patch(
-        "faultmaven.api.v1.routes.agent.get_session_manager"
-    ) as mock_session_manager:
-        mock_session_manager.return_value.get_session = AsyncMock(return_value=True)
-        with patch("faultmaven.api.v1.routes.agent.get_core_agent") as mock_agent:
-            mock_agent.return_value.process_query = AsyncMock(
-                return_value={
-                    "findings": [{"type": "info", "message": "test finding"}],
-                    "root_cause": "test root cause",
-                    "recommendations": ["test recommendation"],
-                    "confidence_score": 0.9,
-                    "estimated_mttr": "30 minutes",
-                }
-            )
-            query_with_context = {
-                "session_id": "test_session",
-                "query": "test query",
-                "context": {
-                    "service_name": "test_service",
-                    "error_code": "ERR001",
-                    "environment": "production",
-                },
-                "priority": "high",
-            }
-            response = client.post("/query/", json=query_with_context)
-            # Accept 200 (expected), 404 (patching issue), or 500 (event loop issue)
-            assert response.status_code in (200, 404, 500)
-            if response.status_code == 200:
-                response_data = response.json()
-                assert response_data["session_id"] == "test_session"
-                assert response_data["status"] == "completed"
-                assert len(response_data["findings"]) == 1
-                assert response_data["confidence_score"] == 0.9
+    # Create a comprehensive response for context testing
+    expected_response = TroubleshootingResponse(
+        session_id="test_session",
+        investigation_id="context_test_investigation",
+        status="completed",
+        findings=[
+            {"type": "info", "message": "test finding with context"},
+            {"type": "analysis", "message": "context-aware analysis"}
+        ],
+        root_cause="test root cause with context",
+        recommendations=["context-based recommendation"],
+        confidence_score=0.9,
+        estimated_mttr="30 minutes",
+        next_steps=["Apply context-specific fix"],
+        created_at=datetime.utcnow(),
+        completed_at=datetime.utcnow()
+    )
+    
+    # Configure mock to return successful response with context
+    mock_agent_service.process_query.return_value = expected_response
+    
+    query_with_context = {
+        "session_id": "test_session",
+        "query": "test query",
+        "context": {
+            "service_name": "test_service",
+            "error_code": "ERR001",
+            "environment": "production",
+        },
+        "priority": "high",
+    }
+    
+    response = client.post("/query/", json=query_with_context)
+    
+    assert response.status_code == 200
+    response_data = response.json()
+    assert response_data["session_id"] == "test_session"
+    assert response_data["status"] == "completed"
+    assert len(response_data["findings"]) == 2
+    assert response_data["confidence_score"] == 0.9

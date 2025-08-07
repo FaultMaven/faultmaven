@@ -34,7 +34,7 @@ def test_health_check():
     architecture = data["architecture"]
     assert "migration_strategy" in architecture
     assert "migration_safe" in architecture
-    assert "using_refactored_api" in architecture
+    assert "using_new_api" in architecture
     assert "using_di_container" in architecture
 
 

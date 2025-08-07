@@ -1,320 +1,376 @@
-"""data_ingestion.py
+"""Refactored Data Routes - Phase 6.2
 
-Purpose: /data endpoint implementation
+Purpose: Thin API layer for data operations with pure delegation pattern
 
-Requirements:
---------------------------------------------------------------------------------
-• Handle multipart/form-data requests
-• Route content to appropriate processor
-• Return DataInsightsResponse
+This refactored module follows clean API architecture principles by removing
+all business logic from the API layer and delegating to the service layer.
 
-Key Components:
---------------------------------------------------------------------------------
-  router = APIRouter()
-  @router.post('/data')
+Key Changes from Original:
+- Removed all business logic (file processing, classification, analysis)
+- Pure delegation to DataServiceRefactored
+- Simplified file upload handling 
+- Proper dependency injection via DI container
+- Clean separation of concerns (API vs Business logic)
 
-Technology Stack:
---------------------------------------------------------------------------------
-FastAPI, Pydantic
-
-Core Design Principles:
---------------------------------------------------------------------------------
-• Privacy-First: Sanitize all external-bound data
-• Resilience: Implement retries and fallbacks
-• Cost-Efficiency: Use semantic caching
-• Extensibility: Use interfaces for pluggable components
-• Observability: Add tracing spans for key operations
+Architecture Pattern:
+API Route (validation + delegation) → Service Layer (business logic) → Core Domain
 """
 
 import logging
-import os
-import uuid
-from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
-import redis.asyncio as redis
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from faultmaven.core.processing.classifier import DataClassifier
-from faultmaven.core.processing.log_analyzer import LogProcessor
-from faultmaven.models import DataInsightsResponse, DataType, UploadedData
+from faultmaven.models import DataInsightsResponse, UploadedData
+from faultmaven.api.v1.dependencies import get_data_service
+from faultmaven.services.data_service import DataService
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.infrastructure.redis_client import create_redis_client
-from faultmaven.session_management import SessionManager
 
-router = APIRouter(prefix="/data", tags=["data_ingestion"])
+router = APIRouter(prefix="/data", tags=["data_processing"])
 
-# Global instances (in production, these would be dependency injected)
+logger = logging.getLogger(__name__)
 
-session_manager = SessionManager()  # Uses environment variables for Redis config
-data_classifier = DataClassifier()
-log_processor = LogProcessor()
-redis_client = create_redis_client()  # Uses enhanced Redis client
+# File size limit (10MB)
+MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
-def get_session_manager():
-    return session_manager
+@router.post("/", response_model=UploadedData)
+@trace("api_upload_data_compat")
+async def upload_data_compat(
+    file: UploadFile = File(...),
+    session_id: str = Form(...),
+    description: Optional[str] = Form(None),
+    data_service: DataService = Depends(get_data_service)
+) -> UploadedData:
+    """
+    Compatibility endpoint for legacy tests - delegates to main upload function
+    
+    This endpoint maintains backward compatibility for existing tests that
+    expect POST to /data instead of /data/upload.
+    """
+    return await upload_data(file, session_id, description, data_service)
 
 
-def get_data_classifier():
-    return data_classifier
-
-
-def get_log_processor():
-    return log_processor
-
-
-def get_redis_client():
-    return redis_client
-
-
-@router.post("/")
+@router.post("/upload", response_model=UploadedData)
 @trace("api_upload_data")
 async def upload_data(
     file: UploadFile = File(...),
     session_id: str = Form(...),
     description: Optional[str] = Form(None),
-    session_manager: SessionManager = Depends(get_session_manager),
-    data_classifier: DataClassifier = Depends(get_data_classifier),
-    log_processor: LogProcessor = Depends(get_log_processor),
-    redis_client = Depends(get_redis_client),
-) -> DataInsightsResponse:
+    data_service: DataService = Depends(get_data_service)
+) -> UploadedData:
     """
-    Upload and process data for troubleshooting analysis
-
+    Upload and process data with clean delegation pattern
+    
+    This endpoint follows the thin controller pattern:
+    1. Basic input validation (file size, type)
+    2. Pure delegation to service layer for all business logic
+    3. Clean error boundary handling
+    
     Args:
         file: File to upload
-        session_id: Session identifier
+        session_id: Session identifier 
         description: Optional description of the data
-
+        data_service: Injected DataServiceRefactored from DI container
+        
     Returns:
-        DataInsightsResponse with processing results
+        UploadedData with processing results
+        
+    Raises:
+        HTTPException: On service layer errors (400, 404, 413, 500)
     """
-    logger = logging.getLogger(__name__)
-    logger.info(f"Processing data upload for session {session_id}")
-
+    logger.info(f"Received data upload for session {session_id}: {file.filename}")
+    
     try:
-        # Validate session
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        # Generate data ID
-        data_id = str(uuid.uuid4())
-
+        # Basic file validation at API boundary
+        if file.size and file.size > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large: {file.size} bytes (max: {MAX_FILE_SIZE})"
+            )
+        
         # Read file content
         content = await file.read()
         content_str = content.decode("utf-8", errors="ignore")
-
-        # Classify the data
-        logger.info(f"Classifying data {data_id}")
-        data_type = await data_classifier.classify(content_str)
-
-        # Create uploaded data record (include data_type)
-        uploaded_data = UploadedData(
-            data_id=data_id,
-            session_id=session_id,
+        
+        # Pure delegation - all business logic is in the service layer
+        uploaded_data = await data_service.ingest_data(
             content=content_str,
+            session_id=session_id,
             file_name=file.filename,
-            file_size=len(content),
-            uploaded_at=datetime.utcnow(),
-            data_type=data_type,
-            insights=None,  # Will be populated after processing
+            file_size=len(content)
         )
-
-        # Process based on data type
-        if data_type == DataType.LOG_FILE:
-            logger.info(f"Processing log file {data_id}")
-            # Create basic agent state for context-aware processing
-            from faultmaven.models import AgentState
-
-            agent_state: AgentState = {
-                "session_id": session_id,
-                "user_query": description or "Data upload for analysis",
-                "current_phase": "data_processing",
-                "investigation_context": {
-                    "data_id": data_id,
-                    "data_type": data_type.value,
-                },
-                "findings": [],
-                "recommendations": [],
-                "confidence_score": 0.0,
-                "tools_used": ["log_processor"],
-            }
-            result = await log_processor.process(content_str, data_id, agent_state)
-        else:
-            # For other data types, create basic insights
-            result = DataInsightsResponse(
-                data_id=data_id,
-                data_type=data_type,
-                insights={
-                    "data_type": data_type.value,
-                    "file_name": file.filename,
-                    "file_size": len(content),
-                    "description": description or "No description provided",
-                    "classification_confidence": data_classifier.get_classification_confidence(
-                        content_str, data_type
-                    ),
-                },
-                confidence_score=data_classifier.get_classification_confidence(
-                    content_str, data_type
-                ),
-                processing_time_ms=0,
-                anomalies_detected=[],
-                recommendations=[
-                    f"Data classified as {data_type.value}",
-                    "Consider uploading additional context if needed",
-                ],
-            )
-
-        # Update uploaded data with insights
-        uploaded_data.insights = result.insights
-        uploaded_data.processing_status = "completed"
-
-        # Add to session
-        await session_manager.add_data_upload(session_id, data_id)
-
-        # Store insights in Redis
-        insights_key = f"insights:{data_id}"
-        await redis_client.set(
-            insights_key, result.model_dump_json(), ex=session_manager.session_timeout_seconds
-        )
-
-        # Add investigation history
-        await session_manager.add_investigation_history(
-            session_id,
-            {
-                "action": "data_upload",
-                "data_id": data_id,
-                "data_type": data_type.value,
-                "file_name": file.filename,
-                "insights": result.insights,
-            },
-        )
-
-        logger.info(f"Successfully processed data {data_id}")
-        return result
-
-    except HTTPException:
-        raise
+        
+        logger.info(f"Successfully uploaded data {uploaded_data.data_id}")
+        return uploaded_data
+        
+    except ValueError as e:
+        # Business logic validation errors
+        logger.warning(f"Data upload validation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    except PermissionError as e:
+        # Authorization/access errors
+        logger.warning(f"Data upload authorization failed: {e}")
+        raise HTTPException(status_code=403, detail="Access denied")
+        
+    except FileNotFoundError as e:
+        # Resource not found errors (session, etc.)
+        logger.warning(f"Resource not found: {e}")
+        raise HTTPException(status_code=404, detail="Resource not found")
+        
     except Exception as e:
-        logger.error(f"Data processing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Data processing failed: {str(e)}")
-
-
-@router.get("/{data_id}")
-async def get_data_insights(data_id: str, session_id: str) -> DataInsightsResponse:
-    """
-    Retrieve insights for previously uploaded data
-
-    Args:
-        data_id: Data identifier
-        session_id: Session identifier
-
-    Returns:
-        DataInsightsResponse with insights
-    """
-    logger = logging.getLogger(__name__)
-
-    try:
-        # Validate session
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        # Check if data belongs to session
-        if data_id not in session.data_uploads:
-            raise HTTPException(status_code=404, detail="Data not found in session")
-
-        # Retrieve insights from Redis
-        insights_key = f"insights:{data_id}"
-        insights_data = await redis_client.get(insights_key)
-
-        if not insights_data:
-            raise HTTPException(status_code=404, detail="Insights not found for data")
-
-        return DataInsightsResponse.model_validate_json(insights_data)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to retrieve data insights: {e}")
+        # Unexpected service layer errors
+        logger.error(f"Data upload failed unexpectedly: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to retrieve insights: {str(e)}"
+            status_code=500,
+            detail="Internal server error during data upload"
         )
 
 
-@router.get("/session/{session_id}/uploads")
-async def list_session_uploads(session_id: str):
+@router.post("/batch-upload", response_model=List[UploadedData])
+@trace("api_batch_upload_data")
+async def batch_upload_data(
+    files: List[UploadFile] = File(...),
+    session_id: str = Form(...),
+    data_service: DataService = Depends(get_data_service)
+) -> List[UploadedData]:
     """
-    List all data uploads for a session
+    Batch upload multiple files with clean delegation
+    
+    Args:
+        files: List of files to upload
+        session_id: Session identifier
+        data_service: Injected DataServiceRefactored
+        
+    Returns:
+        List of UploadedData results
+    """
+    logger.info(f"Received batch upload of {len(files)} files for session {session_id}")
+    
+    try:
+        # Validate batch size
+        if len(files) > 10:
+            raise HTTPException(
+                status_code=400,
+                detail="Too many files in batch (max: 10)"
+            )
+        
+        # Prepare data items for batch processing
+        data_items = []
+        for file in files:
+            if file.size and file.size > MAX_FILE_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File {file.filename} too large: {file.size} bytes"
+                )
+            
+            content = await file.read()
+            content_str = content.decode("utf-8", errors="ignore")
+            data_items.append((content_str, file.filename))
+        
+        # Delegate batch processing to service layer
+        results = await data_service.batch_process(data_items, session_id)
+        
+        logger.info(f"Successfully processed {len(results)} files")
+        return results
+        
+    except ValueError as e:
+        logger.warning(f"Batch upload validation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    except Exception as e:
+        logger.error(f"Batch upload failed unexpectedly: {e}")
+        raise HTTPException(status_code=500, detail="Batch upload failed")
 
+
+@router.post("/analyze/{data_id}", response_model=DataInsightsResponse)
+@trace("api_analyze_data")
+async def analyze_data(
+    data_id: str,
+    session_id: str = Form(...),
+    data_service: DataService = Depends(get_data_service)
+) -> DataInsightsResponse:
+    """
+    Analyze uploaded data with clean delegation
+    
+    Args:
+        data_id: Data identifier to analyze
+        session_id: Session identifier for validation
+        data_service: Injected DataServiceRefactored
+        
+    Returns:
+        DataInsightsResponse with analysis results
+    """
+    logger.info(f"Analyzing data {data_id} for session {session_id}")
+    
+    try:
+        # Pure delegation to service layer
+        insights = await data_service.analyze_data(data_id, session_id)
+        
+        logger.info(f"Successfully analyzed data {data_id}")
+        return insights
+        
+    except ValueError as e:
+        logger.warning(f"Data analysis validation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    except FileNotFoundError as e:
+        logger.warning(f"Data not found: {e}")
+        raise HTTPException(status_code=404, detail="Data not found")
+        
+    except Exception as e:
+        logger.error(f"Data analysis failed: {e}")
+        raise HTTPException(status_code=500, detail="Analysis failed")
+
+
+@router.get("/session/{session_id}", response_model=List[UploadedData])
+@trace("api_get_session_data")
+async def get_session_data(
+    session_id: str,
+    limit: Optional[int] = 10,
+    offset: Optional[int] = 0,
+    data_service: DataService = Depends(get_data_service)
+) -> List[UploadedData]:
+    """
+    Get all data for a session with clean delegation
+    
     Args:
         session_id: Session identifier
-
+        limit: Maximum number of results
+        offset: Pagination offset
+        data_service: Injected DataServiceRefactored
+        
     Returns:
-        List of uploaded data information
+        List of UploadedData for the session
     """
-    logger = logging.getLogger(__name__)
-
+    logger.info(f"Retrieving data for session {session_id}")
+    
     try:
-        # Validate session
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+        # Input validation at API boundary
+        if limit and (limit <= 0 or limit > 100):
+            raise HTTPException(
+                status_code=400,
+                detail="Limit must be between 1 and 100"
+            )
+        if offset and offset < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Offset must be non-negative"
+            )
+        
+        # Delegate to service layer
+        session_data = await data_service.get_session_data(session_id)
+        
+        # Apply pagination at API layer (simple approach)
+        start_idx = offset or 0
+        end_idx = start_idx + (limit or 10)
+        paginated_data = session_data[start_idx:end_idx]
+        
+        return paginated_data
+        
+    except ValueError as e:
+        logger.warning(f"Session data retrieval validation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    except FileNotFoundError as e:
+        logger.warning(f"Session not found: {e}")
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    except Exception as e:
+        logger.error(f"Session data retrieval failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve session data")
 
-        # Return session uploads
+
+@router.delete("/data/{data_id}")
+@trace("api_delete_data")
+async def delete_data(
+    data_id: str,
+    session_id: str,
+    data_service: DataService = Depends(get_data_service)
+):
+    """
+    Delete uploaded data with clean delegation
+    
+    Args:
+        data_id: Data identifier to delete
+        session_id: Session identifier for validation
+        data_service: Injected DataServiceRefactored
+        
+    Returns:
+        Success confirmation
+    """
+    logger.info(f"Deleting data {data_id} for session {session_id}")
+    
+    try:
+        # Delegate deletion logic to service layer
+        success = await data_service.delete_data(data_id, session_id)
+        
+        if success:
+            return {"message": "Data deleted successfully", "data_id": data_id}
+        else:
+            raise HTTPException(status_code=500, detail="Deletion failed")
+            
+    except ValueError as e:
+        logger.warning(f"Data deletion validation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    except FileNotFoundError as e:
+        logger.warning(f"Data not found: {e}")
+        raise HTTPException(status_code=404, detail="Data not found")
+        
+    except Exception as e:
+        logger.error(f"Data deletion failed: {e}")
+        raise HTTPException(status_code=500, detail="Deletion failed")
+
+
+@router.get("/health")
+@trace("api_data_health")
+async def health_check(
+    data_service: DataService = Depends(get_data_service)
+):
+    """
+    Health check endpoint with service delegation
+    
+    Returns:
+        Service health status
+    """
+    try:
+        # Delegate health check to service layer
+        health_status = await data_service.health_check()
+        
         return {
-            "session_id": session_id,
-            "uploads": session.data_uploads,
-            "total_uploads": len(session.data_uploads),
+            "status": "healthy",
+            "service": "data_refactored",
+            "details": health_status
         }
-
-    except HTTPException:
-        raise
+        
     except Exception as e:
-        logger.error(f"Failed to list session uploads: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to list uploads: {str(e)}")
-
-
-@router.delete("/{data_id}")
-async def delete_data(data_id: str, session_id: str):
-    """
-    Delete uploaded data
-
-    Args:
-        data_id: Data identifier
-        session_id: Session identifier
-
-    Returns:
-        Success message
-    """
-    logger = logging.getLogger(__name__)
-
-    try:
-        # Validate session
-        session = await session_manager.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        # Check if data belongs to session
-        if data_id not in session.data_uploads:
-            raise HTTPException(status_code=404, detail="Data not found in session")
-
-        # Remove from session
-        session.data_uploads.remove(data_id)
-
-        # Add to investigation history
-        await session_manager.add_investigation_history(
-            session_id, {"action": "data_deletion", "data_id": data_id}
+        logger.error(f"Data health check failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Data service unavailable"
         )
 
-        logger.info(f"Deleted data {data_id} from session {session_id}")
 
-        return {"message": f"Data {data_id} deleted successfully"}
+# Compatibility functions for legacy tests
+# These are stubs to support existing test infrastructure
+def get_session_manager():
+    """Compatibility function for legacy tests"""
+    from faultmaven.container import container
+    return container.session_service
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to delete data: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete data: {str(e)}")
+def get_data_classifier():
+    """Compatibility function for legacy tests"""
+    from faultmaven.container import container
+    return container.data_classifier
+
+def get_log_processor():
+    """Compatibility function for legacy tests"""
+    from faultmaven.container import container
+    return container.log_processor
+
+def get_redis_client():
+    """Compatibility function for legacy tests"""
+    from faultmaven.container import container
+    return container.redis_client
