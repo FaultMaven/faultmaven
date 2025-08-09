@@ -13,17 +13,17 @@ Core Responsibilities:
 - Cross-service session operations
 """
 
-import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from faultmaven.services.base_service import BaseService
 from faultmaven.models import AgentState, SessionContext
 from faultmaven.models.interfaces import ITracer
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.session_management import SessionManager
 
 
-class SessionService:
+class SessionService(BaseService):
     """Service for centralized session management and coordination"""
 
     def __init__(
@@ -31,7 +31,6 @@ class SessionService:
         session_manager: SessionManager,
         max_sessions_per_user: int = 10,
         inactive_threshold_hours: int = 24,
-        logger: Optional[logging.Logger] = None,
     ):
         """
         Initialize the Session Service
@@ -40,12 +39,12 @@ class SessionService:
             session_manager: Core session manager instance
             max_sessions_per_user: Maximum concurrent sessions per user
             inactive_threshold_hours: Hours before marking session inactive
-            logger: Optional logger instance
         """
+        super().__init__("session_service")
         self.session_manager = session_manager
         self.max_sessions_per_user = max_sessions_per_user
         self.inactive_threshold = timedelta(hours=inactive_threshold_hours)
-        self.logger = logger or logging.getLogger(__name__)
+        # Note: self.logger from BaseService replaces the manual logger
 
     @trace("session_service_create_session")
     async def create_session(

@@ -93,7 +93,8 @@ class TestDataIngestionAPI:
     @pytest.fixture
     def client(self, test_app):
         """Create test client."""
-        return TestClient(test_app)
+        with TestClient(test_app) as client:
+            yield client
 
     def test_upload_data_success(
         self,

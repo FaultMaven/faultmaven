@@ -34,6 +34,10 @@ python-docx>=1.1.2 # For processing DOCX documents
 opik>=0.2.1 # For Comet Opik tracing
 prometheus-client>=0.20.0 # For exposing Prometheus metrics
 
+# --- NEW: Enhanced Logging ---
+structlog>=24.1.0 # For structured logging
+python-json-logger>=2.0.7 # For JSON log formatting
+
 # --- NEW: Session Management ---
 redis[hiredis]>=5.0.0 # For distributed session storage
 

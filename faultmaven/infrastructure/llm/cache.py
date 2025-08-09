@@ -13,12 +13,9 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 import numpy as np
-try:
-    from sentence_transformers import SentenceTransformer
-except ImportError:
-    SentenceTransformer = None
 
 from .providers import LLMResponse
+from ..model_cache import model_cache
 
 
 class SemanticCache:
@@ -31,17 +28,12 @@ class SemanticCache:
         self.embeddings: Dict[str, np.ndarray] = {}
         self.logger = logging.getLogger(__name__)
 
-        # Initialize sentence transformer for semantic similarity
-        if SentenceTransformer:
-            try:
-                self.encoder = SentenceTransformer("BAAI/bge-m3")
-                self.logger.info("✅ Semantic cache initialized with BGE-M3")
-            except Exception as e:
-                self.logger.warning(f"Failed to load sentence transformer: {e}")
-                self.encoder = None
+        # Initialize sentence transformer for semantic similarity using cached model
+        self.encoder = model_cache.get_bge_m3_model()
+        if self.encoder:
+            self.logger.debug("✅ Semantic cache initialized with cached BGE-M3")
         else:
-            self.logger.warning("sentence-transformers not available, using simple cache")
-            self.encoder = None
+            self.logger.warning("BGE-M3 model not available, using simple cache without semantic similarity")
 
     def _get_cache_key(self, prompt: str, model: str) -> str:
         """Generate cache key for prompt and model"""

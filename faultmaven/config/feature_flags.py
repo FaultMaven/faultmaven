@@ -1,4 +1,4 @@
-"""Feature Flags - Phase 7.1
+"""Feature Flags - Phase 7.2
 
 Purpose: Safe migration control for architecture refactoring
 
@@ -6,38 +6,39 @@ This module provides feature flags to enable gradual migration from the original
 monolithic architecture to the new interface-based, service-oriented architecture.
 
 Feature Flags:
-- USE_REFACTORED_SERVICES: Enable refactored service layer with DI container
-- USE_REFACTORED_API: Enable refactored API routes with thin controllers  
-- USE_DI_CONTAINER: Enable centralized dependency injection container
-- ENABLE_MIGRATION_LOGGING: Extra logging during migration period
+- USE_REFACTORED_SERVICES: Enable refactored service layer with DI container (default: TRUE)
+- USE_REFACTORED_API: Enable refactored API routes with thin controllers (default: TRUE)  
+- USE_DI_CONTAINER: Enable centralized dependency injection container (default: TRUE)
+- ENABLE_MIGRATION_LOGGING: Extra logging during migration period (default: TRUE)
 
 Usage:
-    # Enable new architecture
-    export USE_REFACTORED_SERVICES=true
-    export USE_REFACTORED_API=true
-    export USE_DI_CONTAINER=true
+    # New architecture enabled by default (recommended)
+    # No environment variables needed - just run normally
     
-    # Gradual migration
-    export USE_REFACTORED_SERVICES=true  # Backend only
-    export USE_REFACTORED_API=false      # Keep old API
+    # Gradual migration (if needed for debugging)
+    export USE_REFACTORED_SERVICES=false  # Disable new services
+    export USE_REFACTORED_API=false       # Disable new API
+    
+    # Rollback to legacy (emergency use only)
+    export MIGRATION_ROLLBACK_MODE=true
     
 Architecture Migration Strategy:
-1. Phase 7.1: Feature flags created (current)
-2. Phase 7.2: Main app updated to respect flags
-3. Phase 8: Validation with both configurations
+1. Phase 7.1: Feature flags created 
+2. Phase 7.2: New architecture enabled by default (current)
+3. Phase 8: Validation with production workloads
 4. Phase 9: Remove flags and old code
 """
 
 import os
 import logging
 
-# Core architecture flags
-USE_REFACTORED_SERVICES = os.getenv("USE_REFACTORED_SERVICES", "false").lower() == "true"
-USE_REFACTORED_API = os.getenv("USE_REFACTORED_API", "false").lower() == "true"
-USE_DI_CONTAINER = os.getenv("USE_DI_CONTAINER", "false").lower() == "true"
+# Core architecture flags - Phase 2: Enabled by default for production readiness
+USE_REFACTORED_SERVICES = os.getenv("USE_REFACTORED_SERVICES", "true").lower() == "true"
+USE_REFACTORED_API = os.getenv("USE_REFACTORED_API", "true").lower() == "true"
+USE_DI_CONTAINER = os.getenv("USE_DI_CONTAINER", "true").lower() == "true"
 
-# Migration and debugging flags
-ENABLE_MIGRATION_LOGGING = os.getenv("ENABLE_MIGRATION_LOGGING", "false").lower() == "true"
+# Migration and debugging flags - Enable by default for visibility during transition
+ENABLE_MIGRATION_LOGGING = os.getenv("ENABLE_MIGRATION_LOGGING", "true").lower() == "true"
 ENABLE_PARALLEL_VALIDATION = os.getenv("ENABLE_PARALLEL_VALIDATION", "false").lower() == "true"
 MIGRATION_ROLLBACK_MODE = os.getenv("MIGRATION_ROLLBACK_MODE", "false").lower() == "true"
 

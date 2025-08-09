@@ -36,11 +36,11 @@ import pandas as pd
 import pypdf
 from chromadb.config import Settings
 from docx import Document
-from sentence_transformers import SentenceTransformer
 
 from faultmaven.models import KnowledgeBaseDocument
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.security.redaction import DataSanitizer
+from faultmaven.infrastructure.model_cache import model_cache
 
 
 class KnowledgeIngester:
@@ -94,13 +94,13 @@ class KnowledgeIngester:
             name="faultmaven_kb", metadata={"description": "FaultMaven Knowledge Base"}
         )
 
-        # Initialize sentence transformer for embeddings
-        try:
-            self.embedding_model = SentenceTransformer("BAAI/bge-m3")
-            self.logger.info("Loaded BAAI/bge-m3 embedding model")
-        except Exception as e:
-            self.logger.error(f"Failed to load embedding model: {e}")
-            raise
+        # Initialize sentence transformer for embeddings using cached model
+        self.embedding_model = model_cache.get_bge_m3_model()
+        if self.embedding_model is None:
+            self.logger.error("Failed to load BGE-M3 embedding model from cache")
+            raise RuntimeError("BGE-M3 model unavailable - knowledge ingestion cannot proceed")
+        else:
+            self.logger.debug("Using cached BGE-M3 embedding model")
 
         # Supported file extensions
         self.supported_extensions = {

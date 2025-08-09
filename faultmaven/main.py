@@ -56,21 +56,13 @@ from .config.feature_flags import (
 # Log feature flag status at startup
 log_feature_flag_status()
 
-# Conditionally import API routes based on feature flags
-if USE_REFACTORED_API:
-    if ENABLE_MIGRATION_LOGGING:
-        logger.info("Loading refactored API routes")
-    from .api.v1.routes import agent_refactored as agent
-    from .api.v1.routes import data_refactored as data
-    from .api.v1.routes import knowledge  # Knowledge routes not yet refactored
-    from .api.v1.routes import session
-else:
-    if ENABLE_MIGRATION_LOGGING:
-        logger.info("Loading original API routes")
-    from .api.v1.routes import agent, data, knowledge, session
+# Import API routes (already refactored with dependency injection)
+if ENABLE_MIGRATION_LOGGING:
+    logger.info(f"Loading API routes (refactored architecture: {USE_REFACTORED_API})")
+from .api.v1.routes import agent, data, knowledge, session
 
 from .infrastructure.observability.tracing import init_opik_tracing
-from .infrastructure.request_coordinator import UnifiedRequestMiddleware
+from .api.middleware.logging import LoggingMiddleware
 from .session_management import SessionManager
 
 # Optional opik middleware import
@@ -119,19 +111,52 @@ async def lifespan(app: FastAPI):
         redis_password=redis_password
     )
 
+    # Pre-load expensive ML models during startup (not per-request)
+    logger.info("Pre-loading ML models...")
+    try:
+        from .infrastructure.model_cache import model_cache
+        bge_model = model_cache.get_bge_m3_model()
+        if bge_model:
+            logger.info("✅ BGE-M3 model pre-loaded successfully")
+        else:
+            logger.warning("⚠️ BGE-M3 model not available")
+    except Exception as e:
+        logger.warning(f"Failed to pre-load ML models: {e}")
+
     # Initialize DI container
     if USE_DI_CONTAINER:
         if ENABLE_MIGRATION_LOGGING:
-            logger.info("Initializing DI container")
+            logger.info("Initializing DI container during startup lifespan event")
         from .container import container
+        
+        # Initialize container and validate completion
+        logger.info("🚀 Starting DI container initialization...")
         container.initialize()
         app.extra["di_container"] = container
         
+        # Validate initialization succeeded
+        if not getattr(container, '_initialized', False):
+            logger.error("❌ DI container initialization failed - _initialized flag is False")
+            raise RuntimeError("DI container initialization failed")
+        
         # Health check the container
         health = container.health_check()
-        logger.info(f"DI container health: {health['status']}")
-        if health['status'] != 'healthy':
-            logger.warning(f"DI container degraded: {health['components']}")
+        logger.info(f"📊 DI container health: {health['status']}")
+        if health['status'] == 'healthy':
+            logger.info("✅ DI container ready - all components initialized successfully during startup") 
+        else:
+            logger.warning(f"⚠️ DI container degraded: {health['components']}")
+            
+        # Test critical services to ensure they're available
+        try:
+            agent_service = container.get_agent_service()
+            session_service = container.get_session_service()
+            logger.info("✅ Critical services validated - container ready for requests (no lazy initialization needed)")
+        except Exception as e:
+            logger.error(f"❌ Critical services validation failed: {e}")
+            raise RuntimeError(f"Critical services not available: {e}")
+        
+        logger.info("🎯 Container initialization COMPLETE during startup - requests will be fast!")
     else:
         if ENABLE_MIGRATION_LOGGING:
             logger.info("Using original container system")
@@ -141,7 +166,7 @@ async def lifespan(app: FastAPI):
     # Setup tracing
     init_opik_tracing()
 
-    logger.info("FaultMaven API server started successfully")
+    logger.info("🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!")
 
     yield
 
@@ -194,10 +219,10 @@ logger.info(f"After CORS middleware: {[type(m).__name__ for m in app.user_middle
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 logger.info(f"After GZip middleware: {[type(m).__name__ for m in app.user_middleware]}")
 
-# 3. Unified request logging middleware (replaces old RequestLoggingMiddleware)
-logger.info("Adding UnifiedRequestMiddleware to FastAPI app")
-app.add_middleware(UnifiedRequestMiddleware)
-logger.info(f"After UnifiedRequest middleware: {[type(m).__name__ for m in app.user_middleware]}")
+# 3. New unified logging middleware (integrates with Phase 1 & 2 infrastructure)
+logger.info("Adding LoggingMiddleware to FastAPI app")
+app.add_middleware(LoggingMiddleware)
+logger.info(f"After LoggingMiddleware: {[type(m).__name__ for m in app.user_middleware]}")
 
 # 4. Opik tracing middleware (if available) - now coordinated with unified logging
 if OPIK_AVAILABLE and OPIK_MIDDLEWARE_AVAILABLE:
@@ -266,11 +291,64 @@ async def health_check():
                 container_health = container_instance.health_check()
                 health_status["services"]["di_container"] = container_health["status"]
                 health_status["architecture"]["container_components"] = container_health.get("components", {})
+                
+                # Add container initialization status for debugging
+                health_status["architecture"]["container_initialized"] = getattr(container_instance, '_initialized', False)
+                health_status["architecture"]["container_initializing"] = getattr(container_instance, '_initializing', False)
     except Exception as e:
         logger.warning(f"Failed to get DI container health: {e}")
         health_status["services"]["di_container"] = "unknown"
     
     return health_status
+
+
+@app.get("/health/dependencies")  
+async def health_check_dependencies():
+    """Detailed health check for all dependencies"""
+    try:
+        from .container import container
+        health = container.health_check()
+        
+        # Add detailed timing information
+        import time
+        start_time = time.time()
+        
+        # Test each service getter for performance
+        service_tests = {}
+        services = ['agent', 'data', 'knowledge', 'session', 'llm_provider', 'sanitizer', 'tracer']
+        
+        for service_name in services:
+            service_start = time.time()
+            try:
+                service_method = getattr(container, f'get_{service_name}_service' if service_name in ['agent', 'data', 'knowledge', 'session'] else f'get_{service_name}')
+                service_instance = service_method()
+                service_tests[service_name] = {
+                    "available": service_instance is not None,
+                    "response_time_ms": round((time.time() - service_start) * 1000, 2)
+                }
+            except Exception as e:
+                service_tests[service_name] = {
+                    "available": False,
+                    "error": str(e),
+                    "response_time_ms": round((time.time() - service_start) * 1000, 2)
+                }
+        
+        total_time_ms = round((time.time() - start_time) * 1000, 2)
+        
+        return {
+            "container_health": health,
+            "service_tests": service_tests,
+            "performance": {
+                "total_response_time_ms": total_time_ms,
+                "container_initialized": getattr(container, '_initialized', False),
+                "container_initializing": getattr(container, '_initializing', False)
+            }
+        }
+    except Exception as e:
+        return {
+            "error": f"Dependency health check failed: {e}",
+            "container_available": False
+        }
 
 
 # Additional endpoints for session management (legacy support)

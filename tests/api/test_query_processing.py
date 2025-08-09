@@ -11,7 +11,6 @@ from faultmaven.api.v1.dependencies import get_agent_service
 
 app = FastAPI()
 app.include_router(router)
-client = TestClient(app)
 
 
 @pytest.fixture
@@ -56,7 +55,8 @@ def test_process_query_session_not_found(mock_agent_service):
     mock_agent_service.process_query.side_effect = FileNotFoundError("Session not found")
     query = QueryRequest(session_id="non_existent_session", query="test query")
 
-    response = client.post("/query/", json=query.model_dump())
+    with TestClient(app) as client:
+        response = client.post("/query/", json=query.model_dump())
 
     assert response.status_code == 404
     assert "Resource not found" in response.json()["detail"]
@@ -70,7 +70,8 @@ def test_process_query_agent_fails(mock_agent_service):
     mock_agent_service.process_query.side_effect = RuntimeError("Agent processing failed")
     query = QueryRequest(session_id="active_session", query="test query")
 
-    response = client.post("/query/", json=query.model_dump())
+    with TestClient(app) as client:
+        response = client.post("/query/", json=query.model_dump())
 
     assert response.status_code == 500
     assert "Internal server error" in response.json()["detail"]
@@ -82,7 +83,8 @@ def test_process_query_missing_session_id():
     """
     invalid_request = {"query": "test query"}  # Missing session_id field
 
-    response = client.post("/query/", json=invalid_request)
+    with TestClient(app) as client:
+        response = client.post("/query/", json=invalid_request)
 
     assert response.status_code == 422
     error_detail = response.json()["detail"]
@@ -98,7 +100,8 @@ def test_process_query_missing_query():
         # Missing query field
     }
 
-    response = client.post("/query/", json=invalid_request)
+    with TestClient(app) as client:
+        response = client.post("/query/", json=invalid_request)
 
     assert response.status_code == 422
     error_detail = response.json()["detail"]
@@ -114,7 +117,8 @@ def test_process_query_empty_query(mock_agent_service):
     
     invalid_request = {"session_id": "test_session", "query": ""}  # Empty query
 
-    response = client.post("/query/", json=invalid_request)
+    with TestClient(app) as client:
+        response = client.post("/query/", json=invalid_request)
 
     # Should fail at query validation
     assert response.status_code == 400
@@ -134,7 +138,8 @@ def test_process_query_invalid_priority(mock_agent_service, sample_troubleshooti
         "priority": "invalid_priority",  # Invalid priority
     }
     
-    response = client.post("/query/", json=invalid_request)
+    with TestClient(app) as client:
+        response = client.post("/query/", json=invalid_request)
     # Should process successfully since priority is not strictly validated
     assert response.status_code == 200
     assert response.json()["session_id"] == "test_session"
@@ -150,7 +155,8 @@ def test_process_query_invalid_context_type():
         "context": "not_a_dict",  # Context should be dict, not string
     }
 
-    response = client.post("/query/", json=invalid_request)
+    with TestClient(app) as client:
+        response = client.post("/query/", json=invalid_request)
 
     assert response.status_code == 422
     error_detail = response.json()["detail"]
@@ -165,9 +171,10 @@ def test_process_query_malformed_json():
         '{"session_id": "test_session", "query": "test query", "priority":}'
     )
 
-    response = client.post(
-        "/query/",
-        json=malformed_json,
+    with TestClient(app) as client:
+        response = client.post(
+            "/query/",
+            json=malformed_json,
         headers={"Content-Type": "application/json"},
     )
 
@@ -188,7 +195,8 @@ def test_process_query_extra_fields(mock_agent_service, sample_troubleshooting_r
     }
 
     # Extra fields should be ignored by Pydantic, processing should succeed
-    response = client.post("/query/", json=request_with_extra)
+    with TestClient(app) as client:
+        response = client.post("/query/", json=request_with_extra)
 
     assert response.status_code == 200
     assert response.json()["session_id"] == "test_session"
@@ -204,7 +212,8 @@ def test_process_query_session_manager_exception(mock_agent_service):
     )
     query = QueryRequest(session_id="test_session", query="test query")
 
-    response = client.post("/query/", json=query.model_dump())
+    with TestClient(app) as client:
+        response = client.post("/query/", json=query.model_dump())
 
     assert response.status_code == 500
     assert "Internal server error" in response.json()["detail"]
@@ -219,7 +228,8 @@ def test_process_query_data_sanitizer_exception(mock_agent_service):
         "Sanitization failed"
     )
     query = QueryRequest(session_id="test_session", query="test query")
-    response = client.post("/query/", json=query.model_dump())
+    with TestClient(app) as client:
+        response = client.post("/query/", json=query.model_dump())
     
     assert response.status_code == 500
     assert "Internal server error" in response.json()["detail"]
@@ -235,7 +245,8 @@ def test_process_query_agent_not_initialized(mock_agent_service):
     )
     
     query = QueryRequest(session_id="test_session", query="test query")
-    response = client.post("/query/", json=query.model_dump())
+    with TestClient(app) as client:
+        response = client.post("/query/", json=query.model_dump())
     
     # Should return 500 error when agent is not initialized
     assert response.status_code == 500
@@ -278,7 +289,8 @@ def test_process_query_with_context(mock_agent_service):
         "priority": "high",
     }
     
-    response = client.post("/query/", json=query_with_context)
+    with TestClient(app) as client:
+        response = client.post("/query/", json=query_with_context)
     
     assert response.status_code == 200
     response_data = response.json()

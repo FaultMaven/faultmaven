@@ -33,9 +33,10 @@ from typing import Any, Dict, List, Optional
 import requests
 import json
 from faultmaven.models.interfaces import ISanitizer
+from faultmaven.infrastructure.base_client import BaseExternalClient
 
 
-class DataSanitizer(ISanitizer):
+class DataSanitizer(BaseExternalClient, ISanitizer):
     """Sanitizes sensitive information from text data
     
     Implements ISanitizer interface for privacy-first data processing.
@@ -44,7 +45,14 @@ class DataSanitizer(ISanitizer):
 
     def __init__(self):
         """Initialize the DataSanitizer with K8s Presidio service and custom patterns"""
-        self.logger = logging.getLogger(__name__)
+        # Initialize BaseExternalClient
+        super().__init__(
+            client_name="data_sanitizer",
+            service_name="Presidio_Services",
+            enable_circuit_breaker=True,
+            circuit_breaker_threshold=3,  # Lower threshold for privacy-critical service
+            circuit_breaker_timeout=30    # Shorter timeout for privacy service recovery
+        )
 
         # Configure K8s Presidio service endpoints (via NGINX Ingress)
         presidio_analyzer_host = os.getenv("PRESIDIO_ANALYZER_HOST", "presidio-analyzer.faultmaven.local")
@@ -248,74 +256,92 @@ class DataSanitizer(ISanitizer):
         return pattern.sub(replace_match, text)
 
     def _test_service_health(self, service_url: str) -> bool:
-        """Test if a Presidio service is available"""
-        try:
+        """Test if a Presidio service is available with external call wrapping"""
+        def health_check():
             health_url = f"{service_url}/health"
             response = self.session.get(health_url, timeout=5.0)
             return response.status_code == 200
+        
+        try:
+            return self.call_external_sync(
+                operation_name="health_check",
+                call_func=health_check,
+                retries=1,
+                retry_delay=1.0
+            )
         except Exception as e:
             self.logger.debug(f"Health check failed for {service_url}: {e}")
             return False
 
     def _apply_presidio(self, text: str) -> str:
-        """Apply K8s Presidio PII detection and redaction"""
+        """Apply K8s Presidio PII detection and redaction with external call wrapping"""
         if not (self.analyzer_available and self.anonymizer_available):
             self.logger.debug("Presidio services not available, skipping PII detection")
             return text
             
         try:
             # Step 1: Analyze text for PII entities using K8s analyzer service
-            analyze_payload = {
-                "text": text,
-                "language": "en"
-            }
-            
-            analyze_response = self.session.post(
-                f"{self.analyzer_url}/analyze",
-                json=analyze_payload,
-                timeout=self.request_timeout
-            )
-            
-            if analyze_response.status_code != 200:
-                self.logger.warning(f"Presidio analyzer failed with status {analyze_response.status_code}")
-                return text
+            def analyze_text():
+                analyze_payload = {
+                    "text": text,
+                    "language": "en"
+                }
                 
-            analyzer_results = analyze_response.json()
+                analyze_response = self.session.post(
+                    f"{self.analyzer_url}/analyze",
+                    json=analyze_payload,
+                    timeout=self.request_timeout
+                )
+                
+                if analyze_response.status_code != 200:
+                    raise RuntimeError(f"Presidio analyzer failed with status {analyze_response.status_code}")
+                    
+                return analyze_response.json()
+            
+            analyzer_results = self.call_external_sync(
+                operation_name="analyze_pii",
+                call_func=analyze_text,
+                retries=1,
+                retry_delay=1.0
+            )
             
             if not analyzer_results:
                 # No PII detected
                 return text
             
-            # Step 2: Anonymize text using K8s anonymizer service  
-            anonymize_payload = {
-                "text": text,
-                "analyzer_results": analyzer_results
-            }
+            # Step 2: Anonymize text using K8s anonymizer service
+            def anonymize_text():
+                anonymize_payload = {
+                    "text": text,
+                    "analyzer_results": analyzer_results
+                }
+                
+                anonymize_response = self.session.post(
+                    f"{self.anonymizer_url}/anonymize", 
+                    json=anonymize_payload,
+                    timeout=self.request_timeout
+                )
+                
+                if anonymize_response.status_code != 200:
+                    raise RuntimeError(f"Presidio anonymizer failed with status {anonymize_response.status_code}")
+                    
+                return anonymize_response.json()
             
-            anonymize_response = self.session.post(
-                f"{self.anonymizer_url}/anonymize", 
-                json=anonymize_payload,
-                timeout=self.request_timeout
+            anonymize_result = self.call_external_sync(
+                operation_name="anonymize_pii",
+                call_func=anonymize_text,
+                retries=1,
+                retry_delay=1.0
             )
             
-            if anonymize_response.status_code != 200:
-                self.logger.warning(f"Presidio anonymizer failed with status {anonymize_response.status_code}")
-                return text
-                
-            anonymize_result = anonymize_response.json()
             return anonymize_result.get("text", text)
 
-        except requests.exceptions.Timeout:
-            self.logger.warning("Presidio service timeout - falling back to original text")
-            return text
-        except requests.exceptions.ConnectionError:
-            self.logger.warning("Presidio service connection error - falling back to original text")
-            # Mark services as unavailable for next requests
-            self.analyzer_available = False
-            self.anonymizer_available = False
-            return text
         except Exception as e:
             self.logger.warning(f"Presidio K8s service error: {e}")
+            # Mark services as unavailable for next requests on connection errors
+            if "Connection" in str(e) or "Timeout" in str(e):
+                self.analyzer_available = False
+                self.anonymizer_available = False
             return text
 
     def is_sensitive(self, data: Any) -> bool:
@@ -347,7 +373,7 @@ class DataSanitizer(ISanitizer):
     
     def _is_text_sensitive(self, text: str) -> bool:
         """
-        Check if text contains sensitive information
+        Check if text contains sensitive information with external call wrapping
 
         Args:
             text: Text to check
@@ -366,22 +392,78 @@ class DataSanitizer(ISanitizer):
         # Check with K8s Presidio analyzer if available
         if self.analyzer_available:
             try:
-                analyze_payload = {
-                    "text": text,
-                    "language": "en"
-                }
+                def check_sensitivity():
+                    analyze_payload = {
+                        "text": text,
+                        "language": "en"
+                    }
+                    
+                    analyze_response = self.session.post(
+                        f"{self.analyzer_url}/analyze",
+                        json=analyze_payload,
+                        timeout=self.request_timeout
+                    )
+                    
+                    if analyze_response.status_code == 200:
+                        analyzer_results = analyze_response.json()
+                        return len(analyzer_results) > 0
+                    return False
                 
-                analyze_response = self.session.post(
-                    f"{self.analyzer_url}/analyze",
-                    json=analyze_payload,
-                    timeout=self.request_timeout
+                return self.call_external_sync(
+                    operation_name="check_sensitivity",
+                    call_func=check_sensitivity,
+                    retries=1,
+                    retry_delay=0.5
                 )
-                
-                if analyze_response.status_code == 200:
-                    analyzer_results = analyze_response.json()
-                    return len(analyzer_results) > 0
                     
             except Exception as e:
                 self.logger.warning(f"Presidio K8s sensitivity check failed: {e}")
 
         return False
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """
+        Perform comprehensive health check for DataSanitizer.
+        
+        Returns:
+            Dictionary containing health status and metrics
+        """
+        base_health = await super().health_check()
+        
+        # Add sanitizer-specific health data
+        try:
+            # Test service connectivity
+            analyzer_health = self._test_service_health(self.analyzer_url)
+            anonymizer_health = self._test_service_health(self.anonymizer_url)
+            
+            sanitizer_health = {
+                "analyzer_available": analyzer_health,
+                "anonymizer_available": anonymizer_health,
+                "presidio_services": {
+                    "analyzer_url": self.analyzer_url,
+                    "anonymizer_url": self.anonymizer_url
+                },
+                "custom_patterns_count": len(self.custom_patterns),
+                "replacement_patterns_count": len(self.replacements)
+            }
+            
+            # Determine overall status
+            if analyzer_health and anonymizer_health:
+                status = "healthy"
+            elif analyzer_health or anonymizer_health:
+                status = "degraded"  # Partial functionality
+            else:
+                status = "degraded"  # Custom patterns still work
+            
+            base_health.update({
+                "sanitizer_specific": sanitizer_health,
+                "status": status
+            })
+            
+        except Exception as e:
+            base_health.update({
+                "sanitizer_specific": {"error": str(e)},
+                "status": "unhealthy"
+            })
+        
+        return base_health

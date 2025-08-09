@@ -4,6 +4,9 @@ New LLM Router using Centralized Provider Registry.
 This router replaces the old scattered configuration approach with a clean,
 centralized provider registry system that handles provider management,
 fallback strategies, and configuration in a unified way.
+
+Inherits from BaseExternalClient for unified logging, retry logic, and
+circuit breaker patterns for external LLM provider calls.
 """
 
 import logging
@@ -11,17 +14,26 @@ from typing import Optional
 
 from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from .providers import LLMResponse, get_registry
 from .cache import SemanticCache
 
 
-class LLMRouter(ILLMProvider):
+class LLMRouter(BaseExternalClient, ILLMProvider):
     """Simplified LLM router using centralized provider registry"""
     
     def __init__(self, confidence_threshold: float = 0.8):
-        self.logger = logging.getLogger(__name__)
+        # Initialize BaseExternalClient
+        super().__init__(
+            client_name="llm_router",
+            service_name="LLM_Providers",
+            enable_circuit_breaker=True,
+            circuit_breaker_threshold=3,  # Lower threshold for LLM failures
+            circuit_breaker_timeout=30    # Shorter timeout for LLM recovery
+        )
+        
         self.sanitizer = DataSanitizer()
         self.cache = SemanticCache()
         self.confidence_threshold = confidence_threshold
@@ -77,14 +89,19 @@ class LLMRouter(ILLMProvider):
                 self.logger.info("✅ Using cached response")
                 return cached_response
         
-        # Route through registry
+        # Route through registry with BaseExternalClient wrapping
         try:
-            response = await self.registry.route_request(
+            response = await self.call_external(
+                operation_name="route_llm_request",
+                call_func=self.registry.route_request,
                 prompt=sanitized_prompt,
                 model=model,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 confidence_threshold=self.confidence_threshold,
+                timeout=60.0,  # 60 second timeout for LLM calls
+                retries=1,     # Single retry for failed LLM calls
+                retry_delay=2.0
             )
             
             # Store successful response in cache

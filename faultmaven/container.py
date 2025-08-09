@@ -45,14 +45,22 @@ class DIContainer:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
+            cls._instance._initializing = False  # Prevent re-entrant initialization
         return cls._instance
     
     def initialize(self):
         """Initialize all dependencies with proper error handling"""
+        logger = logging.getLogger(__name__)
+        
         if self._initialized:
+            logger.debug("Container already initialized, skipping")
             return
             
-        logger = logging.getLogger(__name__)
+        if getattr(self, '_initializing', False):
+            logger.debug("Container initialization already in progress, skipping")
+            return
+            
+        self._initializing = True
         logger.info("Initializing DI Container with interface-based dependencies")
         
         try:
@@ -67,6 +75,7 @@ class DIContainer:
             self._create_service_layer()
             
             self._initialized = True
+            self._initializing = False
             logger.info("✅ DI Container initialized successfully")
             
         except Exception as e:
@@ -81,6 +90,7 @@ class DIContainer:
                 import traceback
                 logger.error(f"Critical initialization error: {traceback.format_exc()}")
                 self._initialized = False
+                self._initializing = False
     
     def _create_minimal_container(self):
         """Create minimal container for testing environments without dependencies"""
@@ -217,17 +227,26 @@ class DIContainer:
     
     def get_agent_service(self):
         """Get the agent service with all dependencies injected"""
-        self.initialize()
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Agent service requested but container not initialized - this should not happen after startup")
+            self.initialize()
         return self.agent_service
     
     def get_data_service(self):
         """Get the data service with all dependencies injected"""
-        self.initialize()
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Data service requested but container not initialized - this should not happen after startup")
+            self.initialize()
         return self.data_service
         
     def get_knowledge_service(self):
         """Get the knowledge service with all dependencies injected"""
-        self.initialize()
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Knowledge service requested but container not initialized - this should not happen after startup")
+            self.initialize()
         if self.knowledge_service is None:
             return self._create_minimal_knowledge_service()
         return self.knowledge_service
@@ -257,37 +276,58 @@ class DIContainer:
     
     def get_llm_provider(self):
         """Get the LLM provider interface implementation"""
-        self.initialize()
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("LLM provider requested but container not initialized - this should not happen after startup")
+            self.initialize()
         return self.llm_provider
     
     def get_sanitizer(self):
         """Get the data sanitizer interface implementation"""
-        self.initialize()
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Data sanitizer requested but container not initialized - this should not happen after startup")
+            self.initialize()
         return self.sanitizer
     
     def get_tracer(self):
         """Get the tracer interface implementation"""
-        self.initialize()
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Tracer requested but container not initialized - this should not happen after startup")
+            self.initialize()
         return self.tracer
     
     def get_tools(self):
         """Get list of available tools"""
-        self.initialize()
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Tools requested but container not initialized - this should not happen after startup")
+            self.initialize()
         return self.tools
     
     def get_data_classifier(self):
         """Get the data classifier interface implementation"""
-        self.initialize()
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Data classifier requested but container not initialized - this should not happen after startup")
+            self.initialize()
         return self.data_classifier
     
     def get_log_processor(self):
         """Get the log processor interface implementation"""
-        self.initialize()
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Log processor requested but container not initialized - this should not happen after startup")
+            self.initialize()
         return self.log_processor
     
     def get_session_service(self):
         """Get the session service implementation"""
-        self.initialize()
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Session service requested but container not initialized - this should not happen after startup")
+            self.initialize()
         return self.session_service
     
     def _create_minimal_session_service(self):
@@ -357,6 +397,7 @@ class DIContainer:
     def reset(self):
         """Reset container state (useful for testing)"""
         self._initialized = False
+        self._initializing = False
         
         # Clear all cached infrastructure and service components
         infrastructure_attrs = [

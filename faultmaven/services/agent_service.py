@@ -22,16 +22,16 @@ Key Differences from Original:
 - Fully testable with mocked interfaces
 """
 
-import logging
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from faultmaven.services.base_service import BaseService
 from faultmaven.models.interfaces import ILLMProvider, BaseTool, ITracer, ISanitizer
 from faultmaven.models import QueryRequest, TroubleshootingResponse
 
 
-class AgentService:
+class AgentService(BaseService):
     """Agent Service using interface dependencies via dependency injection"""
 
     def __init__(
@@ -40,8 +40,7 @@ class AgentService:
         tools: List[BaseTool],
         tracer: ITracer,
         sanitizer: ISanitizer,
-        session_service: Optional[Any] = None,
-        logger: Optional[logging.Logger] = None
+        session_service: Optional[Any] = None
     ):
         """Initialize with interface dependencies via dependency injection
         
@@ -51,14 +50,13 @@ class AgentService:
             tracer: Interface for distributed tracing
             sanitizer: Interface for data sanitization
             session_service: Optional session service for session validation
-            logger: Optional logger instance
         """
+        super().__init__()
         self._llm = llm_provider
         self._tools = tools
         self._tracer = tracer
         self._sanitizer = sanitizer
         self._session_service = session_service
-        self._logger = logger or logging.getLogger(__name__)
 
     async def process_query(
         self,
@@ -77,57 +75,81 @@ class AgentService:
             ValueError: If request validation fails
             RuntimeError: If agent processing fails
         """
-        with self._tracer.trace("agent_service_process_query"):
-            # 1. Validate and sanitize input
-            await self._validate_request(request)
-            
-            sanitized_query = self._sanitizer.sanitize(request.query)
-            
-            # 2. Generate investigation ID
-            investigation_id = str(uuid.uuid4())
-            self._logger.debug(f"Created investigation {investigation_id}")
-            
-            try:
-                # 3. Create and configure agent with interfaces
-                from faultmaven.core.agent.agent import FaultMavenAgent
-                agent = FaultMavenAgent(llm_interface=self._llm)
-                
-                # 4. Execute troubleshooting using interfaces
-                start_time = datetime.utcnow()
-                
-                result = await agent.run(
-                    query=sanitized_query,
-                    session_id=request.session_id,
-                    tools=self._tools,  # Pass interface-based tools
-                    context=request.context or {}
-                )
-                
-                end_time = datetime.utcnow()
-                processing_time = (end_time - start_time).total_seconds()
-                
-                # 5. Format response using interfaces
-                response = self._format_response(
-                    investigation_id=investigation_id,
-                    session_id=request.session_id,
-                    agent_result=result,
-                    start_time=start_time,
-                    end_time=end_time,
-                    processing_time=processing_time
-                )
-                
-                self._logger.info(
-                    f"Successfully processed investigation {investigation_id} "
-                    f"with confidence {response.confidence_score}"
-                )
-                
-                return response
-                
-            except Exception as e:
-                self._logger.error(
-                    f"Agent processing failed for investigation {investigation_id}: {e}"
-                )
-                raise RuntimeError(f"Agent processing failed: {str(e)}") from e
+        return await self.execute_operation(
+            "process_query",
+            self._execute_query_processing,
+            request,
+            validate_inputs=self._validate_request
+        )
 
+    async def _execute_query_processing(self, request: QueryRequest) -> TroubleshootingResponse:
+        """Execute the core query processing logic"""
+        # 1. Sanitize input
+        sanitized_query = self._sanitizer.sanitize(request.query)
+        
+        # 2. Generate investigation ID
+        investigation_id = str(uuid.uuid4())
+        
+        # Log business event for investigation start
+        self.log_business_event(
+            "investigation_started",
+            "info",
+            {
+                "investigation_id": investigation_id,
+                "session_id": request.session_id,
+                "query_length": len(sanitized_query)
+            }
+        )
+        
+        # 3. Create and configure agent with interfaces
+        from faultmaven.core.agent.agent import FaultMavenAgent
+        agent = FaultMavenAgent(llm_interface=self._llm)
+        
+        # 4. Execute troubleshooting using interfaces
+        start_time = datetime.utcnow()
+        
+        result = await agent.run(
+            query=sanitized_query,
+            session_id=request.session_id,
+            tools=self._tools,  # Pass interface-based tools
+            context=request.context or {}
+        )
+        
+        end_time = datetime.utcnow()
+        processing_time = (end_time - start_time).total_seconds()
+        
+        # Log processing metrics
+        self.log_metric(
+            "investigation_processing_time",
+            processing_time,
+            "seconds",
+            {"investigation_id": investigation_id}
+        )
+        
+        # 5. Format response using interfaces
+        response = self._format_response(
+            investigation_id=investigation_id,
+            session_id=request.session_id,
+            agent_result=result,
+            start_time=start_time,
+            end_time=end_time,
+            processing_time=processing_time
+        )
+        
+        # Log business event for investigation completion
+        self.log_business_event(
+            "investigation_completed",
+            "info",
+            {
+                "investigation_id": investigation_id,
+                "session_id": request.session_id,
+                "confidence_score": response.confidence_score,
+                "processing_time_seconds": processing_time
+            }
+        )
+        
+        return response
+    
     async def _validate_request(self, request: QueryRequest) -> None:
         """Validate request using interface methods
         
@@ -246,41 +268,72 @@ class AgentService:
         Raises:
             RuntimeError: If analysis fails
         """
-        with self._tracer.trace("agent_service_analyze_findings"):
-            self._logger.debug(f"Analyzing {len(findings)} findings for session {session_id}")
-            
-            try:
-                # Sanitize input findings
-                sanitized_findings = self._sanitizer.sanitize(findings)
-                
-                # Group findings by type
-                findings_by_type = self._group_findings_by_type(sanitized_findings)
-                
-                # Identify patterns
-                patterns = await self._identify_patterns(findings_by_type)
-                
-                # Calculate severity distribution
-                severity_dist = self._calculate_severity_distribution(sanitized_findings)
-                
-                # Generate insights
-                insights = {
-                    "total_findings": len(sanitized_findings),
-                    "findings_by_type": {
-                        type_name: len(items) for type_name, items in findings_by_type.items()
-                    },
-                    "severity_distribution": severity_dist,
-                    "patterns_identified": patterns,
-                    "critical_issues": self._extract_critical_issues(sanitized_findings),
-                    "session_id": session_id,
-                    "analysis_timestamp": datetime.utcnow().isoformat()
-                }
-                
-                # Sanitize output
-                return self._sanitizer.sanitize(insights)
-                
-            except Exception as e:
-                self._logger.error(f"Failed to analyze findings: {e}")
-                raise RuntimeError(f"Analysis failed: {str(e)}") from e
+        return await self.execute_operation(
+            "analyze_findings",
+            self._execute_findings_analysis,
+            findings,
+            session_id
+        )
+    
+    async def _execute_findings_analysis(
+        self, 
+        findings: List[Dict[str, Any]], 
+        session_id: str
+    ) -> Dict[str, Any]:
+        """Execute the core findings analysis logic"""
+        # Sanitize input findings
+        sanitized_findings = self._sanitizer.sanitize(findings)
+        
+        # Log business event
+        self.log_business_event(
+            "findings_analysis_started",
+            "info",
+            {
+                "session_id": session_id,
+                "findings_count": len(sanitized_findings)
+            }
+        )
+        
+        # Group findings by type
+        findings_by_type = self._group_findings_by_type(sanitized_findings)
+        
+        # Identify patterns
+        patterns = await self._identify_patterns(findings_by_type)
+        
+        # Calculate severity distribution
+        severity_dist = self._calculate_severity_distribution(sanitized_findings)
+        
+        # Generate insights
+        insights = {
+            "total_findings": len(sanitized_findings),
+            "findings_by_type": {
+                type_name: len(items) for type_name, items in findings_by_type.items()
+            },
+            "severity_distribution": severity_dist,
+            "patterns_identified": patterns,
+            "critical_issues": self._extract_critical_issues(sanitized_findings),
+            "session_id": session_id,
+            "analysis_timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Log metrics
+        self.log_metric(
+            "findings_analyzed",
+            len(sanitized_findings),
+            "count",
+            {"session_id": session_id}
+        )
+        
+        if patterns:
+            self.log_metric(
+                "patterns_identified",
+                len(patterns),
+                "count",
+                {"session_id": session_id}
+            )
+        
+        # Sanitize output
+        return self._sanitizer.sanitize(insights)
 
     def _group_findings_by_type(
         self, findings: List[Dict[str, Any]]
@@ -380,24 +433,31 @@ class AgentService:
         Returns:
             Investigation status information
         """
-        with self._tracer.trace("agent_service_get_investigation_status"):
-            try:
-                # In a full implementation, this would query persistent storage
-                # via an ISessionStore interface to retrieve investigation status
-                status = {
-                    "investigation_id": investigation_id,
-                    "session_id": session_id,
-                    "status": "completed",  # Placeholder
-                    "progress": 100.0,
-                    "phase": "completed",
-                    "last_updated": datetime.utcnow().isoformat()
-                }
-                
-                return self._sanitizer.sanitize(status)
-                
-            except Exception as e:
-                self._logger.error(f"Failed to get investigation status: {e}")
-                raise RuntimeError(f"Status retrieval failed: {str(e)}") from e
+        return await self.execute_operation(
+            "get_investigation_status",
+            self._execute_status_retrieval,
+            investigation_id,
+            session_id
+        )
+    
+    async def _execute_status_retrieval(
+        self,
+        investigation_id: str, 
+        session_id: str
+    ) -> Dict[str, Any]:
+        """Execute the core status retrieval logic"""
+        # In a full implementation, this would query persistent storage
+        # via an ISessionStore interface to retrieve investigation status
+        status = {
+            "investigation_id": investigation_id,
+            "session_id": session_id,
+            "status": "completed",  # Placeholder
+            "progress": 100.0,
+            "phase": "completed",
+            "last_updated": datetime.utcnow().isoformat()
+        }
+        
+        return self._sanitizer.sanitize(status)
 
     async def cancel_investigation(
         self, 
@@ -414,19 +474,34 @@ class AgentService:
         Returns:
             True if cancellation was successful
         """
-        with self._tracer.trace("agent_service_cancel_investigation"):
-            try:
-                # In a full implementation, this would use ISessionStore
-                # to update investigation status and potentially signal
-                # the running agent to stop
-                self._logger.info(
-                    f"Cancelled investigation {investigation_id} for session {session_id}"
-                )
-                return True
-                
-            except Exception as e:
-                self._logger.error(f"Failed to cancel investigation: {e}")
-                return False
+        return await self.execute_operation(
+            "cancel_investigation",
+            self._execute_investigation_cancellation,
+            investigation_id,
+            session_id
+        )
+    
+    async def _execute_investigation_cancellation(
+        self,
+        investigation_id: str, 
+        session_id: str
+    ) -> bool:
+        """Execute the core investigation cancellation logic"""
+        # In a full implementation, this would use ISessionStore
+        # to update investigation status and potentially signal
+        # the running agent to stop
+        
+        # Log business event
+        self.log_business_event(
+            "investigation_cancelled",
+            "info",
+            {
+                "investigation_id": investigation_id,
+                "session_id": session_id
+            }
+        )
+        
+        return True
 
     async def get_investigation_results(
         self, 
@@ -448,50 +523,53 @@ class AgentService:
             FileNotFoundError: If investigation not found
             RuntimeError: If retrieval fails
         """
-        with self._tracer.trace("agent_service_get_investigation_results"):
-            self._logger.debug(f"Retrieving investigation {investigation_id} for session {session_id}")
-            
-            # Validate inputs
+        def validate_inputs(investigation_id: str, session_id: str) -> None:
             if not investigation_id or not investigation_id.strip():
                 raise ValueError("Investigation ID cannot be empty")
             if not session_id or not session_id.strip():
                 raise ValueError("Session ID cannot be empty")
-            
-            try:
-                # In a full implementation, this would query persistent storage
-                # via IInvestigationStore interface to retrieve results
-                # For now, return placeholder response
-                
-                from datetime import datetime
-                placeholder_response = TroubleshootingResponse(
-                    investigation_id=investigation_id,
-                    session_id=session_id,
-                    status="completed",
-                    findings=[
-                        {
-                            "type": "info",
-                            "message": f"Investigation {investigation_id} completed",
-                            "severity": "info",
-                            "timestamp": datetime.utcnow().isoformat(),
-                            "source": "investigation_store"
-                        }
-                    ],
-                    root_cause="Investigation completed successfully",
-                    recommendations=["Review investigation findings", "Take appropriate action"],
-                    confidence_score=0.8,
-                    estimated_mttr="15 minutes",
-                    next_steps=["Monitor system", "Verify fix effectiveness"],
-                    created_at=datetime.utcnow(),
-                    completed_at=datetime.utcnow()
-                )
-                
-                return placeholder_response
-                
-            except Exception as e:
-                self._logger.error(f"Failed to retrieve investigation results: {e}")
-                if "not found" in str(e).lower():
-                    raise FileNotFoundError(f"Investigation {investigation_id} not found")
-                raise RuntimeError(f"Investigation retrieval failed: {str(e)}") from e
+        
+        return await self.execute_operation(
+            "get_investigation_results",
+            self._execute_results_retrieval,
+            investigation_id,
+            session_id,
+            validate_inputs=validate_inputs
+        )
+    
+    async def _execute_results_retrieval(
+        self,
+        investigation_id: str, 
+        session_id: str
+    ) -> TroubleshootingResponse:
+        """Execute the core results retrieval logic"""
+        # In a full implementation, this would query persistent storage
+        # via IInvestigationStore interface to retrieve results
+        # For now, return placeholder response
+        
+        placeholder_response = TroubleshootingResponse(
+            investigation_id=investigation_id,
+            session_id=session_id,
+            status="completed",
+            findings=[
+                {
+                    "type": "info",
+                    "message": f"Investigation {investigation_id} completed",
+                    "severity": "info",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "source": "investigation_store"
+                }
+            ],
+            root_cause="Investigation completed successfully",
+            recommendations=["Review investigation findings", "Take appropriate action"],
+            confidence_score=0.8,
+            estimated_mttr="15 minutes",
+            next_steps=["Monitor system", "Verify fix effectiveness"],
+            created_at=datetime.utcnow(),
+            completed_at=datetime.utcnow()
+        )
+        
+        return placeholder_response
 
     async def list_session_investigations(
         self, 
@@ -515,49 +593,63 @@ class AgentService:
             FileNotFoundError: If session not found
             RuntimeError: If listing fails
         """
-        with self._tracer.trace("agent_service_list_session_investigations"):
-            self._logger.debug(f"Listing investigations for session {session_id} (limit={limit}, offset={offset})")
-            
-            # Validate inputs
+        def validate_inputs(session_id: str, limit: int, offset: int) -> None:
             if not session_id or not session_id.strip():
                 raise ValueError("Session ID cannot be empty")
             if limit <= 0 or limit > 100:
                 raise ValueError("Limit must be between 1 and 100")
             if offset < 0:
                 raise ValueError("Offset must be non-negative")
-            
-            try:
-                # In a full implementation, this would query persistent storage
-                # via ISessionStore interface to list investigations
-                # For now, return placeholder data
-                
-                from datetime import datetime, timedelta
-                
-                # Generate some placeholder investigations
-                base_time = datetime.utcnow()
-                investigations = []
-                
-                for i in range(min(limit, 3)):  # Return up to 3 placeholder investigations
-                    investigations.append({
-                        "investigation_id": f"inv_{session_id}_{i + offset + 1}",
-                        "query": f"Sample troubleshooting query {i + offset + 1}",
-                        "status": "completed",
-                        "priority": "medium",
-                        "findings_count": 2 + i,
-                        "recommendations_count": 1 + i,
-                        "confidence_score": 0.7 + (i * 0.1),
-                        "created_at": (base_time - timedelta(hours=i + 1)).isoformat(),
-                        "completed_at": (base_time - timedelta(hours=i)).isoformat(),
-                        "estimated_mttr": f"{15 + (i * 5)} minutes"
-                    })
-                
-                return self._sanitizer.sanitize(investigations)
-                
-            except Exception as e:
-                self._logger.error(f"Failed to list session investigations: {e}")
-                if "session not found" in str(e).lower():
-                    raise FileNotFoundError(f"Session {session_id} not found")
-                raise RuntimeError(f"Investigation listing failed: {str(e)}") from e
+        
+        return await self.execute_operation(
+            "list_session_investigations",
+            self._execute_investigations_listing,
+            session_id,
+            limit,
+            offset,
+            validate_inputs=validate_inputs
+        )
+    
+    async def _execute_investigations_listing(
+        self,
+        session_id: str, 
+        limit: int, 
+        offset: int
+    ) -> List[Dict[str, Any]]:
+        """Execute the core investigations listing logic"""
+        # In a full implementation, this would query persistent storage
+        # via ISessionStore interface to list investigations
+        # For now, return placeholder data
+        
+        from datetime import timedelta
+        
+        # Generate some placeholder investigations
+        base_time = datetime.utcnow()
+        investigations = []
+        
+        for i in range(min(limit, 3)):  # Return up to 3 placeholder investigations
+            investigations.append({
+                "investigation_id": f"inv_{session_id}_{i + offset + 1}",
+                "query": f"Sample troubleshooting query {i + offset + 1}",
+                "status": "completed",
+                "priority": "medium",
+                "findings_count": 2 + i,
+                "recommendations_count": 1 + i,
+                "confidence_score": 0.7 + (i * 0.1),
+                "created_at": (base_time - timedelta(hours=i + 1)).isoformat(),
+                "completed_at": (base_time - timedelta(hours=i)).isoformat(),
+                "estimated_mttr": f"{15 + (i * 5)} minutes"
+            })
+        
+        # Log business metric
+        self.log_metric(
+            "session_investigations_listed",
+            len(investigations),
+            "count",
+            {"session_id": session_id}
+        )
+        
+        return self._sanitizer.sanitize(investigations)
 
     async def health_check(self) -> Dict[str, Any]:
         """
@@ -566,76 +658,73 @@ class AgentService:
         Returns:
             Dictionary with health status and component details
         """
-        with self._tracer.trace("agent_service_health_check"):
-            try:
-                health_info = {
-                    "service": "agent_service_refactored",
-                    "status": "healthy",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "components": {
-                        "llm_provider": "unknown",
-                        "sanitizer": "unknown", 
-                        "tracer": "unknown",
-                        "tools": "unknown"
-                    }
-                }
-                
-                # Check LLM provider
-                try:
-                    if self._llm and hasattr(self._llm, 'generate_response'):
-                        health_info["components"]["llm_provider"] = "healthy"
-                    else:
-                        health_info["components"]["llm_provider"] = "unavailable"
-                except Exception:
-                    health_info["components"]["llm_provider"] = "unhealthy"
-                
-                # Check sanitizer
-                try:
-                    if self._sanitizer and hasattr(self._sanitizer, 'sanitize'):
-                        # Test sanitization
-                        test_result = self._sanitizer.sanitize("test")
-                        health_info["components"]["sanitizer"] = "healthy"
-                    else:
-                        health_info["components"]["sanitizer"] = "unavailable"
-                except Exception:
-                    health_info["components"]["sanitizer"] = "unhealthy"
-                
-                # Check tracer
-                try:
-                    if self._tracer and hasattr(self._tracer, 'trace'):
-                        health_info["components"]["tracer"] = "healthy"
-                    else:
-                        health_info["components"]["tracer"] = "unavailable"
-                except Exception:
-                    health_info["components"]["tracer"] = "unhealthy"
-                
-                # Check tools
-                try:
-                    if self._tools and len(self._tools) > 0:
-                        health_info["components"]["tools"] = f"healthy ({len(self._tools)} tools available)"
-                    else:
-                        health_info["components"]["tools"] = "no tools available"
-                except Exception:
-                    health_info["components"]["tools"] = "unhealthy"
-                
-                # Determine overall status
-                unhealthy_components = [
-                    comp for status in health_info["components"].values() 
-                    for comp in [status] if "unhealthy" in str(status)
-                ]
-                
-                if unhealthy_components:
-                    health_info["status"] = "degraded"
-                elif any("unavailable" in str(status) for status in health_info["components"].values()):
-                    health_info["status"] = "degraded"
-                
-                return health_info
-                
-            except Exception as e:
-                self._logger.error(f"Health check failed: {e}")
-                return {
-                    "service": "agent_service_refactored",
-                    "status": "unhealthy",
-                    "error": str(e),
-                    "timestamp": datetime.utcnow().isoformat()
-                }
+        # Get base health from BaseService
+        base_health = await super().health_check()
+        
+        # Add component-specific health checks
+        components = {
+            "llm_provider": "unknown",
+            "sanitizer": "unknown", 
+            "tracer": "unknown",
+            "tools": "unknown"
+        }
+        
+        # Check LLM provider
+        try:
+            if self._llm and hasattr(self._llm, 'generate_response'):
+                components["llm_provider"] = "healthy"
+            else:
+                components["llm_provider"] = "unavailable"
+        except Exception:
+            components["llm_provider"] = "unhealthy"
+        
+        # Check sanitizer
+        try:
+            if self._sanitizer and hasattr(self._sanitizer, 'sanitize'):
+                # Test sanitization
+                test_result = self._sanitizer.sanitize("test")
+                components["sanitizer"] = "healthy"
+            else:
+                components["sanitizer"] = "unavailable"
+        except Exception:
+            components["sanitizer"] = "unhealthy"
+        
+        # Check tracer
+        try:
+            if self._tracer and hasattr(self._tracer, 'trace'):
+                components["tracer"] = "healthy"
+            else:
+                components["tracer"] = "unavailable"
+        except Exception:
+            components["tracer"] = "unhealthy"
+        
+        # Check tools
+        try:
+            if self._tools and len(self._tools) > 0:
+                components["tools"] = f"healthy ({len(self._tools)} tools available)"
+            else:
+                components["tools"] = "no tools available"
+        except Exception:
+            components["tools"] = "unhealthy"
+        
+        # Determine overall status
+        unhealthy_components = [
+            comp for status in components.values() 
+            for comp in [status] if "unhealthy" in str(status)
+        ]
+        
+        status = "healthy"
+        if unhealthy_components:
+            status = "degraded"
+        elif any("unavailable" in str(status) for status in components.values()):
+            status = "degraded"
+        
+        # Combine with base health
+        health_info = {
+            **base_health,
+            "service": "agent_service",
+            "status": status,
+            "components": components
+        }
+        
+        return health_info

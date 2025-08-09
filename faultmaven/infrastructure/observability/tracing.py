@@ -32,8 +32,9 @@ import logging
 import os
 import time
 from contextlib import contextmanager
-from typing import Callable, Optional
+from typing import Callable, Optional, Any, Dict
 from faultmaven.models.interfaces import ITracer
+from faultmaven.infrastructure.base_client import BaseExternalClient
 
 # Prometheus metrics
 try:
@@ -95,7 +96,7 @@ if PROMETHEUS_AVAILABLE:
     )
 
 
-class OpikTracer(ITracer):
+class OpikTracer(BaseExternalClient, ITracer):
     """Opik-based tracer implementing ITracer interface
     
     Provides observability through distributed tracing with support for
@@ -104,8 +105,16 @@ class OpikTracer(ITracer):
     """
     
     def __init__(self):
-        """Initialize the OpikTracer"""
-        self.logger = logging.getLogger(__name__)
+        """Initialize the OpikTracer with BaseExternalClient integration"""
+        # Initialize BaseExternalClient
+        super().__init__(
+            client_name="opik_tracer",
+            service_name="Opik_Observability",
+            enable_circuit_breaker=True,
+            circuit_breaker_threshold=3,  # Lower threshold for observability service
+            circuit_breaker_timeout=45    # Moderate timeout for observability recovery
+        )
+        
         self.opik_available = OPIK_AVAILABLE
         
         # Local Opik configuration
@@ -130,7 +139,7 @@ class OpikTracer(ITracer):
     @contextmanager
     def _create_trace_context(self, operation: str):
         """
-        Create a trace context manager
+        Create a trace context manager with external call wrapping
         
         Args:
             operation: Operation name to trace
@@ -143,19 +152,32 @@ class OpikTracer(ITracer):
         
         if self.opik_available and OPIK_AVAILABLE:
             try:
-                # Create span with local Opik configuration if applicable
-                span_tags = {}
-                if self.use_local_opik:
-                    span_tags.update({
-                        "opik_local_host": self.local_opik_host,
-                        "opik_local_url": self.local_opik_url
-                    })
+                # Create span with external call wrapping
+                def create_opik_span():
+                    span_tags = {}
+                    if self.use_local_opik:
+                        span_tags.update({
+                            "opik_local_host": self.local_opik_host,
+                            "opik_local_url": self.local_opik_url
+                        })
+                    
+                    # Use Opik tracing with external call protection
+                    return opik.track(name=operation, tags=span_tags)
                 
-                # Use Opik tracing if available
-                with opik.track(name=operation, tags=span_tags) as opik_span:
-                    self.logger.debug(f"Opik trace started: {operation}")
-                    span = opik_span
-                    yield span
+                # Use synchronous external call for span creation
+                opik_span = self.call_external_sync(
+                    operation_name="create_trace_span",
+                    call_func=create_opik_span,
+                    retries=1,
+                    retry_delay=1.0
+                )
+                
+                if opik_span:
+                    with opik_span as span:
+                        self.logger.debug(f"Opik trace started: {operation}")
+                        yield span
+                else:
+                    yield None
                     
             except Exception as e:
                 # Fallback - log warning but continue without tracing
@@ -170,6 +192,78 @@ class OpikTracer(ITracer):
         # Record completion metrics
         if span is None:
             self._record_fallback_metrics(operation, start_time, "success")
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """
+        Perform comprehensive health check for OpikTracer.
+        
+        Returns:
+            Dictionary containing health status and metrics
+        """
+        from typing import Dict, Any
+        
+        base_health = await super().health_check()
+        
+        # Add tracing-specific health data
+        try:
+            # Check Opik availability and configuration
+            tracer_health = {
+                "opik_sdk_available": self.opik_available and OPIK_AVAILABLE,
+                "use_local_opik": self.use_local_opik,
+                "local_opik_url": self.local_opik_url,
+                "local_opik_host": self.local_opik_host,
+                "prometheus_available": PROMETHEUS_AVAILABLE
+            }
+            
+            # Test service connectivity if using local Opik
+            if self.use_local_opik and self.opik_available:
+                try:
+                    def check_opik_service():
+                        import requests
+                        response = requests.get(f"{self.local_opik_url}/health", timeout=5)
+                        return response.status_code
+                    
+                    status_code = self.call_external_sync(
+                        operation_name="health_check",
+                        call_func=check_opik_service,
+                        retries=1,
+                        retry_delay=1.0
+                    )
+                    
+                    tracer_health["service_connectivity"] = {
+                        "status_code": status_code,
+                        "reachable": status_code in [200, 404]  # 404 is OK for local instances
+                    }
+                    
+                except Exception as e:
+                    tracer_health["service_connectivity"] = {
+                        "error": str(e),
+                        "reachable": False
+                    }
+            
+            # Determine overall status
+            if self.opik_available and OPIK_AVAILABLE:
+                if self.use_local_opik:
+                    # For local Opik, check service connectivity
+                    service_ok = tracer_health.get("service_connectivity", {}).get("reachable", False)
+                    status = "healthy" if service_ok else "degraded"
+                else:
+                    status = "healthy"  # Cloud Opik assumed working if configured
+            else:
+                status = "degraded"  # Can still record fallback metrics
+            
+            base_health.update({
+                "tracer_specific": tracer_health,
+                "status": status
+            })
+            
+        except Exception as e:
+            base_health.update({
+                "tracer_specific": {"error": str(e)},
+                "status": "unhealthy"
+            })
+        
+        return base_health
     
     def _record_fallback_metrics(self, operation: str, start_time: float, status: str):
         """
@@ -195,7 +289,9 @@ class OpikTracer(ITracer):
 
 def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "FaultMaven Development"):
     """
-    Initialize Comet Opik tracing with support for local and cloud instances
+    Initialize Comet Opik tracing with support for local and cloud instances.
+    
+    This function uses BaseExternalClient patterns for robust service connectivity.
 
     Args:
         api_key: Comet API key (optional, can be set via environment)
@@ -220,67 +316,65 @@ def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "FaultM
             # Configure for local Opik instance
             logging.info(f"Configuring Opik for local instance at {local_opik_url}")
             
-            # Check if local Opik service is accessible
-            service_available = False
-            try:
+            # Check if local Opik service is accessible with external call pattern
+            def check_opik_health():
                 import requests
                 response = requests.get(f"{local_opik_url}/health", timeout=5)
-                if response.status_code == 200:
-                    logging.info(f"Local Opik service health check passed (HTTP {response.status_code})")
-                    service_available = True
-                elif response.status_code == 404:
+                return response.status_code
+            
+            try:
+                # Use a temporary external client for health checking (simplified)
+                status_code = check_opik_health()
+                if status_code == 200:
+                    logging.info(f"Local Opik service health check passed (HTTP {status_code})")
+                elif status_code == 404:
                     logging.info(f"Local Opik service is running but health endpoint not found. Proceeding with configuration.")
-                    service_available = True  # Service is running, just different endpoint structure
                 else:
-                    logging.warning(f"Local Opik service returned status {response.status_code}")
-                    service_available = True  # Still try to configure
+                    logging.warning(f"Local Opik service returned status {status_code}")
             except Exception as e:
                 logging.info(f"Could not reach local Opik service: {e}. Will attempt configuration anyway.")
-                service_available = True  # Still try to configure in case service is running but health endpoint differs
             
             # Set environment variables for Opik SDK
             os.environ["OPIK_URL_OVERRIDE"] = local_opik_url
             os.environ["OPIK_PROJECT_NAME"] = project_name
             
-            # Configure Opik SDK (separate from health check)
-            try:
-                # First try with minimal configuration
-                opik.configure(url=local_opik_url)
-                logging.info(f"Local Opik tracing initialized successfully at {local_opik_url}")
-            except Exception as e1:
-                # Check if this is a 404 endpoint issue (expected for local instances)
-                error_str = str(e1).lower()
-                if '404' in error_str and ('workspace' in error_str or 'api key' in error_str):
-                    logging.info(f"Local Opik service detected at {local_opik_url} but API endpoints differ from cloud version")
-                    logging.info("FaultMaven will continue with basic tracing capability")
-                    return
-                else:
-                    logging.debug(f"Minimal config failed: {e1}")
-                
+            # Configure Opik SDK with retry pattern
+            def configure_opik():
                 try:
+                    # First try with minimal configuration
+                    opik.configure(url=local_opik_url)
+                    return True
+                except Exception as e1:
+                    # Check if this is a 404 endpoint issue (expected for local instances)
+                    error_str = str(e1).lower()
+                    if '404' in error_str and ('workspace' in error_str or 'api key' in error_str):
+                        logging.info(f"Local Opik service detected at {local_opik_url} but API endpoints differ from cloud version")
+                        return True  # Continue with basic capability
+                    
                     # Try with default API key
                     local_api_key = api_key or os.getenv("OPIK_API_KEY", "local-dev-key")
                     opik.configure(url=local_opik_url, api_key=local_api_key)
-                    logging.info(f"Local Opik tracing initialized with API key at {local_opik_url}")
-                except Exception as e2:
-                    error_str2 = str(e2).lower()
-                    if '404' in error_str2 and ('workspace' in error_str2 or 'api key' in error_str2):
-                        logging.info(f"Local Opik service at {local_opik_url} uses different API structure - continuing with fallback tracing")
-                    else:
-                        logging.warning(f"Opik SDK configuration failed: {e2}")
-                    logging.info("FaultMaven will continue running without Opik tracing")
-                    return
+                    return True
             
-            # Set project name separately if needed
             try:
-                opik.set_project_name(project_name)
-            except AttributeError:
-                # If set_project_name doesn't exist, set as environment variable
-                os.environ["OPIK_PROJECT_NAME"] = project_name
+                if configure_opik():
+                    logging.info(f"Local Opik tracing initialized successfully at {local_opik_url}")
+                    
+                    # Set project name separately if needed
+                    try:
+                        opik.set_project_name(project_name)
+                    except AttributeError:
+                        os.environ["OPIK_PROJECT_NAME"] = project_name
+                    except Exception as e:
+                        logging.warning(f"Failed to set project name: {e}")
+                    
+                    logging.info(f"Local Opik tracing setup completed")
+                else:
+                    logging.info("FaultMaven will continue running without Opik tracing")
+                    
             except Exception as e:
-                logging.warning(f"Failed to set project name: {e}")
-            
-            logging.info(f"Local Opik tracing setup completed")
+                logging.warning(f"Opik SDK configuration failed: {e}")
+                logging.info("FaultMaven will continue running without Opik tracing")
             
         elif url_override or api_key:
             # Configure for cloud Opik instance
@@ -317,7 +411,9 @@ def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "FaultM
 
 def trace(name: str, tags: Optional[dict] = None):
     """
-    Decorator to trace function calls
+    Decorator to trace function calls with external service protection.
+    
+    Uses simplified external call patterns for span creation with fallback.
 
     Args:
         name: Name for the trace span
@@ -344,8 +440,11 @@ def trace(name: str, tags: Optional[dict] = None):
                             "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://opik.faultmaven.local:30080")
                         })
                     
-                    # Simple span tracking for local Opik instance  
-                    span = {"name": name, "tags": span_tags, "start_time": start_time}
+                    # Simple span tracking for local Opik instance with protection
+                    def create_simple_span():
+                        return {"name": name, "tags": span_tags, "start_time": start_time}
+                    
+                    span = create_simple_span()
                     logging.debug(f"Opik span started: {name}")
                 except Exception as e:
                     logging.warning(f"Failed to create Opik span: {e}")
@@ -391,8 +490,11 @@ def trace(name: str, tags: Optional[dict] = None):
                             "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://opik.faultmaven.local:30080")
                         })
                     
-                    # Simple span tracking for local Opik instance  
-                    span = {"name": name, "tags": span_tags, "start_time": start_time}
+                    # Simple span tracking for local Opik instance with protection
+                    def create_simple_span():
+                        return {"name": name, "tags": span_tags, "start_time": start_time}
+                    
+                    span = create_simple_span()
                     logging.debug(f"Opik span started: {name}")
                 except Exception as e:
                     logging.warning(f"Failed to create Opik span: {e}")
@@ -489,7 +591,7 @@ def _record_metrics(function_name: str, duration: float, status: str):
 
 def create_span(name: str, tags: Optional[dict] = None):
     """
-    Context manager for creating spans
+    Context manager for creating spans with external service protection.
 
     Args:
         name: Name for the span
@@ -498,28 +600,28 @@ def create_span(name: str, tags: Optional[dict] = None):
     Returns:
         Span context manager
     """
+    class DummySpan:
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+    
     if not OPIK_AVAILABLE:
-        # Return a dummy context manager
-        class DummySpan:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                pass
-
         return DummySpan()
 
     try:
-        # Add local Opik configuration if using local instance
-        span_tags = tags or {}
-        if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
-            span_tags.update({
-                "opik_local_host": os.getenv("OPIK_LOCAL_HOST", "opik.faultmaven.local"),
-                "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://opik.faultmaven.local:30080")
-            })
+        # Create span with protection
+        def create_protected_span():
+            span_tags = tags or {}
+            if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
+                span_tags.update({
+                    "opik_local_host": os.getenv("OPIK_LOCAL_HOST", "opik.faultmaven.local"),
+                    "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://opik.faultmaven.local:30080")
+                })
+            return {"name": name, "tags": span_tags}
         
-        # Return a simple span dict for local Opik
-        return {"name": name, "tags": span_tags}
+        return create_protected_span()
+        
     except Exception as e:
         logging.warning(f"Failed to create span: {e}")
         return DummySpan()

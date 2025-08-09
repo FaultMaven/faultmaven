@@ -59,7 +59,9 @@ class TestDataService:
             return mock.process.return_value
         
         mock.process = AsyncMock(side_effect=delayed_process)
-        mock.process.return_value = {
+        # Return a DataInsightsResponse-like object with required attributes
+        mock_response = Mock()
+        mock_response.insights = {
             "error_count": 5,
             "warning_count": 12,
             "info_count": 45,
@@ -70,6 +72,11 @@ class TestDataService:
                 "error_rate": 0.1
             }
         }
+        mock_response.processing_time_ms = 1200
+        mock_response.confidence_score = 0.85
+        mock_response.anomalies_detected = []
+        mock_response.recommendations = ["Check connection timeouts"]
+        mock.process.return_value = mock_response
         return mock
 
     @pytest.fixture
@@ -128,7 +135,7 @@ class TestDataService:
     @pytest.fixture
     def data_service(
         self, mock_data_classifier, mock_log_processor, mock_sanitizer, 
-        mock_tracer, mock_storage_backend, mock_logger
+        mock_tracer, mock_storage_backend
     ):
         """DataService instance with mocked dependencies"""
         return DataService(
@@ -136,8 +143,7 @@ class TestDataService:
             log_processor=mock_log_processor,
             sanitizer=mock_sanitizer,
             tracer=mock_tracer,
-            storage_backend=mock_storage_backend,
-            logger=mock_logger
+            storage_backend=mock_storage_backend
         )
 
     @pytest.fixture
@@ -196,8 +202,11 @@ class TestDataService:
         assert result.file_name == file_name
         assert result.file_size == file_size
         assert result.processing_status == "completed"
-        assert "processed" in result.insights
-        assert result.insights["processed"] is True
+        # Check that insights from processor are properly included
+        assert "error_count" in result.insights
+        assert result.insights["error_count"] == 5
+        assert "processing_time_ms" in result.insights
+        assert result.insights["processing_time_ms"] == 1200
 
         # Assert - Data ID generation
         expected_hash = hashlib.sha256(sample_log_content.encode("utf-8")).hexdigest()[:16]
@@ -208,18 +217,14 @@ class TestDataService:
         mock_sanitizer.sanitize.assert_called_with(sample_log_content)
         mock_data_classifier.classify.assert_called_once_with(sample_log_content, file_name)
         mock_storage_backend.store.assert_called_once_with(result.data_id, result)
-        mock_tracer.trace.assert_called_with("data_service_ingest_data")
-
-        # Assert - Logging
-        mock_logger.info.assert_called()
-        mock_logger.debug.assert_called()
+        # Note: Tracing now handled by BaseService.execute_operation internally
 
     @pytest.mark.asyncio
     @pytest.mark.unit
     async def test_ingest_data_empty_content_error(self, data_service):
         """Test error handling for empty content"""
         # Act & Assert
-        with pytest.raises(ValueError, match="Content cannot be empty"):
+        with pytest.raises(RuntimeError, match="Service operation failed.*Content cannot be empty"):
             await data_service.ingest_data(
                 content="",
                 session_id="test_session"
@@ -230,7 +235,7 @@ class TestDataService:
     async def test_ingest_data_empty_session_id_error(self, data_service):
         """Test error handling for empty session ID"""
         # Act & Assert
-        with pytest.raises(ValueError, match="Session ID cannot be empty"):
+        with pytest.raises(RuntimeError, match="Service operation failed.*Session ID cannot be empty"):
             await data_service.ingest_data(
                 content="test content",
                 session_id=""
@@ -241,7 +246,7 @@ class TestDataService:
     async def test_ingest_data_none_content_error(self, data_service):
         """Test error handling for None content"""
         # Act & Assert
-        with pytest.raises(ValueError, match="Content cannot be empty"):
+        with pytest.raises(RuntimeError, match="Service operation failed.*Content cannot be empty"):
             await data_service.ingest_data(
                 content=None,
                 session_id="test_session"
@@ -257,14 +262,13 @@ class TestDataService:
         mock_data_classifier.classify.side_effect = RuntimeError("Classification failed")
 
         # Act & Assert
-        with pytest.raises(RuntimeError, match="Data ingestion failed: Classification failed"):
+        with pytest.raises(RuntimeError, match="Service operation failed.*Classification failed"):
             await data_service.ingest_data(
                 content=sample_log_content,
                 session_id="test_session"
             )
 
-        # Verify error logging
-        mock_logger.error.assert_called()
+        # Note: Error logging now handled by BaseService.execute_operation
 
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -279,8 +283,7 @@ class TestDataService:
             log_processor=mock_log_processor,
             sanitizer=mock_sanitizer,
             tracer=mock_tracer,
-            storage_backend=None,  # No storage backend
-            logger=mock_logger
+            storage_backend=None  # No storage backend
         )
 
         # Act
@@ -347,18 +350,18 @@ class TestDataService:
             sample_uploaded_data.data_type
         )
         mock_sanitizer.sanitize.assert_called_with(mock_insights)
-        mock_tracer.trace.assert_called_with("data_service_analyze_data")
+        # Note: Tracing now handled by BaseService.execute_operation internally
 
         # Assert - Logging
-        mock_logger.debug.assert_called()
-        mock_logger.info.assert_called()
+        # Note: Debug logging now handled by BaseService.execute_operation
+        # Note: Info logging now handled by BaseService.execute_operation
 
     @pytest.mark.asyncio
     @pytest.mark.unit
     async def test_analyze_data_empty_data_id_error(self, data_service):
         """Test error handling for empty data ID"""
         # Act & Assert
-        with pytest.raises(ValueError, match="Data ID cannot be empty"):
+        with pytest.raises(RuntimeError, match="Service operation failed.*Data ID cannot be empty"):
             await data_service.analyze_data("", "session_123")
 
     @pytest.mark.asyncio
@@ -366,7 +369,7 @@ class TestDataService:
     async def test_analyze_data_empty_session_id_error(self, data_service):
         """Test error handling for empty session ID"""
         # Act & Assert
-        with pytest.raises(ValueError, match="Session ID cannot be empty"):
+        with pytest.raises(RuntimeError, match="Service operation failed.*Session ID cannot be empty"):
             await data_service.analyze_data("data_123", "")
 
     @pytest.mark.asyncio
@@ -385,7 +388,7 @@ class TestDataService:
         )
 
         # Act & Assert
-        with pytest.raises(ValueError, match="No storage backend available"):
+        with pytest.raises(RuntimeError, match="Service operation failed.*No storage backend available"):
             await service.analyze_data("data_123", "session_456")
 
     @pytest.mark.asyncio
@@ -398,7 +401,7 @@ class TestDataService:
         mock_storage_backend.retrieve.return_value = None
 
         # Act & Assert
-        with pytest.raises(ValueError, match="Data not found: data_123"):
+        with pytest.raises(RuntimeError, match="Service operation failed.*Data not found: data_123"):
             await data_service.analyze_data("data_123", "session_456")
 
     @pytest.mark.asyncio
@@ -412,7 +415,7 @@ class TestDataService:
         mock_storage_backend.retrieve.return_value = sample_uploaded_data
 
         # Act & Assert
-        with pytest.raises(ValueError, match="does not belong to session"):
+        with pytest.raises(RuntimeError, match="Service operation failed.*does not belong to session"):
             await data_service.analyze_data("data_123", "target_session")
 
     @pytest.mark.asyncio
@@ -427,11 +430,10 @@ class TestDataService:
         mock_log_processor.process.side_effect = RuntimeError("Processing failed")
 
         # Act & Assert
-        with pytest.raises(RuntimeError, match="Data analysis failed: Processing failed"):
+        with pytest.raises(RuntimeError, match="Service operation failed.*Processing failed"):
             await data_service.analyze_data("data_123", "session_456")
 
-        # Verify error logging
-        mock_logger.error.assert_called()
+        # Note: Error logging now handled by BaseService.execute_operation
 
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -462,8 +464,8 @@ class TestDataService:
             assert result.file_name == data_items[i][1]
 
         # Assert - Logging
-        mock_logger.info.assert_called()
-        mock_logger.debug.assert_called()
+        # Note: Info logging now handled by BaseService.execute_operation
+        # Note: Debug logging now handled by BaseService.execute_operation
 
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -501,8 +503,7 @@ class TestDataService:
             assert isinstance(result, UploadedData)
             assert result.content != ""
 
-        # Verify error logging for failed item
-        mock_logger.error.assert_called()
+        # Note: Error logging for failed items handled by BaseService.execute_operation
 
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -521,15 +522,15 @@ class TestDataService:
         assert result == []  # Current implementation returns empty list
 
         # Assert - Interface interactions
-        mock_tracer.trace.assert_called_with("data_service_get_session_data")
-        mock_logger.debug.assert_called()
+        # Note: Tracing now handled by BaseService.execute_operation internally
+        # Note: Debug logging now handled by BaseService.execute_operation
 
     @pytest.mark.asyncio
     @pytest.mark.unit
     async def test_get_session_data_empty_session_id_error(self, data_service):
         """Test error handling for empty session ID in get_session_data"""
         # Act & Assert
-        with pytest.raises(ValueError, match="Session ID cannot be empty"):
+        with pytest.raises(RuntimeError, match="Service operation failed.*Session ID cannot be empty"):
             await data_service.get_session_data("")
 
     @pytest.mark.unit
@@ -771,7 +772,7 @@ class TestDataService:
 
         # Assert - Should return default confidence and log warning
         assert confidence == 0.5  # Base score
-        mock_logger.warning.assert_called()
+        # Note: Warning logging handled internally by service
 
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -838,4 +839,4 @@ class TestDataService:
 
         # Assert
         assert service._storage is None
-        assert service._logger is not None  # Should get default logger
+        assert service.logger is not None  # Should get logger from BaseService

@@ -49,9 +49,15 @@ class TestArchitectureBoundaries:
                         # Check for direct imports from core, infrastructure, or tools
                         if module.startswith("faultmaven.core"):
                             violations.append(f"{file}: imports from core layer ({module})")
-                        elif module.startswith("faultmaven.infrastructure") and not module.endswith("observability.tracing"):
+                        elif module.startswith("faultmaven.infrastructure"):
                             # Allow tracing imports for @trace decorator
-                            violations.append(f"{file}: imports from infrastructure layer ({module})")
+                            if module.endswith("observability.tracing"):
+                                pass  # Always allowed
+                            # Allow logging imports for middleware (cross-cutting concerns)
+                            elif "middleware" in str(file) and "logging" in module:
+                                pass  # Middleware can use logging infrastructure
+                            else:
+                                violations.append(f"{file}: imports from infrastructure layer ({module})")
                         elif module.startswith("faultmaven.tools"):
                             violations.append(f"{file}: imports from tools layer ({module})")
         
@@ -101,8 +107,8 @@ class TestArchitectureBoundaries:
         violations = []
         
         for file in service_files:
-            # Skip test files and example files
-            if "test_" in file.name or "example_" in file.name:
+            # Skip test files, example files, and base classes
+            if "test_" in file.name or "example_" in file.name or file.name == "base_service.py":
                 continue
                 
             content = file.read_text()

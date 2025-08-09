@@ -426,9 +426,13 @@ async def test_initialization_embedding_model_failure():
     """
     Test initialization failure when embedding model cannot be loaded.
     """
+    # Clear the model cache to ensure we test model loading failure
+    from faultmaven.infrastructure.model_cache import model_cache
+    model_cache.clear_cache()
+    
     with patch(
-        "faultmaven.core.knowledge.ingestion.SentenceTransformer",
+        "faultmaven.infrastructure.model_cache.SentenceTransformer",
         side_effect=Exception("Model load failed"),
     ):
-        with pytest.raises(Exception, match="Model load failed"):
+        with pytest.raises(RuntimeError, match="BGE-M3 model unavailable - knowledge ingestion cannot proceed"):
             KnowledgeIngester()

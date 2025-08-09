@@ -21,11 +21,11 @@ Key Improvements over Original:
 - Standardized tracing and logging patterns
 """
 
-import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import hashlib
 
+from faultmaven.services.base_service import BaseService
 from faultmaven.models.interfaces import (
     IKnowledgeIngester, 
     ISanitizer, 
@@ -35,7 +35,7 @@ from faultmaven.models.interfaces import (
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
 
 
-class KnowledgeService:
+class KnowledgeService(BaseService):
     """Knowledge service using interface dependencies"""
 
     def __init__(
@@ -43,8 +43,7 @@ class KnowledgeService:
         knowledge_ingester: IKnowledgeIngester,
         sanitizer: ISanitizer,
         tracer: ITracer,
-        vector_store: Optional[IVectorStore] = None,
-        logger: Optional[logging.Logger] = None
+        vector_store: Optional[IVectorStore] = None
     ):
         """
         Initialize with interface dependencies for better testability
@@ -54,13 +53,13 @@ class KnowledgeService:
             sanitizer: Interface for data sanitization (PII redaction)
             tracer: Interface for distributed tracing
             vector_store: Optional interface for vector database operations
-            logger: Optional logger instance
         """
+        super().__init__("knowledge_service")
         self._ingester = knowledge_ingester
         self._sanitizer = sanitizer
         self._tracer = tracer
         self._vector_store = vector_store
-        self._logger = logger or logging.getLogger(__name__)
+        # Note: self.logger from BaseService replaces self.logger
 
     async def ingest_document(
         self,
@@ -88,7 +87,7 @@ class KnowledgeService:
             RuntimeError: If ingestion fails
         """
         with self._tracer.trace("knowledge_service_ingest_document"):
-            self._logger.info(f"Ingesting document: {title}")
+            self.logger.info(f"Ingesting document: {title}")
             
             # Validate input
             self._validate_document_data(title, content)
@@ -133,11 +132,11 @@ class KnowledgeService:
                 if self._vector_store:
                     await self._index_document_in_vector_store(document)
                 
-                self._logger.info(f"Successfully ingested document {result_id}")
+                self.logger.info(f"Successfully ingested document {result_id}")
                 return document
                 
             except Exception as e:
-                self._logger.error(f"Failed to ingest document: {e}")
+                self.logger.error(f"Failed to ingest document: {e}")
                 raise RuntimeError(f"Document ingestion failed: {str(e)}") from e
 
     async def search_knowledge(
@@ -161,7 +160,7 @@ class KnowledgeService:
             ValueError: If query is empty or invalid
         """
         with self._tracer.trace("knowledge_service_search"):
-            self._logger.debug(f"Searching knowledge base: {query}")
+            self.logger.debug(f"Searching knowledge base: {query}")
             
             # Validate and sanitize query
             if not query or not query.strip():
@@ -187,15 +186,15 @@ class KnowledgeService:
                         )
                         search_results.append(search_result)
                     
-                    self._logger.info(f"Found {len(search_results)} results for query: {query}")
+                    self.logger.info(f"Found {len(search_results)} results for query: {query}")
                     return search_results
                 else:
                     # Fallback when no vector store available
-                    self._logger.warning("No vector store available, returning empty results")
+                    self.logger.warning("No vector store available, returning empty results")
                     return []
                     
             except Exception as e:
-                self._logger.error(f"Search failed: {e}")
+                self.logger.error(f"Search failed: {e}")
                 raise
 
     async def update_document(
@@ -221,7 +220,7 @@ class KnowledgeService:
             ValueError: If document_id is invalid or no updates provided
         """
         with self._tracer.trace("knowledge_service_update_document"):
-            self._logger.info(f"Updating document {document_id}")
+            self.logger.info(f"Updating document {document_id}")
             
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
@@ -271,11 +270,11 @@ class KnowledgeService:
                 if content and self._vector_store:
                     await self._index_document_in_vector_store(updated_document)
                 
-                self._logger.info(f"Successfully updated document {document_id}")
+                self.logger.info(f"Successfully updated document {document_id}")
                 return updated_document
                 
             except Exception as e:
-                self._logger.error(f"Failed to update document {document_id}: {e}")
+                self.logger.error(f"Failed to update document {document_id}: {e}")
                 raise
 
     async def delete_document(self, document_id: str) -> bool:
@@ -289,7 +288,7 @@ class KnowledgeService:
             True if deletion was successful
         """
         with self._tracer.trace("knowledge_service_delete_document"):
-            self._logger.info(f"Deleting document {document_id}")
+            self.logger.info(f"Deleting document {document_id}")
             
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
@@ -301,11 +300,11 @@ class KnowledgeService:
                 if self._vector_store:
                     await self._remove_from_vector_store(document_id)
                 
-                self._logger.info(f"Successfully deleted document {document_id}")
+                self.logger.info(f"Successfully deleted document {document_id}")
                 return True
                 
             except Exception as e:
-                self._logger.error(f"Failed to delete document {document_id}: {e}")
+                self.logger.error(f"Failed to delete document {document_id}: {e}")
                 return False
 
     async def get_document_statistics(self) -> Dict[str, Any]:
@@ -327,7 +326,7 @@ class KnowledgeService:
                     "vector_store_enabled": self._vector_store is not None
                 }
             except Exception as e:
-                self._logger.error(f"Failed to get statistics: {e}")
+                self.logger.error(f"Failed to get statistics: {e}")
                 raise
 
     def _generate_document_id(self, title: str, document_type: str) -> str:
@@ -395,10 +394,10 @@ class KnowledgeService:
             }
             
             await self._vector_store.add_documents([doc_dict])
-            self._logger.debug(f"Indexed document {document.document_id} in vector store")
+            self.logger.debug(f"Indexed document {document.document_id} in vector store")
             
         except Exception as e:
-            self._logger.error(f"Failed to index document in vector store: {e}")
+            self.logger.error(f"Failed to index document in vector store: {e}")
             # Don't raise exception here as indexing failure shouldn't block ingestion
 
     async def _remove_from_vector_store(self, document_id: str) -> None:
@@ -414,10 +413,10 @@ class KnowledgeService:
         try:
             # Vector store interface doesn't have delete method in current interface
             # This would need to be added to IVectorStore in a future phase
-            self._logger.debug(f"Would remove document {document_id} from vector store")
+            self.logger.debug(f"Would remove document {document_id} from vector store")
             
         except Exception as e:
-            self._logger.error(f"Failed to remove document from vector store: {e}")
+            self.logger.error(f"Failed to remove document from vector store: {e}")
 
 
 # Phase 4 Complete: Adapter classes have been removed as core components now implement interfaces directly
