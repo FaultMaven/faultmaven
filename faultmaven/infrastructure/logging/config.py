@@ -6,9 +6,43 @@ request context injection, deduplication, and OpenTelemetry integration.
 """
 
 import logging
+import os
 from typing import Dict, Any, Optional
 import structlog
 from opentelemetry import trace
+
+
+class LoggingConfig:
+    """
+    Configuration for logging system from environment variables.
+    
+    This class reads logging configuration from environment variables
+    and provides type-safe access to configuration values with sensible
+    defaults.
+    """
+    
+    LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+    LOG_FORMAT = os.getenv('LOG_FORMAT', 'json').lower()
+    LOG_DEDUPE = os.getenv('LOG_DEDUPE', 'true').lower() == 'true'
+    LOG_BUFFER_SIZE = int(os.getenv('LOG_BUFFER_SIZE', '100'))
+    LOG_FLUSH_INTERVAL = float(os.getenv('LOG_FLUSH_INTERVAL', '5'))
+    
+    @classmethod
+    def get_log_level(cls) -> int:
+        """
+        Convert string log level to logging constant.
+        
+        Returns:
+            Logging level constant (logging.DEBUG, logging.INFO, etc.)
+        """
+        levels = {
+            'DEBUG': logging.DEBUG,
+            'INFO': logging.INFO,
+            'WARNING': logging.WARNING,
+            'ERROR': logging.ERROR,
+            'CRITICAL': logging.CRITICAL
+        }
+        return levels.get(cls.LOG_LEVEL, logging.INFO)
 
 
 class FaultMavenLogger:
@@ -22,6 +56,7 @@ class FaultMavenLogger:
     
     def __init__(self):
         """Initialize the logger configuration."""
+        self.config = LoggingConfig()
         self.configure_structlog()
         
     def configure_structlog(self) -> None:
@@ -38,32 +73,43 @@ class FaultMavenLogger:
         - OpenTelemetry trace context
         - JSON output formatting
         """
-        # Configure standard library logging to use structlog formatting
+        # Configure standard library logging with environment-based level
         logging.basicConfig(
             format="%(message)s",
-            level=logging.INFO,
+            level=self.config.get_log_level(),
         )
         
-        # Configure structlog with correct processor names
+        # Build processor list based on configuration
+        processors = [
+            # Standard processors
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
+            
+            # Always add request context
+            self.add_request_context,
+        ]
+        
+        # Add deduplication processor if enabled
+        if self.config.LOG_DEDUPE:
+            processors.append(self.deduplicate_fields)
+        
+        # Always add trace context
+        processors.append(self.add_trace_context)
+        
+        # Add appropriate renderer based on format
+        if self.config.LOG_FORMAT == 'json':
+            processors.append(structlog.processors.JSONRenderer())
+        else:
+            processors.append(structlog.dev.ConsoleRenderer())
+        
+        # Configure structlog with dynamic processor list
         structlog.configure(
-            processors=[
-                # Standard processors
-                structlog.stdlib.filter_by_level,
-                structlog.stdlib.add_logger_name,
-                structlog.stdlib.add_log_level,
-                structlog.processors.TimeStamper(fmt="iso"),
-                structlog.processors.StackInfoRenderer(),
-                structlog.processors.format_exc_info,
-                structlog.processors.UnicodeDecoder(),
-                
-                # Custom processors
-                self.add_request_context,
-                self.deduplicate_fields,
-                self.add_trace_context,
-                
-                # Final JSON rendering
-                structlog.processors.JSONRenderer()
-            ],
+            processors=processors,
             context_class=dict,
             logger_factory=structlog.stdlib.LoggerFactory(),
             wrapper_class=structlog.stdlib.BoundLogger,

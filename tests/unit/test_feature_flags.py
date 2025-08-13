@@ -10,6 +10,43 @@ import os
 from unittest.mock import patch
 
 
+def test_actual_feature_flags_module():
+    """Test the actual feature flags module for coverage"""
+    from faultmaven.config import feature_flags
+    
+    # Test that flags can be accessed
+    assert isinstance(feature_flags.ENABLE_LEGACY_COMPATIBILITY, bool)
+    assert isinstance(feature_flags.ENABLE_EXPERIMENTAL_FEATURES, bool)
+    assert isinstance(feature_flags.ENABLE_PERFORMANCE_MONITORING, bool)
+    assert isinstance(feature_flags.ENABLE_DETAILED_TRACING, bool)
+    
+    # Test get_active_flags function
+    flags = feature_flags.get_active_flags()
+    assert isinstance(flags, dict)
+    assert "legacy_compatibility" in flags
+    assert "experimental_features" in flags
+    assert "performance_monitoring" in flags
+    assert "detailed_tracing" in flags
+    
+    # Test log_feature_flag_status function
+    # This should not raise an exception
+    feature_flags.log_feature_flag_status()
+
+
+@patch.dict(os.environ, {"ENABLE_LEGACY_COMPATIBILITY": "false", "ENABLE_EXPERIMENTAL_FEATURES": "true"})
+def test_feature_flags_with_env_vars():
+    """Test feature flags respond to environment variables"""
+    # Reload the module to pick up new env vars
+    import importlib
+    from faultmaven.config import feature_flags
+    importlib.reload(feature_flags)
+    
+    # Test that environment variables are respected
+    flags = feature_flags.get_active_flags()
+    assert flags["legacy_compatibility"] is False  # Set to false in env
+    assert flags["experimental_features"] is True   # Set to true in env
+
+
 def test_feature_flag_boolean_parsing():
     """Test feature flag boolean parsing logic"""
     
@@ -265,7 +302,14 @@ def test_feature_flag_file_exists():
     with open(feature_flag_file, 'r') as f:
         content = f.read()
     
+    # Updated to reflect cleaned up feature flags
     expected_functions = [
+        "get_active_flags",
+        "log_feature_flag_status"
+    ]
+    
+    # Check that migration functions are NOT present (they were removed)
+    removed_functions = [
         "get_migration_strategy",
         "is_migration_safe", 
         "validate_feature_flag_combination",
@@ -274,3 +318,17 @@ def test_feature_flag_file_exists():
     
     for func_name in expected_functions:
         assert f"def {func_name}" in content, f"Function {func_name} should be defined in feature flags"
+    
+    for func_name in removed_functions:
+        assert f"def {func_name}" not in content, f"Function {func_name} should have been removed from feature flags"
+    
+    # Check that active flags are present
+    expected_flags = [
+        "ENABLE_LEGACY_COMPATIBILITY",
+        "ENABLE_EXPERIMENTAL_FEATURES",
+        "ENABLE_PERFORMANCE_MONITORING",
+        "ENABLE_DETAILED_TRACING"
+    ]
+    
+    for flag_name in expected_flags:
+        assert flag_name in content, f"Flag {flag_name} should be defined in feature flags"

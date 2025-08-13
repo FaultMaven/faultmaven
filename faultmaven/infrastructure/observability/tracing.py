@@ -99,20 +99,18 @@ if PROMETHEUS_AVAILABLE:
 class OpikTracer(BaseExternalClient, ITracer):
     """Opik-based tracer implementing ITracer interface
     
-    Provides observability through distributed tracing with support for
-    both local and cloud Opik instances. Gracefully handles unavailable
-    tracing services without breaking application functionality.
+    This tracer provides distributed tracing capabilities using Comet Opik
+    with graceful fallback to local metrics when Opik is unavailable.
     """
     
     def __init__(self):
-        """Initialize the OpikTracer with BaseExternalClient integration"""
-        # Initialize BaseExternalClient
+        """Initialize OpikTracer with proper BaseExternalClient setup"""
         super().__init__(
-            client_name="opik_tracer",
-            service_name="Opik_Observability",
+            client_name="OpikTracer",
+            service_name="CometOpik",
             enable_circuit_breaker=True,
-            circuit_breaker_threshold=3,  # Lower threshold for observability service
-            circuit_breaker_timeout=45    # Moderate timeout for observability recovery
+            circuit_breaker_threshold=3,
+            circuit_breaker_timeout=30
         )
         
         self.opik_available = OPIK_AVAILABLE
@@ -149,6 +147,13 @@ class OpikTracer(BaseExternalClient, ITracer):
         """
         start_time = time.time()
         span = None
+        
+        # Runtime check for tracing disable/enable
+        if not self._should_trace(operation):
+            self.logger.debug(f"Tracing disabled for operation: {operation}")
+            yield None
+            self._record_fallback_metrics(operation, start_time, "disabled")
+            return
         
         if self.opik_available and OPIK_AVAILABLE:
             try:
@@ -264,6 +269,63 @@ class OpikTracer(BaseExternalClient, ITracer):
             })
         
         return base_health
+    
+    def _should_trace(self, operation: str) -> bool:
+        """
+        Determine if tracing should be enabled for this operation based on various criteria.
+        
+        Supports:
+        - Global disable: OPIK_TRACK_DISABLE=true
+        - Target users: OPIK_TRACK_USERS=user1,user2,user3
+        - Target sessions: OPIK_TRACK_SESSIONS=session1,session2
+        - Target operations: OPIK_TRACK_OPERATIONS=llm_query,knowledge_search
+        
+        Args:
+            operation: Operation name being traced
+            
+        Returns:
+            True if tracing should be enabled, False otherwise
+        """
+        # Global disable check
+        if os.getenv("OPIK_TRACK_DISABLE", "false").lower() == "true":
+            return False
+        
+        # Get current request context for targeted tracing
+        try:
+            from faultmaven.infrastructure.logging.coordinator import request_context
+            context = request_context.get()
+        except:
+            context = None
+        
+        # Check for targeted user tracing
+        target_users = os.getenv("OPIK_TRACK_USERS", "").strip()
+        if target_users:
+            target_user_list = [u.strip() for u in target_users.split(",") if u.strip()]
+            if target_user_list:
+                if not context or not context.user_id:
+                    return False  # No user context, but targeting specific users
+                if context.user_id not in target_user_list:
+                    return False  # User not in target list
+        
+        # Check for targeted session tracing
+        target_sessions = os.getenv("OPIK_TRACK_SESSIONS", "").strip()
+        if target_sessions:
+            target_session_list = [s.strip() for s in target_sessions.split(",") if s.strip()]
+            if target_session_list:
+                if not context or not context.session_id:
+                    return False  # No session context, but targeting specific sessions
+                if context.session_id not in target_session_list:
+                    return False  # Session not in target list
+        
+        # Check for targeted operation tracing
+        target_operations = os.getenv("OPIK_TRACK_OPERATIONS", "").strip()
+        if target_operations:
+            target_op_list = [op.strip() for op in target_operations.split(",") if op.strip()]
+            if target_op_list:
+                if operation not in target_op_list:
+                    return False  # Operation not in target list
+        
+        return True  # Default to enabled if no restrictions apply
     
     def _record_fallback_metrics(self, operation: str, start_time: float, status: str):
         """
@@ -428,6 +490,19 @@ def trace(name: str, tags: Optional[dict] = None):
         def wrapper(*args, **kwargs):
             start_time = time.time()
 
+            # Runtime check for tracing disable/targeting
+            if not _should_trace_operation(name):
+                logging.debug(f"Tracing disabled for function: {name}")
+                try:
+                    result = func(*args, **kwargs)
+                    duration = time.time() - start_time
+                    _record_metrics(name, duration, "success_no_trace")
+                    return result
+                except Exception as e:
+                    duration = time.time() - start_time
+                    _record_metrics(name, duration, "error_no_trace")
+                    raise
+
             # Create span if Opik is available
             span = None
             if OPIK_AVAILABLE:
@@ -477,6 +552,19 @@ def trace(name: str, tags: Optional[dict] = None):
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
             start_time = time.time()
+
+            # Runtime check for tracing disable/targeting
+            if not _should_trace_operation(name):
+                logging.debug(f"Tracing disabled for async function: {name}")
+                try:
+                    result = await func(*args, **kwargs)
+                    duration = time.time() - start_time
+                    _record_metrics(name, duration, "success_no_trace")
+                    return result
+                except Exception as e:
+                    duration = time.time() - start_time
+                    _record_metrics(name, duration, "error_no_trace")
+                    raise
 
             # Create span if Opik is available
             span = None
@@ -528,8 +616,12 @@ def trace(name: str, tags: Optional[dict] = None):
 
         # Return appropriate wrapper based on function type
         if asyncio.iscoroutinefunction(func):
+            # Ensure __wrapped__ attribute is always set for async functions
+            async_wrapper.__wrapped__ = func
             return async_wrapper
         else:
+            # Ensure __wrapped__ attribute is always set for sync functions
+            wrapper.__wrapped__ = func
             return wrapper
 
     return decorator
@@ -606,21 +698,35 @@ def create_span(name: str, tags: Optional[dict] = None):
         def __exit__(self, exc_type, exc_val, exc_tb):
             pass
     
+    # Runtime check for tracing disable/targeting
+    if not _should_trace_operation(name):
+        logging.debug(f"Tracing disabled for span: {name}")
+        return DummySpan()
+    
     if not OPIK_AVAILABLE:
         return DummySpan()
 
     try:
-        # Create span with protection
-        def create_protected_span():
-            span_tags = tags or {}
-            if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
-                span_tags.update({
-                    "opik_local_host": os.getenv("OPIK_LOCAL_HOST", "opik.faultmaven.local"),
-                    "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://opik.faultmaven.local:30080")
-                })
-            return {"name": name, "tags": span_tags}
+        # Create span with protection - return a context manager
+        class ProtectedSpan:
+            def __init__(self, name, tags):
+                self.name = name
+                self.tags = tags
+                
+            def __enter__(self):
+                return self
+                
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                pass
         
-        return create_protected_span()
+        span_tags = tags or {}
+        if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
+            span_tags.update({
+                "opik_local_host": os.getenv("OPIK_LOCAL_HOST", "opik.faultmaven.local"),
+                "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://opik.faultmaven.local:30080")
+            })
+        
+        return ProtectedSpan(name, span_tags)
         
     except Exception as e:
         logging.warning(f"Failed to create span: {e}")
@@ -643,6 +749,59 @@ def set_global_tags(tags: dict):
         logging.info(f"Set global tags: {tags}")
     except Exception as e:
         logging.error(f"Failed to set global tags: {e}")
+
+
+def _should_trace_operation(operation_name: str) -> bool:
+    """
+    Standalone function to check if an operation should be traced.
+    Used by decorators and standalone functions.
+    
+    Args:
+        operation_name: Name of the operation
+        
+    Returns:
+        True if tracing should be enabled, False otherwise
+    """
+    # Global disable check
+    if os.getenv("OPIK_TRACK_DISABLE", "false").lower() == "true":
+        return False
+    
+    # Get current request context for targeted tracing
+    try:
+        from faultmaven.infrastructure.logging.coordinator import request_context
+        context = request_context.get()
+    except:
+        context = None
+    
+    # Check for targeted user tracing
+    target_users = os.getenv("OPIK_TRACK_USERS", "").strip()
+    if target_users:
+        target_user_list = [u.strip() for u in target_users.split(",") if u.strip()]
+        if target_user_list:
+            if not context or not context.user_id:
+                return False  # No user context, but targeting specific users
+            if context.user_id not in target_user_list:
+                return False  # User not in target list
+    
+    # Check for targeted session tracing
+    target_sessions = os.getenv("OPIK_TRACK_SESSIONS", "").strip()
+    if target_sessions:
+        target_session_list = [s.strip() for s in target_sessions.split(",") if s.strip()]
+        if target_session_list:
+            if not context or not context.session_id:
+                return False  # No session context, but targeting specific sessions
+            if context.session_id not in target_session_list:
+                return False  # Session not in target list
+    
+    # Check for targeted operation tracing
+    target_operations = os.getenv("OPIK_TRACK_OPERATIONS", "").strip()
+    if target_operations:
+        target_op_list = [op.strip() for op in target_operations.split(",") if op.strip()]
+        if target_op_list:
+            if operation_name not in target_op_list:
+                return False  # Operation not in target list
+    
+    return True  # Default to enabled if no restrictions apply
 
 
 def record_exception(exception: Exception, tags: Optional[dict] = None):

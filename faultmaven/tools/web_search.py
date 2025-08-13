@@ -14,8 +14,10 @@ import httpx
 from langchain.tools import BaseTool as LangChainBaseTool
 
 from faultmaven.models.interfaces import BaseTool as IBaseTool, ToolResult
+from faultmaven.tools.registry import register_tool
 
 
+@register_tool("web_search")
 class WebSearchTool(LangChainBaseTool, IBaseTool):
     """
     Web search tool with domain filtering for safe and relevant results.
@@ -47,6 +49,8 @@ class WebSearchTool(LangChainBaseTool, IBaseTool):
         api_endpoint: Optional[str] = None,
         trusted_domains: Optional[List[str]] = None,
         max_results: int = 3,
+        knowledge_ingester=None,  # Accept but ignore this parameter from tool registry
+        **kwargs  # Accept any other parameters that might be passed by the registry
     ):
         """
         Initialize the WebSearchTool.
@@ -56,8 +60,12 @@ class WebSearchTool(LangChainBaseTool, IBaseTool):
             api_endpoint: API endpoint for search service
             trusted_domains: List of trusted domains to search
             max_results: Maximum number of results to return
+            knowledge_ingester: Knowledge ingester instance (ignored by this tool)
+            **kwargs: Additional parameters from tool registry (ignored)
         """
-        super().__init__()
+        # Initialize both parent classes properly
+        LangChainBaseTool.__init__(self)
+        IBaseTool.__init__(self)
 
         # Initialize from environment variables if not provided
         self._api_key = api_key or os.getenv("WEB_SEARCH_API_KEY") or ""

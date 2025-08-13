@@ -21,6 +21,7 @@ from faultmaven.models import AgentState, SessionContext
 from faultmaven.models.interfaces import ITracer
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.session_management import SessionManager
+from faultmaven.exceptions import ValidationException, ServiceException
 
 
 class SessionService(BaseService):
@@ -48,13 +49,17 @@ class SessionService(BaseService):
 
     @trace("session_service_create_session")
     async def create_session(
-        self, user_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
+        self, 
+        user_id: Optional[str] = None, 
+        initial_context: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None
     ) -> SessionContext:
         """
         Create a new session with validation and limits
 
         Args:
             user_id: Optional user identifier
+            initial_context: Optional initial context for the session
             metadata: Optional session metadata
 
         Returns:
@@ -67,25 +72,40 @@ class SessionService(BaseService):
 
         # Check user session limits
         if user_id:
-            user_sessions = await self.get_user_sessions(user_id)
-            active_count = len([s for s in user_sessions if await self._is_active(s)])
+            try:
+                user_sessions = await self.get_user_sessions(user_id)
+                active_count = len([s for s in user_sessions if await self._is_active(s)])
 
-            if active_count >= self.max_sessions_per_user:
-                self.logger.warning(
-                    f"User {user_id} has reached session limit ({self.max_sessions_per_user})"
-                )
-                # Clean up oldest inactive session
-                await self._cleanup_oldest_session(user_sessions)
+                if active_count >= self.max_sessions_per_user:
+                    self.logger.warning(
+                        f"User {user_id} has reached session limit ({self.max_sessions_per_user})"
+                    )
+                    # Clean up oldest inactive session
+                    await self._cleanup_oldest_session(user_sessions)
+            except Exception as e:
+                self.logger.warning(f"Failed to check session limits for user {user_id}: {e}")
 
         # Create session through manager
-        session = await self.session_manager.create_session(user_id)
+        try:
+            session = await self.session_manager.create_session(user_id)
 
-        # Add metadata if provided
-        if metadata:
-            await self.session_manager.update_session(session.session_id, metadata)
+            # Add initial context and metadata if provided
+            updates = {}
+            if initial_context:
+                updates.update(initial_context)
+            if metadata:
+                updates.update(metadata)
+            
+            if updates:
+                update_success = await self.session_manager.update_session(session.session_id, updates)
+                if not update_success:
+                    self.logger.warning(f"Failed to add context/metadata to session {session.session_id}")
 
-        self.logger.info(f"Created session {session.session_id}")
-        return session
+            self.logger.info(f"Created session {session.session_id}")
+            return session
+        except Exception as e:
+            self.logger.error(f"Failed to create session: {e}")
+            raise RuntimeError(f"Session creation failed: {str(e)}") from e
 
     @trace("session_service_get_session")
     async def get_session(
@@ -100,16 +120,53 @@ class SessionService(BaseService):
 
         Returns:
             SessionContext or None if not found/invalid
+            
+        Raises:
+            ValidationException: If session_id is invalid
+            RuntimeError: If session retrieval fails
         """
-        session = await self.session_manager.get_session(session_id)
+        if not session_id or not session_id.strip():
+            raise ValidationException("Session ID cannot be empty")
+            
+        try:
+            session = await self.session_manager.get_session(session_id)
 
-        if session and validate:
-            # Validate session is still active
-            if not await self._is_active(session):
-                self.logger.warning(f"Session {session_id} is inactive")
-                return None
+            if session and validate:
+                # Validate session is still active
+                if not await self._is_active(session):
+                    self.logger.warning(f"Session {session_id} is inactive")
+                    return None
 
-        return session
+            return session
+        except ValidationException:
+            # Re-raise validation exceptions without wrapping
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to get session {session_id}: {e}")
+            raise RuntimeError(f"Session retrieval failed: {str(e)}") from e
+
+    @trace("session_service_list_sessions")
+    async def list_sessions(self, user_id: Optional[str] = None) -> List[SessionContext]:
+        """
+        List sessions with optional user filtering
+
+        Args:
+            user_id: Optional user ID to filter by
+
+        Returns:
+            List of SessionContext objects
+        """
+        try:
+            if user_id:
+                # Get sessions for specific user
+                return await self.session_manager.list_sessions(user_id=user_id)
+            else:
+                # Get all sessions
+                return await self.session_manager.list_sessions()
+
+        except Exception as e:
+            self.logger.error(f"Failed to list sessions: {e}")
+            return []
 
     @trace("session_service_update_session")
     async def update_session(
@@ -126,27 +183,44 @@ class SessionService(BaseService):
         Returns:
             True if update was successful
         """
+        if not session_id or not session_id.strip():
+            raise ValidationException("Session ID cannot be empty")
+            
+        if not updates:
+            raise ValidationException("Updates cannot be empty")
+            
         try:
             # Get current session
-            session = await self.get_session(session_id)
+            session = await self.get_session(session_id, validate=False)
             if not session:
                 self.logger.error(f"Session {session_id} not found")
-                return False
+                raise FileNotFoundError(f"Session {session_id} not found")
 
             # Validate state transitions if needed
             if validate_state and "agent_state" in updates:
                 if not self._validate_state_transition(
                     session.agent_state, updates["agent_state"]
                 ):
-                    self.logger.error("Invalid state transition")
-                    return False
+                    return False  # Return False for invalid state transition
 
             # Apply updates
-            return await self.session_manager.update_session(session_id, updates)
+            result = await self.session_manager.update_session(session_id, updates)
+            if not result:
+                raise RuntimeError("Session update operation failed")
+            return result
 
+        except ValidationException:
+            # Re-raise validation exceptions without wrapping
+            raise
+        except FileNotFoundError:
+            # Re-raise file not found exceptions without wrapping
+            raise
+        except RuntimeError:
+            # Re-raise runtime exceptions without wrapping
+            raise
         except Exception as e:
             self.logger.error(f"Failed to update session: {e}")
-            return False
+            raise RuntimeError(f"Session update failed: {str(e)}") from e
 
     @trace("session_service_get_user_sessions")
     async def get_user_sessions(self, user_id: str) -> List[SessionContext]:
@@ -158,8 +232,19 @@ class SessionService(BaseService):
 
         Returns:
             List of user's sessions
+            
+        Raises:
+            ValidationException: If user_id is invalid
+            RuntimeError: If session listing fails
         """
-        return await self.session_manager.list_sessions(user_id=user_id)
+        if not user_id or not user_id.strip():
+            raise ValidationException("User ID cannot be empty")
+            
+        try:
+            return await self.session_manager.list_sessions(user_id=user_id)
+        except Exception as e:
+            self.logger.error(f"Failed to get sessions for user {user_id}: {e}")
+            raise RuntimeError(f"Session listing failed: {str(e)}") from e
 
     @trace("session_service_cleanup_inactive")
     async def cleanup_inactive_sessions(self) -> int:
@@ -253,17 +338,101 @@ class SessionService(BaseService):
         Returns:
             True if extension was successful
         """
+        if not session_id or not session_id.strip():
+            raise ValidationException("Session ID cannot be empty")
+            
+        if extension_hours <= 0:
+            raise ValidationException("Extension hours must be positive")
+            
         try:
             # Validate session exists and is active
-            session = await self.get_session(session_id)
+            session = await self.get_session(session_id, validate=False)
             if not session:
-                return False
+                raise FileNotFoundError(f"Session {session_id} not found")
 
             # Extend through manager
-            return await self.session_manager.extend_session(session_id)
+            result = await self.session_manager.extend_session(session_id)
+            if not result:
+                raise RuntimeError("Session extension operation failed")
+            return result
 
+        except ValidationException:
+            # Re-raise validation exceptions without wrapping
+            raise
+        except FileNotFoundError:
+            # Re-raise file not found exceptions without wrapping
+            raise
+        except RuntimeError:
+            # Re-raise runtime exceptions without wrapping
+            raise
         except Exception as e:
             self.logger.error(f"Failed to extend session: {e}")
+            raise RuntimeError(f"Session extension failed: {str(e)}") from e
+
+    @trace("session_service_update_last_activity")
+    async def update_last_activity(self, session_id: str) -> bool:
+        """
+        Update the last activity timestamp for a session (heartbeat)
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            True if activity timestamp was updated successfully
+        """
+        if not session_id or not session_id.strip():
+            raise ValidationException("Session ID cannot be empty")
+            
+        try:
+            # Validate session exists first
+            session = await self.get_session(session_id, validate=False)
+            if not session:
+                raise FileNotFoundError(f"Session {session_id} not found")
+
+            # Update activity through manager
+            result = await self.session_manager.update_last_activity(session_id)
+            if not result:
+                raise RuntimeError("Activity update operation failed")
+            return result
+
+        except ValidationException:
+            # Re-raise validation exceptions without wrapping
+            raise
+        except FileNotFoundError:
+            # Re-raise file not found exceptions without wrapping
+            raise
+        except RuntimeError:
+            # Re-raise runtime exceptions without wrapping
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to update session activity: {e}")
+            raise RuntimeError(f"Session activity update failed: {str(e)}") from e
+
+    @trace("session_service_delete_session")
+    async def delete_session(self, session_id: str) -> bool:
+        """
+        Delete a session
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            True if session was deleted successfully, False otherwise
+        """
+        if not session_id or not session_id.strip():
+            return False
+            
+        try:
+            # Delegate to session manager
+            result = await self.session_manager.delete_session(session_id)
+            if result:
+                self.logger.info(f"Successfully deleted session {session_id}")
+            else:
+                self.logger.warning(f"Failed to delete session {session_id} - session may not exist")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error deleting session {session_id}: {e}")
             return False
 
     @trace("session_service_get_session_summary")
@@ -302,7 +471,7 @@ class SessionService(BaseService):
                 "status": "active" if is_active else "inactive",
                 "created_at": session.created_at.isoformat(),
                 "last_activity": session.last_activity.isoformat(),
-                "duration_hours": duration.total_seconds() / 3600,
+                "duration_hours": round(duration.total_seconds() / 3600, 2),
                 "data_uploads_count": len(session.data_uploads),
                 "investigation_summary": investigation_summary,
                 "current_agent_state": session.agent_state,
@@ -395,3 +564,277 @@ class SessionService(BaseService):
         except Exception as e:
             self.logger.error(f"Failed to merge sessions: {e}")
             return False
+
+    @trace("session_service_record_query_operation")
+    async def record_query_operation(
+        self,
+        session_id: str,
+        query: str,
+        investigation_id: str,
+        context: Optional[Dict] = None,
+        confidence_score: float = 0.0
+    ) -> bool:
+        """
+        Record a query operation in the session's investigation history
+        
+        Args:
+            session_id: Session identifier  
+            query: The query text
+            investigation_id: Unique investigation identifier
+            context: Optional context information
+            confidence_score: Confidence score for the query result
+            
+        Returns:
+            True if operation was recorded successfully
+        """
+        try:
+            investigation_record = {
+                "action": "query_processed",
+                "investigation_id": investigation_id,
+                "query": query,
+                "context": context or {},
+                "confidence_score": confidence_score,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            await self.session_manager.add_investigation_history(session_id, investigation_record)
+            await self.update_last_activity(session_id)
+            
+            self.logger.debug(f"Recorded query operation for session {session_id}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to record query operation: {e}")
+            return False
+
+    @trace("session_service_record_data_upload_operation")
+    async def record_data_upload_operation(
+        self,
+        session_id: str,
+        operation_type: str,
+        data_id: str,
+        context: Optional[Dict] = None,
+        filename: Optional[str] = None,
+        file_size: int = 0,
+        metadata: Optional[Dict] = None
+    ) -> bool:
+        """
+        Record a data upload operation in the session
+        
+        Args:
+            session_id: Session identifier
+            operation_type: Type of operation (e.g., data_ingestion, log_analysis)
+            data_id: Unique data identifier
+            context: Optional context information about the operation
+            filename: Name of uploaded file (optional)
+            file_size: Size of uploaded file in bytes
+            metadata: Optional metadata about the upload
+            
+        Returns:
+            True if operation was recorded successfully
+        """
+        try:
+            # Add to data uploads
+            await self.session_manager.add_data_upload(session_id, data_id)
+            
+            # Also add to investigation history for tracking
+            upload_record = {
+                "action": "data_uploaded",
+                "operation_type": operation_type,
+                "data_id": data_id,
+                "context": context or {},
+                "filename": filename,
+                "file_size": file_size,
+                "metadata": metadata or {},
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            await self.session_manager.add_investigation_history(session_id, upload_record)
+            await self.update_last_activity(session_id)
+            
+            self.logger.debug(f"Recorded data upload operation for session {session_id}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to record data upload operation: {e}")
+            return False
+
+
+    async def cleanup_session_data(self, session_id: str) -> Dict[str, Any]:
+        """
+        Clean up session data and temporary files
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            Cleanup results
+        """
+        try:
+            return await self.session_manager.cleanup_session_data(session_id)
+        except Exception as e:
+            self.logger.error(f"Failed to cleanup session: {e}")
+            return {
+                "session_id": session_id,
+                "success": False,
+                "error": str(e)
+            }
+
+    @trace("session_service_get_sessions_by_criteria")
+    async def get_sessions_by_criteria(self, criteria: Dict[str, Any]) -> List[SessionContext]:
+        """
+        Get sessions matching specific criteria
+        
+        Args:
+            criteria: Dictionary of criteria to filter sessions
+            
+        Returns:
+            List of sessions matching criteria
+        """
+        try:
+            all_sessions = await self.session_manager.list_sessions()
+            
+            # Filter sessions based on criteria
+            matching_sessions = []
+            for session in all_sessions:
+                # Check if session matches all criteria
+                matches = True
+                for key, value in criteria.items():
+                    # Check in agent state investigation context
+                    if (session.agent_state and 
+                        session.agent_state.get("investigation_context", {}).get(key) != value):
+                        matches = False
+                        break
+                
+                if matches:
+                    matching_sessions.append(session)
+            
+            return matching_sessions
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get sessions by criteria: {e}")
+            return []
+
+    @trace("session_service_get_session_health")
+    async def get_session_health(self) -> Dict[str, Any]:
+        """
+        Get session health status and metrics
+        
+        Returns:
+            Health status dictionary
+        """
+        try:
+            all_sessions = await self.session_manager.list_sessions()
+            active_sessions = [s for s in all_sessions if await self._is_active(s)]
+            
+            # Count sessions by state
+            state_distribution = {
+                "initial": 0,
+                "investigating": 0,
+                "waiting_for_input": 0,
+                "error": 0,
+                "completed": 0,
+                "other": 0
+            }
+            
+            error_count = 0
+            for session in all_sessions:
+                if session.agent_state:
+                    phase = session.agent_state.get("current_phase", "other")
+                    if phase in state_distribution:
+                        state_distribution[phase] += 1
+                        if phase == "error":
+                            error_count += 1
+                    else:
+                        state_distribution["other"] += 1
+            
+            # Calculate average session age
+            now = datetime.utcnow()
+            session_ages = [(now - s.created_at).total_seconds() / 3600 for s in all_sessions]
+            avg_age = sum(session_ages) / len(session_ages) if session_ages else 0
+            
+            # Determine service status
+            service_status = "healthy"
+            if error_count > len(all_sessions) * 0.2:  # More than 20% error sessions
+                service_status = "unhealthy"
+            elif error_count > len(all_sessions) * 0.1:  # More than 10% error sessions
+                service_status = "degraded"
+            
+            return {
+                "service_status": service_status,
+                "total_sessions": len(all_sessions),
+                "active_sessions": len(active_sessions),
+                "session_distribution": state_distribution,
+                "error_sessions": error_count,
+                "average_session_age": round(avg_age, 2)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get session health: {e}")
+            return {
+                "service_status": "unhealthy",
+                "total_sessions": 0,
+                "active_sessions": 0,
+                "session_distribution": {},
+                "error_sessions": 0,
+                "average_session_age": 0
+            }
+
+    @trace("session_service_get_user_session_analytics")
+    async def get_user_session_analytics(self, user_id: str) -> Dict[str, Any]:
+        """
+        Get analytics for a specific user's sessions
+        
+        Args:
+            user_id: User identifier
+            
+        Returns:
+            User session analytics dictionary
+        """
+        try:
+            user_sessions = await self.get_user_sessions(user_id)
+            
+            if not user_sessions:
+                return {
+                    "user_id": user_id,
+                    "session_count": 0,
+                    "total_duration": 0,
+                    "average_duration": 0,
+                    "active_sessions": 0,
+                    "completed_sessions": 0
+                }
+            
+            # Calculate duration metrics
+            now = datetime.utcnow()
+            durations = [(now - s.created_at).total_seconds() / 3600 for s in user_sessions]
+            total_duration = sum(durations)
+            avg_duration = total_duration / len(durations)
+            
+            # Count session states
+            active_count = len([s for s in user_sessions if await self._is_active(s)])
+            completed_count = len([
+                s for s in user_sessions 
+                if s.agent_state and s.agent_state.get("current_phase") == "completed"
+            ])
+            
+            return {
+                "user_id": user_id,
+                "session_count": len(user_sessions),
+                "total_duration": round(total_duration, 2),
+                "average_duration": round(avg_duration, 2),
+                "active_sessions": active_count,
+                "completed_sessions": completed_count,
+                "success_rate": round(completed_count / len(user_sessions), 2) if user_sessions else 0
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get user session analytics: {e}")
+            return {
+                "user_id": user_id,
+                "session_count": 0,
+                "total_duration": 0,
+                "average_duration": 0,
+                "active_sessions": 0,
+                "completed_sessions": 0,
+                "success_rate": 0
+            }

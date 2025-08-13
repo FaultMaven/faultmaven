@@ -33,6 +33,7 @@ from faultmaven.models import (
     DataType,
     UploadedData,
 )
+from faultmaven.exceptions import ValidationException, ServiceException
 
 
 class DataService(BaseService):
@@ -45,6 +46,7 @@ class DataService(BaseService):
         sanitizer: ISanitizer,
         tracer: ITracer,
         storage_backend: Optional[IStorageBackend] = None,
+        session_service=None,  # Optional session service for operation tracking
     ):
         """
         Initialize the Data Service with interface dependencies
@@ -55,6 +57,7 @@ class DataService(BaseService):
             sanitizer: Data sanitization service interface
             tracer: Distributed tracing interface
             storage_backend: Optional storage backend interface
+            session_service: Optional session service for operation tracking
         """
         super().__init__()
         self._classifier = data_classifier
@@ -62,6 +65,7 @@ class DataService(BaseService):
         self._sanitizer = sanitizer
         self._tracer = tracer
         self._storage = storage_backend
+        self._session_service = session_service
 
     async def ingest_data(
         self,
@@ -69,6 +73,8 @@ class DataService(BaseService):
         session_id: str,
         file_name: Optional[str] = None,
         file_size: Optional[int] = None,
+        data_type: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> UploadedData:
         """
         Ingest and process raw data using interface dependencies
@@ -78,6 +84,8 @@ class DataService(BaseService):
             session_id: Session identifier
             file_name: Optional original filename
             file_size: Optional file size in bytes
+            data_type: Optional data type override
+            context: Optional additional context data
 
         Returns:
             UploadedData model with processing results
@@ -86,11 +94,11 @@ class DataService(BaseService):
             ValueError: If input validation fails
             RuntimeError: If processing fails
         """
-        def validate_inputs(content: str, session_id: str, file_name: Optional[str], file_size: Optional[int]) -> None:
-            if not content:
-                raise ValueError("Content cannot be empty")
-            if not session_id:
-                raise ValueError("Session ID cannot be empty")
+        def _validate_ingest_inputs(content: str, session_id: str, file_name: Optional[str], file_size: Optional[int], data_type: Optional[str], context: Optional[Dict[str, Any]]) -> None:
+            if content is None or (isinstance(content, str) and not content.strip()):
+                raise ValidationException("Content cannot be empty")
+            if not session_id or not session_id.strip():
+                raise ValidationException("Session ID cannot be empty")
         
         return await self.execute_operation(
             "ingest_data",
@@ -99,7 +107,9 @@ class DataService(BaseService):
             session_id,
             file_name,
             file_size,
-            validate_inputs=validate_inputs
+            data_type,
+            context,
+            validate_inputs=lambda c, s, f, fs, dt, ctx: _validate_ingest_inputs(c, s, f, fs, dt, ctx)
         )
     
     async def _execute_data_ingestion(
@@ -107,7 +117,9 @@ class DataService(BaseService):
         content: str,
         session_id: str,
         file_name: Optional[str],
-        file_size: Optional[int]
+        file_size: Optional[int],
+        data_type: Optional[str],
+        context: Optional[Dict[str, Any]]
     ) -> UploadedData:
         """Execute the core data ingestion logic"""
         # Generate data ID from content hash
@@ -128,8 +140,21 @@ class DataService(BaseService):
         # Sanitize content using interface
         sanitized_content = self._sanitizer.sanitize(content)
         
-        # Classify data type using interface
-        data_type = await self._classifier.classify(sanitized_content, file_name)
+        # Classify data type using interface (unless overridden) with tracing
+        with self._tracer.trace("data_classification"):
+            if data_type:
+                # Convert string to DataType enum if needed
+                from faultmaven.models import DataType
+                if isinstance(data_type, str):
+                    try:
+                        classified_data_type = DataType(data_type)
+                    except ValueError:
+                        # If invalid data_type provided, fall back to classification
+                        classified_data_type = await self._classifier.classify(sanitized_content, file_name)
+                else:
+                    classified_data_type = data_type
+            else:
+                classified_data_type = await self._classifier.classify(sanitized_content, file_name)
         
         # Log classification metric
         self.log_metric(
@@ -137,24 +162,35 @@ class DataService(BaseService):
             1,
             "count",
             {
-                "data_type": data_type.value,
+                "data_type": classified_data_type.value,
                 "session_id": session_id
             }
         )
 
         # Process data to extract insights using interface
         try:
-            insights_response = await self._processor.process(sanitized_content, data_type)
+            insights_response = await self._processor.process(sanitized_content, classified_data_type)
             # Convert DataInsightsResponse to insights dict including anomalies
-            detailed_insights = {
-                "error_count": insights_response.insights.get("error_count", 0),
-                "error_rate": insights_response.insights.get("error_rate", 0.0),
-                "processing_time_ms": insights_response.processing_time_ms,
-                "confidence_score": insights_response.confidence_score,
-                "anomalies_detected": insights_response.anomalies_detected,
-                "recommendations": insights_response.recommendations
-            }
-            detailed_insights.update(insights_response.insights)
+            # Safely handle insights response structure
+            if hasattr(insights_response, 'insights') and isinstance(insights_response.insights, dict):
+                detailed_insights = {
+                    "error_count": insights_response.insights.get("error_count", 0),
+                    "error_rate": insights_response.insights.get("error_rate", 0.0),
+                    "processing_time_ms": getattr(insights_response, 'processing_time_ms', 0),
+                    "confidence_score": getattr(insights_response, 'confidence_score', 0.5),
+                    "anomalies_detected": getattr(insights_response, 'anomalies_detected', []),
+                    "recommendations": getattr(insights_response, 'recommendations', [])
+                }
+                detailed_insights.update(insights_response.insights)
+            else:
+                # Handle case where insights_response is not properly structured
+                detailed_insights = {
+                    "processed": True, 
+                    "processing_timestamp": datetime.utcnow().isoformat(),
+                    "anomalies_detected": [],
+                    "recommendations": [],
+                    "confidence_score": 0.5
+                }
         except Exception as e:
             self.logger.warning(f"Failed to extract detailed insights: {e}")
             detailed_insights = {
@@ -168,7 +204,7 @@ class DataService(BaseService):
         uploaded_data = UploadedData(
             data_id=data_id,
             session_id=session_id,
-            data_type=data_type,
+            data_type=classified_data_type,
             content=sanitized_content,
             file_name=file_name,
             file_size=file_size or len(content),
@@ -176,6 +212,10 @@ class DataService(BaseService):
             processing_status="completed",
             insights=detailed_insights
         )
+        
+        # Add context if provided
+        if context:
+            uploaded_data.context = context
 
         # Store if backend available
         if self._storage:
@@ -188,10 +228,27 @@ class DataService(BaseService):
             {
                 "data_id": data_id,
                 "session_id": session_id,
-                "data_type": data_type.value,
+                "data_type": classified_data_type.value,
                 "processing_status": uploaded_data.processing_status
             }
         )
+
+        # Record operation in session if session service is available
+        if self._session_service and session_id:
+            try:
+                await self._session_service.record_data_upload_operation(
+                    session_id=session_id,
+                    data_id=data_id,
+                    filename=file_name or "unknown",
+                    file_size=file_size or len(content),
+                    metadata={
+                        "data_type": classified_data_type.value,
+                        "processing_status": uploaded_data.processing_status,
+                        "insights_count": len(detailed_insights)
+                    }
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to record data upload operation in session: {e}")
 
         return uploaded_data
 
@@ -214,18 +271,18 @@ class DataService(BaseService):
             ValueError: If data not found or invalid parameters
             RuntimeError: If analysis fails
         """
-        def validate_inputs(data_id: str, session_id: str) -> None:
-            if not data_id:
-                raise ValueError("Data ID cannot be empty")
-            if not session_id:
-                raise ValueError("Session ID cannot be empty")
+        def _validate_analyze_inputs(data_id: str, session_id: str) -> None:
+            if data_id is None or (isinstance(data_id, str) and not data_id.strip()):
+                raise ValidationException("Data ID cannot be empty")
+            if session_id is None or (isinstance(session_id, str) and not session_id.strip()):
+                raise ValidationException("Session ID cannot be empty")
         
         return await self.execute_operation(
             "analyze_data",
             self._execute_data_analysis,
             data_id,
             session_id,
-            validate_inputs=validate_inputs
+            validate_inputs=lambda di, si: _validate_analyze_inputs(di, si)
         )
     
     async def _execute_data_analysis(
@@ -236,15 +293,15 @@ class DataService(BaseService):
         """Execute the core data analysis logic"""
         # Retrieve data from storage
         if not self._storage:
-            raise ValueError("No storage backend available")
+            raise RuntimeError("No storage backend available")
 
         data = await self._storage.retrieve(data_id)
         if not data:
-            raise ValueError(f"Data not found: {data_id}")
+            raise FileNotFoundError(f"Data not found: {data_id}")
 
         # Verify session ownership
         if data.session_id != session_id:
-            raise ValueError(f"Data {data_id} does not belong to session {session_id}")
+            raise ValidationException(f"Data {data_id} does not belong to session {session_id}")
         
         # Log business event
         self.log_business_event(
@@ -257,12 +314,31 @@ class DataService(BaseService):
             }
         )
 
-        # Process using interface
+        # Process using interface with tracing
         start_time = datetime.utcnow()
-        insights = await self._processor.process(data.content, data.data_type)
+        with self._tracer.trace("data_analysis_processing"):
+            try:
+                insights_response = await self._processor.process(data.content, data.data_type)
+            except Exception as e:
+                # Wrap external processor exceptions in ServiceException
+                self.logger.error(f"Data analysis failed for {data_id}: {e}")
+                raise ServiceException(
+                    f"Data analysis processing failed: {str(e)}", 
+                    details={"operation": "analyze_data", "data_id": data_id, "error": str(e)}
+                ) from e
         end_time = datetime.utcnow()
         
-        processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
+        # Handle insights response properly
+        if hasattr(insights_response, 'insights'):
+            insights = insights_response.insights
+        else:
+            insights = insights_response if isinstance(insights_response, dict) else {"processed": True}
+        
+        # Use processing time from processor response, or calculate if not available
+        if hasattr(insights_response, 'processing_time_ms'):
+            processing_time_ms = insights_response.processing_time_ms
+        else:
+            processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
         
         # Log processing time metric
         self.log_metric(
@@ -278,24 +354,41 @@ class DataService(BaseService):
         # Sanitize insights
         sanitized_insights = self._sanitizer.sanitize(insights)
         
-        # Detect anomalies based on insights
-        anomalies = self._detect_anomalies(data, sanitized_insights)
+        # Ensure insights is a dictionary
+        if not isinstance(sanitized_insights, dict):
+            sanitized_insights = {"processed": True, "data": str(sanitized_insights)}
         
-        # Generate recommendations
-        recommendations = self._generate_recommendations(data, anomalies)
+        # Use anomalies and recommendations from processor response, or generate if not available
+        if hasattr(insights_response, 'anomalies_detected'):
+            anomalies = insights_response.anomalies_detected
+        else:
+            anomalies = self._detect_anomalies(data, sanitized_insights)
         
-        # Calculate confidence score
-        confidence_score = self._calculate_confidence_score(data, sanitized_insights)
+        if hasattr(insights_response, 'recommendations'):
+            recommendations = insights_response.recommendations
+        else:
+            recommendations = self._generate_recommendations(data, anomalies)
+        
+        # Use confidence score from processor response, or calculate if not available
+        if hasattr(insights_response, 'confidence_score'):
+            confidence_score = insights_response.confidence_score
+        else:
+            confidence_score = self._calculate_confidence_score(data, sanitized_insights)
 
-        response = DataInsightsResponse(
-            data_id=data_id,
-            data_type=data.data_type,
-            insights=sanitized_insights,
-            confidence_score=confidence_score,
-            processing_time_ms=processing_time_ms,
-            anomalies_detected=anomalies,
-            recommendations=recommendations,
-        )
+        # Create response with proper error handling
+        try:
+            response = DataInsightsResponse(
+                data_id=data_id,
+                data_type=data.data_type,
+                insights=sanitized_insights,
+                confidence_score=confidence_score,
+                processing_time_ms=processing_time_ms,
+                anomalies_detected=anomalies,
+                recommendations=recommendations,
+            )
+        except Exception as e:
+            # Handle model validation errors
+            raise RuntimeError(f"Failed to create DataInsightsResponse: {str(e)}") from e
         
         # Log completion event
         self.log_business_event(
@@ -397,22 +490,36 @@ class DataService(BaseService):
         Returns:
             List of UploadedData for the session
         """
-        def validate_inputs(session_id: str) -> None:
-            if not session_id:
-                raise ValueError("Session ID cannot be empty")
+        def _validate_session_inputs(session_id: str) -> None:
+            if not session_id or not session_id.strip():
+                raise ValidationException("Session ID cannot be empty")
         
         return await self.execute_operation(
             "get_session_data",
             self._execute_session_data_retrieval,
             session_id,
-            validate_inputs=validate_inputs
+            validate_inputs=lambda sid: _validate_session_inputs(sid)
         )
     
     async def _execute_session_data_retrieval(self, session_id: str) -> List[UploadedData]:
         """Execute the core session data retrieval logic"""
-        # In a real implementation, this would query the storage backend
-        # For now, return empty list
-        return []
+        if not self._storage:
+            return []
+        
+        # Check if storage backend supports session-based retrieval
+        if hasattr(self._storage, 'retrieve_by_session'):
+            session_data = await self._storage.retrieve_by_session(session_id)
+            # Filter to ensure all items are UploadedData instances
+            return [data for data in session_data if hasattr(data, 'data_id')]
+        else:
+            # Fallback: scan all storage items for matching session_id
+            # This is less efficient but ensures compatibility
+            session_data = []
+            if hasattr(self._storage, '_storage'):
+                for data in self._storage._storage.values():
+                    if hasattr(data, 'session_id') and data.session_id == session_id:
+                        session_data.append(data)
+            return session_data
 
     def _generate_data_id(self, content: str) -> str:
         """Generate unique ID from content hash"""
@@ -585,24 +692,24 @@ class DataService(BaseService):
             FileNotFoundError: If data not found
             RuntimeError: If deletion fails
         """
-        def validate_inputs(data_id: str, session_id: str) -> None:
+        def _validate_delete_inputs(data_id: str, session_id: str) -> None:
             if not data_id or not data_id.strip():
-                raise ValueError("Data ID cannot be empty")
+                raise ValidationException("Data ID cannot be empty")
             if not session_id or not session_id.strip():
-                raise ValueError("Session ID cannot be empty")
+                raise ValidationException("Session ID cannot be empty")
         
         return await self.execute_operation(
             "delete_data",
             self._execute_data_deletion,
             data_id,
             session_id,
-            validate_inputs=validate_inputs
+            validate_inputs=lambda di, si: _validate_delete_inputs(di, si)
         )
     
     async def _execute_data_deletion(self, data_id: str, session_id: str) -> bool:
         """Execute the core data deletion logic"""
         if not self._storage:
-            raise ValueError("No storage backend available")
+            raise RuntimeError("No storage backend available")
         
         # Retrieve data to verify ownership
         data = await self._storage.retrieve(data_id)
@@ -611,7 +718,7 @@ class DataService(BaseService):
         
         # Verify session ownership
         if data.session_id != session_id:
-            raise ValueError(f"Data {data_id} does not belong to session {session_id}")
+            raise ValidationException(f"Data {data_id} does not belong to session {session_id}")
         
         # Delete from storage
         await self._storage.delete(data_id)
@@ -725,16 +832,45 @@ class SimpleStorageBackend(IStorageBackend):
     
     def __init__(self):
         self._storage: Dict[str, Any] = {}
+        self._session_index: Dict[str, List[str]] = {}  # session_id -> list of data_ids
     
     async def store(self, key: str, data: Any) -> None:
-        """Store data in memory"""
+        """Store data in memory and maintain session index"""
         self._storage[key] = data
+        
+        # Update session index if data has session_id
+        if hasattr(data, 'session_id') and data.session_id:
+            session_id = data.session_id
+            if session_id not in self._session_index:
+                self._session_index[session_id] = []
+            if key not in self._session_index[session_id]:
+                self._session_index[session_id].append(key)
     
     async def retrieve(self, key: str) -> Optional[Any]:
         """Retrieve data from memory"""
         return self._storage.get(key)
     
+    async def retrieve_by_session(self, session_id: str) -> List[Any]:
+        """Retrieve all data for a given session"""
+        if session_id not in self._session_index:
+            return []
+        
+        session_data = []
+        for data_id in self._session_index[session_id]:
+            data = self._storage.get(data_id)
+            if data is not None:
+                session_data.append(data)
+        
+        return session_data
+    
     async def delete(self, key: str) -> None:
-        """Delete data from memory"""
+        """Delete data from memory and update session index"""
         if key in self._storage:
+            data = self._storage[key]
             del self._storage[key]
+            
+            # Update session index
+            if hasattr(data, 'session_id') and data.session_id:
+                session_id = data.session_id
+                if session_id in self._session_index and key in self._session_index[session_id]:
+                    self._session_index[session_id].remove(key)

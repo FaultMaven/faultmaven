@@ -313,6 +313,9 @@ def test_concrete_implementations():
         
         async def search(self, query: str, k: int = 5) -> List[Dict]:
             return self.documents[:k]
+        
+        async def delete_documents(self, ids: List[str]) -> None:
+            self.documents = [doc for doc in self.documents if doc.get('id') not in ids]
     
     store = ConcreteVectorStore()
     docs = [{'id': 1, 'text': 'test doc'}]
@@ -331,6 +334,15 @@ def test_concrete_implementations():
         
         async def set(self, key: str, value: Dict, ttl: Optional[int] = None) -> None:
             self.store[key] = value
+        
+        async def delete(self, key: str) -> bool:
+            return self.store.pop(key, None) is not None
+        
+        async def exists(self, key: str) -> bool:
+            return key in self.store
+        
+        async def extend_ttl(self, key: str, ttl: Optional[int] = None) -> bool:
+            return key in self.store
     
     session_store = ConcreteSessionStore()
     asyncio.run(session_store.set('test_key', {'data': 'value'}))

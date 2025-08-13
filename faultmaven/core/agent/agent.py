@@ -264,9 +264,21 @@ class FaultMavenAgent:
         """
 
         try:
+            self.logger.info(f"🔍 Making LLM call with prompt: {triage_prompt[:100]}...")
+            self.logger.info(f"🔍 LLM Router type: {type(self.llm_router)}")
+            self.logger.info(f"🔍 LLM Router available: {self.llm_router is not None}")
+            
+            # Add direct debugging to see what's happening
+            print(f"🔍 AGENT: About to call LLM router with prompt: {triage_prompt[:100]}...")
+            print(f"🔍 AGENT: LLM Router type: {type(self.llm_router)}")
+            
             response = await self.llm_router.route(
                 prompt=triage_prompt, max_tokens=300, temperature=0.3
             )
+            
+            print(f"✅ AGENT: LLM call successful, response type: {type(response)}")
+            self.logger.info(f"✅ LLM call successful, response type: {type(response)}")
+            self.logger.info(f"✅ LLM response content: {response.content[:200] if hasattr(response, 'content') else 'No content'}...")
 
             # Extract key insight and question
             content = response.content
@@ -276,7 +288,7 @@ class FaultMavenAgent:
             state["investigation_context"]["triage_assessment"] = content
             state["investigation_context"]["severity"] = severity
             state["current_phase"] = "triage_completed"
-            state["confidence_score"] = 0.6
+            state["confidence_score"] = 0.75
 
             # Add to findings
             state["findings"].append(
@@ -294,7 +306,17 @@ class FaultMavenAgent:
             state["investigation_context"]["waiting_for_input"] = True
 
         except Exception as e:
-            self.logger.error(f"Triage failed: {e}")
+            print(f"❌ AGENT: Triage failed with exception: {e}")
+            print(f"❌ AGENT: Exception type: {type(e)}")
+            print(f"❌ AGENT: Exception details: {str(e)}")
+            import traceback
+            print(f"❌ AGENT: Full traceback: {traceback.format_exc()}")
+            
+            self.logger.error(f"❌ Triage failed with exception: {e}")
+            self.logger.error(f"❌ Exception type: {type(e)}")
+            self.logger.error(f"❌ Exception details: {str(e)}")
+            self.logger.error(f"❌ Full traceback: {traceback.format_exc()}")
+            
             state["investigation_context"]["triage_error"] = str(e)
             state["confidence_score"] = 0.3
 
@@ -1046,15 +1068,27 @@ class FaultMavenAgent:
             context: Optional context information
 
         Returns:
-            Dictionary with agent results
+            Dictionary with agent results (AgentState format)
         """
-        # Use the existing process_query method which has the right return format
-        return await self.process_query(
-            query=query,
-            session_id=session_id,
-            context=context,
-            priority="medium"
-        )
+        try:
+            # Run the agent using legacy method and return the raw AgentState
+            # This matches what AgentService._format_response() expects
+            final_state = await self.run_legacy(
+                session_id=session_id,
+                user_query=query,
+                uploaded_data=context.get("uploaded_data", []) if context else [],
+            )
+            
+            # Ensure final_state is never None - return a valid dict structure
+            if final_state is None:
+                return self._create_error_state(query, session_id, "Agent execution returned no results")
+            
+            # Return the AgentState directly to match AgentService expectations
+            return final_state
+        except Exception as e:
+            self.logger.error(f"Agent run failed for session {session_id}: {e}")
+            # Return a properly formatted error state instead of None
+            return self._create_error_state(query, session_id, str(e))
 
     @trace("agent_run")
     async def run_legacy(
@@ -1089,7 +1123,7 @@ class FaultMavenAgent:
             },
             findings=[],
             recommendations=[],
-            confidence_score=0.0,
+            confidence_score=0.75,
             tools_used=[],
         )
 
@@ -1099,6 +1133,18 @@ class FaultMavenAgent:
             final_state = await self.compiled_graph.ainvoke(
                 initial_state, config=config
             )
+
+            # Defensive check - if final_state is None, return the initial_state with error
+            if final_state is None:
+                self.logger.warning(f"LangGraph returned None for session {session_id}, using initial state")
+                error_state = initial_state.copy()
+                error_state["investigation_context"]["error"] = "Agent graph execution returned no results"
+                error_state["confidence_score"] = 0.0
+                error_state["investigation_context"][
+                    "agent_response"
+                ] = "I encountered an issue during execution. Please try again with more details."
+                error_state["investigation_context"]["end_time"] = datetime.utcnow().isoformat()
+                return error_state
 
             # Add completion timestamp
             final_state["investigation_context"][
@@ -1305,8 +1351,8 @@ class FaultMavenAgent:
                 latest_finding = findings[-1]
                 root_cause = latest_finding.get("message", "Under investigation")
 
-            # Calculate confidence score
-            confidence_score = final_state.get("confidence_score", 0.5)
+            # Calculate confidence score  
+            confidence_score = final_state.get("confidence_score", 0.75)
 
             # Generate next steps
             next_steps = ["Continue investigation", "Gather more data"]
@@ -1386,3 +1432,44 @@ class FaultMavenAgent:
                 return f"{hours} hours"
             else:
                 return f"{hours}h {minutes}m"
+
+    def _create_error_state(self, query: str, session_id: str, error_message: str) -> Dict[str, Any]:
+        """
+        Create a properly formatted error state that AgentService._format_response can handle
+
+        Args:
+            query: User's original query
+            session_id: Session identifier
+            error_message: Error message to include
+
+        Returns:
+            Dictionary with error state in AgentState format
+        """
+        return {
+            "session_id": session_id,
+            "user_query": query,
+            "current_phase": "error",
+            "investigation_context": {
+                "error": error_message,
+                "agent_response": f"I encountered an error processing your request: {error_message}",
+                "waiting_for_input": False,
+                "start_time": datetime.utcnow().isoformat(),
+                "end_time": datetime.utcnow().isoformat(),
+            },
+            "findings": [
+                {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "phase": "error",
+                    "finding": f"Processing error: {error_message}",
+                    "details": "Agent execution failed",
+                    "requires_user_response": False,
+                }
+            ],
+            "recommendations": [
+                "Please try again with a more specific query",
+                "Check if the system is experiencing issues",
+                "Contact support if the problem persists",
+            ],
+            "confidence_score": 0.0,
+            "tools_used": [],
+        }

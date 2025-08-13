@@ -202,3 +202,6 @@ frontend/package-lock.json
 frontend/.vscode/
 frontend/.npmrc
 .DS_Store
+
+# Cleanup and archived files
+recycle/

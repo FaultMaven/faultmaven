@@ -36,8 +36,10 @@ from pydantic import PrivateAttr
 
 from faultmaven.core.knowledge.ingestion import KnowledgeIngester
 from faultmaven.models.interfaces import BaseTool as IBaseTool, ToolResult
+from faultmaven.tools.registry import register_tool
 
 
+@register_tool("knowledge_base")
 class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
     """Enhanced RAG tool for querying the knowledge base with contextual search"""
 
@@ -54,7 +56,9 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
     _knowledge_ingester: KnowledgeIngester = PrivateAttr()
 
     def __init__(self, knowledge_ingester: KnowledgeIngester):
-        super().__init__()
+        # Initialize both parent classes properly
+        LangChainBaseTool.__init__(self)
+        IBaseTool.__init__(self)
         self._logger = logging.getLogger(__name__)
         self._knowledge_ingester = knowledge_ingester
 
@@ -460,6 +464,7 @@ def create_knowledge_base_tool(knowledge_ingester: KnowledgeIngester) -> Tool:
     )
 
 
+@register_tool("knowledge_base_filtered")
 class KnowledgeBaseFilteredTool(LangChainBaseTool, IBaseTool):
     """RAG tool with advanced filtering capabilities"""
 

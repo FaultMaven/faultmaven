@@ -28,6 +28,11 @@ fi
 # Activate virtual environment
 source .venv/bin/activate
 
+# Load environment variables from .env file
+echo "📁 Loading configuration from .env file..."
+export $(cat .env | grep -v '^#' | grep -v '^$' | xargs)
+echo "✅ Environment variables loaded"
+
 # Run FaultMaven
 echo "📁 Configuration loaded from .env file"
 echo "🏃 Running FaultMaven on http://localhost:8000"

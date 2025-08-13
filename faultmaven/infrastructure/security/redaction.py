@@ -80,48 +80,40 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             self.logger.warning(f"⚠️ Limited Presidio connectivity - Analyzer: {self.analyzer_available}, Anonymizer: {self.anonymizer_available}")
             self.logger.info("📝 Falling back to regex-only sanitization")
 
-        # Custom regex patterns for cloud secrets and sensitive data
-        self.custom_patterns = [
+        # Pattern-to-replacement mapping (in priority order)
+        # IMPORTANT: Order matters - more specific patterns should come first
+        self.pattern_replacements = [
+            # OpenAI patterns first (most specific) - flexible length for test compatibility
+            (r"sk-[0-9a-zA-Z]{32,}", "[API_KEY_REDACTED]"),
+            (r"pk-[0-9a-zA-Z]{32,}", "[API_KEY_REDACTED]"),
             # AWS Access Keys
-            re.compile(r"AKIA[0-9A-Z]{16}", re.IGNORECASE),
-            # AWS Secret Access Keys
-            re.compile(r"[0-9a-zA-Z/+]{40}", re.IGNORECASE),
-            # API Keys (common patterns)
-            re.compile(r"api[_-]?key[_-]?[0-9a-fA-F]{32,}", re.IGNORECASE),
-            re.compile(r"sk-[0-9a-zA-Z]{48}", re.IGNORECASE),  # OpenAI keys
-            re.compile(r"pk-[0-9a-zA-Z]{48}", re.IGNORECASE),  # OpenAI public keys
-            # Database connection strings
-            re.compile(r"(mongodb|postgresql|mysql)://[^@]+@[^/\s]+", re.IGNORECASE),
+            (r"AKIA[0-9A-Z]{16}", "[AWS_ACCESS_KEY_REDACTED]"),
+            # Generic API key patterns
+            (r"api[_-]?key[_-]?[0-9a-fA-F]{32,}", "[API_KEY_REDACTED]"),
+            # Database URLs
+            (r"(mongodb|postgresql|mysql)://[^@]+@[^/\s]+", "[DATABASE_URL_REDACTED]"),
             # JWT tokens
-            re.compile(
-                r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*",
-                re.IGNORECASE,
-            ),
-            # Private keys (PEM format)
-            re.compile(
-                r"-----BEGIN PRIVATE KEY-----[^-]+-----END PRIVATE KEY-----", re.DOTALL
-            ),
-            re.compile(
-                r"-----BEGIN RSA PRIVATE KEY-----[^-]+-----END RSA PRIVATE KEY-----",
-                re.DOTALL,
-            ),
+            (r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*", "[JWT_TOKEN_REDACTED]"),
+            # Private keys
+            (r"-----BEGIN PRIVATE KEY-----[^-]+-----END PRIVATE KEY-----", "[PRIVATE_KEY_REDACTED]"),
+            (r"-----BEGIN RSA PRIVATE KEY-----[^-]+-----END RSA PRIVATE KEY-----", "[PRIVATE_KEY_REDACTED]"),
             # Docker registry credentials
-            re.compile(
-                r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}:[a-zA-Z0-9._%+-]+",
-                re.IGNORECASE,
-            ),
+            (r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}:[a-zA-Z0-9._%+-]+", "[CREDENTIALS_REDACTED]"),
             # Kubernetes secrets
-            re.compile(r"k8s[_-]?secret[_-]?[0-9a-fA-F]{32,}", re.IGNORECASE),
-            # Generic password patterns
-            re.compile(r"password[_-]?[=:]\s*[^\s\n]+", re.IGNORECASE),
-            re.compile(r"passwd[_-]?[=:]\s*[^\s\n]+", re.IGNORECASE),
+            (r"k8s[_-]?secret[_-]?[0-9a-fA-F]{32,}", "[K8S_SECRET_REDACTED]"),
+            # Password patterns
+            (r"password[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
+            (r"passwd[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
             # IP addresses (internal ranges)
-            re.compile(
-                r"\b(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)\d{1,3}\.\d{1,3}\b"
-            ),
+            (r"\b(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)\d{1,3}\.\d{1,3}\b", "[IP_ADDRESS_REDACTED]"),
             # MAC addresses
-            re.compile(r"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})"),
+            (r"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})", "[MAC_ADDRESS_REDACTED]"),
+            # AWS Secret Access Keys (very generic - put last to avoid conflicts)
+            (r"\b[0-9a-zA-Z/+]{40}\b", "[AWS_SECRET_KEY_REDACTED]")
         ]
+        
+        # Keep original custom_patterns for backwards compatibility but not used
+        self.custom_patterns = []
 
         # Replacement patterns
         self.replacements = {
@@ -179,9 +171,10 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
         sanitized_text = text
 
-        # Apply custom regex patterns
-        for pattern in self.custom_patterns:
-            sanitized_text = self._apply_pattern(sanitized_text, pattern)
+        # Apply pattern replacements in priority order
+        for pattern_str, replacement in self.pattern_replacements:
+            pattern = re.compile(pattern_str, re.IGNORECASE | re.DOTALL)
+            sanitized_text = pattern.sub(replacement, sanitized_text)
 
         # Apply K8s Presidio PII detection if available
         if self.analyzer_available and self.anonymizer_available:
@@ -199,11 +192,49 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         Returns:
             Sanitized dictionary
         """
+        # Sensitive key patterns - if key matches these, sanitize the value
+        sensitive_key_patterns = [
+            r"password",
+            r"passwd", 
+            r"secret",
+            r"token",
+            r"key",
+            r"api[_-]?key",
+            r"access[_-]?key",
+            r"secret[_-]?key",
+            r"private[_-]?key",
+            r"auth[_-]?token"
+        ]
+        
         sanitized = {}
         for key, value in data.items():
-            # Sanitize both keys and values
+            # Sanitize the key itself
             sanitized_key = self.sanitize(key)
-            sanitized_value = self.sanitize(value)
+            
+            # Check if key indicates sensitive data
+            key_is_sensitive = False
+            key_lower = str(key).lower()
+            for pattern in sensitive_key_patterns:
+                if re.search(pattern, key_lower, re.IGNORECASE):
+                    key_is_sensitive = True
+                    break
+            
+            if key_is_sensitive and isinstance(value, str):
+                # For sensitive keys, replace the value with appropriate redaction
+                if "password" in key_lower or "passwd" in key_lower:
+                    sanitized_value = "[PASSWORD_REDACTED]"
+                elif "token" in key_lower:
+                    sanitized_value = "[TOKEN_REDACTED]"
+                elif "key" in key_lower:
+                    sanitized_value = "[KEY_REDACTED]"
+                elif "secret" in key_lower:
+                    sanitized_value = "[SECRET_REDACTED]"
+                else:
+                    sanitized_value = "[SENSITIVE_VALUE_REDACTED]"
+            else:
+                # Normal sanitization for non-sensitive keys
+                sanitized_value = self.sanitize(value)
+            
             sanitized[sanitized_key] = sanitized_value
         return sanitized
     
@@ -219,41 +250,8 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         """
         return [self.sanitize(item) for item in data]
 
-    def _apply_pattern(self, text: str, pattern: re.Pattern) -> str:
-        """Apply a specific regex pattern to redact matches"""
-
-        def replace_match(match):
-            match_text = match.group(0)
-
-            # Determine replacement based on pattern characteristics
-            if "AKIA" in match_text.upper():
-                return self.replacements["aws_access_key"]
-            elif len(match_text) == 40 and match_text.isalnum():
-                return self.replacements["aws_secret_key"]
-            elif "api" in match_text.lower() and "key" in match_text.lower():
-                return self.replacements["api_key"]
-            elif any(
-                db in match_text.lower()
-                for db in ["mongodb://", "postgresql://", "mysql://"]
-            ):
-                return self.replacements["database_url"]
-            elif match_text.startswith("eyJ"):
-                return self.replacements["jwt_token"]
-            elif "PRIVATE KEY" in match_text:
-                return self.replacements["private_key"]
-            elif "password" in match_text.lower():
-                return self.replacements["password"]
-            elif re.match(
-                r"\b(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)\d{1,3}\.\d{1,3}\b",
-                match_text,
-            ):
-                return self.replacements["ip_address"]
-            elif re.match(r"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})", match_text):
-                return self.replacements["mac_address"]
-            else:
-                return "[SENSITIVE_DATA_REDACTED]"
-
-        return pattern.sub(replace_match, text)
+    # Legacy _apply_pattern method - no longer used
+    # Replaced with pattern_replacements approach for better priority control
 
     def _test_service_health(self, service_url: str) -> bool:
         """Test if a Presidio service is available with external call wrapping"""
@@ -385,7 +383,8 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             return False
 
         # Check custom patterns
-        for pattern in self.custom_patterns:
+        for pattern_str, _ in self.pattern_replacements:
+            pattern = re.compile(pattern_str, re.IGNORECASE | re.DOTALL)
             if pattern.search(text):
                 return True
 
@@ -443,7 +442,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                     "analyzer_url": self.analyzer_url,
                     "anonymizer_url": self.anonymizer_url
                 },
-                "custom_patterns_count": len(self.custom_patterns),
+                "custom_patterns_count": len(self.pattern_replacements),
                 "replacement_patterns_count": len(self.replacements)
             }
             

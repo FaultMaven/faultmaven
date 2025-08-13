@@ -40,6 +40,8 @@ graph TB
         RC --> EC[ErrorContext]
         RC --> PT[PerformanceTracker]
         RC --> CV[ContextVar Storage]
+        RC --> SC[Session Context]
+        RC --> UC[User Context]
     end
     
     subgraph "Output Destinations"
@@ -63,9 +65,10 @@ sequenceDiagram
     participant Infrastructure as BaseExternalClient
     
     Client->>Middleware: HTTP Request
-    Middleware->>Coordinator: start_request()
-    Coordinator->>Context: create RequestContext
-    Context->>Context: initialize tracking
+    Middleware->>Middleware: extract session_id/user_id
+    Middleware->>Coordinator: start_request(session_id, user_id)
+    Coordinator->>Context: create RequestContext with business context
+    Context->>Context: initialize tracking with session data
     
     Middleware->>Service: route to service
     Service->>Logger: execute_operation()
@@ -615,6 +618,39 @@ class DeduplicationPolicy:
 ```
 
 ## Context Management
+
+### Enhanced Context Management (2025 Update)
+
+FaultMaven's context management has been enhanced to include **session and user context continuity** across requests within the same session.
+
+#### Context Components
+
+1. **RequestContext**: Core context container with session/user data
+   - `correlation_id`: Unique request identifier
+   - `session_id`: Business session identifier (NEW)
+   - `user_id`: User identifier from session lookup (NEW)  
+   - `investigation_id`: Troubleshooting session identifier (NEW)
+   - `agent_phase`: Current troubleshooting phase
+   - `attributes`: Additional request metadata
+
+2. **Session Context Integration**: 
+   - LoggingMiddleware extracts `session_id` from requests
+   - SessionService lookup provides `user_id` 
+   - Context populated for entire request lifecycle
+   - Enables session-aware tracing and logging
+
+#### Context Population Flow
+
+```mermaid
+graph LR
+    A[HTTP Request] --> B[Extract session_id]
+    B --> C[Lookup Session]
+    C --> D[Get user_id]
+    D --> E[Populate RequestContext]
+    E --> F[Set ContextVar]
+    F --> G[Request Processing]
+    G --> H[Clear Context]
+```
 
 ### ContextVar Implementation
 

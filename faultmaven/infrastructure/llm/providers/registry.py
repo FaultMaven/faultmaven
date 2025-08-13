@@ -53,8 +53,8 @@ PROVIDER_SCHEMA = {
         "api_key_var": None,  # No API key needed
         "model_var": "LOCAL_LLM_MODEL",
         "base_url_var": "LOCAL_LLM_URL",
-        "default_base_url": "http://192.168.0.47:5000",
-        "default_model": "Phi-3-mini-128k-instruct-onnx",
+        "default_base_url": None,  # Will use environment variable or fail gracefully
+        "default_model": None,     # Will use environment variable or fail gracefully
         "provider_class": LocalProvider,
         "max_retries": 1,
         "timeout": 60,
@@ -114,12 +114,56 @@ class ProviderRegistry:
         self.logger = logging.getLogger(__name__)
         self._providers: Dict[str, BaseLLMProvider] = {}
         self._fallback_chain: List[str] = []
+        self._initialized = False
         
-        # Initialize providers from environment using schema
-        self._initialize_from_environment()
+        # Don't initialize immediately - wait for first use
+        # self._initialize_from_environment()
+    
+    def _ensure_initialized(self):
+        """Ensure providers are initialized before use"""
+        if not self._initialized:
+            self.logger.info("🔍 Lazy-initializing provider registry...")
+            
+            # Force reload environment variables
+            try:
+                from dotenv import load_dotenv
+                import os
+                
+                # Get the current working directory and look for .env file
+                cwd = os.getcwd()
+                env_file = os.path.join(cwd, '.env')
+                
+                if os.path.exists(env_file):
+                    self.logger.info(f"🔍 Loading .env file from: {env_file}")
+                    load_dotenv(env_file, override=True)
+                    self.logger.info("🔍 Environment variables reloaded from .env file")
+                else:
+                    self.logger.warning(f"🔍 .env file not found at: {env_file}")
+                
+                # Also try to load from parent directory
+                parent_env = os.path.join(os.path.dirname(cwd), '.env')
+                if os.path.exists(parent_env):
+                    self.logger.info(f"🔍 Loading .env file from parent: {parent_env}")
+                    load_dotenv(parent_env, override=True)
+                    self.logger.info("🔍 Environment variables reloaded from parent .env file")
+                    
+            except ImportError:
+                self.logger.info("🔍 dotenv not available, using system environment")
+            
+            self._initialize_from_environment()
+            self._initialized = True
     
     def _initialize_from_environment(self):
         """Initialize providers based on environment configuration using schema"""
+        # Debug environment variable reading
+        self.logger.info(f"🔍 Environment variables check:")
+        self.logger.info(f"🔍 CHAT_PROVIDER: {os.getenv('CHAT_PROVIDER', 'NOT_SET')}")
+        self.logger.info(f"🔍 LOCAL_LLM_URL: {os.getenv('LOCAL_LLM_URL', 'NOT_SET')}")
+        self.logger.info(f"🔍 LOCAL_LLM_MODEL: {os.getenv('LOCAL_LLM_MODEL', 'NOT_SET')}")
+        self.logger.info(f"🔍 FIREWORKS_API_KEY: {os.getenv('FIREWORKS_API_KEY', 'NOT_SET')[:10] if os.getenv('FIREWORKS_API_KEY') else 'NOT_SET'}...")
+        self.logger.info(f"🔍 Current working directory: {os.getcwd()}")
+        self.logger.info(f"🔍 .env file exists: {os.path.exists('.env')}")
+        
         # Get primary provider from environment
         primary_provider = os.getenv("CHAT_PROVIDER", "local")
         
@@ -159,6 +203,21 @@ class ProviderRegistry:
         # Get configuration values from environment or defaults
         model = os.getenv(schema["model_var"], schema["default_model"])
         base_url = os.getenv(schema.get("base_url_var", ""), schema["default_base_url"])
+        
+        # For local provider, require environment variables
+        if provider_name == "local":
+            if not model:
+                self.logger.warning(f"❌ Local provider requires LOCAL_LLM_MODEL environment variable")
+                return None
+            if not base_url:
+                self.logger.warning(f"❌ Local provider requires LOCAL_LLM_URL environment variable")
+                return None
+        
+        # Debug configuration values
+        self.logger.info(f"🔍 Provider '{provider_name}' config:")
+        self.logger.info(f"🔍   Model: {model} (from {schema['model_var']})")
+        self.logger.info(f"🔍   Base URL: {base_url} (from {schema.get('base_url_var', 'default')})")
+        self.logger.info(f"🔍   API Key: {'SET' if api_key else 'NOT_SET'}")
         
         return ProviderConfig(
             name=provider_name,
@@ -211,18 +270,22 @@ class ProviderRegistry:
     
     def get_provider(self, name: str) -> Optional[BaseLLMProvider]:
         """Get a specific provider by name"""
+        self._ensure_initialized()
         return self._providers.get(name)
     
     def get_available_providers(self) -> List[str]:
         """Get list of available provider names"""
+        self._ensure_initialized()
         return list(self._providers.keys())
     
     def get_all_provider_names(self) -> List[str]:
         """Get list of all provider names defined in schema"""
+        self._ensure_initialized()
         return list(PROVIDER_SCHEMA.keys())
     
     def get_fallback_chain(self) -> List[str]:
         """Get the current fallback chain"""
+        self._ensure_initialized()
         return self._fallback_chain.copy()
     
     async def route_request(
@@ -234,6 +297,9 @@ class ProviderRegistry:
         confidence_threshold: float = 0.8,
         **kwargs
     ) -> LLMResponse:
+        """Route request through the fallback chain until success"""
+        self._ensure_initialized()
+        
         """
         Route request through the fallback chain until success
         
@@ -295,6 +361,7 @@ class ProviderRegistry:
     
     def get_provider_status(self) -> Dict[str, Dict[str, any]]:
         """Get status information for all providers"""
+        self._ensure_initialized()
         status = {}
         
         for name, provider in self._providers.items():
@@ -316,7 +383,9 @@ def get_registry() -> ProviderRegistry:
     """Get the global provider registry instance"""
     global _registry
     if _registry is None:
+        print("🔍 Creating new ProviderRegistry instance...")
         _registry = ProviderRegistry()
+        print("🔍 ProviderRegistry instance created")
     return _registry
 
 

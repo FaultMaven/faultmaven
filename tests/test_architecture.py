@@ -311,44 +311,6 @@ class TestCircularDependencies:
             pytest.fail(f"Circular import detected: {cycle_msg}")
 
 
-class TestFeatureFlagIntegration:
-    """Test feature flag integration and migration safety"""
-
-    def test_feature_flag_validation(self):
-        """Test feature flag validation logic"""
-        from faultmaven.config.feature_flags import validate_feature_flag_combination
-        
-        # Should not raise exception with default values
-        try:
-            validate_feature_flag_combination()
-        except ValueError:
-            # This is acceptable if current environment has invalid flags
-            pass
-
-    def test_migration_strategy_detection(self):
-        """Test migration strategy detection"""
-        from faultmaven.config.feature_flags import get_migration_strategy
-        
-        strategy = get_migration_strategy()
-        valid_strategies = [
-            "full_legacy_architecture",
-            "full_new_architecture", 
-            "backend_new_api_legacy",
-            "api_new_backend_legacy",
-            "partial_migration",
-            "rollback_mode"
-        ]
-        
-        assert strategy in valid_strategies
-
-    def test_container_selection(self):
-        """Test that proper container is selected based on feature flags"""
-        from faultmaven.config.feature_flags import get_container_type
-        
-        container = get_container_type()
-        assert container is not None
-        assert hasattr(container, 'get_agent_service') or hasattr(container, 'agent_service')
-
 
 class TestDocumentationSync:
     """Test that documentation is in sync with implementation"""

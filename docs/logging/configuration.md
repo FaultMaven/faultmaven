@@ -154,6 +154,37 @@ export LOG_INCLUDE_CALLER_INFO=true
 | `LOG_OTEL_TRACE_CORRELATION` | `true` | Enable trace-log correlation |
 | `LOG_OTEL_SPAN_EVENTS` | `true` | Add log events to spans |
 
+### Opik Targeted Tracing Configuration
+
+| Environment Variable | Default Value | Description |
+|---------------------|---------------|-------------|
+| `OPIK_TRACK_DISABLE` | `false` | Global tracing disable flag |
+| `OPIK_TRACK_USERS` | `""` | Comma-separated list of users to trace |
+| `OPIK_TRACK_SESSIONS` | `""` | Comma-separated list of sessions to trace |
+| `OPIK_TRACK_OPERATIONS` | `""` | Comma-separated list of operations to trace |
+
+**Targeting Logic:**
+- If `OPIK_TRACK_DISABLE=true`, no tracing occurs regardless of other settings
+- If multiple targeting variables are set, ALL criteria must match for tracing
+- Empty targeting variables mean "trace everything" (default behavior)
+- Changes take effect immediately without restart
+
+**Examples:**
+```bash
+# Debug specific user issues
+OPIK_TRACK_USERS=problematic_user_123
+
+# Monitor only expensive operations
+OPIK_TRACK_OPERATIONS=llm_query,vector_search,agent_reasoning
+
+# Combined targeting (user AND operation must match)
+OPIK_TRACK_USERS=debug_user,qa_user
+OPIK_TRACK_OPERATIONS=troubleshoot,generate_solution
+
+# Temporarily disable all tracing
+OPIK_TRACK_DISABLE=true
+```
+
 ### Metrics Export Configuration
 
 | Environment Variable | Default Value | Description |
@@ -519,6 +550,11 @@ data:
   OTEL_SERVICE_NAME: "faultmaven"
   OTEL_ENVIRONMENT: "production"
   LOG_ELASTICSEARCH_ENABLED: "true"
+  # Opik targeted tracing
+  OPIK_TRACK_DISABLE: "false"
+  OPIK_TRACK_USERS: ""
+  OPIK_TRACK_SESSIONS: ""
+  OPIK_TRACK_OPERATIONS: ""
   LOG_ELASTICSEARCH_URL: "http://elasticsearch:9200"
   LOG_METRICS_ENABLED: "true"
   LOG_ENABLE_DATA_SANITIZATION: "true"

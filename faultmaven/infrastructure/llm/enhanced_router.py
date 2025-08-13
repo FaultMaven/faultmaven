@@ -9,7 +9,8 @@ import time
 from typing import Optional
 
 from ...models import DataType
-from ..logging_config import get_logger, LogContext
+from ..logging.config import get_logger
+from ..logging.unified import UnifiedLogger
 from .router import LLMRouter as BaseRouter
 from .providers import LLMResponse
 
@@ -20,6 +21,7 @@ class DevelopmentLLMRouter(BaseRouter):
     
     def __init__(self):
         super().__init__()
+        self.unified_logger = UnifiedLogger(__name__, "infrastructure")
         
         # Log detailed initialization info
         logger.debug("Initializing Enhanced LLM Router for development")
@@ -48,9 +50,8 @@ class DevelopmentLLMRouter(BaseRouter):
     ) -> LLMResponse:
         """Enhanced route method with comprehensive logging."""
         
-        with LogContext(
-            logger, 
-            "LLM_REQUEST",
+        with self.unified_logger.operation(
+            "llm_request",
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,

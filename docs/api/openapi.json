@@ -1,0 +1,3476 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FaultMaven API",
+    "description": "\n# FaultMaven API Documentation\n\nAI-powered troubleshooting assistant for Engineers, SREs, and DevOps professionals.\n\n## Architecture Overview\n\nThe FaultMaven API follows clean architecture principles with:\n\n- **API Layer**: FastAPI routers handling HTTP requests with comprehensive middleware\n- **Service Layer**: Business logic orchestration using dependency injection\n- **Core Layer**: Domain logic including AI reasoning engine and data processing\n- **Infrastructure Layer**: External service integrations (LLM providers, databases, security)\n\n## Key Features\n\n- **AI-Powered Troubleshooting**: Advanced reasoning engine using multiple LLM providers\n- **Privacy-First Design**: Comprehensive PII redaction before external processing\n- **Session Management**: Redis-backed session persistence for multi-turn conversations\n- **Knowledge Base**: RAG-enabled document ingestion and retrieval using ChromaDB\n- **Data Processing**: Intelligent log analysis and classification\n- **Performance Monitoring**: Real-time metrics and health monitoring\n- **Error Recovery**: Automatic error detection and recovery mechanisms\n\n## Authentication\n\nCurrently, the API does not require authentication. This may change in future versions.\nWhen implemented, authentication will use API key-based authentication.\n\n## Rate Limiting\n\nAPI requests are subject to rate limiting to ensure fair usage and system stability.\nCurrent limits are applied at the infrastructure level.\n\n## Error Handling\n\nAll endpoints return structured error responses with appropriate HTTP status codes.\n\n### Standard Error Response Format\n\n```json\n{\n    \"detail\": \"Human-readable error description\",\n    \"error_type\": \"ErrorType\",\n    \"correlation_id\": \"uuid-here\",\n    \"timestamp\": \"2025-01-15T10:30:00Z\"\n}\n```\n\n### Common HTTP Status Codes\n\n- `200`: Success\n- `400`: Bad Request - Invalid input data\n- `401`: Unauthorized - Authentication required (future)\n- `404`: Not Found - Resource not found\n- `422`: Validation Error - Request data validation failed\n- `429`: Too Many Requests - Rate limit exceeded\n- `500`: Internal Server Error - Unexpected server error\n- `503`: Service Unavailable - External service unavailable\n\n## Data Privacy\n\nAll data submitted to the API is processed through privacy-first pipelines with:\n\n- Comprehensive PII redaction using Microsoft Presidio\n- Data sanitization before external LLM processing\n- Session-based data isolation\n- Configurable data retention policies\n\n## Performance Characteristics\n\n- **Response Time**: < 200ms for typical queries (excluding LLM processing)\n- **Throughput**: Supports 100+ concurrent requests\n- **Availability**: 99.9% uptime target with health monitoring\n- **Scalability**: Horizontal scaling support via stateless design\n        ",
+    "version": "1.0.0",
+    "contact": {
+      "name": "FaultMaven Team",
+      "email": "support@faultmaven.ai",
+      "url": "https://faultmaven.ai"
+    },
+    "license": {
+      "name": "Proprietary",
+      "url": "https://faultmaven.ai/license"
+    }
+  },
+  "paths": {
+    "/api/v1/data/": {
+      "post": {
+        "tags": [
+          "data_ingestion",
+          "data_processing"
+        ],
+        "summary": "Upload Data Compat",
+        "description": "Compatibility endpoint for legacy tests - delegates to main upload function\n\nThis endpoint maintains backward compatibility for existing tests that\nexpect POST to /data instead of /data/upload.",
+        "operationId": "upload_data_compat_api_v1_data__post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_data_compat_api_v1_data__post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadedData"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/data/upload": {
+      "post": {
+        "tags": [
+          "data_ingestion",
+          "data_processing"
+        ],
+        "summary": "Upload Data",
+        "description": "Upload and process data with clean delegation pattern\n\nThis endpoint follows the thin controller pattern:\n1. Basic input validation (file size, type)\n2. Pure delegation to service layer for all business logic\n3. Clean error boundary handling\n\nArgs:\n    file: File to upload\n    session_id: Session identifier \n    description: Optional description of the data\n    data_service: Injected DataServiceRefactored from DI container\n    \nReturns:\n    UploadedData with processing results\n    \nRaises:\n    HTTPException: On service layer errors (400, 404, 413, 500)",
+        "operationId": "upload_data_api_v1_data_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_data_api_v1_data_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadedData"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/data/batch-upload": {
+      "post": {
+        "tags": [
+          "data_ingestion",
+          "data_processing"
+        ],
+        "summary": "Batch Upload Data",
+        "description": "Batch upload multiple files with clean delegation\n\nArgs:\n    files: List of files to upload\n    session_id: Session identifier\n    data_service: Injected DataServiceRefactored\n    \nReturns:\n    List of UploadedData results",
+        "operationId": "batch_upload_data_api_v1_data_batch_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_batch_upload_data_api_v1_data_batch_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UploadedData"
+                  },
+                  "type": "array",
+                  "title": "Response Batch Upload Data Api V1 Data Batch Upload Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/data/{data_id}/analyze": {
+      "post": {
+        "tags": [
+          "data_ingestion",
+          "data_processing"
+        ],
+        "summary": "Analyze Data",
+        "description": "Analyze uploaded data with clean delegation\n\nArgs:\n    data_id: Data identifier to analyze\n    analysis_request: Request containing session_id and analysis parameters\n    data_service: Injected DataServiceRefactored\n    \nReturns:\n    DataInsightsResponse with analysis results",
+        "operationId": "analyze_data_api_v1_data__data_id__analyze_post",
+        "parameters": [
+          {
+            "name": "data_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Data Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "title": "Analysis Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Analyze Data Api V1 Data  Data Id  Analyze Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/data/sessions/{session_id}": {
+      "get": {
+        "tags": [
+          "data_ingestion",
+          "data_processing"
+        ],
+        "summary": "Get Session Data",
+        "description": "Get all data for a session with clean delegation\n\nArgs:\n    session_id: Session identifier\n    limit: Maximum number of results\n    offset: Pagination offset\n    data_service: Injected DataServiceRefactored\n    \nReturns:\n    List of UploadedData for the session",
+        "operationId": "get_session_data_api_v1_data_sessions__session_id__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": 10,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Session Data Api V1 Data Sessions  Session Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/data/sessions/{session_id}/batch-process": {
+      "post": {
+        "tags": [
+          "data_ingestion",
+          "data_processing"
+        ],
+        "summary": "Batch Process Session Data",
+        "description": "Batch process data for a session\n\nArgs:\n    session_id: Session identifier\n    batch_request: Request with data_ids to process\n    data_service: Injected DataService\n    \nReturns:\n    Batch processing job information",
+        "operationId": "batch_process_session_data_api_v1_data_sessions__session_id__batch_process_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "title": "Batch Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Batch Process Session Data Api V1 Data Sessions  Session Id  Batch Process Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/data/health": {
+      "get": {
+        "tags": [
+          "data_ingestion",
+          "data_processing"
+        ],
+        "summary": "Health Check",
+        "description": "Health check endpoint with service delegation\n\nReturns:\n    Service health status",
+        "operationId": "health_check_api_v1_data_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/data/{data_id}": {
+      "get": {
+        "tags": [
+          "data_ingestion",
+          "data_processing"
+        ],
+        "summary": "Get Data",
+        "description": "Get data by ID\n\nArgs:\n    data_id: Data identifier\n    data_service: Injected DataService\n    \nReturns:\n    Data information",
+        "operationId": "get_data_api_v1_data__data_id__get",
+        "parameters": [
+          {
+            "name": "data_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Data Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "data_ingestion",
+          "data_processing"
+        ],
+        "summary": "Delete Data",
+        "description": "Delete uploaded data with clean delegation\n\nArgs:\n    data_id: Data identifier to delete\n    data_service: Injected DataServiceRefactored\n    \nReturns:\n    Success confirmation",
+        "operationId": "delete_data_api_v1_data__data_id__delete",
+        "parameters": [
+          {
+            "name": "data_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Data Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/troubleshoot": {
+      "post": {
+        "tags": [
+          "query_processing",
+          "query_processing"
+        ],
+        "summary": "Troubleshoot",
+        "description": "Process troubleshooting query with clean delegation pattern\n\nThis endpoint follows the thin controller pattern:\n1. Minimal input validation (handled by Pydantic models)\n2. Pure delegation to service layer\n3. Clean error boundary handling\n\nArgs:\n    request: QueryRequest with query, session_id, context, priority\n    agent_service: Injected AgentServiceRefactored from DI container\n    \nReturns:\n    TroubleshootingResponse with findings and recommendations\n    \nRaises:\n    HTTPException: On service layer errors (404, 500, etc.)",
+        "operationId": "troubleshoot_api_v1_agent_troubleshoot_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TroubleshootingResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/query": {
+      "post": {
+        "tags": [
+          "query_processing",
+          "query_processing"
+        ],
+        "summary": "Troubleshoot",
+        "description": "Process troubleshooting query with clean delegation pattern\n\nThis endpoint follows the thin controller pattern:\n1. Minimal input validation (handled by Pydantic models)\n2. Pure delegation to service layer\n3. Clean error boundary handling\n\nArgs:\n    request: QueryRequest with query, session_id, context, priority\n    agent_service: Injected AgentServiceRefactored from DI container\n    \nReturns:\n    TroubleshootingResponse with findings and recommendations\n    \nRaises:\n    HTTPException: On service layer errors (404, 500, etc.)",
+        "operationId": "troubleshoot_api_v1_agent_query_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TroubleshootingResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/investigations/{investigation_id}": {
+      "get": {
+        "tags": [
+          "query_processing",
+          "query_processing"
+        ],
+        "summary": "Get Investigation",
+        "description": "Get investigation results by ID with clean delegation\n\nArgs:\n    investigation_id: Investigation identifier\n    session_id: Session identifier for validation\n    agent_service: Injected AgentServiceRefactored\n    \nReturns:\n    TroubleshootingResponse with investigation results",
+        "operationId": "get_investigation_api_v1_agent_investigations__investigation_id__get",
+        "parameters": [
+          {
+            "name": "investigation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Investigation Id"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TroubleshootingResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/sessions/{session_id}/investigations": {
+      "get": {
+        "tags": [
+          "query_processing",
+          "query_processing"
+        ],
+        "summary": "List Session Investigations",
+        "description": "List investigations for a session with clean delegation\n\nArgs:\n    session_id: Session identifier\n    limit: Maximum number of results\n    offset: Pagination offset\n    agent_service: Injected AgentServiceRefactored\n    \nReturns:\n    List of investigation summaries",
+        "operationId": "list_session_investigations_api_v1_agent_sessions__session_id__investigations_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": 10,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/health": {
+      "get": {
+        "tags": [
+          "query_processing",
+          "query_processing"
+        ],
+        "summary": "Health Check",
+        "description": "Health check endpoint with service delegation\n\nReturns:\n    Service health status",
+        "operationId": "health_check_api_v1_agent_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge/documents": {
+      "post": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Upload Document",
+        "description": "Upload a document to the knowledge base\n\nArgs:\n    file: Document file to upload\n    title: Document title\n    document_type: Type of document\n    tags: Comma-separated tags\n    source_url: Source URL if applicable\n\nReturns:\n    Upload job information",
+        "operationId": "upload_document_api_v1_knowledge_documents_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_document_api_v1_knowledge_documents_post"
+              },
+              "examples": {
+                "runbook_upload": {
+                  "summary": "Troubleshooting Runbook",
+                  "description": "Upload team runbook for knowledge base",
+                  "value": {
+                    "file": "[PDF or Markdown runbook content]",
+                    "document_type": "runbook",
+                    "tags": [
+                      "database",
+                      "troubleshooting",
+                      "postgresql"
+                    ],
+                    "description": "Database troubleshooting procedures and common fixes"
+                  }
+                },
+                "documentation_upload": {
+                  "summary": "System Documentation",
+                  "description": "Upload system architecture documentation",
+                  "value": {
+                    "file": "[Documentation content]",
+                    "document_type": "architecture_doc",
+                    "tags": [
+                      "architecture",
+                      "microservices",
+                      "system_design"
+                    ],
+                    "description": "Microservices architecture overview and dependencies"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Upload Document Api V1 Knowledge Documents Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "List Documents",
+        "description": "List knowledge base documents with optional filtering\n\nArgs:\n    document_type: Filter by document type\n    tags: Filter by tags (comma-separated)\n    limit: Maximum number of documents to return\n    offset: Number of documents to skip\n\nReturns:\n    List of documents",
+        "operationId": "list_documents_api_v1_knowledge_documents_get",
+        "parameters": [
+          {
+            "name": "document_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Document Type"
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tags"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response List Documents Api V1 Knowledge Documents Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge/documents/{document_id}": {
+      "get": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Get Document",
+        "description": "Get a specific knowledge base document\n\nArgs:\n    document_id: Document identifier\n\nReturns:\n    Document details",
+        "operationId": "get_document_api_v1_knowledge_documents__document_id__get",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeBaseDocument"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Delete Document",
+        "description": "Delete a knowledge base document\n\nArgs:\n    document_id: Document identifier\n\nReturns:\n    Deletion confirmation",
+        "operationId": "delete_document_api_v1_knowledge_documents__document_id__delete",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Delete Document Api V1 Knowledge Documents  Document Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Update Document",
+        "description": "Update document metadata and content.",
+        "operationId": "update_document_api_v1_knowledge_documents__document_id__put",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "title": "Update Data"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Update Document Api V1 Knowledge Documents  Document Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Get Job Status",
+        "description": "Get the status of a knowledge base ingestion job\n\nArgs:\n    job_id: Job identifier\n\nReturns:\n    Job status information",
+        "operationId": "get_job_status_api_v1_knowledge_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Job Status Api V1 Knowledge Jobs  Job Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge/search": {
+      "post": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Search Documents",
+        "description": "Search knowledge base documents\n\nArgs:\n    request: Search request with query and filters\n\nReturns:\n    Search results",
+        "operationId": "search_documents_api_v1_knowledge_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Search Documents Api V1 Knowledge Search Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge/documents/bulk-update": {
+      "post": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Bulk Update Documents",
+        "description": "Bulk update document metadata.",
+        "operationId": "bulk_update_documents_api_v1_knowledge_documents_bulk_update_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Bulk Update Documents Api V1 Knowledge Documents Bulk Update Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge/documents/bulk-delete": {
+      "post": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Bulk Delete Documents",
+        "description": "Bulk delete documents.",
+        "operationId": "bulk_delete_documents_api_v1_knowledge_documents_bulk_delete_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Bulk Delete Documents Api V1 Knowledge Documents Bulk Delete Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge/stats": {
+      "get": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Get Knowledge Stats",
+        "description": "Get knowledge base statistics.",
+        "operationId": "get_knowledge_stats_api_v1_knowledge_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Knowledge Stats Api V1 Knowledge Stats Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/knowledge/analytics/search": {
+      "get": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Get Search Analytics",
+        "description": "Get search analytics and insights.",
+        "operationId": "get_search_analytics_api_v1_knowledge_analytics_search_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Search Analytics Api V1 Knowledge Analytics Search Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kb/documents": {
+      "post": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Upload Document Kb",
+        "description": "Upload a document to the knowledge base (kb prefix)",
+        "operationId": "upload_document_kb_api_v1_kb_documents_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_document_kb_api_v1_kb_documents_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Upload Document Kb Api V1 Kb Documents Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "List Documents Kb",
+        "description": "List knowledge base documents (kb prefix)",
+        "operationId": "list_documents_kb_api_v1_kb_documents_get",
+        "parameters": [
+          {
+            "name": "document_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Document Type"
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tags"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response List Documents Kb Api V1 Kb Documents Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kb/documents/{document_id}": {
+      "get": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Get Document Kb",
+        "description": "Get a specific document (kb prefix)",
+        "operationId": "get_document_kb_api_v1_kb_documents__document_id__get",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeBaseDocument"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Delete Document Kb",
+        "description": "Delete a document (kb prefix)",
+        "operationId": "delete_document_kb_api_v1_kb_documents__document_id__delete",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Delete Document Kb Api V1 Kb Documents  Document Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Update Document Kb",
+        "description": "Update document (kb prefix)",
+        "operationId": "update_document_kb_api_v1_kb_documents__document_id__put",
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "title": "Update Data"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Update Document Kb Api V1 Kb Documents  Document Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kb/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Get Job Status Kb",
+        "description": "Get job status (kb prefix)",
+        "operationId": "get_job_status_kb_api_v1_kb_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Job Status Kb Api V1 Kb Jobs  Job Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kb/search": {
+      "post": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Search Documents Kb",
+        "description": "Search documents (kb prefix)",
+        "operationId": "search_documents_kb_api_v1_kb_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Search Documents Kb Api V1 Kb Search Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kb/documents/bulk-update": {
+      "post": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Bulk Update Documents Kb",
+        "description": "Bulk update documents (kb prefix)",
+        "operationId": "bulk_update_documents_kb_api_v1_kb_documents_bulk_update_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Bulk Update Documents Kb Api V1 Kb Documents Bulk Update Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kb/documents/bulk-delete": {
+      "post": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Bulk Delete Documents Kb",
+        "description": "Bulk delete documents (kb prefix)",
+        "operationId": "bulk_delete_documents_kb_api_v1_kb_documents_bulk_delete_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object",
+                "title": "Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Bulk Delete Documents Kb Api V1 Kb Documents Bulk Delete Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kb/stats": {
+      "get": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Get Knowledge Stats Kb",
+        "description": "Get knowledge stats (kb prefix)",
+        "operationId": "get_knowledge_stats_kb_api_v1_kb_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Knowledge Stats Kb Api V1 Kb Stats Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/kb/analytics/search": {
+      "get": {
+        "tags": [
+          "knowledge_base",
+          "knowledge_base"
+        ],
+        "summary": "Get Search Analytics Kb",
+        "description": "Get search analytics (kb prefix)",
+        "operationId": "get_search_analytics_kb_api_v1_kb_analytics_search_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Get Search Analytics Kb Api V1 Kb Analytics Search Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/": {
+      "post": {
+        "tags": [
+          "session_management",
+          "session_management"
+        ],
+        "summary": "Create Session",
+        "description": "Create a new troubleshooting session.\n\nArgs:\n    request: Session creation parameters\n    user_id: Optional user identifier (query param)\n\nReturns:\n    Session creation response",
+        "operationId": "create_session_api_v1_sessions__post",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SessionCreateRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "session_management",
+          "session_management"
+        ],
+        "summary": "List Sessions",
+        "description": "List all sessions with optional filtering.\n\nArgs:\n    user_id: Optional user ID filter\n    session_type: Optional session type filter\n    usage_type: Optional usage type filter (alias for session_type)\n    limit: Maximum number of sessions to return\n    offset: Number of sessions to skip\n\nReturns:\n    List of sessions",
+        "operationId": "list_sessions_api_v1_sessions__get",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "session_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Type"
+            }
+          },
+          {
+            "name": "usage_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Usage Type"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}": {
+      "get": {
+        "tags": [
+          "session_management",
+          "session_management"
+        ],
+        "summary": "Get Session",
+        "description": "Retrieve a specific session by ID.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Session details",
+        "operationId": "get_session_api_v1_sessions__session_id__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "session_management",
+          "session_management"
+        ],
+        "summary": "Delete Session",
+        "description": "Delete a specific session.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Deletion confirmation",
+        "operationId": "delete_session_api_v1_sessions__session_id__delete",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}/heartbeat": {
+      "post": {
+        "tags": [
+          "session_management",
+          "session_management"
+        ],
+        "summary": "Session Heartbeat",
+        "description": "Update session activity timestamp (heartbeat).\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Heartbeat confirmation",
+        "operationId": "session_heartbeat_api_v1_sessions__session_id__heartbeat_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}/stats": {
+      "get": {
+        "tags": [
+          "session_management",
+          "session_management"
+        ],
+        "summary": "Get Session Stats",
+        "description": "Get session statistics and activity summary.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Session statistics",
+        "operationId": "get_session_stats_api_v1_sessions__session_id__stats_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}/cleanup": {
+      "post": {
+        "tags": [
+          "session_management",
+          "session_management"
+        ],
+        "summary": "Cleanup Session",
+        "description": "Clean up session data and temporary files.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Cleanup confirmation",
+        "operationId": "cleanup_session_api_v1_sessions__session_id__cleanup_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}/recovery-info": {
+      "get": {
+        "tags": [
+          "session_management",
+          "session_management"
+        ],
+        "summary": "Get Session Recovery Info",
+        "description": "Get session recovery information for restoring lost sessions.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Recovery information",
+        "operationId": "get_session_recovery_info_api_v1_sessions__session_id__recovery_info_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}/restore": {
+      "post": {
+        "tags": [
+          "session_management",
+          "session_management"
+        ],
+        "summary": "Restore Session",
+        "description": "Restore a session from backup or recovery state.\n\nArgs:\n    session_id: Session identifier\n    restore_request: Restoration parameters\n\nReturns:\n    Restoration confirmation",
+        "operationId": "restore_session_api_v1_sessions__session_id__restore_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRestoreRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "summary": "Root",
+        "description": "Root endpoint with API information.",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health Check",
+        "description": "Enhanced health check endpoint with component-specific metrics and SLA monitoring.",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/dependencies": {
+      "get": {
+        "summary": "Health Check Dependencies",
+        "description": "Enhanced detailed health check for all dependencies with SLA metrics",
+        "operationId": "health_check_dependencies_health_dependencies_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/logging": {
+      "get": {
+        "summary": "Logging Health Check",
+        "description": "Get logging system health status.",
+        "operationId": "logging_health_check_health_logging_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/sla": {
+      "get": {
+        "summary": "Health Check Sla",
+        "description": "Get SLA status and metrics for all components.",
+        "operationId": "health_check_sla_health_sla_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/components/{component_name}": {
+      "get": {
+        "summary": "Health Check Component",
+        "description": "Get detailed health information for a specific component.",
+        "operationId": "health_check_component_health_components__component_name__get",
+        "parameters": [
+          {
+            "name": "component_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Component Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/patterns": {
+      "get": {
+        "summary": "Health Check Error Patterns",
+        "description": "Get error patterns and recovery information from enhanced error context.",
+        "operationId": "health_check_error_patterns_health_patterns_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics/performance": {
+      "get": {
+        "summary": "Get Performance Metrics",
+        "description": "Get comprehensive performance metrics.",
+        "operationId": "get_performance_metrics_metrics_performance_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics/realtime": {
+      "get": {
+        "summary": "Get Realtime Metrics",
+        "description": "Get real-time performance metrics.",
+        "operationId": "get_realtime_metrics_metrics_realtime_get",
+        "parameters": [
+          {
+            "name": "time_window_minutes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 5,
+              "title": "Time Window Minutes"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics/alerts": {
+      "get": {
+        "summary": "Get Alert Status",
+        "description": "Get current alert status and statistics.",
+        "operationId": "get_alert_status_metrics_alerts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_batch_upload_data_api_v1_data_batch_upload_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string",
+              "format": "binary"
+            },
+            "type": "array",
+            "title": "Files"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "files",
+          "session_id"
+        ],
+        "title": "Body_batch_upload_data_api_v1_data_batch_upload_post"
+      },
+      "Body_upload_data_api_v1_data_upload_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file",
+          "session_id"
+        ],
+        "title": "Body_upload_data_api_v1_data_upload_post"
+      },
+      "Body_upload_data_compat_api_v1_data__post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file",
+          "session_id"
+        ],
+        "title": "Body_upload_data_compat_api_v1_data__post"
+      },
+      "Body_upload_document_api_v1_knowledge_documents_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "document_type": {
+            "type": "string",
+            "title": "Document Type",
+            "default": "troubleshooting_guide"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file",
+          "title"
+        ],
+        "title": "Body_upload_document_api_v1_knowledge_documents_post"
+      },
+      "Body_upload_document_kb_api_v1_kb_documents_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "document_type": {
+            "type": "string",
+            "title": "Document Type",
+            "default": "troubleshooting_guide"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file",
+          "title"
+        ],
+        "title": "Body_upload_document_kb_api_v1_kb_documents_post"
+      },
+      "DataType": {
+        "type": "string",
+        "enum": [
+          "log_file",
+          "error_message",
+          "stack_trace",
+          "metrics_data",
+          "config_file",
+          "documentation",
+          "unknown"
+        ],
+        "title": "DataType",
+        "description": "Enumeration of supported data types for classification"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "KnowledgeBaseDocument": {
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "title": "Document Id",
+            "description": "Unique document identifier"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Document title"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": "Document content"
+          },
+          "document_type": {
+            "type": "string",
+            "title": "Document Type",
+            "description": "Type of document (e.g., troubleshooting guide, FAQ)"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category",
+            "description": "Document category for organization"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Document processing status",
+            "default": "processed"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags",
+            "description": "Tags for categorization"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url",
+            "description": "Source URL if applicable"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At",
+            "description": "Document creation timestamp"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "Last update timestamp"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "Additional document metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "document_id",
+          "title",
+          "content",
+          "document_type"
+        ],
+        "title": "KnowledgeBaseDocument",
+        "description": "Model for knowledge base documents"
+      },
+      "QueryRequest": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Session identifier"
+          },
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "User's troubleshooting query"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context",
+            "description": "Additional context for the query"
+          },
+          "priority": {
+            "type": "string",
+            "title": "Priority",
+            "description": "Query priority level",
+            "default": "normal"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "query"
+        ],
+        "title": "QueryRequest",
+        "description": "Request model for troubleshooting queries"
+      },
+      "SearchRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Query",
+            "description": "Search query"
+          },
+          "document_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Type",
+            "description": "Filter by document type"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category",
+            "description": "Filter by document category"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags",
+            "description": "Filter by tags (comma-separated)"
+          },
+          "filters": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filters",
+            "description": "Advanced filters for search"
+          },
+          "similarity_threshold": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Similarity Threshold",
+            "description": "Minimum similarity score threshold (0.0-1.0)"
+          },
+          "rank_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank By",
+            "description": "Field to rank results by (e.g., priority)"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Limit",
+            "description": "Maximum number of results",
+            "default": 10
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "SearchRequest",
+        "description": "Request model for knowledge base search"
+      },
+      "SessionCreateRequest": {
+        "properties": {
+          "timeout_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1440.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Minutes",
+            "default": 30
+          },
+          "session_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Type",
+            "default": "troubleshooting"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "title": "SessionCreateRequest",
+        "description": "Request model for session creation."
+      },
+      "SessionRestoreRequest": {
+        "properties": {
+          "restore_point": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Restore Point"
+          },
+          "include_data": {
+            "type": "boolean",
+            "title": "Include Data",
+            "default": true
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type",
+            "default": "full"
+          }
+        },
+        "type": "object",
+        "required": [
+          "restore_point"
+        ],
+        "title": "SessionRestoreRequest",
+        "description": "Request model for session restoration."
+      },
+      "TroubleshootingResponse": {
+        "type": "object",
+        "required": [
+          "investigation_id",
+          "status",
+          "session_id"
+        ],
+        "properties": {
+          "investigation_id": {
+            "type": "string",
+            "description": "Unique identifier for this troubleshooting investigation"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "in_progress",
+              "completed",
+              "failed",
+              "requires_input"
+            ],
+            "description": "Current status of the investigation"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "description": "Finding category",
+                  "enum": [
+                    "root_cause",
+                    "contributing_factor",
+                    "symptom",
+                    "recommendation"
+                  ]
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Finding description"
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "critical",
+                    "high",
+                    "medium",
+                    "low",
+                    "info"
+                  ],
+                  "description": "Finding severity level"
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "AI confidence in this finding (0.0 to 1.0)"
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Supporting evidence for this finding"
+                }
+              }
+            },
+            "description": "List of findings from the investigation"
+          },
+          "recommendations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "description": "Recommended action to take"
+                },
+                "priority": {
+                  "type": "string",
+                  "enum": [
+                    "immediate",
+                    "high",
+                    "medium",
+                    "low"
+                  ],
+                  "description": "Action priority"
+                },
+                "impact": {
+                  "type": "string",
+                  "description": "Expected impact of this action"
+                },
+                "effort": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high"
+                  ],
+                  "description": "Estimated effort required"
+                }
+              }
+            },
+            "description": "Recommended actions based on findings"
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Session ID for this troubleshooting session"
+          },
+          "reasoning_trace": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "step": {
+                  "type": "string"
+                },
+                "reasoning": {
+                  "type": "string"
+                },
+                "data_sources": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "description": "AI reasoning process trace for transparency"
+          }
+        },
+        "example": {
+          "investigation_id": "inv_789",
+          "status": "completed",
+          "findings": [
+            {
+              "type": "root_cause",
+              "message": "Database connection pool exhausted due to connection leak",
+              "severity": "high",
+              "confidence": 0.9,
+              "evidence": [
+                "Connection pool size: 20, Active connections: 20",
+                "No idle connections available",
+                "Long-running transactions detected"
+              ]
+            }
+          ],
+          "recommendations": [
+            {
+              "action": "Increase database connection pool size to 50",
+              "priority": "immediate",
+              "impact": "Should restore service within 5 minutes",
+              "effort": "low"
+            },
+            {
+              "action": "Review application code for connection leaks",
+              "priority": "high",
+              "impact": "Prevents future occurrences",
+              "effort": "medium"
+            }
+          ],
+          "session_id": "session_db_123",
+          "reasoning_trace": [
+            {
+              "step": "symptom_analysis",
+              "reasoning": "HTTP 500 errors correlate with database timeout errors",
+              "data_sources": [
+                "application_logs",
+                "database_metrics"
+              ]
+            },
+            {
+              "step": "hypothesis_formation",
+              "reasoning": "Connection pool exhaustion is most likely cause given metrics",
+              "data_sources": [
+                "connection_pool_metrics",
+                "transaction_logs"
+              ]
+            }
+          ]
+        }
+      },
+      "UploadedData": {
+        "properties": {
+          "data_id": {
+            "type": "string",
+            "title": "Data Id",
+            "description": "Unique identifier for the uploaded data"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id",
+            "description": "Session this data belongs to"
+          },
+          "data_type": {
+            "$ref": "#/components/schemas/DataType",
+            "description": "Classified type of the data"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": "Raw content of the uploaded data"
+          },
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Name",
+            "description": "Original filename if applicable"
+          },
+          "file_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Size",
+            "description": "File size in bytes"
+          },
+          "uploaded_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Uploaded At",
+            "description": "Upload timestamp"
+          },
+          "processing_status": {
+            "type": "string",
+            "title": "Processing Status",
+            "description": "Processing status",
+            "default": "pending"
+          },
+          "insights": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Insights",
+            "description": "Extracted insights from the data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "data_id",
+          "session_id",
+          "data_type",
+          "content"
+        ],
+        "title": "UploadedData",
+        "description": "Model for uploaded data processing"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "Human-readable error description"
+          },
+          "error_type": {
+            "type": "string",
+            "description": "Machine-readable error classification",
+            "enum": [
+              "ValidationError",
+              "AuthenticationError",
+              "AuthorizationError",
+              "NotFoundError",
+              "RateLimitError",
+              "ServiceUnavailableError",
+              "InternalServerError"
+            ]
+          },
+          "correlation_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Unique identifier for request tracing and support"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Error occurrence timestamp in ISO format"
+          },
+          "context": {
+            "type": "object",
+            "description": "Additional error context for debugging"
+          }
+        },
+        "example": {
+          "detail": "Invalid session ID provided",
+          "error_type": "ValidationError",
+          "correlation_id": "123e4567-e89b-12d3-a456-426614174000",
+          "timestamp": "2025-01-15T10:30:00Z",
+          "context": {
+            "session_id": "invalid_session_123",
+            "validation_errors": [
+              "Session ID format invalid"
+            ]
+          }
+        }
+      },
+      "DataIngestionResponse": {
+        "type": "object",
+        "required": [
+          "ingestion_id",
+          "status"
+        ],
+        "properties": {
+          "ingestion_id": {
+            "type": "string",
+            "description": "Unique identifier for this data ingestion"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "processing",
+              "completed",
+              "failed"
+            ],
+            "description": "Current processing status"
+          },
+          "file_info": {
+            "type": "object",
+            "properties": {
+              "filename": {
+                "type": "string"
+              },
+              "size_bytes": {
+                "type": "integer"
+              },
+              "file_type": {
+                "type": "string"
+              },
+              "detected_format": {
+                "type": "string"
+              }
+            },
+            "description": "Information about the uploaded file"
+          },
+          "processing_results": {
+            "type": "object",
+            "properties": {
+              "lines_processed": {
+                "type": "integer"
+              },
+              "errors_found": {
+                "type": "integer"
+              },
+              "insights_extracted": {
+                "type": "integer"
+              },
+              "processing_time_ms": {
+                "type": "integer"
+              }
+            },
+            "description": "Results of data processing"
+          }
+        },
+        "example": {
+          "ingestion_id": "ingest_456",
+          "status": "completed",
+          "file_info": {
+            "filename": "app.log",
+            "size_bytes": 1048576,
+            "file_type": "application/log",
+            "detected_format": "json_logs"
+          },
+          "processing_results": {
+            "lines_processed": 15420,
+            "errors_found": 23,
+            "insights_extracted": 8,
+            "processing_time_ms": 2340
+          }
+        }
+      },
+      "SessionResponse": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "status"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Unique session identifier"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "idle",
+              "expired"
+            ],
+            "description": "Current session status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Session creation timestamp"
+          },
+          "last_activity": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last activity timestamp"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Session metadata and context"
+          }
+        },
+        "example": {
+          "session_id": "session_abc123",
+          "status": "active",
+          "created_at": "2025-01-15T10:00:00Z",
+          "last_activity": "2025-01-15T10:25:00Z",
+          "metadata": {
+            "user_id": "user_123",
+            "environment": "production",
+            "investigations_count": 3
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "API key authentication (planned for future implementation)"
+      },
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT Bearer token authentication (planned for future implementation)"
+      }
+    }
+  },
+  "externalDocs": {
+    "description": "FaultMaven Documentation",
+    "url": "https://docs.faultmaven.ai"
+  },
+  "tags": [
+    {
+      "name": "troubleshooting",
+      "description": "AI-powered troubleshooting operations",
+      "externalDocs": {
+        "description": "Troubleshooting Guide",
+        "url": "https://docs.faultmaven.ai/troubleshooting"
+      }
+    },
+    {
+      "name": "data_ingestion",
+      "description": "File upload and data processing operations",
+      "externalDocs": {
+        "description": "Data Ingestion Guide",
+        "url": "https://docs.faultmaven.ai/data-ingestion"
+      }
+    },
+    {
+      "name": "knowledge_base",
+      "description": "Knowledge base and document management operations",
+      "externalDocs": {
+        "description": "Knowledge Base Guide",
+        "url": "https://docs.faultmaven.ai/knowledge-base"
+      }
+    },
+    {
+      "name": "session_management",
+      "description": "Session lifecycle and management operations"
+    }
+  ]
+}

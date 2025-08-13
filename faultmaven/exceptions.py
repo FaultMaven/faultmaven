@@ -1,6 +1,23 @@
 """Custom exceptions for FaultMaven application."""
 
 from typing import Any, Dict, Optional
+from enum import Enum
+
+
+class ErrorSeverity(Enum):
+    """Error severity levels for intelligent escalation."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class RecoveryResult(Enum):
+    """Results of recovery attempts."""
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    NOT_ATTEMPTED = "not_attempted"
 
 
 class FaultMavenException(Exception):
@@ -38,6 +55,16 @@ class ExternalServiceException(FaultMavenException):
 
 class SessionException(FaultMavenException):
     """Raised when session operations fail."""
+    pass
+
+
+class SessionStoreException(SessionException):
+    """Exception raised during session store operations."""
+    pass
+
+
+class SessionCleanupException(SessionStoreException):
+    """Exception raised during session cleanup operations."""
     pass
 
 

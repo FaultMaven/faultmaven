@@ -39,17 +39,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         self.confidence_threshold = confidence_threshold
         self.registry = get_registry()
         
-        # Log available providers
-        available = self.registry.get_available_providers()
-        fallback_chain = self.registry.get_fallback_chain()
-        
-        self.logger.info(f"Available providers: {available}")
-        self.logger.info(f"Fallback chain: {' -> '.join(fallback_chain)}")
-        
-        if not available:
-            self.logger.warning("⚠️ No LLM providers available!")
-        else:
-            self.logger.info("✅ LLMRouter initialized with centralized registry")
+        # Don't initialize registry immediately - wait for first use
+        self.logger.info("🔍 LLMRouter created, registry will be initialized on first use")
     
     @trace("llm_router_route")
     async def route(
@@ -91,6 +82,16 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         
         # Route through registry with BaseExternalClient wrapping
         try:
+            # Log provider information on first use
+            available = self.registry.get_available_providers()
+            fallback_chain = self.registry.get_fallback_chain()
+            self.logger.info(f"🔍 LLM Router: Available providers: {available}")
+            self.logger.info(f"🔍 LLM Router: Fallback chain: {' -> '.join(fallback_chain)}")
+            
+            self.logger.info(f"🔍 LLM Router: About to call registry.route_request")
+            self.logger.info(f"🔍 LLM Router: Registry type: {type(self.registry)}")
+            self.logger.info(f"🔍 LLM Router: Registry available: {self.registry is not None}")
+            
             response = await self.call_external(
                 operation_name="route_llm_request",
                 call_func=self.registry.route_request,
@@ -104,6 +105,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 retry_delay=2.0
             )
             
+            self.logger.info(f"✅ LLM Router: Registry call successful, response type: {type(response)}")
+            
             # Store successful response in cache
             if response.confidence >= self.confidence_threshold:
                 # Store with the requested model key for consistent cache lookup
@@ -113,7 +116,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             return response
             
         except Exception as e:
-            self.logger.error(f"❌ All providers failed: {e}")
+            self.logger.error(f"❌ LLM Router: All providers failed: {e}")
+            self.logger.error(f"❌ LLM Router: Exception type: {type(e)}")
+            import traceback
+            self.logger.error(f"❌ LLM Router: Full traceback: {traceback.format_exc()}")
             raise
     
     @trace("llm_router_generate")

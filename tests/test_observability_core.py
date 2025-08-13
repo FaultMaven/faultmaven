@@ -121,13 +121,57 @@ class TestObservabilityIntegration:
         """Verify agent methods have trace decorators."""
         from faultmaven.core.agent.agent import FaultMavenAgent
 
-        # Check that key methods have been wrapped with @trace
-        assert hasattr(FaultMavenAgent.run, "__wrapped__")
-        assert hasattr(FaultMavenAgent.resume, "__wrapped__")
-        assert hasattr(FaultMavenAgent._triage_node, "__wrapped__")
-        assert hasattr(FaultMavenAgent._formulate_hypothesis_node, "__wrapped__")
-        assert hasattr(FaultMavenAgent._validate_hypothesis_node, "__wrapped__")
-        assert hasattr(FaultMavenAgent._propose_solution_node, "__wrapped__")
+        # Create an instance to get bound methods for testing
+        try:
+            agent = FaultMavenAgent()
+        except Exception:
+            # If instantiation fails, just check the unbound methods
+            agent = None
+        
+        # List of methods that should have @trace decorators
+        if agent:
+            # Test with bound methods (preferred)
+            traced_methods = [
+                ("run", agent.run),
+                ("resume", agent.resume),
+                ("_triage_node", agent._triage_node),
+                ("_formulate_hypothesis_node", agent._formulate_hypothesis_node),
+                ("_validate_hypothesis_node", agent._validate_hypothesis_node),
+                ("_propose_solution_node", agent._propose_solution_node),
+            ]
+        else:
+            # Fallback to unbound methods
+            traced_methods = [
+                ("run", FaultMavenAgent.run),
+                ("resume", FaultMavenAgent.resume),
+                ("_triage_node", FaultMavenAgent._triage_node),
+                ("_formulate_hypothesis_node", FaultMavenAgent._formulate_hypothesis_node),
+                ("_validate_hypothesis_node", FaultMavenAgent._validate_hypothesis_node),
+                ("_propose_solution_node", FaultMavenAgent._propose_solution_node),
+            ]
+
+        # Check each method for the __wrapped__ attribute with detailed error messages
+        missing_wrapped = []
+        for method_name, method_obj in traced_methods:
+            if not hasattr(method_obj, "__wrapped__"):
+                missing_wrapped.append(method_name)
+                # Additional debugging info
+                print(f"DEBUG: {method_name} missing __wrapped__ attribute")
+                print(f"DEBUG: {method_name} type: {type(method_obj)}")
+                print(f"DEBUG: {method_name} dir: {[attr for attr in dir(method_obj) if not attr.startswith('_')]}")
+
+        # Assert with detailed error message
+        if missing_wrapped:
+            raise AssertionError(
+                f"The following FaultMavenAgent methods are missing __wrapped__ attributes: {missing_wrapped}. "
+                f"This indicates they may not be properly decorated with @trace decorators."
+            )
+
+        # Additional verification: check that __wrapped__ points to the original function
+        for method_name, method_obj in traced_methods:
+            wrapped_func = getattr(method_obj, "__wrapped__", None)
+            assert wrapped_func is not None, f"{method_name}.__wrapped__ is None"
+            assert callable(wrapped_func), f"{method_name}.__wrapped__ is not callable"
 
     def test_data_processing_has_tracing(self):
         """Verify data processing methods have trace decorators."""

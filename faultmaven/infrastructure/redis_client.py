@@ -90,22 +90,35 @@ class RedisClientFactory:
         if redis_url:
             return {'url': redis_url, 'host': None, 'port': None, 'password': None}
         
-        # 2. Check environment variables
+        # 2. Check environment variables for REDIS_URL
         env_url = os.getenv('REDIS_URL')
         if env_url:
             return {'url': env_url, 'host': None, 'port': None, 'password': None}
-            
-        # 3. Build from individual parameters and environment
-        # Default to K8s Redis cluster via NodePort for production-like development
-        # Note: Redis uses TCP protocol which requires direct NodePort access, not HTTP Ingress
-        config = {
-            'url': None,
-            'host': host or os.getenv('REDIS_HOST', '192.168.0.111'),
-            'port': port or int(os.getenv('REDIS_PORT', '30379')),
-            'password': password or os.getenv('REDIS_PASSWORD', 'faultmaven-dev-redis-2025')
-        }
         
-        logger.debug(f"Built Redis config from parameters: {config['host']}:{config['port']}")
+        # 3. Try to use configuration manager for other settings
+        try:
+            from ..config.configuration_manager import get_config
+            config_manager = get_config()
+            db_config = config_manager.get_database_config()
+            
+            config = {
+                'url': None,
+                'host': host or db_config.get('host', '192.168.0.111'),
+                'port': port or db_config.get('port', 30379),
+                'password': password or db_config.get('password', 'faultmaven-dev-redis-2025')
+            }
+            logger.debug(f"Built Redis config from ConfigurationManager: {config['host']}:{config['port']}")
+        except Exception as e:
+            logger.debug(f"ConfigurationManager not available, using environment variables: {e}")
+            # 4. Fallback to direct environment variables
+            config = {
+                'url': None,
+                'host': host or os.getenv('REDIS_HOST', '192.168.0.111'),
+                'port': port or int(os.getenv('REDIS_PORT', '30379')),
+                'password': password or os.getenv('REDIS_PASSWORD', 'faultmaven-dev-redis-2025')
+            }
+            logger.debug(f"Built Redis config from environment: {config['host']}:{config['port']}")
+        
         return config
     
     @staticmethod

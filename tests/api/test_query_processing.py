@@ -5,12 +5,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from faultmaven.models_original import QueryRequest, TroubleshootingResponse
+from faultmaven.models import QueryRequest, TroubleshootingResponse
 from faultmaven.api.v1.routes.agent import router
 from faultmaven.api.v1.dependencies import get_agent_service
 
 app = FastAPI()
-app.include_router(router)
+app.include_router(router, prefix="/api/v1")
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ def test_process_query_session_not_found(mock_agent_service):
     query = QueryRequest(session_id="non_existent_session", query="test query")
 
     with TestClient(app) as client:
-        response = client.post("/query/", json=query.model_dump())
+        response = client.post("/api/v1/agent/query", json=query.model_dump())
 
     assert response.status_code == 404
     assert "Resource not found" in response.json()["detail"]
@@ -71,10 +71,10 @@ def test_process_query_agent_fails(mock_agent_service):
     query = QueryRequest(session_id="active_session", query="test query")
 
     with TestClient(app) as client:
-        response = client.post("/query/", json=query.model_dump())
+        response = client.post("/api/v1/agent/query", json=query.model_dump())
 
     assert response.status_code == 500
-    assert "Internal server error" in response.json()["detail"]
+    assert "Service error during query processing" in response.json()["detail"]
 
 
 def test_process_query_missing_session_id():
@@ -84,7 +84,7 @@ def test_process_query_missing_session_id():
     invalid_request = {"query": "test query"}  # Missing session_id field
 
     with TestClient(app) as client:
-        response = client.post("/query/", json=invalid_request)
+        response = client.post("/api/v1/agent/query", json=invalid_request)
 
     assert response.status_code == 422
     error_detail = response.json()["detail"]
@@ -101,7 +101,7 @@ def test_process_query_missing_query():
     }
 
     with TestClient(app) as client:
-        response = client.post("/query/", json=invalid_request)
+        response = client.post("/api/v1/agent/query", json=invalid_request)
 
     assert response.status_code == 422
     error_detail = response.json()["detail"]
@@ -118,7 +118,7 @@ def test_process_query_empty_query(mock_agent_service):
     invalid_request = {"session_id": "test_session", "query": ""}  # Empty query
 
     with TestClient(app) as client:
-        response = client.post("/query/", json=invalid_request)
+        response = client.post("/api/v1/agent/query", json=invalid_request)
 
     # Should fail at query validation
     assert response.status_code == 400
@@ -139,7 +139,7 @@ def test_process_query_invalid_priority(mock_agent_service, sample_troubleshooti
     }
     
     with TestClient(app) as client:
-        response = client.post("/query/", json=invalid_request)
+        response = client.post("/api/v1/agent/query", json=invalid_request)
     # Should process successfully since priority is not strictly validated
     assert response.status_code == 200
     assert response.json()["session_id"] == "test_session"
@@ -156,7 +156,7 @@ def test_process_query_invalid_context_type():
     }
 
     with TestClient(app) as client:
-        response = client.post("/query/", json=invalid_request)
+        response = client.post("/api/v1/agent/query", json=invalid_request)
 
     assert response.status_code == 422
     error_detail = response.json()["detail"]
@@ -173,10 +173,10 @@ def test_process_query_malformed_json():
 
     with TestClient(app) as client:
         response = client.post(
-            "/query/",
+            "/api/v1/agent/query",
             json=malformed_json,
-        headers={"Content-Type": "application/json"},
-    )
+            headers={"Content-Type": "application/json"},
+        )
 
     assert response.status_code == 422
 
@@ -196,7 +196,7 @@ def test_process_query_extra_fields(mock_agent_service, sample_troubleshooting_r
 
     # Extra fields should be ignored by Pydantic, processing should succeed
     with TestClient(app) as client:
-        response = client.post("/query/", json=request_with_extra)
+        response = client.post("/api/v1/agent/query", json=request_with_extra)
 
     assert response.status_code == 200
     assert response.json()["session_id"] == "test_session"
@@ -213,10 +213,10 @@ def test_process_query_session_manager_exception(mock_agent_service):
     query = QueryRequest(session_id="test_session", query="test query")
 
     with TestClient(app) as client:
-        response = client.post("/query/", json=query.model_dump())
+        response = client.post("/api/v1/agent/query", json=query.model_dump())
 
     assert response.status_code == 500
-    assert "Internal server error" in response.json()["detail"]
+    assert "Internal server error during query processing" in response.json()["detail"]
 
 
 def test_process_query_data_sanitizer_exception(mock_agent_service):
@@ -229,10 +229,10 @@ def test_process_query_data_sanitizer_exception(mock_agent_service):
     )
     query = QueryRequest(session_id="test_session", query="test query")
     with TestClient(app) as client:
-        response = client.post("/query/", json=query.model_dump())
+        response = client.post("/api/v1/agent/query", json=query.model_dump())
     
     assert response.status_code == 500
-    assert "Internal server error" in response.json()["detail"]
+    assert "Service error during query processing" in response.json()["detail"]
 
 
 def test_process_query_agent_not_initialized(mock_agent_service):
@@ -246,11 +246,11 @@ def test_process_query_agent_not_initialized(mock_agent_service):
     
     query = QueryRequest(session_id="test_session", query="test query")
     with TestClient(app) as client:
-        response = client.post("/query/", json=query.model_dump())
+        response = client.post("/api/v1/agent/query", json=query.model_dump())
     
     # Should return 500 error when agent is not initialized
     assert response.status_code == 500
-    assert "Internal server error" in response.json()["detail"]
+    assert "Service error during query processing" in response.json()["detail"]
 
 
 def test_process_query_with_context(mock_agent_service):
@@ -290,7 +290,7 @@ def test_process_query_with_context(mock_agent_service):
     }
     
     with TestClient(app) as client:
-        response = client.post("/query/", json=query_with_context)
+        response = client.post("/api/v1/agent/query", json=query_with_context)
     
     assert response.status_code == 200
     response_data = response.json()

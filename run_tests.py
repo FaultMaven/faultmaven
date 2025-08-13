@@ -8,6 +8,18 @@ import os
 from pathlib import Path
 
 
+def get_venv_executable(command):
+    """Get the virtual environment executable path."""
+    venv_bin = Path(__file__).parent / ".venv" / "bin"
+    executable = venv_bin / command
+    
+    if executable.exists():
+        return str(executable)
+    else:
+        # Fallback to system command
+        return command
+
+
 def run_command(cmd, description):
     """Run a command and handle errors."""
     print(f"\n{'='*60}")
@@ -98,21 +110,21 @@ def main():
         
         # Black formatting check
         if not run_command(
-            ["black", "--check", "--diff", "faultmaven", "tests"],
+            [get_venv_executable("black"), "--check", "--diff", "faultmaven", "tests"],
             "Code formatting check (black)"
         ):
             success = False
         
         # Flake8 linting
         if not run_command(
-            ["flake8", "faultmaven", "tests"],
+            [get_venv_executable("flake8"), "faultmaven", "tests"],
             "Code linting (flake8)"
         ):
             success = False
         
         # Import sorting check
         if not run_command(
-            ["isort", "--check-only", "--diff", "faultmaven", "tests"],
+            [get_venv_executable("isort"), "--check-only", "--diff", "faultmaven", "tests"],
             "Import sorting check (isort)"
         ):
             success = False
@@ -121,7 +133,7 @@ def main():
     if args.type_check or args.all:
         print("\n🔍 Running type checking...")
         if not run_command(
-            ["mypy", "faultmaven"],
+            [get_venv_executable("mypy"), "faultmaven"],
             "Type checking (mypy)"
         ):
             success = False
@@ -131,16 +143,19 @@ def main():
         print("\n🧪 Running tests...")
         
         # Build pytest command
-        pytest_cmd = ["pytest"]
+        pytest_cmd = [get_venv_executable("pytest")]
         
         if args.unit:
-            pytest_cmd.extend(["tests/", "--ignore=tests/integration/"])
+            pytest_cmd.extend(["tests/unit/", "tests/services/", "tests/core/"])
         elif args.integration:
             pytest_cmd.extend(["tests/integration/"])
         elif args.security:
-            pytest_cmd.extend(["tests/security/"])
+            pytest_cmd.extend(["-m", "security"])
         elif args.api:
             pytest_cmd.extend(["tests/api/"])
+        else:
+            # Default: run all tests
+            pytest_cmd.extend(["tests/"])
         
         if args.coverage or args.all:
             pytest_cmd.extend([
@@ -167,14 +182,14 @@ def main():
         
         # Bandit security linting
         if not run_command(
-            ["bandit", "-r", "faultmaven"],
+            [get_venv_executable("bandit"), "-r", "faultmaven"],
             "Security linting (bandit)"
         ):
             success = False
         
         # Safety dependency check
         if not run_command(
-            ["safety", "check"],
+            [get_venv_executable("safety"), "check"],
             "Dependency security check (safety)"
         ):
             success = False

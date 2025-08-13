@@ -4,16 +4,20 @@ Unified logging middleware for FaultMaven API.
 This middleware integrates with the new logging infrastructure (Phase 1 & 2)
 using LoggingCoordinator for request-scoped coordination and the enhanced
 logging configuration for structured output.
+
+Enhanced with session context management to provide continuous user/session
+context across requests within the same session.
 """
 
+import json
 import time
-from typing import Callable
+from typing import Callable, Optional
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
 from faultmaven.infrastructure.logging.config import get_logger
-from faultmaven.infrastructure.logging_config import set_request_id
+from faultmaven.container import container
 
 
 logger = get_logger(__name__)
@@ -28,26 +32,39 @@ class LoggingMiddleware(BaseHTTPMiddleware):
     - Uses the enhanced logging configuration for structured output
     - Prevents duplicate logging through operation tracking
     - Provides correlation IDs for request tracing
+    - Extracts and populates session/user context (ENHANCED)
     - Handles errors gracefully with proper context
     """
     
     def __init__(self, app):
         super().__init__(app)
         self.coordinator = LoggingCoordinator()
-        logger.info("LoggingMiddleware initialized with new logging infrastructure")
+        logger.info("LoggingMiddleware initialized with session context management")
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """
-        Process request with unified logging coordination.
+        Process request with unified logging coordination and session context.
         
         This method coordinates all request-level logging activities using
         the LoggingCoordinator to ensure single-point-of-truth for request
         context and prevent duplicate log entries.
+        
+        Enhanced with session context extraction and population for continuous
+        user/session tracking across requests.
         """
         # Start coordinated request tracking
         start_time = time.time()
         
-        # Initialize request context through coordinator
+        # Extract session and business context from request
+        session_id = await self._extract_session_id(request)
+        user_id = None
+        investigation_id = await self._extract_investigation_id(request)
+        
+        # Look up user_id from session if session_id is available
+        if session_id:
+            user_id = await self._get_user_id_from_session(session_id)
+        
+        # Initialize request context through coordinator with business context
         # HTTP-specific context goes in attributes dict
         http_context = {
             'method': request.method,
@@ -56,23 +73,36 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             'user_agent': request.headers.get('user-agent', 'unknown'),
             'query_params': str(request.query_params)
         }
-        context = self.coordinator.start_request(attributes=http_context)
         
-        # Set global request ID context for correlation
-        set_request_id(context.correlation_id)
+        # Create context with both business and HTTP context
+        context = self.coordinator.start_request(
+            session_id=session_id,
+            user_id=user_id,
+            investigation_id=investigation_id,
+            attributes=http_context
+        )
+        
+        # Request context is already set by LoggingCoordinator.start_request()
         
         # Log request start (coordinator ensures this happens only once)
+        # Include session context in log message for better traceability
+        session_info = f" [session: {session_id}]" if session_id else ""
+        user_info = f" [user: {user_id}]" if user_id else ""
+        
         LoggingCoordinator.log_once(
             operation_key=f"request_start:{context.correlation_id}",
             logger=logger,
             level="info",
-            message=f"Request started: {request.method} {request.url.path}",
+            message=f"Request started: {request.method} {request.url.path}{session_info}{user_info}",
             method=request.method,
             path=request.url.path,
             query_params=str(request.query_params),
             client_ip=context.attributes.get('client_ip', 'unknown'),
             user_agent=context.attributes.get('user_agent', 'unknown'),
             correlation_id=context.correlation_id,
+            session_id=session_id,
+            user_id=user_id,
+            investigation_id=investigation_id,
             x_forwarded_for=request.headers.get('x-forwarded-for', 'none'),
             x_real_ip=request.headers.get('x-real-ip', 'none'),
             content_length=request.headers.get('content-length', 'none')
@@ -111,14 +141,17 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 operation_key=f"request_complete:{context.correlation_id}",
                 logger=logger,
                 level="info",
-                message=f"Request completed: {request.method} {request.url.path} "
+                message=f"Request completed: {request.method} {request.url.path}{session_info}{user_info} "
                        f"-> {response.status_code} in {duration:.3f}s",
                 method=request.method,
                 path=request.url.path,
                 status_code=response.status_code,
                 duration_seconds=duration,
                 response_size=response.headers.get('content-length', 'unknown'),
-                correlation_id=context.correlation_id
+                correlation_id=context.correlation_id,
+                session_id=session_id,
+                user_id=user_id,
+                investigation_id=investigation_id
             )
             
             # Add correlation header to response
@@ -152,14 +185,17 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                         operation_key=f"request_error:{context.correlation_id}",
                         logger=logger,
                         level="error",
-                        message=f"Request failed: {request.method} {request.url.path} "
+                        message=f"Request failed: {request.method} {request.url.path}{session_info}{user_info} "
                                f"after {duration:.3f}s: {str(e)}",
                         method=request.method,
                         path=request.url.path,
                         duration_seconds=duration,
                         error=str(e),
                         error_type=type(e).__name__,
-                        correlation_id=context.correlation_id
+                        correlation_id=context.correlation_id,
+                        session_id=session_id,
+                        user_id=user_id,
+                        investigation_id=investigation_id
                     )
             
             # Generate request summary even for failed requests
@@ -176,3 +212,107 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             
             # Re-raise the exception to maintain FastAPI error handling
             raise
+    
+    async def _extract_session_id(self, request: Request) -> Optional[str]:
+        """
+        Extract session_id from request using multiple sources with priority order.
+        
+        Priority:
+        1. Header: X-Session-ID (preferred for API clients)
+        2. Query parameter: session_id
+        3. Request body: session_id field (using non-consuming method)
+        
+        Args:
+            request: FastAPI request object
+            
+        Returns:
+            session_id if found, None otherwise
+        """
+        try:
+            # 1. Check header (preferred method)
+            if session_id := request.headers.get("x-session-id"):
+                return session_id
+                
+            # 2. Check query parameters
+            if session_id := request.query_params.get("session_id"):
+                return session_id
+                
+            # 3. Check request body for POST/PUT/PATCH requests
+            if request.method in ["POST", "PUT", "PATCH"]:
+                try:
+                    # Use request.json() which handles body parsing correctly without consuming the stream
+                    # This is the proper FastAPI way to access request body
+                    data = await request.json()
+                    if isinstance(data, dict) and (session_id := data.get("session_id")):
+                        return session_id
+                except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                    # Invalid JSON, encoding, or empty body - continue without session context
+                    pass
+                    
+        except Exception as e:
+            # Log error but don't fail the request
+            logger.warning(f"Failed to extract session_id: {e}")
+            
+        return None
+    
+    async def _extract_investigation_id(self, request: Request) -> Optional[str]:
+        """
+        Extract investigation_id from request headers or body.
+        
+        Args:
+            request: FastAPI request object
+            
+        Returns:
+            investigation_id if found, None otherwise
+        """
+        try:
+            # Check header first
+            if investigation_id := request.headers.get("x-investigation-id"):
+                return investigation_id
+                
+            # Check query parameters
+            if investigation_id := request.query_params.get("investigation_id"):
+                return investigation_id
+                
+            # Check request body for POST/PUT/PATCH requests
+            if request.method in ["POST", "PUT", "PATCH"]:
+                try:
+                    # Use request.json() which handles body parsing correctly without consuming the stream
+                    data = await request.json()
+                    if isinstance(data, dict) and (investigation_id := data.get("investigation_id")):
+                        return investigation_id
+                except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                    # Invalid JSON, encoding, or empty body - continue without investigation context
+                    pass
+                    
+        except Exception as e:
+            logger.warning(f"Failed to extract investigation_id: {e}")
+            
+        return None
+    
+    async def _get_user_id_from_session(self, session_id: str) -> Optional[str]:
+        """
+        Look up user_id from session_id using SessionService.
+        
+        Uses graceful degradation - if session lookup fails, continues
+        without user context rather than failing the request.
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            user_id if found, None otherwise
+        """
+        try:
+            # Get SessionService from DI container
+            session_service = container.get_session_service()
+            
+            # Look up session (non-validating to avoid exceptions)
+            session = await session_service.get_session(session_id, validate=False)
+            
+            return session.user_id if session else None
+            
+        except Exception as e:
+            # Graceful degradation - log warning but continue without user context
+            logger.warning(f"Failed to lookup user_id for session {session_id}: {e}")
+            return None

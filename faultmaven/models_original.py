@@ -70,6 +70,9 @@ class SessionContext(BaseModel):
     last_activity: datetime = Field(
         default_factory=datetime.utcnow, description="Last activity timestamp"
     )
+    updated_at: datetime = Field(
+        default_factory=datetime.utcnow, description="Last update timestamp"
+    )
     data_uploads: List[str] = Field(
         default_factory=list, description="List of uploaded data IDs"
     )
@@ -77,6 +80,14 @@ class SessionContext(BaseModel):
         default_factory=list, description="History of investigations"
     )
     agent_state: Optional[AgentState] = Field(None, description="Current agent state")
+
+    @property
+    def active(self) -> bool:
+        """Check if session is considered active based on last activity (24 hours default)"""
+        from datetime import timedelta
+        inactive_threshold = timedelta(hours=24)
+        time_since_activity = datetime.utcnow() - self.last_activity
+        return time_since_activity < inactive_threshold
 
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat()}
@@ -179,6 +190,8 @@ class KnowledgeBaseDocument(BaseModel):
     document_type: str = Field(
         ..., description="Type of document (e.g., troubleshooting guide, FAQ)"
     )
+    category: Optional[str] = Field(None, description="Document category for organization")
+    status: str = Field(default="processed", description="Document processing status")
     tags: List[str] = Field(default_factory=list, description="Tags for categorization")
     source_url: Optional[str] = Field(None, description="Source URL if applicable")
     created_at: datetime = Field(
@@ -187,6 +200,7 @@ class KnowledgeBaseDocument(BaseModel):
     updated_at: datetime = Field(
         default_factory=datetime.utcnow, description="Last update timestamp"
     )
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional document metadata")
 
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat()}
@@ -195,10 +209,14 @@ class KnowledgeBaseDocument(BaseModel):
 class SearchRequest(BaseModel):
     """Request model for knowledge base search"""
 
-    query: str = Field(..., description="Search query")
+    query: str = Field(..., description="Search query", min_length=1)
     document_type: Optional[str] = Field(None, description="Filter by document type")
+    category: Optional[str] = Field(None, description="Filter by document category")
     tags: Optional[str] = Field(None, description="Filter by tags (comma-separated)")
-    limit: int = Field(default=10, description="Maximum number of results")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Advanced filters for search")
+    similarity_threshold: Optional[float] = Field(None, description="Minimum similarity score threshold (0.0-1.0)", ge=0.0, le=1.0)
+    rank_by: Optional[str] = Field(None, description="Field to rank results by (e.g., priority)")
+    limit: int = Field(default=10, description="Maximum number of results", gt=0, le=100)
 
 
 class SearchResult(BaseModel):

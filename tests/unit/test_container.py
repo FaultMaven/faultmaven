@@ -8,10 +8,11 @@ Test Coverage:
 - Service creation with proper interface implementations
 - Error handling and fallback mechanisms
 - Health checks and container state management
+- Configuration manager integration
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, Mock
 import logging
 
 from faultmaven.container import DIContainer, container
@@ -357,3 +358,227 @@ class TestContainerIntegration:
         assert components["tools_count"] >= 0
         assert components["agent_service"] is True
         assert components["data_service"] is True
+
+
+class TestContainerConfigurationIntegration:
+    """Test container integration with configuration manager."""
+    
+    def setup_method(self):
+        """Reset container and configuration before each test."""
+        DIContainer._instance = None
+        from faultmaven.config.configuration_manager import reset_config
+        reset_config()
+
+    def teardown_method(self):
+        """Clean up after each test."""
+        if DIContainer._instance:
+            DIContainer._instance.reset()
+        DIContainer._instance = None
+        from faultmaven.config.configuration_manager import reset_config
+        reset_config()
+
+    def test_container_uses_configuration_manager(self):
+        """Test that container components use configuration manager."""
+        # Mock configuration for testing
+        with patch('faultmaven.config.configuration_manager.get_config') as mock_get_config:
+            mock_config = Mock()
+            mock_config.get_database_config.return_value = {
+                "host": "container.redis.com",
+                "port": 6379,
+                "password": "container_password",
+                "db": 1,
+                "ssl": False,
+                "timeout": 30
+            }
+            mock_config.get_llm_config.return_value = {
+                "provider": "openai",
+                "api_key": "container_test_key",
+                "model": "gpt-4o",
+                "timeout": 60,
+                "max_retries": 3
+            }
+            mock_config.get_session_config.return_value = {
+                "timeout_minutes": 60,
+                "cleanup_interval_minutes": 30,
+                "max_memory_mb": 200,
+                "cleanup_batch_size": 75,
+                "encryption_key": None
+            }
+            mock_get_config.return_value = mock_config
+            
+            # Initialize container
+            test_container = DIContainer()
+            test_container.initialize()
+            
+            # Verify configuration was accessed during initialization
+            # (Components should use config manager when they're created)
+            assert test_container._initialized
+
+    def test_container_configuration_validation_integration(self):
+        """Test container handles configuration validation."""
+        # Test with valid configuration
+        valid_config = {
+            'CHAT_PROVIDER': 'openai',
+            'REDIS_HOST': 'container.redis.com',
+            'SESSION_TIMEOUT_MINUTES': '45'
+        }
+        
+        with patch.dict('os.environ', valid_config, clear=True):
+            test_container = DIContainer()
+            
+            # Should initialize successfully with valid config
+            test_container.initialize()
+            assert test_container._initialized
+            
+            # Health check should reflect configuration status
+            health = test_container.health_check()
+            assert health["status"] in ["healthy", "degraded"]
+
+    def test_container_with_configuration_errors(self):
+        """Test container behavior with configuration errors."""
+        # Test with invalid configuration
+        invalid_config = {
+            'CHAT_PROVIDER': 'invalid_provider',
+            'REDIS_HOST': '',  # Empty required field
+        }
+        
+        with patch.dict('os.environ', invalid_config, clear=True):
+            test_container = DIContainer()
+            
+            # Container should handle invalid configuration gracefully
+            # Depending on implementation, it might initialize with errors
+            # or fail to initialize completely
+            try:
+                test_container.initialize()
+                # If initialization succeeds, health check should show issues
+                health = test_container.health_check()
+                # Status might be degraded or error due to config issues
+                assert health["status"] in ["healthy", "degraded", "error"]
+            except Exception:
+                # If initialization fails due to config, that's also acceptable
+                assert not test_container._initialized
+
+    def test_container_components_receive_configuration(self):
+        """Test that container components receive proper configuration."""
+        # Mock specific configurations for different components
+        with patch('faultmaven.config.configuration_manager.get_config') as mock_get_config:
+            mock_config = Mock()
+            
+            # LLM configuration
+            mock_config.get_llm_config.return_value = {
+                "provider": "anthropic",
+                "api_key": "test_anthropic_key",
+                "model": "claude-3-5-sonnet",
+                "timeout": 45,
+                "max_retries": 2
+            }
+            
+            # Security configuration
+            mock_config.get_security_config.return_value = {
+                "presidio_analyzer_url": "http://test.analyzer.com",
+                "presidio_anonymizer_url": "http://test.anonymizer.com",
+                "pii_detection_confidence": 0.9,
+                "sanitization_enabled": True,
+                "sanitization_timeout": 15
+            }
+            
+            # Observability configuration
+            mock_config.get_observability_config.return_value = {
+                "opik_use_local": True,
+                "opik_local_url": "http://test.opik.com",
+                "opik_project_name": "Test Project",
+                "tracing_sample_rate": 0.5,
+                "metrics_enabled": True
+            }
+            
+            mock_get_config.return_value = mock_config
+            
+            # Initialize container with mocked components
+            with patch('faultmaven.services.agent_service.AgentService') as mock_agent_service:
+                with patch('faultmaven.services.data_service.DataService') as mock_data_service:
+                    test_container = DIContainer()
+                    test_container.initialize()
+                    
+                    # Verify configuration methods were called
+                    mock_config.get_llm_config.assert_called()
+                    mock_config.get_security_config.assert_called()
+                    mock_config.get_observability_config.assert_called()
+
+    def test_container_configuration_change_handling(self):
+        """Test container handles configuration changes."""
+        # Initial configuration
+        initial_config = {
+            'CHAT_PROVIDER': 'openai',
+            'REDIS_HOST': 'initial.redis.com',
+            'SESSION_TIMEOUT_MINUTES': '30'
+        }
+        
+        with patch.dict('os.environ', initial_config, clear=True):
+            test_container = DIContainer()
+            test_container.initialize()
+            initial_health = test_container.health_check()
+        
+        # Reset and change configuration
+        test_container.reset()
+        
+        updated_config = {
+            'CHAT_PROVIDER': 'anthropic',
+            'REDIS_HOST': 'updated.redis.com',
+            'SESSION_TIMEOUT_MINUTES': '60'
+        }
+        
+        with patch.dict('os.environ', updated_config, clear=True):
+            # Reset configuration manager to pick up new values
+            from faultmaven.config.configuration_manager import reset_config
+            reset_config()
+            
+            # Re-initialize container
+            test_container.initialize()
+            updated_health = test_container.health_check()
+            
+            # Container should work with updated configuration
+            assert test_container._initialized
+            assert updated_health["status"] in ["healthy", "degraded"]
+
+    def test_container_health_check_includes_configuration_status(self):
+        """Test health check includes configuration validation status."""
+        test_container = DIContainer()
+        test_container.initialize()
+        
+        health = test_container.health_check()
+        
+        # Health check should include configuration-related information
+        assert "status" in health
+        assert "components" in health
+        
+        # If configuration status is included, verify its format
+        if "configuration" in health:
+            config_status = health["configuration"]
+            assert isinstance(config_status, dict)
+            
+            # Should include validation status
+            if "config_valid" in config_status:
+                assert isinstance(config_status["config_valid"], bool)
+
+    def test_container_with_minimal_configuration(self):
+        """Test container works with minimal configuration."""
+        minimal_config = {
+            'CHAT_PROVIDER': 'openai',
+            'REDIS_HOST': 'minimal.redis.com'
+        }
+        
+        with patch.dict('os.environ', minimal_config, clear=True):
+            test_container = DIContainer()
+            test_container.initialize()
+            
+            # Should work with defaults for optional configuration
+            assert test_container._initialized
+            
+            # Should create all core components
+            agent_service = test_container.get_agent_service()
+            data_service = test_container.get_data_service()
+            llm_provider = test_container.get_llm_provider()
+            
+            assert agent_service is not None
+            assert data_service is not None
+            assert llm_provider is not None

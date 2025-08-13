@@ -11,6 +11,7 @@ from abc import ABC
 from datetime import datetime
 
 from faultmaven.infrastructure.logging.unified import get_unified_logger, UnifiedLogger
+from faultmaven.exceptions import ValidationException
 
 
 # Type variable for generic return types
@@ -128,6 +129,26 @@ class BaseService(ABC):
                         else:
                             validate_inputs(*args, **kwargs)
                         ctx["validation"] = "passed"
+                    except ValidationException as validation_error:
+                        ctx["validation"] = "failed"
+                        ctx["validation_error"] = str(validation_error)
+                        self.logger.error(
+                            f"Input validation failed for operation: {operation_name}",
+                            validation_error=str(validation_error),
+                            operation=operation_name,
+                            service=self.service_name
+                        )
+                        raise  # Re-raise ValidationException as-is
+                    except FileNotFoundError as validation_error:
+                        ctx["validation"] = "failed"
+                        ctx["validation_error"] = str(validation_error)
+                        self.logger.error(
+                            f"Input validation failed for operation: {operation_name}",
+                            validation_error=str(validation_error),
+                            operation=operation_name,
+                            service=self.service_name
+                        )
+                        raise  # Re-raise FileNotFoundError as-is
                     except Exception as validation_error:
                         ctx["validation"] = "failed"
                         ctx["validation_error"] = str(validation_error)
@@ -216,6 +237,12 @@ class BaseService(ABC):
                 
                 return result
                 
+            except ValidationException as validation_error:
+                # Re-raise ValidationException directly for test compatibility
+                raise
+            except FileNotFoundError:
+                # Re-raise FileNotFoundError exceptions without wrapping
+                raise
             except Exception as operation_error:
                 # Update context with error information
                 ctx["error"] = str(operation_error)
@@ -382,6 +409,12 @@ class BaseService(ABC):
                 
                 return result
                 
+            except ValidationException as validation_error:
+                # Re-raise ValidationException directly for test compatibility
+                raise
+            except FileNotFoundError:
+                # Re-raise FileNotFoundError exceptions without wrapping
+                raise
             except Exception as operation_error:
                 # Update context with error information
                 ctx["error"] = str(operation_error)

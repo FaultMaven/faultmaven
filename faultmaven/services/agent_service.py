@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from faultmaven.services.base_service import BaseService
 from faultmaven.models.interfaces import ILLMProvider, BaseTool, ITracer, ISanitizer
 from faultmaven.models import QueryRequest, TroubleshootingResponse
+from faultmaven.exceptions import ValidationException
 
 
 class AgentService(BaseService):
@@ -84,71 +85,91 @@ class AgentService(BaseService):
 
     async def _execute_query_processing(self, request: QueryRequest) -> TroubleshootingResponse:
         """Execute the core query processing logic"""
-        # 1. Sanitize input
-        sanitized_query = self._sanitizer.sanitize(request.query)
-        
-        # 2. Generate investigation ID
-        investigation_id = str(uuid.uuid4())
-        
-        # Log business event for investigation start
-        self.log_business_event(
-            "investigation_started",
-            "info",
-            {
-                "investigation_id": investigation_id,
-                "session_id": request.session_id,
-                "query_length": len(sanitized_query)
-            }
-        )
-        
-        # 3. Create and configure agent with interfaces
-        from faultmaven.core.agent.agent import FaultMavenAgent
-        agent = FaultMavenAgent(llm_interface=self._llm)
-        
-        # 4. Execute troubleshooting using interfaces
-        start_time = datetime.utcnow()
-        
-        result = await agent.run(
-            query=sanitized_query,
-            session_id=request.session_id,
-            tools=self._tools,  # Pass interface-based tools
-            context=request.context or {}
-        )
-        
-        end_time = datetime.utcnow()
-        processing_time = (end_time - start_time).total_seconds()
-        
-        # Log processing metrics
-        self.log_metric(
-            "investigation_processing_time",
-            processing_time,
-            "seconds",
-            {"investigation_id": investigation_id}
-        )
-        
-        # 5. Format response using interfaces
-        response = self._format_response(
-            investigation_id=investigation_id,
-            session_id=request.session_id,
-            agent_result=result,
-            start_time=start_time,
-            end_time=end_time,
-            processing_time=processing_time
-        )
-        
-        # Log business event for investigation completion
-        self.log_business_event(
-            "investigation_completed",
-            "info",
-            {
-                "investigation_id": investigation_id,
-                "session_id": request.session_id,
-                "confidence_score": response.confidence_score,
-                "processing_time_seconds": processing_time
-            }
-        )
-        
-        return response
+        # Use ITracer interface for operation tracing
+        with self._tracer.trace("process_query_workflow"):
+            # 1. Sanitize input
+            with self._tracer.trace("sanitize_input"):
+                sanitized_query = self._sanitizer.sanitize(request.query)
+            
+            # 2. Generate investigation ID
+            investigation_id = str(uuid.uuid4())
+            
+            # Log business event for investigation start
+            self.log_business_event(
+                "investigation_started",
+                "info",
+                {
+                    "investigation_id": investigation_id,
+                    "session_id": request.session_id,
+                    "query_length": len(sanitized_query)
+                }
+            )
+            
+            # 3. Create and configure agent with interfaces
+            with self._tracer.trace("initialize_agent"):
+                from faultmaven.core.agent.agent import FaultMavenAgent
+                agent = FaultMavenAgent(llm_interface=self._llm)
+            
+            # 4. Execute troubleshooting using interfaces
+            start_time = datetime.utcnow()
+            
+            with self._tracer.trace("execute_agent_workflow"):
+                result = await agent.run(
+                    query=sanitized_query,
+                    session_id=request.session_id,
+                    tools=self._tools,  # Pass interface-based tools
+                    context=request.context or {}
+                )
+            
+            end_time = datetime.utcnow()
+            processing_time = (end_time - start_time).total_seconds()
+            
+            # Log processing metrics
+            self.log_metric(
+                "investigation_processing_time",
+                processing_time,
+                "seconds",
+                {"investigation_id": investigation_id}
+            )
+            
+            # 5. Format response using interfaces
+            with self._tracer.trace("format_response"):
+                response = self._format_response(
+                    investigation_id=investigation_id,
+                    session_id=request.session_id,
+                    agent_result=result,
+                    start_time=start_time,
+                    end_time=end_time,
+                    processing_time=processing_time
+                )
+            
+            # Log business event for investigation completion
+            self.log_business_event(
+                "investigation_completed",
+                "info",
+                {
+                    "investigation_id": investigation_id,
+                    "session_id": request.session_id,
+                    "confidence_score": response.confidence_score,
+                    "processing_time_seconds": processing_time
+                }
+            )
+            
+            # Record operation in session if session service is available
+            if self._session_service and request.session_id:
+                try:
+                    with self._tracer.trace("record_session_operation"):
+                        await self._session_service.record_query_operation(
+                            session_id=request.session_id,
+                            query=request.query,
+                            investigation_id=investigation_id,
+                            context=request.context,
+                            confidence_score=response.confidence_score
+                        )
+                except Exception as e:
+                    self.logger.warning(f"Failed to record query operation in session: {e}")
+            
+            return response
     
     async def _validate_request(self, request: QueryRequest) -> None:
         """Validate request using interface methods
@@ -157,14 +178,14 @@ class AgentService(BaseService):
             request: QueryRequest to validate
             
         Raises:
-            ValueError: If validation fails
+            ValidationException: If validation fails
             FileNotFoundError: If session not found
         """
         if not request.query or not request.query.strip():
-            raise ValueError("Query cannot be empty")
+            raise ValidationException("Query cannot be empty")
             
         if not request.session_id or not request.session_id.strip():
-            raise ValueError("Session ID cannot be empty")
+            raise ValidationException("Session ID cannot be empty")
             
         # Validate session exists if session service is available
         if self._session_service:
@@ -196,6 +217,17 @@ class AgentService(BaseService):
         Returns:
             Formatted TroubleshootingResponse
         """
+        # Handle None agent_result defensively
+        if agent_result is None:
+            agent_result = {
+                'findings': [],
+                'recommendations': [],
+                'next_steps': [],
+                'root_cause': 'Processing error occurred',
+                'confidence_score': 0.0,
+                'estimated_mttr': 'Unknown'
+            }
+        
         # Process findings from agent result
         findings = []
         raw_findings = agent_result.get('findings', [])
@@ -204,11 +236,16 @@ class AgentService(BaseService):
             for finding_data in raw_findings:
                 if isinstance(finding_data, dict):
                     # Create properly formatted finding
+                    # Handle both old format (message/description) and new format (finding/details)
+                    message = finding_data.get('message') or finding_data.get('description') or finding_data.get('finding', 'No description available')
+                    details = finding_data.get('details', message)  # Use details field if available
+                    
                     finding_dict = {
                         'type': finding_data.get('type', 'observation'),
-                        'message': finding_data.get('message', finding_data.get('description', 'No description available')),
+                        'message': message,
+                        'details': details,  # Include the detailed content
                         'severity': finding_data.get('severity', 'medium'),
-                        'timestamp': datetime.utcnow().isoformat(),
+                        'timestamp': finding_data.get('timestamp', datetime.utcnow().isoformat()),
                         'source': finding_data.get('source', 'agent_analysis'),
                         'confidence': finding_data.get('confidence', 0.5)
                     }
@@ -227,7 +264,7 @@ class AgentService(BaseService):
         # Extract other response components
         recommendations = agent_result.get('recommendations', [])
         if not isinstance(recommendations, list):
-            recommendations = [str(recommendations)] if recommendations else []
+            recommendations = []  # Return empty list for invalid data types
             
         next_steps = agent_result.get('next_steps', [])
         if not isinstance(next_steps, list):
@@ -240,7 +277,7 @@ class AgentService(BaseService):
             findings=self._sanitizer.sanitize(findings),  # Sanitize output
             root_cause=agent_result.get('root_cause'),
             recommendations=self._sanitizer.sanitize(recommendations),
-            confidence_score=float(agent_result.get('confidence', 0.0)),
+            confidence_score=self._safe_float(agent_result.get('confidence_score', agent_result.get('confidence', 0.0))),
             status="completed",
             estimated_mttr=agent_result.get('estimated_mttr'),
             next_steps=self._sanitizer.sanitize(next_steps),
@@ -249,6 +286,15 @@ class AgentService(BaseService):
         )
         
         return response
+
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
+        """Safely convert a value to float, returning default on error"""
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except (ValueError, TypeError):
+            return default
 
     async def analyze_findings(
         self, 
@@ -281,59 +327,67 @@ class AgentService(BaseService):
         session_id: str
     ) -> Dict[str, Any]:
         """Execute the core findings analysis logic"""
-        # Sanitize input findings
-        sanitized_findings = self._sanitizer.sanitize(findings)
-        
-        # Log business event
-        self.log_business_event(
-            "findings_analysis_started",
-            "info",
-            {
-                "session_id": session_id,
-                "findings_count": len(sanitized_findings)
-            }
-        )
-        
-        # Group findings by type
-        findings_by_type = self._group_findings_by_type(sanitized_findings)
-        
-        # Identify patterns
-        patterns = await self._identify_patterns(findings_by_type)
-        
-        # Calculate severity distribution
-        severity_dist = self._calculate_severity_distribution(sanitized_findings)
-        
-        # Generate insights
-        insights = {
-            "total_findings": len(sanitized_findings),
-            "findings_by_type": {
-                type_name: len(items) for type_name, items in findings_by_type.items()
-            },
-            "severity_distribution": severity_dist,
-            "patterns_identified": patterns,
-            "critical_issues": self._extract_critical_issues(sanitized_findings),
-            "session_id": session_id,
-            "analysis_timestamp": datetime.utcnow().isoformat()
-        }
-        
-        # Log metrics
-        self.log_metric(
-            "findings_analyzed",
-            len(sanitized_findings),
-            "count",
-            {"session_id": session_id}
-        )
-        
-        if patterns:
+        # Use ITracer interface for operation tracing
+        with self._tracer.trace("findings_analysis_workflow"):
+            # Sanitize input findings
+            with self._tracer.trace("sanitize_findings"):
+                sanitized_findings = self._sanitizer.sanitize(findings)
+            
+            # Log business event
+            self.log_business_event(
+                "findings_analysis_started",
+                "info",
+                {
+                    "session_id": session_id,
+                    "findings_count": len(sanitized_findings)
+                }
+            )
+            
+            # Group findings by type
+            with self._tracer.trace("group_findings_by_type"):
+                findings_by_type = self._group_findings_by_type(sanitized_findings)
+            
+            # Identify patterns
+            with self._tracer.trace("identify_patterns"):
+                patterns = await self._identify_patterns(findings_by_type)
+            
+            # Calculate severity distribution
+            with self._tracer.trace("calculate_severity_distribution"):
+                severity_dist = self._calculate_severity_distribution(sanitized_findings)
+            
+            # Generate insights
+            with self._tracer.trace("generate_insights"):
+                insights = {
+                    "total_findings": len(sanitized_findings),
+                    "findings_by_type": {
+                        type_name: len(items) for type_name, items in findings_by_type.items()
+                    },
+                    "severity_distribution": severity_dist,
+                    "patterns_identified": patterns,
+                    "critical_issues": self._extract_critical_issues(sanitized_findings),
+                    "session_id": session_id,
+                    "analysis_timestamp": datetime.utcnow().isoformat()
+                }
+            
+            # Log metrics
             self.log_metric(
-                "patterns_identified",
-                len(patterns),
+                "findings_analyzed",
+                len(sanitized_findings),
                 "count",
                 {"session_id": session_id}
             )
-        
-        # Sanitize output
-        return self._sanitizer.sanitize(insights)
+            
+            if patterns:
+                self.log_metric(
+                    "patterns_identified",
+                    len(patterns),
+                    "count",
+                    {"session_id": session_id}
+                )
+            
+            # Sanitize output
+            with self._tracer.trace("sanitize_output"):
+                return self._sanitizer.sanitize(insights)
 
     def _group_findings_by_type(
         self, findings: List[Dict[str, Any]]
@@ -446,18 +500,22 @@ class AgentService(BaseService):
         session_id: str
     ) -> Dict[str, Any]:
         """Execute the core status retrieval logic"""
-        # In a full implementation, this would query persistent storage
-        # via an ISessionStore interface to retrieve investigation status
-        status = {
-            "investigation_id": investigation_id,
-            "session_id": session_id,
-            "status": "completed",  # Placeholder
-            "progress": 100.0,
-            "phase": "completed",
-            "last_updated": datetime.utcnow().isoformat()
-        }
-        
-        return self._sanitizer.sanitize(status)
+        # Use ITracer interface for operation tracing
+        with self._tracer.trace("investigation_status_retrieval"):
+            # In a full implementation, this would query persistent storage
+            # via an ISessionStore interface to retrieve investigation status
+            with self._tracer.trace("retrieve_status_data"):
+                status = {
+                    "investigation_id": investigation_id,
+                    "session_id": session_id,
+                    "status": "completed",  # Placeholder
+                    "progress": 100.0,
+                    "phase": "completed",
+                    "last_updated": datetime.utcnow().isoformat()
+                }
+            
+            with self._tracer.trace("sanitize_status_output"):
+                return self._sanitizer.sanitize(status)
 
     async def cancel_investigation(
         self, 
@@ -487,21 +545,23 @@ class AgentService(BaseService):
         session_id: str
     ) -> bool:
         """Execute the core investigation cancellation logic"""
-        # In a full implementation, this would use ISessionStore
-        # to update investigation status and potentially signal
-        # the running agent to stop
-        
-        # Log business event
-        self.log_business_event(
-            "investigation_cancelled",
-            "info",
-            {
-                "investigation_id": investigation_id,
-                "session_id": session_id
-            }
-        )
-        
-        return True
+        # Use ITracer interface for operation tracing
+        with self._tracer.trace("cancel_investigation"):
+            # In a full implementation, this would use ISessionStore
+            # to update investigation status and potentially signal
+            # the running agent to stop
+            
+            # Log business event
+            self.log_business_event(
+                "investigation_cancelled",
+                "info",
+                {
+                    "investigation_id": investigation_id,
+                    "session_id": session_id
+                }
+            )
+            
+            return True
 
     async def get_investigation_results(
         self, 

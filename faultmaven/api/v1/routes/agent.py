@@ -1,13 +1,13 @@
-"""Refactored Agent Routes - Phase 6.1
+"""Agent API Routes
 
 Purpose: Thin API layer for agent operations with pure delegation pattern
 
-This refactored module follows clean API architecture principles by removing
+This module follows clean API architecture principles by removing
 all business logic from the API layer and delegating to the service layer.
 
-Key Changes from Original:
+Key Features:
 - Removed all business logic (session validation, sanitization, processing)
-- Pure delegation to AgentServiceRefactored
+- Pure delegation to AgentService
 - Simplified error handling at API boundary
 - Proper dependency injection via DI container
 - Clean separation of concerns (API vs Business logic)
@@ -25,14 +25,15 @@ from faultmaven.models import QueryRequest, TroubleshootingResponse
 from faultmaven.api.v1.dependencies import get_agent_service
 from faultmaven.services.agent_service import AgentService
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.exceptions import ValidationException
 
-router = APIRouter(prefix="/query", tags=["query_processing"])
+router = APIRouter(prefix="/agent", tags=["query_processing"])
 
 logger = logging.getLogger(__name__)
 
 
-@router.post("/troubleshoot", response_model=TroubleshootingResponse)
-@router.post("/", response_model=TroubleshootingResponse)  # Compatibility endpoint for tests
+@router.post("/query", response_model=TroubleshootingResponse)
+@router.post("/troubleshoot", response_model=TroubleshootingResponse)  # Compatibility endpoint
 @trace("api_troubleshoot")
 async def troubleshoot(
     request: QueryRequest,
@@ -48,7 +49,7 @@ async def troubleshoot(
     
     Args:
         request: QueryRequest with query, session_id, context, priority
-        agent_service: Injected AgentServiceRefactored from DI container
+        agent_service: Injected AgentService from DI container
         
     Returns:
         TroubleshootingResponse with findings and recommendations
@@ -64,6 +65,21 @@ async def troubleshoot(
         
         logger.info(f"Successfully processed query {response.investigation_id}")
         return response
+        
+    except ValidationException as e:
+        # Input validation errors - should return 422 Unprocessable Entity
+        logger.warning(f"Query validation failed: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
+    
+    except RuntimeError as e:
+        # Check if this is a wrapped validation error from service layer
+        if "Validation failed:" in str(e):
+            logger.warning(f"Query validation failed (wrapped): {e}")
+            raise HTTPException(status_code=422, detail=str(e))
+        else:
+            # Other runtime errors
+            logger.error(f"Query processing runtime error: {e}")
+            raise HTTPException(status_code=500, detail="Service error during query processing")
         
     except ValueError as e:
         # Business logic validation errors (session not found, invalid input)
@@ -102,7 +118,7 @@ async def get_investigation(
     Args:
         investigation_id: Investigation identifier
         session_id: Session identifier for validation
-        agent_service: Injected AgentServiceRefactored
+        agent_service: Injected AgentService
         
     Returns:
         TroubleshootingResponse with investigation results
@@ -117,6 +133,10 @@ async def get_investigation(
         )
         
         return response
+        
+    except ValidationException as e:
+        logger.warning(f"Investigation retrieval validation failed: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
         
     except ValueError as e:
         logger.warning(f"Investigation retrieval validation failed: {e}")
@@ -146,7 +166,7 @@ async def list_session_investigations(
         session_id: Session identifier
         limit: Maximum number of results
         offset: Pagination offset
-        agent_service: Injected AgentServiceRefactored
+        agent_service: Injected AgentService
         
     Returns:
         List of investigation summaries
@@ -168,6 +188,10 @@ async def list_session_investigations(
             "offset": offset,
             "total": len(investigations)  # Service layer provides this
         }
+        
+    except ValidationException as e:
+        logger.warning(f"Investigation listing validation failed: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
         
     except ValueError as e:
         logger.warning(f"Investigation listing validation failed: {e}")
