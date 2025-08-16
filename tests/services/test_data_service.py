@@ -463,20 +463,20 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         
         processing_time = (end_time - start_time).total_seconds()
         
-        # Validate business logic outcomes
-        assert isinstance(result, UploadedData)
-        assert result.session_id == session_id
-        assert result.file_name == filename
-        assert result.data_type == DataType.LOG_FILE  # Should be classified correctly
-        assert result.processing_status == "completed"
+        # Validate business logic outcomes (DataService now returns dict for v3.1.0 compatibility)
+        assert isinstance(result, dict)
+        assert result["session_id"] == session_id
+        assert result["file_name"] == filename
+        assert result["data_type"] == DataType.LOG_FILE.value  # Should be classified correctly
+        assert result["processing_status"] == "completed"
         
         # Validate data ID generation
         expected_hash = hashlib.sha256(sample_log_content.encode("utf-8")).hexdigest()[:16]
         expected_data_id = f"data_{expected_hash}"
-        assert result.data_id == expected_data_id
+        assert result["data_id"] == expected_data_id
         
         # Validate real processing insights
-        insights = result.insights
+        insights = result["insights"]
         assert isinstance(insights, dict)
         assert insights["error_count"] == 4  # 4 ERROR lines in sample content
         assert insights["warning_count"] == 3  # 3 WARN lines in sample content
@@ -509,9 +509,10 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         assert test_storage.operation_count == 1  # One storage operation
         
         # Validate data was stored
-        stored_data = await test_storage.retrieve(result.data_id)
+        stored_data = await test_storage.retrieve(result["data_id"])
         assert stored_data is not None
-        assert stored_data.session_id == session_id
+        # Storage also returns dict format for v3.1.0 compatibility
+        assert stored_data["session_id"] == session_id
     
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -528,11 +529,11 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
             file_name=filename
         )
         
-        # Validate classification
-        assert result.data_type == DataType.STACK_TRACE
+        # Validate classification (DataService now returns dict for v3.1.0 compatibility)
+        assert result["data_type"] == DataType.STACK_TRACE.value
         
         # Validate stack trace analysis
-        insights = result.insights
+        insights = result["insights"]
         assert "stack_frames" in insights
         assert "stack_depth" in insights
         assert "exception_type" in insights
@@ -569,10 +570,10 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         )
         
         # Validate classification
-        assert result.data_type == DataType.ERROR_MESSAGE
+        assert result["data_type"] == DataType.ERROR_MESSAGE.value
         
         # Validate error message analysis
-        insights = result.insights
+        insights = result["insights"]
         assert "error_type" in insights
         assert "severity" in insights
         assert "component" in insights
@@ -604,13 +605,13 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         
         # Then analyze the data
         analysis_result = await data_service.analyze_data(
-            data_id=uploaded_data.data_id,
+            data_id=uploaded_data["data_id"],
             session_id=session_id
         )
         
         # Validate analysis result structure
         assert isinstance(analysis_result, DataInsightsResponse)
-        assert analysis_result.data_id == uploaded_data.data_id
+        assert analysis_result.data_id == uploaded_data["data_id"]
         assert analysis_result.data_type == DataType.LOG_FILE
         
         # Validate real confidence scoring
@@ -663,19 +664,19 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         
         # Validate each result
         for result in results:
-            assert isinstance(result, UploadedData)
-            assert result.session_id == session_id
-            assert result.processing_status == "completed"
-            assert result.data_id.startswith("data_")
+            assert isinstance(result, dict)  # DataService now returns dict for v3.1.0 compatibility
+            assert result["session_id"] == session_id
+            assert result["processing_status"] == "completed"
+            assert result["data_id"].startswith("data_")
         
         # Validate different classifications occurred
-        data_types = [result.data_type for result in results]
-        assert DataType.LOG_FILE in data_types
-        assert DataType.ERROR_MESSAGE in data_types
+        data_types = [result["data_type"] for result in results]
+        assert DataType.LOG_FILE.value in data_types
+        assert DataType.ERROR_MESSAGE.value in data_types
         
         # Validate classification logic worked correctly
-        log_results = [r for r in results if r.data_type == DataType.LOG_FILE]
-        error_results = [r for r in results if r.data_type == DataType.ERROR_MESSAGE]
+        log_results = [r for r in results if r["data_type"] == DataType.LOG_FILE.value]
+        error_results = [r for r in results if r["data_type"] == DataType.ERROR_MESSAGE.value]
         assert len(log_results) >= 2  # At least the main log and startup log
         assert len(error_results) >= 1  # The error message
     
@@ -700,7 +701,7 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         )
         
         # Analyze for anomalies
-        analysis = await data_service.analyze_data(result.data_id, session_id)
+        analysis = await data_service.analyze_data(result["data_id"], session_id)
         
         # Validate anomaly detection
         anomalies = analysis.anomalies_detected
@@ -745,8 +746,8 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         )
         
         # Validate confidence scoring differences
-        high_quality_insights = high_quality_result.insights
-        low_quality_insights = low_quality_result.insights
+        high_quality_insights = high_quality_result["insights"]
+        low_quality_insights = low_quality_result["insights"]
         
         # High quality should have higher confidence
         assert high_quality_insights.get("confidence_score", 0) > low_quality_insights.get("confidence_score", 0)
@@ -786,9 +787,9 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         # Validate all processed successfully
         assert len(results) == 10
         for result in results:
-            assert isinstance(result, UploadedData)
-            assert result.processing_status == "completed"
-            assert result.data_type == DataType.LOG_FILE
+            assert isinstance(result, dict)  # DataService now returns dict for v3.1.0 compatibility
+            assert result["processing_status"] == "completed"
+            assert result["data_type"] == DataType.LOG_FILE.value
         
         # Validate performance characteristics
         assert total_time < 2.0, f"Concurrent processing took {total_time}s, expected <2.0s"
@@ -796,7 +797,7 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         assert average_time_per_item < 0.3, f"Average per item: {average_time_per_item}s, expected <0.3s"
         
         # Validate each item was processed independently
-        unique_data_ids = set(result.data_id for result in results)
+        unique_data_ids = set(result["data_id"] for result in results)
         assert len(unique_data_ids) == 10  # All should have unique IDs
         
         # Validate classification occurred for all items
@@ -818,7 +819,7 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
             file_name="to_delete.log"
         )
         
-        data_id = result.data_id
+        data_id = result["data_id"]
         
         # Verify data is stored
         stored_data = await test_storage.retrieve(data_id)
@@ -898,9 +899,9 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         result = await data_service.ingest_data(
             content=large_data, session_id="test_session", file_name="large.log"
         )
-        assert isinstance(result, UploadedData)
-        assert result.content == large_data
-        assert result.file_size == len(large_data)
+        assert isinstance(result, dict)  # DataService now returns dict for v3.1.0 compatibility
+        assert result["content"] == large_data
+        assert result["file_size"] == len(large_data)
     
     @pytest.mark.asyncio
     @pytest.mark.unit  
@@ -920,7 +921,7 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         results = await asyncio.gather(*tasks)
         
         # Validate all data IDs are unique
-        data_ids = [result.data_id for result in results]
+        data_ids = [result["data_id"] for result in results]
         assert len(data_ids) == len(set(data_ids)), "Data IDs should be unique"
         
         # Validate all data IDs are non-empty and well-formed
@@ -944,14 +945,15 @@ ConnectionTimeout: Database connection pool exhausted - timeout after 30 seconds
         
         end_time = datetime.utcnow()
         
-        # Validate timestamps are within expected range
-        assert start_time <= result.uploaded_at <= end_time
+        # Note: DataService dict format doesn't include uploaded_at timestamp
+        # Validate timestamps are captured in insights instead
+        assert "processing_timestamp" in result["insights"]
         
-        # Validate metadata structure
-        assert result.file_name == "timestamped.log"
-        assert result.file_size == len(test_content)
-        assert result.session_id == "test_session"
-        assert result.data_type in [dt.value for dt in DataType]
+        # Validate metadata structure (DataService now returns dict for v3.1.0 compatibility)
+        assert result["file_name"] == "timestamped.log"
+        assert result["file_size"] == len(test_content)
+        assert result["session_id"] == "test_session"
+        assert result["data_type"] in [dt.value for dt in DataType]
         
         # Validate processing status
-        assert result.processing_status in ["pending", "processing", "completed", "failed"]
+        assert result["processing_status"] in ["pending", "processing", "completed", "failed"]

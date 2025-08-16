@@ -314,7 +314,8 @@ FaultMaven follows a **Clean Architecture** pattern with interface-based design 
 - **LangGraph Integration**: State machine with explicit state transitions
 - **Five-Phase Doctrine**: Structured troubleshooting workflow in `core/agent/doctrine.py`
 - **Tool Integration**: Agent uses injected `List[BaseTool]` for capabilities
-- **Session Management**: Redis-backed sessions with configurable timeout
+- **Case/Session Management**: Redis-backed sessions with case-level conversation tracking
+- **Conversation Continuity**: Full context injection across case queries
 - **Tracing**: Use `@trace` decorator on agent methods for observability
 
 ### Security Requirements (Privacy-First)
@@ -411,6 +412,7 @@ python scripts/generate_api_docs.py
 Comprehensive system documentation with visual diagrams:
 - **System Architecture**: `docs/architecture/SYSTEM_ARCHITECTURE.md` - Complete system overview with Mermaid diagrams
 - **Component Interactions**: `docs/architecture/COMPONENT_INTERACTIONS.md` - Detailed interaction patterns and data flows
+- **Case/Session Concepts**: `docs/specifications/CASE_SESSION_CONCEPTS.md` - Fundamental concepts for case vs session management
 - **Deployment Guide**: `docs/architecture/DEPLOYMENT_GUIDE.md` - Complete deployment instructions for all environments
 - **Interface Documentation**: `docs/specifications/` - Detailed interface specifications and compliance
 

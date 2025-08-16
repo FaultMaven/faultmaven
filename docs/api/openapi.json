@@ -491,9 +491,9 @@
           "query_processing",
           "query_processing"
         ],
-        "summary": "Troubleshoot",
-        "description": "Process troubleshooting query with clean delegation pattern\n\nThis endpoint follows the thin controller pattern:\n1. Minimal input validation (handled by Pydantic models)\n2. Pure delegation to service layer\n3. Clean error boundary handling\n\nArgs:\n    request: QueryRequest with query, session_id, context, priority\n    agent_service: Injected AgentServiceRefactored from DI container\n    \nReturns:\n    TroubleshootingResponse with findings and recommendations\n    \nRaises:\n    HTTPException: On service layer errors (404, 500, etc.)",
-        "operationId": "troubleshoot_api_v1_agent_query_post",
+        "summary": "Submit Query",
+        "description": "Process troubleshooting query with enhanced response types\n\nThis endpoint returns an AgentResponse with one of 7 response types:\n- ANSWER: Direct answer to the query\n- PLAN_PROPOSAL: Step-by-step troubleshooting plan\n- CLARIFICATION_REQUEST: Asks for more information\n- CONFIRMATION_REQUEST: Asks for user confirmation\n- SOLUTION_READY: Solution is ready to implement\n- NEEDS_MORE_DATA: Requires additional data uploads\n- ESCALATION_REQUIRED: Issue escalated to human support\n\nArgs:\n    request: QueryRequest with query, session_id, context, priority\n    agent_service: Injected AgentServiceRefactored from DI container\n    \nReturns:\n    AgentResponse with response_type and appropriate content\n    \nRaises:\n    HTTPException: On service layer errors (404, 500, etc.)",
+        "operationId": "submit_query_api_v1_agent_query_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -510,7 +510,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TroubleshootingResponse"
+                  "$ref": "#/components/schemas/AgentResponse"
                 }
               }
             }
@@ -528,23 +528,23 @@
         }
       }
     },
-    "/api/v1/agent/investigations/{investigation_id}": {
+    "/api/v1/agent/cases/{case_id}": {
       "get": {
         "tags": [
           "query_processing",
-          "query_processing"
+          "case_management"
         ],
-        "summary": "Get Investigation",
-        "description": "Get investigation results by ID with clean delegation\n\nArgs:\n    investigation_id: Investigation identifier\n    session_id: Session identifier for validation\n    agent_service: Injected AgentServiceRefactored\n    \nReturns:\n    TroubleshootingResponse with investigation results",
-        "operationId": "get_investigation_api_v1_agent_investigations__investigation_id__get",
+        "summary": "Get Case",
+        "description": "Get case results by ID with clean delegation\n\nArgs:\n    case_id: Case identifier\n    session_id: Session identifier for validation\n    agent_service: Injected AgentServiceRefactored\n    \nReturns:\n    TroubleshootingResponse with case results",
+        "operationId": "get_case_api_v1_agent_cases__case_id__get",
         "parameters": [
           {
-            "name": "investigation_id",
+            "name": "case_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
-              "title": "Investigation Id"
+              "title": "Case Id"
             }
           },
           {
@@ -581,15 +581,15 @@
         }
       }
     },
-    "/api/v1/agent/sessions/{session_id}/investigations": {
+    "/api/v1/agent/sessions/{session_id}/cases": {
       "get": {
         "tags": [
           "query_processing",
-          "query_processing"
+          "case_management"
         ],
-        "summary": "List Session Investigations",
-        "description": "List investigations for a session with clean delegation\n\nArgs:\n    session_id: Session identifier\n    limit: Maximum number of results\n    offset: Pagination offset\n    agent_service: Injected AgentServiceRefactored\n    \nReturns:\n    List of investigation summaries",
-        "operationId": "list_session_investigations_api_v1_agent_sessions__session_id__investigations_get",
+        "summary": "List Session Cases",
+        "description": "List cases for a session with clean delegation\n\nArgs:\n    session_id: Session identifier\n    limit: Maximum number of results\n    offset: Pagination offset\n    agent_service: Injected AgentServiceRefactored\n    \nReturns:\n    List of case summaries",
+        "operationId": "list_session_cases_api_v1_agent_sessions__session_id__cases_get",
         "parameters": [
           {
             "name": "session_id",
@@ -2186,6 +2186,225 @@
         }
       }
     },
+    "/api/v1/cases": {
+      "get": {
+        "tags": [
+          "case_management"
+        ],
+        "summary": "List Cases",
+        "description": "Get user cases with optional filtering\n\nArgs:\n    filters: Optional case filters\n\nReturns:\n    List of cases",
+        "operationId": "list_cases_api_v1_cases_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "title": "Case Status"
+            }
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "title": "Case Priority"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Case"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cases/{case_id}/resolve": {
+      "patch": {
+        "tags": [
+          "case_management"
+        ],
+        "summary": "Resolve Case",
+        "description": "Mark a case as resolved\n\nArgs:\n    case_id: Case identifier\n\nReturns:\n    Updated case",
+        "operationId": "resolve_case_api_v1_cases__case_id__resolve_patch",
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Case Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Case"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/files/upload": {
+      "post": {
+        "tags": [
+          "file_management"
+        ],
+        "summary": "Upload File",
+        "description": "Upload a file for analysis\n\nArgs:\n    file: File to upload\n\nReturns:\n    Upload result",
+        "operationId": "upload_file_api_v1_files_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_file_api_v1_files_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadedFile"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/session/{session_id}": {
+      "get": {
+        "tags": [
+          "real_time"
+        ],
+        "summary": "WebSocket Connection",
+        "description": "WebSocket endpoint for real-time session updates",
+        "operationId": "websocket_session_ws_session__session_id__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{session_id}/events": {
+      "get": {
+        "tags": [
+          "real_time"
+        ],
+        "summary": "Server-Sent Events",
+        "description": "Server-sent events endpoint for real-time updates",
+        "operationId": "sse_session_events_api_v1_sessions__session_id__events_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/": {
       "get": {
         "summary": "Root",
@@ -2711,13 +2930,17 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At",
-            "description": "Document creation timestamp"
+            "description": "Document creation timestamp in UTC timezone (ISO 8601 format with Z suffix)",
+            "example": "2025-01-15T10:00:00Z",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
           },
           "updated_at": {
             "type": "string",
             "format": "date-time",
             "title": "Updated At",
-            "description": "Last update timestamp"
+            "description": "Last update timestamp in UTC timezone (ISO 8601 format with Z suffix)",
+            "example": "2025-01-15T10:15:00Z",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
           },
           "metadata": {
             "anyOf": [
@@ -2958,15 +3181,17 @@
       },
       "TroubleshootingResponse": {
         "type": "object",
+        "deprecated": true,
+        "description": "**DEPRECATED**: This schema is deprecated. Use AgentResponse for new implementations.",
         "required": [
-          "investigation_id",
+          "case_id",
           "status",
           "session_id"
         ],
         "properties": {
-          "investigation_id": {
+          "case_id": {
             "type": "string",
-            "description": "Unique identifier for this troubleshooting investigation"
+            "description": "Unique identifier for this troubleshooting case"
           },
           "status": {
             "type": "string",
@@ -2976,7 +3201,7 @@
               "failed",
               "requires_input"
             ],
-            "description": "Current status of the investigation"
+            "description": "Current status of the case"
           },
           "findings": {
             "type": "array",
@@ -3023,7 +3248,7 @@
                 }
               }
             },
-            "description": "List of findings from the investigation"
+            "description": "List of findings from the case"
           },
           "recommendations": {
             "type": "array",
@@ -3088,7 +3313,7 @@
           }
         },
         "example": {
-          "investigation_id": "inv_789",
+          "case_id": "case_789",
           "status": "completed",
           "findings": [
             {
@@ -3187,7 +3412,9 @@
             "type": "string",
             "format": "date-time",
             "title": "Uploaded At",
-            "description": "Upload timestamp"
+            "description": "Upload timestamp in UTC timezone (ISO 8601 format with Z suffix)",
+            "example": "2025-01-15T10:00:00Z",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
           },
           "processing_status": {
             "type": "string",
@@ -3282,7 +3509,9 @@
           "timestamp": {
             "type": "string",
             "format": "date-time",
-            "description": "Error occurrence timestamp in ISO format"
+            "description": "Error occurrence timestamp in UTC timezone (ISO 8601 format with Z suffix)",
+            "example": "2025-01-15T10:00:00Z",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
           },
           "context": {
             "type": "object",
@@ -3376,51 +3605,424 @@
           }
         }
       },
-      "SessionResponse": {
+             "ResponseType": {
+         "type": "string",
+         "enum": [
+           "ANSWER",
+           "PLAN_PROPOSAL",
+           "CLARIFICATION_REQUEST",
+           "CONFIRMATION_REQUEST",
+           "SOLUTION_READY",
+           "NEEDS_MORE_DATA",
+           "ESCALATION_REQUIRED"
+         ],
+         "description": "Response type enumeration. MUST be sent exactly as defined (UPPERCASE). Case sensitivity is enforced. Enumeration of response types for intelligent conversation flow."
+       },
+       "SourceType": {
+         "type": "string",
+         "enum": [
+           "log_analysis",
+           "knowledge_base",
+           "user_input",
+           "system_metrics",
+           "external_api",
+           "previous_case"
+         ],
+         "description": "Types of information sources"
+       },
+       "Source": {
+         "type": "object",
+         "required": [
+           "type",
+           "content"
+         ],
+         "properties": {
+           "type": {
+             "$ref": "#/components/schemas/SourceType"
+           },
+           "content": {
+             "type": "string",
+             "description": "Source content or description"
+           },
+           "confidence": {
+             "type": "number",
+             "minimum": 0,
+             "maximum": 1,
+             "description": "Confidence in this source (0.0 to 1.0)"
+           },
+           "metadata": {
+             "type": "object",
+             "description": "Additional source metadata"
+           }
+         }
+       },
+       "PlanStep": {
+         "type": "object",
+         "required": [
+           "step_number",
+           "action",
+           "description"
+         ],
+         "properties": {
+           "step_number": {
+             "type": "integer",
+             "minimum": 1,
+             "description": "Step number in the plan"
+           },
+           "action": {
+             "type": "string",
+             "description": "Action to perform"
+           },
+           "description": {
+             "type": "string",
+             "description": "Detailed description of the step"
+           },
+           "estimated_time": {
+             "type": "string",
+             "description": "Estimated time to complete this step"
+           },
+           "dependencies": {
+             "type": "array",
+             "items": {
+               "type": "integer"
+             },
+             "description": "Step numbers this step depends on"
+           },
+           "required_tools": {
+             "type": "array",
+             "items": {
+               "type": "string"
+             },
+             "description": "Tools or permissions required for this step"
+           }
+         }
+       },
+       "ViewState": {
+         "type": "object",
+         "properties": {
+           "show_upload_button": {
+             "type": "boolean",
+             "description": "Whether to show file upload button"
+           },
+           "show_plan_actions": {
+             "type": "boolean",
+             "description": "Whether to show plan action buttons"
+           },
+           "show_confirmation_dialog": {
+             "type": "boolean",
+             "description": "Whether to show confirmation dialog"
+           },
+           "highlighted_sections": {
+             "type": "array",
+             "items": {
+               "type": "string"
+             },
+             "description": "Sections to highlight in the UI"
+           },
+           "custom_actions": {
+             "type": "array",
+             "items": {
+               "type": "object",
+               "properties": {
+                 "label": {
+                   "type": "string"
+                 },
+                 "action": {
+                   "type": "string"
+                 },
+                 "style": {
+                   "type": "string"
+                 }
+               }
+             },
+             "description": "Custom action buttons to display"
+           }
+         }
+       },
+       "Case": {
+         "type": "object",
+         "required": [
+           "case_id",
+           "session_id",
+           "status",
+           "title"
+         ],
+         "properties": {
+           "case_id": {
+             "type": "string",
+             "description": "Unique case identifier"
+           },
+           "session_id": {
+             "type": "string",
+             "description": "Session this case belongs to"
+           },
+           "status": {
+             "type": "string",
+             "enum": [
+               "open",
+               "in_progress",
+               "waiting_for_user",
+               "resolved",
+               "closed"
+             ],
+             "description": "Current case status"
+           },
+           "title": {
+             "type": "string",
+             "description": "Case title"
+           },
+           "description": {
+             "type": "string",
+             "description": "Case description"
+           },
+           "priority": {
+             "type": "string",
+             "enum": [
+               "low",
+               "medium",
+               "high",
+               "critical"
+             ],
+             "description": "Case priority"
+           },
+           "created_at": {
+             "type": "string",
+             "format": "date-time",
+             "description": "Case creation timestamp in UTC timezone (ISO 8601 format with Z suffix)",
+             "example": "2025-01-15T10:00:00Z",
+             "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
+           },
+           "updated_at": {
+             "type": "string",
+             "format": "date-time",
+             "description": "Last update timestamp in UTC timezone (ISO 8601 format with Z suffix)",
+             "example": "2025-01-15T10:15:00Z",
+             "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
+           },
+           "resolved_at": {
+             "type": "string",
+             "format": "date-time",
+             "description": "Resolution timestamp in UTC timezone (ISO 8601 format with Z suffix)",
+             "example": "2025-01-15T10:30:00Z",
+             "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
+           }
+         }
+       },
+       "UploadedFile": {
+         "type": "object",
+         "required": [
+           "file_id",
+           "filename",
+           "size_bytes",
+           "uploaded_at"
+         ],
+         "properties": {
+           "file_id": {
+             "type": "string",
+             "description": "Unique file identifier"
+           },
+           "filename": {
+             "type": "string",
+             "description": "Original filename"
+           },
+           "size_bytes": {
+             "type": "integer",
+             "description": "File size in bytes"
+           },
+           "uploaded_at": {
+             "type": "string",
+             "format": "date-time",
+             "description": "Upload timestamp in UTC timezone (ISO 8601 format with Z suffix)",
+             "example": "2025-01-15T10:00:00Z",
+             "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
+           },
+           "file_type": {
+             "type": "string",
+             "description": "Detected file type"
+           },
+           "processing_status": {
+             "type": "string",
+             "enum": [
+               "pending",
+               "processing",
+               "completed",
+               "failed"
+             ],
+             "description": "File processing status"
+           }
+         }
+       },
+       "Body_upload_file_api_v1_files_upload_post": {
+         "type": "object",
+         "required": [
+           "file"
+         ],
+         "properties": {
+           "file": {
+             "type": "string",
+             "format": "binary",
+             "title": "File"
+           }
+         },
+         "title": "Body_upload_file_api_v1_files_upload_post"
+       },
+       "SessionResponse": {
+         "type": "object",
+         "required": [
+           "session_id",
+           "status"
+         ],
+         "properties": {
+           "session_id": {
+             "type": "string",
+             "description": "Unique session identifier"
+           },
+           "status": {
+             "type": "string",
+             "enum": [
+               "active",
+               "idle",
+               "expired"
+             ],
+             "description": "Current session status"
+           },
+           "created_at": {
+             "type": "string",
+             "format": "date-time",
+             "description": "Session creation timestamp in UTC timezone (ISO 8601 format with Z suffix)",
+             "example": "2025-01-15T10:00:00Z",
+             "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
+           },
+           "last_activity": {
+             "type": "string",
+             "format": "date-time",
+             "description": "Last activity timestamp in UTC timezone (ISO 8601 format with Z suffix)",
+             "example": "2025-01-15T10:25:00Z",
+             "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
+           },
+           "metadata": {
+             "type": "object",
+             "description": "Session metadata and context"
+           }
+         },
+         "example": {
+           "session_id": "session_abc123",
+           "status": "active",
+           "created_at": "2025-01-15T10:00:00Z",
+           "last_activity": "2025-01-15T10:25:00Z",
+           "metadata": {
+             "user_id": "user_123",
+             "environment": "production",
+             "cases_count": 3
+           }
+         }
+       },
+             "AgentResponse": {
+         "type": "object",
+         "required": [
+           "response_type",
+           "content",
+           "session_id"
+         ],
+         "properties": {
+           "response_type": {
+             "$ref": "#/components/schemas/ResponseType"
+           },
+           "content": {
+             "type": "string",
+             "description": "Primary response content for display to user. Must be plain text or markdown-formatted text ready for display. Should NOT contain internal data structures or JSON.",
+             "example": "The issue appears to be a database connection timeout. Here are the recommended steps to resolve it:\n\n1. Check connection pool settings\n2. Verify network connectivity\n3. Review timeout configurations"
+           },
+           "session_id": {
+             "type": "string",
+             "description": "Session identifier"
+           },
+           "case_id": {
+             "type": "string",
+             "description": "Case identifier for this troubleshooting case within a session. Optional field, may be null for general queries.",
+             "nullable": true
+           },
+           "confidence_score": {
+             "type": "number",
+             "minimum": 0,
+             "maximum": 1,
+             "description": "AI confidence in the response (0.0 to 1.0)"
+           },
+           "sources": {
+             "type": "array",
+             "items": {
+               "$ref": "#/components/schemas/Source"
+             },
+             "description": "Information sources used"
+           },
+           "plan": {
+             "$ref": "#/components/schemas/PlanStep",
+             "description": "Troubleshooting plan (for PLAN_PROPOSAL responses)"
+           },
+           "estimated_time_to_resolution": {
+             "type": "string",
+             "description": "Estimated time to resolve the issue"
+           },
+           "next_action_hint": {
+             "type": "string",
+             "description": "Hint for the next user action"
+           },
+           "view_state": {
+             "$ref": "#/components/schemas/ViewState",
+             "description": "UI state configuration"
+           },
+           "metadata": {
+             "type": "object",
+             "description": "Additional response metadata"
+           }
+         },
+         "example": {
+           "response_type": "ANSWER",
+           "content": "The root cause of the issue is a connection leak in the database.",
+           "session_id": "session_123",
+           "case_id": "case_456",
+           "confidence_score": 0.95,
+           "sources": [
+             {
+               "type": "log_analysis",
+               "content": "Database connection pool exhausted",
+               "confidence": 0.9
+             }
+           ],
+           "estimated_time_to_resolution": "15 minutes",
+           "next_action_hint": "Review application code for connection leaks"
+         }
+       },
+      "APIError": {
         "type": "object",
-        "required": [
-          "session_id",
-          "status"
-        ],
+        "required": ["detail", "error_type", "timestamp"],
         "properties": {
-          "session_id": {
+          "detail": {
             "type": "string",
-            "description": "Unique session identifier"
+            "description": "Human-readable error description"
           },
-          "status": {
+          "error_type": {
             "type": "string",
-            "enum": [
-              "active",
-              "idle",
-              "expired"
-            ],
-            "description": "Current session status"
+            "description": "Machine-readable error category"
           },
-          "created_at": {
+          "correlation_id": {
             "type": "string",
-            "format": "date-time",
-            "description": "Session creation timestamp"
+            "description": "Request correlation ID for debugging",
+            "format": "uuid"
           },
-          "last_activity": {
+          "timestamp": {
             "type": "string",
             "format": "date-time",
-            "description": "Last activity timestamp"
-          },
-          "metadata": {
-            "type": "object",
-            "description": "Session metadata and context"
+            "description": "Error timestamp in UTC timezone (ISO 8601 format with Z suffix)",
+            "example": "2025-01-15T10:00:00Z",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
           }
         },
         "example": {
-          "session_id": "session_abc123",
-          "status": "active",
-          "created_at": "2025-01-15T10:00:00Z",
-          "last_activity": "2025-01-15T10:25:00Z",
-          "metadata": {
-            "user_id": "user_123",
-            "environment": "production",
-            "investigations_count": 3
-          }
+          "detail": "Session not found or has expired",
+          "error_type": "SESSION_NOT_FOUND",
+          "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
+          "timestamp": "2025-01-15T10:00:00Z"
         }
       }
     },
@@ -3471,6 +4073,18 @@
     {
       "name": "session_management",
       "description": "Session lifecycle and management operations"
+    },
+    {
+      "name": "case_management",
+      "description": "Case lifecycle and management operations"
+    },
+    {
+      "name": "file_management",
+      "description": "File upload and management operations"
+    },
+    {
+      "name": "real_time",
+      "description": "Real-time communication endpoints (WebSocket, SSE)"
     }
   ]
 }

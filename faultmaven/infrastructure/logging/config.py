@@ -145,8 +145,8 @@ class FaultMavenLogger:
                 event_dict['session_id'] = ctx.session_id
             if 'user_id' not in event_dict and ctx.user_id:
                 event_dict['user_id'] = ctx.user_id
-            if 'investigation_id' not in event_dict and ctx.investigation_id:
-                event_dict['investigation_id'] = ctx.investigation_id
+            if 'case_id' not in event_dict and ctx.case_id:
+                event_dict['case_id'] = ctx.case_id
             if 'agent_phase' not in event_dict and ctx.agent_phase:
                 event_dict['agent_phase'] = ctx.agent_phase
                 

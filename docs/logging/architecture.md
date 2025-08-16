@@ -260,12 +260,17 @@ class BaseService(ABC):
 ```python
 class BaseExternalClient(ABC):
     """
-    Infrastructure layer base class providing:
+    Infrastructure layer base class for EXTERNAL service integrations providing:
     - Circuit breaker protection
     - Retry mechanisms with exponential backoff
     - Response validation and transformation
     - Connection metrics tracking
     - Health monitoring
+    - Comprehensive logging for external API monitoring
+    
+    Note: This is used for external service calls (LLM providers, APIs) that require
+    full monitoring and logging. For internal infrastructure like Redis session 
+    storage, use lightweight clients instead.
     """
     
     async def call_external(
@@ -289,6 +294,42 @@ class BaseExternalClient(ABC):
         7. Handle timeouts and failures
         """
 ```
+
+#### Internal Infrastructure vs External Service Clients
+
+**Architectural Principle**: The logging system distinguishes between internal infrastructure operations and external service monitoring:
+
+```python
+# INTERNAL INFRASTRUCTURE (Redis session storage)
+# High-frequency operations, minimal logging overhead
+class RedisSessionStore(ISessionStore):
+    def __init__(self):
+        # Uses lightweight Redis client - no verbose logging
+        self.redis_client = create_redis_client()  # Simple factory function
+    
+    async def get(self, key: str) -> Optional[Dict]:
+        # Direct Redis operations without comprehensive logging
+        return await self.redis_client.get(f"{self.prefix}{key}")
+
+# EXTERNAL SERVICE MONITORING (LLM providers, APIs)
+# Lower-frequency operations, comprehensive monitoring needed
+class LLMProvider(BaseExternalClient):
+    async def generate_completion(self, prompt: str):
+        # Uses BaseExternalClient with full logging, retries, circuit breakers
+        return await self.call_external(
+            "llm_completion",
+            self._make_api_request,
+            prompt,
+            timeout=30.0,
+            retries=3
+        )
+```
+
+**Benefits of this separation**:
+- **Performance**: Session operations don't generate excessive logs
+- **Observability**: External service calls get full monitoring
+- **Resource efficiency**: Internal operations use minimal overhead
+- **Clear boundaries**: Explicit distinction between internal/external concerns
 
 ## Layer Architecture
 
@@ -386,12 +427,15 @@ async def core_processing(data):
 ```
 
 #### 4. Infrastructure Layer Pattern
+
+**4a. External Service Pattern (Full Monitoring)**
 ```python
 # Characteristics:
 # - External service interaction logging
 # - Circuit breaker status
 # - Connection metrics
 # - Performance threshold: 1000ms
+# - Used for: LLM providers, external APIs, third-party services
 
 class ExternalServiceClient(BaseExternalClient):
     async def external_operation(self, params):
@@ -403,6 +447,28 @@ class ExternalServiceClient(BaseExternalClient):
             retries=3,
             validate_response=self._validate_api_response
         )
+```
+
+**4b. Internal Infrastructure Pattern (Lightweight)**
+```python
+# Characteristics:
+# - High-frequency internal operations
+# - Minimal logging overhead
+# - Direct client usage without BaseExternalClient
+# - Performance threshold: 50ms
+# - Used for: Redis session storage, internal caching, internal databases
+
+class RedisSessionStore(ISessionStore):
+    def __init__(self):
+        # Lightweight Redis client for internal operations
+        self.redis_client = create_redis_client()
+    
+    async def get(self, key: str) -> Optional[Dict]:
+        # Direct operation - no comprehensive logging
+        # Only application-level errors are logged, not every Redis call
+        full_key = f"{self.prefix}{key}"
+        data = await self.redis_client.get(full_key)
+        return json.loads(data) if data else None
 ```
 
 ## Request Lifecycle

@@ -58,7 +58,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         # Extract session and business context from request
         session_id = await self._extract_session_id(request)
         user_id = None
-        investigation_id = await self._extract_investigation_id(request)
+        case_id = await self._extract_case_id(request)
         
         # Look up user_id from session if session_id is available
         if session_id:
@@ -78,7 +78,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         context = self.coordinator.start_request(
             session_id=session_id,
             user_id=user_id,
-            investigation_id=investigation_id,
+            case_id=case_id,
             attributes=http_context
         )
         
@@ -102,7 +102,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             correlation_id=context.correlation_id,
             session_id=session_id,
             user_id=user_id,
-            investigation_id=investigation_id,
+            case_id=case_id,
             x_forwarded_for=request.headers.get('x-forwarded-for', 'none'),
             x_real_ip=request.headers.get('x-real-ip', 'none'),
             content_length=request.headers.get('content-length', 'none')
@@ -151,7 +151,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 correlation_id=context.correlation_id,
                 session_id=session_id,
                 user_id=user_id,
-                investigation_id=investigation_id
+                case_id=case_id
             )
             
             # Add correlation header to response
@@ -195,7 +195,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                         correlation_id=context.correlation_id,
                         session_id=session_id,
                         user_id=user_id,
-                        investigation_id=investigation_id
+                        case_id=case_id
                     )
             
             # Generate request summary even for failed requests
@@ -255,38 +255,38 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             
         return None
     
-    async def _extract_investigation_id(self, request: Request) -> Optional[str]:
+    async def _extract_case_id(self, request: Request) -> Optional[str]:
         """
-        Extract investigation_id from request headers or body.
+        Extract case_id from request headers or body.
         
         Args:
             request: FastAPI request object
             
         Returns:
-            investigation_id if found, None otherwise
+            case_id if found, None otherwise
         """
         try:
-            # Check header first
-            if investigation_id := request.headers.get("x-investigation-id"):
-                return investigation_id
+            # Check header
+            if case_id := request.headers.get("x-case-id"):
+                return case_id
                 
             # Check query parameters
-            if investigation_id := request.query_params.get("investigation_id"):
-                return investigation_id
+            if case_id := request.query_params.get("case_id"):
+                return case_id
                 
             # Check request body for POST/PUT/PATCH requests
             if request.method in ["POST", "PUT", "PATCH"]:
                 try:
                     # Use request.json() which handles body parsing correctly without consuming the stream
                     data = await request.json()
-                    if isinstance(data, dict) and (investigation_id := data.get("investigation_id")):
-                        return investigation_id
+                    if isinstance(data, dict) and (case_id := data.get("case_id")):
+                        return case_id
                 except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-                    # Invalid JSON, encoding, or empty body - continue without investigation context
+                    # Invalid JSON, encoding, or empty body - continue without case context
                     pass
                     
         except Exception as e:
-            logger.warning(f"Failed to extract investigation_id: {e}")
+            logger.warning(f"Failed to extract case_id: {e}")
             
         return None
     

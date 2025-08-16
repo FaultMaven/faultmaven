@@ -76,3 +76,18 @@ class KnowledgeBaseException(FaultMavenException):
 class LLMException(FaultMavenException):
     """Raised when LLM operations fail."""
     pass
+
+
+class MemoryException(FaultMavenException):
+    """Raised when memory operations fail."""
+    pass
+
+
+class PlanningException(FaultMavenException):
+    """Raised when planning operations fail."""
+    pass
+
+
+class ReasoningException(FaultMavenException):
+    """Raised when reasoning operations fail."""
+    pass

@@ -133,7 +133,7 @@ async def get_session(
             "last_activity": session.last_activity.isoformat(),
             "status": "active",
             "data_uploads_count": len(session.data_uploads),
-            "investigation_history_count": len(session.investigation_history),
+            "case_history_count": len(session.case_history),
         }
     except HTTPException:
         raise
@@ -230,7 +230,7 @@ async def list_sessions(
                 "session_type": session_type_val,
                 "usage_type": session_type_val,  # For backward compatibility
                 "data_uploads_count": len(session.data_uploads),
-                "investigation_history_count": len(session.investigation_history),
+                "case_history_count": len(session.case_history),
             })
         
         return {
@@ -309,14 +309,14 @@ async def session_heartbeat(
         # Record heartbeat operation in session history
         heartbeat_record = {
             "action": "heartbeat",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "endpoint": "heartbeat"
         }
         
         try:
-            # Check if session_manager has a real add_investigation_history method
-            if hasattr(session_service, 'session_manager') and hasattr(session_service.session_manager, 'add_investigation_history'):
-                await session_service.session_manager.add_investigation_history(session_id, heartbeat_record)
+            # Check if session_manager has a real add_case_history method
+            if hasattr(session_service, 'session_manager') and hasattr(session_service.session_manager, 'add_case_history'):
+                await session_service.session_manager.add_case_history(session_id, heartbeat_record)
         except Exception as e:
             logger.warning(f"Failed to record heartbeat operation: {e}")
 
@@ -326,7 +326,7 @@ async def session_heartbeat(
         return {
             "session_id": session_id,
             "status": "active",
-            "last_activity": session.last_activity.isoformat() if session else datetime.utcnow().isoformat(),
+            "last_activity": session.last_activity.isoformat() if session else datetime.utcnow().isoformat() + 'Z',
             "message": "Session heartbeat updated",
         }
     except HTTPException:
@@ -361,14 +361,14 @@ async def get_session_stats(
         # Record stats request operation in session history
         stats_record = {
             "action": "stats_request",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "endpoint": "stats"
         }
         
         try:
-            # Check if session_manager has a real add_investigation_history method
-            if hasattr(session_service, 'session_manager') and hasattr(session_service.session_manager, 'add_investigation_history'):
-                await session_service.session_manager.add_investigation_history(session_id, stats_record)
+            # Check if session_manager has a real add_case_history method
+            if hasattr(session_service, 'session_manager') and hasattr(session_service.session_manager, 'add_case_history'):
+                await session_service.session_manager.add_case_history(session_id, stats_record)
         except Exception as e:
             logger.warning(f"Failed to record stats operation: {e}")
 
@@ -376,37 +376,37 @@ async def get_session_stats(
         session = await session_service.get_session(session_id)
 
         # Calculate statistics for this specific session
-        total_investigations = len([
-            h for h in session.investigation_history
+        total_cases = len([
+            h for h in session.case_history
             if h.get("action") == "query_processed"
         ])
 
-        # Count data upload operations from investigation history instead of data_uploads list
+        # Count data upload operations from case history instead of data_uploads list
         total_upload_operations = len([
-            h for h in session.investigation_history
+            h for h in session.case_history
             if h.get("action") == "data_uploaded"
         ])
         
         # Count heartbeat operations
         total_heartbeat_operations = len([
-            h for h in session.investigation_history
+            h for h in session.case_history
             if h.get("action") == "heartbeat"
         ])
         
         # Count stats request operations
         total_stats_operations = len([
-            h for h in session.investigation_history
+            h for h in session.case_history
             if h.get("action") == "stats_request"
         ])
         
         # Count all request operations (this is what tests are looking for)
-        total_requests = total_investigations + total_upload_operations + total_heartbeat_operations + total_stats_operations
+        total_requests = total_cases + total_upload_operations + total_heartbeat_operations + total_stats_operations
 
         # Debug: log what's actually in the history
-        logger.debug(f"Session {session_id} investigation history: {len(session.investigation_history)} total entries")
-        for i, h in enumerate(session.investigation_history):
+        logger.debug(f"Session {session_id} case history: {len(session.case_history)} total entries")
+        for i, h in enumerate(session.case_history):
             logger.debug(f"  History {i}: action={h.get('action')}, keys={list(h.keys())}")
-        logger.debug(f"Query operations: {total_investigations}, Upload operations: {total_upload_operations}, Heartbeat operations: {total_heartbeat_operations}, Stats operations: {total_stats_operations}")
+        logger.debug(f"Query operations: {total_cases}, Upload operations: {total_upload_operations}, Heartbeat operations: {total_heartbeat_operations}, Stats operations: {total_stats_operations}")
         logger.debug(f"Total requests: {total_requests}")
 
         # For backward compatibility, also count unique data uploads
@@ -414,7 +414,7 @@ async def get_session_stats(
 
         # Get latest investigation confidence
         latest_confidence = 0.0
-        for history in reversed(session.investigation_history):
+        for history in reversed(session.case_history):
             if history.get("action") == "query_processed":
                 latest_confidence = history.get("confidence_score", 0.0)
                 break
@@ -425,7 +425,7 @@ async def get_session_stats(
             "created_at": session.created_at.isoformat(),
             "last_activity": session.last_activity.isoformat(),
             "statistics": {
-                "total_investigations": total_investigations,
+                "total_cases": total_cases,
                 "total_data_uploads": total_uploads,
                 "total_heartbeats": total_heartbeat_operations,
                 "total_stats_requests": total_stats_operations,
@@ -435,7 +435,7 @@ async def get_session_stats(
                 ),
             },
             "total_requests": total_requests,  # Count all operations that represent requests
-            "operations_history": session.investigation_history,  # For test compatibility
+            "operations_history": session.case_history,  # For test compatibility
         }
     except HTTPException:
         raise
@@ -512,7 +512,7 @@ async def get_session_recovery_info(
             "state_summary": {
                 "active": True,
                 "data_uploads": len(session.data_uploads),
-                "investigations": len(session.investigation_history),
+                "cases": len(session.case_history),
             },
             "metadata": {
                 "test_mode": True,  # For test compatibility
@@ -569,10 +569,10 @@ async def restore_session(
             "message": f"Session restored successfully ({restore_type} restoration)",
             "restoration_details": {
                 "type": restore_type,
-                "restored_at": datetime.utcnow().isoformat(),
+                "restored_at": datetime.utcnow().isoformat() + 'Z',
                 "items_restored": {
                     "data_uploads": len(session.data_uploads),
-                    "investigation_history": len(session.investigation_history)
+                    "case_history": len(session.case_history)
                 }
             }
         }

@@ -52,7 +52,7 @@ class AgentState(TypedDict):
     session_id: str
     user_query: str
     current_phase: str
-    investigation_context: Dict[str, Any]
+    case_context: Dict[str, Any]
     findings: List[Dict[str, Any]]
     recommendations: List[str]
     confidence_score: float
@@ -76,9 +76,10 @@ class SessionContext(BaseModel):
     data_uploads: List[str] = Field(
         default_factory=list, description="List of uploaded data IDs"
     )
-    investigation_history: List[Dict[str, Any]] = Field(
-        default_factory=list, description="History of investigations"
+    case_history: List[Dict[str, Any]] = Field(
+        default_factory=list, description="History of cases (conversation threads)"
     )
+    current_case_id: Optional[str] = Field(None, description="Current active case/conversation thread ID")
     agent_state: Optional[AgentState] = Field(None, description="Current agent state")
 
     @property
@@ -90,7 +91,7 @@ class SessionContext(BaseModel):
         return time_since_activity < inactive_threshold
 
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat()}
+        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
 
 
 class UploadedData(BaseModel):
@@ -113,7 +114,7 @@ class UploadedData(BaseModel):
     )
 
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat()}
+        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
 
 
 class DataInsightsResponse(BaseModel):
@@ -136,17 +137,17 @@ class DataInsightsResponse(BaseModel):
     )
 
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat()}
+        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
 
 
 class TroubleshootingResponse(BaseModel):
     """Response model for troubleshooting results"""
 
     session_id: str = Field(..., description="Session identifier")
-    investigation_id: str = Field(..., description="Unique investigation identifier")
-    status: str = Field(..., description="Status of the investigation")
+    case_id: str = Field(..., description="Unique case identifier")
+    status: str = Field(..., description="Status of the case")
     findings: List[Dict[str, Any]] = Field(
-        ..., description="Detailed findings from the investigation"
+        ..., description="Detailed findings from the case"
     )
     root_cause: Optional[str] = Field(None, description="Identified root cause")
     recommendations: List[str] = Field(..., description="Actionable recommendations")
@@ -160,14 +161,14 @@ class TroubleshootingResponse(BaseModel):
         default_factory=list, description="Recommended next steps"
     )
     created_at: datetime = Field(
-        default_factory=datetime.utcnow, description="Investigation creation timestamp"
+        default_factory=datetime.utcnow, description="Case creation timestamp"
     )
     completed_at: Optional[datetime] = Field(
-        None, description="Investigation completion timestamp"
+        None, description="Case completion timestamp"
     )
 
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat()}
+        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
 
 
 class QueryRequest(BaseModel):
@@ -203,7 +204,7 @@ class KnowledgeBaseDocument(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional document metadata")
 
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat()}
+        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
 
 
 class SearchRequest(BaseModel):

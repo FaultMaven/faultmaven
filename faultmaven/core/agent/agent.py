@@ -293,7 +293,7 @@ class FaultMavenAgent:
             # Add to findings
             state["findings"].append(
                 {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.utcnow().isoformat() + 'Z',
                     "phase": "triage",
                     "finding": f"Initial assessment: {severity} severity",
                     "details": content,
@@ -335,7 +335,7 @@ class FaultMavenAgent:
                 # Add basic finding
                 state["findings"].append(
                     {
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.utcnow().isoformat() + 'Z',
                         "phase": "triage",
                         "finding": "Basic triage assessment (LLM providers unavailable)",
                         "details": basic_assessment,
@@ -391,7 +391,7 @@ class FaultMavenAgent:
                 for finding in phase_result["findings"]:
                     state["findings"].append(
                         {
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": datetime.utcnow().isoformat() + 'Z',
                             "phase": "define_blast_radius",
                             "finding": finding,
                             "details": phase_result,
@@ -458,7 +458,7 @@ class FaultMavenAgent:
                 for finding in phase_result["findings"]:
                     state["findings"].append(
                         {
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": datetime.utcnow().isoformat() + 'Z',
                             "phase": "establish_timeline",
                             "finding": finding,
                             "details": phase_result,
@@ -526,7 +526,7 @@ class FaultMavenAgent:
                 for finding in phase_result["findings"]:
                     state["findings"].append(
                         {
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": datetime.utcnow().isoformat() + 'Z',
                             "phase": "formulate_hypothesis",
                             "finding": finding,
                             "details": phase_result,
@@ -596,7 +596,7 @@ class FaultMavenAgent:
                 for finding in phase_result["findings"]:
                     state["findings"].append(
                         {
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": datetime.utcnow().isoformat() + 'Z',
                             "phase": "validate_hypothesis",
                             "finding": finding,
                             "details": phase_result,
@@ -666,7 +666,7 @@ class FaultMavenAgent:
                 for finding in phase_result["findings"]:
                     state["findings"].append(
                         {
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": datetime.utcnow().isoformat() + 'Z',
                             "phase": "propose_solution",
                             "finding": finding,
                             "details": phase_result,
@@ -726,7 +726,7 @@ class FaultMavenAgent:
         state["investigation_context"]["last_agent_response"] = response
         state["investigation_context"][
             "response_timestamp"
-        ] = datetime.utcnow().isoformat()
+        ] = datetime.utcnow().isoformat() + 'Z'
 
         # Set waiting for input
         state["investigation_context"]["waiting_for_input"] = True
@@ -781,7 +781,7 @@ class FaultMavenAgent:
         state["investigation_context"]["status"] = "awaiting_user_input"
         state["investigation_context"][
             "pause_timestamp"
-        ] = datetime.utcnow().isoformat()
+        ] = datetime.utcnow().isoformat() + 'Z'
 
         return state
 
@@ -1117,7 +1117,7 @@ class FaultMavenAgent:
             current_phase="triage",
             investigation_context={
                 "uploaded_data": uploaded_data or [],
-                "start_time": datetime.utcnow().isoformat(),
+                "start_time": datetime.utcnow().isoformat() + 'Z',
                 "interaction_count": 0,
                 "waiting_for_input": False,
             },
@@ -1143,13 +1143,13 @@ class FaultMavenAgent:
                 error_state["investigation_context"][
                     "agent_response"
                 ] = "I encountered an issue during execution. Please try again with more details."
-                error_state["investigation_context"]["end_time"] = datetime.utcnow().isoformat()
+                error_state["investigation_context"]["end_time"] = datetime.utcnow().isoformat() + 'Z'
                 return error_state
 
             # Add completion timestamp
             final_state["investigation_context"][
                 "end_time"
-            ] = datetime.utcnow().isoformat()
+            ] = datetime.utcnow().isoformat() + 'Z'
 
             self.logger.info(f"Agent run completed for session {session_id}")
             return final_state
@@ -1195,7 +1195,7 @@ class FaultMavenAgent:
             state_values["investigation_context"]["last_user_input"] = user_input
             state_values["investigation_context"][
                 "input_timestamp"
-            ] = datetime.utcnow().isoformat()
+            ] = datetime.utcnow().isoformat() + 'Z'
 
             # Resume the graph
             final_state = await self.compiled_graph.ainvoke(state_values, config=config)
@@ -1329,7 +1329,7 @@ class FaultMavenAgent:
                         "message": finding.get("finding", ""),
                         "details": finding.get("details", ""),
                         "timestamp": finding.get(
-                            "timestamp", datetime.utcnow().isoformat()
+                            "timestamp", datetime.utcnow().isoformat() + 'Z'
                         ),
                         "severity": "info",
                     }
@@ -1379,7 +1379,7 @@ class FaultMavenAgent:
                         "type": "error",
                         "message": f"Processing error: {str(e)}",
                         "details": "Please try again or provide more details",
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.utcnow().isoformat() + 'Z',
                         "severity": "error",
                     }
                 ],
@@ -1453,12 +1453,12 @@ class FaultMavenAgent:
                 "error": error_message,
                 "agent_response": f"I encountered an error processing your request: {error_message}",
                 "waiting_for_input": False,
-                "start_time": datetime.utcnow().isoformat(),
-                "end_time": datetime.utcnow().isoformat(),
+                "start_time": datetime.utcnow().isoformat() + 'Z',
+                "end_time": datetime.utcnow().isoformat() + 'Z',
             },
             "findings": [
                 {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.utcnow().isoformat() + 'Z',
                     "phase": "error",
                     "finding": f"Processing error: {error_message}",
                     "details": "Agent execution failed",

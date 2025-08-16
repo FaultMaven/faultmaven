@@ -1,7 +1,7 @@
 # File: faultmaven/models/interfaces.py
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, List, ContextManager
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Tool interfaces
 class ToolResult(BaseModel):
@@ -557,7 +557,7 @@ class ISessionStore(ABC):
             - 'created_at': Session creation timestamp (ISO format)
             - 'last_activity': Last access timestamp (ISO format)
             - 'data_uploads': List of uploaded data references
-            - 'investigation_history': List of troubleshooting steps
+            - 'case_history': List of troubleshooting steps
             
         Raises:
             SessionStoreException: When storage operation fails
@@ -604,7 +604,7 @@ class ISessionStore(ABC):
                    - 'user_id': Associated user identifier
                    - 'last_activity': Last access timestamp
                    - 'data_uploads': List of data references
-                   - 'investigation_history': Troubleshooting history
+                   - 'case_history': Troubleshooting history
             ttl: Time to live in seconds. If None, uses default session
                  timeout from configuration (typically 30 minutes).
                  
@@ -622,7 +622,7 @@ class ISessionStore(ABC):
                 'created_at': '2025-01-15T10:30:00Z',
                 'last_activity': '2025-01-15T10:30:00Z',
                 'data_uploads': [],
-                'investigation_history': []
+                'case_history': []
             }
             >>> await session_store.set(session_data['session_id'], session_data, ttl=1800)
             
@@ -1520,5 +1520,373 @@ redis:
             Related chunks and embeddings are automatically cleaned up.
             Search index is updated to remove deleted content.
             References to deleted documents in other systems may become invalid.
+        """
+        pass
+
+
+# Memory Management Interfaces
+class ConversationContext(BaseModel):
+    """Represents conversation context retrieved from memory"""
+    session_id: str
+    conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
+    user_profile: Optional[Dict[str, Any]] = None
+    relevant_insights: List[Dict[str, Any]] = Field(default_factory=list)
+    domain_context: Optional[Dict[str, Any]] = None
+    
+class UserProfile(BaseModel):
+    """Represents user profile and preferences"""
+    user_id: Optional[str] = None
+    skill_level: str = "intermediate"  # beginner, intermediate, advanced
+    preferred_communication_style: str = "balanced"  # concise, detailed, balanced
+    domain_expertise: List[str] = Field(default_factory=list)
+    interaction_patterns: Dict[str, Any] = Field(default_factory=dict)
+    historical_context: Dict[str, Any] = Field(default_factory=dict)
+
+class IMemoryService(ABC):
+    """Interface for memory management operations.
+    
+    This interface abstracts memory operations for intelligent conversation
+    context management. Implementations should provide hierarchical memory
+    storage with semantic retrieval, user profiling, and insight consolidation
+    for enhanced troubleshooting conversations.
+    
+    Memory Architecture:
+        - Working Memory: Current conversation context
+        - Session Memory: Session-specific insights and patterns
+        - User Memory: User preferences and interaction history
+        - Episodic Memory: Cross-session patterns and learning
+        
+    Performance Requirements:
+        - Context retrieval within 50ms for optimal user experience
+        - Memory consolidation should be asynchronous
+        - Efficient memory usage with automatic cleanup
+        
+    Privacy Requirements:
+        - All memory data must be sanitized for PII
+        - User consent required for cross-session memory
+        - Configurable memory retention policies
+    """
+    
+    @abstractmethod
+    async def retrieve_context(self, session_id: str, query: str) -> ConversationContext:
+        """Retrieve relevant conversation context for enhanced responses.
+        
+        This method analyzes the current query and session to retrieve
+        relevant conversation history, user profile, and insights that
+        can enhance the quality and personalization of responses.
+        
+        Args:
+            session_id: Session identifier for context scope
+            query: Current user query for context relevance matching
+                   
+        Returns:
+            ConversationContext containing:
+            - conversation_history: Relevant previous interactions
+            - user_profile: User preferences and skill level
+            - relevant_insights: Previously learned insights
+            - domain_context: Domain-specific knowledge
+            
+        Raises:
+            MemoryException: When context retrieval fails
+            ValidationException: When session_id or query is invalid
+            
+        Example:
+            Retrieve context for database troubleshooting:
+            
+            >>> context = await memory_service.retrieve_context(
+                "session_123", 
+                "Database connection timeout"
+            )
+            >>> context.user_profile.skill_level
+            'advanced'
+            >>> len(context.conversation_history)
+            3
+            >>> context.relevant_insights[0]['pattern']
+            'connection_pool_exhaustion'
+            
+        Note:
+            Context retrieval uses semantic similarity for relevance matching.
+            User profile is enriched based on interaction patterns.
+            Privacy controls limit cross-session data sharing.
+        """
+        pass
+    
+    @abstractmethod
+    async def consolidate_insights(self, session_id: str, result: Dict[str, Any]) -> bool:
+        """Consolidate insights from troubleshooting results into memory.
+        
+        This method processes troubleshooting results to extract patterns,
+        insights, and learning that can improve future interactions. The
+        consolidation process updates all memory hierarchies appropriately.
+        
+        Args:
+            session_id: Session identifier for context attribution
+            result: Troubleshooting result containing findings, solutions,
+                   and outcomes that can be learned from
+                   
+        Returns:
+            True if consolidation was successful, False otherwise
+            
+        Raises:
+            MemoryException: When consolidation process fails
+            ValidationException: When session_id or result format is invalid
+            
+        Example:
+            Consolidate database troubleshooting results:
+            
+            >>> result = {
+                'root_cause': 'Connection pool exhaustion',
+                'solution': 'Increased pool size from 10 to 50',
+                'effectiveness': 0.95,
+                'domain': 'database',
+                'patterns': ['high_load', 'connection_limit']
+            }
+            >>> success = await memory_service.consolidate_insights(
+                "session_123", 
+                result
+            )
+            >>> success
+            True
+            
+        Note:
+            Consolidation runs asynchronously to avoid blocking responses.
+            Patterns are automatically detected and categorized.
+            User preferences are updated based on successful solutions.
+        """
+        pass
+    
+    @abstractmethod
+    async def get_user_profile(self, session_id: str) -> UserProfile:
+        """Get user profile and preferences for personalization.
+        
+        This method retrieves user profile information including skill level,
+        communication preferences, domain expertise, and interaction patterns
+        to enable personalized troubleshooting assistance.
+        
+        Args:
+            session_id: Session identifier for user association
+                   
+        Returns:
+            UserProfile containing:
+            - skill_level: User's technical skill level
+            - preferred_communication_style: Response style preference
+            - domain_expertise: Areas of technical expertise
+            - interaction_patterns: Historical interaction patterns
+            - historical_context: Relevant historical context
+            
+        Raises:
+            MemoryException: When profile retrieval fails
+            ValidationException: When session_id is invalid
+            
+        Example:
+            Get user profile for response personalization:
+            
+            >>> profile = await memory_service.get_user_profile("session_123")
+            >>> profile.skill_level
+            'advanced'
+            >>> profile.preferred_communication_style
+            'concise'
+            >>> 'database' in profile.domain_expertise
+            True
+            
+        Note:
+            New users receive default profile with gradual personalization.
+            Profile updates are based on interaction patterns and feedback.
+            Privacy controls limit profile data collection and sharing.
+        """
+        pass
+    
+    @abstractmethod
+    async def update_user_profile(self, session_id: str, updates: Dict[str, Any]) -> bool:
+        """Update user profile based on interaction patterns.
+        
+        This method updates user profile information based on observed
+        interaction patterns, explicit user feedback, and successful
+        troubleshooting outcomes to improve future personalization.
+        
+        Args:
+            session_id: Session identifier for user association
+            updates: Dictionary of profile updates including:
+                    - skill_level: Updated skill assessment
+                    - communication_style: Observed style preferences
+                    - domain_expertise: New or confirmed expertise areas
+                    - interaction_patterns: Updated pattern data
+                   
+        Returns:
+            True if profile update was successful, False otherwise
+            
+        Raises:
+            MemoryException: When profile update fails
+            ValidationException: When session_id or updates format is invalid
+            
+        Example:
+            Update user skill level based on successful troubleshooting:
+            
+            >>> updates = {
+                'skill_level': 'advanced',
+                'domain_expertise': ['database', 'networking'],
+                'preferred_communication_style': 'detailed'
+            }
+            >>> success = await memory_service.update_user_profile(
+                "session_123", 
+                updates
+            )
+            >>> success
+            True
+            
+        Note:
+            Profile updates are gradual to avoid over-correction.
+            Multiple signals are weighted for reliable assessment.
+            User can override automatic profile adjustments.
+        """
+        pass
+
+
+# Planning System Interfaces
+class StrategicPlan(BaseModel):
+    """Represents a strategic plan for problem resolution"""
+    plan_id: str
+    problem_analysis: Dict[str, Any]
+    solution_strategy: Dict[str, Any]
+    risk_assessment: Dict[str, Any]
+    success_criteria: List[str] = Field(default_factory=list)
+    estimated_effort: Optional[str] = None
+    confidence_score: float = 0.0
+
+class ProblemComponents(BaseModel):
+    """Represents decomposed problem components"""
+    primary_issue: str
+    contributing_factors: List[str] = Field(default_factory=list)
+    dependencies: List[str] = Field(default_factory=list)
+    complexity_assessment: Dict[str, Any] = Field(default_factory=dict)
+    priority_ranking: List[str] = Field(default_factory=list)
+
+class IPlanningService(ABC):
+    """Interface for strategic planning operations.
+    
+    This interface abstracts strategic planning operations for intelligent
+    problem-solving workflows. Implementations should provide problem
+    decomposition, solution strategy development, risk assessment, and
+    resource planning for complex troubleshooting scenarios.
+    
+    Planning Capabilities:
+        - Multi-phase strategic planning
+        - Problem decomposition and prioritization  
+        - Risk assessment and mitigation strategies
+        - Alternative solution development
+        - Resource requirement estimation
+        
+    Performance Requirements:
+        - Plan generation within 100ms for responsive interaction
+        - Concurrent planning for multiple scenarios
+        - Efficient plan storage and retrieval
+        
+    Integration Notes:
+        - Works with memory service for context-aware planning
+        - Integrates with agent workflow for plan execution
+        - Supports plan adaptation based on execution feedback
+    """
+    
+    @abstractmethod
+    async def plan_response_strategy(self, query: str, context: Dict[str, Any]) -> StrategicPlan:
+        """Plan strategic response approach for user query.
+        
+        This method analyzes the user query and available context to develop
+        a strategic plan for providing the most effective troubleshooting
+        assistance. The plan includes problem analysis, solution strategy,
+        and risk assessment.
+        
+        Args:
+            query: User's troubleshooting query or problem description
+            context: Available context including:
+                    - conversation_history: Previous interactions
+                    - user_profile: User preferences and skill level
+                    - domain_context: Relevant domain knowledge
+                    - available_tools: Tools available for assistance
+                   
+        Returns:
+            StrategicPlan containing:
+            - problem_analysis: Detailed problem breakdown
+            - solution_strategy: Recommended approach and methods
+            - risk_assessment: Potential risks and mitigation strategies
+            - success_criteria: Measurable success indicators
+            - estimated_effort: Time and resource estimates
+            - confidence_score: Plan confidence assessment
+            
+        Raises:
+            PlanningException: When strategic planning fails
+            ValidationException: When query or context is invalid
+            
+        Example:
+            Plan response for database performance issue:
+            
+            >>> plan = await planning_service.plan_response_strategy(
+                "Database queries are slow", 
+                {
+                    'user_profile': {'skill_level': 'intermediate'},
+                    'domain_context': {'database_type': 'postgresql'},
+                    'urgency': 'high'
+                }
+            )
+            >>> plan.solution_strategy['approach']
+            'systematic_performance_analysis'
+            >>> plan.estimated_effort
+            '30-45 minutes'
+            
+        Note:
+            Planning adapts to user skill level and available context.
+            Risk assessment considers potential impact of solutions.
+            Plans are optimized for user success and safety.
+        """
+        pass
+    
+    @abstractmethod
+    async def decompose_problem(self, problem: str, context: Dict[str, Any]) -> ProblemComponents:
+        """Decompose complex problem into manageable components.
+        
+        This method breaks down complex troubleshooting problems into
+        smaller, manageable components with clear dependencies and
+        priority rankings to enable systematic problem resolution.
+        
+        Args:
+            problem: Complex problem description requiring decomposition
+            context: Problem context including:
+                    - system_information: Relevant system details
+                    - error_symptoms: Observed error patterns
+                    - environment_details: Environment configuration
+                    - previous_attempts: Prior troubleshooting efforts
+                   
+        Returns:
+            ProblemComponents containing:
+            - primary_issue: Core problem requiring resolution
+            - contributing_factors: Secondary issues affecting primary
+            - dependencies: Component relationships and dependencies
+            - complexity_assessment: Difficulty and resource estimates
+            - priority_ranking: Recommended resolution order
+            
+        Raises:
+            PlanningException: When problem decomposition fails
+            ValidationException: When problem description is insufficient
+            
+        Example:
+            Decompose complex application performance issue:
+            
+            >>> components = await planning_service.decompose_problem(
+                "Application is slow and occasionally crashes",
+                {
+                    'system_info': {'cpu_usage': '95%', 'memory': '8GB used'},
+                    'error_patterns': ['OutOfMemoryError', 'Connection timeout'],
+                    'environment': 'production'
+                }
+            )
+            >>> components.primary_issue
+            'Resource exhaustion causing performance degradation'
+            >>> len(components.contributing_factors)
+            3
+            
+        Note:
+            Decomposition considers system interdependencies.
+            Priority ranking optimizes for maximum impact resolution.
+            Component relationships guide troubleshooting sequence.
         """
         pass

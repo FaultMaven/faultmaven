@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.services.base_service import BaseService
 from faultmaven.models.interfaces import ILLMProvider, BaseTool, ITracer, ISanitizer
-from faultmaven.models import QueryRequest, TroubleshootingResponse
+from faultmaven.models import QueryRequest, TroubleshootingResponse, AgentResponse, ViewState, UploadedData, Source, SourceType, ResponseType, PlanStep
 from faultmaven.exceptions import ValidationException
 
 
@@ -62,7 +62,7 @@ class AgentService(BaseService):
     async def process_query(
         self,
         request: QueryRequest
-    ) -> TroubleshootingResponse:
+    ) -> AgentResponse:
         """
         Main business logic for query processing using interface dependencies
         
@@ -70,7 +70,7 @@ class AgentService(BaseService):
             request: QueryRequest with query, session_id, context, etc.
             
         Returns:
-            TroubleshootingResponse with investigation results
+            AgentResponse with case analysis results using v3.1.0 schema
             
         Raises:
             ValueError: If request validation fails
@@ -83,7 +83,7 @@ class AgentService(BaseService):
             validate_inputs=self._validate_request
         )
 
-    async def _execute_query_processing(self, request: QueryRequest) -> TroubleshootingResponse:
+    async def _execute_query_processing(self, request: QueryRequest) -> AgentResponse:
         """Execute the core query processing logic"""
         # Use ITracer interface for operation tracing
         with self._tracer.trace("process_query_workflow"):
@@ -91,15 +91,19 @@ class AgentService(BaseService):
             with self._tracer.trace("sanitize_input"):
                 sanitized_query = self._sanitizer.sanitize(request.query)
             
-            # 2. Generate investigation ID
-            investigation_id = str(uuid.uuid4())
+            # 2. Get or create case_id for this conversation thread
+            if self._session_service:
+                case_id = await self._session_service.get_or_create_current_case_id(request.session_id)
+            else:
+                # Fallback if no session service available
+                case_id = str(uuid.uuid4())
             
-            # Log business event for investigation start
+            # Log business event for case analysis start
             self.log_business_event(
-                "investigation_started",
+                "case_analysis_started",
                 "info",
                 {
-                    "investigation_id": investigation_id,
+                    "case_id": case_id,
                     "session_id": request.session_id,
                     "query_length": len(sanitized_query)
                 }
@@ -110,15 +114,36 @@ class AgentService(BaseService):
                 from faultmaven.core.agent.agent import FaultMavenAgent
                 agent = FaultMavenAgent(llm_interface=self._llm)
             
-            # 4. Execute troubleshooting using interfaces
+            # 4. Retrieve conversation history for context
+            conversation_context = ""
+            if self._session_service:
+                with self._tracer.trace("retrieve_conversation_history"):
+                    try:
+                        conversation_context = await self._session_service.format_conversation_context(
+                            request.session_id, case_id, limit=5
+                        )
+                        if conversation_context:
+                            self.logger.debug(f"Retrieved conversation context for case {case_id}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to retrieve conversation context: {e}")
+            
+            # 5. Enhanced query with conversation context
+            enhanced_query = sanitized_query
+            if conversation_context:
+                enhanced_query = f"{conversation_context}\n{sanitized_query}"
+            
+            # 6. Execute troubleshooting using interfaces
             start_time = datetime.utcnow()
             
             with self._tracer.trace("execute_agent_workflow"):
+                agent_context = (request.context or {}).copy()
+                agent_context["has_conversation_history"] = bool(conversation_context)
+                
                 result = await agent.run(
-                    query=sanitized_query,
+                    query=enhanced_query,
                     session_id=request.session_id,
                     tools=self._tools,  # Pass interface-based tools
-                    context=request.context or {}
+                    context=agent_context
                 )
             
             end_time = datetime.utcnow()
@@ -126,32 +151,34 @@ class AgentService(BaseService):
             
             # Log processing metrics
             self.log_metric(
-                "investigation_processing_time",
+                "case_processing_time",
                 processing_time,
                 "seconds",
-                {"investigation_id": investigation_id}
+                {"case_id": case_id, "has_conversation_context": bool(conversation_context)}
             )
             
-            # 5. Format response using interfaces
+            # 7. Format response using v3.1.0 schema
             with self._tracer.trace("format_response"):
-                response = self._format_response(
-                    investigation_id=investigation_id,
+                response = await self._format_agent_response(
+                    case_id=case_id,
                     session_id=request.session_id,
+                    query=sanitized_query,
                     agent_result=result,
                     start_time=start_time,
                     end_time=end_time,
                     processing_time=processing_time
                 )
             
-            # Log business event for investigation completion
+            # Log business event for case analysis completion
             self.log_business_event(
-                "investigation_completed",
+                "case_analysis_completed",
                 "info",
                 {
-                    "investigation_id": investigation_id,
+                    "case_id": case_id,
                     "session_id": request.session_id,
-                    "confidence_score": response.confidence_score,
-                    "processing_time_seconds": processing_time
+                    "response_type": response.response_type.value,
+                    "processing_time_seconds": processing_time,
+                    "conversation_context_used": bool(conversation_context)
                 }
             )
             
@@ -162,9 +189,9 @@ class AgentService(BaseService):
                         await self._session_service.record_query_operation(
                             session_id=request.session_id,
                             query=request.query,
-                            investigation_id=investigation_id,
+                            case_id=case_id,
                             context=request.context,
-                            confidence_score=response.confidence_score
+                            confidence_score=1.0  # Default confidence for AgentResponse
                         )
                 except Exception as e:
                     self.logger.warning(f"Failed to record query operation in session: {e}")
@@ -195,27 +222,29 @@ class AgentService(BaseService):
                 
         # Additional validation can be added here
 
-    def _format_response(
+    async def _format_agent_response(
         self,
-        investigation_id: str,
+        case_id: str,
         session_id: str,
+        query: str,
         agent_result: dict,
         start_time: datetime,
         end_time: datetime,
         processing_time: float
-    ) -> TroubleshootingResponse:
-        """Format response using interface sanitization
+    ) -> AgentResponse:
+        """Format v3.1.0 AgentResponse using interface sanitization
         
         Args:
-            investigation_id: Unique investigation identifier
+            case_id: Unique case identifier for this troubleshooting case
             session_id: Session identifier
+            query: User's sanitized query
             agent_result: Raw result from agent execution
-            start_time: Investigation start time
-            end_time: Investigation completion time
+            start_time: Case analysis start time
+            end_time: Case analysis completion time
             processing_time: Processing time in seconds
             
         Returns:
-            Formatted TroubleshootingResponse
+            Formatted AgentResponse using v3.1.0 schema
         """
         # Handle None agent_result defensively
         if agent_result is None:
@@ -228,61 +257,30 @@ class AgentService(BaseService):
                 'estimated_mttr': 'Unknown'
             }
         
-        # Process findings from agent result
-        findings = []
-        raw_findings = agent_result.get('findings', [])
+        # 1. Determine response type based on agent result
+        response_type = self._determine_response_type(agent_result)
         
-        if isinstance(raw_findings, list):
-            for finding_data in raw_findings:
-                if isinstance(finding_data, dict):
-                    # Create properly formatted finding
-                    # Handle both old format (message/description) and new format (finding/details)
-                    message = finding_data.get('message') or finding_data.get('description') or finding_data.get('finding', 'No description available')
-                    details = finding_data.get('details', message)  # Use details field if available
-                    
-                    finding_dict = {
-                        'type': finding_data.get('type', 'observation'),
-                        'message': message,
-                        'details': details,  # Include the detailed content
-                        'severity': finding_data.get('severity', 'medium'),
-                        'timestamp': finding_data.get('timestamp', datetime.utcnow().isoformat()),
-                        'source': finding_data.get('source', 'agent_analysis'),
-                        'confidence': finding_data.get('confidence', 0.5)
-                    }
-                    findings.append(finding_dict)
-                else:
-                    # Handle non-dict findings
-                    findings.append({
-                        'type': 'general',
-                        'message': str(finding_data),
-                        'severity': 'info',
-                        'timestamp': datetime.utcnow().isoformat(),
-                        'source': 'agent_analysis',
-                        'confidence': 0.5
-                    })
+        # 2. Extract sources from agent result and tools
+        sources = await self._extract_sources(agent_result)
         
-        # Extract other response components
-        recommendations = agent_result.get('recommendations', [])
-        if not isinstance(recommendations, list):
-            recommendations = []  # Return empty list for invalid data types
-            
-        next_steps = agent_result.get('next_steps', [])
-        if not isinstance(next_steps, list):
-            next_steps = [str(next_steps)] if next_steps else []
+        # 3. Create ViewState
+        view_state = await self._create_view_state(case_id, session_id)
         
-        # Create response object
-        response = TroubleshootingResponse(
-            investigation_id=investigation_id,
-            session_id=session_id,
-            findings=self._sanitizer.sanitize(findings),  # Sanitize output
-            root_cause=agent_result.get('root_cause'),
-            recommendations=self._sanitizer.sanitize(recommendations),
-            confidence_score=self._safe_float(agent_result.get('confidence_score', agent_result.get('confidence', 0.0))),
-            status="completed",
-            estimated_mttr=agent_result.get('estimated_mttr'),
-            next_steps=self._sanitizer.sanitize(next_steps),
-            created_at=start_time,
-            completed_at=end_time
+        # 4. Generate content based on agent result
+        content = self._generate_content(agent_result, query)
+        
+        # 5. Handle plan for PLAN_PROPOSAL responses
+        plan = None
+        if response_type == ResponseType.PLAN_PROPOSAL:
+            plan = self._extract_plan_steps(agent_result)
+        
+        # 6. Create AgentResponse
+        response = AgentResponse(
+            content=self._sanitizer.sanitize(content),
+            response_type=response_type,
+            view_state=view_state,
+            sources=sources,
+            plan=plan
         )
         
         return response
@@ -295,6 +293,191 @@ class AgentService(BaseService):
             return float(value)
         except (ValueError, TypeError):
             return default
+
+    def _determine_response_type(self, agent_result: dict) -> ResponseType:
+        """Determine the response type based on agent result"""
+        # Check for clarification indicators
+        if self._needs_clarification(agent_result):
+            return ResponseType.CLARIFICATION_REQUEST
+        
+        # Check for confirmation indicators
+        if self._needs_confirmation(agent_result):
+            return ResponseType.CONFIRMATION_REQUEST
+        
+        # Check for multi-step plan indicators
+        if self._has_plan(agent_result):
+            return ResponseType.PLAN_PROPOSAL
+        
+        # Default to answer
+        return ResponseType.ANSWER
+
+    def _needs_clarification(self, agent_result: dict) -> bool:
+        """Check if the agent result indicates need for clarification"""
+        # Look for clarification keywords in recommendations or findings
+        text_content = str(agent_result.get('recommendations', [])) + str(agent_result.get('findings', []))
+        clarification_keywords = ['clarify', 'unclear', 'more information', 'specify', 'which', 'ambiguous']
+        return any(keyword in text_content.lower() for keyword in clarification_keywords)
+
+    def _needs_confirmation(self, agent_result: dict) -> bool:
+        """Check if the agent result indicates need for confirmation"""
+        # Look for confirmation keywords in recommendations
+        text_content = str(agent_result.get('recommendations', []))
+        confirmation_keywords = ['confirm', 'verify', 'proceed', 'approve', 'authorize']
+        return any(keyword in text_content.lower() for keyword in confirmation_keywords)
+
+    def _has_plan(self, agent_result: dict) -> bool:
+        """Check if the agent result contains a multi-step plan"""
+        # Check for explicit plan or multiple next_steps
+        next_steps = agent_result.get('next_steps', [])
+        return isinstance(next_steps, list) and len(next_steps) > 2
+
+    async def _extract_sources(self, agent_result: dict) -> List[Source]:
+        """Extract sources from agent result and tools"""
+        sources = []
+        
+        # Extract from knowledge base results if available
+        kb_results = agent_result.get('knowledge_base_results', [])
+        for kb_result in kb_results:
+            if isinstance(kb_result, dict):
+                sources.append(Source(
+                    type=SourceType.KNOWLEDGE_BASE,
+                    name=kb_result.get('title', 'Knowledge Base Document'),
+                    snippet=kb_result.get('snippet', kb_result.get('content', ''))[:200] + "..."
+                ))
+        
+        # Extract from tool results if available
+        tool_results = agent_result.get('tool_results', [])
+        for tool_result in tool_results:
+            if isinstance(tool_result, dict):
+                tool_name = tool_result.get('tool_name', 'unknown')
+                if 'web_search' in tool_name.lower():
+                    sources.append(Source(
+                        type=SourceType.WEB_SEARCH,
+                        name=tool_result.get('source', 'Web Search'),
+                        snippet=tool_result.get('content', '')[:200] + "..."
+                    ))
+                elif 'log' in tool_name.lower():
+                    sources.append(Source(
+                        type=SourceType.LOG_FILE,
+                        name=tool_result.get('filename', 'Log File'),
+                        snippet=tool_result.get('content', '')[:200] + "..."
+                    ))
+        
+        return sources[:10]  # Limit to 10 sources
+
+    async def _create_view_state(self, case_id: str, session_id: str) -> ViewState:
+        """Create ViewState for the current case"""
+        # Generate running summary based on case progress
+        running_summary = f"Case {case_id[:8]} in progress..."
+        
+        # Get uploaded data from session if available
+        uploaded_data = []
+        if self._session_service:
+            try:
+                session = await self._session_service.get_session(session_id)
+                if session and hasattr(session, 'data_uploads'):
+                    for data_id in session.data_uploads:
+                        uploaded_data.append(UploadedData(
+                            id=data_id,
+                            name=f"data_{data_id}",
+                            type="unknown"
+                        ))
+            except Exception as e:
+                self.logger.warning(f"Failed to get session data uploads: {e}")
+        
+        return ViewState(
+            session_id=session_id,
+            case_id=case_id,
+            running_summary=running_summary,
+            uploaded_data=uploaded_data
+        )
+
+    def _generate_content(self, agent_result: dict, query: str) -> str:
+        """Generate content from agent result"""
+        # Check if agent is in error state first
+        current_phase = agent_result.get('current_phase')
+        if current_phase == 'error':
+            # Be transparent about errors instead of faking responses
+            error_info = agent_result.get('investigation_context', {})
+            error_message = error_info.get('error', 'Unknown error occurred')
+            
+            return (
+                f"I'm unable to process your query at the moment due to a technical issue.\n\n"
+                f"Error details: {error_message}\n\n"
+                f"This might be due to:\n"
+                f"• LLM service connectivity issues\n"
+                f"• System configuration problems\n"
+                f"• Temporary service outage\n\n"
+                f"Please try again in a moment, or contact support if the issue persists."
+            )
+        
+        # Start with any direct response content
+        content_parts = []
+        
+        # Add root cause if available
+        root_cause = agent_result.get('root_cause')
+        if root_cause:
+            content_parts.append(f"Root Cause: {root_cause}")
+        
+        # Add key findings
+        findings = agent_result.get('findings', [])
+        if findings:
+            content_parts.append("Key Findings:")
+            for finding in findings[:3]:  # Limit to top 3 findings
+                if isinstance(finding, dict):
+                    message = finding.get('message', finding.get('description', 'Finding discovered'))
+                    content_parts.append(f"• {message}")
+                elif isinstance(finding, str):
+                    content_parts.append(f"• {finding}")
+                else:
+                    # Convert non-dict, non-string to a meaningful message
+                    content_parts.append(f"• Analysis finding identified")
+        
+        # Add recommendations
+        recommendations = agent_result.get('recommendations', [])
+        if recommendations:
+            content_parts.append("Recommendations:")
+            for rec in recommendations[:3]:  # Limit to top 3 recommendations
+                if isinstance(rec, str):
+                    content_parts.append(f"• {rec}")
+                elif isinstance(rec, dict):
+                    # Extract meaningful text from dict recommendation
+                    rec_text = rec.get('text', rec.get('description', rec.get('action', 'Review system configuration')))
+                    content_parts.append(f"• {rec_text}")
+                else:
+                    # Convert non-dict, non-string to a meaningful recommendation
+                    content_parts.append(f"• Follow standard troubleshooting procedures")
+        
+        # If no content found but not in error state, indicate system limitation
+        if not content_parts:
+            content_parts = [
+                f"I'm unable to provide specific insights for your query: '{query}'.",
+                "This may be due to:",
+                "• Insufficient context in your query",
+                "• System processing limitations", 
+                "• Temporary analysis service issues",
+                "",
+                "Try providing more specific details about your problem, such as:",
+                "• Error messages you're seeing",
+                "• Steps that led to the issue", 
+                "• System components involved"
+            ]
+        
+        return "\n\n".join(content_parts)
+
+    def _extract_plan_steps(self, agent_result: dict) -> List[PlanStep]:
+        """Extract plan steps from agent result"""
+        steps = []
+        next_steps = agent_result.get('next_steps', [])
+        
+        for step in next_steps:
+            if isinstance(step, str):
+                steps.append(PlanStep(description=step))
+            elif isinstance(step, dict):
+                description = step.get('description', step.get('step', str(step)))
+                steps.append(PlanStep(description=description))
+        
+        return steps
 
     async def analyze_findings(
         self, 
@@ -366,7 +549,7 @@ class AgentService(BaseService):
                     "patterns_identified": patterns,
                     "critical_issues": self._extract_critical_issues(sanitized_findings),
                     "session_id": session_id,
-                    "analysis_timestamp": datetime.utcnow().isoformat()
+                    "analysis_timestamp": datetime.utcnow().isoformat() + 'Z'
                 }
             
             # Log metrics
@@ -472,156 +655,157 @@ class AgentService(BaseService):
                     
         return critical_issues
 
-    async def get_investigation_status(
+    async def get_case_status(
         self, 
-        investigation_id: str, 
+        case_id: str, 
         session_id: str
     ) -> Dict[str, Any]:
         """
-        Get the status of a specific investigation using interface dependencies
+        Get the status of a specific case using interface dependencies
         
         Args:
-            investigation_id: Investigation identifier
+            case_id: Case identifier
             session_id: Session identifier
             
         Returns:
-            Investigation status information
+            Case status information
         """
         return await self.execute_operation(
-            "get_investigation_status",
+            "get_case_status",
             self._execute_status_retrieval,
-            investigation_id,
+            case_id,
             session_id
         )
+
     
     async def _execute_status_retrieval(
         self,
-        investigation_id: str, 
+        case_id: str, 
         session_id: str
     ) -> Dict[str, Any]:
         """Execute the core status retrieval logic"""
         # Use ITracer interface for operation tracing
-        with self._tracer.trace("investigation_status_retrieval"):
+        with self._tracer.trace("case_status_retrieval"):
             # In a full implementation, this would query persistent storage
-            # via an ISessionStore interface to retrieve investigation status
+            # via an ISessionStore interface to retrieve case status
             with self._tracer.trace("retrieve_status_data"):
                 status = {
-                    "investigation_id": investigation_id,
+                    "case_id": case_id,
                     "session_id": session_id,
                     "status": "completed",  # Placeholder
                     "progress": 100.0,
                     "phase": "completed",
-                    "last_updated": datetime.utcnow().isoformat()
+                    "last_updated": datetime.utcnow().isoformat() + 'Z'
                 }
             
             with self._tracer.trace("sanitize_status_output"):
                 return self._sanitizer.sanitize(status)
 
-    async def cancel_investigation(
+    async def cancel_case(
         self, 
-        investigation_id: str, 
+        case_id: str, 
         session_id: str
     ) -> bool:
         """
-        Cancel an ongoing investigation using interface dependencies
+        Cancel an ongoing case using interface dependencies
         
         Args:
-            investigation_id: Investigation identifier
+            case_id: Case identifier
             session_id: Session identifier
             
         Returns:
             True if cancellation was successful
         """
         return await self.execute_operation(
-            "cancel_investigation",
-            self._execute_investigation_cancellation,
-            investigation_id,
+            "cancel_case",
+            self._execute_case_cancellation,
+            case_id,
             session_id
         )
     
-    async def _execute_investigation_cancellation(
+    async def _execute_case_cancellation(
         self,
-        investigation_id: str, 
+        case_id: str, 
         session_id: str
     ) -> bool:
-        """Execute the core investigation cancellation logic"""
+        """Execute the core case cancellation logic"""
         # Use ITracer interface for operation tracing
-        with self._tracer.trace("cancel_investigation"):
+        with self._tracer.trace("cancel_case"):
             # In a full implementation, this would use ISessionStore
-            # to update investigation status and potentially signal
+            # to update case status and potentially signal
             # the running agent to stop
             
             # Log business event
             self.log_business_event(
-                "investigation_cancelled",
+                "case_cancelled",
                 "info",
                 {
-                    "investigation_id": investigation_id,
+                    "case_id": case_id,
                     "session_id": session_id
                 }
             )
             
             return True
 
-    async def get_investigation_results(
+    async def get_case_results(
         self, 
-        investigation_id: str, 
+        case_id: str, 
         session_id: str
     ) -> TroubleshootingResponse:
         """
-        Get investigation results by ID with proper validation
+        Get case results by ID with proper validation
         
         Args:
-            investigation_id: Investigation identifier
+            case_id: Case identifier
             session_id: Session identifier for access control
             
         Returns:
-            TroubleshootingResponse with investigation results
+            TroubleshootingResponse with case results
             
         Raises:
-            ValueError: If investigation_id or session_id is invalid
-            FileNotFoundError: If investigation not found
+            ValueError: If case_id or session_id is invalid
+            FileNotFoundError: If case not found
             RuntimeError: If retrieval fails
         """
-        def validate_inputs(investigation_id: str, session_id: str) -> None:
-            if not investigation_id or not investigation_id.strip():
-                raise ValueError("Investigation ID cannot be empty")
+        def validate_inputs(case_id: str, session_id: str) -> None:
+            if not case_id or not case_id.strip():
+                raise ValueError("Case ID cannot be empty")
             if not session_id or not session_id.strip():
                 raise ValueError("Session ID cannot be empty")
         
         return await self.execute_operation(
-            "get_investigation_results",
+            "get_case_results",
             self._execute_results_retrieval,
-            investigation_id,
+            case_id,
             session_id,
             validate_inputs=validate_inputs
         )
     
     async def _execute_results_retrieval(
         self,
-        investigation_id: str, 
+        case_id: str, 
         session_id: str
     ) -> TroubleshootingResponse:
         """Execute the core results retrieval logic"""
         # In a full implementation, this would query persistent storage
-        # via IInvestigationStore interface to retrieve results
+        # via ICaseStore interface to retrieve results
         # For now, return placeholder response
         
         placeholder_response = TroubleshootingResponse(
-            investigation_id=investigation_id,
+            case_id=case_id,
             session_id=session_id,
             status="completed",
             findings=[
                 {
                     "type": "info",
-                    "message": f"Investigation {investigation_id} completed",
+                    "message": f"Case {case_id} completed",
                     "severity": "info",
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "source": "investigation_store"
+                    "timestamp": datetime.utcnow().isoformat() + 'Z',
+                    "source": "case_store"
                 }
             ],
-            root_cause="Investigation completed successfully",
-            recommendations=["Review investigation findings", "Take appropriate action"],
+            root_cause="Case completed successfully",
+            recommendations=["Review case findings", "Take appropriate action"],
             confidence_score=0.8,
             estimated_mttr="15 minutes",
             next_steps=["Monitor system", "Verify fix effectiveness"],
@@ -631,14 +815,14 @@ class AgentService(BaseService):
         
         return placeholder_response
 
-    async def list_session_investigations(
+    async def list_session_cases(
         self, 
         session_id: str, 
         limit: int = 10, 
         offset: int = 0
     ) -> List[Dict[str, Any]]:
         """
-        List investigations for a session with pagination
+        List cases for a session with pagination
         
         Args:
             session_id: Session identifier
@@ -646,7 +830,7 @@ class AgentService(BaseService):
             offset: Pagination offset
             
         Returns:
-            List of investigation summary dictionaries
+            List of case summary dictionaries
             
         Raises:
             ValueError: If session_id is invalid or pagination params are invalid
@@ -662,54 +846,54 @@ class AgentService(BaseService):
                 raise ValueError("Offset must be non-negative")
         
         return await self.execute_operation(
-            "list_session_investigations",
-            self._execute_investigations_listing,
+            "list_session_cases",
+            self._execute_cases_listing,
             session_id,
             limit,
             offset,
             validate_inputs=validate_inputs
         )
     
-    async def _execute_investigations_listing(
+    async def _execute_cases_listing(
         self,
         session_id: str, 
         limit: int, 
         offset: int
     ) -> List[Dict[str, Any]]:
-        """Execute the core investigations listing logic"""
+        """Execute the core cases listing logic"""
         # In a full implementation, this would query persistent storage
-        # via ISessionStore interface to list investigations
+        # via ISessionStore interface to list cases
         # For now, return placeholder data
         
         from datetime import timedelta
         
-        # Generate some placeholder investigations
+        # Generate some placeholder cases
         base_time = datetime.utcnow()
-        investigations = []
+        cases = []
         
-        for i in range(min(limit, 3)):  # Return up to 3 placeholder investigations
-            investigations.append({
-                "investigation_id": f"inv_{session_id}_{i + offset + 1}",
+        for i in range(min(limit, 3)):  # Return up to 3 placeholder cases
+            cases.append({
+                "case_id": f"case_{session_id}_{i + offset + 1}",
                 "query": f"Sample troubleshooting query {i + offset + 1}",
                 "status": "completed",
                 "priority": "medium",
                 "findings_count": 2 + i,
                 "recommendations_count": 1 + i,
                 "confidence_score": 0.7 + (i * 0.1),
-                "created_at": (base_time - timedelta(hours=i + 1)).isoformat(),
-                "completed_at": (base_time - timedelta(hours=i)).isoformat(),
+                "created_at": (base_time - timedelta(hours=i + 1)).isoformat() + 'Z',
+                "completed_at": (base_time - timedelta(hours=i)).isoformat() + 'Z',
                 "estimated_mttr": f"{15 + (i * 5)} minutes"
             })
         
         # Log business metric
         self.log_metric(
-            "session_investigations_listed",
-            len(investigations),
+            "session_cases_listed",
+            len(cases),
             "count",
             {"session_id": session_id}
         )
         
-        return self._sanitizer.sanitize(investigations)
+        return self._sanitizer.sanitize(cases)
 
     async def health_check(self) -> Dict[str, Any]:
         """

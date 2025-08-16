@@ -29,7 +29,7 @@ class RequestContext:
         correlation_id: Unique identifier for request tracing
         session_id: Optional session identifier
         user_id: Optional user identifier  
-        investigation_id: Optional troubleshooting session identifier
+        case_id: Optional troubleshooting case identifier
         agent_phase: Current agent phase (e.g., "define_blast_radius")
         start_time: Request start timestamp
         attributes: Additional request-scoped metadata
@@ -40,7 +40,7 @@ class RequestContext:
     correlation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     session_id: Optional[str] = None
     user_id: Optional[str] = None
-    investigation_id: Optional[str] = None
+    case_id: Optional[str] = None
     agent_phase: Optional[str] = None
     start_time: datetime = field(default_factory=datetime.utcnow)
     attributes: Dict[str, Any] = field(default_factory=dict)
@@ -661,7 +661,7 @@ class LoggingCoordinator:
         """
         # Separate known RequestContext fields from arbitrary attributes
         known_fields = {
-            'correlation_id', 'session_id', 'user_id', 'investigation_id', 
+            'correlation_id', 'session_id', 'user_id', 'case_id', 
             'agent_phase', 'start_time'
         }
         

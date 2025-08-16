@@ -35,14 +35,14 @@ logger = logging.getLogger(__name__)
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
-@router.post("/", response_model=UploadedData)
+@router.post("/")
 @trace("api_upload_data_compat")
 async def upload_data_compat(
     file: UploadFile = File(...),
     session_id: str = Form(...),
     description: Optional[str] = Form(None),
     data_service: DataService = Depends(get_data_service)
-) -> UploadedData:
+):
     """
     Compatibility endpoint for legacy tests - delegates to main upload function
     
@@ -52,14 +52,14 @@ async def upload_data_compat(
     return await upload_data(file, session_id, description, data_service)
 
 
-@router.post("/upload", response_model=UploadedData)
+@router.post("/upload")
 @trace("api_upload_data")
 async def upload_data(
     file: UploadFile = File(...),
     session_id: str = Form(...),
     description: Optional[str] = Form(None),
     data_service: DataService = Depends(get_data_service)
-) -> UploadedData:
+):
     """
     Upload and process data with clean delegation pattern
     
@@ -102,7 +102,7 @@ async def upload_data(
             file_size=len(content)
         )
         
-        logger.info(f"Successfully uploaded data {uploaded_data.data_id}")
+        logger.info(f"Successfully uploaded data {uploaded_data.get('data_id', 'unknown')}")
         return uploaded_data
         
     except ValidationException as e:

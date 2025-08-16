@@ -11,12 +11,24 @@ from ..models_original import (
     DataInsightsResponse,
     DataType,
     KnowledgeBaseDocument,
-    QueryRequest,
     SearchRequest,
     SearchResult,
     SessionContext,
     TroubleshootingResponse,
+)
+
+# Import new v3.1.0 API models
+from .api import (
+    ResponseType,
+    SourceType,
+    Source,
+    PlanStep,
     UploadedData,
+    ViewState,
+    QueryRequest,
+    AgentResponse,
+    ErrorDetail,
+    ErrorResponse,
 )
 
 # Import new interfaces (Phase 1.1 of refactoring)
@@ -37,6 +49,36 @@ from .interfaces import (
     IKnowledgeIngester,
 )
 
+# Utility functions for timestamp formatting
+from datetime import datetime
+
+def utc_timestamp() -> str:
+    """Generate UTC timestamp with 'Z' suffix format required by API specification.
+    
+    Returns:
+        str: UTC timestamp in ISO format with 'Z' suffix (e.g. "2024-01-15T14:30:00.123Z")
+    """
+    return datetime.utcnow().isoformat() + 'Z'
+
+def parse_utc_timestamp(timestamp_str: str) -> datetime:
+    """Parse UTC timestamp string into timezone-naive datetime object.
+    
+    Handles both 'Z' suffix format and regular ISO format consistently,
+    returning timezone-naive datetime objects to avoid comparison issues.
+    
+    Args:
+        timestamp_str: UTC timestamp string (with or without 'Z' suffix)
+        
+    Returns:
+        datetime: Timezone-naive datetime object in UTC
+    """
+    if timestamp_str.endswith('Z'):
+        # Remove 'Z' suffix and parse as naive datetime (already UTC)
+        return datetime.fromisoformat(timestamp_str[:-1])
+    else:
+        # Parse regular ISO format
+        return datetime.fromisoformat(timestamp_str)
+
 # Re-export everything
 __all__ = [
     # Original models (backward compatibility)
@@ -44,12 +86,21 @@ __all__ = [
     "DataInsightsResponse", 
     "DataType",
     "KnowledgeBaseDocument",
-    "QueryRequest",
     "SearchRequest",
     "SearchResult",
     "SessionContext",
     "TroubleshootingResponse",
+    # New v3.1.0 API models
+    "ResponseType",
+    "SourceType", 
+    "Source",
+    "PlanStep",
     "UploadedData",
+    "ViewState",
+    "QueryRequest",
+    "AgentResponse",
+    "ErrorDetail",
+    "ErrorResponse",
     # New interfaces (Phase 1.1)
     "ToolResult",
     "BaseTool",
@@ -64,6 +115,9 @@ __all__ = [
     "IStorageBackend",
     # Phase 3.3 additions
     "IKnowledgeIngester",
+    # Utility functions
+    "utc_timestamp",
+    "parse_utc_timestamp",
 ]
 
 # As we migrate, we'll replace the above with:

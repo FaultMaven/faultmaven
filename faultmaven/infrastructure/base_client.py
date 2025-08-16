@@ -234,19 +234,20 @@ class BaseExternalClient(ABC):
             )
             raise CircuitBreakerError(f"Circuit breaker is open for {self.service_name}")
         
-        # Log external call boundary - inbound
-        self.logger.log_boundary(
-            operation=operation_name,
-            direction="inbound",
-            data={
-                "client": self.client_name,
-                "service": self.service_name,
-                "args_count": len(args),
-                "kwargs_keys": list(kwargs.keys()) if kwargs else [],
-                "timeout": timeout,
-                "retries": retries
-            }
-        )
+        # Log external call boundary - inbound (DEBUG level to reduce verbosity)
+        if self.logger.logger.isEnabledFor(10):  # DEBUG level
+            self.logger.log_boundary(
+                operation=operation_name,
+                direction="inbound",
+                data={
+                    "client": self.client_name,
+                    "service": self.service_name,
+                    "args_count": len(args),
+                    "kwargs_keys": list(kwargs.keys()) if kwargs else [],
+                    "timeout": timeout,
+                    "retries": retries
+                }
+            )
         
         # Track metrics
         self.connection_metrics["total_calls"] += 1
@@ -344,45 +345,48 @@ class BaseExternalClient(ABC):
                     if self.circuit_breaker:
                         self.circuit_breaker.record_success()
                     
-                    # Log performance metrics
-                    self.logger.log_metric(
-                        metric_name="external_call_duration",
-                        value=call_duration,
-                        unit="seconds",
-                        tags={
-                            "client": self.client_name,
-                            "service": self.service_name,
-                            "operation": operation_name,
-                            "success": "true"
-                        }
-                    )
+                    # Log performance metrics (DEBUG level to reduce verbosity)
+                    if self.logger.logger.isEnabledFor(10):  # DEBUG level
+                        self.logger.log_metric(
+                            metric_name="external_call_duration",
+                            value=call_duration,
+                            unit="seconds",
+                            tags={
+                                "client": self.client_name,
+                                "service": self.service_name,
+                                "operation": operation_name,
+                                "success": "true"
+                            }
+                        )
                     
-                    # Log successful boundary - outbound
-                    self.logger.log_boundary(
-                        operation=operation_name,
-                        direction="outbound",
-                        data={
-                            "client": self.client_name,
-                            "service": self.service_name,
-                            "success": True,
-                            "duration": call_duration,
-                            "attempts": attempt + 1
-                        }
-                    )
+                    # Log successful boundary - outbound (DEBUG level to reduce verbosity)
+                    if self.logger.logger.isEnabledFor(10):  # DEBUG level
+                        self.logger.log_boundary(
+                            operation=operation_name,
+                            direction="outbound",
+                            data={
+                                "client": self.client_name,
+                                "service": self.service_name,
+                                "success": True,
+                                "duration": call_duration,
+                                "attempts": attempt + 1
+                            }
+                        )
                     
-                    # Log success event
-                    self.logger.log_event(
-                        event_type="technical",
-                        event_name="external_call_success",
-                        severity="info",
-                        data={
-                            "client": self.client_name,
-                            "service": self.service_name,
-                            "operation": operation_name,
-                            "duration": call_duration,
-                            "attempts": attempt + 1
-                        }
-                    )
+                    # Log success event (DEBUG level to reduce verbosity)
+                    if self.logger.logger.isEnabledFor(10):  # DEBUG level
+                        self.logger.log_event(
+                            event_type="technical",
+                            event_name="external_call_success",
+                            severity="info",
+                            data={
+                                "client": self.client_name,
+                                "service": self.service_name,
+                                "operation": operation_name,
+                                "duration": call_duration,
+                                "attempts": attempt + 1
+                            }
+                        )
                     
                     return result
                     
@@ -606,45 +610,48 @@ class BaseExternalClient(ABC):
                     if self.circuit_breaker:
                         self.circuit_breaker.record_success()
                     
-                    # Log performance metrics
-                    self.logger.log_metric(
-                        metric_name="external_call_duration",
-                        value=call_duration,
-                        unit="seconds",
-                        tags={
-                            "client": self.client_name,
-                            "service": self.service_name,
-                            "operation": operation_name,
-                            "success": "true"
-                        }
-                    )
+                    # Log performance metrics (DEBUG level to reduce verbosity)
+                    if self.logger.logger.isEnabledFor(10):  # DEBUG level
+                        self.logger.log_metric(
+                            metric_name="external_call_duration",
+                            value=call_duration,
+                            unit="seconds",
+                            tags={
+                                "client": self.client_name,
+                                "service": self.service_name,
+                                "operation": operation_name,
+                                "success": "true"
+                            }
+                        )
                     
-                    # Log successful boundary - outbound
-                    self.logger.log_boundary(
-                        operation=operation_name,
-                        direction="outbound",
-                        data={
-                            "client": self.client_name,
-                            "service": self.service_name,
-                            "success": True,
-                            "duration": call_duration,
-                            "attempts": attempt + 1
-                        }
-                    )
+                    # Log successful boundary - outbound (DEBUG level to reduce verbosity)
+                    if self.logger.logger.isEnabledFor(10):  # DEBUG level
+                        self.logger.log_boundary(
+                            operation=operation_name,
+                            direction="outbound",
+                            data={
+                                "client": self.client_name,
+                                "service": self.service_name,
+                                "success": True,
+                                "duration": call_duration,
+                                "attempts": attempt + 1
+                            }
+                        )
                     
-                    # Log success event
-                    self.logger.log_event(
-                        event_type="technical",
-                        event_name="external_call_success",
-                        severity="info",
-                        data={
-                            "client": self.client_name,
-                            "service": self.service_name,
-                            "operation": operation_name,
-                            "duration": call_duration,
-                            "attempts": attempt + 1
-                        }
-                    )
+                    # Log success event (DEBUG level to reduce verbosity)
+                    if self.logger.logger.isEnabledFor(10):  # DEBUG level
+                        self.logger.log_event(
+                            event_type="technical",
+                            event_name="external_call_success",
+                            severity="info",
+                            data={
+                                "client": self.client_name,
+                                "service": self.service_name,
+                                "operation": operation_name,
+                                "duration": call_duration,
+                                "attempts": attempt + 1
+                            }
+                        )
                     
                     return result
                     

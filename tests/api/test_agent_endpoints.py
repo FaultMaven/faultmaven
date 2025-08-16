@@ -11,7 +11,7 @@ from typing import Dict, Any
 import pytest
 from httpx import AsyncClient
 
-from faultmaven.models import QueryRequest, TroubleshootingResponse
+from faultmaven.models import QueryRequest, AgentResponse
 
 
 class TestAgentAPIEndpointsRebuilt:
@@ -51,24 +51,23 @@ class TestAgentAPIEndpointsRebuilt:
         
         # Validate real response structure and business logic
         data = response.json()
-        response_validator.assert_valid_troubleshooting_response(data)
+        response_validator.assert_valid_response(data)
         
-        # Validate business logic results
-        assert data["session_id"] == test_session
-        assert data["investigation_id"] is not None
-        assert data["status"] in ["in_progress", "completed", "analysis"]
-        assert len(data["findings"]) > 0
-        assert len(data["recommendations"]) > 0
+        # Validate v3.1.0 AgentResponse structure
+        assert data["schema_version"] == "3.1.0"
+        assert data["content"] is not None
+        assert data["response_type"] in ["answer", "plan_proposal", "clarification_request", "confirmation_request"]
+        assert "view_state" in data
+        assert data["view_state"]["session_id"] == test_session
+        assert data["view_state"]["case_id"] is not None
+        assert "sources" in data
+        assert isinstance(data["sources"], list)
         
-        # Validate confidence scoring
-        assert 0.7 <= data["confidence_score"] <= 1.0  # High confidence for clear database issues
-        
-        # Validate recommendation structure
-        for rec in data["recommendations"]:
-            assert isinstance(rec, (str, dict))
-            if isinstance(rec, dict):
-                assert "action" in rec
-                assert "priority" in rec
+        # Validate plan field consistency
+        if data["response_type"] == "plan_proposal":
+            assert "plan" in data and data["plan"] is not None
+        else:
+            assert data.get("plan") is None
         
         # Performance validation - API should respond quickly
         performance_tracker.assert_performance_target("troubleshooting_query", 2.0)
@@ -148,11 +147,11 @@ class TestAgentAPIEndpointsRebuilt:
             
             assert response.status_code == 200
             data = response.json()
-            response_validator.assert_valid_troubleshooting_response(data)
+            response_validator.assert_valid_response(data)
             
             # Validate that different query types produce appropriate responses
-            assert data["investigation_id"] != ""
-            assert len(data["findings"]) > 0
+            assert data["view_state"]["case_id"] != ""
+            assert data["content"] != ""
     
     @pytest.mark.asyncio
     async def test_session_not_found_handling(self, client: AsyncClient):
@@ -204,15 +203,15 @@ class TestAgentAPIEndpointsRebuilt:
             assert response.status_code == 200
             
             data = response.json()
-            assert data["session_id"] == test_session
-            assert data["investigation_id"] is not None
+            assert data["view_state"]["session_id"] == test_session
+            assert data["view_state"]["case_id"] is not None
         
         # Validate concurrent performance
         performance_tracker.assert_performance_target("concurrent_queries", 5.0)
         
-        # Validate each query got unique investigation ID
-        investigation_ids = [r.json()["investigation_id"] for r in responses]
-        assert len(set(investigation_ids)) == len(investigation_ids)
+        # Validate each query got unique case ID
+        case_ids = [r.json()["view_state"]["case_id"] for r in responses]
+        assert len(set(case_ids)) == len(case_ids)
     
     @pytest.mark.asyncio
     async def test_query_response_serialization(
@@ -246,12 +245,12 @@ class TestAgentAPIEndpointsRebuilt:
         parsed_back = json.loads(json_string)
         
         # Validate structure preserved
-        assert parsed_back["session_id"] == test_session
-        assert parsed_back["investigation_id"] is not None
+        assert parsed_back["view_state"]["session_id"] == test_session
+        assert parsed_back["view_state"]["case_id"] is not None
         
         # Validate unicode handling
-        assert "investigation_id" in parsed_back
-        assert isinstance(parsed_back["findings"], list)
+        assert "view_state" in parsed_back
+        assert "sources" in parsed_back
     
     @pytest.mark.asyncio 
     async def test_investigation_results_retrieval(
@@ -273,19 +272,19 @@ class TestAgentAPIEndpointsRebuilt:
         
         assert query_response.status_code == 200
         query_data = query_response.json()
-        investigation_id = query_data["investigation_id"]
+        case_id = query_data["view_state"]["case_id"]
         
-        # Retrieve investigation results
+        # Retrieve investigation results (uses legacy endpoint for backward compatibility)
         results_response = await client.get(
-            f"/api/v1/agent/investigations/{investigation_id}",
+            f"/api/v1/agent/investigations/{case_id}",
             params={"session_id": test_session}
         )
         
         assert results_response.status_code == 200
         results_data = results_response.json()
         
-        # Validate results structure
-        assert results_data["investigation_id"] == investigation_id
+        # Validate legacy results structure (for backward compatibility)
+        assert results_data["investigation_id"] == case_id
         assert results_data["session_id"] == test_session
         assert "findings" in results_data
         assert "recommendations" in results_data
@@ -318,7 +317,7 @@ class TestAgentAPIEndpointsRebuilt:
             )
             
             assert response.status_code == 200
-            investigation_ids.append(response.json()["investigation_id"])
+            investigation_ids.append(response.json()["view_state"]["case_id"])
         
         # List investigations for session
         list_response = await client.get(
@@ -518,7 +517,8 @@ class TestAgentAPIErrorScenarios:
         assert response.status_code in [200, 504, 408]
         
         if response.status_code == 200:
-            # If successful, validate response structure
+            # If successful, validate v3.1.0 response structure
             data = response.json()
-            assert "investigation_id" in data
-            assert "findings" in data
+            assert "view_state" in data
+            assert data["view_state"]["case_id"] is not None
+            assert "content" in data

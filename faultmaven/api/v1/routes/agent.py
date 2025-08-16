@@ -21,9 +21,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from faultmaven.models import QueryRequest, TroubleshootingResponse
-from faultmaven.api.v1.dependencies import get_agent_service
+from faultmaven.models import QueryRequest, TroubleshootingResponse, AgentResponse, ErrorResponse
+from faultmaven.api.v1.dependencies import get_agent_service, get_session_service
 from faultmaven.services.agent_service import AgentService
+from faultmaven.services.session_service import SessionService
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import ValidationException
 
@@ -32,15 +33,14 @@ router = APIRouter(prefix="/agent", tags=["query_processing"])
 logger = logging.getLogger(__name__)
 
 
-@router.post("/query", response_model=TroubleshootingResponse)
-@router.post("/troubleshoot", response_model=TroubleshootingResponse)  # Compatibility endpoint
-@trace("api_troubleshoot")
-async def troubleshoot(
+@router.post("/query", response_model=AgentResponse)
+@trace("api_query")
+async def query(
     request: QueryRequest,
     agent_service: AgentService = Depends(get_agent_service)
-) -> TroubleshootingResponse:
+) -> AgentResponse:
     """
-    Process troubleshooting query with clean delegation pattern
+    Process query using v3.1.0 schema with clean delegation pattern
     
     This endpoint follows the thin controller pattern:
     1. Minimal input validation (handled by Pydantic models)
@@ -52,7 +52,7 @@ async def troubleshoot(
         agent_service: Injected AgentService from DI container
         
     Returns:
-        TroubleshootingResponse with findings and recommendations
+        AgentResponse with v3.1.0 schema including content, response_type, and view_state
         
     Raises:
         HTTPException: On service layer errors (404, 500, etc.)
@@ -63,7 +63,7 @@ async def troubleshoot(
         # Pure delegation - all business logic is in the service layer
         response = await agent_service.process_query(request)
         
-        logger.info(f"Successfully processed query {response.investigation_id}")
+        logger.info(f"Successfully processed query for case {response.view_state.case_id}")
         return response
         
     except ValidationException as e:
@@ -105,62 +105,195 @@ async def troubleshoot(
         )
 
 
-@router.get("/investigations/{investigation_id}", response_model=TroubleshootingResponse)
-@trace("api_get_investigation")
-async def get_investigation(
-    investigation_id: str,
+@router.post("/troubleshoot", response_model=TroubleshootingResponse)  # Compatibility endpoint
+@trace("api_troubleshoot")
+async def troubleshoot_legacy(
+    request: QueryRequest,
+    agent_service: AgentService = Depends(get_agent_service)
+) -> TroubleshootingResponse:
+    """
+    Legacy troubleshooting endpoint for backward compatibility
+    
+    This endpoint maintains compatibility with existing clients by converting
+    the new v3.1.0 AgentResponse back to the old TroubleshootingResponse format.
+    
+    Args:
+        request: QueryRequest with query, session_id, context, priority
+        agent_service: Injected AgentService from DI container
+        
+    Returns:
+        TroubleshootingResponse in legacy format
+        
+    Raises:
+        HTTPException: On service layer errors (404, 500, etc.)
+    """
+    logger.info(f"Received legacy troubleshooting request for session {request.session_id}")
+    
+    try:
+        # Get new format response
+        agent_response = await agent_service.process_query(request)
+        
+        # Convert to legacy format
+        legacy_response = _convert_to_legacy_response(agent_response, request.session_id)
+        
+        logger.info(f"Successfully processed legacy query for case {legacy_response.case_id}")
+        return legacy_response
+        
+    except ValidationException as e:
+        logger.warning(f"Legacy query validation failed: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
+    
+    except RuntimeError as e:
+        if "Validation failed:" in str(e):
+            logger.warning(f"Legacy query validation failed (wrapped): {e}")
+            raise HTTPException(status_code=422, detail=str(e))
+        else:
+            logger.error(f"Legacy query processing runtime error: {e}")
+            raise HTTPException(status_code=500, detail="Service error during query processing")
+        
+    except ValueError as e:
+        logger.warning(f"Legacy query validation failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    except PermissionError as e:
+        logger.warning(f"Legacy query authorization failed: {e}")
+        raise HTTPException(status_code=403, detail="Access denied")
+        
+    except FileNotFoundError as e:
+        logger.warning(f"Resource not found: {e}")
+        raise HTTPException(status_code=404, detail="Resource not found")
+        
+    except Exception as e:
+        logger.error(f"Legacy query processing failed unexpectedly: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Internal server error during query processing"
+        )
+
+
+def _convert_to_legacy_response(agent_response: AgentResponse, session_id: str) -> TroubleshootingResponse:
+    """Convert new v3.1.0 AgentResponse to legacy TroubleshootingResponse format"""
+    from datetime import datetime
+    
+    # Extract content parts from agent response
+    content = agent_response.content
+    findings = []
+    recommendations = []
+    next_steps = []
+    
+    # Parse content to extract structured data
+    content_lines = content.split('\n')
+    current_section = None
+    
+    for line in content_lines:
+        line = line.strip()
+        if line.startswith('Root Cause:'):
+            root_cause = line.replace('Root Cause:', '').strip()
+        elif line == 'Key Findings:':
+            current_section = 'findings'
+        elif line == 'Recommendations:':
+            current_section = 'recommendations'
+        elif line.startswith('•'):
+            item = line[1:].strip()
+            if current_section == 'findings':
+                findings.append({
+                    'type': 'observation',
+                    'message': item,
+                    'severity': 'medium',
+                    'timestamp': datetime.utcnow().isoformat() + 'Z',
+                    'source': 'agent_analysis'
+                })
+            elif current_section == 'recommendations':
+                recommendations.append(item)
+    
+    # Extract next steps from plan if available
+    if agent_response.plan:
+        next_steps = [step.description for step in agent_response.plan]
+    
+    # Handle case where no structured content was found
+    if not findings and not recommendations:
+        findings = [{
+            'type': 'general',
+            'message': content,
+            'severity': 'info',
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'source': 'agent_response'
+        }]
+        recommendations = ['Review the analysis above']
+    
+    root_cause = locals().get('root_cause', 'Analysis completed')
+    
+    return TroubleshootingResponse(
+        case_id=agent_response.view_state.case_id,
+        session_id=session_id,
+        status="completed",
+        findings=findings,
+        root_cause=root_cause,
+        recommendations=recommendations,
+        confidence_score=0.8,  # Default confidence
+        estimated_mttr="15 minutes",  # Default MTTR
+        next_steps=next_steps,
+        created_at=datetime.utcnow(),
+        completed_at=datetime.utcnow()
+    )
+
+
+@router.get("/cases/{case_id}", response_model=TroubleshootingResponse)
+@trace("api_get_case")
+async def get_case(
+    case_id: str,
     session_id: str,
     agent_service: AgentService = Depends(get_agent_service)
 ) -> TroubleshootingResponse:
     """
-    Get investigation results by ID with clean delegation
+    Get case results by ID with clean delegation
     
     Args:
-        investigation_id: Investigation identifier
+        case_id: Case identifier
         session_id: Session identifier for validation
         agent_service: Injected AgentService
         
     Returns:
-        TroubleshootingResponse with investigation results
+        TroubleshootingResponse with case results
     """
-    logger.info(f"Retrieving investigation {investigation_id} for session {session_id}")
+    logger.info(f"Retrieving case {case_id} for session {session_id}")
     
     try:
         # Delegate to service layer for all logic
-        response = await agent_service.get_investigation_results(
-            investigation_id=investigation_id,
+        response = await agent_service.get_case_results(
+            case_id=case_id,
             session_id=session_id
         )
         
         return response
         
     except ValidationException as e:
-        logger.warning(f"Investigation retrieval validation failed: {e}")
+        logger.warning(f"Case retrieval validation failed: {e}")
         raise HTTPException(status_code=422, detail=str(e))
         
     except ValueError as e:
-        logger.warning(f"Investigation retrieval validation failed: {e}")
+        logger.warning(f"Case retrieval validation failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
         
     except FileNotFoundError as e:
-        logger.warning(f"Investigation not found: {e}")
-        raise HTTPException(status_code=404, detail="Investigation not found")
+        logger.warning(f"Case not found: {e}")
+        raise HTTPException(status_code=404, detail="Case not found")
         
     except Exception as e:
-        logger.error(f"Investigation retrieval failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve investigation")
+        logger.error(f"Case retrieval failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve case")
 
 
-@router.get("/sessions/{session_id}/investigations")
-@trace("api_list_session_investigations")
-async def list_session_investigations(
+@router.get("/sessions/{session_id}/cases")
+@trace("api_list_session_cases")
+async def list_session_cases(
     session_id: str,
     limit: Optional[int] = 10,
     offset: Optional[int] = 0,
     agent_service: AgentService = Depends(get_agent_service)
 ):
     """
-    List investigations for a session with clean delegation
+    List cases for a session with clean delegation
     
     Args:
         session_id: Session identifier
@@ -169,13 +302,13 @@ async def list_session_investigations(
         agent_service: Injected AgentService
         
     Returns:
-        List of investigation summaries
+        List of case summaries
     """
-    logger.info(f"Listing investigations for session {session_id}")
+    logger.info(f"Listing cases for session {session_id}")
     
     try:
         # Delegate pagination and business logic to service layer
-        investigations = await agent_service.list_session_investigations(
+        cases = await agent_service.list_session_cases(
             session_id=session_id,
             limit=limit,
             offset=offset
@@ -183,18 +316,18 @@ async def list_session_investigations(
         
         return {
             "session_id": session_id,
-            "investigations": investigations,
+            "cases": cases,
             "limit": limit,
             "offset": offset,
-            "total": len(investigations)  # Service layer provides this
+            "total": len(cases)  # Service layer provides this
         }
         
     except ValidationException as e:
-        logger.warning(f"Investigation listing validation failed: {e}")
+        logger.warning(f"Case listing validation failed: {e}")
         raise HTTPException(status_code=422, detail=str(e))
         
     except ValueError as e:
-        logger.warning(f"Investigation listing validation failed: {e}")
+        logger.warning(f"Case listing validation failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
         
     except FileNotFoundError as e:
@@ -202,8 +335,8 @@ async def list_session_investigations(
         raise HTTPException(status_code=404, detail="Session not found")
         
     except Exception as e:
-        logger.error(f"Investigation listing failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list investigations")
+        logger.error(f"Case listing failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list cases")
 
 
 @router.get("/health")
@@ -233,6 +366,61 @@ async def health_check(
             status_code=503, 
             detail="Agent service unavailable"
         )
+
+
+@router.post("/sessions/{session_id}/new-case")
+@trace("api_agent_new_case")
+async def start_new_case(
+    session_id: str,
+    session_service: SessionService = Depends(get_session_service)
+):
+    """
+    Start a new case/conversation thread for a session
+    
+    This endpoint allows users to start a fresh conversation thread within 
+    the same session. The existing case_id will be replaced with a new one,
+    effectively starting a new troubleshooting conversation.
+    
+    Args:
+        session_id: Session identifier
+        session_service: Injected session service
+        
+    Returns:
+        New case information
+        
+    Raises:
+        HTTPException: If session not found or case creation fails
+    """
+    try:
+        # Validate session exists
+        session = await session_service.get_session(session_id, validate=True)
+        if not session:
+            logger.warning(f"Attempt to start new case for non-existent session: {session_id}")
+            raise HTTPException(status_code=404, detail="Session not found or expired")
+        
+        # Start new case
+        new_case_id = await session_service.start_new_case(session_id)
+        
+        logger.info(f"Started new case {new_case_id} for session {session_id}")
+        
+        return {
+            "session_id": session_id,
+            "new_case_id": new_case_id,
+            "message": "New conversation thread started successfully",
+            "previous_case_id": session.current_case_id if session.current_case_id != new_case_id else None
+        }
+        
+    except ValidationException as e:
+        logger.warning(f"Validation error starting new case: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to start new case for session {session_id}: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail="Failed to start new conversation thread"
+        )
+
+
 
 
 # Compatibility functions for legacy tests

@@ -9,7 +9,7 @@ from typing import Dict, Optional
 import json
 from datetime import datetime
 from faultmaven.models.interfaces import ISessionStore
-from faultmaven.infrastructure.persistence.redis import RedisClient
+from faultmaven.infrastructure.redis_client import create_redis_client
 
 
 class RedisSessionStore(ISessionStore):
@@ -17,7 +17,7 @@ class RedisSessionStore(ISessionStore):
     
     def __init__(self):
         """Initialize Redis session store"""
-        self.redis_client = RedisClient()
+        self.redis_client = create_redis_client()
         self.default_ttl = 1800  # 30 minutes default
         self.prefix = "session:"
     

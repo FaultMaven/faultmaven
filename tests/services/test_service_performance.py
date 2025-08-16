@@ -153,12 +153,13 @@ class TestPerformanceValidation:
         assert peak / 1024 / 1024 < 50, f"Memory usage {peak / 1024 / 1024:.2f}MB, expected <50MB"
         assert len(results) == 5, "All test operations should complete successfully"
         
-        # Validate business logic was tested
+        # Validate business logic was tested - v3.1.0 AgentResponse doesn't have status, confidence_score, findings, recommendations
         for result in results:
-            assert result.status == "completed"
-            assert result.confidence_score > 0.8
-            assert len(result.findings) > 0
-            assert len(result.recommendations) > 0
+            # v3.1.0 AgentResponse has schema_version, content, response_type, view_state, sources, plan
+            assert result.schema_version == "3.1.0"
+            assert len(result.content) > 0  # Should have meaningful content
+            assert result.response_type is not None  # Should have response type
+            assert len(result.sources) >= 0  # May have sources
         
         print(f"Agent service performance: {execution_time:.3f}s, {peak/1024/1024:.2f}MB peak memory")
     
@@ -210,10 +211,10 @@ class TestPerformanceValidation:
         # Execute ingestion
         upload_results = await asyncio.gather(*ingestion_tasks)
         
-        # Execute analysis
+        # Execute analysis (DataService returns dict for v3.1.0 compatibility)
         analysis_tasks = []
         for upload in upload_results:
-            task = data_service.analyze_data(upload.data_id, "perf_test_session")
+            task = data_service.analyze_data(upload["data_id"], "perf_test_session")
             analysis_tasks.append(task)
         
         analysis_results = await asyncio.gather(*analysis_tasks)
@@ -239,8 +240,8 @@ class TestPerformanceValidation:
         assert len(analysis_results) == 5
         
         for upload in upload_results:
-            assert upload.processing_status == "completed"
-            assert upload.data_type != None  # Should be classified
+            assert upload["processing_status"] == "completed"
+            assert upload["data_type"] != None  # Should be classified
         
         for analysis in analysis_results:
             assert analysis.confidence_score > 0.5
@@ -311,7 +312,7 @@ class TestPerformanceValidation:
             file_name="incident.log"
         )
         
-        data_analysis = await data_service.analyze_data(uploaded_data.data_id, session_id)
+        data_analysis = await data_service.analyze_data(uploaded_data["data_id"], session_id)
         
         # Phase 2: Troubleshooting with context
         inner_insights = data_analysis.insights.get('insights', {})
@@ -321,7 +322,7 @@ class TestPerformanceValidation:
             session_id=session_id,
             context={
                 "incident_severity": "critical",
-                "data_reference": uploaded_data.data_id,
+                "data_reference": uploaded_data["data_id"],
                 "error_count": error_count
             }
         )
@@ -381,18 +382,24 @@ class TestPerformanceValidation:
         assert execution_time < 1.5, f"Integration workflow took {execution_time:.3f}s, expected <1.5s"
         assert peak / 1024 / 1024 < 75, f"Memory usage {peak / 1024 / 1024:.2f}MB, expected <75MB"
         
-        # Validate integrated business logic
-        assert uploaded_data.data_type != None
+        # Validate integrated business logic - v3.1.0 compatibility
+        assert uploaded_data["data_type"] != None
         assert data_analysis.confidence_score > 0.6
         # The insights structure has nested insights - access the inner error_count
         inner_insights = data_analysis.insights.get('insights', {})
         assert inner_insights.get('error_count', 0) >= 3  # Should detect errors
-        assert troubleshooting_response.confidence_score > 0.8
-        assert len(troubleshooting_response.recommendations) > 0
+        
+        # v3.1.0 AgentResponse doesn't have confidence_score or recommendations fields
+        assert troubleshooting_response.schema_version == "3.1.0"
+        assert len(troubleshooting_response.content) > 0  # Should have meaningful content
+        
+        # Check for recommendations if response type is plan_proposal
+        if troubleshooting_response.response_type.value == "plan_proposal":
+            assert len(troubleshooting_response.plan) > 0
         
         # Validate cross-service data consistency
-        assert uploaded_data.session_id == session_id
-        assert troubleshooting_response.session_id == session_id
+        assert uploaded_data["session_id"] == session_id
+        assert troubleshooting_response.view_state.session_id == session_id
         
         print(f"Integration performance: {execution_time:.3f}s, {peak/1024/1024:.2f}MB peak memory")
     
@@ -488,7 +495,8 @@ class TestPerformanceValidation:
                 mock_agent_class.return_value = mock_agent
                 
                 result = await service.process_query(query)
-                return result.confidence_score > 0.5
+                # v3.1.0 AgentResponse doesn't have confidence_score field
+                return len(result.content) > 0  # Check meaningful content instead
         
         # Run concurrent service tests
         start_time = time.perf_counter()
@@ -612,10 +620,14 @@ class TestPerformanceValidation:
         
         result = asyncio.run(run_diagnostic_test())
         
-        # Validate that business logic issues are detectable
-        assert len(result.findings) == 0, "Empty findings should be preserved for diagnosis"
-        assert result.confidence_score == 0.1, "Low confidence should be preserved"
-        assert len(result.recommendations) == 0, "Empty recommendations should be detectable"
+        # Validate that business logic issues are detectable - v3.1.0 AgentResponse doesn't have findings, confidence_score, recommendations
+        # v3.1.0 AgentResponse has sources instead of findings
+        assert len(result.sources) == 0, "Empty sources should be preserved for diagnosis"
+        assert len(result.content) > 0, "Should still have meaningful content"
+        
+        # Check for recommendations if response type is plan_proposal
+        if result.response_type.value == "plan_proposal":
+            assert len(result.plan) == 0, "Empty plan should be detectable for plan proposals"
         
         # This demonstrates that real business logic validation catches meaningful issues
         # whereas heavy mocking might hide these problems

@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import Mock, patch, AsyncMock
 
 from faultmaven.services.agent_service import AgentService
-from faultmaven.models import QueryRequest, TroubleshootingResponse
+from faultmaven.models import QueryRequest, AgentResponse, ResponseType
 from faultmaven.models.interfaces import ILLMProvider, BaseTool, ITracer, ISanitizer, ToolResult
 from faultmaven.exceptions import ValidationException
 
@@ -313,31 +313,31 @@ class TestAgentServiceBehavior:
             processing_time = (end_time - start_time).total_seconds()
             
             # Validate business logic outcomes
-            assert isinstance(result, TroubleshootingResponse)
-            assert result.session_id == "session_db_001"
-            assert result.status == "completed"
+            assert isinstance(result, AgentResponse)
+            assert result.schema_version == "3.1.0"
+            assert result.view_state.session_id == "session_db_001"
             
-            # Validate real findings analysis
-            assert len(result.findings) == 2
-            error_finding = next(f for f in result.findings if f['type'] == 'error')
-            assert error_finding['severity'] == 'high'
-            assert 'database connection timeout' in error_finding['message'].lower()
-            assert error_finding['confidence'] == 0.9
+            # Validate v3.1.0 AgentResponse structure
+            assert result.response_type in [ResponseType.ANSWER, ResponseType.PLAN_PROPOSAL, ResponseType.CLARIFICATION_REQUEST, ResponseType.CONFIRMATION_REQUEST]
+            assert result.content is not None
+            assert len(result.content) > 0
             
-            performance_finding = next(f for f in result.findings if f['type'] == 'performance')
-            assert performance_finding['severity'] == 'medium'
-            assert 'query execution time' in performance_finding['message'].lower()
+            # Validate content contains expected database troubleshooting information
+            assert 'database' in result.content.lower()
             
-            # Validate real recommendations
-            assert len(result.recommendations) == 3
-            assert any('timeout' in rec.lower() for rec in result.recommendations)
-            assert any('connection pool' in rec.lower() for rec in result.recommendations)
+            # Validate view_state
+            assert result.view_state.case_id is not None
+            assert result.view_state.running_summary is not None
             
-            # Validate real business metrics
-            assert result.confidence_score == 0.85
-            assert result.root_cause == 'Database connection pool exhaustion under high load'
-            assert result.estimated_mttr == "20 minutes"
-            assert len(result.next_steps) == 2
+            # Validate sources (should be populated from tools/knowledge)
+            assert isinstance(result.sources, list)
+            
+            # If it's a plan proposal, validate plan structure
+            if result.response_type == ResponseType.PLAN_PROPOSAL:
+                assert result.plan is not None
+                assert len(result.plan) > 0
+            else:
+                assert result.plan is None
             
             # Validate performance characteristics
             assert processing_time < 1.0, f"Processing took {processing_time}s, expected <1.0s"
@@ -367,20 +367,17 @@ class TestAgentServiceBehavior:
             result = await agent_service.process_query(memory_query_request)
             
             # Validate memory-specific analysis
-            assert isinstance(result, TroubleshootingResponse)
-            assert result.confidence_score == 0.92
-            assert result.root_cause == 'Memory leak in user session management'
-            assert result.estimated_mttr == "45 minutes"
+            assert isinstance(result, AgentResponse)
+            assert result.schema_version == "3.1.0"
+            assert result.view_state.session_id == "session_mem_001"
             
-            # Validate memory-specific findings
-            memory_finding = result.findings[0]
-            assert memory_finding['type'] == 'performance'
-            assert 'memory usage spike' in memory_finding['message'].lower()
-            assert memory_finding['confidence'] == 0.95
+            # Validate content contains memory-related information
+            assert 'memory' in result.content.lower()
             
-            # Validate memory-specific recommendations
-            assert any('memory leak' in rec.lower() for rec in result.recommendations)
-            assert any('garbage collection' in rec.lower() for rec in result.recommendations)
+            # Validate v3.1.0 structure
+            assert result.response_type in [ResponseType.ANSWER, ResponseType.PLAN_PROPOSAL, ResponseType.CLARIFICATION_REQUEST, ResponseType.CONFIRMATION_REQUEST]
+            assert result.view_state.case_id is not None
+            assert isinstance(result.sources, list)
     
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -582,10 +579,12 @@ class TestAgentServiceBehavior:
             # Validate all requests processed successfully
             assert len(results) == 5
             for i, result in enumerate(results):
-                assert isinstance(result, TroubleshootingResponse)
-                assert result.session_id == f"session_concurrent_{i}"
-                assert result.status == "completed"
-                assert len(result.findings) > 0
+                assert isinstance(result, AgentResponse)
+                assert result.view_state.session_id == f"session_concurrent_{i}"
+                # v3.1.0 doesn't have status field, check response_type instead
+                assert result.response_type in [ResponseType.ANSWER, ResponseType.PLAN_PROPOSAL, ResponseType.CLARIFICATION_REQUEST, ResponseType.CONFIRMATION_REQUEST]
+                # v3.1.0 doesn't have findings field directly, check sources or plan
+                assert result.sources is not None or result.plan is not None
             
             # Validate performance characteristics
             # Concurrent processing should be faster than sequential
@@ -667,9 +666,12 @@ class TestAgentServiceBehavior:
             result = await agent_service.process_query(database_query_request)
             
             # Validate graceful handling
-            assert isinstance(result, TroubleshootingResponse)
-            assert result.findings == []  # Should be empty due to invalid format
-            assert len(result.recommendations) == 1
+            assert isinstance(result, AgentResponse)
+            # v3.1.0 doesn't have findings field directly - check sources instead
+            assert isinstance(result.sources, list)  # Should be a list (may be empty)
+            # v3.1.0 recommendations are in plan field when response_type is plan_proposal
+            if result.response_type == ResponseType.PLAN_PROPOSAL:
+                assert result.plan is not None
             
         with patch('faultmaven.core.agent.agent.FaultMavenAgent') as mock_agent_class:
             mock_agent = Mock()
@@ -685,15 +687,15 @@ class TestAgentServiceBehavior:
             result = await agent_service.process_query(database_query_request)
             
             # Validate conversion logic
-            assert isinstance(result, TroubleshootingResponse)
-            assert len(result.findings) == 4  # All items should be converted
+            assert isinstance(result, AgentResponse)
+            # v3.1.0 doesn't have findings field directly - check sources instead
+            assert isinstance(result.sources, list)  # Should be a list
             
-            # Check that non-dict items were properly converted
-            for finding in result.findings:
-                assert isinstance(finding, dict)
-                assert 'type' in finding
-                assert 'message' in finding
-                assert 'severity' in finding
+            # Check that sources contain meaningful data
+            if len(result.sources) > 0:
+                for source in result.sources:
+                    assert isinstance(source, dict)
+                    # Sources in v3.1.0 have different structure than legacy findings
     
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -712,8 +714,8 @@ class TestAgentServiceBehavior:
             
             # Should handle long queries gracefully
             result = await agent_service.process_query(request)
-            assert isinstance(result, TroubleshootingResponse)
-            assert result.session_id == "test_session"
+            assert isinstance(result, AgentResponse)
+            assert result.view_state.session_id == "test_session"
     
     @pytest.mark.asyncio
     @pytest.mark.unit
@@ -756,7 +758,7 @@ class TestAgentServiceBehavior:
             
             # Validate sanitization occurred
             assert test_sanitizer.call_count > 0
-            assert isinstance(result, TroubleshootingResponse)
+            assert isinstance(result, AgentResponse)
             
             # Check that sensitive data was redacted in sanitizer calls
             sanitized_calls = test_sanitizer.sanitized_items

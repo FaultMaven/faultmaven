@@ -37,7 +37,7 @@ import time
 import redis.asyncio as redis
 
 from .infrastructure.redis_client import create_redis_client, validate_redis_connection
-from .models import AgentState, SessionContext
+from .models import AgentState, SessionContext, parse_utc_timestamp
 from .models.interfaces import ISessionStore
 from .infrastructure.persistence.redis_session_store import RedisSessionStore
 from .exceptions import SessionStoreException, SessionCleanupException
@@ -103,7 +103,8 @@ class SessionManager:
             'created_at': created_at.isoformat(),
             'last_activity': created_at.isoformat(),
             'data_uploads': [],
-            'investigation_history': []
+            'case_history': [],
+            'current_case_id': None
         }
         
         ttl = self.session_timeout_hours * 3600  # Convert hours to seconds
@@ -122,6 +123,7 @@ class SessionManager:
             user_id=user_id,
             created_at=created_at,
             last_activity=created_at,
+            current_case_id=None,
             agent_state=None,
         )
         
@@ -133,23 +135,24 @@ class SessionManager:
         session_data = await self.session_store.get(session_id)
         if session_data:
             try:
-                # Convert ISO strings back to datetime objects
-                created_at = datetime.fromisoformat(session_data.get('created_at', datetime.utcnow().isoformat()))
-                last_activity = datetime.fromisoformat(session_data.get('last_activity', datetime.utcnow().isoformat()))
+                # Convert ISO strings back to datetime objects (timezone-naive for consistency)
+                created_at = parse_utc_timestamp(session_data.get('created_at', datetime.utcnow().isoformat() + 'Z'))
+                last_activity = parse_utc_timestamp(session_data.get('last_activity', datetime.utcnow().isoformat() + 'Z'))
                 
                 session = SessionContext(
                     session_id=session_data['session_id'],
                     user_id=session_data.get('user_id'),
                     created_at=created_at,
                     last_activity=last_activity,
+                    current_case_id=session_data.get('current_case_id'),
                     agent_state=session_data.get('agent_state'),
                     data_uploads=session_data.get('data_uploads', []),
-                    investigation_history=session_data.get('investigation_history', [])
+                    case_history=session_data.get('case_history', [])
                 )
                 
                 # Update last activity and extend TTL
                 updated_data = session_data.copy()
-                updated_data['last_activity'] = datetime.utcnow().isoformat()
+                updated_data['last_activity'] = datetime.utcnow().isoformat() + 'Z'
                 ttl = self.session_timeout_hours * 3600
                 await self.session_store.set(session_id, updated_data, ttl=ttl)
                 
@@ -193,7 +196,7 @@ class SessionManager:
                 session_data[key] = value
             
             # Update last activity
-            session_data['last_activity'] = datetime.utcnow().isoformat()
+            session_data['last_activity'] = datetime.utcnow().isoformat() + 'Z'
 
             # Save back to session store
             ttl = self.session_timeout_hours * 3600
@@ -234,7 +237,7 @@ class SessionManager:
         if data_id not in data_uploads:
             data_uploads.append(data_id)
             session_data['data_uploads'] = data_uploads
-            session_data['last_activity'] = datetime.utcnow().isoformat()
+            session_data['last_activity'] = datetime.utcnow().isoformat() + 'Z'
 
             # Save back to session store
             ttl = self.session_timeout_hours * 3600
@@ -244,15 +247,15 @@ class SessionManager:
 
         return True
 
-    async def add_investigation_history(
-        self, session_id: str, investigation_data: Dict
+    async def add_case_history(
+        self, session_id: str, case_data: Dict
     ) -> bool:
         """
-        Add investigation history to a session
+        Add case history to a session
 
         Args:
             session_id: Session identifier
-            investigation_data: Investigation data to add
+            case_data: Case data to add
 
         Returns:
             True if addition was successful
@@ -270,18 +273,27 @@ class SessionManager:
         if not session_data:
             return False
             
-        investigation_data["timestamp"] = datetime.utcnow().isoformat()
-        investigation_history = session_data.get('investigation_history', [])
-        investigation_history.append(investigation_data)
-        session_data['investigation_history'] = investigation_history
-        session_data['last_activity'] = datetime.utcnow().isoformat()
+        case_data["timestamp"] = datetime.utcnow().isoformat() + 'Z'
+        case_history = session_data.get('case_history', [])
+        case_history.append(case_data)
+        session_data['case_history'] = case_history
+        session_data['last_activity'] = datetime.utcnow().isoformat() + 'Z'
 
         # Save back to session store
         ttl = self.session_timeout_hours * 3600
         await self.session_store.set(session_id, session_data, ttl=ttl)
 
-        self.logger.debug(f"Added investigation history to session {session_id}")
+        self.logger.debug(f"Added case history to session {session_id}")
         return True
+
+    async def add_investigation_history(
+        self, session_id: str, investigation_data: Dict
+    ) -> bool:
+        """
+        Legacy alias for add_case_history. 
+        Use add_case_history instead.
+        """
+        return await self.add_case_history(session_id, investigation_data)
 
     async def update_agent_state(
         self, session_id: str, agent_state: AgentState
@@ -310,7 +322,7 @@ class SessionManager:
             return False
             
         session_data['agent_state'] = agent_state.dict() if agent_state else None
-        session_data['last_activity'] = datetime.utcnow().isoformat()
+        session_data['last_activity'] = datetime.utcnow().isoformat() + 'Z'
 
         # Save back to session store
         ttl = self.session_timeout_hours * 3600
@@ -470,7 +482,7 @@ class SessionManager:
         if not session_data:
             return False
             
-        session_data['last_activity'] = datetime.utcnow().isoformat()
+        session_data['last_activity'] = datetime.utcnow().isoformat() + 'Z'
 
         # Save back to session store with extended TTL
         ttl = self.session_timeout_hours * 3600
@@ -540,16 +552,16 @@ class SessionManager:
             
             # Count items to be cleaned
             data_uploads_count = len(session_data.get('data_uploads', []))
-            investigation_history_count = len(session_data.get('investigation_history', []))
+            case_history_count = len(session_data.get('case_history', []))
             
             # Clear session data but keep the session active
             cleaned_data = {
                 'session_id': session_id,
                 'user_id': session_data.get('user_id'),
                 'created_at': session_data.get('created_at'),
-                'last_activity': datetime.utcnow().isoformat(),
+                'last_activity': datetime.utcnow().isoformat() + 'Z',
                 'data_uploads': [],
-                'investigation_history': [],
+                'case_history': [],
                 'agent_state': None
             }
             
@@ -566,7 +578,7 @@ class SessionManager:
                 "message": "Session data cleaned successfully",
                 "cleaned_items": {
                     "data_uploads": data_uploads_count,
-                    "investigation_history": investigation_history_count,
+                    "case_history": case_history_count,
                     "temp_files": 0  # Simulated - would clean actual temp files in production
                 }
             }
@@ -640,14 +652,14 @@ class SessionManager:
                             last_activity_str = session_data.get('last_activity', session_data.get('created_at'))
                             if last_activity_str:
                                 try:
-                                    last_activity = datetime.fromisoformat(last_activity_str)
+                                    last_activity = parse_utc_timestamp(last_activity_str)
                                     
                                     # Double-check if session is actually expired
                                     if last_activity < cutoff_time:
                                         # Calculate session duration for metrics
                                         created_at_str = session_data.get('created_at')
                                         if created_at_str:
-                                            created_at = datetime.fromisoformat(created_at_str)
+                                            created_at = parse_utc_timestamp(created_at_str)
                                             duration_hours = (last_activity - created_at).total_seconds() / 3600
                                             self._session_durations.append(duration_hours)
                                         

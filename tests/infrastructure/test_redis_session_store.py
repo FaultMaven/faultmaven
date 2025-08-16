@@ -21,9 +21,9 @@ class TestRedisSessionStore:
     @pytest.fixture
     def mock_redis_client(self):
         """Mock Redis client for testing"""
-        with patch('faultmaven.infrastructure.persistence.redis_session_store.RedisClient') as mock_redis_class:
+        with patch('faultmaven.infrastructure.persistence.redis_session_store.create_redis_client') as mock_redis_factory:
             mock_client = AsyncMock()
-            mock_redis_class.return_value = mock_client
+            mock_redis_factory.return_value = mock_client
             yield mock_client
     
     @pytest.fixture
@@ -282,7 +282,7 @@ class TestRedisSessionStore:
     
     def test_configuration_defaults(self):
         """Test default configuration values"""
-        with patch('faultmaven.infrastructure.persistence.redis_session_store.RedisClient'):
+        with patch('faultmaven.infrastructure.persistence.redis_session_store.create_redis_client'):
             store = RedisSessionStore()
             
             assert store.default_ttl == 1800  # 30 minutes in seconds
@@ -378,9 +378,9 @@ class TestRedisSessionStoreIntegration:
     @pytest.fixture
     def mock_redis_client(self):
         """Mock Redis client for integration testing"""
-        with patch('faultmaven.infrastructure.persistence.redis_session_store.RedisClient') as mock_redis_class:
+        with patch('faultmaven.infrastructure.persistence.redis_session_store.create_redis_client') as mock_redis_factory:
             mock_client = AsyncMock()
-            mock_redis_class.return_value = mock_client
+            mock_redis_factory.return_value = mock_client
             yield mock_client
     
     @pytest.fixture
@@ -403,7 +403,7 @@ class TestRedisSessionStoreIntegration:
     @pytest.mark.asyncio
     async def test_interface_compliance_comprehensive(self):
         """Comprehensive test of interface compliance"""
-        with patch('faultmaven.infrastructure.persistence.redis_session_store.RedisClient'):
+        with patch('faultmaven.infrastructure.persistence.redis_session_store.create_redis_client'):
             store = RedisSessionStore()
             
             # Test all interface methods exist and are callable

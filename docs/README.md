@@ -7,6 +7,7 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 ### 🏗️ Architecture & Design
 - **[System Architecture](architecture/SYSTEM_ARCHITECTURE.md)** - Complete system overview with visual diagrams
 - **[Component Interactions](architecture/COMPONENT_INTERACTIONS.md)** - Detailed interaction patterns and data flows
+- **[Infrastructure Layer Guide](architecture/infrastructure-layer-guide.md)** - 🆕 **NEW** - Internal vs external service patterns
 - **[Deployment Guide](architecture/DEPLOYMENT_GUIDE.md)** - Production deployment instructions
 - **[Current Architecture](architecture/current-architecture.md)** - Current implementation status
 - **[Interface-Based Design](architecture/interface-based-design.md)** - Clean architecture patterns
@@ -19,6 +20,9 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 - **[Configuration Reference](logging/configuration.md)** - Environment variables and setup
 - **[Operations Runbook](logging/operations-runbook.md)** - Production operations guide
 - **[Testing Guide](logging/testing-guide.md)** - Testing patterns and examples
+
+### 🔧 Infrastructure Documentation
+- **[Redis Architecture Guide](infrastructure/redis-architecture-guide.md)** - 🆕 **NEW** - Redis logging optimization and patterns
 
 ### 🔌 API Documentation
 - **[API Reference](api/README.md)** - Complete API documentation with examples

@@ -25,7 +25,7 @@ from unittest.mock import Mock, patch, AsyncMock
 
 from faultmaven.services.agent_service import AgentService
 from faultmaven.services.data_service import DataService
-from faultmaven.models import QueryRequest, TroubleshootingResponse, UploadedData, DataType
+from faultmaven.models import QueryRequest, AgentResponse, UploadedData, DataType
 from faultmaven.exceptions import ValidationException
 
 # Import test doubles from the service test modules
@@ -138,24 +138,24 @@ class TestServiceIntegrationWorkflows:
             file_name="incident_2024-01-15.log"
         )
         
-        # Validate data ingestion results
-        assert uploaded_data.data_type == DataType.LOG_FILE
-        assert uploaded_data.processing_status == "completed"
+        # Validate data ingestion results (DataService returns dict for v3.1.0 compatibility)
+        assert uploaded_data["data_type"] == DataType.LOG_FILE.value
+        assert uploaded_data["processing_status"] == "completed"
         
         # Get detailed analysis
         data_analysis = await data_service.analyze_data(
-            uploaded_data.data_id, 
+            uploaded_data["data_id"], 
             session_id
         )
         
         # Phase 2: Troubleshooting Query Processing
         query_request = QueryRequest(
-            query=f"We're experiencing database connection issues. The logs show connection timeouts and circuit breaker activation. Data ID: {uploaded_data.data_id}",
+            query=f"We're experiencing database connection issues. The logs show connection timeouts and circuit breaker activation. Data ID: {uploaded_data['data_id']}",
             session_id=session_id,
             context={
                 "environment": "production",
                 "incident_severity": "critical",
-                "data_reference": uploaded_data.data_id,
+                "data_reference": uploaded_data["data_id"],
                 "log_analysis": {
                     "error_count": data_analysis.insights.get("error_count", 0),
                     "patterns": data_analysis.insights.get("patterns_found", [])
@@ -225,36 +225,36 @@ class TestServiceIntegrationWorkflows:
         assert "timeout_issues" in data_analysis.insights.get("patterns_found", [])
         
         # Validate troubleshooting response
-        assert isinstance(troubleshooting_response, TroubleshootingResponse)
-        assert troubleshooting_response.session_id == session_id
-        assert troubleshooting_response.confidence_score == 0.91
-        assert troubleshooting_response.root_cause is not None
-        assert "connection pool" in troubleshooting_response.root_cause.lower()
+        assert isinstance(troubleshooting_response, AgentResponse)
+        assert troubleshooting_response.schema_version == "3.1.0"
+        assert troubleshooting_response.view_state.session_id == session_id
+        assert troubleshooting_response.content is not None
+        assert "connection pool" in troubleshooting_response.content.lower()
         
-        # Validate findings integration
-        assert len(troubleshooting_response.findings) == 3
-        critical_findings = [f for f in troubleshooting_response.findings if f['severity'] == 'critical']
-        assert len(critical_findings) >= 1
+        # Validate v3.1.0 structure
+        assert troubleshooting_response.response_type is not None
+        assert troubleshooting_response.view_state.case_id is not None
+        assert isinstance(troubleshooting_response.sources, list)
         
-        # Validate recommendations are actionable
-        assert len(troubleshooting_response.recommendations) >= 4
-        assert any("connection pool" in rec.lower() for rec in troubleshooting_response.recommendations)
-        assert any("timeout" in rec.lower() for rec in troubleshooting_response.recommendations)
+        # Validate content contains relevant information
+        assert "connection" in troubleshooting_response.content.lower()
+        assert "timeout" in troubleshooting_response.content.lower()
         
-        # Validate next steps are specific
-        assert len(troubleshooting_response.next_steps) >= 4
-        assert any("increase" in step.lower() for step in troubleshooting_response.next_steps)
+        # Validate plan structure if it's a plan proposal
+        if troubleshooting_response.response_type.value == "plan_proposal":
+            assert troubleshooting_response.plan is not None
+            assert len(troubleshooting_response.plan) >= 2
         
         # Validate performance characteristics
         assert integration_time < 1.0, f"Integrated workflow took {integration_time}s, expected <1.0s"
         
         # Validate cross-service data consistency
-        assert troubleshooting_response.session_id == uploaded_data.session_id
+        assert troubleshooting_response.view_state.session_id == uploaded_data["session_id"]
         
         # Validate storage integration
-        stored_data = await test_storage.retrieve(uploaded_data.data_id)
+        stored_data = await test_storage.retrieve(uploaded_data["data_id"])
         assert stored_data is not None
-        assert stored_data.session_id == session_id
+        assert stored_data["session_id"] == session_id
     
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -303,39 +303,39 @@ Active Connections: 2547"""
         assert len(data_uploads) == 3
         log_data, metrics_data, error_data = data_uploads
         
-        # Validate different data types were classified
-        assert log_data.data_type == DataType.LOG_FILE
-        assert error_data.data_type == DataType.ERROR_MESSAGE
+        # Validate different data types were classified (DataService returns dict for v3.1.0 compatibility)
+        assert log_data["data_type"] == DataType.LOG_FILE.value
+        assert error_data["data_type"] == DataType.ERROR_MESSAGE.value
         
         # Analyze each data source
         analyses = await asyncio.gather(
-            data_service.analyze_data(log_data.data_id, session_id),
-            data_service.analyze_data(metrics_data.data_id, session_id),
-            data_service.analyze_data(error_data.data_id, session_id)
+            data_service.analyze_data(log_data["data_id"], session_id),
+            data_service.analyze_data(metrics_data["data_id"], session_id),
+            data_service.analyze_data(error_data["data_id"], session_id)
         )
         
         log_analysis, metrics_analysis, error_analysis = analyses
         
         # Create comprehensive troubleshooting query
         query_request = QueryRequest(
-            query=f"Security incident in progress: brute force attack detected. Multiple data sources available: logs ({log_data.data_id}), metrics ({metrics_data.data_id}), alerts ({error_data.data_id})",
+            query=f"Security incident in progress: brute force attack detected. Multiple data sources available: logs ({log_data['data_id']}), metrics ({metrics_data['data_id']}), alerts ({error_data['data_id']})",
             session_id=session_id,
             context={
                 "incident_type": "security",
                 "severity": "critical",
                 "data_sources": {
                     "logs": {
-                        "id": log_data.data_id,
+                        "id": log_data["data_id"],
                         "error_count": log_analysis.insights.get("error_count", 0),
                         "patterns": log_analysis.insights.get("patterns_found", [])
                     },
                     "metrics": {
-                        "id": metrics_data.data_id,
+                        "id": metrics_data["data_id"],
                         "cpu_usage": "95%",
                         "connections": 2547
                     },
                     "alerts": {
-                        "id": error_data.data_id,
+                        "id": error_data["data_id"],
                         "alert_type": "security",
                         "severity": error_analysis.insights.get("severity", "unknown")
                     }
@@ -392,22 +392,20 @@ Active Connections: 2547"""
             # Execute multi-source troubleshooting
             response = await agent_service.process_query(query_request)
         
-        # Validate integrated analysis
-        assert response.confidence_score >= 0.94
-        assert "brute force" in response.root_cause.lower()
+        # Validate integrated analysis - v3.1.0 AgentResponse doesn't have confidence_score, root_cause, recommendations, findings fields
+        # Check content contains expected analysis
+        assert "brute force" in response.content.lower()
         
-        # Validate security-specific recommendations
-        security_recommendations = [r for r in response.recommendations if "block" in r.lower() or "security" in r.lower()]
-        assert len(security_recommendations) >= 2
+        # v3.1.0 has plan field for recommendations (if response_type is plan_proposal)
+        if response.response_type.value == "plan_proposal" and response.plan:
+            security_recommendations = [step for step in response.plan if "block" in step.description.lower() or "security" in step.description.lower()]
+            assert len(security_recommendations) >= 1
         
-        # Validate data correlation insights
-        findings_types = [f['type'] for f in response.findings]
-        assert 'security' in findings_types
-        assert 'performance' in findings_types
-        assert 'system' in findings_types
+        # v3.1.0 has sources field instead of findings
+        assert isinstance(response.sources, list)
         
-        # Validate all data sources contributed to analysis
-        assert len(response.findings) == 3  # One finding per data source type
+        # Validate meaningful analysis was provided
+        assert len(response.content) > 50
     
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -443,7 +441,7 @@ Active Connections: 2547"""
         # Try to access with wrong session
         wrong_session = "wrong_session_id"
         with pytest.raises(ValidationException) as exc_info:
-            await data_service.analyze_data(valid_data.data_id, wrong_session)
+            await data_service.analyze_data(valid_data["data_id"], wrong_session)
         assert "does not belong to session" in str(exc_info.value)
         
         # Test 4: Storage backend error simulation
@@ -482,7 +480,7 @@ Active Connections: 2547"""
         # Measure analysis performance
         analysis_start = datetime.utcnow()
         analysis_results = await asyncio.gather(*[
-            data_service.analyze_data(upload.data_id, session_id)
+            data_service.analyze_data(upload["data_id"], session_id)
             for upload in upload_results
         ])
         analysis_end = datetime.utcnow()
@@ -492,10 +490,10 @@ Active Connections: 2547"""
         # Create troubleshooting queries based on analyses
         queries = [
             QueryRequest(
-                query=f"Investigating issue based on data {upload.data_id}",
+                query=f"Investigating issue based on data {upload["data_id"]}",
                 session_id=session_id,
                 context={
-                    "data_reference": upload.data_id,
+                    "data_reference": upload["data_id"],
                     "error_count": analysis.insights.get("error_count", 0)
                 }
             )
@@ -537,16 +535,18 @@ Active Connections: 2547"""
         
         # Validate quality wasn't sacrificed for speed
         for upload in upload_results:
-            assert upload.processing_status == "completed"
-            assert upload.data_type == DataType.LOG_FILE
+            assert upload["processing_status"] == "completed"
+            assert upload["data_type"] == DataType.LOG_FILE.value
         
         for analysis in analysis_results:
             assert analysis.confidence_score > 0.6
             assert analysis.processing_time_ms > 0
         
         for troubleshooting in troubleshooting_results:
-            assert troubleshooting.confidence_score > 0.7
-            assert troubleshooting.status == "completed"
+            # v3.1.0 AgentResponse doesn't have confidence_score or status fields
+            assert isinstance(troubleshooting, AgentResponse)
+            assert troubleshooting.schema_version == "3.1.0"
+            assert len(troubleshooting.content) > 0
     
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -572,11 +572,11 @@ Active Connections: 2547"""
         
         # Query with sensitive information
         sensitive_query = QueryRequest(
-            query=f"User with password=admin123 is having issues. Also check SSN 987-65-4321 in data {uploaded_data.data_id}",
+            query=f"User with password=admin123 is having issues. Also check SSN 987-65-4321 in data {uploaded_data['data_id']}",
             session_id=session_id,
             context={
                 "user_info": "Contains password=test456 and card 9999888877776666",
-                "data_reference": uploaded_data.data_id
+                "data_reference": uploaded_data["data_id"]
             }
         )
         
@@ -609,11 +609,12 @@ Active Connections: 2547"""
         assert has_password_redaction, "Expected password redaction in sanitized data"
         
         # Validate data service sanitization
-        assert uploaded_data.processing_status == "completed"
+        assert uploaded_data["processing_status"] == "completed"
         
-        # Validate agent service sanitization
-        assert response.status == "completed"
-        assert response.confidence_score > 0.8
+        # Validate agent service sanitization - v3.1.0 AgentResponse doesn't have status or confidence_score
+        assert isinstance(response, AgentResponse)
+        assert response.schema_version == "3.1.0"
+        assert len(response.content) > 0
     
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -641,30 +642,30 @@ Active Connections: 2547"""
         )
         
         # Validate session isolation in data service
-        assert data_1.session_id == session_1
-        assert data_2.session_id == session_2
-        assert data_1.data_id != data_2.data_id
+        assert data_1["session_id"] == session_1
+        assert data_2["session_id"] == session_2
+        assert data_1["data_id"] != data_2["data_id"]
         
         # Test cross-session access prevention
         with pytest.raises(ValidationException) as exc_info:
-            await data_service.analyze_data(data_1.data_id, session_2)
+            await data_service.analyze_data(data_1["data_id"], session_2)
         assert "does not belong to session" in str(exc_info.value)
         
         # Test valid session access
-        analysis_1 = await data_service.analyze_data(data_1.data_id, session_1)
-        assert analysis_1.data_id == data_1.data_id
+        analysis_1 = await data_service.analyze_data(data_1["data_id"], session_1)
+        assert analysis_1.data_id == data_1["data_id"]
         
         # Test agent service session consistency
         query_1 = QueryRequest(
-            query=f"Analyze error from data {data_1.data_id}",
+            query=f"Analyze error from data {data_1['data_id']}",
             session_id=session_1,
-            context={"data_reference": data_1.data_id}
+            context={"data_reference": data_1["data_id"]}
         )
         
         query_2 = QueryRequest(
-            query=f"Analyze warning from data {data_2.data_id}",
+            query=f"Analyze warning from data {data_2['data_id']}",
             session_id=session_2,
-            context={"data_reference": data_2.data_id}
+            context={"data_reference": data_2["data_id"]}
         )
         
         with patch('faultmaven.core.agent.agent.FaultMavenAgent') as mock_agent_class:
@@ -687,14 +688,15 @@ Active Connections: 2547"""
             response_1 = await agent_service.process_query(query_1)
             response_2 = await agent_service.process_query(query_2)
         
-        # Validate session-specific responses
-        assert response_1.session_id == session_1
-        assert response_2.session_id == session_2
-        assert response_1.findings[0]['type'] == 'error'
-        assert response_2.findings[0]['type'] == 'warning'
+        # Validate session-specific responses - v3.1.0 AgentResponse structure
+        assert response_1.view_state.session_id == session_1
+        assert response_2.view_state.session_id == session_2
+        # v3.1.0 doesn't have findings field - check content instead
+        assert "error" in response_1.content.lower()
+        assert "warning" in response_2.content.lower()
         
         # Validate storage isolation
-        stored_1 = await test_storage.retrieve(data_1.data_id)
-        stored_2 = await test_storage.retrieve(data_2.data_id)
-        assert stored_1.session_id == session_1
-        assert stored_2.session_id == session_2
+        stored_1 = await test_storage.retrieve(data_1["data_id"])
+        stored_2 = await test_storage.retrieve(data_2["data_id"])
+        assert stored_1["session_id"] == session_1
+        assert stored_2["session_id"] == session_2

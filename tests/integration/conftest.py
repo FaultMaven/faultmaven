@@ -2,14 +2,18 @@
 Integration test configuration and fixtures.
 
 Provides shared fixtures for integration tests that interact with the
-full application stack via docker-compose.
+full application stack via docker-compose. Enhanced with Phase 2 
+integration testing capabilities including memory, planning, reasoning,
+knowledge, and orchestration system testing.
 """
 
 import asyncio
 import io
 import os
 import time
+from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Dict
+from unittest.mock import Mock, AsyncMock
 
 import httpx
 import pytest
@@ -17,6 +21,11 @@ import pytest_asyncio
 import redis.asyncio as redis
 
 from .mock_servers import MockServerManager
+from faultmaven.models.interfaces import (
+    IMemoryService, IPlanningService, ILLMProvider, ITracer, IVectorStore, ISanitizer
+)
+from faultmaven.core.orchestration.troubleshooting_orchestrator import WorkflowContext
+from faultmaven.exceptions import ServiceException, ValidationException
 
 # Configure pytest-asyncio to fix deprecation warnings
 pytest_asyncio.asyncio_default_fixture_loop_scope = "function"
@@ -384,3 +393,332 @@ def kb_document_upload(sample_kb_document: str) -> Dict[str, Any]:
         "document_type": "troubleshooting_guide",
         "tags": "database,connection,troubleshooting",
     }
+
+
+# Phase 2 Integration Test Fixtures
+
+@pytest.fixture
+async def mock_vector_store_integration():
+    """Comprehensive mock vector store for Phase 2 integration testing"""
+    vector_store = Mock()
+    
+    # Enhanced search functionality with realistic responses
+    async def mock_search(query, k=10, **kwargs):
+        # Simulate different response types based on query content
+        if "database" in query.lower():
+            return [
+                {
+                    "id": "db_doc_1",
+                    "content": "Database connection pool optimization strategies for high-throughput applications",
+                    "metadata": {"source": "database-optimization.md", "type": "guide", "complexity": "advanced"},
+                    "score": 0.95
+                },
+                {
+                    "id": "db_doc_2", 
+                    "content": "Troubleshooting PostgreSQL connection timeout issues in production environments",
+                    "metadata": {"source": "postgres-troubleshooting.md", "type": "troubleshooting", "complexity": "intermediate"},
+                    "score": 0.88
+                }
+            ]
+        elif "performance" in query.lower():
+            return [
+                {
+                    "id": "perf_doc_1",
+                    "content": "API performance optimization techniques for microservices architecture",
+                    "metadata": {"source": "api-performance.md", "type": "guide", "complexity": "advanced"},
+                    "score": 0.92
+                }
+            ]
+        else:
+            return [
+                {
+                    "id": f"generic_doc_{i}",
+                    "content": f"Generic troubleshooting document {i} related to: {query[:50]}",
+                    "metadata": {"source": f"generic-{i}.md", "type": "reference", "complexity": "basic"},
+                    "score": 0.7 - (i * 0.1)
+                }
+                for i in range(min(k, 3))
+            ]
+    
+    vector_store.search = AsyncMock(side_effect=mock_search)
+    return vector_store
+
+
+@pytest.fixture
+async def mock_llm_provider_integration():
+    """Sophisticated mock LLM provider for Phase 2 integration testing"""
+    llm = Mock()
+    
+    # Counter to track usage for realistic learning simulation
+    call_count = 0
+    interaction_history = []
+    
+    async def mock_generate(prompt, context=None, **kwargs):
+        nonlocal call_count, interaction_history
+        call_count += 1
+        
+        # Store interaction for learning simulation
+        interaction_history.append({
+            "prompt": prompt,
+            "context": context,
+            "timestamp": datetime.utcnow(),
+            "call_number": call_count
+        })
+        
+        # Simulate different response types based on prompt content
+        if "troubleshoot" in prompt.lower() or "diagnose" in prompt.lower():
+            return {
+                "response": f"Based on the symptoms described, this appears to be a database connectivity issue. Recommended approach: systematic analysis of connection pool and network configuration",
+                "confidence": 0.85 + (call_count % 10) / 100,
+                "reasoning": f"Analysis based on {len(interaction_history)} previous interactions and domain expertise",
+                "issue_type": "database_connectivity",
+                "recommendations": [
+                    "Immediate: Check system logs for error patterns",
+                    "Short-term: Implement monitoring for early detection", 
+                    "Long-term: Review architecture for resilience"
+                ]
+            }
+        elif "plan" in prompt.lower() or "strategy" in prompt.lower():
+            return {
+                "response": f"Strategic plan for addressing this issue: systematic troubleshooting approach with phased implementation",
+                "confidence": 0.80 + (call_count % 15) / 100,
+                "reasoning": "Strategic planning based on best practices and similar cases",
+                "plan_type": "systematic_approach",
+                "phases": [
+                    "Assessment and scoping",
+                    "Root cause analysis", 
+                    "Solution implementation",
+                    "Validation and monitoring"
+                ]
+            }
+        else:
+            return {
+                "response": f"AI analysis of the provided information: {prompt[:100]}...",
+                "confidence": 0.70,
+                "reasoning": "General analysis without specific domain expertise",
+                "analysis_type": "general"
+            }
+    
+    llm.generate = AsyncMock(side_effect=mock_generate)
+    return llm
+
+
+@pytest.fixture
+def sample_complex_workflow_context():
+    """Complex workflow context for comprehensive integration testing"""
+    return WorkflowContext(
+        session_id="integration-test-session-complex",
+        case_id="integration-test-case-complex",
+        user_id="integration-test-user-complex",
+        problem_description="Complex multi-system issue affecting database performance, API response times, and user authentication across microservices architecture",
+        initial_context={
+            "affected_services": ["user-api", "auth-service", "database-cluster"],
+            "environment": "production",
+            "infrastructure": "kubernetes",
+            "database_type": "postgresql",
+            "monitoring_alerts": [
+                "High database connection count",
+                "API response time SLA breach",
+                "Authentication failure rate spike"
+            ],
+            "recent_changes": [
+                "Database schema migration deployed 2 hours ago",
+                "Auth service scaling policy updated yesterday", 
+                "New rate limiting rules activated this morning"
+            ],
+            "business_impact": {
+                "severity": "high",
+                "affected_users": 15000,
+                "revenue_impact": "moderate",
+                "customer_complaints": 47
+            }
+        },
+        priority_level="critical",
+        domain_expertise="expert",
+        time_constraints=1800,  # 30 minutes
+        available_tools=["enhanced_knowledge_search", "knowledge_discovery", "web_search", "log_analysis"]
+    )
+
+
+@pytest.fixture
+def workflow_test_scenarios():
+    """Predefined workflow scenarios for integration testing"""
+    return [
+        {
+            "name": "Database Performance Issue",
+            "problem_description": "Database queries are timing out and connection pool is exhausted",
+            "context": {
+                "service": "user-api",
+                "database": "postgresql",
+                "environment": "production",
+                "symptoms": ["timeouts", "connection_pool_exhaustion", "high_latency"]
+            },
+            "priority": "high",
+            "expected_phases": ["define_blast_radius", "establish_timeline", "formulate_hypothesis", "validate_hypothesis", "propose_solution"],
+            "expected_insights": ["database_performance", "connection_management"]
+        },
+        {
+            "name": "Security Incident",
+            "problem_description": "Unauthorized access attempts detected in authentication logs",
+            "context": {
+                "service": "auth-service",
+                "issue_type": "security_breach",
+                "environment": "production",
+                "symptoms": ["unauthorized_access", "suspicious_logs", "authentication_failures"]
+            },
+            "priority": "critical",
+            "expected_phases": ["define_blast_radius", "establish_timeline", "formulate_hypothesis", "validate_hypothesis", "propose_solution", "verification"],
+            "expected_insights": ["security_analysis", "access_patterns"]
+        }
+    ]
+
+
+@pytest.fixture
+def memory_test_interactions():
+    """Pre-defined interactions for memory integration testing"""
+    return [
+        {
+            "session_id": "memory-test-session-1",
+            "user_input": "Database connection pool exhausted errors",
+            "ai_response": "Increase max_connections and pool_size parameters to resolve connection exhaustion",
+            "context": {
+                "issue_type": "database_connection",
+                "resolution": "parameter_tuning",
+                "success": True,
+                "resolution_time": 450
+            }
+        },
+        {
+            "session_id": "memory-test-session-2", 
+            "user_input": "API response times degraded after deployment",
+            "ai_response": "Deployment introduced inefficient queries - optimized query performance",
+            "context": {
+                "issue_type": "performance_degradation",
+                "trigger": "deployment",
+                "resolution": "query_optimization", 
+                "success": True,
+                "improvement": "60% faster"
+            }
+        }
+    ]
+
+
+@pytest.fixture
+async def integration_test_metrics():
+    """Metrics collection for integration testing"""
+    metrics = {
+        "start_time": time.time(),
+        "operations": [],
+        "errors": [],
+        "performance_data": {}
+    }
+    
+    def record_operation(operation_type, duration, success=True, metadata=None):
+        metrics["operations"].append({
+            "type": operation_type,
+            "duration": duration,
+            "success": success,
+            "metadata": metadata or {},
+            "timestamp": time.time()
+        })
+    
+    def record_error(error_type, error_message, context=None):
+        metrics["errors"].append({
+            "type": error_type,
+            "message": error_message,
+            "context": context or {},
+            "timestamp": time.time()
+        })
+    
+    def get_summary():
+        total_time = time.time() - metrics["start_time"]
+        total_operations = len(metrics["operations"])
+        successful_operations = len([op for op in metrics["operations"] if op["success"]])
+        
+        return {
+            "total_time": total_time,
+            "total_operations": total_operations,
+            "successful_operations": successful_operations,
+            "success_rate": successful_operations / total_operations if total_operations > 0 else 0,
+            "avg_operation_time": sum(op["duration"] for op in metrics["operations"]) / total_operations if total_operations > 0 else 0,
+            "total_errors": len(metrics["errors"]),
+            "throughput": total_operations / total_time if total_time > 0 else 0
+        }
+    
+    metrics["record_operation"] = record_operation
+    metrics["record_error"] = record_error
+    metrics["get_summary"] = get_summary
+    
+    return metrics
+
+
+# Performance testing utilities
+class PerformanceTimer:
+    """Utility class for measuring performance in integration tests"""
+    
+    def __init__(self, name):
+        self.name = name
+        self.start_time = None
+        self.end_time = None
+        
+    def __enter__(self):
+        self.start_time = time.time()
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.end_time = time.time()
+        
+    @property
+    def duration(self):
+        if self.start_time and self.end_time:
+            return self.end_time - self.start_time
+        return None
+
+
+@pytest.fixture
+def performance_timer():
+    """Performance timer utility for integration tests"""
+    return PerformanceTimer
+
+
+# Async utilities for integration testing
+class AsyncTestUtilities:
+    """Utilities for async integration testing"""
+    
+    @staticmethod
+    async def run_concurrent_tasks(tasks, max_concurrency=10):
+        """Run tasks with controlled concurrency"""
+        semaphore = asyncio.Semaphore(max_concurrency)
+        
+        async def run_with_semaphore(task):
+            async with semaphore:
+                return await task
+        
+        return await asyncio.gather(*[run_with_semaphore(task) for task in tasks], return_exceptions=True)
+    
+    @staticmethod
+    async def measure_async_performance(async_func, *args, **kwargs):
+        """Measure performance of async function"""
+        start_time = time.time()
+        try:
+            result = await async_func(*args, **kwargs)
+            success = True
+            error = None
+        except Exception as e:
+            result = None
+            success = False
+            error = str(e)
+        end_time = time.time()
+        
+        return {
+            "result": result,
+            "duration": end_time - start_time,
+            "success": success,
+            "error": error
+        }
+
+
+@pytest.fixture
+def async_test_utils():
+    """Async testing utilities for integration tests"""
+    return AsyncTestUtilities

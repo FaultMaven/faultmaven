@@ -208,24 +208,25 @@ Returns:
 
 #### POST
 
-**Troubleshoot**
+**Query v3.1.0 Schema**
 
-Process troubleshooting query with clean delegation pattern
+Process troubleshooting query using the modern v3.1.0 schema with structured responses
 
-This endpoint follows the thin controller pattern:
-1. Minimal input validation (handled by Pydantic models)
-2. Pure delegation to service layer
-3. Clean error boundary handling
+This endpoint provides:
+1. Intent-driven responses with explicit `ResponseType`
+2. Evidence-based answers with structured `Source` attribution
+3. ViewState for session and case tracking
+4. Multi-step plans for complex troubleshooting workflows
 
 Args:
-    request: QueryRequest with query, session_id, context, priority
-    agent_service: Injected AgentServiceRefactored from DI container
+    request: QueryRequest with query, session_id
+    agent_service: Injected AgentService from DI container
     
 Returns:
-    TroubleshootingResponse with findings and recommendations
+    AgentResponse with v3.1.0 schema including content, response_type, view_state, sources, and optional plan
     
 Raises:
-    HTTPException: On service layer errors (404, 500, etc.)
+    HTTPException: On service layer errors (400, 404, 422, 500)
 
 **Tags:** `query_processing`, `query_processing`
 
@@ -235,62 +236,81 @@ Content-Type: `application/json`
 
 **Responses:**
 
-**200** - Successful Response
+**200** - Successful Response (v3.1.0 Schema)
 
 ```json
 {
-  "investigation_id": "inv_789",
-  "status": "completed",
-  "findings": [
+  "schema_version": "3.1.0",
+  "content": "Database connection pool exhausted. The application is unable to establish new database connections, causing HTTP 500 errors. I recommend immediately increasing the connection pool size and reviewing the application for connection leaks.",
+  "response_type": "answer",
+  "view_state": {
+    "session_id": "session_db_123",
+    "case_id": "case_def456",
+    "running_summary": "Investigating HTTP 500 errors in production API. Found database connection pool exhaustion as root cause.",
+    "uploaded_data": [
+      {
+        "id": "data_123",
+        "name": "application.log",
+        "type": "log_file"
+      }
+    ]
+  },
+  "sources": [
     {
-      "type": "root_cause",
-      "message": "Database connection pool exhausted due to connection leak",
-      "severity": "high",
-      "confidence": 0.9,
-      "evidence": [
-        "Connection pool size: 20, Active connections: 20",
-        "No idle connections available",
-        "Long-running transactions detected"
-      ]
-    }
-  ],
-  "recommendations": [
-    {
-      "action": "Increase database connection pool size to 50",
-      "priority": "immediate",
-      "impact": "Should restore service within 5 minutes",
-      "effort": "low"
+      "type": "log_file",
+      "name": "application.log",
+      "snippet": "Connection pool size: 20, Active connections: 20, Queue length: 15"
     },
     {
-      "action": "Review application code for connection leaks",
-      "priority": "high",
-      "impact": "Prevents future occurrences",
-      "effort": "medium"
-    }
-  ],
-  "session_id": "session_db_123",
-  "reasoning_trace": [
-    {
-      "step": "symptom_analysis",
-      "reasoning": "HTTP 500 errors correlate with database timeout errors",
-      "data_sources": [
-        "application_logs",
-        "database_metrics"
-      ]
-    },
-    {
-      "step": "hypothesis_formation",
-      "reasoning": "Connection pool exhaustion is most likely cause given metrics",
-      "data_sources": [
-        "connection_pool_metrics",
-        "transaction_logs"
-      ]
+      "type": "knowledge_base",
+      "name": "database_troubleshooting.md",
+      "snippet": "Connection pool exhaustion is indicated by maxActive = activeCount and queue buildup"
     }
   ]
 }
 ```
 
-**422** - Validation Error
+**Example PLAN_PROPOSAL Response:**
+
+```json
+{
+  "schema_version": "3.1.0",
+  "content": "I've identified the root cause as database connection pool exhaustion. Here's a step-by-step plan to resolve this issue:",
+  "response_type": "plan_proposal",
+  "view_state": {
+    "session_id": "session_db_123", 
+    "case_id": "case_def456",
+    "running_summary": "Database connection pool exhaustion causing HTTP 500 errors. Multi-step resolution plan prepared.",
+    "uploaded_data": []
+  },
+  "sources": [
+    {
+      "type": "knowledge_base",
+      "name": "incident_response_playbook.md", 
+      "snippet": "For immediate relief, increase pool size by 50%, then investigate leaks"
+    }
+  ],
+  "plan": [
+    {
+      "description": "Immediately increase database connection pool size from 20 to 50"
+    },
+    {
+      "description": "Monitor active connections and response times for 10 minutes"
+    },
+    {
+      "description": "Review application logs for connection leak patterns"
+    },
+    {
+      "description": "Implement connection pool monitoring alerts"
+    }
+  ]
+}
+```
+
+**400** - Bad Request - Invalid input data  
+**404** - Not Found - Session or resource not found  
+**422** - Validation Error - Request validation failed  
+**500** - Internal Server Error - Service processing error
 
 ---
 
@@ -1877,28 +1897,120 @@ Model for uploaded data processing
 
 **Properties:**
 
-- `detail` (string) ✅ - Human-readable error description
-- `error_type` (string) ❌ - Machine-readable error classification
-- `correlation_id` (string) ❌ - Unique identifier for request tracing and support
-- `timestamp` (string) ❌ - Error occurrence timestamp in ISO format
-- `context` (object) ❌ - Additional error context for debugging
+- `schema_version` (string) ✅ - Always "3.1.0" for new responses
+- `error` (object) ✅ - Error details object containing code and message
 
 **Example:**
 
 ```json
 {
-  "detail": "Invalid session ID provided",
-  "error_type": "ValidationError",
-  "correlation_id": "123e4567-e89b-12d3-a456-426614174000",
-  "timestamp": "2025-01-15T10:30:00Z",
-  "context": {
-    "session_id": "invalid_session_123",
-    "validation_errors": [
-      "Session ID format invalid"
-    ]
+  "schema_version": "3.1.0",
+  "error": {
+    "code": "SESSION_NOT_FOUND",
+    "message": "The specified session ID does not exist or has expired"
   }
 }
 ```
+
+---
+
+## v3.1.0 Schema Models
+
+### AgentResponse
+
+**Primary response model for the v3.1.0 API schema**
+
+**Properties:**
+
+- `schema_version` (string) ✅ - Always "3.1.0"
+- `content` (string) ✅ - Main response content from the AI agent
+- `response_type` (ResponseType) ✅ - Explicit agent intent for this response
+- `view_state` (ViewState) ✅ - Read-only state snapshot for frontend sync
+- `sources` (array) ❌ - List of Source objects for evidence attribution
+- `plan` (array) ❌ - List of PlanStep objects (only for PLAN_PROPOSAL responses)
+
+**Example:**
+
+```json
+{
+  "schema_version": "3.1.0",
+  "content": "Your database connection pool is exhausted...",
+  "response_type": "answer",
+  "view_state": {
+    "session_id": "sess_123",
+    "case_id": "case_456",
+    "running_summary": "Investigating connection issues",
+    "uploaded_data": []
+  },
+  "sources": [
+    {
+      "type": "log_file",
+      "name": "app.log", 
+      "snippet": "Connection pool exhausted"
+    }
+  ]
+}
+```
+
+---
+
+### ResponseType
+
+**Enumeration defining the agent's primary intent**
+
+**Values:**
+
+- `answer` - Direct answer to user's question
+- `plan_proposal` - Multi-step troubleshooting plan
+- `clarification_request` - Agent needs more information
+- `confirmation_request` - Agent needs user confirmation to proceed
+
+---
+
+### ViewState
+
+**Read-only state snapshot for frontend synchronization**
+
+**Properties:**
+
+- `session_id` (string) ✅ - Current session identifier
+- `case_id` (string) ✅ - Persistent investigation case identifier  
+- `running_summary` (string) ✅ - Current investigation summary
+- `uploaded_data` (array) ✅ - List of UploadedData objects in this session
+
+---
+
+### Source
+
+**Evidence attribution for user trust and verifiability**
+
+**Properties:**
+
+- `type` (SourceType) ✅ - Type of evidence source
+- `name` (string) ✅ - Source name (filename, document title, etc.)
+- `snippet` (string) ✅ - Relevant excerpt from the source
+
+---
+
+### SourceType
+
+**Enumeration defining the origin of evidence**
+
+**Values:**
+
+- `knowledge_base` - From ingested knowledge base documents
+- `log_file` - From uploaded log files
+- `web_search` - From web search results
+
+---
+
+### PlanStep
+
+**Individual step in a multi-step troubleshooting plan**
+
+**Properties:**
+
+- `description` (string) ✅ - Clear description of the step to perform
 
 ---
 

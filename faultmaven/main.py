@@ -48,7 +48,7 @@ from .infrastructure.logging.config import get_logger
 logger = get_logger(__name__)
 
 # Import API routes
-from .api.v1.routes import agent, data, knowledge, session
+from .api.v1.routes import agent, data, knowledge, session, enhanced_agent, orchestration
 
 from .infrastructure.observability.tracing import init_opik_tracing
 from .api.middleware.logging import LoggingMiddleware
@@ -270,6 +270,22 @@ def setup_middleware():
     app.add_middleware(PerformanceTrackingMiddleware, service_name="faultmaven_api")
     if logging_enabled:
         logger.info(f"After PerformanceTrackingMiddleware: {[type(m).__name__ for m in app.user_middleware]}")
+    
+    # 3.6. System-wide optimization middleware (Phase 2 optimization)
+    from .api.middleware.system_optimization import SystemOptimizationMiddleware
+    if logging_enabled:
+        logger.info("Adding SystemOptimizationMiddleware to FastAPI app")
+    app.add_middleware(
+        SystemOptimizationMiddleware,
+        enable_compression=True,
+        enable_caching=True,
+        enable_background_optimization=True,
+        enable_resource_cleanup=True,
+        cache_ttl_seconds=300,
+        compression_threshold=1024
+    )
+    if logging_enabled:
+        logger.info(f"After SystemOptimizationMiddleware: {[type(m).__name__ for m in app.user_middleware]}")
 
     # 4. Opik tracing middleware (if available) - now coordinated with unified logging
     if OPIK_AVAILABLE and OPIK_MIDDLEWARE_AVAILABLE:
@@ -301,6 +317,12 @@ app.include_router(knowledge.router, prefix="/api/v1", tags=["knowledge_base"])
 app.include_router(knowledge.kb_router, prefix="/api/v1", tags=["knowledge_base"])
 
 app.include_router(session.router, prefix="/api/v1", tags=["session_management"])
+
+# Phase 2: Enhanced Agent routes with advanced intelligence
+app.include_router(enhanced_agent.router, prefix="/api/v1", tags=["enhanced_intelligence"])
+
+# Phase 2: Multi-Step Troubleshooting Orchestration
+app.include_router(orchestration.router, prefix="/api/v1", tags=["multi_step_orchestration"])
 
 
 
@@ -353,7 +375,7 @@ async def health_check():
         # Enhanced health status with component details
         health_status = {
             "status": overall_status.value,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "overall_sla": sla_summary["overall_sla"],
             "components": {},
             "services": {"session_manager": "active", "api": "running"},
@@ -385,7 +407,7 @@ async def health_check():
         # Fallback to basic health status
         health_status = {
             "status": "degraded",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "error": "Enhanced health monitoring unavailable",
             "services": {"session_manager": "unknown", "api": "running"}
         }
@@ -481,7 +503,7 @@ async def health_check_dependencies():
                 sla_details[component_name] = {"error": str(e)}
         
         return {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "container_health": health,
             "service_tests": service_tests,
             "component_health": {
@@ -512,7 +534,7 @@ async def health_check_dependencies():
         return {
             "error": f"Enhanced dependency health check failed: {e}",
             "container_available": False,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
         }
 
 
@@ -526,7 +548,7 @@ async def logging_health_check():
         health_status = coordinator.get_health_status()
         
         # Add timestamp and additional metadata
-        health_status["timestamp"] = datetime.utcnow().isoformat()
+        health_status["timestamp"] = datetime.utcnow().isoformat() + 'Z'
         health_status["service"] = "logging"
         
         return health_status
@@ -535,7 +557,7 @@ async def logging_health_check():
         return {
             "status": "error",
             "error": f"Logging health check failed: {e}",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "service": "logging"
         }
 
@@ -558,7 +580,7 @@ async def health_check_sla():
                 detailed_sla[component_name] = {"error": str(e)}
         
         return {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "summary": sla_summary,
             "components": detailed_sla
         }
@@ -567,7 +589,7 @@ async def health_check_sla():
         logger.error(f"SLA health check failed: {e}")
         return {
             "error": f"SLA health check failed: {e}",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
         }
 
 
@@ -592,7 +614,7 @@ async def health_check_component(component_name: str):
             sla_details = {"error": str(e)}
         
         return {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "component_name": component_name,
             "health": {
                 "status": component_health.status.value,
@@ -612,7 +634,7 @@ async def health_check_component(component_name: str):
         return {
             "error": f"Component health check failed: {e}",
             "component_name": component_name,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
         }
 
 
@@ -629,7 +651,7 @@ async def health_check_error_patterns():
             error_context = context.error_context
             
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.utcnow().isoformat() + 'Z',
                 "escalation_level": error_context.escalation_level.value,
                 "detected_patterns": error_context.get_pattern_summary(),
                 "recovery_summary": error_context.get_recovery_summary(),
@@ -644,7 +666,7 @@ async def health_check_error_patterns():
             }
         else:
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.utcnow().isoformat() + 'Z',
                 "message": "No active error context",
                 "patterns": [],
                 "recovery_attempts": []
@@ -654,7 +676,7 @@ async def health_check_error_patterns():
         logger.error(f"Error patterns health check failed: {e}")
         return {
             "error": f"Error patterns health check failed: {e}",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
         }
 
 
@@ -680,7 +702,7 @@ async def get_performance_metrics():
         else:
             # Return basic metrics if middleware not found
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.utcnow().isoformat() + 'Z',
                 "error": "Performance middleware not found",
                 "metrics_collector": metrics_collector.get_metrics_summary(),
                 "apm_integration": apm_integration.get_export_statistics(),
@@ -691,7 +713,7 @@ async def get_performance_metrics():
         logger.error(f"Performance metrics endpoint failed: {e}")
         return {
             "error": f"Performance metrics failed: {e}",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
         }
 
 
@@ -710,7 +732,7 @@ async def get_realtime_metrics(time_window_minutes: int = 5):
         active_alerts = alert_manager.get_active_alerts()
         
         return {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "time_window_minutes": time_window_minutes,
             "dashboard": dashboard_data,
             "active_alerts": [
@@ -731,7 +753,7 @@ async def get_realtime_metrics(time_window_minutes: int = 5):
         logger.error(f"Real-time metrics endpoint failed: {e}")
         return {
             "error": f"Real-time metrics failed: {e}",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
         }
 
 
@@ -745,7 +767,7 @@ async def get_alert_status():
         alert_stats = alert_manager.get_alert_statistics()
         
         return {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "statistics": alert_stats,
             "active_alerts": [
                 {
@@ -769,7 +791,126 @@ async def get_alert_status():
         logger.error(f"Alert status endpoint failed: {e}")
         return {
             "error": f"Alert status failed: {e}",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
+        }
+
+
+@app.get("/metrics/optimization")
+async def get_system_optimization_metrics():
+    """Get comprehensive system optimization metrics."""
+    try:
+        # Find system optimization middleware
+        system_opt_middleware = None
+        for middleware in app.user_middleware:
+            if hasattr(middleware, 'cls') and middleware.cls.__name__ == 'SystemOptimizationMiddleware':
+                system_opt_middleware = middleware.cls
+                break
+        
+        optimization_metrics = {}
+        if system_opt_middleware and hasattr(system_opt_middleware, 'get_optimization_metrics'):
+            optimization_metrics = system_opt_middleware.get_optimization_metrics()
+        
+        # Get resource optimization metrics if available
+        resource_metrics = {}
+        try:
+            from .container import container
+            if hasattr(container, '_resource_optimization_service'):
+                resource_service = container._resource_optimization_service
+                if resource_service and hasattr(resource_service, 'get_resource_usage_stats'):
+                    resource_metrics = await resource_service.get_resource_usage_stats()
+        except Exception as e:
+            logger.warning(f"Failed to get resource optimization metrics: {e}")
+        
+        # Get LLM router optimization metrics if available
+        llm_optimization_metrics = {}
+        try:
+            from .container import container
+            llm_provider = container.get_llm_provider()
+            if hasattr(llm_provider, 'get_optimization_metrics'):
+                llm_optimization_metrics = llm_provider.get_optimization_metrics()
+        except Exception as e:
+            logger.warning(f"Failed to get LLM optimization metrics: {e}")
+        
+        return {
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "system_optimization": optimization_metrics,
+            "resource_optimization": resource_metrics,
+            "llm_optimization": llm_optimization_metrics,
+            "optimization_summary": {
+                "total_optimizations_applied": sum([
+                    optimization_metrics.get("requests_processed", 0),
+                    resource_metrics.get("optimization_metrics", {}).get("memory_pools_created", 0),
+                    llm_optimization_metrics.get("requests_batched", 0)
+                ]),
+                "performance_improvements": {
+                    "response_compression": optimization_metrics.get("compression_ratio", 0.0),
+                    "cache_hit_rate": optimization_metrics.get("cache_hit_rate", 0.0),
+                    "memory_pool_efficiency": resource_metrics.get("memory_pools", {}).get("efficiency", 0.0),
+                    "llm_batching_efficiency": llm_optimization_metrics.get("optimization_status", {}).get("batching_enabled", False)
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"System optimization metrics endpoint failed: {e}")
+        return {
+            "error": f"System optimization metrics failed: {e}",
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
+        }
+
+
+@app.get("/admin/optimization/trigger-cleanup")
+async def trigger_system_cleanup():
+    """Trigger comprehensive system cleanup and optimization."""
+    try:
+        cleanup_results = {}
+        
+        # Trigger resource optimization cleanup if available
+        try:
+            from .container import container
+            if hasattr(container, '_resource_optimization_service'):
+                resource_service = container._resource_optimization_service
+                if resource_service:
+                    cleanup_results["resource_cleanup"] = await resource_service.trigger_resource_cleanup(aggressive=True)
+        except Exception as e:
+            cleanup_results["resource_cleanup"] = {"error": str(e)}
+        
+        # Trigger manual garbage collection
+        import gc
+        collected_objects = gc.collect()
+        cleanup_results["garbage_collection"] = {
+            "objects_collected": collected_objects,
+            "memory_freed": True
+        }
+        
+        # Clear system optimization middleware caches if available
+        for middleware in app.user_middleware:
+            if hasattr(middleware, 'cls') and middleware.cls.__name__ == 'SystemOptimizationMiddleware':
+                try:
+                    if hasattr(middleware.cls, '_response_cache'):
+                        cache_size = len(middleware.cls._response_cache)
+                        middleware.cls._response_cache.clear()
+                        middleware.cls._cache_access_times.clear()
+                        middleware.cls._cache_hit_counts.clear()
+                        cleanup_results["cache_cleanup"] = {
+                            "entries_cleared": cache_size,
+                            "cache_reset": True
+                        }
+                except Exception as e:
+                    cleanup_results["cache_cleanup"] = {"error": str(e)}
+                break
+        
+        cleanup_results["timestamp"] = datetime.utcnow().isoformat() + 'Z'
+        cleanup_results["cleanup_triggered"] = True
+        
+        return cleanup_results
+        
+    except Exception as e:
+        logger.error(f"System cleanup trigger failed: {e}")
+        return {
+            "error": f"System cleanup failed: {e}",
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "cleanup_triggered": False
         }
 
 

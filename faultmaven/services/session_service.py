@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from faultmaven.services.base_service import BaseService
-from faultmaven.models import AgentState, SessionContext
+from faultmaven.models import AgentState, SessionContext, parse_utc_timestamp
 from faultmaven.models.interfaces import ITracer
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.session_management import SessionManager
@@ -294,9 +294,9 @@ class SessionService(BaseService):
                 duration = datetime.utcnow() - session.created_at
                 durations.append(duration.total_seconds() / 3600)
 
-            # Investigation analytics
-            total_investigations = sum(
-                len(s.investigation_history) for s in all_sessions
+            # Case analytics
+            total_cases = sum(
+                len(s.case_history) for s in all_sessions
             )
             
             # Data upload analytics
@@ -310,9 +310,9 @@ class SessionService(BaseService):
                     sum(durations) / len(durations) if durations else 0
                 ),
                 "max_session_duration_hours": max(durations) if durations else 0,
-                "total_investigations": total_investigations,
-                "average_investigations_per_session": (
-                    total_investigations / len(all_sessions) if all_sessions else 0
+                "total_cases": total_cases,
+                "average_cases_per_session": (
+                    total_cases / len(all_sessions) if all_sessions else 0
                 ),
                 "total_data_uploads": total_uploads,
                 "sessions_with_data": len([s for s in all_sessions if s.data_uploads]),
@@ -455,14 +455,14 @@ class SessionService(BaseService):
             duration = datetime.utcnow() - session.created_at
             is_active = await self._is_active(session)
 
-            # Extract investigation summary
-            investigation_summary = {
-                "total": len(session.investigation_history),
+            # Extract case summary
+            case_summary = {
+                "total": len(session.case_history),
                 "successful": len(
-                    [i for i in session.investigation_history 
+                    [i for i in session.case_history 
                      if i.get("confidence_score", 0) > 0.7]
                 ),
-                "recent": session.investigation_history[-5:] if session.investigation_history else [],
+                "recent": session.case_history[-5:] if session.case_history else [],
             }
 
             summary = {
@@ -473,7 +473,7 @@ class SessionService(BaseService):
                 "last_activity": session.last_activity.isoformat(),
                 "duration_hours": round(duration.total_seconds() / 3600, 2),
                 "data_uploads_count": len(session.data_uploads),
-                "investigation_summary": investigation_summary,
+                "case_summary": case_summary,
                 "current_agent_state": session.agent_state,
             }
 
@@ -549,10 +549,10 @@ class SessionService(BaseService):
                 if data_id not in primary.data_uploads:
                     await self.session_manager.add_data_upload(primary_session_id, data_id)
 
-            # Merge investigation history
-            for investigation in secondary.investigation_history:
-                await self.session_manager.add_investigation_history(
-                    primary_session_id, investigation
+            # Merge case history
+            for case_item in secondary.case_history:
+                await self.session_manager.add_case_history(
+                    primary_session_id, case_item
                 )
 
             # Delete secondary session
@@ -570,17 +570,17 @@ class SessionService(BaseService):
         self,
         session_id: str,
         query: str,
-        investigation_id: str,
+        case_id: str,
         context: Optional[Dict] = None,
         confidence_score: float = 0.0
     ) -> bool:
         """
-        Record a query operation in the session's investigation history
+        Record a query operation in the session's case history
         
         Args:
             session_id: Session identifier  
             query: The query text
-            investigation_id: Unique investigation identifier
+            case_id: Unique case identifier
             context: Optional context information
             confidence_score: Confidence score for the query result
             
@@ -588,16 +588,16 @@ class SessionService(BaseService):
             True if operation was recorded successfully
         """
         try:
-            investigation_record = {
+            case_record = {
                 "action": "query_processed",
-                "investigation_id": investigation_id,
+                "case_id": case_id,
                 "query": query,
                 "context": context or {},
                 "confidence_score": confidence_score,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat() + 'Z'
             }
             
-            await self.session_manager.add_investigation_history(session_id, investigation_record)
+            await self.session_manager.add_case_history(session_id, case_record)
             await self.update_last_activity(session_id)
             
             self.logger.debug(f"Recorded query operation for session {session_id}")
@@ -637,7 +637,7 @@ class SessionService(BaseService):
             # Add to data uploads
             await self.session_manager.add_data_upload(session_id, data_id)
             
-            # Also add to investigation history for tracking
+            # Also add to case history for tracking
             upload_record = {
                 "action": "data_uploaded",
                 "operation_type": operation_type,
@@ -646,10 +646,10 @@ class SessionService(BaseService):
                 "filename": filename,
                 "file_size": file_size,
                 "metadata": metadata or {},
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat() + 'Z'
             }
             
-            await self.session_manager.add_investigation_history(session_id, upload_record)
+            await self.session_manager.add_case_history(session_id, upload_record)
             await self.update_last_activity(session_id)
             
             self.logger.debug(f"Recorded data upload operation for session {session_id}")
@@ -700,9 +700,9 @@ class SessionService(BaseService):
                 # Check if session matches all criteria
                 matches = True
                 for key, value in criteria.items():
-                    # Check in agent state investigation context
+                    # Check in agent state case context
                     if (session.agent_state and 
-                        session.agent_state.get("investigation_context", {}).get(key) != value):
+                        session.agent_state.get("case_context", {}).get(key) != value):
                         matches = False
                         break
                 
@@ -838,3 +838,255 @@ class SessionService(BaseService):
                 "completed_sessions": 0,
                 "success_rate": 0
             }
+
+    @trace("session_service_get_or_create_case")
+    async def get_or_create_current_case_id(self, session_id: str, force_new_case: bool = False) -> str:
+        """
+        Get the current case ID for a session, or create a new one
+        
+        Args:
+            session_id: Session identifier
+            force_new_case: If True, always create a new case (start new conversation)
+            
+        Returns:
+            Current or new case ID for the session
+            
+        Raises:
+            ValidationException: If session_id is invalid
+            RuntimeError: If case management fails
+        """
+        if not session_id or not session_id.strip():
+            raise ValidationException("Session ID cannot be empty")
+            
+        try:
+            session = await self.get_session(session_id, validate=False)
+            if not session:
+                raise FileNotFoundError(f"Session {session_id} not found")
+            
+            # If forcing new case or no current case exists, create new one
+            if force_new_case or not session.current_case_id:
+                import uuid
+                new_case_id = str(uuid.uuid4())
+                
+                # Update session with new case ID
+                await self.update_session(session_id, {"current_case_id": new_case_id}, validate_state=False)
+                
+                self.logger.info(f"{'Created new case' if force_new_case else 'Initialized case'} {new_case_id} for session {session_id}")
+                return new_case_id
+            
+            # Return existing case ID
+            self.logger.debug(f"Using existing case {session.current_case_id} for session {session_id}")
+            return session.current_case_id
+            
+        except ValidationException:
+            raise
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to get/create case for session {session_id}: {e}")
+            raise RuntimeError(f"Case management failed: {str(e)}") from e
+
+    @trace("session_service_start_new_case")
+    async def start_new_case(self, session_id: str) -> str:
+        """
+        Start a new case/conversation thread for a session
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            New case ID
+            
+        Raises:
+            ValidationException: If session_id is invalid
+            RuntimeError: If new case creation fails
+        """
+        if not session_id or not session_id.strip():
+            raise ValidationException("Session ID cannot be empty")
+            
+        try:
+            # Force creation of new case
+            new_case_id = await self.get_or_create_current_case_id(session_id, force_new_case=True)
+            
+            # Record the case start in case history
+            case_start_record = {
+                "action": "new_case_started",
+                "case_id": new_case_id,
+                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "details": "New conversation thread initiated"
+            }
+            
+            await self.session_manager.add_case_history(session_id, case_start_record)
+            
+            self.logger.info(f"Started new case {new_case_id} for session {session_id}")
+            return new_case_id
+            
+        except ValidationException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to start new case for session {session_id}: {e}")
+            raise RuntimeError(f"New case creation failed: {str(e)}") from e
+
+    @trace("session_service_get_current_case")
+    async def get_current_case_id(self, session_id: str) -> Optional[str]:
+        """
+        Get the current case ID for a session without creating a new one
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            Current case ID or None if no active case
+        """
+        if not session_id or not session_id.strip():
+            return None
+            
+        try:
+            session = await self.get_session(session_id, validate=False)
+            return session.current_case_id if session else None
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to get current case for session {session_id}: {e}")
+            return None
+
+    @trace("session_service_update_case_activity")
+    async def update_case_activity(self, session_id: str, case_id: str, activity_details: Dict[str, Any]) -> bool:
+        """
+        Record activity for the current case
+        
+        Args:
+            session_id: Session identifier
+            case_id: Case identifier
+            activity_details: Details about the case activity
+            
+        Returns:
+            True if activity was recorded successfully
+        """
+        try:
+            # Verify the case_id matches current session case
+            current_case = await self.get_current_case_id(session_id)
+            if current_case != case_id:
+                self.logger.warning(f"Case ID mismatch: current={current_case}, provided={case_id}")
+                return False
+            
+            # Record activity in case history
+            activity_record = {
+                "action": "case_activity",
+                "case_id": case_id,
+                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                **activity_details
+            }
+            
+            await self.session_manager.add_case_history(session_id, activity_record)
+            await self.update_last_activity(session_id)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to record case activity: {e}")
+            return False
+
+    @trace("session_service_get_case_conversation_history")
+    async def get_case_conversation_history(self, session_id: str, case_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get conversation history for a specific case
+        
+        Args:
+            session_id: Session identifier
+            case_id: Case identifier to filter history
+            limit: Maximum number of history items to return (most recent first)
+            
+        Returns:
+            List of conversation history items for the case
+        """
+        try:
+            session = await self.get_session(session_id, validate=False)
+            if not session:
+                return []
+            
+            # Filter case history for the current case
+            case_conversation_history = []
+            for item in reversed(session.case_history):  # Most recent first
+                # Only include items from the current case
+                if item.get("case_id") == case_id:
+                    
+                    # Only include query-related interactions for conversation history
+                    if item.get("action") in ["query_processed", "case_activity"]:
+                        case_conversation_history.append(item)
+                        
+                        if len(case_conversation_history) >= limit:
+                            break
+            
+            # Format for conversation context
+            conversation_history = []
+            for item in reversed(case_conversation_history):  # Put back in chronological order
+                if item.get("action") == "query_processed":
+                    conversation_history.append({
+                        "type": "user_query",
+                        "content": item.get("query", ""),
+                        "timestamp": item.get("timestamp"),
+                        "case_id": case_id
+                    })
+                elif item.get("action") == "case_activity" and "query" in item:
+                    conversation_history.append({
+                        "type": "user_query", 
+                        "content": item.get("query", ""),
+                        "timestamp": item.get("timestamp"),
+                        "case_id": case_id
+                    })
+            
+            self.logger.debug(f"Retrieved {len(conversation_history)} conversation items for case {case_id}")
+            return conversation_history
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to get conversation history for case {case_id}: {e}")
+            return []
+
+    @trace("session_service_format_conversation_context")
+    async def format_conversation_context(self, session_id: str, case_id: str, limit: int = 5) -> str:
+        """
+        Format conversation history for inclusion in LLM context
+        
+        Args:
+            session_id: Session identifier
+            case_id: Case identifier
+            limit: Maximum number of previous interactions to include
+            
+        Returns:
+            Formatted conversation history string for LLM context
+        """
+        try:
+            history = await self.get_case_conversation_history(session_id, case_id, limit)
+            
+            if not history:
+                return ""
+            
+            # Format as conversation context
+            formatted_lines = ["Previous conversation in this troubleshooting session:"]
+            
+            for i, item in enumerate(history[:-1], 1):  # Exclude the current query
+                timestamp = item.get("timestamp", "")
+                if timestamp:
+                    # Parse and format timestamp
+                    try:
+                        dt = parse_utc_timestamp(timestamp)
+                        time_str = dt.strftime("%H:%M")
+                    except:
+                        time_str = ""
+                else:
+                    time_str = ""
+                
+                query = item.get("content", "").strip()
+                if query:
+                    formatted_lines.append(f"{i}. [{time_str}] User: {query}")
+            
+            if len(formatted_lines) > 1:  # More than just the header
+                formatted_lines.append("")  # Add spacing
+                formatted_lines.append("Current query:")
+                return "\n".join(formatted_lines)
+            else:
+                return ""
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to format conversation context: {e}")
+            return ""

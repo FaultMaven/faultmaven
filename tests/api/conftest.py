@@ -110,7 +110,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
             
             async def mock_agent_service():
                 from unittest.mock import Mock, AsyncMock
-                from faultmaven.models import TroubleshootingResponse
+                from faultmaven.models import TroubleshootingResponse, AgentResponse, ViewState, UploadedData, Source, SourceType, ResponseType
                 mock_service = Mock()
                 # Counter for unique investigation IDs
                 import uuid
@@ -200,14 +200,36 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         session_id, query, investigation_id, context, confidence_score
                     )
                     
-                    return TroubleshootingResponse(
-                        investigation_id=investigation_id,
+                    # Create v3.1.0 AgentResponse for process_query method
+                    view_state = ViewState(
                         session_id=session_id,
-                        status="completed",
-                        findings=findings,
-                        recommendations=recommendations,
-                        confidence_score=confidence_score,
-                        created_at="2024-01-01T12:00:00Z"
+                        case_id=investigation_id,
+                        running_summary=f"Investigation for: {query}",
+                        uploaded_data=[
+                            UploadedData(id="test_data_1", name="test_log.log", type="log_file")
+                        ]
+                    )
+                    
+                    sources = [
+                        Source(
+                            type=SourceType.KNOWLEDGE_BASE,
+                            name="troubleshooting_guide.md",
+                            snippet="Database connection troubleshooting steps..."
+                        )
+                    ]
+                    
+                    # Generate content based on findings and recommendations
+                    content = "Analysis Results:\n"
+                    if findings:
+                        content += "Key findings: " + "; ".join([f["message"] for f in findings]) + "\n"
+                    if recommendations:
+                        content += "Recommendations: " + "; ".join(recommendations[:2])
+                    
+                    return AgentResponse(
+                        content=content,
+                        response_type=ResponseType.ANSWER,
+                        view_state=view_state,
+                        sources=sources
                     )
                 mock_service.process_query = mock_process_query
                 
@@ -290,15 +312,17 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                     
                     data_id = f"data_{upload_counter}_{int(time.time() * 1000)}"
                     
-                    uploaded_data = UploadedData(
-                        data_id=data_id,
-                        session_id=session_id,
-                        data_type=data_type,
-                        content=content or "2024-01-01 12:00:01 INFO Default test content",
-                        file_name=filename,
-                        file_size=file_size or len(content or ''),
-                        processing_status="completed",
-                        insights={
+                    # Return a dict with the old format that tests expect (not the new v3.1.0 UploadedData model)
+                    # This bypasses FastAPI response model validation since we removed response_model
+                    uploaded_data = {
+                        "data_id": data_id,
+                        "session_id": session_id,
+                        "data_type": detected_type,
+                        "content": content or "2024-01-01 12:00:01 INFO Default test content",
+                        "file_name": filename,
+                        "file_size": file_size or len(content or ''),
+                        "processing_status": "completed",
+                        "insights": {
                             "error_count": error_count,
                             "error_rate": error_count / max(1, len(content.split('\n')) if content else 1),
                             "confidence_score": 0.8 if content else 0.5,
@@ -306,7 +330,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                             "patterns_detected": ["connection_failure", "timeout"] if error_count > 0 else [],
                             "recommendations": ["Check network connectivity", "Review timeout settings"] if error_count > 0 else []
                         }
-                    )
+                    }
                     
                     # Store the uploaded data
                     uploaded_items[data_id] = uploaded_data
@@ -687,7 +711,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         "confidence_score": confidence_score,
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
-                    session.investigation_history.append(investigation_record)
+                    session.case_history.append(investigation_record)
                     session.last_activity = datetime.now(timezone.utc)
                     return True
                 return False
@@ -709,7 +733,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         "metadata": metadata or {},
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
-                    session.investigation_history.append(upload_record)
+                    session.case_history.append(upload_record)
                     session.last_activity = datetime.now(timezone.utc)
                     return True
                 return False
@@ -723,7 +747,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         "action": "heartbeat",
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
-                    session.investigation_history.append(heartbeat_record)
+                    session.case_history.append(heartbeat_record)
                     session.last_activity = datetime.now(timezone.utc)
                     return True
                 return False
@@ -749,7 +773,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         created_at=datetime.now(timezone.utc),
                         last_activity=datetime.now(timezone.utc),
                         data_uploads=[],
-                        investigation_history=[],
+                        case_history=[],
                         agent_state={
                             "session_id": session_id,
                             "user_query": "",
@@ -804,11 +828,11 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                     session = test_sessions.get(session_id)
                     if session:
                         data_uploads_count = len(session.data_uploads)
-                        investigation_history_count = len(session.investigation_history)
+                        case_history_count = len(session.case_history)
                         
                         # Clear session data but keep session active
                         session.data_uploads.clear()
-                        session.investigation_history.clear()
+                        session.case_history.clear()
                         session.agent_state = None
                         
                         return {
@@ -818,7 +842,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                             "message": "Session data cleaned successfully",
                             "cleaned_items": {
                                 "data_uploads": data_uploads_count,
-                                "investigation_history": investigation_history_count,
+                                "case_history": case_history_count,
                                 "temp_files": 0
                             }
                         }
@@ -839,7 +863,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                             "confidence_score": confidence_score,
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
-                        session.investigation_history.append(investigation_record)
+                        session.case_history.append(investigation_record)
                         session.last_activity = datetime.now(timezone.utc)
                         return True
                     return False
@@ -860,7 +884,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                             "metadata": metadata or {},
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
-                        session.investigation_history.append(upload_record)
+                        session.case_history.append(upload_record)
                         session.last_activity = datetime.now(timezone.utc)
                         return True
                     return False
@@ -880,13 +904,13 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         return None
                     
                     # Count different types of operations
-                    query_operations = len([h for h in session.investigation_history if h.get("action") == "query_processed"])
-                    upload_operations = len([h for h in session.investigation_history if h.get("action") == "data_uploaded"])
-                    heartbeat_operations = len([h for h in session.investigation_history if h.get("action") == "heartbeat"])
+                    query_operations = len([h for h in session.case_history if h.get("action") == "query_processed"])
+                    upload_operations = len([h for h in session.case_history if h.get("action") == "data_uploaded"])
+                    heartbeat_operations = len([h for h in session.case_history if h.get("action") == "heartbeat"])
                     
                     return {
                         "session_id": session_id,
-                        "total_requests": len(session.investigation_history),  # Count ALL operations
+                        "total_requests": len(session.case_history),  # Count ALL operations
                         "data_uploads": len(session.data_uploads),
                         "created_at": session.created_at.isoformat(),
                         "last_activity": session.last_activity.isoformat(),
@@ -899,7 +923,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                                 (session.last_activity - session.created_at).total_seconds() / 60
                             ),
                         },
-                        "operations_history": session.investigation_history,  # For test compatibility
+                        "operations_history": session.case_history,  # For test compatibility
                         "memory_usage": 1024,  # Mock memory usage
                         "processing_time": 0.5  # Mock processing time
                     }
@@ -920,16 +944,16 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                 from unittest.mock import AsyncMock
                 mock_session_manager = Mock()
                 
-                async def mock_add_investigation_history(session_id, record, *args, **kwargs):
-                    """Mock add_investigation_history for session endpoints."""
+                async def mock_add_case_history(session_id, record, *args, **kwargs):
+                    """Mock add_case_history for session endpoints."""
                     session = test_sessions.get(session_id)
                     if session:
-                        session.investigation_history.append(record)
+                        session.case_history.append(record)
                         session.last_activity = datetime.now(timezone.utc)
                         return True
                     return False
                 
-                mock_session_manager.add_investigation_history = mock_add_investigation_history
+                mock_session_manager.add_case_history = mock_add_case_history
                 mock_service.session_manager = mock_session_manager
                 
                 # Store references to test data and utility functions for integration

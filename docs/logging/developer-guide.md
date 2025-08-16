@@ -30,12 +30,20 @@ class YourService(BaseService):
     def __init__(self):
         super().__init__("your_service")
 
-# Infrastructure Layer  
+# Infrastructure Layer - External Services
 from faultmaven.infrastructure.base_client import BaseExternalClient
 
-class YourClient(BaseExternalClient):
+class YourExternalClient(BaseExternalClient):
     def __init__(self):
         super().__init__("your_client", "ExternalService")
+
+# Infrastructure Layer - Internal Services (Redis, internal DBs)
+from faultmaven.infrastructure.redis_client import create_redis_client
+
+class YourInternalStore:
+    def __init__(self):
+        # Use lightweight client for internal infrastructure
+        self.client = create_redis_client()
 
 # Direct Logging (API/Core layers)
 from faultmaven.infrastructure.logging.unified import get_unified_logger
@@ -50,9 +58,12 @@ logger = get_unified_logger(__name__, "api")  # or "core"
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
 from faultmaven.infrastructure.logging.unified import get_unified_logger
 
-# Base classes (inherit from these)
+# Base classes for different infrastructure patterns
 from faultmaven.services.base_service import BaseService
-from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.base_client import BaseExternalClient  # External services only
+
+# Lightweight clients for internal infrastructure
+from faultmaven.infrastructure.redis_client import create_redis_client
 
 # For manual context management (advanced)
 from faultmaven.infrastructure.logging.coordinator import request_context
@@ -395,79 +406,7 @@ class RedisSessionClient(BaseExternalClient):
         session_id: str, 
         session_data: Dict[str, Any],
         ttl: int = 3600
-    ) -> bool:
-        """Set session data with expiration."""
-        
-        async def redis_set_operation(
-            session_id: str, 
-            data: Dict[str, Any], 
-            ttl: int
-        ) -> bool:
-            """Internal Redis SET operation with TTL."""
-            if not self._connection:
-                self._connection = await aioredis.from_url(self.redis_url)
-            
-            # Prepare data for Redis
-            redis_data = {
-                "created_at": data.get("created_at", datetime.utcnow().isoformat()),
-                "last_activity": datetime.utcnow().isoformat(),
-                "user_id": data.get("user_id", ""),
-                "context": json.dumps(data.get("context", {}))
-            }
-            
-            # Set with expiration
-            await self._connection.hset(f"session:{session_id}", mapping=redis_data)
-            await self._connection.expire(f"session:{session_id}", ttl)
-            
-            return True
-        
-        def validate_set_response(result: bool) -> bool:
-            """Validate that set operation succeeded."""
-            return result is True
-        
-        return await self.call_external(
-            operation_name="set_session",
-            call_func=redis_set_operation,
-            session_id,
-            session_data,
-            ttl,
-            timeout=5.0,
-            retries=3,
-            retry_delay=0.5,
-            validate_response=validate_set_response
-        )
-
-    async def health_check(self) -> Dict[str, Any]:
-        """Override health check with Redis-specific checks."""
-        base_health = await super().health_check()
-        
-        try:
-            # Test Redis connectivity
-            if not self._connection:
-                self._connection = await aioredis.from_url(self.redis_url)
-            
-            # Perform ping test
-            pong = await self._connection.ping()
-            redis_healthy = pong == b"PONG"
-            
-            base_health.update({
-                "redis_ping": "success" if redis_healthy else "failed",
-                "connection_status": "connected" if self._connection else "disconnected"
-            })
-            
-            if redis_healthy:
-                base_health["status"] = "healthy"
-            else:
-                base_health["status"] = "unhealthy"
-                
-        except Exception as e:
-            base_health.update({
-                "status": "unhealthy",
-                "redis_error": str(e),
-                "connection_status": "error"
-            })
-        
-        return base_health
+```
 ```
 
 ## Core Concepts

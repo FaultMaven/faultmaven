@@ -34,11 +34,19 @@ graph LR
 - **Knowledge Management**: RAG-powered document processing with vector store abstraction
 - **Data Processing**: Interface-based log/metrics analysis pipelines
 - **Privacy-First Security**: Comprehensive PII redaction with Presidio microservice integration
+- **User Management**: Authentication, account management, billing, and usage tracking
 
-### 2. [FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)
-- Browser extension UI for real-time troubleshooting
-- Side panel interface for evidence submission
-- Interactive chat experience
+### 2. [FaultMaven Website](https://faultmaven.com) (This Repository)
+- **User Authentication**: Registration, login, password management
+- **Account Dashboard**: Profile management, subscription, billing
+- **Marketing Pages**: Landing pages, features, pricing, company information
+- **Extension Download**: Browser extension distribution and setup guides
+
+### 3. [FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot) (Separate Repository)
+- **Browser Extension UI**: Troubleshooting interface with 7 response types
+- **Real-time Communication**: Interactive chat with AI agent
+- **Evidence Submission**: File uploads and data input
+- **Session Management**: Context-aware troubleshooting sessions
 
 ## 🧠 Key Features
 
@@ -52,15 +60,20 @@ graph LR
 | **Interface-Based Tools** | Pluggable tool system with `BaseTool` interface | `KnowledgeBaseTool`, `WebSearchTool` |
 | **Context-Aware Analysis** | Intelligent evidence processing with interfaces | `IDataClassifier`, `ILogProcessor` |
 | **Comprehensive Observability** | LLM tracing and performance monitoring | Opik, `ITracer` interface |
+| **Dual Frontend Architecture** | Website for auth/management, Extension for troubleshooting | Website + Copilot Extension |
+| **User Management** | Authentication, billing, usage tracking | User accounts, subscriptions, billing |
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - [Docker](https://www.docker.com/products/docker-desktop/)
 - [Python 3.11+](https://www.python.org/downloads/)
-- Clone both repositories:
+- Clone the repositories:
   ```bash
+  # Backend API server + Website frontend
   git clone https://github.com/FaultMaven/faultmaven.git
+  
+  # Browser extension (separate repository)
   git clone https://github.com/FaultMaven/faultmaven-copilot.git
   ```
 
@@ -87,12 +100,22 @@ graph LR
    redis               Up 5 minutes        6379/tcp
    ```
 
-4. Connect the frontend:
+4. Start the website frontend:
+   ```bash
+   # In faultmaven directory (website frontend)
+   cd frontend
+   npm install
+   npm run dev
+   # Website will be available at http://localhost:3000
+   ```
+
+5. Start the copilot extension development:
    ```bash
    # In faultmaven-copilot directory
    echo "VITE_API_BASE_URL=http://localhost:8000" > .env.local
    npm install
    npm run dev
+   # Extension development server will be available
    ```
 
 ### Local Development Setup
@@ -231,7 +254,7 @@ graph TD
 ```
 
 For detailed architecture documentation, see:
-- [Current Architecture](docs/architecture/current-architecture.md) - Complete interface-based architecture
+- [System Architecture](docs/architecture/SYSTEM_ARCHITECTURE.md) - Complete interface-based architecture
 - [Dependency Injection System](docs/architecture/dependency-injection-system.md) - DI container deep dive
 - [Service Patterns](docs/architecture/service-patterns.md) - Interface-based service design
 - [Migration Guide](docs/migration/import-migration-guide.md) - Legacy to clean architecture migration
@@ -391,8 +414,76 @@ We welcome contributions! Please see our [Contribution Guidelines](docs/CONTRIBU
 For inquiries: [support@faultmaven.ai](mailto:support@faultmaven.ai)  
 Join our [Discord Community](https://discord.com/faultmaven) for real-time discussion.
 
+## 📚 Documentation
+
+### **Documentation Structure**
+
+FaultMaven documentation is organized into strategic and tactical levels:
+
+#### **Strategic Level (System Vision & Requirements)**
+- **[System Requirements & Design](../docs/FAULTMAVEN_SYSTEM_REQUIREMENTS.md)** - Complete system vision, requirements, and frontend design specifications
+
+#### **Tactical Level (Implementation & Technical Details)**
+- **[Architecture Documentation](../docs/architecture/)** - Technical implementation guidance
+- **[Website Frontend Documentation](../docs/frontend/)** - Website frontend implementation details (this repository)
+- **[Copilot Extension Repository](https://github.com/FaultMaven/faultmaven-copilot)** - Complete browser extension codebase and documentation
+
+### **Quick Navigation by Role**
+
+#### **For Product Managers & Stakeholders**
+- **[System Requirements](../docs/FAULTMAVEN_SYSTEM_REQUIREMENTS.md)** - System vision, features, and business requirements
+
+#### **For Website Frontend Developers** (This Repository)
+- **[Website Frontend Guide](../docs/frontend/website-guide.md)** - Landing pages, authentication, and user management
+- **[Website Component Library](../docs/frontend/website-components.md)** - Marketing, auth, and dashboard components
+
+#### **For Copilot Extension Developers** (Separate Repository)
+- **[System Requirements - Frontend Section](../docs/FAULTMAVEN_SYSTEM_REQUIREMENTS.md#frontend-design--user-experience)** - UI/UX requirements and design specifications for the browser extension
+- **[Copilot Repository](https://github.com/FaultMaven/faultmaven-copilot)** - Complete extension codebase and documentation
+- **Note**: The 7 response types and troubleshooting UI are implemented in the separate repository
+
+#### **For Backend Developers**
+- **[System Architecture](../docs/architecture/SYSTEM_ARCHITECTURE.md)** - High-level system architecture and design patterns
+- **[Component Interactions](../docs/architecture/COMPONENT_INTERACTIONS.md)** - Component interaction patterns and data flows
+- **[Implementation Gap Analysis](../docs/architecture/IMPLEMENTATION_GAP_ANALYSIS.md)** - Development roadmap and gap closure plan
+- **[Developer Guide](../docs/architecture/developer-guide.md)** - Development workflow and best practices
+- **[Service Patterns](../docs/architecture/service-patterns.md)** - Service layer implementation patterns
+- **[Dependency Injection System](../docs/architecture/dependency-injection-system.md)** - DI container architecture and patterns
+- **[Container Usage Guide](../docs/architecture/container-usage-guide.md)** - Practical DI container usage examples
+
+#### **For DevOps & Operations**
+- **[Deployment Guide](../docs/architecture/DEPLOYMENT_GUIDE.md)** - Production deployment instructions and configuration
+- **[Testing Guide](../docs/architecture/testing-guide.md)** - Testing strategies and quality assurance
+
+#### **For New Team Members**
+- **[Developer Guide](../docs/architecture/developer-guide.md)** - Onboarding and development workflow
+- **[Interface-Based Design](../docs/architecture/interface-based-design.md)** - Core architectural principles
+
+### **Key Features Documentation**
+
+#### **Response Type System**
+- **7 Response Types**: ANSWER, PLAN_PROPOSAL, CLARIFICATION_REQUEST, CONFIRMATION_REQUEST, SOLUTION_READY, NEEDS_MORE_DATA, ESCALATION_REQUIRED
+- **Copilot Extension Components**: Each response type has dedicated React components with specific behaviors in the browser extension
+- **Website Frontend**: Landing pages, authentication, and user management (separate from the 7 response types)
+- **Implementation**: 
+  - **Copilot Extension**: See [Copilot Repository](https://github.com/FaultMaven/faultmaven-copilot) for complete implementation
+  - **Website**: See [Website Component Library](../docs/frontend/website-components.md)
+
+#### **Intelligent Communication**
+- **Memory Management**: Hierarchical memory system with context awareness
+- **Advanced Prompting**: Dynamic prompt assembly with context injection
+- **Strategic Planning**: Multi-phase planning and problem decomposition
+- **Implementation**: See [System Requirements - Advanced Communication Section](../docs/FAULTMAVEN_SYSTEM_REQUIREMENTS.md#advanced-communication-layer-memory-prompting--planning)
+
+#### **Case Lifecycle Management**
+- **Status Management**: Comprehensive case status tracking
+- **Termination Logic**: Intelligent case closure and escalation
+- **Implementation**: See [System Requirements - Case Lifecycle Section](../docs/FAULTMAVEN_SYSTEM_REQUIREMENTS.md#case-lifecycle-management)
+
+---
+
 **Technical Documentation**:
-- [Architecture Deep Dive](docs/architecture/current-architecture.md)
+- [Architecture Deep Dive](docs/architecture/SYSTEM_ARCHITECTURE.md)
 - [DI Container Guide](docs/architecture/dependency-injection-system.md)
 - [Container Usage Guide](docs/architecture/container-usage-guide.md)
 - [LLM Provider Setup](docs/how-to-add-providers.md)

@@ -5,7 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from faultmaven.models import QueryRequest, TroubleshootingResponse
+from faultmaven.models import QueryRequest, AgentResponse, ViewState, UploadedData, Source, SourceType, ResponseType
 from faultmaven.api.v1.routes.agent import router
 from faultmaven.api.v1.dependencies import get_agent_service
 
@@ -27,23 +27,30 @@ def mock_agent_service():
 
 
 @pytest.fixture
-def sample_troubleshooting_response():
-    """Sample troubleshooting response for tests."""
-    return TroubleshootingResponse(
+def sample_agent_response():
+    """Sample v3.1.0 agent response for tests."""
+    view_state = ViewState(
         session_id="test_session",
-        investigation_id="test_investigation_id",
-        status="completed",
-        findings=[
-            {"type": "info", "message": "Sample finding"},
-            {"type": "warning", "message": "Sample warning"}
-        ],
-        root_cause="Sample root cause identified",
-        recommendations=["Sample recommendation 1", "Sample recommendation 2"],
-        confidence_score=0.85,
-        estimated_mttr="15 minutes",
-        next_steps=["Step 1", "Step 2"],
-        created_at=datetime.utcnow(),
-        completed_at=datetime.utcnow()
+        case_id="test_investigation_id",
+        running_summary="Test investigation completed",
+        uploaded_data=[
+            UploadedData(id="data1", name="test.log", type="log_file")
+        ]
+    )
+    
+    sources = [
+        Source(
+            type=SourceType.KNOWLEDGE_BASE,
+            name="troubleshooting_guide.md",
+            snippet="Sample troubleshooting guidance"
+        )
+    ]
+    
+    return AgentResponse(
+        content="Sample root cause identified. Analysis shows sample finding and sample warning.",
+        response_type=ResponseType.ANSWER,
+        view_state=view_state,
+        sources=sources
     )
 
 
@@ -125,12 +132,12 @@ def test_process_query_empty_query(mock_agent_service):
     assert "Query cannot be empty" in response.json()["detail"]
 
 
-def test_process_query_invalid_priority(mock_agent_service, sample_troubleshooting_response):
+def test_process_query_invalid_priority(mock_agent_service, sample_agent_response):
     """
     Test that invalid priority value is processed successfully (no strict validation).
     """
     # Configure mock to return successful response - priority validation is lenient
-    mock_agent_service.process_query.return_value = sample_troubleshooting_response
+    mock_agent_service.process_query.return_value = sample_agent_response
     
     invalid_request = {
         "session_id": "test_session",
@@ -142,7 +149,7 @@ def test_process_query_invalid_priority(mock_agent_service, sample_troubleshooti
         response = client.post("/api/v1/agent/query", json=invalid_request)
     # Should process successfully since priority is not strictly validated
     assert response.status_code == 200
-    assert response.json()["session_id"] == "test_session"
+    assert response.json()["view_state"]["session_id"] == "test_session"
 
 
 def test_process_query_invalid_context_type():
@@ -181,12 +188,12 @@ def test_process_query_malformed_json():
     assert response.status_code == 422
 
 
-def test_process_query_extra_fields(mock_agent_service, sample_troubleshooting_response):
+def test_process_query_extra_fields(mock_agent_service, sample_agent_response):
     """
     Test that extra fields in request are handled gracefully.
     """
     # Configure mock to return successful response - extra fields should be ignored
-    mock_agent_service.process_query.return_value = sample_troubleshooting_response
+    mock_agent_service.process_query.return_value = sample_agent_response
     
     request_with_extra = {
         "session_id": "test_session",
@@ -199,7 +206,7 @@ def test_process_query_extra_fields(mock_agent_service, sample_troubleshooting_r
         response = client.post("/api/v1/agent/query", json=request_with_extra)
 
     assert response.status_code == 200
-    assert response.json()["session_id"] == "test_session"
+    assert response.json()["view_state"]["session_id"] == "test_session"
 
 
 def test_process_query_session_manager_exception(mock_agent_service):
@@ -258,21 +265,26 @@ def test_process_query_with_context(mock_agent_service):
     Test processing query with context data.
     """
     # Create a comprehensive response for context testing
-    expected_response = TroubleshootingResponse(
+    view_state = ViewState(
         session_id="test_session",
-        investigation_id="context_test_investigation",
-        status="completed",
-        findings=[
-            {"type": "info", "message": "test finding with context"},
-            {"type": "analysis", "message": "context-aware analysis"}
-        ],
-        root_cause="test root cause with context",
-        recommendations=["context-based recommendation"],
-        confidence_score=0.9,
-        estimated_mttr="30 minutes",
-        next_steps=["Apply context-specific fix"],
-        created_at=datetime.utcnow(),
-        completed_at=datetime.utcnow()
+        case_id="context_test_investigation",
+        running_summary="Test investigation with context completed",
+        uploaded_data=[]
+    )
+    
+    sources = [
+        Source(
+            type=SourceType.KNOWLEDGE_BASE,
+            name="context_guide.md",
+            snippet="Context-specific troubleshooting guidance"
+        )
+    ]
+    
+    expected_response = AgentResponse(
+        content="Test root cause with context identified. Found test finding with context and context-aware analysis.",
+        response_type=ResponseType.ANSWER,
+        view_state=view_state,
+        sources=sources
     )
     
     # Configure mock to return successful response with context
@@ -294,7 +306,9 @@ def test_process_query_with_context(mock_agent_service):
     
     assert response.status_code == 200
     response_data = response.json()
-    assert response_data["session_id"] == "test_session"
-    assert response_data["status"] == "completed"
-    assert len(response_data["findings"]) == 2
-    assert response_data["confidence_score"] == 0.9
+    assert response_data["schema_version"] == "3.1.0"
+    assert response_data["view_state"]["session_id"] == "test_session"
+    assert response_data["view_state"]["case_id"] == "context_test_investigation"
+    assert response_data["response_type"] == "answer"
+    assert "context" in response_data["content"]
+    assert len(response_data["sources"]) == 1

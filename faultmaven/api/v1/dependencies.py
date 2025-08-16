@@ -33,6 +33,26 @@ async def get_agent_service() -> AgentService:
     return container.get_agent_service()
 
 
+async def get_enhanced_agent_service():
+    """Get EnhancedAgentService instance from container"""
+    return container.get_enhanced_agent_service()
+
+
+async def get_memory_service():
+    """Get MemoryService instance from container"""
+    return container.get_memory_service()
+
+
+async def get_planning_service():
+    """Get PlanningService instance from container"""
+    return container.get_planning_service()
+
+
+async def get_orchestration_service():
+    """Get OrchestrationService instance from container"""
+    return container.get_orchestration_service()
+
+
 async def get_data_service() -> DataService:
     """Get DataService instance from container"""
     return container.get_data_service()

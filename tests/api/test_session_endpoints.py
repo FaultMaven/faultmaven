@@ -149,11 +149,20 @@ class TestSessionAPIEndpointsRebuilt:
             
             assert response.status_code == 200
             result_data = response.json()
-            assert result_data["session_id"] == session_id
+            
+            # Handle different response schemas: v3.1.0 AgentResponse vs legacy formats
+            if op["operation"] == "query":
+                # AgentResponse (v3.1.0) has session_id in view_state
+                assert result_data["view_state"]["session_id"] == session_id
+                result_id = result_data["view_state"]["case_id"]
+            else:
+                # Data upload responses have session_id at top level
+                assert result_data["session_id"] == session_id
+                result_id = result_data.get("data_id")
             
             operation_results.append({
                 "operation": op["operation"],
-                "result_id": result_data.get("investigation_id") or result_data.get("data_id"),
+                "result_id": result_id,
                 "timestamp": time.time()
             })
         
@@ -220,7 +229,16 @@ class TestSessionAPIEndpointsRebuilt:
             assert response.status_code == 200
             
             response_data = response.json()
-            assert response_data.get("session_id") == session_id or "session_id" in response_data
+            # Handle different response schemas based on operation type
+            if "view_state" in response_data:
+                # AgentResponse (v3.1.0) - query operations
+                assert response_data["view_state"]["session_id"] == session_id
+            elif "session_id" in response_data:
+                # Legacy response format - heartbeat, stats operations
+                assert response_data["session_id"] == session_id
+            else:
+                # Some operations might not include session_id directly
+                pass
         
         # Validate concurrent performance
         performance_tracker.assert_performance_target("concurrent_operations", 5.0)
@@ -396,9 +414,10 @@ class TestSessionAPIEndpointsRebuilt:
             }
         )
         assert query_response.status_code == 200
+        query_result = query_response.json()
         associated_data.append({
             "type": "investigation",
-            "id": query_response.json()["investigation_id"]
+            "id": query_result["view_state"]["case_id"]
         })
         
         # Check session has associated data

@@ -1,6 +1,9 @@
-# FaultMaven Deployment Guide
+# Enhanced FaultMaven Deployment Guide
 
-This guide provides comprehensive instructions for deploying FaultMaven in various environments, from local development to production Kubernetes clusters.
+**Document Type**: Deployment Guide  
+**Last Updated**: August 2025
+
+This guide provides comprehensive instructions for deploying FaultMaven in various environments, from local development to production Kubernetes clusters. The system now features advanced intelligent communication capabilities including memory management, strategic planning, and dynamic prompting.
 
 ## Table of Contents
 
@@ -11,6 +14,7 @@ This guide provides comprehensive instructions for deploying FaultMaven in vario
 - [Kubernetes Deployment](#kubernetes-deployment)
 - [Production Considerations](#production-considerations)
 - [Monitoring and Observability](#monitoring-and-observability)
+- [Intelligence Service Configuration](#intelligence-service-configuration)
 - [Troubleshooting](#troubleshooting)
 
 ## Prerequisites
@@ -18,16 +22,21 @@ This guide provides comprehensive instructions for deploying FaultMaven in vario
 ### System Requirements
 
 **Minimum Requirements:**
-- CPU: 2 cores
-- Memory: 4GB RAM
-- Storage: 10GB available space
+- CPU: 4 cores (increased for intelligence services)
+- Memory: 8GB RAM (increased for memory management)
+- Storage: 20GB available space (increased for memory storage)
 - Network: Internet connectivity for LLM providers
 
 **Recommended for Production:**
-- CPU: 4+ cores
-- Memory: 8GB+ RAM
-- Storage: 50GB+ available space
+- CPU: 8+ cores (for parallel intelligence processing)
+- Memory: 16GB+ RAM (for large memory operations)
+- Storage: 100GB+ available space (for extensive memory storage)
 - Network: High-bandwidth connection with low latency
+
+**Intelligence Service Requirements:**
+- **Memory Service**: Additional 4-8GB RAM for hierarchical memory
+- **Planning Service**: Additional 2-4GB RAM for strategic planning
+- **Prompt Engine**: Additional 2-4GB RAM for advanced prompting
 
 ### Software Dependencies
 
@@ -37,8 +46,8 @@ This guide provides comprehensive instructions for deploying FaultMaven in vario
 - Kubernetes 1.21+ (for K8s deployment)
 
 **External Services (Required):**
-- Redis 6.0+ (session storage and caching)
-- ChromaDB 0.4+ (vector database for knowledge base)
+- Redis 6.0+ (session storage, caching, and memory management)
+- ChromaDB 0.4+ (vector database for knowledge base and memory)
 - Microsoft Presidio (PII redaction service)
 
 **External Services (Optional):**
@@ -53,7 +62,7 @@ This guide provides comprehensive instructions for deploying FaultMaven in vario
 
 ## Environment Configuration
 
-### Environment Variables
+### Enhanced Environment Variables
 
 Create a `.env` file in the project root with the following configuration:
 
@@ -63,6 +72,34 @@ ENVIRONMENT=production
 HOST=0.0.0.0
 PORT=8000
 LOG_LEVEL=INFO
+
+# === Intelligence Service Configuration ===
+# Memory Management System
+ENABLE_MEMORY_FEATURES=true
+MEMORY_HIERARCHY_LEVELS=4
+MEMORY_MAX_WORKING_SIZE_MB=512
+MEMORY_MAX_SESSION_SIZE_MB=256
+MEMORY_MAX_USER_SIZE_MB=1024
+MEMORY_MAX_EPISODIC_SIZE_MB=2048
+MEMORY_CONSOLIDATION_INTERVAL_MINUTES=30
+MEMORY_SEMANTIC_SEARCH_ENABLED=true
+MEMORY_VECTOR_DIMENSION=768
+
+# Strategic Planning System
+ENABLE_PLANNING_FEATURES=true
+PLANNING_MAX_PHASES=7
+PLANNING_STRATEGY_CACHE_SIZE=100
+PLANNING_RISK_ASSESSMENT_ENABLED=true
+PLANNING_ALTERNATIVE_SOLUTIONS_ENABLED=true
+PLANNING_EXECUTION_TIMEOUT_SECONDS=300
+
+# Advanced Prompting System
+ENABLE_ADVANCED_PROMPTING=true
+PROMPT_MAX_LAYERS=6
+PROMPT_OPTIMIZATION_ENABLED=true
+PROMPT_VERSIONING_ENABLED=true
+PROMPT_A_B_TESTING_ENABLED=true
+PROMPT_PERFORMANCE_TRACKING=true
 
 # === LLM Provider Configuration ===
 # Choose your primary LLM provider
@@ -80,30 +117,38 @@ ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
 FIREWORKS_API_KEY=your_fireworks_api_key_here
 FIREWORKS_MODEL=accounts/fireworks/models/llama-v3p1-70b-instruct
 
-# === Database Configuration ===
-# Redis (Session Storage)
+# === Enhanced Database Configuration ===
+# Redis (Session Storage, Caching, and Memory)
 REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_PASSWORD=your_redis_password
 REDIS_DB=0
+REDIS_MEMORY_DB=1
+REDIS_CACHE_DB=2
+REDIS_MEMORY_TTL_HOURS=168  # 7 days
+REDIS_CACHE_TTL_HOURS=24    # 1 day
 
-# ChromaDB (Vector Database)
+# ChromaDB (Vector Database for Knowledge Base and Memory)
 CHROMADB_URL=http://localhost:8000
 CHROMADB_API_KEY=your_chromadb_api_key
 CHROMADB_COLLECTION=faultmaven_knowledge
+CHROMADB_MEMORY_COLLECTION=faultmaven_memory
+CHROMADB_MAX_COLLECTIONS=10
 
 # === Security Services ===
 # Presidio (PII Redaction)
 PRESIDIO_ANALYZER_URL=http://localhost:5001
 PRESIDIO_ANONYMIZER_URL=http://localhost:5002
 
-# === Session Management ===
-SESSION_TIMEOUT_MINUTES=30
+# === Enhanced Session Management ===
+SESSION_TIMEOUT_MINUTES=60  # Increased for intelligence features
 SESSION_CLEANUP_INTERVAL_MINUTES=15
-SESSION_MAX_MEMORY_MB=100
+SESSION_MAX_MEMORY_MB=500   # Increased for memory storage
 SESSION_CLEANUP_BATCH_SIZE=50
+SESSION_MEMORY_PRESERVATION=true
+SESSION_INTELLIGENCE_CONTEXT=true
 
-# === Observability (Optional) ===
+# === Enhanced Observability (Optional) ===
 # Opik Configuration
 OPIK_API_KEY=your_opik_api_key
 OPIK_PROJECT_NAME=faultmaven
@@ -113,41 +158,54 @@ OPIK_WORKSPACE=your_workspace
 OPIK_USE_LOCAL=true
 OPIK_BASE_URL=http://localhost:5173
 
-# === Feature Flags ===
-ENABLE_LEGACY_COMPATIBILITY=true
+# === Enhanced Feature Flags ===
+ENABLE_INTELLIGENT_FEATURES=true
+ENABLE_MEMORY_FEATURES=true
+ENABLE_PLANNING_FEATURES=true
+ENABLE_ADVANCED_PROMPTING=true
+ENABLE_LEGACY_COMPATIBILITY=false
 ENABLE_EXPERIMENTAL_FEATURES=false
 ENABLE_PERFORMANCE_MONITORING=true
-ENABLE_DETAILED_TRACING=false
+ENABLE_DETAILED_TRACING=true
+ENABLE_MEMORY_ANALYTICS=true
+ENABLE_PLANNING_ANALYTICS=true
 
-# === Logging Configuration ===
+# === Enhanced Logging Configuration ===
 LOG_FORMAT=json
 LOG_DEDUPE=true
-LOG_BUFFER_SIZE=100
+LOG_BUFFER_SIZE=200  # Increased for intelligence logging
 LOG_FLUSH_INTERVAL=5
+LOG_MEMORY_OPERATIONS=true
+LOG_PLANNING_OPERATIONS=true
+LOG_PROMPT_OPERATIONS=true
 ```
 
-### Configuration Validation
+### Enhanced Configuration Validation
 
-Before deployment, validate your configuration:
+Before deployment, validate your enhanced configuration:
 
 ```bash
 # Activate virtual environment
 source .venv/bin/activate
 
-# Test configuration
+# Test enhanced configuration
 python -c "
-from faultmaven.config.configuration_manager import get_config
-config = get_config()
-if config.validate():
-    print('✅ Configuration is valid')
+from faultmaven.config.enhanced_configuration_manager import get_enhanced_config
+config = get_enhanced_config()
+if config.validate_intelligence_services():
+    print('✅ Enhanced configuration is valid')
+    print(f'Memory features: {config.memory_enabled}')
+    print(f'Planning features: {config.planning_enabled}')
+    print(f'Advanced prompting: {config.advanced_prompting_enabled}')
 else:
-    print('❌ Configuration validation failed')
+    print('❌ Enhanced configuration validation failed')
+    print(config.validation_errors)
 "
 ```
 
 ## Local Development Deployment
 
-### Quick Start
+### Enhanced Quick Start
 
 1. **Clone and Setup**
    ```bash
@@ -157,56 +215,63 @@ else:
    source .venv/bin/activate
    pip install -r requirements.txt
    pip install -r requirements-test.txt
+   pip install -r requirements-intelligence.txt  # New intelligence dependencies
    ```
 
-2. **Download ML Models**
+2. **Download Enhanced ML Models**
    ```bash
    python -m spacy download en_core_web_lg
+   python -m spacy download en_core_web_trf  # For advanced NLP
+   python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"  # For memory embeddings
    ```
 
-3. **Configure Environment**
+3. **Configure Enhanced Environment**
    ```bash
    cp .env.example .env
-   # Edit .env with your configuration
+   # Edit .env with your enhanced configuration
    ```
 
-4. **Start Development Server**
+4. **Start Enhanced Development Server**
    ```bash
    ./run_faultmaven.sh
    ```
 
-5. **Verify Deployment**
+5. **Verify Enhanced Deployment**
    ```bash
    curl http://localhost:8000/health
+   curl http://localhost:8000/health/intelligence  # New intelligence health check
    ```
 
-### Development with External Services
+### Development with Enhanced External Services
 
-For full functionality, start the required external services:
+For full functionality with intelligence features, start the required external services:
 
-**Redis (using Docker):**
+**Enhanced Redis (using Docker):**
 ```bash
 docker run -d \
   --name faultmaven-redis \
   -p 6379:6379 \
+  -e REDIS_MAXMEMORY=2gb \
+  -e REDIS_MAXMEMORY_POLICY=allkeys-lru \
   redis:7-alpine redis-server --requirepass your_redis_password
 ```
 
-**ChromaDB (using Docker):**
+**Enhanced ChromaDB (using Docker):**
 ```bash
 docker run -d \
   --name faultmaven-chromadb \
   -p 8000:8000 \
   -e CHROMA_SERVER_AUTH_CREDENTIALS_PROVIDER=chromadb.auth.token.TokenAuthCredentialsProvider \
-  -e CHROMA_SERVER_AUTH_TOKEN_TRANSPORT_HEADER=X-Chroma-Token \
-  -e CHROMA_AUTH_TOKEN_TRANSPORT_HEADER=your_chromadb_api_key \
+  -e CHROMA_SERVER_AUTH_CREDENTIALS=your_chromadb_api_key \
+  -e CHROMA_SERVER_AUTH_PROVIDER=chromadb.auth.token.TokenAuthServerProvider \
+  -e CHROMA_SERVER_AUTH_CREDENTIALS_FILE=/chroma/chroma_auth.json \
+  -v $(pwd)/chroma_data:/chroma/chroma \
   chromadb/chroma:latest
 ```
 
-**Presidio (using Docker Compose):**
-```bash
-# Create presidio-docker-compose.yml
-cat > presidio-docker-compose.yml << EOF
+**Enhanced Presidio (using Docker Compose):**
+```yaml
+# docker-compose.presidio.yml
 version: '3.8'
 services:
   presidio-analyzer:
@@ -214,49 +279,212 @@ services:
     ports:
       - "5001:3000"
     environment:
-      - PORT=3000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
   
   presidio-anonymizer:
     image: mcr.microsoft.com/presidio-anonymizer:latest
     ports:
       - "5002:3000"
     environment:
-      - PORT=3000
-EOF
-
-docker-compose -f presidio-docker-compose.yml up -d
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+  
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
 ```
 
-## Docker Deployment
+## Intelligence Service Configuration
 
-### Single Container Deployment
+### Memory Management System Setup
 
-1. **Build the Docker Image**
-   ```bash
-   docker build -t faultmaven:latest .
-   ```
+Configure the hierarchical memory system:
 
-2. **Run the Container**
-   ```bash
-   docker run -d \
-     --name faultmaven \
-     -p 8000:8000 \
-     --env-file .env \
-     -v $(pwd)/logs:/app/logs \
-     faultmaven:latest
-   ```
+```bash
+# Memory service configuration
+export MEMORY_SERVICE_CONFIG="{
+  'hierarchy_levels': 4,
+  'working_memory': {
+    'max_size_mb': 512,
+    'ttl_hours': 24,
+    'consolidation_interval_minutes': 30
+  },
+  'session_memory': {
+    'max_size_mb': 256,
+    'ttl_hours': 168,
+    'consolidation_interval_minutes': 60
+  },
+  'user_memory': {
+    'max_size_mb': 1024,
+    'ttl_hours': 8760,
+    'consolidation_interval_minutes': 1440
+  },
+  'episodic_memory': {
+    'max_size_mb': 2048,
+    'ttl_hours': 87600,
+    'consolidation_interval_minutes': 10080
+  }
+}"
 
-3. **Check Container Health**
-   ```bash
-   docker logs faultmaven
-   curl http://localhost:8000/health
-   ```
+# Initialize memory collections
+python -c "
+from faultmaven.services.memory_service import MemoryService
+from faultmaven.infrastructure.persistence.redis_store import RedisMemoryStore
+from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBMemoryStore
 
-### Docker Compose Deployment
+# Initialize memory stores
+redis_store = RedisMemoryStore()
+chroma_store = ChromaDBMemoryStore()
 
-Create a `docker-compose.yml` file for a complete stack:
+# Initialize memory service
+memory_service = MemoryService(redis_store, chroma_store)
+memory_service.initialize_collections()
+
+print('✅ Memory collections initialized')
+"
+```
+
+### Strategic Planning System Setup
+
+Configure the strategic planning system:
+
+```bash
+# Planning service configuration
+export PLANNING_SERVICE_CONFIG="{
+  'max_phases': 7,
+  'strategy_cache_size': 100,
+  'risk_assessment_enabled': true,
+  'alternative_solutions_enabled': true,
+  'execution_timeout_seconds': 300,
+  'planning_models': {
+    'problem_decomposition': 'gpt-4o',
+    'strategy_development': 'gpt-4o',
+    'risk_assessment': 'gpt-4o'
+  }
+}"
+
+# Initialize planning service
+python -c "
+from faultmaven.services.planning_service import PlanningService
+from faultmaven.infrastructure.llm.router import LLMRouter
+
+# Initialize LLM router
+llm_router = LLMRouter()
+
+# Initialize planning service
+planning_service = PlanningService(llm_router)
+planning_service.initialize()
+
+print('✅ Planning service initialized')
+"
+```
+
+### Advanced Prompting System Setup
+
+Configure the advanced prompting system:
+
+```bash
+# Prompt engine configuration
+export PROMPT_ENGINE_CONFIG="{
+  'max_layers': 6,
+  'optimization_enabled': true,
+  'versioning_enabled': true,
+  'a_b_testing_enabled': true,
+  'performance_tracking': true,
+  'layer_configs': {
+    'system': {'weight': 1.0, 'optimization': true},
+    'context': {'weight': 0.8, 'optimization': true},
+    'domain': {'weight': 0.9, 'optimization': true},
+    'task': {'weight': 1.0, 'optimization': true},
+    'safety': {'weight': 0.7, 'optimization': false},
+    'adaptation': {'weight': 0.6, 'optimization': true}
+  }
+}"
+
+# Initialize prompt engine
+python -c "
+from faultmaven.core.prompting import AdvancedPromptEngine
+from faultmaven.infrastructure.llm.router import LLMRouter
+from faultmaven.services.memory_service import MemoryService
+
+# Initialize dependencies
+llm_router = LLMRouter()
+memory_service = MemoryService()
+
+# Initialize prompt engine
+prompt_engine = AdvancedPromptEngine(llm_router, memory_service)
+prompt_engine.initialize()
+
+print('✅ Advanced prompt engine initialized')
+"
+```
+
+## Enhanced Docker Deployment
+
+### Enhanced Dockerfile
+
+Create an enhanced Dockerfile with intelligence dependencies:
+
+```dockerfile
+# Enhanced FaultMaven Dockerfile
+FROM python:3.10-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt requirements-intelligence.txt ./
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements-intelligence.txt
+
+# Download enhanced ML models
+RUN python -m spacy download en_core_web_lg
+RUN python -m spacy download en_core_web_trf
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"
+
+# Copy application code
+COPY faultmaven/ ./faultmaven/
+COPY run_faultmaven.sh ./
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV ENABLE_INTELLIGENT_FEATURES=true
+ENV ENABLE_MEMORY_FEATURES=true
+ENV ENABLE_PLANNING_FEATURES=true
+ENV ENABLE_ADVANCED_PROMPTING=true
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run application
+CMD ["./run_faultmaven.sh"]
+```
+
+### Enhanced Docker Compose
+
+Create an enhanced docker-compose.yml with intelligence services:
 
 ```yaml
+# Enhanced docker-compose.yml
 version: '3.8'
 
 services:
@@ -265,12 +493,14 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - ENABLE_INTELLIGENT_FEATURES=true
+      - ENABLE_MEMORY_FEATURES=true
+      - ENABLE_PLANNING_FEATURES=true
+      - ENABLE_ADVANCED_PROMPTING=true
       - REDIS_HOST=redis
       - CHROMADB_URL=http://chromadb:8000
       - PRESIDIO_ANALYZER_URL=http://presidio-analyzer:3000
       - PRESIDIO_ANONYMIZER_URL=http://presidio-anonymizer:3000
-    env_file:
-      - .env
     depends_on:
       - redis
       - chromadb
@@ -278,173 +508,70 @@ services:
       - presidio-anonymizer
     volumes:
       - ./logs:/app/logs
+      - ./memory_data:/app/memory_data
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
-    command: redis-server --requirepass ${REDIS_PASSWORD:-defaultpassword}
+    command: redis-server --requirepass your_redis_password --maxmemory 2gb --maxmemory-policy allkeys-lru
     volumes:
-      - redis-data:/data
+      - redis_data:/data
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
-      interval: 30s
-      timeout: 3s
-      retries: 5
 
   chromadb:
     image: chromadb/chroma:latest
     ports:
-      - "8001:8000"
+      - "8000:8000"
     environment:
       - CHROMA_SERVER_AUTH_CREDENTIALS_PROVIDER=chromadb.auth.token.TokenAuthCredentialsProvider
-      - CHROMA_SERVER_AUTH_TOKEN_TRANSPORT_HEADER=X-Chroma-Token
-      - CHROMA_AUTH_TOKEN_TRANSPORT_HEADER=${CHROMADB_API_KEY:-defaultkey}
+      - CHROMA_SERVER_AUTH_CREDENTIALS=your_chromadb_api_key
+      - CHROMA_SERVER_AUTH_PROVIDER=chromadb.auth.token.TokenAuthServerProvider
     volumes:
-      - chromadb-data:/chroma/chroma
+      - chromadb_data:/chroma/chroma
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
 
   presidio-analyzer:
     image: mcr.microsoft.com/presidio-analyzer:latest
     ports:
       - "5001:3000"
     environment:
-      - PORT=3000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
 
   presidio-anonymizer:
     image: mcr.microsoft.com/presidio-anonymizer:latest
     ports:
       - "5002:3000"
     environment:
-      - PORT=3000
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  # Optional: Opik for LLM observability
-  opik:
-    image: comet-opik/opik:latest
-    ports:
-      - "5173:5173"
-    environment:
-      - OPIK_DATABASE_URL=postgresql://opik:opik@postgres:5432/opik
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     depends_on:
-      - postgres
-    restart: unless-stopped
-
-  postgres:
-    image: postgres:15
-    environment:
-      - POSTGRES_DB=opik
-      - POSTGRES_USER=opik
-      - POSTGRES_PASSWORD=opik
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - redis
     restart: unless-stopped
 
 volumes:
-  redis-data:
-  chromadb-data:
-  postgres-data:
-
-networks:
-  default:
-    name: faultmaven-network
+  redis_data:
+  chromadb_data:
+  memory_data:
 ```
 
-**Deploy the Stack:**
-```bash
-docker-compose up -d
-```
+## Enhanced Kubernetes Deployment
 
-**Monitor the Deployment:**
-```bash
-docker-compose ps
-docker-compose logs -f faultmaven
-```
+### Enhanced Kubernetes Manifests
 
-## Kubernetes Deployment
-
-### Prerequisites
-
-- Kubernetes cluster (1.21+)
-- kubectl configured
-- Helm 3.x (optional, for easier deployment)
-
-### Namespace and Configuration
-
-1. **Create Namespace**
-   ```bash
-   kubectl create namespace faultmaven
-   ```
-
-2. **Create ConfigMap**
-   ```yaml
-   # configmap.yaml
-   apiVersion: v1
-   kind: ConfigMap
-   metadata:
-     name: faultmaven-config
-     namespace: faultmaven
-   data:
-     ENVIRONMENT: "production"
-     LOG_LEVEL: "INFO"
-     HOST: "0.0.0.0"
-     PORT: "8000"
-     CHAT_PROVIDER: "openai"
-     REDIS_HOST: "faultmaven-redis"
-     REDIS_PORT: "6379"
-     CHROMADB_URL: "http://faultmaven-chromadb:8000"
-     PRESIDIO_ANALYZER_URL: "http://faultmaven-presidio-analyzer:3000"
-     PRESIDIO_ANONYMIZER_URL: "http://faultmaven-presidio-anonymizer:3000"
-   ```
-
-3. **Create Secrets**
-   ```yaml
-   # secrets.yaml
-   apiVersion: v1
-   kind: Secret
-   metadata:
-     name: faultmaven-secrets
-     namespace: faultmaven
-   type: Opaque
-   stringData:
-     OPENAI_API_KEY: "your_openai_api_key_here"
-     ANTHROPIC_API_KEY: "your_anthropic_api_key_here"
-     REDIS_PASSWORD: "your_redis_password"
-     CHROMADB_API_KEY: "your_chromadb_api_key"
-   ```
-
-### Application Deployment
+Create enhanced Kubernetes manifests with intelligence services:
 
 ```yaml
-# deployment.yaml
+# Enhanced deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: faultmaven
-  namespace: faultmaven
   labels:
     app: faultmaven
 spec:
@@ -462,385 +589,331 @@ spec:
         image: faultmaven:latest
         ports:
         - containerPort: 8000
-        envFrom:
-        - configMapRef:
-            name: faultmaven-config
-        - secretRef:
-            name: faultmaven-secrets
+        env:
+        - name: ENABLE_INTELLIGENT_FEATURES
+          value: "true"
+        - name: ENABLE_MEMORY_FEATURES
+          value: "true"
+        - name: ENABLE_PLANNING_FEATURES
+          value: "true"
+        - name: ENABLE_ADVANCED_PROMPTING
+          value: "true"
+        - name: REDIS_HOST
+          value: "redis-service"
+        - name: CHROMADB_URL
+          value: "http://chromadb-service:8000"
+        - name: PRESIDIO_ANALYZER_URL
+          value: "http://presidio-analyzer-service:3000"
+        - name: PRESIDIO_ANONYMIZER_URL
+          value: "http://presidio-anonymizer-service:3000"
         resources:
           requests:
-            memory: "512Mi"
-            cpu: "250m"
+            memory: "8Gi"
+            cpu: "2"
           limits:
-            memory: "2Gi"
-            cpu: "1000m"
+            memory: "16Gi"
+            cpu: "4"
         livenessProbe:
           httpGet:
             path: /health
             port: 8000
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
+          initialDelaySeconds: 60
+          periodSeconds: 30
         readinessProbe:
           httpGet:
-            path: /health
+            path: /health/intelligence
             port: 8000
-          initialDelaySeconds: 5
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 2
+          initialDelaySeconds: 30
+          periodSeconds: 10
         volumeMounts:
+        - name: memory-storage
+          mountPath: /app/memory_data
         - name: logs
           mountPath: /app/logs
       volumes:
+      - name: memory-storage
+        persistentVolumeClaim:
+          claimName: faultmaven-memory-pvc
       - name: logs
         emptyDir: {}
-      restartPolicy: Always
----
+```
+
+### Enhanced Service Manifests
+
+```yaml
+# Enhanced service.yaml
 apiVersion: v1
 kind: Service
 metadata:
   name: faultmaven-service
-  namespace: faultmaven
 spec:
   selector:
     app: faultmaven
   ports:
-  - protocol: TCP
-    port: 80
+  - port: 80
     targetPort: 8000
-  type: ClusterIP
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: faultmaven-ingress
-  namespace: faultmaven
-  annotations:
-    kubernetes.io/ingress.class: "nginx"
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-spec:
-  tls:
-  - hosts:
-    - api.faultmaven.yourdomain.com
-    secretName: faultmaven-tls
-  rules:
-  - host: api.faultmaven.yourdomain.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: faultmaven-service
-            port:
-              number: 80
-```
-
-### Supporting Services
-
-**Redis Deployment:**
-```yaml
-# redis.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: faultmaven-redis
-  namespace: faultmaven
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: faultmaven-redis
-  template:
-    metadata:
-      labels:
-        app: faultmaven-redis
-    spec:
-      containers:
-      - name: redis
-        image: redis:7-alpine
-        args: ["redis-server", "--requirepass", "$(REDIS_PASSWORD)"]
-        env:
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: faultmaven-secrets
-              key: REDIS_PASSWORD
-        ports:
-        - containerPort: 6379
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        volumeMounts:
-        - name: redis-data
-          mountPath: /data
-      volumes:
-      - name: redis-data
-        persistentVolumeClaim:
-          claimName: redis-pvc
+  type: LoadBalancer
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: faultmaven-redis
-  namespace: faultmaven
+  name: redis-service
 spec:
   selector:
-    app: faultmaven-redis
+    app: redis
   ports:
   - port: 6379
     targetPort: 6379
 ---
 apiVersion: v1
-kind: PersistentVolumeClaim
+kind: Service
 metadata:
-  name: redis-pvc
-  namespace: faultmaven
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 10Gi
-```
-
-### Deploy to Kubernetes
-
-```bash
-# Apply all configurations
-kubectl apply -f configmap.yaml
-kubectl apply -f secrets.yaml
-kubectl apply -f redis.yaml
-kubectl apply -f deployment.yaml
-
-# Verify deployment
-kubectl get pods -n faultmaven
-kubectl get services -n faultmaven
-kubectl logs -f deployment/faultmaven -n faultmaven
-```
-
-## Production Considerations
-
-### Security
-
-1. **API Keys and Secrets**
-   - Use Kubernetes secrets or external secret management
-   - Rotate API keys regularly
-   - Implement least-privilege access policies
-
-2. **Network Security**
-   - Use TLS/SSL for all communications
-   - Implement network policies in Kubernetes
-   - Restrict ingress to necessary ports only
-
-3. **Data Protection**
-   - Enable encryption at rest for all data stores
-   - Implement proper backup and recovery procedures
-   - Ensure PII redaction is functioning correctly
-
-### High Availability
-
-1. **Application Layer**
-   - Deploy multiple replicas (minimum 3 for production)
-   - Use anti-affinity rules to spread pods across nodes
-   - Implement proper health checks and auto-healing
-
-2. **Data Layer**
-   - Deploy Redis in cluster mode or with sentinel
-   - Use ChromaDB with replication
-   - Implement backup strategies for persistent data
-
-3. **Load Balancing**
-   - Use ingress controllers with proper load balancing
-   - Implement circuit breakers for external services
-   - Configure appropriate timeout and retry policies
-
-### Performance Optimization
-
-1. **Resource Allocation**
-   ```yaml
-   resources:
-     requests:
-       memory: "1Gi"
-       cpu: "500m"
-     limits:
-       memory: "4Gi"
-       cpu: "2000m"
-   ```
-
-2. **Horizontal Pod Autoscaling**
-   ```yaml
-   apiVersion: autoscaling/v2
-   kind: HorizontalPodAutoscaler
-   metadata:
-     name: faultmaven-hpa
-     namespace: faultmaven
-   spec:
-     scaleTargetRef:
-       apiVersion: apps/v1
-       kind: Deployment
-       name: faultmaven
-     minReplicas: 3
-     maxReplicas: 10
-     metrics:
-     - type: Resource
-       resource:
-         name: cpu
-         target:
-           type: Utilization
-           averageUtilization: 70
-     - type: Resource
-       resource:
-         name: memory
-         target:
-           type: Utilization
-           averageUtilization: 80
-   ```
-
-3. **Persistent Volume Configuration**
-   - Use SSD storage for better performance
-   - Size volumes appropriately for growth
-   - Monitor disk usage and implement cleanup policies
-
-## Monitoring and Observability
-
-### Health Monitoring
-
-FaultMaven provides comprehensive health endpoints:
-
-```bash
-# Basic health check
-curl http://your-domain/health
-
-# Detailed component health
-curl http://your-domain/health/dependencies
-
-# SLA metrics
-curl http://your-domain/health/sla
-
-# Performance metrics
-curl http://your-domain/metrics/performance
-```
-
-### Prometheus Integration
-
-**ServiceMonitor for Prometheus:**
-```yaml
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: faultmaven-monitor
-  namespace: faultmaven
+  name: chromadb-service
 spec:
   selector:
-    matchLabels:
-      app: faultmaven
-  endpoints:
-  - port: http
-    path: /metrics/prometheus
-    interval: 30s
+    app: chromadb
+  ports:
+  - port: 8000
+    targetPort: 8000
 ```
 
-### Grafana Dashboard
+### Enhanced Persistent Volume Claims
 
-Create monitoring dashboards for:
-- Request rate and response times
-- Error rates and types
-- LLM provider performance
-- Session metrics
-- Component health status
-
-### Log Aggregation
-
-**Fluent Bit Configuration:**
 ```yaml
+# Enhanced pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: faultmaven-memory-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: fast-ssd
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: faultmaven-logs-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: fast-ssd
+```
+
+## Enhanced Production Considerations
+
+### Intelligence Service Scaling
+
+Configure scaling for intelligence services:
+
+```yaml
+# Enhanced hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: faultmaven-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: faultmaven
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+```
+
+### Memory and Planning Service Monitoring
+
+Configure monitoring for intelligence services:
+
+```yaml
+# Enhanced monitoring.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: fluent-bit-config
+  name: faultmaven-monitoring-config
 data:
-  fluent-bit.conf: |
-    [INPUT]
-        Name tail
-        Path /app/logs/*.log
-        Tag faultmaven.*
-        
-    [OUTPUT]
-        Name es
-        Match faultmaven.*
-        Host elasticsearch.logging.svc.cluster.local
-        Port 9200
-        Index faultmaven-logs
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+    - job_name: 'faultmaven'
+      static_configs:
+      - targets: ['faultmaven-service:80']
+      metrics_path: /metrics
+      scrape_interval: 10s
+    - job_name: 'faultmaven-intelligence'
+      static_configs:
+      - targets: ['faultmaven-service:80']
+      metrics_path: /metrics/intelligence
+      scrape_interval: 5s
 ```
 
-## Troubleshooting
+## Enhanced Monitoring and Observability
 
-### Common Issues
+### Intelligence Service Health Checks
 
-1. **Container Won't Start**
-   ```bash
-   # Check logs
-   docker logs faultmaven
-   kubectl logs deployment/faultmaven -n faultmaven
-   
-   # Check configuration
-   kubectl describe pod <pod-name> -n faultmaven
-   ```
-
-2. **External Service Connection Issues**
-   ```bash
-   # Test Redis connectivity
-   redis-cli -h redis-host -p 6379 ping
-   
-   # Test ChromaDB
-   curl http://chromadb-host:8000/api/v1/heartbeat
-   
-   # Test Presidio
-   curl http://presidio-host:3000/health
-   ```
-
-3. **Performance Issues**
-   ```bash
-   # Check resource usage
-   kubectl top pods -n faultmaven
-   
-   # Check health endpoints
-   curl http://your-domain/health/dependencies
-   curl http://your-domain/metrics/performance
-   ```
-
-### Debug Mode
-
-Enable debug mode for detailed logging:
+Monitor the health of intelligence services:
 
 ```bash
-# Environment variable
-LOG_LEVEL=DEBUG
+# Check memory service health
+curl -X GET "http://localhost:8000/health/memory" \
+  -H "accept: application/json"
 
-# Feature flag
-ENABLE_DETAILED_TRACING=true
+# Check planning service health
+curl -X GET "http://localhost:8000/health/planning" \
+  -H "accept: application/json"
+
+# Check prompt engine health
+curl -X GET "http://localhost:8000/health/prompt-engine" \
+  -H "accept: application/json"
+
+# Check overall intelligence health
+curl -X GET "http://localhost:8000/health/intelligence" \
+  -H "accept: application/json"
 ```
 
-### Support
+### Memory Analytics Dashboard
 
-For production support:
+Access memory analytics:
 
-1. Collect relevant logs and metrics
-2. Check health endpoint outputs
-3. Verify external service connectivity
-4. Review resource utilization
-5. Check configuration validity
-
-**Health Check Command:**
 ```bash
-# Comprehensive health check
-curl -s http://your-domain/health/dependencies | jq '.'
+# Get memory usage statistics
+curl -X GET "http://localhost:8000/analytics/memory/usage" \
+  -H "accept: application/json"
+
+# Get memory performance metrics
+curl -X GET "http://localhost:8000/analytics/memory/performance" \
+  -H "accept: application/json"
+
+# Get memory consolidation insights
+curl -X GET "http://localhost:8000/analytics/memory/consolidation" \
+  -H "accept: application/json"
 ```
 
-This deployment guide provides a comprehensive foundation for deploying FaultMaven in various environments, from development to production-ready Kubernetes clusters.
+### Planning Analytics Dashboard
+
+Access planning analytics:
+
+```bash
+# Get planning strategy metrics
+curl -X GET "http://localhost:8000/analytics/planning/strategies" \
+  -H "accept: application/json"
+
+# Get planning performance metrics
+curl -X GET "http://localhost:8000/analytics/planning/performance" \
+  -H "accept: application/json"
+
+# Get planning success rates
+curl -X GET "http://localhost:8000/analytics/planning/success-rates" \
+  -H "accept: application/json"
+```
+
+## Enhanced Troubleshooting
+
+### Intelligence Service Diagnostics
+
+Diagnose intelligence service issues:
+
+```bash
+# Check intelligence service logs
+kubectl logs -l app=faultmaven -c faultmaven | grep -E "(memory|planning|prompt)"
+
+# Check intelligence service status
+kubectl exec -it deployment/faultmaven -- curl -s http://localhost:8000/health/intelligence
+
+# Check memory service connectivity
+kubectl exec -it deployment/faultmaven -- python -c "
+from faultmaven.services.memory_service import MemoryService
+try:
+    memory_service = MemoryService()
+    status = memory_service.get_health_status()
+    print(f'Memory service status: {status}')
+except Exception as e:
+    print(f'Memory service error: {e}')
+"
+
+# Check planning service connectivity
+kubectl exec -it deployment/faultmaven -- python -c "
+from faultmaven.services.planning_service import PlanningService
+try:
+    planning_service = PlanningService()
+    status = planning_service.get_health_status()
+    print(f'Planning service status: {status}')
+except Exception as e:
+    print(f'Planning service error: {e}')
+"
+```
+
+### Performance Optimization
+
+Optimize intelligence service performance:
+
+```bash
+# Monitor memory usage
+kubectl top pods -l app=faultmaven
+
+# Check memory service performance
+curl -X GET "http://localhost:8000/analytics/memory/performance" \
+  -H "accept: application/json" | jq '.response_time_percentiles'
+
+# Check planning service performance
+curl -X GET "http://localhost:8000/analytics/planning/performance" \
+  -H "accept: application/json" | jq '.strategy_development_time'
+
+# Optimize memory storage
+curl -X POST "http://localhost:8000/admin/memory/optimize" \
+  -H "accept: application/json" \
+  -H "content-type: application/json" \
+  -d '{"optimization_level": "aggressive"}'
+```
+
+## Conclusion
+
+This enhanced deployment guide provides comprehensive instructions for deploying FaultMaven with advanced intelligent communication capabilities. The new memory management, strategic planning, and advanced prompting services require additional resources and configuration but provide significant improvements in system intelligence and user experience.
+
+**Key Deployment Benefits**:
+- **Intelligent Context Awareness**: All operations consider memory and planning context
+- **Strategic Execution**: Planning-driven approach to problem solving
+- **Continuous Learning**: System improves through conversation analysis and feedback
+- **Enhanced User Experience**: Context-aware, personalized, and progressive interactions
+- **Scalable Intelligence**: Horizontal scaling for intelligence services
+
+**Next Steps**:
+1. **Deploy Enhanced Services**: Use the enhanced configuration and manifests
+2. **Monitor Intelligence Services**: Use the new health checks and analytics
+3. **Optimize Performance**: Monitor and optimize intelligence service performance
+4. **Scale as Needed**: Use HPA for automatic scaling of intelligence services
+
+This enhanced deployment positions FaultMaven for intelligent operation in production environments while maintaining all the benefits of the existing clean architecture.

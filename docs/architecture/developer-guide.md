@@ -1,12 +1,11 @@
 # FaultMaven Developer Onboarding Guide
 
 **Document Type**: Developer Guide  
-**Last Updated**: August 2025  
-**Status**: Active - Post-Refactoring Complete
+**Last Updated**: August 2025
 
 ## Overview
 
-Welcome to FaultMaven! This guide helps new developers quickly understand our clean architecture, development workflow, and best practices. FaultMaven has recently completed a major architectural refactoring, resulting in a modern, interface-based system that prioritizes testability, maintainability, and deployment flexibility.
+Welcome to FaultMaven! This guide helps new developers quickly understand our intelligent architecture, development workflow, and best practices. FaultMaven features a sophisticated clean architecture with advanced memory management, strategic planning, and intelligent communication capabilities that make it truly intelligent and adaptive.
 
 ## Quick Start (5 Minutes)
 
@@ -56,517 +55,559 @@ python -m faultmaven.main
 python run_tests.py --unit
 ```
 
-## Architecture Overview (Interface-Based Design)
+## Enhanced Architecture Overview
 
 ### Core Philosophy
 
-FaultMaven uses **interface-based dependency injection** throughout. This means:
+FaultMaven uses **intelligent interface-based dependency injection** throughout, featuring:
 
-- **All dependencies are abstractions (interfaces)**
-- **Services receive interfaces, not concrete classes**
-- **Easy testing with mocked interfaces**
-- **Flexible deployment options**
+- **Advanced Memory Management**: Hierarchical memory with semantic understanding
+- **Strategic Planning**: Multi-phase planning with problem decomposition
+- **Intelligent Communication**: Context-aware prompting and response optimization
+- **Continuous Learning**: System improvement through conversation analysis
+- **All dependencies are abstractions (interfaces)** for maximum flexibility
 
-### Layer Structure
+### Enhanced Layer Structure
 
 ```
 API Layer (FastAPI routes)
     ↓ [Uses dependency injection]
-Service Layer (Business logic)
-    ↓ [Uses interface contracts]
-Core Domain (Business entities)
-    ↓ [Uses interface abstractions]
-Infrastructure (External integrations)
+Service Layer (Business logic + Intelligence)
+    ↓ [Memory + Planning integration]
+Core Domain (Business entities + AI reasoning)
+    ↓ [Advanced communication capabilities]
+Infrastructure (External integrations + Memory storage)
 ```
 
-### Key Interfaces
+### Key Enhanced Interfaces
 
 Located in `faultmaven/models/interfaces.py`:
 
 ```python
+# Core Intelligence Interfaces
+IMemoryService      # Hierarchical memory management
+IPlanningService    # Strategic planning and problem decomposition
+IPromptEngine       # Advanced prompting with optimization
+
 # Infrastructure Interfaces
-ILLMProvider     # AI model interaction
-ISanitizer       # Data cleaning/PII removal
-ITracer          # Observability/tracing
-IVectorStore     # Knowledge base storage
-ISessionStore    # Session management
+ILLMProvider        # AI model interaction with memory enhancement
+ISanitizer          # Data cleaning/PII removal
+ITracer             # Observability/tracing
+IVectorStore        # Knowledge base storage with memory integration
+ISessionStore       # Session management with memory preservation
 
 # Processing Interfaces  
-IDataClassifier  # Data type detection
-ILogProcessor    # Log analysis
-IStorageBackend  # General storage
+IDataClassifier     # Data type detection with context awareness
+ILogProcessor       # Log analysis with pattern learning
+IStorageBackend     # General storage
 
 # Tool Interfaces
-BaseTool         # Agent capabilities
+BaseTool            # Agent capabilities with planning integration
 ```
 
-## Understanding Services
+## New Architecture Features
 
-### Service Constructor Pattern
+### 1. Memory Management System
 
-All services follow the same pattern - **constructor injection of interfaces**:
+FaultMaven now features a sophisticated hierarchical memory architecture:
 
 ```python
-class AgentService:
-    def __init__(
-        self,
-        llm_provider: ILLMProvider,    # Interface dependency
-        tools: List[BaseTool],         # Interface list  
-        tracer: ITracer,              # Interface dependency
-        sanitizer: ISanitizer         # Interface dependency
-    ):
-        self._llm = llm_provider      # Store interface reference
-        self._tools = tools           # Store interface list
-        self._tracer = tracer         # Store interface reference
-        self._sanitizer = sanitizer   # Store interface reference
+# Memory Service Usage
+from faultmaven.services.memory_service import IMemoryService
+
+class EnhancedAgentService:
+    def __init__(self, memory_service: IMemoryService):
+        self._memory = memory_service
+    
+    async def process_query(self, request: QueryRequest) -> AgentResponse:
+        # Retrieve relevant context from memory
+        context = await self._memory.retrieve_context(
+            request.session_id, 
+            request.query
+        )
+        
+        # Process with context awareness
+        result = await self._process_with_context(request, context)
+        
+        # Consolidate insights back to memory
+        await self._memory.consolidate_insights(
+            request.session_id, 
+            result
+        )
+        
+        return result
 ```
 
-**Key Points**:
-- Services depend **only on interfaces**, never concrete classes
-- All dependencies provided via constructor
-- Services are **completely testable** with interface mocks
-- No direct imports of infrastructure components
+**Memory Types**:
+- **Working Memory**: Current conversation context (sliding window)
+- **Session Memory**: Session-specific insights and learnings
+- **User Memory**: Long-term user preferences and expertise patterns
+- **Episodic Memory**: Past troubleshooting cases and resolutions
 
-### Service Examples
+### 2. Strategic Planning System
 
-**AgentService** - AI troubleshooting workflows:
-```python
-# Usage in API routes
-agent_service = container.get_agent_service()  # All dependencies injected
-result = await agent_service.process_query(user_input)
-```
-
-**DataService** - Data processing and analysis:
-```python
-# Usage example
-data_service = container.get_data_service()  # All dependencies injected  
-analysis = await data_service.analyze_logs(log_data)
-```
-
-**KnowledgeService** - Knowledge base operations:
-```python
-# Usage example
-knowledge_service = container.get_knowledge_service()  # All dependencies injected
-search_results = await knowledge_service.search(query)
-```
-
-## Dependency Injection System
-
-### Global Container Access
-
-The `DIContainer` provides all services with dependencies pre-injected:
+The system now includes intelligent planning capabilities:
 
 ```python
-from faultmaven.container import container
+# Planning Service Usage
+from faultmaven.services.planning_service import IPlanningService
 
-# Get services (all dependencies automatically injected)
-agent_service = container.get_agent_service()
-data_service = container.get_data_service()
-knowledge_service = container.get_knowledge_service()
-
-# Get infrastructure components
-llm_provider = container.get_llm_provider()
-sanitizer = container.get_sanitizer()
-tracer = container.get_tracer()
+class EnhancedAgentService:
+    def __init__(self, planning_service: IPlanningService):
+        self._planning = planning_service
+    
+    async def process_query(self, request: QueryRequest) -> AgentResponse:
+        # Plan response strategy
+        strategy = await self._planning.plan_response_strategy(
+            request.query, 
+            context
+        )
+        
+        # Execute with strategic guidance
+        result = await self._execute_with_strategy(request, strategy)
+        
+        return result
 ```
 
-### Container Features
+**Planning Features**:
+- **Problem Decomposition**: LLM-powered problem breakdown
+- **Solution Strategy**: Multi-phase solution development
+- **Risk Assessment**: Comprehensive risk analysis and mitigation
+- **Alternative Solutions**: Multiple approach evaluation
 
-- **Singleton Pattern**: One instance across application
-- **Lazy Initialization**: Components created only when needed
-- **Health Monitoring**: Built-in health checks for all dependencies  
-- **Graceful Fallbacks**: Mock implementations when dependencies unavailable
-- **Environment-Specific**: Different implementations per environment
+### 3. Advanced Prompting System
+
+Enhanced prompting with multi-layer architecture:
+
+```python
+# Advanced Prompt Engine Usage
+from faultmaven.core.prompting import AdvancedPromptEngine
+
+class EnhancedAgentService:
+    def __init__(self, prompt_engine: AdvancedPromptEngine):
+        self._prompt_engine = prompt_engine
+    
+    async def generate_response(self, query: str, context: dict) -> str:
+        # Assemble context-aware prompt
+        prompt = await self._prompt_engine.assemble_prompt(
+            question=query,
+            response_type=ResponseType.ANSWER,
+            context=context
+        )
+        
+        # Generate optimized response
+        response = await self._llm.generate(prompt)
+        
+        return response
+```
+
+**Prompt Features**:
+- **Multi-Layer Architecture**: System, context, domain, task, safety, adaptation
+- **Dynamic Optimization**: Quality-based prompt improvement
+- **Context Injection**: Memory-aware prompt enhancement
+- **Performance Tracking**: A/B testing and optimization
 
 ## Development Workflow
 
-### 1. Adding New Features
+### 1. Understanding the New Architecture
 
-**Step 1**: Define interface (if needed)
-```python
-# faultmaven/models/interfaces.py
-class INewFeature(ABC):
-    @abstractmethod
-    async def do_something(self, input_data: str) -> str:
-        """Process input and return result"""
-        pass
-```
+Start with these key documents:
+- `SYSTEM_ARCHITECTURE.md` - Complete system overview
+- `COMPONENT_INTERACTIONS.md` - How components work together
+- `IMPLEMENTATION_GAP_ANALYSIS.md` - What's implemented vs. planned
 
-**Step 2**: Implement interface
-```python
-# faultmaven/infrastructure/new_feature.py
-class NewFeatureImpl(INewFeature):
-    async def do_something(self, input_data: str) -> str:
-        # Implementation logic
-        return processed_data
-```
+### 2. Working with Memory and Planning
 
-**Step 3**: Add to container
 ```python
-# faultmaven/container.py
-def _create_infrastructure_layer(self):
-    # ... existing components ...
-    self.new_feature = NewFeatureImpl()
-```
-
-**Step 4**: Use in service
-```python
-# faultmaven/services/some_service.py
-class SomeService:
-    def __init__(self, new_feature: INewFeature):
-        self._new_feature = new_feature
+# Example: Adding memory to a new service
+class MyNewService:
+    def __init__(
+        self,
+        memory_service: IMemoryService,
+        planning_service: IPlanningService
+    ):
+        self._memory = memory_service
+        self._planning = planning_service
     
-    async def use_feature(self, data: str):
-        return await self._new_feature.do_something(data)
+    async def process_request(self, request: MyRequest) -> MyResponse:
+        # Get context from memory
+        context = await self._memory.retrieve_context(
+            request.session_id, 
+            request.content
+        )
+        
+        # Plan approach
+        plan = await self._planning.plan_response_strategy(
+            request.content, 
+            context
+        )
+        
+        # Process with intelligence
+        result = await self._process_intelligently(request, context, plan)
+        
+        # Learn from interaction
+        await self._memory.consolidate_insights(
+            request.session_id, 
+            result
+        )
+        
+        return result
 ```
 
-### 2. Testing Strategy
+### 3. Testing with New Components
 
-**Unit Tests** - Test services in isolation:
 ```python
+# Testing memory and planning services
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import Mock
 
-@pytest.fixture
-def mock_llm_provider():
-    mock = AsyncMock()
-    mock.generate.return_value = "Mock response"
-    return mock
+class TestMyNewService:
+    @pytest.fixture
+    def mock_memory_service(self):
+        service = Mock(spec=IMemoryService)
+        service.retrieve_context.return_value = MockConversationContext()
+        service.consolidate_insights.return_value = True
+        return service
+    
+    @pytest.fixture
+    def mock_planning_service(self):
+        service = Mock(spec=IPlanningService)
+        service.plan_response_strategy.return_value = MockStrategicPlan()
+        return service
+    
+    async def test_service_with_intelligence(self, mock_memory_service, mock_planning_service):
+        my_service = MyNewService(mock_memory_service, mock_planning_service)
+        result = await my_service.process_request(MockRequest())
+        
+        assert result is not None
+        mock_memory_service.retrieve_context.assert_called_once()
+        mock_planning_service.plan_response_strategy.assert_called_once()
+```
 
-@pytest.fixture  
-def agent_service(mock_llm_provider):
-    return AgentService(
-        llm_provider=mock_llm_provider,
-        tools=[],
-        tracer=AsyncMock(),
-        sanitizer=AsyncMock()
+## Key Development Patterns
+
+### 1. Memory-Aware Processing
+
+Always consider memory context in your services:
+
+```python
+# Good: Memory-aware processing
+async def process_data(self, data: str, session_id: str) -> ProcessedData:
+    # Get relevant context
+    context = await self._memory.retrieve_context(session_id, data)
+    
+    # Process with context
+    result = await self._process_with_context(data, context)
+    
+    # Learn from processing
+    await self._memory.consolidate_insights(session_id, result)
+    
+    return result
+
+# Avoid: Ignoring memory context
+async def process_data(self, data: str) -> ProcessedData:
+    # Missing memory integration
+    return await self._process(data)
+```
+
+### 2. Strategic Planning Integration
+
+Use planning for complex operations:
+
+```python
+# Good: Planning-driven processing
+async def solve_problem(self, problem: str, session_id: str) -> Solution:
+    # Plan approach
+    strategy = await self._planning.plan_response_strategy(problem, {})
+    
+    # Execute with strategy
+    solution = await self._execute_strategy(problem, strategy)
+    
+    return solution
+
+# Avoid: Direct problem solving
+async def solve_problem(self, problem: str) -> Solution:
+    # Missing strategic planning
+    return await self._direct_solve(problem)
+```
+
+### 3. Context-Aware Communication
+
+Always consider user context and expertise:
+
+```python
+# Good: Context-aware communication
+async def generate_response(self, query: str, session_id: str) -> str:
+    # Get user profile and context
+    user_profile = await self._memory.get_user_profile(session_id)
+    context = await self._memory.retrieve_context(session_id, query)
+    
+    # Generate appropriate response
+    response = await self._generate_contextual_response(
+        query, 
+        user_profile, 
+        context
     )
+    
+    return response
 
-async def test_agent_service_query(agent_service):
-    result = await agent_service.process_query("test query")
-    assert result is not None
+# Avoid: Generic responses
+async def generate_response(self, query: str) -> str:
+    # Missing context awareness
+    return await self._generate_generic_response(query)
 ```
 
-**Integration Tests** - Test with real dependencies:
-```python
-@pytest.fixture
-def container():
-    # Use real container with test configuration
-    container = DIContainer()
-    container.initialize()
-    return container
+## Testing Strategy
 
-async def test_full_workflow(container):
-    agent_service = container.get_agent_service()
-    result = await agent_service.process_query("integration test")
-    assert result.success
-```
+### 1. Unit Testing
 
-### 3. Running Tests
-
-```bash
-# All tests with coverage
-python run_tests.py --all
-
-# Unit tests only
-python run_tests.py --unit
-
-# Integration tests
-python run_tests.py --integration
-
-# Specific test category
-pytest -m "unit"       # Unit tests
-pytest -m "api"        # API tests  
-pytest -m "security"   # Security tests
-```
-
-## LLM Provider System
-
-### Quick Provider Setup
-
-FaultMaven supports 7 LLM providers out of the box. Just add API keys to use them:
-
-```bash
-# High performance, recommended
-FIREWORKS_API_KEY="fw_your_key"
-CHAT_PROVIDER="fireworks"
-
-# Highest quality
-OPENAI_API_KEY="sk_your_key"  
-CHAT_PROVIDER="openai"
-
-# Best reasoning
-ANTHROPIC_API_KEY="sk-ant_your_key"
-CHAT_PROVIDER="anthropic"
-
-# Free/Local development
-CHAT_PROVIDER="local"  # No API key needed
-```
-
-### Automatic Fallbacks
-
-The system automatically creates fallback chains:
-- If primary provider fails → Try Fireworks → Try OpenAI → Try Local
-- Completely transparent to your application code
-
-### Provider Status
-
-Check which providers are available:
-```python
-from faultmaven.infrastructure.llm.providers.registry import get_registry
-
-registry = get_registry()
-print("Available:", registry.get_available_providers())
-print("Fallback chain:", registry.get_fallback_chain())
-```
-
-## API Development
-
-### Route Structure
-
-API routes are **thin controllers** that delegate to services:
+Test individual components with mocked dependencies:
 
 ```python
-# faultmaven/api/v1/routes/agent.py
-from fastapi import APIRouter, Depends
-from faultmaven.api.v1.dependencies import get_agent_service
+# Test memory service
+async def test_memory_retrieval():
+    mock_vector_store = Mock()
+    memory_service = MemoryService(mock_vector_store)
+    
+    context = await memory_service.retrieve_context("session_1", "query")
+    assert context is not None
+    assert len(context.conversation_history) > 0
 
-router = APIRouter(prefix="/agent")
-
-@router.post("/query")
-async def process_query(
-    request: QueryRequest,
-    agent_service = Depends(get_agent_service)  # Dependency injection
-):
-    # Thin controller - just delegate to service
-    result = await agent_service.process_query(request.query)
-    return QueryResponse(result=result)
+# Test planning service
+async def test_planning_strategy():
+    mock_llm = Mock()
+    planning_service = PlanningService(mock_llm)
+    
+    strategy = await planning_service.plan_response_strategy("query", {})
+    assert strategy is not None
+    assert strategy.plan_components is not None
 ```
 
-### Dependency Injection in FastAPI
+### 2. Integration Testing
 
-```python  
-# faultmaven/api/v1/dependencies.py
-from faultmaven.container import container
+Test component interactions:
 
-def get_agent_service():
-    """FastAPI dependency to get agent service with all dependencies injected"""
-    return container.get_agent_service()
+```python
+# Test complete workflow
+async def test_intelligent_workflow():
+    # Setup services
+    memory_service = MemoryService(mock_vector_store)
+    planning_service = PlanningService(mock_llm)
+    agent_service = EnhancedAgentService(
+        memory_service, 
+        planning_service
+    )
+    
+    # Test complete flow
+    request = QueryRequest(session_id="test", query="test query")
+    response = await agent_service.process_query(request)
+    
+    # Verify intelligence features
+    assert response.view_state.memory_context is not None
+    assert response.view_state.planning_state is not None
+```
 
-def get_data_service():
-    """FastAPI dependency to get data service with all dependencies injected"""
-    return container.get_data_service()
+### 3. Performance Testing
+
+Test memory and planning performance:
+
+```python
+# Test memory performance
+async def test_memory_performance():
+    start_time = time.time()
+    context = await memory_service.retrieve_context("session_1", "query")
+    end_time = time.time()
+    
+    # Should complete within 50ms
+    assert (end_time - start_time) < 0.05
+    assert context is not None
+
+# Test planning performance
+async def test_planning_performance():
+    start_time = time.time()
+    strategy = await planning_service.plan_response_strategy("query", {})
+    end_time = time.time()
+    
+    # Should complete within 100ms
+    assert (end_time - start_time) < 0.1
+    assert strategy is not None
 ```
 
 ## Common Development Tasks
 
-### 1. Adding New API Endpoint
+### 1. Adding a New Service
 
 ```python
-# 1. Add to route file
-@router.post("/new-endpoint")
-async def new_endpoint(
-    request: NewRequest,
-    service = Depends(get_appropriate_service)
-):
-    return await service.handle_new_request(request)
+# 1. Define interface
+class IMyService(ABC):
+    @abstractmethod
+    async def process_request(self, request: MyRequest) -> MyResponse:
+        pass
 
-# 2. Add method to service
-class AppropriateService:
-    async def handle_new_request(self, request: NewRequest):
-        # Business logic using injected interfaces
+# 2. Implement service with intelligence
+class MyService(IMyService):
+    def __init__(
+        self,
+        memory_service: IMemoryService,
+        planning_service: IPlanningService
+    ):
+        self._memory = memory_service
+        self._planning = planning_service
+    
+    async def process_request(self, request: MyRequest) -> MyResponse:
+        # Get context
+        context = await self._memory.retrieve_context(
+            request.session_id, 
+            request.content
+        )
+        
+        # Plan approach
+        plan = await self._planning.plan_response_strategy(
+            request.content, 
+            context
+        )
+        
+        # Process
+        result = await self._process(request, context, plan)
+        
+        # Learn
+        await self._memory.consolidate_insights(
+            request.session_id, 
+            result
+        )
+        
         return result
 
-# 3. Add tests
-async def test_new_endpoint(client, mock_service):
-    response = client.post("/api/v1/new-endpoint", json={...})
-    assert response.status_code == 200
+# 3. Add to DI container
+def _create_service_layer(self):
+    self.my_service = MyService(
+        self.memory_service,
+        self.planning_service
+    )
 ```
 
-### 2. Adding New LLM Provider
+### 2. Adding Memory Integration
 
 ```python
-# 1. Add to provider schema (if using existing pattern)
-# Edit: faultmaven/infrastructure/llm/providers/registry.py
-"new_provider": {
-    "api_key_var": "NEW_PROVIDER_API_KEY",
-    "model_var": "NEW_PROVIDER_MODEL", 
-    "default_model": "some-model-name",
-    "provider_class": CompatibleProviderClass,
-    # ... other config
-}
-
-# 2. Set environment variables
-NEW_PROVIDER_API_KEY="your_key"
-CHAT_PROVIDER="new_provider"
-
-# That's it! Provider is automatically available
-```
-
-### 3. Adding Observability
-
-All services support tracing via the `ITracer` interface:
-
-```python
-class YourService:
-    def __init__(self, tracer: ITracer):
-        self._tracer = tracer
+# Add memory to existing service
+class EnhancedExistingService:
+    def __init__(
+        self,
+        existing_dependencies: List[Any],
+        memory_service: IMemoryService  # New dependency
+    ):
+        self._existing_deps = existing_dependencies
+        self._memory = memory_service  # New memory integration
     
-    async def your_method(self):
-        with self._tracer.trace("your_operation"):
-            # Your logic here
-            result = await self._do_work()
-            self._tracer.log_event("operation_completed", {"result": result})
-            return result
+    async def existing_method(self, request: Request) -> Response:
+        # Get context from memory
+        context = await self._memory.retrieve_context(
+            request.session_id, 
+            request.content
+        )
+        
+        # Use context in existing logic
+        result = await self._existing_logic(request, context)
+        
+        # Learn from interaction
+        await self._memory.consolidate_insights(
+            request.session_id, 
+            result
+        )
+        
+        return result
 ```
 
-## Debugging and Troubleshooting
-
-### 1. Container Health Check
+### 3. Adding Planning Integration
 
 ```python
-from faultmaven.container import container
-
-# Check container health
-health = container.health_check()
-print("Container status:", health["status"])
-print("Components:", health["components"])
+# Add planning to existing service
+class EnhancedExistingService:
+    def __init__(
+        self,
+        existing_dependencies: List[Any],
+        planning_service: IPlanningService  # New dependency
+    ):
+        self._existing_deps = existing_dependencies
+        self._planning = planning_service  # New planning integration
+    
+    async def existing_method(self, request: Request) -> Response:
+        # Plan approach
+        strategy = await self._planning.plan_response_strategy(
+            request.content, 
+            {}
+        )
+        
+        # Use strategy in existing logic
+        result = await self._existing_logic(request, strategy)
+        
+        return result
 ```
 
-### 2. Provider Status
+## Troubleshooting Common Issues
+
+### 1. Memory Service Not Available
 
 ```python
-from faultmaven.infrastructure.llm.providers.registry import get_registry
+# Check DI container initialization
+container = DIContainer()
+if not container.memory_service:
+    print("Memory service not initialized")
+    print("Check container health:", container.get_health_status())
 
-registry = get_registry()
-status = registry.get_provider_status()
-
-for name, info in status.items():
-    print(f"{name}: {'✅' if info['available'] else '❌'}")
+# Verify Redis connection
+redis_client = redis.Redis.from_url(REDIS_URL)
+try:
+    redis_client.ping()
+    print("Redis connection OK")
+except Exception as e:
+    print(f"Redis connection failed: {e}")
 ```
 
-### 3. Common Issues
+### 2. Planning Service Errors
 
-**Issue**: Service not found
-**Solution**: Check container initialization and interface implementations
+```python
+# Check LLM provider availability
+container = DIContainer()
+if not container.llm_provider:
+    print("LLM provider not available")
+    print("Check LLM configuration in .env")
 
-**Issue**: Provider not available  
-**Solution**: Verify API key environment variables and provider configuration
-
-**Issue**: Tests failing with missing dependencies
-**Solution**: Use proper mocking with interface contracts
-
-### 4. Logging
-
-FaultMaven uses structured logging. Enable debug mode:
-
-```bash
-# Enable detailed logging
-export LOG_LEVEL=DEBUG
-export ENABLE_MIGRATION_LOGGING=true
-
-./run_faultmaven.sh
+# Verify planning service health
+planning_service = container.planning_service
+health = await planning_service.get_health_status()
+print("Planning service health:", health)
 ```
 
-## Best Practices
+### 3. Performance Issues
 
-### 1. Interface Design
+```python
+# Check memory usage
+import psutil
+process = psutil.Process()
+print(f"Memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
 
-- Keep interfaces focused and minimal
-- Use async by default for I/O operations
-- Include comprehensive docstrings
-- Follow consistent naming patterns
-
-### 2. Service Implementation
-
-- Accept only interfaces in constructors
-- Never import infrastructure directly
-- Use dependency injection consistently  
-- Include proper error handling
-
-### 3. Testing
-
-- Mock all interfaces for unit tests
-- Use real implementations for integration tests
-- Test both success and failure scenarios
-- Verify interface contracts are followed
-
-### 4. Development
-
-- Always use the container for service access
-- Never create service instances manually
-- Follow the established patterns
-- Write tests first (TDD)
-
-## Deployment Considerations
-
-### Feature Flags
-
-Control architecture behavior via environment variables:
-
-```bash
-# Enable new architecture (default)
-USE_REFACTORED_SERVICES=true
-USE_DI_CONTAINER=true
-
-# Legacy fallback (if needed)  
-USE_REFACTORED_SERVICES=false
-USE_DI_CONTAINER=false
+# Check Redis performance
+redis_client = redis.Redis.from_url(REDIS_URL)
+start_time = time.time()
+redis_client.ping()
+end_time = time.time()
+print(f"Redis response time: {(end_time - start_time) * 1000:.2f} ms")
 ```
 
-### Environment-Specific Configuration
+## Next Steps
 
-**Development**:
-```bash
-CHAT_PROVIDER="local"           # Use local LLM
-REDIS_URL="redis://localhost:6379"
-```
+1. **Read the Architecture Documents**: Start with `SYSTEM_ARCHITECTURE.md`
+2. **Explore the Codebase**: Look at existing memory and planning implementations
+3. **Run the Tests**: Verify your environment is working correctly
+4. **Start Small**: Add memory integration to a simple service first
+5. **Ask Questions**: Use the team chat for architecture questions
 
-**Testing**:
-```bash
-TESTING_MODE=true               # Enables mocking
-USE_MOCK_LLM=true              # Mock LLM responses
-```
+## Resources
 
-**Production**:
-```bash
-CHAT_PROVIDER="fireworks"       # Use production LLM
-REDIS_URL="redis://prod-redis:6379"
-OPIK_ENABLED=true              # Enable observability
-```
+- **Architecture Documents**: `docs/architecture/`
+- **Code Examples**: `faultmaven/services/` and `faultmaven/core/`
+- **Testing**: `tests/` directory with comprehensive examples
+- **Configuration**: `.env.example` for environment setup
 
-## Getting Help
-
-### Documentation
-
-- **Architecture**: [Current Architecture](current-architecture.md)
-- **Dependency Injection**: [DI System](dependency-injection-system.md)
-- **Container Usage**: [DI Container Usage Guide](container-usage-guide.md)
-- **LLM Providers**: [Provider Guide](../how-to-add-providers.md)
-- **ADR**: [Interface-Based Design Decision](adr-001-interface-based-design.md)
-
-### Code Examples
-
-Look at existing tests for usage patterns:
-- `tests/services/` - Service testing patterns
-- `tests/unit/` - Interface and container testing
-- `tests/integration/` - Full workflow testing
-
-### Common Commands
-
-```bash
-# Development
-./run_faultmaven.sh                    # Start server
-python run_tests.py --all              # Run all tests
-python run_tests.py --unit --coverage  # Unit tests with coverage
-
-# Code Quality
-black faultmaven tests                 # Format code
-flake8 faultmaven tests               # Lint code
-mypy faultmaven                       # Type checking
-
-# Container Management
-python -c "from faultmaven.container import container; print(container.health_check())"
-```
-
-This guide should get you productive with FaultMaven's clean architecture quickly. The interface-based design makes the codebase predictable and testable - once you understand the patterns, development becomes straightforward and enjoyable!
+Welcome to the intelligent future of FaultMaven! 🚀
