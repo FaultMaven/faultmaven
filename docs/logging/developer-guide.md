@@ -718,7 +718,145 @@ logger.critical("Database connection lost", error=exception)
 
 ## Common Patterns
 
-### 1. Validation with Logging
+### 1. High-Frequency Operations (Heartbeats, Health Checks)
+
+High-frequency routine operations require specialized patterns to prevent log spam while maintaining diagnostics:
+
+```python
+import time
+from typing import Dict
+
+# Rate-limited error logging for repeated failures
+_session_not_found_log_tracker: Dict[str, float] = {}
+_SESSION_NOT_FOUND_LOG_INTERVAL = 30  # Log every 30 seconds per session_id
+
+def _log_session_not_found_rate_limited(session_id: str) -> None:
+    """
+    Log session not found error with rate limiting to prevent log spam.
+    
+    Only logs once per 30 seconds per session_id to reduce noise from
+    frontend clients that repeatedly send heartbeats for expired sessions.
+    """
+    current_time = time.time()
+    last_logged = _session_not_found_log_tracker.get(session_id, 0)
+    
+    if current_time - last_logged >= _SESSION_NOT_FOUND_LOG_INTERVAL:
+        # Include repeat information for context
+        if last_logged > 0:
+            logger.warning(
+                f"Session not found for heartbeat: {session_id} "
+                f"(repeated attempts - last logged {int((current_time - last_logged))}s ago)"
+            )
+        else:
+            logger.warning(f"Session not found for heartbeat: {session_id}")
+        
+        _session_not_found_log_tracker[session_id] = current_time
+        
+        # Clean up old entries to prevent memory leak
+        cutoff_time = current_time - (2 * _SESSION_NOT_FOUND_LOG_INTERVAL)
+        for sid, logged_time in list(_session_not_found_log_tracker.items()):
+            if logged_time < cutoff_time:
+                del _session_not_found_log_tracker[sid]
+
+@router.post("/{session_id}/heartbeat")
+async def session_heartbeat(session_id: str):
+    """
+    Heartbeat endpoint with routine operation logging pattern.
+    
+    Key patterns:
+    - Rate-limited error logging prevents spam
+    - Minimal success logging (DEBUG level via middleware)
+    - Immediate logging for infrastructure errors
+    """
+    try:
+        result = await session_service.update_last_activity(session_id)
+        if not result:
+            _log_session_not_found_rate_limited(session_id)
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Success case - minimal logging (handled by middleware at DEBUG level)
+        return {"status": "active", "session_id": session_id}
+        
+    except FileNotFoundError:
+        # Use rate-limited logging for expected errors
+        _log_session_not_found_rate_limited(session_id)
+        raise HTTPException(status_code=404, detail="Session not found")
+    except ConnectionError as e:
+        # Infrastructure errors still logged immediately
+        logger.error(f"Session store connection issue during heartbeat: {e}")
+        raise HTTPException(status_code=503, detail="Service unavailable")
+    except Exception as e:
+        # Unexpected errors always logged
+        logger.error(f"Unexpected error during heartbeat: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+# Middleware pattern for conditional log levels
+class LoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Reduce verbosity for routine operations
+        is_heartbeat = request.url.path.endswith('/heartbeat')
+        start_log_level = "debug" if is_heartbeat else "info"
+        
+        LoggingCoordinator.log_once(
+            operation_key=f"request_start:{correlation_id}",
+            logger=logger,
+            level=start_log_level,  # DEBUG for heartbeats, INFO for business
+            message=f"Request started: {request.method} {request.url.path}",
+            # ... other context
+        )
+        
+        response = await call_next(request)
+        
+        # Conditional logging for response based on operation + status
+        is_heartbeat_404 = (
+            request.url.path.endswith('/heartbeat') and 
+            response.status_code == 404
+        )
+        completion_log_level = "debug" if is_heartbeat_404 else "info"
+        
+        LoggingCoordinator.log_once(
+            operation_key=f"request_complete:{correlation_id}",
+            logger=logger,
+            level=completion_log_level,
+            message=f"Request completed: {request.method} {request.url.path} -> {response.status_code}",
+            # ... other context
+        )
+        
+        return response
+
+# Observability pattern for span filtering
+@trace("session_heartbeat")
+async def traced_heartbeat_operation():
+    """
+    Observability integration with routine operation filtering.
+    
+    The @trace decorator includes logic to reduce span logging noise:
+    - Spans are still created for tracing (metrics preserved)
+    - Verbose span logging is suppressed for routine operations
+    - Full tracing available for debugging when needed
+    """
+    # In tracing.py:
+    # if not ('heartbeat' in name.lower() or 'update_last_activity' in name.lower()):
+    #     logging.debug(f"Opik span started: {name}")
+    # # Span still created for observability, just not logged verbosely
+    
+    result = await perform_heartbeat_logic()
+    return result
+```
+
+**When to Use High-Frequency Patterns:**
+- **Heartbeat endpoints**: Session keep-alive requests from frontends
+- **Health checks**: Automated monitoring pings
+- **Status updates**: Frequent state synchronization operations
+- **Routine maintenance**: Cleanup tasks, cache refreshes
+
+**Benefits:**
+- **Log Volume Reduction**: 80-95% reduction in routine operation logs
+- **Preserved Diagnostics**: Full traceability via DEBUG level + rate-limited errors
+- **Infrastructure Monitoring**: Critical errors (connection issues) still logged immediately
+- **Memory Efficiency**: Automatic cleanup prevents memory leaks in rate limiters
+
+### 2. Validation with Logging
 
 ```python
 async def validate_and_process(data: Dict[str, Any]) -> Dict[str, Any]:

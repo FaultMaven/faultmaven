@@ -36,7 +36,7 @@ class TestTroubleshootingDoctrine:
                     "timestamp": "2024-01-01T10:01:00Z",
                 },
             ],
-            investigation_context={},
+            case_context={},
         )
         self.sample_context = {
             "uploaded_data": [
@@ -223,7 +223,7 @@ class TestTroubleshootingDoctrine:
             session_id="test-session-123",
             user_query="Database connection timeout",
             findings=[],
-            investigation_context={
+            case_context={
                 "formulate_hypothesis_results": {
                     "hypothesis_list": ["Connection pool exhaustion", "Network timeout"]
                 }
@@ -259,7 +259,7 @@ class TestTroubleshootingDoctrine:
             session_id="test-session-123",
             user_query="Database connection timeout",
             findings=[],
-            investigation_context={
+            case_context={
                 "validate_hypothesis_results": {
                     "validated_hypothesis": "Connection pool exhaustion"
                 }
@@ -492,7 +492,7 @@ class TestTroubleshootingDoctrine:
                     "timestamp": "2024-01-01T10:01:00Z",
                 },
             ],
-            investigation_context={},
+            case_context={},
         )
 
         result = self.doctrine._fallback_hypothesis_analysis(
@@ -514,7 +514,7 @@ class TestTroubleshootingDoctrine:
             session_id="test-session-123",
             user_query="Database error",
             findings=[],
-            investigation_context={
+            case_context={
                 "formulate_hypothesis_results": {
                     "hypothesis_list": [
                         "Database connection failure",
@@ -538,7 +538,7 @@ class TestTroubleshootingDoctrine:
             session_id="test-session-123",
             user_query="Database error",
             findings=[],
-            investigation_context={
+            case_context={
                 "validate_hypothesis_results": {
                     "validated_hypothesis": "Connection pool exhaustion"
                 }

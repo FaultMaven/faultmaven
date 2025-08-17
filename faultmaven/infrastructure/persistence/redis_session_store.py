@@ -17,9 +17,19 @@ class RedisSessionStore(ISessionStore):
     
     def __init__(self):
         """Initialize Redis session store"""
-        self.redis_client = create_redis_client()
-        self.default_ttl = 1800  # 30 minutes default
-        self.prefix = "session:"
+        try:
+            self.redis_client = create_redis_client()
+            self.default_ttl = 1800  # 30 minutes default
+            self.prefix = "session:"
+            self._connection_healthy = True
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to initialize Redis client: {e}")
+            self.redis_client = None
+            self.default_ttl = 1800
+            self.prefix = "session:"
+            self._connection_healthy = False
     
     async def get(self, key: str) -> Optional[Dict]:
         """
@@ -31,15 +41,25 @@ class RedisSessionStore(ISessionStore):
         Returns:
             Session data if found, None otherwise
         """
-        full_key = f"{self.prefix}{key}"
-        data = await self.redis_client.get(full_key)
+        if not self._connection_healthy or not self.redis_client:
+            raise ConnectionError("Redis connection not available")
         
-        if data:
-            try:
-                return json.loads(data)
-            except json.JSONDecodeError:
-                return None
-        return None
+        try:
+            full_key = f"{self.prefix}{key}"
+            data = await self.redis_client.get(full_key)
+            
+            if data:
+                try:
+                    return json.loads(data)
+                except json.JSONDecodeError:
+                    return None
+            return None
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Redis get operation failed for key {key}: {e}")
+            self._connection_healthy = False
+            raise ConnectionError(f"Redis operation failed: {e}")
     
     async def set(self, key: str, value: Dict, ttl: Optional[int] = None) -> None:
         """
@@ -50,16 +70,26 @@ class RedisSessionStore(ISessionStore):
             value: Session data to store
             ttl: Time to live in seconds (optional)
         """
-        full_key = f"{self.prefix}{key}"
+        if not self._connection_healthy or not self.redis_client:
+            raise ConnectionError("Redis connection not available")
         
-        # Add timestamp if not present
-        if 'last_activity' not in value:
-            value['last_activity'] = datetime.utcnow().isoformat()
-        
-        serialized = json.dumps(value)
-        ttl = ttl if ttl is not None else self.default_ttl
-        
-        await self.redis_client.set(full_key, serialized, ex=ttl)
+        try:
+            full_key = f"{self.prefix}{key}"
+            
+            # Add timestamp if not present
+            if 'last_activity' not in value:
+                value['last_activity'] = datetime.utcnow().isoformat() + 'Z'
+            
+            serialized = json.dumps(value)
+            ttl = ttl if ttl is not None else self.default_ttl
+            
+            await self.redis_client.set(full_key, serialized, ex=ttl)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Redis set operation failed for key {key}: {e}")
+            self._connection_healthy = False
+            raise ConnectionError(f"Redis operation failed: {e}")
     
     async def delete(self, key: str) -> bool:
         """

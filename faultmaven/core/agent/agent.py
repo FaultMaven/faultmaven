@@ -233,8 +233,8 @@ class FaultMavenAgent:
         self.logger.info("Executing triage node")
 
         # Initialize state if needed
-        if not state.get("investigation_context"):
-            state["investigation_context"] = {}
+        if not state.get("case_context"):
+            state["case_context"] = {}
 
         if not state.get("findings"):
             state["findings"] = []
@@ -246,9 +246,9 @@ class FaultMavenAgent:
             state["tools_used"] = []
 
         # Initialize interaction tracking
-        state["investigation_context"]["interaction_count"] = 0
-        state["investigation_context"]["last_user_input"] = None
-        state["investigation_context"]["waiting_for_input"] = False
+        state["case_context"]["interaction_count"] = 0
+        state["case_context"]["last_user_input"] = None
+        state["case_context"]["waiting_for_input"] = False
 
         # Analyze the user query
         triage_prompt = f"""
@@ -264,29 +264,17 @@ class FaultMavenAgent:
         """
 
         try:
-            self.logger.info(f"🔍 Making LLM call with prompt: {triage_prompt[:100]}...")
-            self.logger.info(f"🔍 LLM Router type: {type(self.llm_router)}")
-            self.logger.info(f"🔍 LLM Router available: {self.llm_router is not None}")
-            
-            # Add direct debugging to see what's happening
-            print(f"🔍 AGENT: About to call LLM router with prompt: {triage_prompt[:100]}...")
-            print(f"🔍 AGENT: LLM Router type: {type(self.llm_router)}")
-            
             response = await self.llm_router.route(
                 prompt=triage_prompt, max_tokens=300, temperature=0.3
             )
-            
-            print(f"✅ AGENT: LLM call successful, response type: {type(response)}")
-            self.logger.info(f"✅ LLM call successful, response type: {type(response)}")
-            self.logger.info(f"✅ LLM response content: {response.content[:200] if hasattr(response, 'content') else 'No content'}...")
 
             # Extract key insight and question
             content = response.content
             severity = self._extract_severity(content)
 
             # Update state with triage results
-            state["investigation_context"]["triage_assessment"] = content
-            state["investigation_context"]["severity"] = severity
+            state["case_context"]["triage_assessment"] = content
+            state["case_context"]["severity"] = severity
             state["current_phase"] = "triage_completed"
             state["confidence_score"] = 0.75
 
@@ -302,22 +290,13 @@ class FaultMavenAgent:
             )
 
             # Set response for user
-            state["investigation_context"]["agent_response"] = content
-            state["investigation_context"]["waiting_for_input"] = True
+            state["case_context"]["agent_response"] = content
+            state["case_context"]["waiting_for_input"] = True
 
         except Exception as e:
-            print(f"❌ AGENT: Triage failed with exception: {e}")
-            print(f"❌ AGENT: Exception type: {type(e)}")
-            print(f"❌ AGENT: Exception details: {str(e)}")
-            import traceback
-            print(f"❌ AGENT: Full traceback: {traceback.format_exc()}")
+            self.logger.error(f"Triage failed: {e}")
             
-            self.logger.error(f"❌ Triage failed with exception: {e}")
-            self.logger.error(f"❌ Exception type: {type(e)}")
-            self.logger.error(f"❌ Exception details: {str(e)}")
-            self.logger.error(f"❌ Full traceback: {traceback.format_exc()}")
-            
-            state["investigation_context"]["triage_error"] = str(e)
+            state["case_context"]["triage_error"] = str(e)
             state["confidence_score"] = 0.3
 
             # Check if this is an LLM provider failure
@@ -328,8 +307,8 @@ class FaultMavenAgent:
                 basic_assessment = self._basic_triage_fallback(
                     state.get("user_query", "")
                 )
-                state["investigation_context"]["triage_assessment"] = basic_assessment
-                state["investigation_context"]["severity"] = "medium"
+                state["case_context"]["triage_assessment"] = basic_assessment
+                state["case_context"]["severity"] = "medium"
                 state["current_phase"] = "triage_completed"
 
                 # Add basic finding
@@ -344,14 +323,14 @@ class FaultMavenAgent:
                 )
 
                 # Set a helpful response
-                state["investigation_context"]["agent_response"] = basic_assessment
-                state["investigation_context"]["waiting_for_input"] = False
+                state["case_context"]["agent_response"] = basic_assessment
+                state["case_context"]["waiting_for_input"] = False
             else:
                 # For other errors, request more info
-                state["investigation_context"][
+                state["case_context"][
                     "agent_response"
                 ] = f"I encountered an issue during triage: {str(e)}. Can you provide more details about the problem?"
-                state["investigation_context"]["waiting_for_input"] = True
+                state["case_context"]["waiting_for_input"] = True
 
         return state
 
@@ -372,7 +351,7 @@ class FaultMavenAgent:
             "llm_router": self.llm_router,
             "knowledge_base_tool": self.knowledge_base_tool,
             "web_search_tool": self.web_search_tool,
-            "uploaded_data": state.get("investigation_context", {}).get(
+            "uploaded_data": state.get("case_context", {}).get(
                 "uploaded_data", []
             ),
         }
@@ -399,7 +378,7 @@ class FaultMavenAgent:
                     )
 
             # Store phase results
-            state["investigation_context"]["define_blast_radius_results"] = phase_result
+            state["case_context"]["define_blast_radius_results"] = phase_result
 
             # Set response following "Single Insight, Single Question" rule
             key_insight = phase_result.get(
@@ -409,17 +388,17 @@ class FaultMavenAgent:
                 "follow_up_question", "Should we proceed to establish the timeline?"
             )
 
-            state["investigation_context"][
+            state["case_context"][
                 "agent_response"
             ] = f"{key_insight}\n\n{follow_up_question}"
-            state["investigation_context"]["waiting_for_input"] = phase_result.get(
+            state["case_context"]["waiting_for_input"] = phase_result.get(
                 "requires_user_input", False
             )
 
         except Exception as e:
             self.logger.error(f"Blast radius phase failed: {e}")
-            state["investigation_context"]["blast_radius_error"] = str(e)
-            state["investigation_context"][
+            state["case_context"]["blast_radius_error"] = str(e)
+            state["case_context"][
                 "agent_response"
             ] = f"I encountered an issue assessing the blast radius: {str(e)}. Can you provide more information about the affected systems?"
 
@@ -439,7 +418,7 @@ class FaultMavenAgent:
 
         context = {
             "knowledge_base_tool": self.knowledge_base_tool,
-            "uploaded_data": state.get("investigation_context", {}).get(
+            "uploaded_data": state.get("case_context", {}).get(
                 "uploaded_data", []
             ),
         }
@@ -466,7 +445,7 @@ class FaultMavenAgent:
                     )
 
             # Store phase results
-            state["investigation_context"]["establish_timeline_results"] = phase_result
+            state["case_context"]["establish_timeline_results"] = phase_result
 
             # Set response
             key_insight = phase_result.get("key_insight", "Timeline analysis completed")
@@ -474,17 +453,17 @@ class FaultMavenAgent:
                 "follow_up_question", "Should we proceed to formulate hypotheses?"
             )
 
-            state["investigation_context"][
+            state["case_context"][
                 "agent_response"
             ] = f"{key_insight}\n\n{follow_up_question}"
-            state["investigation_context"]["waiting_for_input"] = phase_result.get(
+            state["case_context"]["waiting_for_input"] = phase_result.get(
                 "requires_user_input", False
             )
 
         except Exception as e:
             self.logger.error(f"Timeline phase failed: {e}")
-            state["investigation_context"]["timeline_error"] = str(e)
-            state["investigation_context"][
+            state["case_context"]["timeline_error"] = str(e)
+            state["case_context"][
                 "agent_response"
             ] = f"I encountered an issue establishing the timeline: {str(e)}. Can you provide more details about when the issue started?"
 
@@ -507,7 +486,7 @@ class FaultMavenAgent:
             "llm_router": self.llm_router,
             "knowledge_base_tool": self.knowledge_base_tool,
             "web_search_tool": self.web_search_tool,
-            "uploaded_data": state.get("investigation_context", {}).get(
+            "uploaded_data": state.get("case_context", {}).get(
                 "uploaded_data", []
             ),
         }
@@ -534,7 +513,7 @@ class FaultMavenAgent:
                     )
 
             # Store phase results
-            state["investigation_context"][
+            state["case_context"][
                 "formulate_hypothesis_results"
             ] = phase_result
 
@@ -544,17 +523,17 @@ class FaultMavenAgent:
                 "follow_up_question", "Should we validate these hypotheses?"
             )
 
-            state["investigation_context"][
+            state["case_context"][
                 "agent_response"
             ] = f"{key_insight}\n\n{follow_up_question}"
-            state["investigation_context"]["waiting_for_input"] = phase_result.get(
+            state["case_context"]["waiting_for_input"] = phase_result.get(
                 "requires_user_input", False
             )
 
         except Exception as e:
             self.logger.error(f"Hypothesis formulation phase failed: {e}")
-            state["investigation_context"]["hypothesis_error"] = str(e)
-            state["investigation_context"][
+            state["case_context"]["hypothesis_error"] = str(e)
+            state["case_context"][
                 "agent_response"
             ] = f"I encountered an issue formulating hypotheses: {str(e)}. Can you provide more symptoms or error details?"
 
@@ -577,7 +556,7 @@ class FaultMavenAgent:
             "llm_router": self.llm_router,
             "knowledge_base_tool": self.knowledge_base_tool,
             "web_search_tool": self.web_search_tool,
-            "uploaded_data": state.get("investigation_context", {}).get(
+            "uploaded_data": state.get("case_context", {}).get(
                 "uploaded_data", []
             ),
         }
@@ -604,7 +583,7 @@ class FaultMavenAgent:
                     )
 
             # Store phase results
-            state["investigation_context"]["validate_hypothesis_results"] = phase_result
+            state["case_context"]["validate_hypothesis_results"] = phase_result
 
             # Set response
             key_insight = phase_result.get(
@@ -614,17 +593,17 @@ class FaultMavenAgent:
                 "follow_up_question", "Should we proceed to propose solutions?"
             )
 
-            state["investigation_context"][
+            state["case_context"][
                 "agent_response"
             ] = f"{key_insight}\n\n{follow_up_question}"
-            state["investigation_context"]["waiting_for_input"] = phase_result.get(
+            state["case_context"]["waiting_for_input"] = phase_result.get(
                 "requires_user_input", False
             )
 
         except Exception as e:
             self.logger.error(f"Hypothesis validation phase failed: {e}")
-            state["investigation_context"]["validation_error"] = str(e)
-            state["investigation_context"][
+            state["case_context"]["validation_error"] = str(e)
+            state["case_context"][
                 "agent_response"
             ] = f"I encountered an issue validating hypotheses: {str(e)}. Can you provide additional data to test our theories?"
 
@@ -647,7 +626,7 @@ class FaultMavenAgent:
             "llm_router": self.llm_router,
             "knowledge_base_tool": self.knowledge_base_tool,
             "web_search_tool": self.web_search_tool,
-            "uploaded_data": state.get("investigation_context", {}).get(
+            "uploaded_data": state.get("case_context", {}).get(
                 "uploaded_data", []
             ),
         }
@@ -674,7 +653,7 @@ class FaultMavenAgent:
                     )
 
             # Store phase results
-            state["investigation_context"]["propose_solution_results"] = phase_result
+            state["case_context"]["propose_solution_results"] = phase_result
 
             # Set response
             key_insight = phase_result.get("key_insight", "Solution proposal completed")
@@ -683,17 +662,17 @@ class FaultMavenAgent:
                 "Would you like to proceed with implementing this solution?",
             )
 
-            state["investigation_context"][
+            state["case_context"][
                 "agent_response"
             ] = f"{key_insight}\n\n{follow_up_question}"
-            state["investigation_context"]["waiting_for_input"] = phase_result.get(
+            state["case_context"]["waiting_for_input"] = phase_result.get(
                 "requires_user_input", False
             )
 
         except Exception as e:
             self.logger.error(f"Solution proposal phase failed: {e}")
-            state["investigation_context"]["solution_error"] = str(e)
-            state["investigation_context"][
+            state["case_context"]["solution_error"] = str(e)
+            state["case_context"][
                 "agent_response"
             ] = f"I encountered an issue proposing solutions: {str(e)}. Can you provide more context about your constraints or requirements?"
 
@@ -712,24 +691,24 @@ class FaultMavenAgent:
         self.logger.info("Executing respond to user node")
 
         # Get the prepared response
-        response = state.get("investigation_context", {}).get(
+        response = state.get("case_context", {}).get(
             "agent_response", "I need more information to proceed."
         )
 
         # Update interaction count
         interaction_count = (
-            state.get("investigation_context", {}).get("interaction_count", 0) + 1
+            state.get("case_context", {}).get("interaction_count", 0) + 1
         )
-        state["investigation_context"]["interaction_count"] = interaction_count
+        state["case_context"]["interaction_count"] = interaction_count
 
         # Mark that we've responded
-        state["investigation_context"]["last_agent_response"] = response
-        state["investigation_context"][
+        state["case_context"]["last_agent_response"] = response
+        state["case_context"][
             "response_timestamp"
         ] = datetime.utcnow().isoformat() + 'Z'
 
         # Set waiting for input
-        state["investigation_context"]["waiting_for_input"] = True
+        state["case_context"]["waiting_for_input"] = True
 
         self.logger.info(f"Agent response: {response}")
 
@@ -758,9 +737,9 @@ class FaultMavenAgent:
         Do you want me to proceed with the recommended solution? (yes/no)
         """
 
-        state["investigation_context"]["agent_response"] = confirmation_prompt
-        state["investigation_context"]["waiting_for_input"] = True
-        state["investigation_context"]["confirmation_required"] = True
+        state["case_context"]["agent_response"] = confirmation_prompt
+        state["case_context"]["waiting_for_input"] = True
+        state["case_context"]["confirmation_required"] = True
 
         return state
 
@@ -778,8 +757,8 @@ class FaultMavenAgent:
 
         # This node represents a pause in the graph
         # The graph will wait here until new input is provided
-        state["investigation_context"]["status"] = "awaiting_user_input"
-        state["investigation_context"][
+        state["case_context"]["status"] = "awaiting_user_input"
+        state["case_context"][
             "pause_timestamp"
         ] = datetime.utcnow().isoformat() + 'Z'
 
@@ -787,7 +766,7 @@ class FaultMavenAgent:
 
     def _should_start_investigation(self, state: AgentState) -> str:
         """Determine if we should start the investigation"""
-        severity = state.get("investigation_context", {}).get("severity", "low")
+        severity = state.get("case_context", {}).get("severity", "low")
 
         if severity in ["high", "critical"]:
             return "define_blast_radius"
@@ -803,7 +782,7 @@ class FaultMavenAgent:
         This implements the interruption mechanism for human-in-the-loop capability
         """
         # Check if the phase explicitly requires user input
-        if state.get("investigation_context", {}).get("waiting_for_input", False):
+        if state.get("case_context", {}).get("waiting_for_input", False):
             return "respond_to_user"
 
         # Check confidence score - if low, ask for user input
@@ -843,7 +822,7 @@ class FaultMavenAgent:
         """Determine next step after user confirmation"""
         # Check if user confirmed
         last_input = (
-            state.get("investigation_context", {}).get("last_user_input", "") or ""
+            state.get("case_context", {}).get("last_user_input", "") or ""
         )
         if "yes" in last_input.lower():
             return "respond_to_user"
@@ -857,8 +836,8 @@ class FaultMavenAgent:
         This is called when the graph resumes after user input
         """
         # Get user input with multiple fallbacks to prevent None
-        investigation_context = state.get("investigation_context", {})
-        last_user_input = investigation_context.get("last_user_input")
+        case_context = state.get("case_context", {})
+        last_user_input = case_context.get("last_user_input")
 
         # Ensure user_input is never None
         user_input = ""
@@ -868,7 +847,7 @@ class FaultMavenAgent:
         current_phase = state.get("current_phase", "")
 
         # Update state with user input
-        state["investigation_context"]["waiting_for_input"] = False
+        state["case_context"]["waiting_for_input"] = False
 
         # If no user input provided yet (first run), end execution to await input
         if not user_input or user_input.strip() == "":
@@ -1115,7 +1094,7 @@ class FaultMavenAgent:
             session_id=session_id,
             user_query=user_query,
             current_phase="triage",
-            investigation_context={
+            case_context={
                 "uploaded_data": uploaded_data or [],
                 "start_time": datetime.utcnow().isoformat() + 'Z',
                 "interaction_count": 0,
@@ -1138,62 +1117,55 @@ class FaultMavenAgent:
             if final_state is None:
                 self.logger.warning(f"LangGraph returned None for session {session_id}, using initial state")
                 error_state = initial_state.copy()
-                error_state["investigation_context"]["error"] = "Agent graph execution returned no results"
+                error_state["case_context"]["error"] = "Agent graph execution returned no results"
                 error_state["confidence_score"] = 0.0
-                error_state["investigation_context"][
+                error_state["case_context"][
                     "agent_response"
-                ] = "I encountered an issue during execution. Please try again with more details."
-                error_state["investigation_context"]["end_time"] = datetime.utcnow().isoformat() + 'Z'
+                ] = "I encountered an issue during execution. Please try again."
                 return error_state
-
-            # Add completion timestamp
-            final_state["investigation_context"][
-                "end_time"
-            ] = datetime.utcnow().isoformat() + 'Z'
 
             self.logger.info(f"Agent run completed for session {session_id}")
             return final_state
 
         except Exception as e:
-            self.logger.error(f"Agent run failed for session {session_id}: {e}")
-
-            # Return error state
+            self.logger.error(f"Agent execution failed for session {session_id}: {e}")
+            # Return initial state with error information for graceful degradation
             error_state = initial_state.copy()
-            error_state["investigation_context"]["error"] = str(e)
+            error_state["case_context"]["error"] = str(e)
             error_state["confidence_score"] = 0.0
-            error_state["investigation_context"][
+            error_state["case_context"][
                 "agent_response"
-            ] = f"I encountered an error: {str(e)}. Please try again or provide more details."
+            ] = f"I encountered an issue during execution: {str(e)}. Please try rephrasing your query or provide more details."
             return error_state
 
     @trace("agent_resume")
-    async def resume(self, session_id: str, user_input: str) -> AgentState:
+    async def resume(self, case_id: str, user_input: str) -> AgentState:
         """
-        Resume an agent session with user input
+        Resume an agent case with user input
 
         Args:
-            session_id: Session identifier
+            case_id: Case identifier (thread ID)
             user_input: User's input to resume with
 
         Returns:
             Updated agent state
         """
         self.logger.info(
-            f"Resuming agent session {session_id} with input: {user_input}"
+            f"Resuming agent case {case_id} with input: {user_input}"
         )
 
         try:
             # Get current state with proper thread configuration
-            config = {"configurable": {"thread_id": session_id}}
+            config = {"configurable": {"thread_id": case_id}}
             current_state = self.compiled_graph.get_state(config)
 
             if not current_state:
-                raise ValueError(f"No active session found for {session_id}")
+                raise ValueError(f"No active case found for {case_id}")
 
             # Update state with user input
             state_values = current_state.values
-            state_values["investigation_context"]["last_user_input"] = user_input
-            state_values["investigation_context"][
+            state_values["case_context"]["last_user_input"] = user_input
+            state_values["case_context"][
                 "input_timestamp"
             ] = datetime.utcnow().isoformat() + 'Z'
 
@@ -1203,7 +1175,7 @@ class FaultMavenAgent:
             return final_state
 
         except Exception as e:
-            self.logger.error(f"Failed to resume session {session_id}: {e}")
+            self.logger.error(f"Failed to resume case {case_id}: {e}")
             raise
 
     def get_agent_status(self, session_id: str) -> Optional[Dict[str, Any]]:
@@ -1230,12 +1202,12 @@ class FaultMavenAgent:
                     "findings_count": len(state_values.get("findings", [])),
                     "tools_used": state_values.get("tools_used", []),
                     "waiting_for_input": state_values.get(
-                        "investigation_context", {}
+                        "case_context", {}
                     ).get("waiting_for_input", False),
                     "interaction_count": state_values.get(
-                        "investigation_context", {}
+                        "case_context", {}
                     ).get("interaction_count", 0),
-                    "last_response": state_values.get("investigation_context", {}).get(
+                    "last_response": state_values.get("case_context", {}).get(
                         "last_agent_response", ""
                     ),
                 }
@@ -1313,11 +1285,12 @@ class FaultMavenAgent:
         self.logger.info(f"Processing query for session {session_id}: {query}")
 
         try:
-            # Run the agent using legacy method
-            final_state = await self.run_legacy(
+            # Run the agent using clean architecture
+            final_state = await self.run(
+                query=query,
                 session_id=session_id,
-                user_query=query,
-                uploaded_data=context.get("uploaded_data", []) if context else [],
+                tools=self.tools,
+                context=context
             )
 
             # Extract findings and convert to expected format
@@ -1339,7 +1312,7 @@ class FaultMavenAgent:
             recommendations = final_state.get("recommendations", [])
             if not recommendations:
                 # Fallback to extracting from agent response
-                agent_response = final_state.get("investigation_context", {}).get(
+                agent_response = final_state.get("case_context", {}).get(
                     "agent_response", ""
                 )
                 if agent_response:
@@ -1356,7 +1329,7 @@ class FaultMavenAgent:
 
             # Generate next steps
             next_steps = ["Continue investigation", "Gather more data"]
-            if final_state.get("investigation_context", {}).get(
+            if final_state.get("case_context", {}).get(
                 "waiting_for_input", False
             ):
                 next_steps = ["Awaiting user input", "Provide additional details"]
@@ -1449,7 +1422,7 @@ class FaultMavenAgent:
             "session_id": session_id,
             "user_query": query,
             "current_phase": "error",
-            "investigation_context": {
+            "case_context": {
                 "error": error_message,
                 "agent_response": f"I encountered an error processing your request: {error_message}",
                 "waiting_for_input": False,

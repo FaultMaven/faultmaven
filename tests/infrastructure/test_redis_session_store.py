@@ -297,7 +297,7 @@ class TestRedisSessionStore:
             "session_id": "test-123",
             "user_id": "user-456",
             "data_uploads": ["file1.log", "file2.log"],
-            "investigation_history": [
+            "case_history": [
                 {"timestamp": "2025-01-01T12:00:00", "action": "upload"},
                 {"timestamp": "2025-01-01T12:05:00", "action": "analyze"}
             ],
@@ -316,7 +316,7 @@ class TestRedisSessionStore:
         deserialized = json.loads(serialized_data)
         assert deserialized["session_id"] == "test-123"
         assert deserialized["data_uploads"] == ["file1.log", "file2.log"]
-        assert len(deserialized["investigation_history"]) == 2
+        assert len(deserialized["case_history"]) == 2
         assert deserialized["nested_data"]["key2"] == ["item1", "item2"]
         
         # Test get (deserialization)
@@ -326,7 +326,7 @@ class TestRedisSessionStore:
         # Verify complex data was properly deserialized
         assert retrieved_data["session_id"] == "test-123"
         assert retrieved_data["data_uploads"] == ["file1.log", "file2.log"]
-        assert len(retrieved_data["investigation_history"]) == 2
+        assert len(retrieved_data["case_history"]) == 2
         assert retrieved_data["nested_data"]["key2"] == ["item1", "item2"]
     
     @pytest.mark.asyncio

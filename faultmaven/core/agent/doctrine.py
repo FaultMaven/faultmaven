@@ -684,8 +684,8 @@ class TroubleshootingDoctrine:
                             )
 
             # Look for hypotheses from previous phase
-            investigation_context = agent_state.get("investigation_context", {})
-            hypothesis_results = investigation_context.get(
+            case_context = agent_state.get("case_context", {})
+            hypothesis_results = case_context.get(
                 "formulate_hypothesis_results", {}
             )
             hypothesis_list = hypothesis_results.get("hypothesis_list", [])
@@ -794,8 +794,8 @@ class TroubleshootingDoctrine:
                 solution_options.extend(parsed_output["solutions"])
 
             # Look for validated hypothesis from previous phase
-            investigation_context = agent_state.get("investigation_context", {})
-            validation_results = investigation_context.get(
+            case_context = agent_state.get("case_context", {})
+            validation_results = case_context.get(
                 "validate_hypothesis_results", {}
             )
             validated_hypothesis = validation_results.get("validated_hypothesis")
@@ -1037,8 +1037,8 @@ class TroubleshootingDoctrine:
         validated_hypothesis = None
 
         # Look for hypothesis from previous phase
-        investigation_context = agent_state.get("investigation_context", {})
-        hypothesis_results = investigation_context.get(
+        case_context = agent_state.get("case_context", {})
+        hypothesis_results = case_context.get(
             "formulate_hypothesis_results", {}
         )
         hypothesis_list = hypothesis_results.get("hypothesis_list", [])
@@ -1075,8 +1075,8 @@ class TroubleshootingDoctrine:
         solution_options = []
 
         # Look for validated hypothesis from previous phase
-        investigation_context = agent_state.get("investigation_context", {})
-        validation_results = investigation_context.get(
+        case_context = agent_state.get("case_context", {})
+        validation_results = case_context.get(
             "validate_hypothesis_results", {}
         )
         validated_hypothesis = validation_results.get("validated_hypothesis")

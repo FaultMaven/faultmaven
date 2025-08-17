@@ -251,19 +251,47 @@ def setup_middleware():
     if logging_enabled:
         logger.info(f"After CORS middleware: {[type(m).__name__ for m in app.user_middleware]}")
 
-    # 2. GZip middleware
+    # 2. Protection middleware (early in stack for security)
+    try:
+        from .api.protection import setup_protection_middleware
+        environment = os.getenv("ENVIRONMENT", "development")
+        protection_info = setup_protection_middleware(app, environment=environment)
+        
+        if logging_enabled:
+            if protection_info.get("protection_enabled"):
+                middleware_names = protection_info.get("middleware_added", [])
+                logger.info(f"✅ Protection middleware enabled: {middleware_names}")
+                if protection_info.get("warnings"):
+                    logger.warning(f"Protection warnings: {protection_info['warnings']}")
+            else:
+                logger.info("ℹ️ Protection middleware disabled")
+                
+        # Make protection info available to health endpoints
+        app.extra["protection_info"] = protection_info
+        
+    except Exception as e:
+        if logging_enabled:
+            logger.warning(f"Failed to setup protection middleware: {e}")
+        # Continue without protection middleware in development
+        if os.getenv("ENVIRONMENT", "development") != "development":
+            raise  # Fail hard in production
+    
+    if logging_enabled:
+        logger.info(f"After Protection middleware: {[type(m).__name__ for m in app.user_middleware]}")
+
+    # 3. GZip middleware
     app.add_middleware(GZipMiddleware, minimum_size=1000)
     if logging_enabled:
         logger.info(f"After GZip middleware: {[type(m).__name__ for m in app.user_middleware]}")
 
-    # 3. New unified logging middleware (integrates with Phase 1 & 2 infrastructure)
+    # 4. New unified logging middleware (integrates with Phase 1 & 2 infrastructure)
     if logging_enabled:
         logger.info("Adding LoggingMiddleware to FastAPI app")
     app.add_middleware(LoggingMiddleware)
     if logging_enabled:
         logger.info(f"After LoggingMiddleware: {[type(m).__name__ for m in app.user_middleware]}")
 
-    # 3.5. Performance tracking middleware (Phase 2 enhancement)
+    # 5. Performance tracking middleware (Phase 2 enhancement)
     from .api.middleware.performance import PerformanceTrackingMiddleware
     if logging_enabled:
         logger.info("Adding PerformanceTrackingMiddleware to FastAPI app")
@@ -271,7 +299,7 @@ def setup_middleware():
     if logging_enabled:
         logger.info(f"After PerformanceTrackingMiddleware: {[type(m).__name__ for m in app.user_middleware]}")
     
-    # 3.6. System-wide optimization middleware (Phase 2 optimization)
+    # 6. System-wide optimization middleware (Phase 2 optimization)
     from .api.middleware.system_optimization import SystemOptimizationMiddleware
     if logging_enabled:
         logger.info("Adding SystemOptimizationMiddleware to FastAPI app")
@@ -287,7 +315,7 @@ def setup_middleware():
     if logging_enabled:
         logger.info(f"After SystemOptimizationMiddleware: {[type(m).__name__ for m in app.user_middleware]}")
 
-    # 4. Opik tracing middleware (if available) - now coordinated with unified logging
+    # 7. Opik tracing middleware (if available) - now coordinated with unified logging
     if OPIK_AVAILABLE and OPIK_MIDDLEWARE_AVAILABLE:
         if logging_enabled:
             if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
@@ -323,6 +351,15 @@ app.include_router(enhanced_agent.router, prefix="/api/v1", tags=["enhanced_inte
 
 # Phase 2: Multi-Step Troubleshooting Orchestration
 app.include_router(orchestration.router, prefix="/api/v1", tags=["multi_step_orchestration"])
+
+# Protection system monitoring endpoints
+try:
+    from .api.protection import create_protection_router
+    protection_router = create_protection_router()
+    app.include_router(protection_router, prefix="/api/v1", tags=["protection"])
+    logger.info("✅ Protection monitoring endpoints added")
+except Exception as e:
+    logger.warning(f"Failed to add protection monitoring endpoints: {e}")
 
 
 

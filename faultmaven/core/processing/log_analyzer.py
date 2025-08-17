@@ -388,7 +388,7 @@ class EnhancedLogProcessor(ILogProcessor):
             "service_context": [],
             "urgency_level": "normal",
             "expected_patterns": [],
-            "investigation_keywords": []
+            "case_keywords": []
         }
         
         if not memory_context:
@@ -431,14 +431,14 @@ class EnhancedLogProcessor(ILogProcessor):
                 
                 # Extract investigation keywords
                 keywords = re.findall(r'\b(\w{4,})\b', content_lower)
-                insights["investigation_keywords"].extend(keywords[:10])  # Limit to 10 keywords
+                insights["case_keywords"].extend(keywords[:10])  # Limit to 10 keywords
         
         # Extract user expertise level
         if memory_context.user_profile:
             insights["user_expertise"] = memory_context.user_profile.get("skill_level", "unknown")
         
         # Clean up duplicates
-        for key in ["technical_focus", "previous_issues", "service_context", "investigation_keywords"]:
+        for key in ["technical_focus", "previous_issues", "service_context", "case_keywords"]:
             insights[key] = list(set(insights[key]))
         
         return insights
@@ -517,7 +517,7 @@ class EnhancedLogProcessor(ILogProcessor):
         # Enhanced pattern matching with context weights
         technical_focus = context_insights.get("technical_focus", [])
         urgency_level = context_insights.get("urgency_level", "normal")
-        investigation_keywords = context_insights.get("investigation_keywords", [])
+        case_keywords = context_insights.get("case_keywords", [])
         
         # Standard field extraction with enhanced patterns
         for category, patterns in self.compiled_enhanced_patterns.items():
@@ -575,10 +575,10 @@ class EnhancedLogProcessor(ILogProcessor):
         elif urgency_level == "medium":
             entry["severity_weight"] *= 1.1
         
-        # Check for investigation keywords
-        if investigation_keywords:
+        # Check for case keywords
+        if case_keywords:
             line_lower = line.lower()
-            keyword_matches = sum(1 for keyword in investigation_keywords if keyword in line_lower)
+            keyword_matches = sum(1 for keyword in case_keywords if keyword in line_lower)
             if keyword_matches > 0:
                 entry["context_relevance"] += min(0.3, keyword_matches * 0.1)
         
@@ -811,15 +811,15 @@ class EnhancedLogProcessor(ILogProcessor):
 
         # Extract context keywords from agent state
         context_keywords = []
-        investigation_context = agent_state.get("investigation_context", {})
+        case_context = agent_state.get("case_context", {})
 
         # Get keywords from various context sources
-        if "keywords" in investigation_context:
-            context_keywords.extend(investigation_context["keywords"])
-        if "services" in investigation_context:
-            context_keywords.extend(investigation_context["services"])
-        if "components" in investigation_context:
-            context_keywords.extend(investigation_context["components"])
+        if "keywords" in case_context:
+            context_keywords.extend(case_context["keywords"])
+        if "services" in case_context:
+            context_keywords.extend(case_context["services"])
+        if "components" in case_context:
+            context_keywords.extend(case_context["components"])
 
         # Extract keywords from user query
         user_query = agent_state.get("user_query", "")
@@ -1121,7 +1121,7 @@ class LogProcessor(ILogProcessor):
             # Create mock agent state for context-aware processing
             mock_agent_state = {
                 "user_query": "",
-                "investigation_context": {},
+                "case_context": {},
                 "current_phase": "analyze"
             }
 
@@ -1346,15 +1346,15 @@ class LogProcessor(ILogProcessor):
 
         # Extract context keywords from agent state
         context_keywords = []
-        investigation_context = agent_state.get("investigation_context", {})
+        case_context = agent_state.get("case_context", {})
 
         # Get keywords from various context sources
-        if "keywords" in investigation_context:
-            context_keywords.extend(investigation_context["keywords"])
-        if "services" in investigation_context:
-            context_keywords.extend(investigation_context["services"])
-        if "components" in investigation_context:
-            context_keywords.extend(investigation_context["components"])
+        if "keywords" in case_context:
+            context_keywords.extend(case_context["keywords"])
+        if "services" in case_context:
+            context_keywords.extend(case_context["services"])
+        if "components" in case_context:
+            context_keywords.extend(case_context["components"])
 
         # Extract keywords from user query
         user_query = agent_state.get("user_query", "")
@@ -1595,7 +1595,7 @@ class LogProcessor(ILogProcessor):
         """
         recommendations = []
         current_phase = agent_state.get("current_phase", "")
-        investigation_context = agent_state.get("investigation_context", {})
+        case_context = agent_state.get("case_context", {})
 
         # Phase-specific recommendations
         if current_phase == "define_blast_radius":

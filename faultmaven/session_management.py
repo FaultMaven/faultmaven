@@ -100,8 +100,8 @@ class SessionManager:
         session_data = {
             'session_id': session_id,
             'user_id': user_id,
-            'created_at': created_at.isoformat(),
-            'last_activity': created_at.isoformat(),
+            'created_at': created_at.isoformat() + 'Z',
+            'last_activity': created_at.isoformat() + 'Z',
             'data_uploads': [],
             'case_history': [],
             'current_case_id': None
@@ -286,14 +286,6 @@ class SessionManager:
         self.logger.debug(f"Added case history to session {session_id}")
         return True
 
-    async def add_investigation_history(
-        self, session_id: str, investigation_data: Dict
-    ) -> bool:
-        """
-        Legacy alias for add_case_history. 
-        Use add_case_history instead.
-        """
-        return await self.add_case_history(session_id, investigation_data)
 
     async def update_agent_state(
         self, session_id: str, agent_state: AgentState
@@ -512,7 +504,7 @@ class SessionManager:
                 return False
             
             current_time = datetime.utcnow()    
-            session_data['last_activity'] = current_time.isoformat()
+            session_data['last_activity'] = current_time.isoformat() + 'Z'
 
             # Store updated session
             ttl = self.session_timeout_hours * 3600

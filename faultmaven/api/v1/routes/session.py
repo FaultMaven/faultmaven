@@ -29,6 +29,7 @@ Core Design Principles:
 
 from typing import Optional
 from datetime import datetime
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from pydantic import BaseModel, Field, ValidationError
@@ -36,12 +37,72 @@ from pydantic import BaseModel, Field, ValidationError
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.services.session_service import SessionService
+from faultmaven.models import utc_timestamp
 import logging
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
 
 # Use standard logger to avoid infrastructure imports
 logger = logging.getLogger(__name__)
+
+# Rate-limited logging for repeated session not found errors
+_session_not_found_log_tracker = {}
+_SESSION_NOT_FOUND_LOG_INTERVAL = 30  # Log every 30 seconds per session_id
+
+
+def _safe_datetime_to_utc_string(dt: datetime) -> str:
+    """
+    Safely convert a datetime object to UTC string with Z suffix.
+    
+    Handles both timezone-aware and timezone-naive datetime objects.
+    Assumes timezone-naive datetimes are already in UTC.
+    
+    Args:
+        dt: datetime object to convert
+        
+    Returns:
+        UTC timestamp string with Z suffix (e.g., "2025-01-15T10:30:00.123Z")
+    """
+    if dt.tzinfo is not None:
+        # Timezone-aware - convert to UTC and make naive
+        dt_utc = dt.utctimetuple()
+        dt_naive = datetime(*dt_utc[:6], microsecond=dt.microsecond)
+        return dt_naive.isoformat() + 'Z'
+    else:
+        # Timezone-naive - assume it's already UTC
+        return dt.isoformat() + 'Z'
+
+
+def _log_session_not_found_rate_limited(session_id: str) -> None:
+    """
+    Log session not found error with rate limiting to prevent log spam.
+    
+    Only logs once per 30 seconds per session_id to reduce noise from
+    frontend clients that repeatedly send heartbeats for expired sessions.
+    
+    Args:
+        session_id: The session ID that was not found
+    """
+    current_time = time.time()
+    last_logged = _session_not_found_log_tracker.get(session_id, 0)
+    
+    if current_time - last_logged >= _SESSION_NOT_FOUND_LOG_INTERVAL:
+        # Log with count if this is a repeated occurrence
+        if last_logged > 0:
+            logger.warning(
+                f"Session not found for heartbeat: {session_id} "
+                f"(repeated attempts - last logged {int((current_time - last_logged))}s ago)"
+            )
+        else:
+            logger.warning(f"Session not found for heartbeat: {session_id}")
+        
+        _session_not_found_log_tracker[session_id] = current_time
+        
+        # Clean up old entries to prevent memory leak
+        cutoff_time = current_time - (2 * _SESSION_NOT_FOUND_LOG_INTERVAL)
+        for sid, logged_time in list(_session_not_found_log_tracker.items()):
+            if logged_time < cutoff_time:
+                del _session_not_found_log_tracker[sid]
 
 
 class SessionCreateRequest(BaseModel):
@@ -95,7 +156,7 @@ async def create_session(
         return {
             "session_id": session.session_id,
             "user_id": session.user_id,
-            "created_at": session.created_at.isoformat(),
+            "created_at": _safe_datetime_to_utc_string(session.created_at),
             "status": "active",
             "session_type": metadata.get("session_type", "troubleshooting"),
             "message": "Session created successfully",
@@ -129,8 +190,8 @@ async def get_session(
         return {
             "session_id": session.session_id,
             "user_id": session.user_id,
-            "created_at": session.created_at.isoformat(),
-            "last_activity": session.last_activity.isoformat(),
+            "created_at": _safe_datetime_to_utc_string(session.created_at),
+            "last_activity": _safe_datetime_to_utc_string(session.last_activity),
             "status": "active",
             "data_uploads_count": len(session.data_uploads),
             "case_history_count": len(session.case_history),
@@ -224,8 +285,8 @@ async def list_sessions(
             sessions_response.append({
                 "session_id": session.session_id,
                 "user_id": session.user_id,
-                "created_at": session.created_at.isoformat(),
-                "last_activity": session.last_activity.isoformat(),
+                "created_at": _safe_datetime_to_utc_string(session.created_at),
+                "last_activity": _safe_datetime_to_utc_string(session.last_activity),
                 "status": "active",
                 "session_type": session_type_val,
                 "usage_type": session_type_val,  # For backward compatibility
@@ -300,13 +361,42 @@ async def session_heartbeat(
     Returns:
         Heartbeat confirmation
     """
+    # Input validation
+    if not session_id or not session_id.strip():
+        raise HTTPException(status_code=400, detail="Session ID cannot be empty")
+    
     try:
-        # Use the actual SessionManager method name
-        result = await session_service.update_last_activity(session_id)
+        # Check if session service is available
+        if not session_service:
+            logger.error("Session service is not available")
+            raise HTTPException(status_code=503, detail="Session service unavailable")
+        
+        # Update session activity with specific error handling
+        try:
+            result = await session_service.update_last_activity(session_id)
+        except FileNotFoundError:
+            _log_session_not_found_rate_limited(session_id)
+            raise HTTPException(status_code=404, detail="Session not found or expired")
+        except RuntimeError as e:
+            # Handle specific runtime errors from session service
+            if "Session store unavailable" in str(e):
+                logger.error(f"Session store connection issue during heartbeat for {session_id}: {e}")
+                raise HTTPException(status_code=503, detail="Session store temporarily unavailable")
+            elif "Activity update operation failed" in str(e):
+                logger.error(f"Session activity update failed for {session_id}: {e}")
+                raise HTTPException(status_code=500, detail="Failed to update session activity")
+            else:
+                logger.error(f"Unexpected runtime error during heartbeat for {session_id}: {e}")
+                raise HTTPException(status_code=500, detail="Internal server error")
+        except Exception as e:
+            logger.error(f"Unexpected error during heartbeat for {session_id}: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error")
+        
         if not result:
-            raise HTTPException(status_code=404, detail="Session not found")
+            _log_session_not_found_rate_limited(session_id)
+            raise HTTPException(status_code=404, detail="Session not found or expired")
 
-        # Record heartbeat operation in session history
+        # Record heartbeat operation in session history (best effort)
         heartbeat_record = {
             "action": "heartbeat",
             "timestamp": datetime.utcnow().isoformat() + 'Z',
@@ -315,26 +405,37 @@ async def session_heartbeat(
         
         try:
             # Check if session_manager has a real add_case_history method
-            if hasattr(session_service, 'session_manager') and hasattr(session_service.session_manager, 'add_case_history'):
+            if (hasattr(session_service, 'session_manager') and 
+                hasattr(session_service.session_manager, 'add_case_history')):
                 await session_service.session_manager.add_case_history(session_id, heartbeat_record)
         except Exception as e:
-            logger.warning(f"Failed to record heartbeat operation: {e}")
+            # Log warning but don't fail the heartbeat if case history fails
+            logger.warning(f"Failed to record heartbeat operation for {session_id}: {e}")
 
-        # Get updated session to return current last_activity
-        session = await session_service.get_session(session_id)
+        # Get updated session to return current last_activity (best effort)
+        last_activity = datetime.utcnow().isoformat() + 'Z'  # fallback
+        try:
+            session = await session_service.get_session(session_id, validate=False)
+            if session and session.last_activity:
+                last_activity = _safe_datetime_to_utc_string(session.last_activity)
+        except Exception as e:
+            logger.warning(f"Failed to get updated session info for {session_id}: {e}")
         
         return {
             "session_id": session_id,
             "status": "active",
-            "last_activity": session.last_activity.isoformat() if session else datetime.utcnow().isoformat() + 'Z',
+            "last_activity": last_activity,
             "message": "Session heartbeat updated",
         }
     except HTTPException:
+        # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
-        logger.error(f"Failed to update heartbeat for session {session_id}: {e}")
+        # Catch-all for unexpected errors
+        logger.error(f"Unexpected error in heartbeat for session {session_id}: {e}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to update heartbeat: {str(e)}"
+            status_code=500, 
+            detail="Internal server error during heartbeat operation"
         )
 
 
@@ -422,8 +523,8 @@ async def get_session_stats(
         return {
             "session_id": session_id,
             "user_id": session.user_id,
-            "created_at": session.created_at.isoformat(),
-            "last_activity": session.last_activity.isoformat(),
+            "created_at": _safe_datetime_to_utc_string(session.created_at),
+            "last_activity": _safe_datetime_to_utc_string(session.last_activity),
             "statistics": {
                 "total_cases": total_cases,
                 "total_data_uploads": total_uploads,
@@ -507,8 +608,8 @@ async def get_session_recovery_info(
         return {
             "session_id": session_id,
             "user_id": session.user_id,
-            "created_at": session.created_at.isoformat(),
-            "last_activity": session.last_activity.isoformat(),
+            "created_at": _safe_datetime_to_utc_string(session.created_at),
+            "last_activity": _safe_datetime_to_utc_string(session.last_activity),
             "state_summary": {
                 "active": True,
                 "data_uploads": len(session.data_uploads),
@@ -521,7 +622,7 @@ async def get_session_recovery_info(
             "recovery_info": {
                 "can_restore": True,
                 "backup_available": True,
-                "last_backup": session.last_activity.isoformat(),
+                "last_backup": _safe_datetime_to_utc_string(session.last_activity),
                 "data_integrity": "good"
             },
             "restoration_options": {

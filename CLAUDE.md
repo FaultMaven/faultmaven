@@ -189,6 +189,8 @@ FaultMaven follows a **Clean Architecture** pattern with interface-based design 
 
 - **LLM Router** (`infrastructure/llm/`): Multi-provider routing with automatic fallback implementing `ILLMProvider`
 - **Security** (`infrastructure/security/`): K8s Presidio microservice integration implementing `ISanitizer`
+- **Protection** (`infrastructure/protection/`): Comprehensive client protection system with ML-based threat detection
+- **Monitoring** (`infrastructure/monitoring/`): Advanced monitoring and alerting for protection systems
 - **Observability** (`infrastructure/observability/`): Opik tracing implementing `ITracer`
 - **Persistence** (`infrastructure/persistence/`): Redis and ChromaDB integrations
 
@@ -205,12 +207,21 @@ FaultMaven follows a **Clean Architecture** pattern with interface-based design 
 - `{PROVIDER}_MODEL` for default model selection  
 - `CHAT_PROVIDER` to select primary provider
 
-**Environment Configuration**: Primary configuration through `.env` file with enhanced logging support:
+**Environment Configuration**: Primary configuration through `.env` file with enhanced logging and protection support:
 - `LOG_LEVEL=INFO` - Logging verbosity (DEBUG, INFO, WARNING, ERROR)
 - `LOG_FORMAT=json` - Structured JSON logging with correlation IDs
 - `LOG_DEDUPE=true` - Prevent duplicate log entries (95% deduplication success)
 - `LOG_BUFFER_SIZE=100` - Log buffer optimization
 - `LOG_FLUSH_INTERVAL=5` - Flush interval in seconds
+
+**Protection System Configuration**: Comprehensive client protection with two-phase approach:
+- `PROTECTION_ENABLED=true` - Master protection system toggle
+- `PROTECTION_PHASE_1_ENABLED=true` - Immediate protection (rate limiting, deduplication, timeouts)
+- `PROTECTION_PHASE_2_ENABLED=true` - Intelligent protection (ML, behavioral analysis, reputation)
+- `RATE_LIMIT_GLOBAL_REQUESTS=1000` - Global rate limit threshold
+- `ML_ANOMALY_DETECTION_ENABLED=true` - Enable ML-based anomaly detection
+- `BEHAVIORAL_ANALYSIS_ENABLED=true` - Enable behavioral pattern analysis
+- `REPUTATION_SYSTEM_ENABLED=true` - Enable client reputation management
 
 **Service Connection Defaults** (Hybrid Ingress + NodePort):
 - `REDIS_HOST=192.168.0.111` `REDIS_PORT=30379` (NodePort - TCP binary protocol)

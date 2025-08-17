@@ -37,7 +37,7 @@ class TestCoreAgent:
             session_id="test-session-123",
             user_query="Database connection timeout in production",
             findings=[],
-            investigation_context={},
+            case_context={},
             awaiting_user_input=False,
             current_phase="define_blast_radius",
             user_feedback="",
@@ -70,7 +70,7 @@ class TestCoreAgent:
         """Test _decide_if_user_update_is_needed with basic phase results."""
         # Create a mock state with required fields
         state = {
-            "investigation_context": {"waiting_for_input": False},
+            "case_context": {"waiting_for_input": False},
             "confidence_score": 0.9,
             "findings": [],
             "current_phase": "",
@@ -81,14 +81,14 @@ class TestCoreAgent:
         assert decision == "respond_to_user"  # Default behavior when no phase set
 
         # Test with waiting for input
-        state["investigation_context"]["waiting_for_input"] = True
+        state["case_context"]["waiting_for_input"] = True
         decision = self.agent._decide_if_user_update_is_needed(state)
         assert decision == "respond_to_user"
 
     def test_decide_if_user_update_needed_low_confidence(self):
         """Test _decide_if_user_update_is_needed with low confidence scores."""
         state = {
-            "investigation_context": {"waiting_for_input": False},
+            "case_context": {"waiting_for_input": False},
             "confidence_score": 0.3,  # Low confidence
             "findings": [],
             "current_phase": "",
@@ -103,7 +103,7 @@ class TestCoreAgent:
         """Test _decide_if_user_update_is_needed with different completed phases."""
         # Test blast radius completed -> establish timeline
         state = {
-            "investigation_context": {"waiting_for_input": False},
+            "case_context": {"waiting_for_input": False},
             "confidence_score": 0.8,
             "findings": [],
             "current_phase": "define_blast_radius_completed",
@@ -120,7 +120,7 @@ class TestCoreAgent:
     def test_decide_if_user_update_needed_findings(self):
         """Test _decide_if_user_update_is_needed with findings that need user response."""
         state = {
-            "investigation_context": {"waiting_for_input": False},
+            "case_context": {"waiting_for_input": False},
             "confidence_score": 0.7,
             "findings": [{"requires_user_response": True}],
             "current_phase": "validate_hypothesis_completed",
@@ -165,7 +165,7 @@ class TestCoreAgent:
 
             # Check result - the method returns an AgentState object, not a dict
             assert result["current_phase"] == "define_blast_radius_completed"
-            assert "define_blast_radius_results" in result["investigation_context"]
+            assert "define_blast_radius_results" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_establish_timeline_node_success(self):
@@ -194,7 +194,7 @@ class TestCoreAgent:
             )
 
             assert result["current_phase"] == "establish_timeline_completed"
-            assert "establish_timeline_results" in result["investigation_context"]
+            assert "establish_timeline_results" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_formulate_hypothesis_node_success(self):
@@ -230,7 +230,7 @@ class TestCoreAgent:
             )
 
             assert result["current_phase"] == "formulate_hypothesis_completed"
-            assert "formulate_hypothesis_results" in result["investigation_context"]
+            assert "formulate_hypothesis_results" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_validate_hypothesis_node_success(self):
@@ -262,7 +262,7 @@ class TestCoreAgent:
             )
 
             assert result["current_phase"] == "validate_hypothesis_completed"
-            assert "validate_hypothesis_results" in result["investigation_context"]
+            assert "validate_hypothesis_results" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_propose_solution_node_success(self):
@@ -298,7 +298,7 @@ class TestCoreAgent:
             )
 
             assert result["current_phase"] == "propose_solution_completed"
-            assert "propose_solution_results" in result["investigation_context"]
+            assert "propose_solution_results" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_respond_to_user_node(self):
@@ -307,7 +307,7 @@ class TestCoreAgent:
             session_id="test-session-123",
             user_query="Database timeout",
             findings=[],
-            investigation_context={
+            case_context={
                 "define_blast_radius_results": {
                     "key_insight": "System-wide authentication issue",
                     "follow_up_question": "Are multiple users affected?",
@@ -324,14 +324,14 @@ class TestCoreAgent:
         result = await self.agent.respond_to_user(agent_state, context)
 
         # Should format response from phase results
-        assert "last_agent_response" in result["investigation_context"]
+        assert "last_agent_response" in result["case_context"]
         assert (
             "System-wide authentication issue"
-            in result["investigation_context"]["last_agent_response"]
+            in result["case_context"]["last_agent_response"]
         )
         assert (
             "Are multiple users affected?"
-            in result["investigation_context"]["last_agent_response"]
+            in result["case_context"]["last_agent_response"]
         )
 
     @pytest.mark.asyncio
@@ -341,7 +341,7 @@ class TestCoreAgent:
             session_id="test-session-123",
             user_query="Database timeout",
             findings=[],
-            investigation_context={},
+            case_context={},
             awaiting_user_input=False,
             current_phase="define_blast_radius",
             user_feedback="",
@@ -351,9 +351,9 @@ class TestCoreAgent:
 
         result = await self.agent.await_user_input(agent_state, context)
 
-        # Should set status in investigation_context
-        assert result["investigation_context"]["status"] == "awaiting_user_input"
-        assert "pause_timestamp" in result["investigation_context"]
+        # Should set status in case_context
+        assert result["case_context"]["status"] == "awaiting_user_input"
+        assert "pause_timestamp" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_node_execution_with_error(self):
@@ -366,13 +366,13 @@ class TestCoreAgent:
             result = await self.agent.define_blast_radius(self.sample_agent_state)
 
             # Should handle error gracefully
-            assert "blast_radius_error" in result["investigation_context"]
+            assert "blast_radius_error" in result["case_context"]
             assert (
                 "LLM service error"
-                in result["investigation_context"]["blast_radius_error"]
+                in result["case_context"]["blast_radius_error"]
             )
             assert (
-                "agent_response" in result["investigation_context"]
+                "agent_response" in result["case_context"]
             )  # Should set error response
 
     @pytest.mark.asyncio
@@ -382,7 +382,7 @@ class TestCoreAgent:
             session_id="test-session-123",
             user_query="Database timeout",
             findings=[],
-            investigation_context={},
+            case_context={},
             awaiting_user_input=True,
             current_phase="define_blast_radius",
             user_feedback="Yes, multiple users are affected",
@@ -464,7 +464,7 @@ class TestCoreAgent:
             session_id="test-session-123",
             user_query="Database timeout",
             findings=[],
-            investigation_context={},
+            case_context={},
             awaiting_user_input=False,
             current_phase="define_blast_radius",
             user_feedback="",
@@ -488,9 +488,9 @@ class TestCoreAgent:
 
             # Verify state was updated with phase results
             assert result["current_phase"] == "define_blast_radius_completed"
-            assert "define_blast_radius_results" in result["investigation_context"]
+            assert "define_blast_radius_results" in result["case_context"]
             assert (
-                result["investigation_context"]["define_blast_radius_results"]
+                result["case_context"]["define_blast_radius_results"]
                 == blast_radius_result
             )
 
@@ -514,7 +514,7 @@ class TestCoreAgent:
             session_id="test-session-123",
             user_query="Database connection issues",
             findings=[],
-            investigation_context={},
+            case_context={},
             awaiting_user_input=False,
             current_phase="define_blast_radius",
             user_feedback="",
@@ -550,15 +550,15 @@ class TestCoreAgent:
             # Execute blast radius phase
             result1 = await self.agent.define_blast_radius(initial_state)
             assert result1["current_phase"] == "define_blast_radius_completed"
-            assert "define_blast_radius_results" in result1["investigation_context"]
+            assert "define_blast_radius_results" in result1["case_context"]
 
             # Simulate moving to next phase
             updated_state = AgentState(
                 session_id="test-session-123",
                 user_query="Database connection issues",
                 findings=[],
-                investigation_context={
-                    "define_blast_radius_results": result1["investigation_context"][
+                case_context={
+                    "define_blast_radius_results": result1["case_context"][
                         "define_blast_radius_results"
                     ]
                 },
@@ -570,13 +570,13 @@ class TestCoreAgent:
             # Execute timeline phase
             result2 = await self.agent.establish_timeline(updated_state)
             assert result2["current_phase"] == "establish_timeline_completed"
-            assert "establish_timeline_results" in result2["investigation_context"]
+            assert "establish_timeline_results" in result2["case_context"]
 
             # Verify progression - check the actual stored results
-            blast_results = result1["investigation_context"][
+            blast_results = result1["case_context"][
                 "define_blast_radius_results"
             ]
-            timeline_results = result2["investigation_context"][
+            timeline_results = result2["case_context"][
                 "establish_timeline_results"
             ]
             assert blast_results["next_phase"] == "establish_timeline"

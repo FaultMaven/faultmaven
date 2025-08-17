@@ -18,7 +18,7 @@ def sample_agent_state():
         session_id="test-session-123",
         user_query="Database connection issues with auth-service",
         current_phase="formulate_hypothesis",
-        investigation_context={
+        case_context={
             "keywords": ["database", "connection", "auth-service"],
             "services": ["auth-service"],
             "components": ["database", "auth"],

@@ -29,7 +29,7 @@ class TestCoreAgentErrors:
             session_id="test-session-123",
             user_query="Database connection timeout",
             findings=[],
-            investigation_context={},
+            case_context={},
             awaiting_user_input=False,
             current_phase="triage",
             user_feedback="",
@@ -45,10 +45,10 @@ class TestCoreAgentErrors:
 
         # Should fall back to basic triage and complete the phase
         assert result["current_phase"] == "triage_completed"
-        assert "triage_error" in result["investigation_context"]
-        assert "triage_assessment" in result["investigation_context"]
-        assert "severity" in result["investigation_context"]
-        assert "agent_response" in result["investigation_context"]
+        assert "triage_error" in result["case_context"]
+        assert "triage_assessment" in result["case_context"]
+        assert "severity" in result["case_context"]
+        assert "agent_response" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_triage_node_kb_tool_failure(self):
@@ -61,8 +61,8 @@ class TestCoreAgentErrors:
 
         # Should handle the error but not complete the phase (remains "triage")
         assert result["current_phase"] == "triage"
-        assert "triage_error" in result["investigation_context"]
-        assert "agent_response" in result["investigation_context"]
+        assert "triage_error" in result["case_context"]
+        assert "agent_response" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_define_blast_radius_doctrine_failure(self):
@@ -76,7 +76,7 @@ class TestCoreAgentErrors:
 
             # Should handle the error gracefully
             assert result["current_phase"] == "triage"
-            assert "blast_radius_error" in result["investigation_context"]
+            assert "blast_radius_error" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_establish_timeline_doctrine_failure(self):
@@ -90,7 +90,7 @@ class TestCoreAgentErrors:
 
             # Should handle the error gracefully
             assert result["current_phase"] == "triage"
-            assert "timeline_error" in result["investigation_context"]
+            assert "timeline_error" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_formulate_hypothesis_doctrine_failure(self):
@@ -104,7 +104,7 @@ class TestCoreAgentErrors:
 
             # Should handle the error gracefully
             assert result["current_phase"] == "triage"
-            assert "hypothesis_error" in result["investigation_context"]
+            assert "hypothesis_error" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_validate_hypothesis_doctrine_failure(self):
@@ -118,7 +118,7 @@ class TestCoreAgentErrors:
 
             # Should handle the error gracefully
             assert result["current_phase"] == "triage"
-            assert "validation_error" in result["investigation_context"]
+            assert "validation_error" in result["case_context"]
 
     @pytest.mark.asyncio
     async def test_propose_solution_doctrine_failure(self):
@@ -132,7 +132,7 @@ class TestCoreAgentErrors:
 
             # Should handle the error gracefully
             assert result["current_phase"] == "triage"
-            assert "solution_error" in result["investigation_context"]
+            assert "solution_error" in result["case_context"]
 
     def test_should_start_investigation_with_error(self):
         """Test _should_start_investigation with error in state."""
@@ -141,7 +141,7 @@ class TestCoreAgentErrors:
             session_id="test-session",
             user_query="",
             findings=[],
-            investigation_context={"error": "Invalid query"},
+            case_context={"error": "Invalid query"},
             awaiting_user_input=False,
             current_phase="triage",
             user_feedback="",
@@ -158,7 +158,7 @@ class TestCoreAgentErrors:
             session_id="test-session",
             user_query="test query",
             findings=[],
-            investigation_context={
+            case_context={
                 "error": "Processing failed",
                 "waiting_for_input": False,
             },
@@ -178,7 +178,7 @@ class TestCoreAgentErrors:
             session_id="test-session",
             user_query="test query",
             findings=[],
-            investigation_context={"current_phase": "invalid_phase"},
+            case_context={"current_phase": "invalid_phase"},
             awaiting_user_input=True,
             current_phase="await_user_input",
             user_feedback="continue",

@@ -422,6 +422,11 @@ def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "FaultM
                 if configure_opik():
                     logging.info(f"Local Opik tracing initialized successfully at {local_opik_url}")
                     
+                    # Reduce Opik library's own logging verbosity
+                    import logging as logging_module
+                    opik_logger = logging_module.getLogger('opik')
+                    opik_logger.setLevel(logging_module.WARNING)  # Only show warnings and errors
+                    
                     # Set project name separately if needed
                     try:
                         opik.set_project_name(project_name)
@@ -520,7 +525,9 @@ def trace(name: str, tags: Optional[dict] = None):
                         return {"name": name, "tags": span_tags, "start_time": start_time}
                     
                     span = create_simple_span()
-                    logging.debug(f"Opik span started: {name}")
+                    # Reduce logging noise for heartbeat operations
+                    if not ('heartbeat' in name.lower() or 'update_last_activity' in name.lower()):
+                        logging.debug(f"Opik span started: {name}")
                 except Exception as e:
                     logging.warning(f"Failed to create Opik span: {e}")
 
@@ -547,7 +554,9 @@ def trace(name: str, tags: Optional[dict] = None):
                 # Finalize span logging
                 if span and OPIK_AVAILABLE:
                     duration = time.time() - start_time
-                    logging.debug(f"Opik span completed: {span.get('name', 'unknown')} ({duration:.3f}s)")
+                    # Reduce logging noise for heartbeat operations
+                    if not ('heartbeat' in span.get('name', '').lower() or 'update_last_activity' in span.get('name', '').lower()):
+                        logging.debug(f"Opik span completed: {span.get('name', 'unknown')} ({duration:.3f}s)")
 
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
@@ -583,7 +592,9 @@ def trace(name: str, tags: Optional[dict] = None):
                         return {"name": name, "tags": span_tags, "start_time": start_time}
                     
                     span = create_simple_span()
-                    logging.debug(f"Opik span started: {name}")
+                    # Reduce logging noise for heartbeat operations
+                    if not ('heartbeat' in name.lower() or 'update_last_activity' in name.lower()):
+                        logging.debug(f"Opik span started: {name}")
                 except Exception as e:
                     logging.warning(f"Failed to create Opik span: {e}")
 
@@ -612,7 +623,9 @@ def trace(name: str, tags: Optional[dict] = None):
                 # Finalize span logging
                 if span and OPIK_AVAILABLE:
                     duration = time.time() - start_time
-                    logging.debug(f"Opik span completed: {span.get('name', 'unknown')} ({duration:.3f}s)")
+                    # Reduce logging noise for heartbeat operations
+                    if not ('heartbeat' in span.get('name', '').lower() or 'update_last_activity' in span.get('name', '').lower()):
+                        logging.debug(f"Opik span completed: {span.get('name', 'unknown')} ({duration:.3f}s)")
 
         # Return appropriate wrapper based on function type
         if asyncio.iscoroutinefunction(func):

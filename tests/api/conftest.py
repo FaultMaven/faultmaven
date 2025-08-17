@@ -778,7 +778,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                             "session_id": session_id,
                             "user_query": "",
                             "current_phase": "initial",
-                            "investigation_context": {},
+                            "case_context": {},
                             "findings": [],
                             "recommendations": [],
                             "confidence_score": 0.0,

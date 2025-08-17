@@ -57,6 +57,7 @@ graph LR
 | **Agentic Troubleshooting** | Five-phase SRE doctrine for issue investigation | LangGraph, LLMs |
 | **Knowledge Base (RAG)** | Centralized repository for runbooks and docs | ChromaDB, BGE-M3 |
 | **Privacy-First Design** | Comprehensive PII redaction before processing | Presidio microservice, Custom regex |
+| **Client Protection System** | Two-phase protection against malicious clients | Rate limiting, ML anomaly detection, Reputation |
 | **Interface-Based Tools** | Pluggable tool system with `BaseTool` interface | `KnowledgeBaseTool`, `WebSearchTool` |
 | **Context-Aware Analysis** | Intelligent evidence processing with interfaces | `IDataClassifier`, `ILogProcessor` |
 | **Comprehensive Observability** | LLM tracing and performance monitoring | Opik, `ITracer` interface |
@@ -425,6 +426,7 @@ FaultMaven documentation is organized into strategic and tactical levels:
 
 #### **Tactical Level (Implementation & Technical Details)**
 - **[Architecture Documentation](../docs/architecture/)** - Technical implementation guidance
+- **[Protection System Guide](../docs/security/comprehensive-protection-implementation-guide.md)** - Complete client protection implementation (Phase 1 + Phase 2)
 - **[Website Frontend Documentation](../docs/frontend/)** - Website frontend implementation details (this repository)
 - **[Copilot Extension Repository](https://github.com/FaultMaven/faultmaven-copilot)** - Complete browser extension codebase and documentation
 

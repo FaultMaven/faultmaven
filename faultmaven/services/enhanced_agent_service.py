@@ -545,7 +545,7 @@ Provide a comprehensive troubleshooting response that:
         current_phase = agent_result.get('current_phase')
         if current_phase == 'error':
             # Be transparent about errors instead of faking responses
-            error_info = agent_result.get('investigation_context', {})
+            error_info = agent_result.get('case_context', {})
             error_message = error_info.get('error', 'Unknown error occurred')
             
             # Personalize error message based on user profile

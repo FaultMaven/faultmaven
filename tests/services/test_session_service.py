@@ -55,12 +55,12 @@ class ComprehensiveMockSessionManager:
             last_activity=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             data_uploads=[],
-            investigation_history=[],
+            case_history=[],
             agent_state={
                 "session_id": session_id,
                 "user_query": "",
                 "current_phase": "initial",
-                "investigation_context": initial_context or {},
+                "case_context": initial_context or {},
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.0,
@@ -106,9 +106,9 @@ class ComprehensiveMockSessionManager:
             if "agent_state" in updates:
                 session.agent_state = updates["agent_state"]
             else:
-                # If no explicit agent_state, update investigation_context with the updates
+                # If no explicit agent_state, update case_context with the updates
                 if session.agent_state and isinstance(session.agent_state, dict):
-                    session.agent_state["investigation_context"].update(updates)
+                    session.agent_state["case_context"].update(updates)
                 
             session.last_activity = datetime.utcnow()
             return True
@@ -211,10 +211,10 @@ class ComprehensiveMockSessionManager:
             return False
         return self._test_attributes.get(session_id, {}).get('active', True)
     
-    async def add_investigation_history(self, session_id: str, investigation_data: Dict) -> bool:
+    async def add_case_history(self, session_id: str, investigation_data: Dict) -> bool:
         """Mock add investigation history"""
         self.call_count += 1
-        self.operations_log.append(("add_investigation_history", session_id, investigation_data))
+        self.operations_log.append(("add_case_history", session_id, investigation_data))
         
         if self.should_fail and self.failure_type == "add_investigation_error":
             raise Exception("Add investigation history failed")
@@ -224,7 +224,7 @@ class ComprehensiveMockSessionManager:
             # Add timestamp if not present
             if "timestamp" not in investigation_data:
                 investigation_data["timestamp"] = datetime.utcnow().isoformat()
-            session.investigation_history.append(investigation_data)
+            session.case_history.append(investigation_data)
             session.last_activity = datetime.utcnow()
             return True
         return False
@@ -303,7 +303,7 @@ class TestSessionServiceComprehensive:
         assert session is not None
         assert session.user_id == user_id
         # Verify initial context is set in agent state
-        assert session.agent_state["investigation_context"] == initial_context
+        assert session.agent_state["case_context"] == initial_context
         assert session.agent_state["current_phase"] == "initial"
         assert session.active is True  # Use the session's active property
         assert isinstance(session.created_at, datetime)
@@ -335,7 +335,7 @@ class TestSessionServiceComprehensive:
             "session_id": session_id,
             "user_query": "troubleshooting",
             "current_phase": "investigating",
-            "investigation_context": update_context,
+            "case_context": update_context,
             "findings": [],
             "recommendations": [],
             "confidence_score": 0.0,
@@ -451,7 +451,7 @@ class TestSessionServiceComprehensive:
                 "session_id": session_id,
                 "user_query": "test query",
                 "current_phase": "investigating",
-                "investigation_context": update,
+                "case_context": update,
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.0,
@@ -477,7 +477,7 @@ class TestSessionServiceComprehensive:
             "session_id": session_id,
             "user_query": "test query",
             "current_phase": "completed",
-            "investigation_context": override_context,
+            "case_context": override_context,
             "findings": [],
             "recommendations": [],
             "confidence_score": 0.0,
@@ -518,7 +518,7 @@ class TestSessionServiceComprehensive:
                 "session_id": session_id,
                 "user_query": "test query",
                 "current_phase": phase,
-                "investigation_context": context,
+                "case_context": context,
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.0,
@@ -646,9 +646,9 @@ class TestSessionServiceComprehensive:
         # Verify operation was recorded - session should have investigation history
         session = await session_service.get_session(session_id)
         assert session is not None
-        assert len(session.investigation_history) > 0
+        assert len(session.case_history) > 0
         # Check that the query operation was recorded
-        last_investigation = session.investigation_history[-1]
+        last_investigation = session.case_history[-1]
         assert last_investigation["action"] == "query_processed"
         assert last_investigation["investigation_id"] == "inv_001"
         assert last_investigation["confidence_score"] == 0.85
@@ -666,8 +666,8 @@ class TestSessionServiceComprehensive:
         assert updated_session is not None
         
         # Verify data upload was recorded in investigation history
-        assert len(updated_session.investigation_history) >= 2  # Query + data upload
-        data_upload_record = updated_session.investigation_history[-1]
+        assert len(updated_session.case_history) >= 2  # Query + data upload
+        data_upload_record = updated_session.case_history[-1]
         assert data_upload_record["action"] == "data_uploaded"
         assert data_upload_record["data_id"] == "data_001"
     
@@ -862,7 +862,7 @@ class TestSessionServiceComprehensive:
                 "session_id": session_id,
                 "user_query": f"test query {i}",
                 "current_phase": phase_names[i],
-                "investigation_context": {"health_test": True},
+                "case_context": {"health_test": True},
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.0,
@@ -930,7 +930,7 @@ class TestSessionServiceComprehensive:
                 "session_id": session_id,
                 "user_query": "Database connection timeout affecting user transactions",
                 "current_phase": phase,
-                "investigation_context": context_update,
+                "case_context": context_update,
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.0,
@@ -966,7 +966,7 @@ class TestSessionServiceComprehensive:
         assert final_session is not None
         
         # Validate that the session has investigation history from all operations
-        assert len(final_session.investigation_history) >= 2  # Query + data operations
+        assert len(final_session.case_history) >= 2  # Query + data operations
         
         # Validate final state and business logic consistency
         assert final_session.agent_state["current_phase"] == "completed"

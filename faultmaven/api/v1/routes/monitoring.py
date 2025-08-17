@@ -149,7 +149,7 @@ async def get_system_health(
         # Build system health response
         system_health = SystemHealth(
             overall_status=overall_status,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.utcnow().isoformat() + 'Z',
             system_uptime_seconds=time.time() - start_time,  # Simplified uptime
             components=components,
             performance_summary=performance_summary,
@@ -192,7 +192,7 @@ async def liveness_probe() -> JSONResponse:
             status_code=status.HTTP_200_OK,
             content={
                 "status": "alive",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.utcnow().isoformat() + 'Z',
                 "application": "faultmaven-phase2"
             }
         )
@@ -266,7 +266,7 @@ async def readiness_probe() -> JSONResponse:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content={
                     "status": "not_ready",
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.utcnow().isoformat() + 'Z',
                     "critical_checks": critical_checks,
                     "not_ready_services": len(not_ready_services)
                 }
@@ -276,7 +276,7 @@ async def readiness_probe() -> JSONResponse:
             status_code=status.HTTP_200_OK,
             content={
                 "status": "ready",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.utcnow().isoformat() + 'Z',
                 "critical_checks": critical_checks,
                 "application": "faultmaven-phase2"
             }
@@ -345,7 +345,7 @@ async def get_services_health(
                     services_health[service_name] = HealthStatus(
                         service=service_name,
                         status="unhealthy",
-                        timestamp=datetime.utcnow().isoformat(),
+                        timestamp=datetime.utcnow().isoformat() + 'Z',
                         uptime_seconds=0,
                         details={"error": "Service not available"}
                     )
@@ -366,7 +366,7 @@ async def get_services_health(
                 services_health[service_name] = HealthStatus(
                     service=service_name,
                     status=health_data.get("status", "healthy"),
-                    timestamp=datetime.utcnow().isoformat(),
+                    timestamp=datetime.utcnow().isoformat() + 'Z',
                     uptime_seconds=response_time / 1000,  # Simplified
                     details={
                         "response_time_ms": response_time,
@@ -380,7 +380,7 @@ async def get_services_health(
                 services_health[service_name] = HealthStatus(
                     service=service_name,
                     status="unhealthy",
-                    timestamp=datetime.utcnow().isoformat(),
+                    timestamp=datetime.utcnow().isoformat() + 'Z',
                     uptime_seconds=0,
                     details={"error": str(e)}
                 )
@@ -427,7 +427,7 @@ async def get_performance_metrics(
         if not metrics_collector and not analytics_service:
             # Return basic metrics if collectors not available
             return PerformanceMetrics(
-                timestamp=datetime.utcnow().isoformat(),
+                timestamp=datetime.utcnow().isoformat() + 'Z',
                 time_range_minutes=time_range_minutes,
                 services={"error": "Metrics collector not available"},
                 system_metrics={"error": "Analytics service not available"},
@@ -480,7 +480,7 @@ async def get_performance_metrics(
             sla_status = await _get_sla_status(services_data, system_metrics)
         
         return PerformanceMetrics(
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.utcnow().isoformat() + 'Z',
             time_range_minutes=time_range_minutes,
             services=services_data,
             system_metrics=system_metrics,
@@ -625,7 +625,7 @@ async def get_system_diagnostics(
         di_container = container
         
         diagnostics = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "system_info": {
                 "container_initialized": di_container._initialized,
                 "container_initializing": getattr(di_container, '_initializing', False),
@@ -722,7 +722,7 @@ async def get_system_status() -> Dict[str, Any]:
         availability_percentage = (healthy_components / total_components) * 100 if total_components > 0 else 0
         
         status_summary = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
             "overall_status": system_health.overall_status,
             "availability_percentage": round(availability_percentage, 2),
             "components": {
@@ -826,7 +826,7 @@ async def _check_infrastructure_health(deep_check: bool, timeout_seconds: int) -
                 name=component_name,
                 status=status,
                 response_time_ms=response_time,
-                last_check=datetime.utcnow().isoformat(),
+                last_check=datetime.utcnow().isoformat() + 'Z',
                 error_message=error_message,
                 metadata={"component_key": component_key, "deep_check": deep_check}
             ))
@@ -837,7 +837,7 @@ async def _check_infrastructure_health(deep_check: bool, timeout_seconds: int) -
                 name=component_name,
                 status="unhealthy",
                 response_time_ms=0,
-                last_check=datetime.utcnow().isoformat(),
+                last_check=datetime.utcnow().isoformat() + 'Z',
                 error_message=str(e),
                 metadata={"component_key": component_key}
             ))
@@ -915,7 +915,7 @@ async def _check_services_health(di_container, deep_check: bool, timeout_seconds
                 name=service_name,
                 status=status,
                 response_time_ms=response_time,
-                last_check=datetime.utcnow().isoformat(),
+                last_check=datetime.utcnow().isoformat() + 'Z',
                 error_message=error_message,
                 metadata=metadata
             ))
@@ -926,7 +926,7 @@ async def _check_services_health(di_container, deep_check: bool, timeout_seconds
                 name=service_name,
                 status="unhealthy",
                 response_time_ms=0,
-                last_check=datetime.utcnow().isoformat(),
+                last_check=datetime.utcnow().isoformat() + 'Z',
                 error_message=str(e),
                 metadata={"service_key": service_key}
             ))
@@ -1022,7 +1022,7 @@ async def _get_sla_status(services_data: Dict[str, Any], system_metrics: Dict[st
             "overall_compliance": overall_compliance,
             "compliance_percentage": (sum(1 for s in sla_status.values() if s["compliant"]) / len(sla_status)) * 100,
             "metrics": sla_status,
-            "last_updated": datetime.utcnow().isoformat()
+            "last_updated": datetime.utcnow().isoformat() + 'Z'
         }
         
     except Exception as e:

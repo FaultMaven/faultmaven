@@ -26,12 +26,12 @@ def sample_session_data():
         'created_at': now.isoformat(),
         'last_activity': now.isoformat(),
         'data_uploads': [],
-        'investigation_history': [],
+        'case_history': [],
         'agent_state': {
             "session_id": "test-session-123",
             "user_query": "Test query",
             "current_phase": "initial",
-            "investigation_context": {},
+            "case_context": {},
             "findings": [],
             "recommendations": [],
             "confidence_score": 0.5,
@@ -151,7 +151,7 @@ class TestSessionManager:
                 "session_id": "test-session-123",
                 "user_query": "Updated query",
                 "current_phase": "investigating",
-                "investigation_context": {"key": "value"},
+                "case_context": {"key": "value"},
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.8,
@@ -174,7 +174,7 @@ class TestSessionManager:
                 "session_id": "non-existent",
                 "user_query": "Test",
                 "current_phase": "investigating",
-                "investigation_context": {},
+                "case_context": {},
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.5,
@@ -221,7 +221,7 @@ class TestSessionManager:
             "message": "User asked about error logs",
         }
 
-        success = await session_manager.add_investigation_history(
+        success = await session_manager.add_case_history(
             "test-session-123", investigation_data
         )
         assert success is True
@@ -279,7 +279,7 @@ class TestSessionManager:
             'created_at': session.created_at.isoformat(),
             'last_activity': session.last_activity.isoformat(),
             'data_uploads': [],
-            'investigation_history': []
+            'case_history': []
         }
         mock_session_store.get.return_value = session_data
 
@@ -289,7 +289,7 @@ class TestSessionManager:
                 "session_id": session.session_id,
                 "user_query": "Test query",
                 "current_phase": "investigating",
-                "investigation_context": {},
+                "case_context": {},
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.7,
@@ -368,7 +368,7 @@ class TestSessionManager:
                     'created_at': now.isoformat(),
                     'last_activity': now.isoformat(),
                     'data_uploads': [],
-                    'investigation_history': []
+                    'case_history': []
                 }
             else:
                 # Second call fails
@@ -395,13 +395,13 @@ class TestSessionManager:
         assert success is False
 
     @pytest.mark.asyncio
-    async def test_add_investigation_history_nonexistent_session(
+    async def test_add_case_history_nonexistent_session(
         self, session_manager, mock_session_store
     ):
         """Test adding investigation history to non-existent session."""
         mock_session_store.get.return_value = None
 
-        success = await session_manager.add_investigation_history(
+        success = await session_manager.add_case_history(
             "non-existent-session", {"type": "test", "message": "test message"}
         )
         assert success is False
@@ -417,7 +417,7 @@ class TestSessionManager:
             session_id="test-session",
             user_query="test query",
             current_phase="investigating",
-            investigation_context={},
+            case_context={},
             findings=[],
             recommendations=[],
             confidence_score=0.8,
@@ -478,7 +478,7 @@ class TestSessionManager:
         # Add some data to cleanup
         session_with_data = sample_session_data.copy()
         session_with_data['data_uploads'] = ['data1', 'data2']
-        session_with_data['investigation_history'] = [
+        session_with_data['case_history'] = [
             {'type': 'test', 'message': 'test1'},
             {'type': 'test', 'message': 'test2'}
         ]
@@ -490,7 +490,7 @@ class TestSessionManager:
         
         assert result['success'] is True
         assert result['cleaned_items']['data_uploads'] == 2
-        assert result['cleaned_items']['investigation_history'] == 2
+        assert result['cleaned_items']['case_history'] == 2
 
     @pytest.mark.asyncio
     async def test_cleanup_session_data_nonexistent(

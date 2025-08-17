@@ -89,10 +89,14 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         session_info = f" [session: {session_id}]" if session_id else ""
         user_info = f" [user: {user_id}]" if user_id else ""
         
+        # Reduce verbosity for heartbeat requests to prevent log spam
+        is_heartbeat = request.url.path.endswith('/heartbeat')
+        start_log_level = "debug" if is_heartbeat else "info"
+        
         LoggingCoordinator.log_once(
             operation_key=f"request_start:{context.correlation_id}",
             logger=logger,
-            level="info",
+            level=start_log_level,
             message=f"Request started: {request.method} {request.url.path}{session_info}{user_info}",
             method=request.method,
             path=request.url.path,
@@ -136,11 +140,19 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                         correlation_id=context.correlation_id
                     )
             
-            # Log successful completion (coordinator ensures this happens only once)
+            # Determine log level based on request type and status
+            # Reduce verbosity for heartbeat 404s to prevent log spam
+            is_heartbeat_404 = (
+                request.url.path.endswith('/heartbeat') and 
+                response.status_code == 404
+            )
+            log_level = "debug" if is_heartbeat_404 else "info"
+            
+            # Log completion (coordinator ensures this happens only once)
             LoggingCoordinator.log_once(
                 operation_key=f"request_complete:{context.correlation_id}",
                 logger=logger,
-                level="info",
+                level=log_level,
                 message=f"Request completed: {request.method} {request.url.path}{session_info}{user_info} "
                        f"-> {response.status_code} in {duration:.3f}s",
                 method=request.method,

@@ -401,6 +401,10 @@ class SessionService(BaseService):
         except FileNotFoundError:
             # Re-raise file not found exceptions without wrapping
             raise
+        except ConnectionError as e:
+            # Handle Redis connection errors specifically
+            self.logger.error(f"Session store connection error during heartbeat for {session_id}: {e}")
+            raise RuntimeError(f"Session store unavailable: {str(e)}") from e
         except RuntimeError:
             # Re-raise runtime exceptions without wrapping
             raise
