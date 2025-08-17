@@ -25,6 +25,7 @@ import logging
 # Import interfaces with graceful fallback for testing environments
 try:
     from faultmaven.models.interfaces import ILLMProvider, ITracer, ISanitizer, BaseTool, IVectorStore, ISessionStore
+    from faultmaven.models.interfaces_case import ICaseStore, ICaseService
     INTERFACES_AVAILABLE = True
 except ImportError as e:
     logging.getLogger(__name__).warning(f"Interfaces not available: {e}")
@@ -35,6 +36,8 @@ except ImportError as e:
     BaseTool = Any
     IVectorStore = Any
     ISessionStore = Any
+    ICaseStore = Any
+    ICaseService = Any
     INTERFACES_AVAILABLE = False
 
 
@@ -182,6 +185,18 @@ class DIContainer:
             logging.getLogger(__name__).warning(f"Session store initialization failed: {e}")
             self.session_store = None
         
+        # Case store for case persistence (optional feature)
+        try:
+            from faultmaven.infrastructure.persistence.redis_case_store import RedisCaseStore
+            self.case_store: ICaseStore = RedisCaseStore()
+            logging.getLogger(__name__).debug("Case store initialized")
+        except ImportError:
+            logging.getLogger(__name__).debug("Case store not available - case persistence disabled")
+            self.case_store = None
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Case store initialization failed: {e}")
+            self.case_store = None
+        
         logging.getLogger(__name__).debug("Infrastructure layer created")
     
     def _create_tools_layer(self):
@@ -216,11 +231,33 @@ class DIContainer:
         from faultmaven.services.knowledge_service import KnowledgeService
         from faultmaven.services.session_service import SessionService
         
+        # Case Service - Case persistence and management (optional)
+        try:
+            from faultmaven.services.case_service import CaseService
+            if hasattr(self, 'case_store') and self.case_store:
+                self.case_service: ICaseService = CaseService(
+                    case_store=self.case_store,
+                    session_store=self.get_session_store()
+                )
+                logging.getLogger(__name__).debug("Case service initialized")
+            else:
+                self.case_service = None
+                logging.getLogger(__name__).debug("Case service disabled - case store not available")
+        except ImportError:
+            logging.getLogger(__name__).debug("Case service not available")
+            self.case_service = None
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Case service initialization failed: {e}")
+            self.case_service = None
+
         # Session Service - Session management and validation
         try:
             from faultmaven.session_management import SessionManager
             session_manager = SessionManager(session_store=self.get_session_store())
-            self.session_service = SessionService(session_manager)
+            self.session_service = SessionService(
+                session_manager=session_manager,
+                case_service=self.case_service  # Inject case service for enhanced features
+            )
         except Exception:
             # Create a minimal session service for testing
             self.session_service = self._create_minimal_session_service()
@@ -969,6 +1006,22 @@ class DIContainer:
             if not getattr(self, '_initializing', False):
                 self.initialize()
         return getattr(self, 'session_service', None)
+    
+    def get_case_service(self) -> Optional[ICaseService]:
+        """Get the case service implementation (optional feature)"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Case service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'case_service', None)
+    
+    def get_case_store(self) -> Optional[ICaseStore]:
+        """Get the case store implementation (optional feature)"""
+        if not self._initialized:
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'case_store', None)
     
     def get_config(self):
         """Get the configuration manager instance"""

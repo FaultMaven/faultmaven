@@ -50,6 +50,14 @@ logger = get_logger(__name__)
 # Import API routes
 from .api.v1.routes import agent, data, knowledge, session, enhanced_agent, orchestration
 
+# Import case routes (optional)
+try:
+    from .api.v1.routes import case
+    CASE_ROUTES_AVAILABLE = True
+except ImportError:
+    CASE_ROUTES_AVAILABLE = False
+    case = None
+
 from .infrastructure.observability.tracing import init_opik_tracing
 from .api.middleware.logging import LoggingMiddleware
 from .session_management import SessionManager
@@ -345,6 +353,13 @@ app.include_router(knowledge.router, prefix="/api/v1", tags=["knowledge_base"])
 app.include_router(knowledge.kb_router, prefix="/api/v1", tags=["knowledge_base"])
 
 app.include_router(session.router, prefix="/api/v1", tags=["session_management"])
+
+# Case persistence routes (optional feature)
+if CASE_ROUTES_AVAILABLE and case:
+    app.include_router(case.router, prefix="/api/v1", tags=["case_persistence"])
+    logger.info("✅ Case persistence endpoints added")
+else:
+    logger.info("ℹ️ Case persistence endpoints not available")
 
 # Phase 2: Enhanced Agent routes with advanced intelligence
 app.include_router(enhanced_agent.router, prefix="/api/v1", tags=["enhanced_intelligence"])

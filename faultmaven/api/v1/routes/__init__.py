@@ -7,6 +7,14 @@ from . import data
 from . import knowledge
 from . import session
 
+# Import case persistence routes
+try:
+    from . import case
+    CASE_ROUTES_AVAILABLE = True
+except ImportError:
+    CASE_ROUTES_AVAILABLE = False
+    case = None
+
 # Import Phase 2 enhanced routes
 try:
     from . import enhanced_agent
@@ -31,6 +39,10 @@ __all__ = [
     "knowledge",
     "session",
 ]
+
+# Add case routes if available
+if CASE_ROUTES_AVAILABLE:
+    __all__.append("case")
 
 # Add enhanced routes if available
 if ENHANCED_ROUTES_AVAILABLE:

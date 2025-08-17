@@ -18,6 +18,7 @@ from fastapi import Depends, HTTPException, Request
 
 from ...container import container
 from ...models import SessionContext
+from ...models.interfaces_case import ICaseService
 from ...services import AgentService, DataService, KnowledgeService, SessionService
 
 
@@ -46,6 +47,38 @@ async def get_memory_service():
 async def get_planning_service():
     """Get PlanningService instance from container"""
     return container.get_planning_service()
+
+
+async def get_case_service() -> Optional[ICaseService]:
+    """Get CaseService instance from container"""
+    try:
+        return container.get_case_service()
+    except Exception:
+        # Case service is optional - return None if not available
+        return None
+
+
+# Authentication Dependencies
+
+async def get_user_id(request: Request) -> Optional[str]:
+    """
+    Extract user ID from request headers or session
+    
+    This is a simplified implementation - in production, this would
+    integrate with proper authentication/authorization systems.
+    """
+    # Check for user ID in headers
+    user_id = request.headers.get("X-User-Id")
+    if user_id:
+        return user_id
+    
+    # Check for user ID in query params (for testing)
+    user_id = request.query_params.get("user_id")
+    if user_id:
+        return user_id
+    
+    # For now, return None for anonymous users
+    return None
 
 
 async def get_orchestration_service():

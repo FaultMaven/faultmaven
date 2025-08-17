@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 from faultmaven.services.base_service import BaseService
 from faultmaven.models import AgentState, SessionContext, parse_utc_timestamp
 from faultmaven.models.interfaces import ITracer
+from faultmaven.models.interfaces_case import ICaseService
+from faultmaven.models.case import CaseMessage, MessageType
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.session_management import SessionManager
 from faultmaven.exceptions import ValidationException, ServiceException
@@ -30,6 +32,7 @@ class SessionService(BaseService):
     def __init__(
         self,
         session_manager: SessionManager,
+        case_service: Optional[ICaseService] = None,
         max_sessions_per_user: int = 10,
         inactive_threshold_hours: int = 24,
     ):
@@ -38,11 +41,13 @@ class SessionService(BaseService):
 
         Args:
             session_manager: Core session manager instance
+            case_service: Optional case service for case persistence features
             max_sessions_per_user: Maximum concurrent sessions per user
             inactive_threshold_hours: Hours before marking session inactive
         """
         super().__init__("session_service")
         self.session_manager = session_manager
+        self.case_service = case_service
         self.max_sessions_per_user = max_sessions_per_user
         self.inactive_threshold = timedelta(hours=inactive_threshold_hours)
         # Note: self.logger from BaseService replaces the manual logger
@@ -1094,3 +1099,436 @@ class SessionService(BaseService):
         except Exception as e:
             self.logger.warning(f"Failed to format conversation context: {e}")
             return ""
+
+    # ==== ENHANCED CASE PERSISTENCE METHODS ====
+
+    @trace("session_service_get_or_create_case")
+    async def get_or_create_case_for_session(
+        self,
+        session_id: str,
+        user_id: Optional[str] = None,
+        force_new_case: bool = False,
+        case_title: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Get existing case for session or create new one with case service integration
+        
+        Args:
+            session_id: Session identifier
+            user_id: Optional user identifier
+            force_new_case: Force creation of new case
+            case_title: Optional case title for new cases
+            
+        Returns:
+            Case ID if case service available, None otherwise
+        """
+        if not self.case_service:
+            self.logger.warning("Case service not available - case persistence disabled")
+            return None
+            
+        if not session_id or not session_id.strip():
+            raise ValidationException("Session ID cannot be empty")
+            
+        try:
+            # Use case service to get or create case
+            case_id = await self.case_service.get_or_create_case_for_session(
+                session_id=session_id,
+                user_id=user_id,
+                force_new=force_new_case
+            )
+            
+            # Update session with case association
+            if case_id:
+                session = await self.get_session(session_id, validate=False)
+                if session:
+                    await self.update_session(session_id, {
+                        "current_case_id": case_id
+                    }, validate_state=False)
+                    
+                    self.logger.info(f"Associated session {session_id} with case {case_id}")
+                
+            return case_id
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get/create case for session {session_id}: {e}")
+            raise ServiceException(f"Case management failed: {str(e)}") from e
+
+    @trace("session_service_resume_case")
+    async def resume_case_in_session(
+        self,
+        session_id: str,
+        case_id: str,
+        user_id: Optional[str] = None
+    ) -> bool:
+        """
+        Resume an existing case in this session
+        
+        Args:
+            session_id: Session identifier
+            case_id: Case identifier to resume
+            user_id: Optional user identifier for access control
+            
+        Returns:
+            True if case was resumed successfully
+        """
+        if not self.case_service:
+            self.logger.warning("Case service not available - cannot resume case")
+            return False
+            
+        if not session_id or not case_id:
+            raise ValidationException("Session ID and Case ID are required")
+            
+        try:
+            # Verify session exists
+            session = await self.get_session(session_id, validate=False)
+            if not session:
+                raise FileNotFoundError(f"Session {session_id} not found")
+            
+            # Check case access if user provided
+            if user_id and self.case_service:
+                case = await self.case_service.get_case(case_id, user_id)
+                if not case:
+                    self.logger.warning(f"User {user_id} cannot access case {case_id}")
+                    return False
+            
+            # Resume case in case service
+            success = await self.case_service.resume_case_in_session(case_id, session_id)
+            
+            if success:
+                # Update session with case reference
+                await self.update_session(session_id, {
+                    "current_case_id": case_id
+                }, validate_state=False)
+                
+                self.logger.info(f"Resumed case {case_id} in session {session_id}")
+            
+            return success
+            
+        except ValidationException:
+            raise
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to resume case {case_id} in session {session_id}: {e}")
+            raise ServiceException(f"Case resume failed: {str(e)}") from e
+
+    @trace("session_service_record_case_message")
+    async def record_case_message(
+        self,
+        session_id: str,
+        message_content: str,
+        message_type: MessageType = MessageType.USER_QUERY,
+        author_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Record a message in the current case for this session
+        
+        Args:
+            session_id: Session identifier
+            message_content: Message content
+            message_type: Type of message
+            author_id: Optional message author
+            metadata: Optional message metadata
+            
+        Returns:
+            True if message was recorded successfully
+        """
+        if not self.case_service:
+            # Fall back to legacy case history if no case service
+            return await self.record_query_operation(
+                session_id=session_id,
+                query=message_content,
+                case_id="legacy",
+                context=metadata or {}
+            )
+            
+        if not session_id or not message_content:
+            raise ValidationException("Session ID and message content are required")
+            
+        try:
+            # Get current case for session
+            session = await self.get_session(session_id, validate=False)
+            if not session:
+                raise FileNotFoundError(f"Session {session_id} not found")
+            
+            case_id = session.current_case_id
+            
+            # Create case if none exists
+            if not case_id:
+                case_id = await self.get_or_create_case_for_session(
+                    session_id=session_id,
+                    user_id=author_id
+                )
+                
+                if not case_id:
+                    self.logger.warning(f"Could not create case for session {session_id}")
+                    return False
+            
+            # Create message
+            message = CaseMessage(
+                case_id=case_id,
+                session_id=session_id,
+                author_id=author_id,
+                message_type=message_type,
+                content=message_content,
+                metadata=metadata or {}
+            )
+            
+            # Add message to case
+            success = await self.case_service.add_message_to_case(
+                case_id=case_id,
+                message=message,
+                session_id=session_id
+            )
+            
+            if success:
+                # Update session activity
+                await self.update_last_activity(session_id)
+                self.logger.debug(f"Recorded case message for session {session_id}")
+            
+            return success
+            
+        except ValidationException:
+            raise
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to record case message for session {session_id}: {e}")
+            return False
+
+    @trace("session_service_get_case_conversation_context")
+    async def get_case_conversation_context(
+        self,
+        session_id: str,
+        limit: int = 10
+    ) -> str:
+        """
+        Get conversation context from the current case for LLM processing
+        
+        Args:
+            session_id: Session identifier
+            limit: Maximum number of conversation items to include
+            
+        Returns:
+            Formatted conversation context string
+        """
+        if not self.case_service:
+            # Fall back to legacy conversation context
+            try:
+                session = await self.get_session(session_id, validate=False)
+                if session and session.current_case_id:
+                    return await self.format_conversation_context(
+                        session_id, session.current_case_id, limit
+                    )
+            except:
+                pass
+            return ""
+            
+        try:
+            session = await self.get_session(session_id, validate=False)
+            if not session or not session.current_case_id:
+                return ""
+            
+            # Get conversation context from case service
+            context = await self.case_service.get_case_conversation_context(
+                case_id=session.current_case_id,
+                limit=limit
+            )
+            
+            return context
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to get case conversation context: {e}")
+            return ""
+
+    @trace("session_service_start_new_case")
+    async def start_new_case_for_session(
+        self,
+        session_id: str,
+        case_title: Optional[str] = None,
+        user_id: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Start a new case for the session (force new conversation)
+        
+        Args:
+            session_id: Session identifier
+            case_title: Optional case title
+            user_id: Optional user identifier
+            
+        Returns:
+            New case ID if successful, None otherwise
+        """
+        if not self.case_service:
+            self.logger.warning("Case service not available - cannot start new case")
+            return None
+            
+        try:
+            # Force creation of new case
+            case_id = await self.get_or_create_case_for_session(
+                session_id=session_id,
+                user_id=user_id,
+                force_new_case=True,
+                case_title=case_title
+            )
+            
+            if case_id:
+                # Record case start event
+                await self.record_case_message(
+                    session_id=session_id,
+                    message_content="New troubleshooting case started",
+                    message_type=MessageType.SYSTEM_EVENT,
+                    author_id=user_id,
+                    metadata={"event": "case_started"}
+                )
+                
+                self.logger.info(f"Started new case {case_id} for session {session_id}")
+            
+            return case_id
+            
+        except Exception as e:
+            self.logger.error(f"Failed to start new case for session {session_id}: {e}")
+            return None
+
+    @trace("session_service_get_session_cases")
+    async def get_session_cases(self, session_id: str) -> List[str]:
+        """
+        Get all cases associated with this session
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            List of case IDs associated with this session
+        """
+        if not self.case_service:
+            return []
+            
+        try:
+            session = await self.get_session(session_id, validate=False)
+            if not session:
+                return []
+            
+            # Return current case if available
+            if session.current_case_id:
+                return [session.current_case_id]
+            
+            return []
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to get cases for session {session_id}: {e}")
+            return []
+
+    @trace("session_service_share_current_case")
+    async def share_current_case(
+        self,
+        session_id: str,
+        target_user_id: str,
+        role: str = "viewer",
+        sharer_user_id: Optional[str] = None
+    ) -> bool:
+        """
+        Share the current case for this session with another user
+        
+        Args:
+            session_id: Session identifier
+            target_user_id: User to share case with
+            role: Role to assign ("viewer", "collaborator", "support")
+            sharer_user_id: User performing the share action
+            
+        Returns:
+            True if case was shared successfully
+        """
+        if not self.case_service:
+            self.logger.warning("Case service not available - cannot share case")
+            return False
+            
+        try:
+            session = await self.get_session(session_id, validate=False)
+            if not session or not session.current_case_id:
+                self.logger.warning(f"No current case for session {session_id}")
+                return False
+            
+            # Map string role to enum
+            from faultmaven.models.case import ParticipantRole
+            role_mapping = {
+                "viewer": ParticipantRole.VIEWER,
+                "collaborator": ParticipantRole.COLLABORATOR,
+                "support": ParticipantRole.SUPPORT
+            }
+            
+            participant_role = role_mapping.get(role.lower(), ParticipantRole.VIEWER)
+            
+            # Share case through case service
+            success = await self.case_service.share_case(
+                case_id=session.current_case_id,
+                target_user_id=target_user_id,
+                role=participant_role,
+                sharer_user_id=sharer_user_id
+            )
+            
+            if success:
+                # Record share event
+                await self.record_case_message(
+                    session_id=session_id,
+                    message_content=f"Case shared with user {target_user_id} as {role}",
+                    message_type=MessageType.SYSTEM_EVENT,
+                    author_id=sharer_user_id,
+                    metadata={
+                        "event": "case_shared",
+                        "target_user": target_user_id,
+                        "role": role
+                    }
+                )
+                
+                self.logger.info(f"Shared case {session.current_case_id} with user {target_user_id}")
+            
+            return success
+            
+        except Exception as e:
+            self.logger.error(f"Failed to share case for session {session_id}: {e}")
+            return False
+
+    async def get_enhanced_session_summary(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get enhanced session summary including case information
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            Enhanced session summary with case details
+        """
+        try:
+            # Get base session summary
+            base_summary = await self.get_session_summary(session_id)
+            if not base_summary:
+                return None
+            
+            # Add case information if case service available
+            if self.case_service:
+                session = await self.get_session(session_id, validate=False)
+                if session and session.current_case_id:
+                    try:
+                        case_analytics = await self.case_service.get_case_analytics(session.current_case_id)
+                        base_summary["current_case"] = {
+                            "case_id": session.current_case_id,
+                            "analytics": case_analytics
+                        }
+                    except Exception as e:
+                        self.logger.warning(f"Failed to get case analytics: {e}")
+                        base_summary["current_case"] = {
+                            "case_id": session.current_case_id,
+                            "analytics": {}
+                        }
+                else:
+                    base_summary["current_case"] = None
+            else:
+                base_summary["current_case"] = None
+            
+            return base_summary
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get enhanced session summary: {e}")
+            return None

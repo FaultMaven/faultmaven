@@ -1,0 +1,419 @@
+"""Case persistence data models.
+
+This module defines Pydantic models for case persistence across sessions,
+enabling conversation continuity and collaborative troubleshooting.
+
+Key Models:
+- Case: Main case entity with lifecycle and metadata
+- CaseMessage: Individual conversation messages 
+- CaseParticipant: User access and collaboration management
+- CaseContext: Contextual information and artifacts
+"""
+
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set
+from uuid import uuid4
+
+from pydantic import BaseModel, Field, validator
+
+
+class CaseStatus(str, Enum):
+    """Case lifecycle status enumeration"""
+    ACTIVE = "active"
+    INVESTIGATING = "investigating"
+    SOLVED = "solved"
+    STALLED = "stalled"
+    ARCHIVED = "archived"
+    SHARED = "shared"
+
+
+class CasePriority(str, Enum):
+    """Case priority levels"""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class MessageType(str, Enum):
+    """Types of messages in a case conversation"""
+    USER_QUERY = "user_query"
+    AGENT_RESPONSE = "agent_response"
+    SYSTEM_EVENT = "system_event"
+    DATA_UPLOAD = "data_upload"
+    CASE_NOTE = "case_note"
+    STATUS_CHANGE = "status_change"
+
+
+class ParticipantRole(str, Enum):
+    """Participant roles in case collaboration"""
+    OWNER = "owner"
+    COLLABORATOR = "collaborator"
+    VIEWER = "viewer"
+    SUPPORT = "support"
+
+
+class CaseMessage(BaseModel):
+    """Individual message within a case conversation"""
+    
+    message_id: str = Field(default_factory=lambda: str(uuid4()), description="Unique message identifier")
+    case_id: str = Field(..., description="Case this message belongs to")
+    session_id: Optional[str] = Field(None, description="Session where message was created")
+    author_id: Optional[str] = Field(None, description="User who created the message")
+    message_type: MessageType = Field(..., description="Type of message")
+    content: str = Field(..., description="Message content")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Message creation time")
+    
+    # Message metadata
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional message metadata")
+    attachments: List[str] = Field(default_factory=list, description="Attached file/data IDs")
+    
+    # Context and processing
+    confidence_score: Optional[float] = Field(None, description="Confidence score for agent responses")
+    processing_time_ms: Optional[int] = Field(None, description="Time taken to process message")
+    
+    class Config:
+        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
+
+
+class CaseParticipant(BaseModel):
+    """Case participant with role and permissions"""
+    
+    user_id: str = Field(..., description="User identifier")
+    role: ParticipantRole = Field(..., description="User's role in the case")
+    added_at: datetime = Field(default_factory=datetime.utcnow, description="When user was added")
+    added_by: Optional[str] = Field(None, description="Who added this participant")
+    last_accessed: Optional[datetime] = Field(None, description="Last time user accessed case")
+    
+    # Permissions
+    can_edit: bool = Field(default=False, description="Can edit case details")
+    can_share: bool = Field(default=False, description="Can share case with others")
+    can_archive: bool = Field(default=False, description="Can archive case")
+    
+    @validator('can_edit', 'can_share', 'can_archive', pre=True, always=True)
+    def set_permissions_by_role(cls, v, values):
+        """Set permissions based on role"""
+        role = values.get('role')
+        if role == ParticipantRole.OWNER:
+            return True
+        elif role == ParticipantRole.COLLABORATOR:
+            return v if v is not None else True
+        elif role == ParticipantRole.SUPPORT:
+            return v if v is not None else False
+        else:  # VIEWER
+            return False
+    
+    class Config:
+        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
+
+
+class CaseContext(BaseModel):
+    """Contextual information and artifacts for a case"""
+    
+    # Troubleshooting context
+    problem_description: Optional[str] = Field(None, description="Initial problem description")
+    system_info: Dict[str, Any] = Field(default_factory=dict, description="System information")
+    environment_details: Dict[str, Any] = Field(default_factory=dict, description="Environment context")
+    
+    # Data and artifacts
+    uploaded_files: List[str] = Field(default_factory=list, description="Uploaded file IDs")
+    log_snippets: List[Dict[str, Any]] = Field(default_factory=list, description="Relevant log excerpts")
+    error_patterns: List[str] = Field(default_factory=list, description="Identified error patterns")
+    
+    # SRE doctrine progress
+    blast_radius_defined: bool = Field(default=False, description="Blast radius analysis completed")
+    timeline_established: bool = Field(default=False, description="Timeline analysis completed")
+    hypothesis_formulated: List[str] = Field(default_factory=list, description="Working hypotheses")
+    hypothesis_validated: List[Dict[str, Any]] = Field(default_factory=list, description="Validation results")
+    solutions_proposed: List[Dict[str, Any]] = Field(default_factory=list, description="Proposed solutions")
+    
+    # Analysis results
+    root_causes: List[str] = Field(default_factory=list, description="Identified root causes")
+    recommendations: List[str] = Field(default_factory=list, description="Recommended actions")
+    knowledge_base_refs: List[str] = Field(default_factory=list, description="Related KB document IDs")
+
+
+class Case(BaseModel):
+    """Main case entity for troubleshooting session persistence"""
+    
+    # Core identification
+    case_id: str = Field(default_factory=lambda: str(uuid4()), description="Unique case identifier")
+    title: str = Field(..., description="Case title/summary")
+    description: Optional[str] = Field(None, description="Detailed case description")
+    
+    # Ownership and collaboration
+    owner_id: Optional[str] = Field(None, description="Case owner user ID")
+    participants: List[CaseParticipant] = Field(default_factory=list, description="Case participants")
+    
+    # Lifecycle management
+    status: CaseStatus = Field(default=CaseStatus.ACTIVE, description="Current case status")
+    priority: CasePriority = Field(default=CasePriority.MEDIUM, description="Case priority level")
+    created_at: datetime = Field(default_factory=datetime.utcnow, description="Case creation time")
+    updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update time")
+    last_activity_at: datetime = Field(default_factory=datetime.utcnow, description="Last activity time")
+    
+    # Persistence and expiration
+    expires_at: Optional[datetime] = Field(None, description="Case expiration time")
+    auto_archive_after_days: int = Field(default=30, description="Days until auto-archive")
+    
+    # Conversation and content
+    messages: List[CaseMessage] = Field(default_factory=list, description="Case conversation messages")
+    message_count: int = Field(default=0, description="Total message count")
+    
+    # Associated sessions
+    session_ids: Set[str] = Field(default_factory=set, description="Sessions that have accessed this case")
+    current_session_id: Optional[str] = Field(None, description="Currently active session")
+    
+    # Context and artifacts
+    context: CaseContext = Field(default_factory=CaseContext, description="Case context and artifacts")
+    
+    # Metadata and tags
+    tags: List[str] = Field(default_factory=list, description="Case tags for organization")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional case metadata")
+    
+    # Analytics and metrics
+    resolution_time_hours: Optional[float] = Field(None, description="Time to resolution in hours")
+    participant_count: int = Field(default=0, description="Number of participants")
+    share_count: int = Field(default=0, description="Number of times shared")
+    
+    @validator('expires_at', pre=True, always=True)
+    def set_expiration_date(cls, v, values):
+        """Set expiration date based on auto_archive_after_days if not provided"""
+        if v is None:
+            created_at = values.get('created_at', datetime.utcnow())
+            auto_archive_days = values.get('auto_archive_after_days', 30)
+            return created_at + timedelta(days=auto_archive_days)
+        return v
+    
+    @validator('participant_count', pre=True, always=True)
+    def update_participant_count(cls, v, values):
+        """Update participant count based on participants list"""
+        participants = values.get('participants', [])
+        return len(participants)
+    
+    def add_participant(self, user_id: str, role: ParticipantRole, added_by: Optional[str] = None) -> bool:
+        """Add a participant to the case"""
+        # Check if user is already a participant
+        for participant in self.participants:
+            if participant.user_id == user_id:
+                return False  # Already exists
+        
+        # Create new participant
+        new_participant = CaseParticipant(
+            user_id=user_id,
+            role=role,
+            added_by=added_by
+        )
+        
+        self.participants.append(new_participant)
+        self.participant_count = len(self.participants)
+        self.updated_at = datetime.utcnow()
+        
+        return True
+    
+    def remove_participant(self, user_id: str) -> bool:
+        """Remove a participant from the case"""
+        for i, participant in enumerate(self.participants):
+            if participant.user_id == user_id:
+                # Don't remove owner
+                if participant.role == ParticipantRole.OWNER:
+                    return False
+                
+                del self.participants[i]
+                self.participant_count = len(self.participants)
+                self.updated_at = datetime.utcnow()
+                return True
+        
+        return False  # Participant not found
+    
+    def update_participant_role(self, user_id: str, new_role: ParticipantRole) -> bool:
+        """Update a participant's role"""
+        for participant in self.participants:
+            if participant.user_id == user_id:
+                # Don't change owner role
+                if participant.role == ParticipantRole.OWNER:
+                    return False
+                
+                participant.role = new_role
+                self.updated_at = datetime.utcnow()
+                return True
+        
+        return False  # Participant not found
+    
+    def add_message(self, message: CaseMessage) -> None:
+        """Add a message to the case"""
+        message.case_id = self.case_id
+        self.messages.append(message)
+        self.message_count = len(self.messages)
+        self.last_activity_at = datetime.utcnow()
+        self.updated_at = datetime.utcnow()
+    
+    def get_participant_role(self, user_id: str) -> Optional[ParticipantRole]:
+        """Get a user's role in the case"""
+        for participant in self.participants:
+            if participant.user_id == user_id:
+                return participant.role
+        return None
+    
+    def can_user_access(self, user_id: str) -> bool:
+        """Check if a user can access this case"""
+        return any(p.user_id == user_id for p in self.participants)
+    
+    def can_user_edit(self, user_id: str) -> bool:
+        """Check if a user can edit this case"""
+        for participant in self.participants:
+            if participant.user_id == user_id:
+                return participant.can_edit
+        return False
+    
+    def can_user_share(self, user_id: str) -> bool:
+        """Check if a user can share this case"""
+        for participant in self.participants:
+            if participant.user_id == user_id:
+                return participant.can_share
+        return False
+    
+    def is_expired(self) -> bool:
+        """Check if the case has expired"""
+        if self.expires_at is None:
+            return False
+        return datetime.utcnow() > self.expires_at
+    
+    def extend_expiration(self, additional_days: int = 30) -> None:
+        """Extend case expiration by additional days"""
+        if self.expires_at is None:
+            self.expires_at = datetime.utcnow() + timedelta(days=additional_days)
+        else:
+            self.expires_at = self.expires_at + timedelta(days=additional_days)
+        
+        self.updated_at = datetime.utcnow()
+    
+    def mark_as_solved(self, resolution_summary: Optional[str] = None) -> None:
+        """Mark case as solved"""
+        self.status = CaseStatus.SOLVED
+        self.updated_at = datetime.utcnow()
+        
+        if self.created_at:
+            duration = datetime.utcnow() - self.created_at
+            self.resolution_time_hours = duration.total_seconds() / 3600
+        
+        if resolution_summary:
+            self.metadata['resolution_summary'] = resolution_summary
+    
+    def archive(self, reason: Optional[str] = None) -> None:
+        """Archive the case"""
+        self.status = CaseStatus.ARCHIVED
+        self.updated_at = datetime.utcnow()
+        
+        if reason:
+            self.metadata['archive_reason'] = reason
+    
+    def get_recent_messages(self, limit: int = 10) -> List[CaseMessage]:
+        """Get recent messages from the case"""
+        return sorted(self.messages, key=lambda m: m.timestamp, reverse=True)[:limit]
+    
+    def get_conversation_summary(self) -> Dict[str, Any]:
+        """Get a summary of the case conversation"""
+        message_types = {}
+        for message in self.messages:
+            msg_type = message.message_type.value
+            message_types[msg_type] = message_types.get(msg_type, 0) + 1
+        
+        recent_activity = None
+        if self.messages:
+            recent_message = max(self.messages, key=lambda m: m.timestamp)
+            recent_activity = {
+                'last_message_time': recent_message.timestamp,
+                'last_message_type': recent_message.message_type.value,
+                'last_author': recent_message.author_id
+            }
+        
+        return {
+            'total_messages': self.message_count,
+            'message_types': message_types,
+            'participants': len(self.participants),
+            'sessions_involved': len(self.session_ids),
+            'recent_activity': recent_activity,
+            'case_duration_hours': (
+                (self.last_activity_at - self.created_at).total_seconds() / 3600
+                if self.created_at else 0
+            )
+        }
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat() + 'Z',
+            set: lambda v: list(v)  # Convert sets to lists for JSON serialization
+        }
+
+
+class CaseCreateRequest(BaseModel):
+    """Request model for creating a new case"""
+    
+    title: str = Field(..., description="Case title", min_length=1, max_length=200)
+    description: Optional[str] = Field(None, description="Case description", max_length=2000)
+    priority: CasePriority = Field(default=CasePriority.MEDIUM, description="Case priority")
+    tags: List[str] = Field(default_factory=list, description="Case tags")
+    session_id: Optional[str] = Field(None, description="Associated session ID")
+    initial_message: Optional[str] = Field(None, description="Initial case message")
+
+
+class CaseUpdateRequest(BaseModel):
+    """Request model for updating case details"""
+    
+    title: Optional[str] = Field(None, description="Updated case title")
+    description: Optional[str] = Field(None, description="Updated case description")
+    status: Optional[CaseStatus] = Field(None, description="Updated case status")
+    priority: Optional[CasePriority] = Field(None, description="Updated case priority")
+    tags: Optional[List[str]] = Field(None, description="Updated case tags")
+
+
+class CaseShareRequest(BaseModel):
+    """Request model for sharing a case with other users"""
+    
+    user_id: str = Field(..., description="User ID to share with")
+    role: ParticipantRole = Field(default=ParticipantRole.VIEWER, description="Role to assign")
+    message: Optional[str] = Field(None, description="Optional message to include")
+
+
+class CaseListFilter(BaseModel):
+    """Filter criteria for listing cases"""
+    
+    user_id: Optional[str] = Field(None, description="Filter by participant user ID")
+    status: Optional[CaseStatus] = Field(None, description="Filter by case status")
+    priority: Optional[CasePriority] = Field(None, description="Filter by case priority")
+    owner_id: Optional[str] = Field(None, description="Filter by case owner")
+    tags: Optional[List[str]] = Field(None, description="Filter by tags (any match)")
+    created_after: Optional[datetime] = Field(None, description="Filter by creation date")
+    created_before: Optional[datetime] = Field(None, description="Filter by creation date")
+    limit: int = Field(default=50, description="Maximum number of results", le=100)
+    offset: int = Field(default=0, description="Result offset for pagination", ge=0)
+
+
+class CaseSearchRequest(BaseModel):
+    """Request model for searching cases"""
+    
+    query: str = Field(..., description="Search query", min_length=1)
+    filters: Optional[CaseListFilter] = Field(None, description="Additional filters")
+    search_in_messages: bool = Field(default=True, description="Search in message content")
+    search_in_context: bool = Field(default=True, description="Search in case context")
+
+
+class CaseSummary(BaseModel):
+    """Summary view of a case for list operations"""
+    
+    case_id: str
+    title: str
+    status: CaseStatus
+    priority: CasePriority
+    owner_id: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    last_activity_at: datetime
+    message_count: int
+    participant_count: int
+    tags: List[str]
+    
+    class Config:
+        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}

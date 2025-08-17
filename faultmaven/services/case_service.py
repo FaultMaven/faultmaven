@@ -1,0 +1,783 @@
+"""Case Service Module
+
+Purpose: Core case management service for troubleshooting persistence
+
+This service provides business logic for managing troubleshooting cases that
+persist across multiple sessions, enabling conversation continuity and
+collaborative troubleshooting.
+
+Core Responsibilities:
+- Case lifecycle management (create, update, archive)
+- Case-session association and linking
+- Conversation context management
+- Case sharing and collaboration
+- Access control and permissions
+- Case analytics and metrics
+"""
+
+import uuid
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+from faultmaven.services.base_service import BaseService
+from faultmaven.models.case import (
+    Case,
+    CaseCreateRequest,
+    CaseListFilter,
+    CaseMessage,
+    CaseSearchRequest,
+    CaseSummary,
+    CaseUpdateRequest,
+    MessageType,
+    ParticipantRole,
+    CaseStatus,
+    CaseParticipant
+)
+from faultmaven.models.interfaces_case import ICaseStore, ICaseService
+from faultmaven.models.interfaces import ISessionStore
+from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.models import parse_utc_timestamp
+
+
+class CaseService(BaseService, ICaseService):
+    """Service for centralized case management and coordination"""
+
+    def __init__(
+        self,
+        case_store: ICaseStore,
+        session_store: Optional[ISessionStore] = None,
+        default_case_expiry_days: int = 30,
+        max_cases_per_user: int = 100
+    ):
+        """
+        Initialize the Case Service
+
+        Args:
+            case_store: Case persistence store interface
+            session_store: Optional session store for integration
+            default_case_expiry_days: Default case expiration in days
+            max_cases_per_user: Maximum cases per user
+        """
+        super().__init__("case_service")
+        self.case_store = case_store
+        self.session_store = session_store
+        self.default_case_expiry_days = default_case_expiry_days
+        self.max_cases_per_user = max_cases_per_user
+
+    @trace("case_service_create_case")
+    async def create_case(
+        self,
+        title: str,
+        description: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        initial_message: Optional[str] = None
+    ) -> Case:
+        """
+        Create a new troubleshooting case
+
+        Args:
+            title: Case title
+            description: Optional case description
+            owner_id: Optional owner user ID
+            session_id: Optional session to associate with case
+            initial_message: Optional initial message content
+
+        Returns:
+            Created case object
+
+        Raises:
+            ValidationException: If input validation fails
+            ServiceException: If case creation fails
+        """
+        if not title or not title.strip():
+            raise ValidationException("Case title cannot be empty")
+
+        if len(title) > 200:
+            raise ValidationException("Case title cannot exceed 200 characters")
+
+        try:
+            # Check user case limits if owner specified
+            if owner_id:
+                user_cases = await self.list_user_cases(owner_id)
+                active_cases = [c for c in user_cases if c.status not in [CaseStatus.ARCHIVED]]
+                
+                if len(active_cases) >= self.max_cases_per_user:
+                    raise ValidationException(f"User has reached maximum case limit ({self.max_cases_per_user})")
+
+            # Create new case
+            case = Case(
+                title=title.strip(),
+                description=description.strip() if description else None,
+                owner_id=owner_id,
+                expires_at=datetime.utcnow() + timedelta(days=self.default_case_expiry_days)
+            )
+
+            # Add owner as participant if specified
+            if owner_id:
+                case.add_participant(owner_id, ParticipantRole.OWNER)
+
+            # Add initial message if provided
+            if initial_message:
+                message = CaseMessage(
+                    case_id=case.case_id,
+                    session_id=session_id,
+                    author_id=owner_id,
+                    message_type=MessageType.USER_QUERY,
+                    content=initial_message.strip()
+                )
+                case.add_message(message)
+
+            # Associate with session if provided
+            if session_id:
+                case.session_ids.add(session_id)
+                case.current_session_id = session_id
+
+                # Update session with case ID if session store available
+                if self.session_store:
+                    try:
+                        await self.session_store.set(
+                            f"session:{session_id}:current_case_id", 
+                            case.case_id, 
+                            ttl=86400  # 24 hours
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to update session with case ID: {e}")
+
+            # Store the case
+            success = await self.case_store.create_case(case)
+            if not success:
+                raise ServiceException("Failed to create case in store")
+
+            self.logger.info(f"Created case {case.case_id} with title '{title}'")
+            return case
+
+        except ValidationException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to create case: {e}")
+            raise ServiceException(f"Case creation failed: {str(e)}") from e
+
+    @trace("case_service_get_case")
+    async def get_case(self, case_id: str, user_id: Optional[str] = None) -> Optional[Case]:
+        """
+        Get a case with optional access control
+
+        Args:
+            case_id: Case identifier
+            user_id: Optional user ID for access control
+
+        Returns:
+            Case object if found and accessible, None otherwise
+        """
+        if not case_id or not case_id.strip():
+            return None
+
+        try:
+            case = await self.case_store.get_case(case_id)
+            if not case:
+                return None
+
+            # Apply access control if user_id provided
+            if user_id and not case.can_user_access(user_id):
+                self.logger.warning(f"User {user_id} denied access to case {case_id}")
+                return None
+
+            # Update participant last accessed time if user provided
+            if user_id:
+                for participant in case.participants:
+                    if participant.user_id == user_id:
+                        participant.last_accessed = datetime.utcnow()
+                        # Update in store
+                        await self.case_store.update_case(case_id, {
+                            "participants": [p.dict() for p in case.participants]
+                        })
+                        break
+
+            return case
+
+        except Exception as e:
+            self.logger.error(f"Failed to get case {case_id}: {e}")
+            return None
+
+    @trace("case_service_update_case")
+    async def update_case(
+        self,
+        case_id: str,
+        updates: Dict[str, Any],
+        user_id: Optional[str] = None
+    ) -> bool:
+        """
+        Update case with access control
+
+        Args:
+            case_id: Case identifier
+            updates: Updates to apply
+            user_id: Optional user ID for access control
+
+        Returns:
+            True if update was successful
+        """
+        if not case_id or not case_id.strip():
+            raise ValidationException("Case ID cannot be empty")
+
+        if not updates:
+            raise ValidationException("Updates cannot be empty")
+
+        try:
+            # Get current case and check access
+            case = await self.get_case(case_id, user_id)
+            if not case:
+                return False
+
+            # Check edit permissions if user specified
+            if user_id and not case.can_user_edit(user_id):
+                self.logger.warning(f"User {user_id} denied edit access to case {case_id}")
+                return False
+
+            # Validate update fields
+            allowed_fields = {
+                'title', 'description', 'status', 'priority', 'tags', 
+                'metadata', 'context', 'auto_archive_after_days'
+            }
+            
+            filtered_updates = {k: v for k, v in updates.items() if k in allowed_fields}
+            if not filtered_updates:
+                raise ValidationException("No valid update fields provided")
+
+            # Add update metadata
+            filtered_updates['updated_at'] = datetime.utcnow()
+            if user_id:
+                filtered_updates['metadata'] = {
+                    **case.metadata,
+                    'last_updated_by': user_id
+                }
+
+            # Apply updates
+            success = await self.case_store.update_case(case_id, filtered_updates)
+            if success:
+                self.logger.info(f"Updated case {case_id}")
+            
+            return success
+
+        except ValidationException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to update case {case_id}: {e}")
+            raise ServiceException(f"Case update failed: {str(e)}") from e
+
+    @trace("case_service_share_case")
+    async def share_case(
+        self,
+        case_id: str,
+        target_user_id: str,
+        role: ParticipantRole,
+        sharer_user_id: Optional[str] = None
+    ) -> bool:
+        """
+        Share a case with another user
+
+        Args:
+            case_id: Case identifier
+            target_user_id: User to share with
+            role: Role to assign to the user
+            sharer_user_id: User performing the share action
+
+        Returns:
+            True if case was shared successfully
+        """
+        if not case_id or not target_user_id:
+            raise ValidationException("Case ID and target user ID are required")
+
+        if role == ParticipantRole.OWNER:
+            raise ValidationException("Cannot assign owner role through sharing")
+
+        try:
+            # Get case and check share permissions
+            case = await self.get_case(case_id, sharer_user_id)
+            if not case:
+                return False
+
+            if sharer_user_id and not case.can_user_share(sharer_user_id):
+                self.logger.warning(f"User {sharer_user_id} denied share access to case {case_id}")
+                return False
+
+            # Check if user is already a participant
+            existing_role = case.get_participant_role(target_user_id)
+            if existing_role:
+                # Update existing participant role if different
+                if existing_role != role:
+                    success = await self.case_store.update_case(case_id, {
+                        "participants": [
+                            {**p.dict(), "role": role.value} if p.user_id == target_user_id else p.dict()
+                            for p in case.participants
+                        ],
+                        "updated_at": datetime.utcnow()
+                    })
+                    if success:
+                        self.logger.info(f"Updated role for user {target_user_id} in case {case_id}")
+                    return success
+                else:
+                    # User already has the same role
+                    return True
+
+            # Add new participant
+            success = await self.case_store.add_case_participant(
+                case_id, target_user_id, role, sharer_user_id
+            )
+
+            if success:
+                # Update case metadata
+                await self.case_store.update_case(case_id, {
+                    "share_count": case.share_count + 1,
+                    "updated_at": datetime.utcnow(),
+                    "metadata": {
+                        **case.metadata,
+                        f"shared_with_{target_user_id}": {
+                            "shared_by": sharer_user_id,
+                            "shared_at": datetime.utcnow().isoformat() + 'Z',
+                            "role": role.value
+                        }
+                    }
+                })
+
+                self.logger.info(f"Shared case {case_id} with user {target_user_id} as {role.value}")
+
+            return success
+
+        except ValidationException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to share case {case_id}: {e}")
+            raise ServiceException(f"Case sharing failed: {str(e)}") from e
+
+    @trace("case_service_add_message")
+    async def add_message_to_case(
+        self,
+        case_id: str,
+        message: CaseMessage,
+        session_id: Optional[str] = None
+    ) -> bool:
+        """
+        Add a message to a case conversation
+
+        Args:
+            case_id: Case identifier
+            message: Message to add
+            session_id: Optional session ID
+
+        Returns:
+            True if message was added successfully
+        """
+        if not case_id or not message:
+            raise ValidationException("Case ID and message are required")
+
+        try:
+            # Ensure message belongs to this case
+            message.case_id = case_id
+            if session_id:
+                message.session_id = session_id
+
+            # Add message to store
+            success = await self.case_store.add_message_to_case(case_id, message)
+            
+            if success:
+                # Update case activity
+                await self.case_store.update_case_activity(case_id, session_id)
+                
+                # Add session to case if not already associated
+                if session_id:
+                    case = await self.case_store.get_case(case_id)
+                    if case and session_id not in case.session_ids:
+                        case.session_ids.add(session_id)
+                        await self.case_store.update_case(case_id, {
+                            "session_ids": list(case.session_ids),
+                            "current_session_id": session_id
+                        })
+
+                self.logger.debug(f"Added message to case {case_id}")
+
+            return success
+
+        except ValidationException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to add message to case {case_id}: {e}")
+            return False
+
+    @trace("case_service_get_or_create_case_for_session")
+    async def get_or_create_case_for_session(
+        self,
+        session_id: str,
+        user_id: Optional[str] = None,
+        force_new: bool = False
+    ) -> str:
+        """
+        Get existing case for session or create new one
+
+        Args:
+            session_id: Session identifier
+            user_id: Optional user identifier
+            force_new: Force creation of new case
+
+        Returns:
+            Case ID
+        """
+        if not session_id or not session_id.strip():
+            raise ValidationException("Session ID cannot be empty")
+
+        try:
+            # Try to get existing case for session if not forcing new
+            if not force_new and self.session_store:
+                try:
+                    existing_case_id = await self.session_store.get(f"session:{session_id}:current_case_id")
+                    if existing_case_id:
+                        # Verify case still exists and is accessible
+                        case = await self.get_case(existing_case_id, user_id)
+                        if case and not case.is_expired():
+                            self.logger.debug(f"Using existing case {existing_case_id} for session {session_id}")
+                            return existing_case_id
+                except Exception as e:
+                    self.logger.warning(f"Failed to get existing case for session: {e}")
+
+            # Create new case
+            title = f"Troubleshooting Session {session_id[:8]}"
+            case = await self.create_case(
+                title=title,
+                description="Auto-created case for troubleshooting session",
+                owner_id=user_id,
+                session_id=session_id
+            )
+
+            self.logger.info(f"Created new case {case.case_id} for session {session_id}")
+            return case.case_id
+
+        except ValidationException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to get/create case for session {session_id}: {e}")
+            raise ServiceException(f"Case management failed: {str(e)}") from e
+
+    @trace("case_service_link_session_to_case")
+    async def link_session_to_case(self, session_id: str, case_id: str) -> bool:
+        """
+        Link a session to an existing case
+
+        Args:
+            session_id: Session identifier
+            case_id: Case identifier
+
+        Returns:
+            True if linking was successful
+        """
+        if not session_id or not case_id:
+            raise ValidationException("Session ID and Case ID are required")
+
+        try:
+            # Verify case exists
+            case = await self.case_store.get_case(case_id)
+            if not case:
+                return False
+
+            # Add session to case
+            if session_id not in case.session_ids:
+                case.session_ids.add(session_id)
+                success = await self.case_store.update_case(case_id, {
+                    "session_ids": list(case.session_ids),
+                    "current_session_id": session_id,
+                    "last_activity_at": datetime.utcnow()
+                })
+                
+                if not success:
+                    return False
+
+            # Update session store with case reference
+            if self.session_store:
+                try:
+                    await self.session_store.set(
+                        f"session:{session_id}:current_case_id",
+                        case_id,
+                        ttl=86400  # 24 hours
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Failed to update session store: {e}")
+
+            self.logger.info(f"Linked session {session_id} to case {case_id}")
+            return True
+
+        except ValidationException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to link session to case: {e}")
+            return False
+
+    @trace("case_service_get_conversation_context")
+    async def get_case_conversation_context(
+        self,
+        case_id: str,
+        limit: int = 10
+    ) -> str:
+        """
+        Get formatted conversation context for LLM
+
+        Args:
+            case_id: Case identifier
+            limit: Maximum number of messages to include
+
+        Returns:
+            Formatted conversation context string
+        """
+        if not case_id:
+            return ""
+
+        try:
+            messages = await self.case_store.get_case_messages(case_id, limit=limit)
+            if not messages:
+                return ""
+
+            # Sort messages by timestamp
+            sorted_messages = sorted(messages, key=lambda m: m.timestamp)
+
+            # Format for LLM context
+            context_lines = ["Previous conversation in this troubleshooting case:"]
+            
+            for i, message in enumerate(sorted_messages[:-1], 1):  # Exclude current query
+                timestamp = message.timestamp.strftime("%H:%M")
+                
+                if message.message_type == MessageType.USER_QUERY:
+                    context_lines.append(f"{i}. [{timestamp}] User: {message.content}")
+                elif message.message_type == MessageType.AGENT_RESPONSE:
+                    # Truncate long agent responses
+                    content = message.content[:200] + "..." if len(message.content) > 200 else message.content
+                    context_lines.append(f"{i}. [{timestamp}] Assistant: {content}")
+                elif message.message_type == MessageType.SYSTEM_EVENT:
+                    context_lines.append(f"{i}. [{timestamp}] System: {message.content}")
+
+            if len(context_lines) > 1:  # More than just header
+                context_lines.append("")  # Add spacing
+                context_lines.append("Current query:")
+                return "\n".join(context_lines)
+            else:
+                return ""
+
+        except Exception as e:
+            self.logger.warning(f"Failed to get conversation context for case {case_id}: {e}")
+            return ""
+
+    @trace("case_service_resume_case")
+    async def resume_case_in_session(self, case_id: str, session_id: str) -> bool:
+        """
+        Resume an existing case in a new session
+
+        Args:
+            case_id: Case identifier
+            session_id: Session identifier
+
+        Returns:
+            True if case was resumed successfully
+        """
+        if not case_id or not session_id:
+            raise ValidationException("Case ID and Session ID are required")
+
+        try:
+            # Link session to case
+            success = await self.link_session_to_case(session_id, case_id)
+            
+            if success:
+                # Log resume event
+                resume_message = CaseMessage(
+                    case_id=case_id,
+                    session_id=session_id,
+                    message_type=MessageType.SYSTEM_EVENT,
+                    content=f"Case resumed in session {session_id}",
+                    metadata={"event_type": "case_resumed"}
+                )
+                
+                await self.add_message_to_case(case_id, resume_message, session_id)
+                self.logger.info(f"Resumed case {case_id} in session {session_id}")
+
+            return success
+
+        except ValidationException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to resume case {case_id} in session {session_id}: {e}")
+            return False
+
+    @trace("case_service_archive_case")
+    async def archive_case(
+        self,
+        case_id: str,
+        reason: Optional[str] = None,
+        user_id: Optional[str] = None
+    ) -> bool:
+        """
+        Archive a case
+
+        Args:
+            case_id: Case identifier
+            reason: Optional archive reason
+            user_id: Optional user ID for access control
+
+        Returns:
+            True if case was archived successfully
+        """
+        if not case_id:
+            raise ValidationException("Case ID cannot be empty")
+
+        try:
+            # Check permissions if user provided
+            if user_id:
+                case = await self.get_case(case_id, user_id)
+                if not case:
+                    return False
+
+                # Check if user can archive
+                user_role = case.get_participant_role(user_id)
+                if user_role not in [ParticipantRole.OWNER, ParticipantRole.COLLABORATOR]:
+                    self.logger.warning(f"User {user_id} denied archive access to case {case_id}")
+                    return False
+
+            # Archive the case
+            updates = {
+                "status": CaseStatus.ARCHIVED.value,
+                "updated_at": datetime.utcnow(),
+                "metadata": {}
+            }
+
+            if reason:
+                updates["metadata"]["archive_reason"] = reason
+            if user_id:
+                updates["metadata"]["archived_by"] = user_id
+
+            success = await self.case_store.update_case(case_id, updates)
+            
+            if success:
+                self.logger.info(f"Archived case {case_id}")
+
+            return success
+
+        except ValidationException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to archive case {case_id}: {e}")
+            return False
+
+    @trace("case_service_list_user_cases")
+    async def list_user_cases(
+        self,
+        user_id: str,
+        filters: Optional[CaseListFilter] = None
+    ) -> List[CaseSummary]:
+        """
+        List cases for a user
+
+        Args:
+            user_id: User identifier
+            filters: Optional filter criteria
+
+        Returns:
+            List of user's cases
+        """
+        if not user_id:
+            raise ValidationException("User ID cannot be empty")
+
+        try:
+            return await self.case_store.get_user_cases(user_id, filters)
+
+        except Exception as e:
+            self.logger.error(f"Failed to list cases for user {user_id}: {e}")
+            return []
+
+    @trace("case_service_search_cases")
+    async def search_cases(
+        self,
+        search_request: CaseSearchRequest,
+        user_id: Optional[str] = None
+    ) -> List[CaseSummary]:
+        """
+        Search cases with access control
+
+        Args:
+            search_request: Search criteria
+            user_id: Optional user ID for access control
+
+        Returns:
+            List of matching cases
+        """
+        try:
+            # Add user filter if provided
+            if user_id and search_request.filters:
+                search_request.filters.user_id = user_id
+            elif user_id:
+                search_request.filters = CaseListFilter(user_id=user_id)
+
+            return await self.case_store.search_cases(search_request)
+
+        except Exception as e:
+            self.logger.error(f"Failed to search cases: {e}")
+            return []
+
+    @trace("case_service_get_analytics")
+    async def get_case_analytics(self, case_id: str) -> Dict[str, Any]:
+        """
+        Get case analytics and metrics
+
+        Args:
+            case_id: Case identifier
+
+        Returns:
+            Case analytics dictionary
+        """
+        try:
+            return await self.case_store.get_case_analytics(case_id)
+
+        except Exception as e:
+            self.logger.error(f"Failed to get analytics for case {case_id}: {e}")
+            return {}
+
+    @trace("case_service_cleanup_expired")
+    async def cleanup_expired_cases(self) -> int:
+        """
+        Clean up expired cases
+
+        Returns:
+            Number of cases cleaned up
+        """
+        try:
+            cleaned_count = await self.case_store.cleanup_expired_cases()
+            
+            if cleaned_count > 0:
+                self.logger.info(f"Cleaned up {cleaned_count} expired cases")
+
+            return cleaned_count
+
+        except Exception as e:
+            self.logger.error(f"Failed to cleanup expired cases: {e}")
+            return 0
+
+    async def get_case_health_status(self) -> Dict[str, Any]:
+        """
+        Get case service health status and metrics
+
+        Returns:
+            Health status dictionary
+        """
+        try:
+            # Get some basic metrics
+            # This would typically query the case store for metrics
+            return {
+                "service_status": "healthy",
+                "case_store_connected": True,
+                "session_store_connected": self.session_store is not None,
+                "default_expiry_days": self.default_case_expiry_days,
+                "max_cases_per_user": self.max_cases_per_user
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get case service health: {e}")
+            return {
+                "service_status": "unhealthy",
+                "error": str(e)
+            }

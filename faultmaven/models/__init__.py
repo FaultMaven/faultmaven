@@ -49,6 +49,34 @@ from .interfaces import (
     IKnowledgeIngester,
 )
 
+# Import case persistence models (optional)
+try:
+    from .case import (
+        Case,
+        CaseMessage,
+        CaseParticipant,
+        CaseContext,
+        CaseStatus,
+        CasePriority,
+        MessageType,
+        ParticipantRole,
+        CaseCreateRequest,
+        CaseUpdateRequest,
+        CaseShareRequest,
+        CaseListFilter,
+        CaseSearchRequest,
+        CaseSummary
+    )
+    from .interfaces_case import (
+        ICaseStore,
+        ICaseService,
+        ICaseNotificationService,
+        ICaseIntegrationService
+    )
+    CASE_MODELS_AVAILABLE = True
+except ImportError:
+    CASE_MODELS_AVAILABLE = False
+
 # Utility functions for timestamp formatting
 from datetime import datetime
 
@@ -119,6 +147,31 @@ __all__ = [
     "utc_timestamp",
     "parse_utc_timestamp",
 ]
+
+# Add case models to exports if available
+if CASE_MODELS_AVAILABLE:
+    __all__.extend([
+        # Case persistence models
+        "Case",
+        "CaseMessage",
+        "CaseParticipant", 
+        "CaseContext",
+        "CaseStatus",
+        "CasePriority",
+        "MessageType",
+        "ParticipantRole",
+        "CaseCreateRequest",
+        "CaseUpdateRequest",
+        "CaseShareRequest",
+        "CaseListFilter",
+        "CaseSearchRequest",
+        "CaseSummary",
+        # Case interfaces
+        "ICaseStore",
+        "ICaseService",
+        "ICaseNotificationService",
+        "ICaseIntegrationService",
+    ])
 
 # As we migrate, we'll replace the above with:
 # from .agent import *
