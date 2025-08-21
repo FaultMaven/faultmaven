@@ -178,9 +178,10 @@ class TestEndToEndTroubleshootingWorkflows:
         assert "total_requests" in stats_data
         assert stats_data["session_id"] == session_id
         
-        # Step 7: Generate final investigation report
+        # Step 7: Generate final investigation report  
+        # Note: investigation_id is actually case_id from view_state
         final_investigation = await client.get(
-            f"/api/v1/agent/investigations/{investigation_id}",
+            f"/api/v1/agent/cases/{investigation_id}",
             params={"session_id": session_id}
         )
         
@@ -188,9 +189,9 @@ class TestEndToEndTroubleshootingWorkflows:
         final_report = final_investigation.json()
         
         # Validate comprehensive analysis
-        # Note: the investigations endpoint returns TroubleshootingResponse (legacy), not AgentResponse (v3.1.0)
+        # Note: the case endpoint returns TroubleshootingResponse (legacy), not AgentResponse (v3.1.0)
         assert final_report["session_id"] == session_id
-        assert final_report["investigation_id"] == investigation_id
+        assert final_report["case_id"] == investigation_id  # investigation_id is actually case_id
         
         # In legacy format, findings are direct fields
         initial_sources_count = len(initial_analysis.get("sources", []))

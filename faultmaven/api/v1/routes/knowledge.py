@@ -40,6 +40,9 @@ from faultmaven.services.knowledge_service import KnowledgeService
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
 
+# Canonical document types (authoritative)
+ALLOWED_DOCUMENT_TYPES = {"playbook", "troubleshooting_guide", "reference", "how_to"}
+
 # Create a secondary router with /kb prefix for backward compatibility
 kb_router = APIRouter(prefix="/kb", tags=["knowledge_base"])
 
@@ -49,7 +52,7 @@ kb_router = APIRouter(prefix="/kb", tags=["knowledge_base"])
 async def upload_document(
     file: UploadFile = File(...),
     title: str = Form(...),
-    document_type: str = Form("troubleshooting_guide"),
+    document_type: str = Form(...),
     category: Optional[str] = Form(None),
     tags: Optional[str] = Form(None),
     source_url: Optional[str] = Form(None),
@@ -85,6 +88,16 @@ async def upload_document(
             raise HTTPException(
                 status_code=415,
                 detail=f"Unsupported file type: {file.content_type}. Allowed types: {', '.join(allowed_types)}"
+            )
+
+        # Validate document type
+        if document_type not in ALLOWED_DOCUMENT_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Invalid document_type",
+                    "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES))
+                }
             )
 
         # Read file content
@@ -157,6 +170,16 @@ async def list_documents(
     logger = logging.getLogger(__name__)
 
     try:
+        # Validate filters
+        if document_type is not None and document_type not in ALLOWED_DOCUMENT_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Invalid document_type filter",
+                    "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES))
+                }
+            )
+
         # Parse tags filter
         tag_list = None
         if tags:
@@ -337,6 +360,17 @@ async def update_document(
     logger = logging.getLogger(__name__)
     
     try:
+        # Validate document_type if provided
+        if "document_type" in update_data and update_data["document_type"] is not None:
+            if update_data["document_type"] not in ALLOWED_DOCUMENT_TYPES:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": "Invalid document_type",
+                        "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES))
+                    }
+                )
+
         result = await knowledge_service.update_document_metadata(
             document_id=document_id,
             **update_data

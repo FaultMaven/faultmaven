@@ -94,11 +94,15 @@ class Config(IConfiguration):
             db=int(os.getenv("REDIS_DB", "0"))
         )
         
-        # ChromaDB Configuration
+        # ChromaDB Configuration (Vector Store)
+        # Defaults favor NodePort/dev URL; set CHROMADB_URL to in-cluster service when running inside K8s (e.g., http://chromadb:8000)
         self.chromadb = ChromaDBConfig(
             url=os.getenv("CHROMADB_URL", "http://chromadb.faultmaven.local:30080"),
-            api_key=os.getenv("CHROMADB_API_KEY", "faultmaven-dev-chromadb-2025"),
+            api_key=os.getenv("CHROMADB_API_KEY"),  # No default secret; auth is optional
             collection_name=os.getenv("CHROMADB_COLLECTION", "faultmaven_knowledge")
+        )
+        self.logger.info(
+            f"ChromaDB config: url={self.chromadb.url}, collection={self.chromadb.collection_name}, auth={'enabled' if self.chromadb.api_key else 'disabled'}"
         )
         
         # Presidio Configuration

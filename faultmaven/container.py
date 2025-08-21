@@ -176,14 +176,23 @@ class DIContainer:
             logging.getLogger(__name__).warning(f"Vector store initialization failed: {e}")
             self.vector_store = None
         
-        # Session store for session management
+        # Redis client for persistence (sessions, cases, KB metadata)
+        try:
+            from faultmaven.infrastructure.redis_client import create_redis_client
+            self.redis_client = create_redis_client()
+            logging.getLogger(__name__).info("✅ Redis client initialized for application persistence")
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Redis client initialization failed: {e}")
+            self.redis_client = None
+        
+        # Session store for session management (fail-fast)
         from faultmaven.infrastructure.persistence.redis_session_store import RedisSessionStore
         try:
             self.session_store: ISessionStore = RedisSessionStore()
             logging.getLogger(__name__).debug("Session store initialized")
         except Exception as e:
-            logging.getLogger(__name__).warning(f"Session store initialization failed: {e}")
-            self.session_store = None
+            logging.getLogger(__name__).error(f"Session store initialization failed; aborting startup: {e}")
+            raise
         
         # Case store for case persistence (optional feature)
         try:
@@ -294,15 +303,14 @@ class DIContainer:
             logging.getLogger(__name__).warning(f"KnowledgeIngester creation failed: {e}")
             knowledge_ingester = None
         
-        if knowledge_ingester:
-            self.knowledge_service = KnowledgeService(
-                knowledge_ingester=knowledge_ingester,
-                sanitizer=self.get_sanitizer(),
-                tracer=self.get_tracer(),
-                vector_store=self.get_vector_store(),  # Now using actual IVectorStore implementation
-            )
-        else:
-            self.knowledge_service = None
+        # Always create KnowledgeService; it can operate without an ingester for API upload path
+        self.knowledge_service = KnowledgeService(
+            knowledge_ingester=knowledge_ingester,
+            sanitizer=self.get_sanitizer(),
+            tracer=self.get_tracer(),
+            vector_store=self.get_vector_store(),
+            redis_client=getattr(self, 'redis_client', None),
+        )
         
         # Phase 2: Advanced Intelligence Services
         self._create_advanced_intelligence_services()
@@ -312,8 +320,45 @@ class DIContainer:
         
         # Phase 3: Enhanced Data Processing Services
         self._create_enhanced_data_processing_services()
+        
+        # Phase A: Microservice Foundation Services
+        self._create_microservice_foundation_services()
             
         logging.getLogger(__name__).debug("Service layer created")
+
+        # Modular-monolith skill graph registration
+        try:
+            from faultmaven.core.orchestrator.skill_registry import SkillRegistry
+            from faultmaven.core.orchestrator.router import Router as SkillRouter
+            from faultmaven.skills.clarifier import ClarifierSkill
+            from faultmaven.skills.diagnoser import DiagnoserSkill
+            from faultmaven.skills.validator import ValidatorSkill
+            from faultmaven.core.confidence.aggregator import ConfidenceAggregator
+            from faultmaven.core.loop_guard.loop_guard import LoopGuard
+            
+            # Create basic skills without retrieval service dependency for now
+            skills = [
+                ClarifierSkill(),
+                DiagnoserSkill(),
+                ValidatorSkill(),
+            ]
+            self.skill_registry = SkillRegistry(skills=skills)
+            self.skill_router = SkillRouter()
+            self.confidence = ConfidenceAggregator()
+            self.loop_guard = LoopGuard()
+            
+            # Create in-memory bus if available
+            try:
+                from faultmaven.bus.in_memory_bus import InMemoryBus
+                self.event_bus = InMemoryBus()
+            except ImportError:
+                logging.getLogger(__name__).debug("InMemoryBus not available, skipping")
+                
+            logging.getLogger(__name__).info("✅ SkillRegistry and Router initialized (modular monolith)")
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Failed to initialize skill graph components: {e}")
+            import traceback
+            logging.getLogger(__name__).debug(f"Skill graph error details: {traceback.format_exc()}")
     
     def _create_advanced_intelligence_services(self):
         """Create Phase 2 advanced intelligence services (Memory & Planning)"""
@@ -516,6 +561,123 @@ class DIContainer:
             self.enhanced_log_processor = None
             self.enhanced_security_assessment = None
             self.enhanced_data_service = None
+
+    def _create_microservice_foundation_services(self):
+        """Create Phase A microservice foundation services"""
+        try:
+            # Microservice Session Service - Enhanced session/case management
+            from faultmaven.services.microservice_session_service import MicroserviceSessionService
+            self.microservice_session_service = MicroserviceSessionService(
+                base_session_service=self.get_session_service(),
+                tracer=self.get_tracer()
+            )
+            logging.getLogger(__name__).debug("Microservice session service created")
+            
+            # Global Confidence Service - Calibrated confidence scoring
+            from faultmaven.services.confidence_service import GlobalConfidenceService
+            self.confidence_service = GlobalConfidenceService(
+                calibration_method="platt",
+                model_version="conf-v1",
+                hysteresis_up_turns=1,
+                hysteresis_down_turns=2
+            )
+            logging.getLogger(__name__).debug("Global confidence service created")
+            
+            # Policy/Safety Service - Action classification and safety
+            from faultmaven.services.policy_service import PolicySafetyService
+            self.policy_service = PolicySafetyService(
+                enforcement_mode="strict",
+                enable_compliance_checking=True,
+                auto_approve_low_risk=False
+            )
+            logging.getLogger(__name__).debug("Policy/safety service created")
+            
+            # Unified Retrieval Service - Federated knowledge access
+            from faultmaven.services.unified_retrieval_service import UnifiedRetrievalService
+            self.unified_retrieval_service = UnifiedRetrievalService(
+                knowledge_service=self.get_knowledge_service(),
+                vector_store=self.get_vector_store(),
+                sanitizer=self.get_sanitizer(),
+                tracer=self.get_tracer(),
+                enable_caching=True,
+                cache_ttl_seconds=3600
+            )
+            logging.getLogger(__name__).debug("Unified retrieval service created")
+            
+            # Decision Records & Telemetry Service - Observability infrastructure
+            from faultmaven.infrastructure.telemetry.decision_recorder import DecisionRecorder
+            self.decision_recorder = DecisionRecorder(
+                tracer=self.get_tracer(),
+                retention_days=90,
+                enable_structured_logging=True,
+                enable_performance_tracking=True
+            )
+            logging.getLogger(__name__).debug("Decision recorder created")
+            
+            # Phase B: Core Orchestration and Coordination Services
+            self._create_phase_b_orchestration_services()
+            
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Microservice foundation services creation failed: {e}")
+            # Set fallback services
+            self.microservice_session_service = None
+            self.confidence_service = None
+            self.policy_service = None
+            self.unified_retrieval_service = None
+            self.decision_recorder = None
+            # Phase B fallbacks
+            self.gateway_service = None
+            self.loop_guard_service = None
+            self.orchestrator_service = None
+
+    def _create_phase_b_orchestration_services(self):
+        """Create Phase B orchestration and coordination services"""
+        try:
+            # Gateway Processing Service - Pre-processing and filtering
+            from faultmaven.services.gateway_service import GatewayProcessingService
+            self.gateway_service = GatewayProcessingService(
+                llm_provider=self.get_llm_provider(),
+                sanitizer=self.get_sanitizer(),
+                tracer=self.get_tracer(),
+                clarity_threshold=0.6,
+                reality_threshold=0.8,
+                enable_assumption_extraction=True
+            )
+            logging.getLogger(__name__).debug("Gateway processing service created")
+            
+            # LoopGuard Service - Loop detection and recovery
+            from faultmaven.services.loop_guard_service import LoopGuardService
+            self.loop_guard_service = LoopGuardService(
+                embedding_similarity_threshold=0.85,
+                confidence_slope_threshold=0.05,
+                novelty_threshold=0.3,
+                debounce_required=2,
+                state_ttl_hours=24,
+                cooldown_minutes=10
+            )
+            logging.getLogger(__name__).debug("LoopGuard service created")
+            
+            # Orchestrator/Router Service - Central coordination and routing
+            from faultmaven.services.orchestrator_service import OrchestratorService
+            self.orchestrator_service = OrchestratorService(
+                agent_service=self.get_agent_service(),
+                gateway_service=self.gateway_service,
+                confidence_service=getattr(self, 'confidence_service', None),
+                loop_guard_service=self.loop_guard_service,
+                decision_recorder=getattr(self, 'decision_recorder', None),
+                tracer=self.get_tracer(),
+                exploration_epsilon=0.05,
+                max_agents_per_turn=2,
+                circuit_breaker_enabled=True
+            )
+            logging.getLogger(__name__).debug("Orchestrator service created")
+            
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Phase B orchestration services creation failed: {e}")
+            # Set fallback services
+            self.gateway_service = None
+            self.loop_guard_service = None
+            self.orchestrator_service = None
     
     # Public getter methods for dependency injection
     
@@ -523,8 +685,9 @@ class DIContainer:
         """Get the agent service with all dependencies injected"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
-            logger.warning("Agent service requested but container not initialized - this should not happen after startup")
+            # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
+                logger.warning("Agent service requested but container not initialized - this should not happen after startup")
                 self.initialize()
         return getattr(self, 'agent_service', None)
     
@@ -532,8 +695,9 @@ class DIContainer:
         """Get the data service with all dependencies injected"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
-            logger.warning("Data service requested but container not initialized - this should not happen after startup")
+            # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
+                logger.warning("Data service requested but container not initialized - this should not happen after startup")
                 self.initialize()
         return getattr(self, 'data_service', None)
         
@@ -541,8 +705,9 @@ class DIContainer:
         """Get the knowledge service with all dependencies injected"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
-            logger.warning("Knowledge service requested but container not initialized - this should not happen after startup")
+            # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
+                logger.warning("Knowledge service requested but container not initialized - this should not happen after startup")
                 self.initialize()
         knowledge_service = getattr(self, 'knowledge_service', None)
         if knowledge_service is None:
@@ -897,8 +1062,9 @@ class DIContainer:
         """Get the LLM provider interface implementation"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
-            logger.warning("LLM provider requested but container not initialized - this should not happen after startup")
+            # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
+                logger.warning("LLM provider requested but container not initialized - this should not happen after startup")
                 self.initialize()
         
         # Ensure we always return a valid implementation, even if initialization failed
@@ -916,8 +1082,9 @@ class DIContainer:
         """Get the data sanitizer interface implementation"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
-            logger.warning("Data sanitizer requested but container not initialized - this should not happen after startup")
+            # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
+                logger.warning("Data sanitizer requested but container not initialized - this should not happen after startup")
                 self.initialize()
         
         # Ensure we always return a valid implementation, even if initialization failed
@@ -935,8 +1102,9 @@ class DIContainer:
         """Get the tracer interface implementation"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
-            logger.warning("Tracer requested but container not initialized - this should not happen after startup")
+            # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
+                logger.warning("Tracer requested but container not initialized - this should not happen after startup")
                 self.initialize()
         
         # Ensure we always return a valid implementation, even if initialization failed
@@ -954,8 +1122,9 @@ class DIContainer:
         """Get list of available tools"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
-            logger.warning("Tools requested but container not initialized - this should not happen after startup")
+            # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
+                logger.warning("Tools requested but container not initialized - this should not happen after startup")
                 self.initialize()
         return getattr(self, 'tools', [])
     
@@ -963,8 +1132,9 @@ class DIContainer:
         """Get the data classifier interface implementation"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
-            logger.warning("Data classifier requested but container not initialized - this should not happen after startup")
+            # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
+                logger.warning("Data classifier requested but container not initialized - this should not happen after startup")
                 self.initialize()
         return getattr(self, 'data_classifier', None)
     
@@ -972,8 +1142,9 @@ class DIContainer:
         """Get the log processor interface implementation"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
-            logger.warning("Log processor requested but container not initialized - this should not happen after startup")
+            # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
+                logger.warning("Log processor requested but container not initialized - this should not happen after startup")
                 self.initialize()
         return getattr(self, 'log_processor', None)
     
@@ -1002,8 +1173,9 @@ class DIContainer:
         """Get the session service implementation"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
-            logger.warning("Session service requested but container not initialized - this should not happen after startup")
+            # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
+                logger.warning("Session service requested but container not initialized - this should not happen after startup")
                 self.initialize()
         return getattr(self, 'session_service', None)
     
@@ -1102,6 +1274,41 @@ class DIContainer:
                         "temp_files": 0
                     }
                 }
+            
+            async def get_or_create_current_case_id(self, session_id, force_new_case=False):
+                """Get or create a case ID for the session"""
+                if session_id in self.sessions:
+                    session = self.sessions[session_id]
+                    if not hasattr(session, 'current_case_id') or force_new_case:
+                        session.current_case_id = str(uuid.uuid4())
+                    return session.current_case_id
+                else:
+                    # Create session if it doesn't exist
+                    await self.create_session()
+                    return str(uuid.uuid4())
+            
+            async def format_conversation_context(self, session_id, case_id, limit=5):
+                """Format conversation context for a case"""
+                if session_id in self.sessions:
+                    # Return empty context for mock implementation
+                    return ""
+                return ""
+            
+            async def record_query_operation(self, session_id, query, case_id, context=None, confidence_score=1.0):
+                """Record a query operation in the session"""
+                if session_id in self.sessions:
+                    session = self.sessions[session_id]
+                    if not hasattr(session, 'operations'):
+                        session.operations = []
+                    session.operations.append({
+                        "query": query,
+                        "case_id": case_id,
+                        "context": context,
+                        "confidence_score": confidence_score,
+                        "timestamp": datetime.utcnow()
+                    })
+                    return True
+                return False
         
         return MinimalSessionService()
     
@@ -1164,6 +1371,90 @@ class DIContainer:
             return self.get_data_service()
         return enhanced_service
     
+    # Phase A: Microservice Foundation Services Getters
+    
+    def get_microservice_session_service(self):
+        """Get the microservice session service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Microservice session service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        service = getattr(self, 'microservice_session_service', None)
+        if service is None:
+            # Fallback to base session service
+            return self.get_session_service()
+        return service
+    
+    def get_confidence_service(self):
+        """Get the global confidence service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Confidence service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'confidence_service', None)
+    
+    def get_policy_service(self):
+        """Get the policy/safety service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Policy service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'policy_service', None)
+    
+    def get_unified_retrieval_service(self):
+        """Get the unified retrieval service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Unified retrieval service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        service = getattr(self, 'unified_retrieval_service', None)
+        if service is None:
+            # Fallback to base knowledge service
+            return self.get_knowledge_service()
+        return service
+    
+    def get_decision_recorder(self):
+        """Get the decision records & telemetry service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Decision recorder requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'decision_recorder', None)
+    
+    # Phase B: Orchestration and Coordination Services Getters
+    
+    def get_gateway_service(self):
+        """Get the gateway processing service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Gateway service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'gateway_service', None)
+    
+    def get_loop_guard_service(self):
+        """Get the loop guard service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("LoopGuard service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'loop_guard_service', None)
+    
+    def get_orchestrator_service(self):
+        """Get the orchestrator/router service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Orchestrator service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'orchestrator_service', None)
+    
     def health_check(self) -> dict:
         """Check health of all container dependencies"""
         if not self._initialized:
@@ -1200,6 +1491,16 @@ class DIContainer:
             "enhanced_log_processor": getattr(self, 'enhanced_log_processor', None) is not None,
             "enhanced_security_assessment": getattr(self, 'enhanced_security_assessment', None) is not None,
             "enhanced_data_service": getattr(self, 'enhanced_data_service', None) is not None,
+            # Phase A Microservice Foundation Services
+            "microservice_session_service": getattr(self, 'microservice_session_service', None) is not None,
+            "confidence_service": getattr(self, 'confidence_service', None) is not None,
+            "policy_service": getattr(self, 'policy_service', None) is not None,
+            "unified_retrieval_service": getattr(self, 'unified_retrieval_service', None) is not None,
+            "decision_recorder": getattr(self, 'decision_recorder', None) is not None,
+            # Phase B Orchestration and Coordination Services
+            "gateway_service": getattr(self, 'gateway_service', None) is not None,
+            "loop_guard_service": getattr(self, 'loop_guard_service', None) is not None,
+            "orchestrator_service": getattr(self, 'orchestrator_service', None) is not None,
         }
         
         all_healthy = all(

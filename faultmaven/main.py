@@ -361,11 +361,7 @@ if CASE_ROUTES_AVAILABLE and case:
 else:
     logger.info("ℹ️ Case persistence endpoints not available")
 
-# Phase 2: Enhanced Agent routes with advanced intelligence
-app.include_router(enhanced_agent.router, prefix="/api/v1", tags=["enhanced_intelligence"])
-
-# Phase 2: Multi-Step Troubleshooting Orchestration
-app.include_router(orchestration.router, prefix="/api/v1", tags=["multi_step_orchestration"])
+# Modular monolith pivot: keep only core endpoints; advanced routes disabled
 
 # Protection system monitoring endpoints
 try:
@@ -383,11 +379,13 @@ except Exception as e:
 # Custom exception handlers
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc):
-    """Custom 404 handler to ensure consistent error responses"""
-    return JSONResponse(
-        status_code=404,
-        content={"detail": "Not Found"}
-    )
+    """Custom 404 handler preserving detail if provided"""
+    detail = getattr(exc, 'detail', None)
+    if isinstance(detail, str):
+        msg = detail
+    else:
+        msg = "Not Found"
+    return JSONResponse(status_code=404, content={"detail": msg})
 
 
 @app.exception_handler(500) 
@@ -589,6 +587,20 @@ async def health_check_dependencies():
             "timestamp": datetime.utcnow().isoformat() + 'Z'
         }
 
+
+@app.get("/readiness")
+async def readiness():
+    """Readiness probe: return unready if Redis or ChromaDB are unavailable."""
+    try:
+        from .container import container
+        container.initialize()
+        if getattr(container, 'session_store', None) is None:
+            return {"status": "unready", "reason": "redis_unavailable"}
+        if getattr(container, 'vector_store', None) is None:
+            return {"status": "unready", "reason": "chromadb_unavailable"}
+        return {"status": "ready"}
+    except Exception as e:
+        return {"status": "unready", "reason": str(e)}
 
 @app.get("/health/logging")
 async def logging_health_check():

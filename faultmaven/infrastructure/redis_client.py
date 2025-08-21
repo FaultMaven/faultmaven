@@ -56,6 +56,7 @@ class RedisClientFactory:
                 # Use URL-based connection (includes auth)
                 client = redis.from_url(
                     config['url'],
+                    decode_responses=True,
                     **pool_kwargs,
                     **kwargs
                 )
@@ -66,11 +67,21 @@ class RedisClientFactory:
                     host=config['host'],
                     port=config['port'],
                     password=config['password'],
+                    decode_responses=True,
                     **pool_kwargs,
                     **kwargs
                 )
                 logger.info(f"Redis client created: {config['host']}:{config['port']} (auth: {'yes' if config['password'] else 'no'})")
             
+            # Validate connection (fail-fast)
+            try:
+                import asyncio
+                is_ok = asyncio.run(RedisClientFactory.test_connection(client))
+                if not is_ok:
+                    raise ConnectionError("Redis ping failed")
+            except RuntimeError:
+                # Event loop already running (unlikely at app startup); skip validation
+                logger.warning("Event loop already running; skipping Redis ping validation")
             return client
             
         except Exception as e:
@@ -105,7 +116,7 @@ class RedisClientFactory:
                 'url': None,
                 'host': host or db_config.get('host', '192.168.0.111'),
                 'port': port or db_config.get('port', 30379),
-                'password': password or db_config.get('password', 'faultmaven-dev-redis-2025')
+                'password': password or db_config.get('password')
             }
             logger.debug(f"Built Redis config from ConfigurationManager: {config['host']}:{config['port']}")
         except Exception as e:
@@ -115,7 +126,7 @@ class RedisClientFactory:
                 'url': None,
                 'host': host or os.getenv('REDIS_HOST', '192.168.0.111'),
                 'port': port or int(os.getenv('REDIS_PORT', '30379')),
-                'password': password or os.getenv('REDIS_PASSWORD', 'faultmaven-dev-redis-2025')
+                'password': password or os.getenv('REDIS_PASSWORD')
             }
             logger.debug(f"Built Redis config from environment: {config['host']}:{config['port']}")
         

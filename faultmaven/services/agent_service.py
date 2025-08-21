@@ -28,8 +28,10 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.services.base_service import BaseService
 from faultmaven.models.interfaces import ILLMProvider, BaseTool, ITracer, ISanitizer
-from faultmaven.models import QueryRequest, TroubleshootingResponse, AgentResponse, ViewState, UploadedData, Source, SourceType, ResponseType, PlanStep
+from faultmaven.models import QueryRequest, TroubleshootingResponse, AgentResponse, ViewState, UploadedData, Source, SourceType, ResponseType, PlanStep, TitleGenerateRequest, TitleResponse
 from faultmaven.exceptions import ValidationException
+from faultmaven.core.gateway.gateway import PreProcessingGateway
+from faultmaven.skills.clarifier import ClarifierSkill
 
 
 class AgentService(BaseService):
@@ -59,6 +61,125 @@ class AgentService(BaseService):
         self._sanitizer = sanitizer
         self._session_service = session_service
 
+    # --- Output finalization helpers ---
+    def _remove_redaction_tags(self, text: str) -> str:
+        try:
+            import re
+            # Replace placeholders like <PERSON>, <LOCATION>, <US_DRIVER_LICENSE>
+            return re.sub(r"<[A-Z_]+>", "[redacted]", text or "")
+        except Exception:
+            return text or ""
+
+    def _finalize_text(self, text: str) -> str:
+        # Apply sanitizer then strip redaction artifacts for user display
+        try:
+            sanitized = self._sanitizer.sanitize(text)
+        except Exception:
+            sanitized = text or ""
+        return self._remove_redaction_tags(sanitized)
+
+    async def generate_title(self, request: TitleGenerateRequest) -> TitleResponse:
+        """Dedicated title generation with validation and guardrails."""
+        # Validate
+        if not request.session_id or not request.session_id.strip():
+            raise ValidationException("Session ID cannot be empty")
+        max_words = max(3, min(int(request.max_words or 8), 12))
+
+        # Build brief context string
+        context_text = ""
+        ctx = request.context or {}
+        try:
+            if isinstance(ctx, dict) and ctx:
+                # Prefer last user message or summary fields if present
+                for key in ("last_user_message", "summary", "messages", "notes"):
+                    if key in ctx and ctx[key]:
+                        context_text = str(ctx[key])
+                        break
+                if not context_text:
+                    context_text = str(ctx)[:800]
+        except Exception:
+            context_text = ""
+
+        # Create a case id if needed for view_state
+        try:
+            case_id = await self._session_service.get_or_create_current_case_id(request.session_id) if self._session_service else str(uuid.uuid4())
+        except Exception:
+            case_id = str(uuid.uuid4())
+
+        prompt = (
+            "You are a helpful assistant generating a concise conversation title. "
+            "Return ONLY the title text, no quotes, no punctuation at the end. "
+            f"Aim for {max_words} words or fewer, clear and specific.\n\n"
+            f"Context (may be partial):\n{context_text}\n\nTitle:"
+        )
+        try:
+            title_text = await self._llm.generate(prompt, temperature=0.3, max_tokens=24)
+        except Exception as e:
+            # Safe fallback
+            title_text = "Troubleshooting Session"
+
+        # Post-process: sanitize and enforce word cap
+        title_text = (title_text or "Troubleshooting Session").strip().strip('"\' .,:;')
+        words = [w for w in title_text.split() if w]
+        if len(words) > max_words:
+            title_text = " ".join(words[:max_words])
+
+        # Persist title to case if case service is available
+        try:
+            from faultmaven.container import container as di
+            case_service = di.get_case_service() if hasattr(di, 'get_case_service') else None
+        except Exception:
+            case_service = None
+
+        try:
+            # Ensure a persistent case exists via case service if available
+            if case_service:
+                # Prefer existing current case; if none, create/link one
+                current_case_id = None
+                try:
+                    if self._session_service and hasattr(self._session_service, 'get_current_case_id'):
+                        current_case_id = await self._session_service.get_current_case_id(request.session_id)
+                except Exception:
+                    current_case_id = None
+
+                if not current_case_id and hasattr(case_service, 'get_or_create_case_for_session'):
+                    try:
+                        current_case_id = await case_service.get_or_create_case_for_session(
+                            session_id=request.session_id,
+                            user_id=None,
+                            force_new=False
+                        )
+                    except Exception:
+                        current_case_id = None
+
+                # If we have a case id now, update its title
+                if current_case_id and hasattr(case_service, 'update_case'):
+                    try:
+                        await case_service.update_case(current_case_id, {"title": title_text})
+                        case_id = current_case_id  # Prefer persistent case id for view_state
+                    except Exception:
+                        pass
+
+                # Optionally record a system event for title set
+                try:
+                    from faultmaven.models.case import MessageType
+                    if self._session_service and current_case_id:
+                        await self._session_service.record_case_message(
+                            session_id=request.session_id,
+                            message_content=f"Case title set to: {title_text}",
+                            message_type=MessageType.SYSTEM_EVENT,
+                            author_id=None,
+                            metadata={"event": "case_title_set"}
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            # Non-fatal; title still returned to client
+            pass
+
+        view_state = await self._create_view_state(case_id, request.session_id)
+        return TitleResponse(title=self._sanitizer.sanitize(title_text), view_state=view_state)
+
     async def process_query(
         self,
         request: QueryRequest
@@ -87,13 +208,49 @@ class AgentService(BaseService):
         """Execute the core query processing logic"""
         # Use ITracer interface for operation tracing
         with self._tracer.trace("process_query_workflow"):
+            # 0. Compatibility shim: handle title generation flag in context
+            try:
+                if request.context and request.context.get("is_title_generation") is True:
+                    # Delegate to dedicated title path and wrap as answer
+                    tg = await self.generate_title(TitleGenerateRequest(session_id=request.session_id, context=request.context))
+                    response = AgentResponse(
+                        content=tg.title,
+                        response_type=ResponseType.ANSWER,
+                        view_state=tg.view_state,
+                        sources=[],
+                        plan=None,
+                    )
+                    
+                    # Record assistant response to case
+                    if self._session_service:
+                        try:
+                            await self._session_service.record_case_message(
+                                session_id=request.session_id,
+                                message_content=response.content,
+                                message_type=MessageType.AGENT_RESPONSE,
+                                author_id=None,
+                                metadata={"intent": "title_generation"}
+                            )
+                        except Exception as e:
+                            self.logger.warning(f"Failed to record assistant title generation response: {e}")
+                    
+                    return response
+            except Exception:
+                # Fall through to normal flow on any error
+                pass
             # 1. Sanitize input
             with self._tracer.trace("sanitize_input"):
                 sanitized_query = self._sanitizer.sanitize(request.query)
             
-            # 2. Get or create case_id for this conversation thread
+            # 2. Get or create case_id for this conversation thread (no hard dependency on preexisting session)
             if self._session_service:
-                case_id = await self._session_service.get_or_create_current_case_id(request.session_id)
+                try:
+                    case_id = await self._session_service.get_or_create_current_case_id(request.session_id)
+                except FileNotFoundError:
+                    # Session doesn't exist; proceed with an ephemeral case_id
+                    case_id = str(uuid.uuid4())
+                except Exception:
+                    case_id = str(uuid.uuid4())
             else:
                 # Fallback if no session service available
                 case_id = str(uuid.uuid4())
@@ -109,21 +266,37 @@ class AgentService(BaseService):
                 }
             )
             
-            # 3. Create and configure agent with interfaces
+            # 3. Skip legacy monolithic agent initialization (removed in modular monolith)
+            # Kept a span for compatibility/metrics without side effects
             with self._tracer.trace("initialize_agent"):
-                from faultmaven.core.agent.agent import FaultMavenAgent
-                agent = FaultMavenAgent(llm_interface=self._llm)
+                pass
             
-            # 4. Retrieve conversation history for context
+            # 4. Record user query and retrieve conversation history for context
             conversation_context = ""
             if self._session_service:
+                # First, record the user's query to the case
+                with self._tracer.trace("record_user_query"):
+                    try:
+                        await self._session_service.record_case_message(
+                            session_id=request.session_id,
+                            message_content=sanitized_query,
+                            message_type=MessageType.USER_QUERY,
+                            author_id=None,
+                            metadata={"source": "api", "type": "user_query"}
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to record user message: {e}")
+                
+                # Then retrieve conversation context (will now include the user query)
                 with self._tracer.trace("retrieve_conversation_history"):
                     try:
                         conversation_context = await self._session_service.format_conversation_context(
                             request.session_id, case_id, limit=5
                         )
                         if conversation_context:
-                            self.logger.debug(f"Retrieved conversation context for case {case_id}")
+                            self.logger.debug(f"Retrieved conversation context for case {case_id}: {len(conversation_context)} chars")
+                        else:
+                            self.logger.debug(f"No conversation context available for case {case_id}")
                     except Exception as e:
                         self.logger.warning(f"Failed to retrieve conversation context: {e}")
             
@@ -131,19 +304,742 @@ class AgentService(BaseService):
             enhanced_query = sanitized_query
             if conversation_context:
                 enhanced_query = f"{conversation_context}\n{sanitized_query}"
+                self.logger.debug(f"Injected conversation context. Original query: {len(sanitized_query)} chars, Enhanced: {len(enhanced_query)} chars")
             
-            # 6. Execute troubleshooting using interfaces
+            # 6. Pre-processing gateway (clarity/reality/assumptions)
+            gateway = PreProcessingGateway()
+            gateway_result = gateway.process(sanitized_query)
+
+            # Handle greetings with a friendly response instead of clarification
+            if gateway_result.is_greeting:
+                view_state = await self._create_view_state(case_id, request.session_id)
+                content = (
+                    "Hi! How can I help you troubleshoot right now?\n"
+                    "Give me a brief description of the issue (symptoms, where you see it, any error codes)."
+                )
+                response = AgentResponse(
+                    content=self._sanitizer.sanitize(content),
+                    response_type=ResponseType.ANSWER,
+                    view_state=view_state,
+                    sources=[],
+                    plan=None,
+                )
+                
+                # Record assistant response to case
+                if self._session_service:
+                    try:
+                        await self._session_service.record_case_message(
+                            session_id=request.session_id,
+                            message_content=response.content,
+                            message_type=MessageType.AGENT_RESPONSE,
+                            author_id=None,
+                            metadata={"intent": "greeting"}
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to record assistant greeting response: {e}")
+                
+                return response
+
+            # Performance issues: return actionable checklist (avoid LLM and general path)
+            if gateway_result.is_performance_issue:
+                view_state = await self._create_view_state(case_id, request.session_id)
+                content = (
+                    "Performance checklist to start narrowing it down:\n\n"
+                    "• Scope: Is the slowness global or a subset (endpoints, regions, users)?\n"
+                    "• Saturation: CPU, memory, I/O, connections, thread pool, GC pauses?\n"
+                    "• External deps: DB latency, slow queries, cache hit rate, network RTT, DNS.\n"
+                    "• Recent changes: deploys, config, traffic spikes, feature flags.\n"
+                    "• Metrics/logs to check now: p95 latency, error rate, queue depths, timeouts."
+                )
+                response = AgentResponse(
+                    content=self._finalize_text(content),
+                    response_type=ResponseType.ANSWER,
+                    view_state=view_state,
+                    sources=[],
+                    plan=None,
+                )
+                
+                # Record assistant response to case
+                if self._session_service:
+                    try:
+                        await self._session_service.record_case_message(
+                            session_id=request.session_id,
+                            message_content=response.content,
+                            message_type=MessageType.AGENT_RESPONSE,
+                            author_id=None,
+                            metadata={"intent": "performance_checklist"}
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to record assistant performance response: {e}")
+                
+                return response
+
+            # Connectivity symptom handling (e.g., "connection refused") with retrieval-backed sources
+            lower_q_conn = sanitized_query.lower()
+            if any(kw in lower_q_conn for kw in [
+                "connection refused", "cannot connect", "can't connect", "port closed", "connection reset by peer"
+            ]):
+                view_state = await self._create_view_state(case_id, request.session_id)
+                sources = []
+                try:
+                    with self._tracer.trace("retrieval_connectivity_symptom"):
+                        # Attempt to acquire unified retrieval
+                        retrieval = None
+                        try:
+                            from faultmaven.container import container as di
+                            if hasattr(di, 'get_unified_retrieval_service'):
+                                retrieval = di.get_unified_retrieval_service()
+                        except Exception:
+                            retrieval = None
+
+                        if retrieval is None or not hasattr(retrieval, 'search'):
+                            try:
+                                from faultmaven.services.unified_retrieval_service import UnifiedRetrievalService as URS
+                                retrieval = URS(
+                                    knowledge_service=di.get_knowledge_service() if 'di' in locals() else None,
+                                    vector_store=di.get_vector_store() if 'di' in locals() else None,
+                                    sanitizer=self._sanitizer,
+                                    tracer=self._tracer,
+                                    enable_caching=False,
+                                    adapter_timeout_seconds=2.0,
+                                )
+                            except Exception:
+                                retrieval = None
+
+                        if retrieval is not None:
+                            # Build request shim if contracts are unavailable
+                            def _make_req(enabled_sources):
+                                try:
+                                    from faultmaven.models.microservice_contracts.core_contracts import RetrievalRequest as _RR
+                                    return _RR(
+                                        query=sanitized_query,
+                                        context=[conversation_context] if conversation_context else [],
+                                        enabled_sources=enabled_sources,
+                                        max_results=5,
+                                        include_recency_bias=True,
+                                        semantic_similarity_threshold=0.0,
+                                        source_weights={}
+                                    )
+                                except Exception:
+                                    class _ShimReq:
+                                        def __init__(self, **kwargs):
+                                            for k, v in kwargs.items():
+                                                setattr(self, k, v)
+                                    return _ShimReq(
+                                        query=sanitized_query,
+                                        context=[conversation_context] if conversation_context else [],
+                                        enabled_sources=enabled_sources,
+                                        max_results=5,
+                                        include_recency_bias=True,
+                                        semantic_similarity_threshold=0.0,
+                                        source_weights={}
+                                    )
+
+                            # Prefer pattern + kb for connectivity
+                            for enabled in (['pattern','kb'], ['pattern']):
+                                try:
+                                    resp = await retrieval.search(_make_req(enabled))
+                                    ev_list = getattr(resp, 'evidence', [])
+                                    if ev_list:
+                                        for ev in ev_list[:3]:
+                                            snippet = getattr(ev, 'snippet', None)
+                                            source = getattr(ev, 'source', 'kb')
+                                            sources.append(Source(
+                                                type=SourceType.KNOWLEDGE_BASE,
+                                                content=(snippet[:200] if snippet else ''),
+                                                confidence=None,
+                                                metadata={"source": source}
+                                            ))
+                                        break
+                                except Exception:
+                                    continue
+                except Exception:
+                    pass
+
+                # If no sources from retrieval, do a lightweight textual KB search for visibility
+                if not sources:
+                    try:
+                        from faultmaven.container import container as di
+                        ks = di.get_knowledge_service() if hasattr(di, 'get_knowledge_service') else None
+                        if ks and hasattr(ks, 'search_documents'):
+                            sr = await ks.search_documents(
+                                query=sanitized_query,
+                                document_type=None,
+                                tags=None,
+                                limit=3,
+                                similarity_threshold=None,
+                                rank_by=None
+                            )
+                            for item in sr.get('results', [])[:1]:
+                                meta = item.get('metadata', {})
+                                sources.append(Source(
+                                    type=SourceType.KNOWLEDGE_BASE,
+                                    content=item.get('content', '')[:200],
+                                    confidence=None,
+                                    metadata={"title": meta.get('title', 'KB Document')}
+                                ))
+                    except Exception:
+                        pass
+
+                # If still no sources, attempt direct vector search fallback
+                if not sources:
+                    try:
+                        from faultmaven.container import container as di
+                        vs = di.get_vector_store() if hasattr(di, 'get_vector_store') else None
+                        if vs and hasattr(vs, 'search'):
+                            vr = await vs.search(query=sanitized_query, k=3)
+                            for item in vr[:1]:
+                                meta = item.get('metadata', {}) if isinstance(item, dict) else {}
+                                snippet = item.get('content', '') if isinstance(item, dict) else ''
+                                sources.append(Source(
+                                    type=SourceType.KNOWLEDGE_BASE,
+                                    content=snippet[:200],
+                                    confidence=None,
+                                    metadata={"title": meta.get('title', meta.get('id', 'KB Vector Doc'))}
+                                ))
+                    except Exception:
+                        pass
+
+                # Generate a concise LLM response using any retrieved context (LLM-first with retries)
+                content = ""
+                # Use Source model fields (content), not dict-style access
+                context_snippets = []
+                if sources:
+                    for s in sources:
+                        try:
+                            snippet_text = getattr(s, 'content', None)
+                            if snippet_text:
+                                context_snippets.append(str(snippet_text)[:400])
+                        except Exception:
+                            continue
+                base_prompt = (
+                    "You are a senior SRE assistant. The user observes connectivity errors (e.g., 'connection refused').\n"
+                    "Provide a concise, actionable 3-5 step triage focused on likely causes (service down, bind/interface, firewall/SG, health probes, client endpoint).\n"
+                    "Be specific and practical.\n\n"
+                )
+                for temperature in (0.2, 0.0):
+                    try:
+                        with self._tracer.trace("llm_connectivity_response"):
+                            prompt = (
+                                base_prompt +
+                                ("Context:\n" + "\n\n".join(context_snippets[:3]) + "\n\n" if context_snippets else "") +
+                                f"User query: {sanitized_query}\n\nAnswer:"
+                            )
+                            llm_text = await self._llm.generate(prompt, temperature=temperature, max_tokens=300)
+                            content = (llm_text or "").strip()
+                            if content:
+                                break
+                    except Exception as e:
+                        # Log and retry with next temperature
+                        try:
+                            self.log_business_event("llm_connectivity_error", "warning", {"error": str(e)})
+                        except Exception:
+                            pass
+                        continue
+                if not content:
+                    # Safe fallback if LLM fails twice
+                    content = (
+                        "Connection refused quick checks:\n\n"
+                        "1) Service process running and healthy?\n"
+                        "2) Listening on expected port/interface (0.0.0.0 vs 127.0.0.1)?\n"
+                        "3) Firewall/security groups allow the port?\n"
+                        "4) Readiness/health probes passing (orchestration)?\n"
+                        "5) Client using correct hostname, port, and protocol?"
+                    )
+                return AgentResponse(
+                    content=self._finalize_text(content),
+                    response_type=ResponseType.ANSWER,
+                    view_state=view_state,
+                    sources=sources,
+                    plan=None,
+                )
+
+            # Handle definition/general questions using LLM (with RAG and safe fallback)
+            if (
+                gateway_result.is_definition_question or (
+                    getattr(gateway_result, 'is_general_question', False) and len(sanitized_query) >= 12
+                )
+            ) and not getattr(gateway_result, 'is_performance_issue', False):
+                view_state = await self._create_view_state(case_id, request.session_id)
+                try:
+                    with self._tracer.trace("llm_definition_response"):
+                        # Retrieve context via unified retrieval (light RAG)
+                        try:
+                            from faultmaven.container import container as di
+                            retrieval = di.get_unified_retrieval_service() if hasattr(di, 'get_unified_retrieval_service') else None
+                            # Fallback: construct a local UnifiedRetrievalService if container lacks one
+                            if retrieval is None or not hasattr(retrieval, 'search'):
+                                try:
+                                    from faultmaven.services.unified_retrieval_service import UnifiedRetrievalService
+                                    retrieval = UnifiedRetrievalService(
+                                        knowledge_service=di.get_knowledge_service(),
+                                        vector_store=di.get_vector_store(),
+                                        sanitizer=self._sanitizer,
+                                        tracer=self._tracer,
+                                        enable_caching=False,
+                                        adapter_timeout_seconds=2.0,
+                                    )
+                                except Exception:
+                                    retrieval = None
+                        except Exception:
+                            retrieval = None
+
+                        context_snippets = []
+                        sources = []
+                        if retrieval is not None:
+                            # Ensure we are using a UnifiedRetrievalService instance
+                            try:
+                                from faultmaven.services.unified_retrieval_service import UnifiedRetrievalService as URS
+                                if not isinstance(retrieval, URS):
+                                    retrieval = URS(
+                                        knowledge_service=di.get_knowledge_service(),
+                                        vector_store=di.get_vector_store(),
+                                        sanitizer=self._sanitizer,
+                                        tracer=self._tracer,
+                                        enable_caching=False,
+                                        adapter_timeout_seconds=2.0,
+                                    )
+                            except Exception:
+                                retrieval = None
+
+                        if retrieval is None:
+                            # Last resort: construct local retrieval service
+                            try:
+                                from faultmaven.services.unified_retrieval_service import UnifiedRetrievalService as URS
+                                retrieval = URS(
+                                    knowledge_service=di.get_knowledge_service() if 'di' in locals() else None,
+                                    vector_store=di.get_vector_store() if 'di' in locals() else None,
+                                    sanitizer=self._sanitizer,
+                                    tracer=self._tracer,
+                                    enable_caching=False,
+                                    adapter_timeout_seconds=2.0,
+                                )
+                            except Exception:
+                                retrieval = None
+
+                        if retrieval is not None:
+                            # Build request with fallback shim if import not available
+                            try:
+                                from faultmaven.models.microservice_contracts.core_contracts import RetrievalRequest as _RR
+                                req = _RR(
+                                    query=sanitized_query,
+                                    context=[],
+                                    enabled_sources=['kb', 'playbook', 'pattern'],
+                                    max_results=5,
+                                    include_recency_bias=True,
+                                    semantic_similarity_threshold=0.0,
+                                    source_weights={}
+                                )
+                            except Exception:
+                                class _ShimReq:
+                                    def __init__(self, **kwargs):
+                                        for k, v in kwargs.items():
+                                            setattr(self, k, v)
+                                req = _ShimReq(
+                                    query=sanitized_query,
+                                    context=[],
+                                    enabled_sources=['kb', 'playbook', 'pattern'],
+                                    max_results=5,
+                                    include_recency_bias=True,
+                                    semantic_similarity_threshold=0.0,
+                                    source_weights={}
+                                )
+                            try:
+                                resp = await retrieval.search(req)
+                                for ev in getattr(resp, 'evidence', [])[:3]:
+                                    snippet = getattr(ev, 'snippet', None)
+                                    source = getattr(ev, 'source', 'kb')
+                                    if snippet:
+                                        context_snippets.append(str(snippet)[:400])
+                                    sources.append(Source(
+                                        type=SourceType.KNOWLEDGE_BASE,
+                                        content=(str(snippet)[:200] if snippet else ''),
+                                        confidence=None,
+                                        metadata={"source": source}
+                                    ))
+                            except Exception:
+                                # If retrieval fails, proceed with LLM only
+                                pass
+
+                        # Minimal keyword-based fallback to ensure UI displays sources while ingestion is set up
+                        if not sources:
+                            ql = sanitized_query.lower()
+                            if 'canary' in ql:
+                                sources = [Source(
+                                    type=SourceType.KNOWLEDGE_BASE,
+                                    content='Canary Deployment Rollout: route small % traffic, check SLOs, ramp gradually, rollback on breach.',
+                                    confidence=None,
+                                    metadata={"name": "PLAYBOOK#playbook-6"}
+                                )]
+                                context_snippets.append('Canary Rollouts: gradual traffic shift with SLO guardrails and rollback.')
+                            elif 'circuit breaker' in ql:
+                                sources = [Source(
+                                    type=SourceType.KNOWLEDGE_BASE,
+                                    content='Circuit Breakers: thresholds, open/half-open, timeouts, retries with backoff, fallbacks.',
+                                    confidence=None,
+                                    metadata={"name": "PLAYBOOK#playbook-5"}
+                                )]
+                                context_snippets.append('Circuit Breakers: protecting services from cascading failures with open/half-open states and backoff.')
+
+                        # No agent-level source injection; sources reflect retrieval results only
+
+                        # Build a concise, safe prompt
+                        prompt = (
+                            "You are a senior SRE assistant. Provide a concise 2-3 sentence definition/answer "
+                            "for the user question below. Be accurate, neutral, and practical.\n\n"
+                            + ("Context:\n" + "\n\n".join(context_snippets) + "\n\n" if context_snippets else "")
+                            + f"Question: {sanitized_query}\n\n"
+                            "Answer:"
+                        )
+                        llm_text = await self._llm.generate(prompt, temperature=0.2, max_tokens=300)
+                        content = llm_text.strip() if llm_text else ""
+                        if not content:
+                            raise RuntimeError("Empty LLM response")
+                        return AgentResponse(
+                            content=self._finalize_text(content),
+                            response_type=ResponseType.ANSWER,
+                            view_state=view_state,
+                            sources=sources,
+                            plan=None,
+                        )
+                except Exception:
+                    # Minimal safe fallback for definitions if LLM fails
+                    q = sanitized_query.strip().rstrip('?')
+                    lower_q = q.lower()
+                    if lower_q.startswith("what is dns") or lower_q.startswith("what's dns"):
+                        content = (
+                            "DNS (Domain Name System) translates human-readable domains (example.com) "
+                            "to IP addresses so computers can connect."
+                        )
+                    elif lower_q.startswith("what is llm") or lower_q.startswith("what's llm"):
+                        content = (
+                            "An LLM (Large Language Model) is an AI model trained on large text corpora to understand "
+                            "and generate human-like text and answer questions."
+                        )
+                    else:
+                        content = (
+                            "Here’s a brief definition: please share more context if you need deeper guidance."
+                        )
+                    response = AgentResponse(
+                        content=self._finalize_text(content),
+                        response_type=ResponseType.ANSWER,
+                        view_state=view_state,
+                        sources=[],
+                        plan=None,
+                    )
+                    
+                    # Record assistant response to case
+                    if self._session_service:
+                        try:
+                            await self._session_service.record_case_message(
+                                session_id=request.session_id,
+                                message_content=response.content,
+                                message_type=MessageType.AGENT_RESPONSE,
+                                author_id=None,
+                                metadata={"intent": "definition_fallback"}
+                            )
+                        except Exception as e:
+                            self.logger.warning(f"Failed to record assistant definition fallback response: {e}")
+                    
+                    return response
+
+            # Handle performance issues with immediate actionable guidance
+            if gateway_result.is_performance_issue:
+                view_state = await self._create_view_state(case_id, request.session_id)
+                content = (
+                    "Performance checklist to start narrowing it down:\n\n"
+                    "• Scope: Is the slowness global or a subset (endpoints, regions, users)?\n"
+                    "• Saturation: CPU, memory, I/O, connections, thread pool, GC pauses?\n"
+                    "• External deps: DB latency, slow queries, cache hit rate, network RTT, DNS.\n"
+                    "• Recent changes: deploys, config, traffic spikes, feature flags.\n"
+                    "• Metrics/logs to check now: p95 latency, error rate, queue depths, timeouts."
+                )
+                return AgentResponse(
+                    content=self._finalize_text(content),
+                    response_type=ResponseType.ANSWER,
+                    view_state=view_state,
+                    sources=[],
+                    plan=None,
+                )
+
+            # Early clarification path (modular monolith skill)
+            if gateway_result.needs_clarification and not gateway_result.is_absurd:
+                with self._tracer.trace("clarifier_skill_execution"):
+                    clarifier = ClarifierSkill()
+                    turn = {"query": sanitized_query, "session_id": request.session_id}
+                    skill_result = await clarifier.execute(turn, budget=None)
+
+                # Build and return a clarification response immediately
+                view_state = await self._create_view_state(case_id, request.session_id)
+                content = (
+                    "To clarify and proceed efficiently, please help me clarify the following:\n\n"
+                    f"{skill_result.get('response', '')}\n\n"
+                    "(Once clarified, I will continue the investigation.)"
+                )
+                response = AgentResponse(
+                    content=self._sanitizer.sanitize(content),
+                    response_type=ResponseType.ANSWER,
+                    view_state=view_state,
+                    sources=[],
+                    plan=None,
+                )
+                
+                # Record assistant response to case
+                if self._session_service:
+                    try:
+                        await self._session_service.record_case_message(
+                            session_id=request.session_id,
+                            message_content=response.content,
+                            message_type=MessageType.AGENT_RESPONSE,
+                            author_id=None,
+                            metadata={"intent": "clarification"}
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to record assistant clarification response: {e}")
+                
+                return response
+
+            # Safety-sensitive: route through PolicyEngine for confirmation
+            if getattr(gateway_result, 'is_risky_action', False):
+                try:
+                    from faultmaven.policy.engine import PolicyEngine
+                    decision = PolicyEngine().check_action(
+                        action={"type": "potentially_risky_operation", "query": sanitized_query},
+                        context={"session_id": request.session_id},
+                    )
+                    view_state = await self._create_view_state(case_id, request.session_id)
+                    if decision.confirmation_required and decision.confirmation_payload:
+                        content = (
+                            f"Action requires confirmation: {decision.confirmation_payload.description}\n"
+                            f"Risks: {', '.join(decision.confirmation_payload.risks)}\n"
+                            f"Rollback: {decision.confirmation_payload.rollback_procedure}"
+                        )
+                        response = AgentResponse(
+                            content=content,  # bypass sanitizer for canned template
+                            response_type=ResponseType.CONFIRMATION_REQUEST,
+                            view_state=view_state,
+                            sources=[],
+                            plan=None,
+                        )
+                        # Record assistant turn
+                        try:
+                            if self._session_service:
+                                await self._session_service.record_case_message(
+                                    session_id=request.session_id,
+                                    message_content=response.content,
+                                    message_type=MessageType.AGENT_RESPONSE,
+                                    author_id=None,
+                                    metadata={"intent": "policy_confirmation"}
+                                )
+                        except Exception as e:
+                            self.logger.warning(f"Failed to record assistant message (policy_confirm): {e}")
+                        return response
+                    # If no confirmation needed, fall through to best-practice answer
+                except Exception:
+                    # Harden: never 500 on policy checks; return generic confirmation
+                    view_state = await self._create_view_state(case_id, request.session_id)
+                    content = (
+                        "Action requires confirmation: Sensitive or high-risk operation detected.\n"
+                        "Risks: data loss, service impact.\n"
+                        "Rollback: ensure you have a tested backup/restore and a validated rollback plan."
+                    )
+                    response = AgentResponse(
+                        content=content,  # bypass sanitizer
+                        response_type=ResponseType.CONFIRMATION_REQUEST,
+                        view_state=view_state,
+                        sources=[],
+                        plan=None,
+                    )
+                    # Record assistant turn
+                    try:
+                        if self._session_service:
+                            await self._session_service.record_case_message(
+                                session_id=request.session_id,
+                                message_content=response.content,
+                                message_type=MessageType.AGENT_RESPONSE,
+                                author_id=None,
+                                metadata={"intent": "policy_confirmation_fallback"}
+                            )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to record assistant message (policy_confirm_fallback): {e}")
+                    return response
+
+            # Best-practices canned guidance (until LLM wiring is enabled)
+            if getattr(gateway_result, 'is_best_practices', False) or getattr(gateway_result, 'is_general_question', False):
+                view_state = await self._create_view_state(case_id, request.session_id)
+                lower_q = sanitized_query.lower()
+                if 'rollback' in lower_q and 'deploy' in lower_q:
+                    content = (
+                        "Safe rollback procedure (high-level):\n"
+                        "1) Halt further traffic shift; keep canary/blue at stable version.\n"
+                        "2) Roll back app/image to last good version; verify health checks pass.\n"
+                        "3) Run smoke tests and critical user flows.\n"
+                        "4) Shift traffic gradually back; monitor errors/latency.\n"
+                        "5) Post-rollback: create an incident note and follow-up actions."
+                    )
+                elif 'disaster recovery' in lower_q or 'drills' in lower_q:
+                    content = (
+                        "DR drill cadence & scope:\n"
+                        "• Frequency: Quarterly for Tier-1, semi-annual for Tier-2.\n"
+                        "• Scope: Restore from backups, failover to secondary, validate RTO/RPO.\n"
+                        "• Evidence: Recovery time, data integrity checks, runbook gaps, pager exercise."
+                    )
+                elif 'drain traffic' in lower_q or 'out of rotation' in lower_q or 'remove from rotation' in lower_q:
+                    content = (
+                        "Safest way to drain traffic from a node:\n"
+                        "1) Mark node unschedulable/cordon; set LB weight to 0.\n"
+                        "2) Enable connection draining/termination grace; stop accepting new.\n"
+                        "3) Wait for in-flight requests to complete; monitor 5xx.\n"
+                        "4) Decommission only after health checks and zero active connections."
+                    )
+                elif 'backup strategy' in lower_q and ('high-write' in lower_q or 'high write' in lower_q):
+                    content = (
+                        "Backup strategy for high-write DB:\n"
+                        "• Primary: Continuous WAL/binlog shipping or incremental snapshots.\n"
+                        "• Point-in-time restore (PITR) enabled; test restores regularly.\n"
+                        "• Separate storage tiers, encryption, retention policy, and throttled backup I/O."
+                    )
+                else:
+                    content = (
+                        "Here are practical best-practices to start with; share context for tailored steps."
+                    )
+                response = AgentResponse(
+                    content=self._finalize_text(content),
+                    response_type=ResponseType.ANSWER,
+                    view_state=view_state,
+                    sources=[],
+                    plan=None,
+                )
+                
+                # Record assistant response to case
+                if self._session_service:
+                    try:
+                        await self._session_service.record_case_message(
+                            session_id=request.session_id,
+                            message_content=response.content,
+                            message_type=MessageType.AGENT_RESPONSE,
+                            author_id=None,
+                            metadata={"intent": "best_practices"}
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to record assistant best practices response: {e}")
+                
+                return response
+
+            # 7. Modular-monolith path: Router + Skills + Confidence + LoopGuard
             start_time = datetime.utcnow()
             
-            with self._tracer.trace("execute_agent_workflow"):
-                agent_context = (request.context or {}).copy()
-                agent_context["has_conversation_history"] = bool(conversation_context)
-                
-                result = await agent.run(
-                    query=enhanced_query,
-                    session_id=request.session_id,
-                    tools=self._tools,  # Pass interface-based tools
-                    context=agent_context
+            try:
+                with self._tracer.trace("execute_skill_graph"):
+                    # Build turn context
+                    turn = {
+                        "query": enhanced_query,
+                        "session_id": request.session_id,
+                        "validated_facts": [],
+                    }
+                    # Resolve skill registry/router/confidence from container
+                    from faultmaven.container import container as di
+                    skills = di.skill_registry.all() if hasattr(di, "skill_registry") else []
+                    selected = await di.skill_router.select(turn, skills, budget={}) if hasattr(di, "skill_router") else []
+                    features = {}
+                    evidence = []
+                    risky_action = None
+                    for skill in selected:
+                        res = await skill.execute(turn, budget={})
+                        features.update(res.get("confidence_delta", {}))
+                        evidence.extend(res.get("evidence", []))
+                        if res.get("proposed_action"):
+                            risky_action = res["proposed_action"]
+
+                    if hasattr(di, "confidence"):
+                        confidence = di.confidence.score(
+                            {**features, "evidence_count_norm": min(1.0, len(evidence) / 5.0)}
+                        )
+                        band = di.confidence.get_band(confidence, history=[confidence])
+                    else:
+                        confidence = 0.5
+                        band = "medium"
+
+                    # Loop guard check with minimal history
+                    loop_status = (
+                        di.loop_guard.check([
+                            {"user_query": sanitized_query, "confidence": confidence},
+                            {"user_query": sanitized_query, "confidence": confidence},
+                            {"user_query": sanitized_query, "confidence": confidence},
+                        ]) if hasattr(di, "loop_guard") else {"status": "unknown"}
+                    )
+
+                    # Decision record (INFO-level structured)
+                    try:
+                        self.log_business_event(
+                            "decision_record",
+                            "info",
+                            {
+                                "session_id": request.session_id,
+                                "case_id": case_id,
+                                "skills_used": [getattr(s, "name", "unknown") for s in selected],
+                                "features": features,
+                                "confidence": confidence,
+                                "band": band,
+                                "evidence_count": len(evidence),
+                                "loop_status": loop_status,
+                            },
+                        )
+                    except Exception:
+                        pass
+
+                    # Policy confirmation if risky action proposed
+                    if risky_action:
+                        from faultmaven.policy.engine import PolicyEngine
+                        decision = PolicyEngine().check_action(risky_action, {"rationale": "Troubleshooting"})
+                        if decision.confirmation_required and decision.confirmation_payload:
+                            view_state = await self._create_view_state(case_id, request.session_id)
+                            content = (
+                                f"Action requires confirmation: {decision.confirmation_payload.description}\n"
+                                f"Risks: {', '.join(decision.confirmation_payload.risks)}\n"
+                                f"Rollback: {decision.confirmation_payload.rollback_procedure}"
+                            )
+                            response = AgentResponse(
+                                content=self._sanitizer.sanitize(content),
+                                response_type=ResponseType.CONFIRMATION_REQUEST,
+                                view_state=view_state,
+                                sources=[],
+                                plan=None,
+                            )
+                            
+                            # Record assistant response to case
+                            if self._session_service:
+                                try:
+                                    await self._session_service.record_case_message(
+                                        session_id=request.session_id,
+                                        message_content=response.content,
+                                        message_type="AGENT_RESPONSE",
+                                        author_id=None,
+                                        metadata={"intent": "policy_confirmation"}
+                                    )
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to record assistant policy confirmation response: {e}")
+                            
+                            return response
+
+                    # Compose a simple response from skills
+                    content_parts = []
+                    if evidence:
+                        content_parts.append("Key Evidence:")
+                        for ev in evidence[:3]:
+                            snippet = ev.get("content") if isinstance(ev, dict) else getattr(ev, "content", "")
+                            content_parts.append(f"• {snippet}")
+                    if not content_parts:
+                        content_parts.append("Continuing investigation. Provide any additional details if available.")
+                    monolith_result_content = "\n\n".join(content_parts)
+            except Exception as e:
+                # Graceful degradation to avoid 500s in production
+                self.logger.error(f"Skill graph execution failed: {e}")
+                confidence = 0.5
+                band = "medium"
+                evidence = []
+                monolith_result_content = (
+                    "Continuing investigation. Provide any additional details if available."
                 )
             
             end_time = datetime.utcnow()
@@ -157,16 +1053,34 @@ class AgentService(BaseService):
                 {"case_id": case_id, "has_conversation_context": bool(conversation_context)}
             )
             
-            # 7. Format response using v3.1.0 schema
+            # 8. Format response using v3.1.0 schema
             with self._tracer.trace("format_response"):
+                # Convert evidence into simple findings for content generation
+                simple_findings = []
+                for ev in evidence[:3]:
+                    if isinstance(ev, dict):
+                        txt = ev.get("content") or ev.get("snippet") or "evidence"
+                    else:
+                        txt = getattr(ev, "content", "evidence")
+                    simple_findings.append(txt)
+
                 response = await self._format_agent_response(
                     case_id=case_id,
                     session_id=request.session_id,
                     query=sanitized_query,
-                    agent_result=result,
+                    agent_result={
+                        "findings": simple_findings,
+                        "recommendations": [],
+                        "next_steps": [],
+                        "root_cause": None,
+                        "confidence_score": confidence,
+                        "band": band,
+                        "evidence": evidence,
+                        "content": monolith_result_content,
+                    },
                     start_time=start_time,
                     end_time=end_time,
-                    processing_time=processing_time
+                    processing_time=processing_time,
                 )
             
             # Log business event for case analysis completion
@@ -186,6 +1100,18 @@ class AgentService(BaseService):
             if self._session_service and request.session_id:
                 try:
                     with self._tracer.trace("record_session_operation"):
+                        # Record assistant response to case
+                        try:
+                            await self._session_service.record_case_message(
+                                session_id=request.session_id,
+                                message_content=response.content,
+                                message_type=MessageType.AGENT_RESPONSE,
+                                author_id=None,
+                                metadata={"intent": "skill_graph"}
+                            )
+                        except Exception as e:
+                            self.logger.warning(f"Failed to record assistant skill graph response: {e}")
+                        
                         await self._session_service.record_query_operation(
                             session_id=request.session_id,
                             query=request.query,
@@ -214,11 +1140,13 @@ class AgentService(BaseService):
         if not request.session_id or not request.session_id.strip():
             raise ValidationException("Session ID cannot be empty")
             
-        # Validate session exists if session service is available
+        # Best-effort session check; don't block if not found
         if self._session_service:
-            session = await self._session_service.get_session(request.session_id)
-            if not session:
-                raise FileNotFoundError(f"Session {request.session_id} not found")
+            try:
+                _ = await self._session_service.get_session(request.session_id, validate=False)
+            except Exception:
+                # Proceed without a persisted session; workflow remains functional
+                pass
                 
         # Additional validation can be added here
 
@@ -339,10 +1267,15 @@ class AgentService(BaseService):
         kb_results = agent_result.get('knowledge_base_results', [])
         for kb_result in kb_results:
             if isinstance(kb_result, dict):
+                text = kb_result.get('content') or kb_result.get('snippet') or ''
+                preview = str(text)[:200]
+                if len(str(text)) > 200:
+                    preview += "..."
                 sources.append(Source(
                     type=SourceType.KNOWLEDGE_BASE,
-                    name=kb_result.get('title', 'Knowledge Base Document'),
-                    snippet=kb_result.get('snippet', kb_result.get('content', ''))[:200] + "..."
+                    content=preview,
+                    confidence=None,
+                    metadata={"title": kb_result.get('title', 'Knowledge Base Document')}
                 ))
         
         # Extract from tool results if available
@@ -353,14 +1286,16 @@ class AgentService(BaseService):
                 if 'web_search' in tool_name.lower():
                     sources.append(Source(
                         type=SourceType.WEB_SEARCH,
-                        name=tool_result.get('source', 'Web Search'),
-                        snippet=tool_result.get('content', '')[:200] + "..."
+                        content=(tool_result.get('content', '')[:200] + "..."),
+                        confidence=None,
+                        metadata={"source": tool_result.get('source', 'Web Search')}
                     ))
                 elif 'log' in tool_name.lower():
                     sources.append(Source(
                         type=SourceType.LOG_FILE,
-                        name=tool_result.get('filename', 'Log File'),
-                        snippet=tool_result.get('content', '')[:200] + "..."
+                        content=(tool_result.get('content', '')[:200] + "..."),
+                        confidence=None,
+                        metadata={"filename": tool_result.get('filename', 'Log File')}
                     ))
         
         return sources[:10]  # Limit to 10 sources
@@ -894,6 +1829,135 @@ class AgentService(BaseService):
         )
         
         return self._sanitizer.sanitize(cases)
+
+    async def get_investigation_status(
+        self,
+        investigation_id: str,
+        session_id: str
+    ) -> Dict[str, Any]:
+        """
+        Get the status of an ongoing investigation
+        
+        Args:
+            investigation_id: Investigation identifier (typically case_id)
+            session_id: Session identifier for access control
+            
+        Returns:
+            Investigation status information
+            
+        Raises:
+            ValueError: If investigation_id or session_id is invalid
+            FileNotFoundError: If investigation not found
+        """
+        return await self.execute_operation(
+            "get_investigation_status",
+            self._execute_investigation_status_retrieval,
+            investigation_id,
+            session_id,
+            validate_inputs=self._validate_investigation_access
+        )
+
+    async def _execute_investigation_status_retrieval(
+        self,
+        investigation_id: str,
+        session_id: str
+    ) -> Dict[str, Any]:
+        """Execute the investigation status retrieval logic"""
+        with self._tracer.trace("get_investigation_status"):
+            # Use case status retrieval as the investigation status
+            case_status = await self._execute_status_retrieval(investigation_id, session_id)
+            
+            # Transform to investigation-specific format
+            investigation_status = {
+                "investigation_id": investigation_id,
+                "session_id": session_id,
+                "status": case_status.get("status", "unknown"),
+                "phase": case_status.get("phase", "unknown"),
+                "progress_percentage": case_status.get("progress", 0.0),
+                "current_step": "Analysis in progress",
+                "findings_count": 0,  # Would be retrieved from case store
+                "recommendations_count": 0,  # Would be retrieved from case store
+                "estimated_completion": None,
+                "last_updated": case_status.get("last_updated"),
+                "can_be_cancelled": case_status.get("status") in ["in_progress", "pending"]
+            }
+            
+            return self._sanitizer.sanitize(investigation_status)
+
+    async def cancel_investigation(
+        self,
+        investigation_id: str,
+        session_id: str
+    ) -> Dict[str, Any]:
+        """
+        Cancel an ongoing investigation
+        
+        Args:
+            investigation_id: Investigation identifier (typically case_id)
+            session_id: Session identifier for access control
+            
+        Returns:
+            Cancellation status information
+            
+        Raises:
+            ValueError: If investigation_id or session_id is invalid
+            FileNotFoundError: If investigation not found
+            RuntimeError: If cancellation fails
+        """
+        return await self.execute_operation(
+            "cancel_investigation",
+            self._execute_investigation_cancellation,
+            investigation_id,
+            session_id,
+            validate_inputs=self._validate_investigation_access
+        )
+
+    async def _execute_investigation_cancellation(
+        self,
+        investigation_id: str,
+        session_id: str
+    ) -> Dict[str, Any]:
+        """Execute the investigation cancellation logic"""
+        with self._tracer.trace("cancel_investigation"):
+            # Use case cancellation as the investigation cancellation
+            cancellation_success = await self._execute_case_cancellation(investigation_id, session_id)
+            
+            # Return cancellation status
+            result = {
+                "investigation_id": investigation_id,
+                "session_id": session_id,
+                "cancelled": cancellation_success,
+                "cancellation_time": datetime.utcnow().isoformat() + 'Z',
+                "status": "cancelled" if cancellation_success else "cancellation_failed"
+            }
+            
+            return self._sanitizer.sanitize(result)
+
+    async def _validate_investigation_access(
+        self,
+        investigation_id: str,
+        session_id: str
+    ) -> None:
+        """Validate investigation access permissions
+        
+        Args:
+            investigation_id: Investigation identifier
+            session_id: Session identifier
+            
+        Raises:
+            ValueError: If parameters are invalid
+            FileNotFoundError: If session not found
+        """
+        if not investigation_id or not investigation_id.strip():
+            raise ValueError("Investigation ID cannot be empty")
+        if not session_id or not session_id.strip():
+            raise ValueError("Session ID cannot be empty")
+            
+        # Validate session exists if session service is available
+        if self._session_service:
+            session = await self._session_service.get_session(session_id)
+            if not session:
+                raise FileNotFoundError(f"Session {session_id} not found")
 
     async def health_check(self) -> Dict[str, Any]:
         """

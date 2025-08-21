@@ -29,6 +29,8 @@ from .api import (
     AgentResponse,
     ErrorDetail,
     ErrorResponse,
+    TitleGenerateRequest,
+    TitleResponse,
 )
 
 # Import new interfaces (Phase 1.1 of refactoring)
@@ -129,6 +131,8 @@ __all__ = [
     "AgentResponse",
     "ErrorDetail",
     "ErrorResponse",
+    "TitleGenerateRequest",
+    "TitleResponse",
     # New interfaces (Phase 1.1)
     "ToolResult",
     "BaseTool",

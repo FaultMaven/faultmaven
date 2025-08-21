@@ -274,9 +274,9 @@ class TestAgentAPIEndpointsRebuilt:
         query_data = query_response.json()
         case_id = query_data["view_state"]["case_id"]
         
-        # Retrieve investigation results (uses legacy endpoint for backward compatibility)
+        # Retrieve case results
         results_response = await client.get(
-            f"/api/v1/agent/investigations/{case_id}",
+            f"/api/v1/agent/cases/{case_id}",
             params={"session_id": test_session}
         )
         
@@ -284,7 +284,7 @@ class TestAgentAPIEndpointsRebuilt:
         results_data = results_response.json()
         
         # Validate legacy results structure (for backward compatibility)
-        assert results_data["investigation_id"] == case_id
+        assert results_data["case_id"] == case_id
         assert results_data["session_id"] == test_session
         assert "findings" in results_data
         assert "recommendations" in results_data
@@ -319,9 +319,9 @@ class TestAgentAPIEndpointsRebuilt:
             assert response.status_code == 200
             investigation_ids.append(response.json()["view_state"]["case_id"])
         
-        # List investigations for session
+        # List cases for session
         list_response = await client.get(
-            f"/api/v1/agent/sessions/{test_session}/investigations"
+            f"/api/v1/agent/sessions/{test_session}/cases"
         )
         
         assert list_response.status_code == 200
@@ -329,17 +329,17 @@ class TestAgentAPIEndpointsRebuilt:
         
         # Validate response structure
         assert "session_id" in list_data
-        assert "investigations" in list_data
+        assert "cases" in list_data
         assert "total" in list_data
         assert list_data["session_id"] == test_session
         
-        investigations = list_data["investigations"]
+        investigations = list_data["cases"]
         assert isinstance(investigations, list)
         assert len(investigations) >= len(queries)
         
-        # Validate structure of each investigation
+        # Validate structure of each case
         for investigation in investigations:
-            assert "investigation_id" in investigation
+            assert "case_id" in investigation
             assert "query" in investigation
             assert "status" in investigation
             assert "created_at" in investigation

@@ -255,10 +255,10 @@ graph TD
 ```
 
 For detailed architecture documentation, see:
+- [Architecture Decision Guide](docs/ARCHITECTURE_DECISION_GUIDE.md) - Comprehensive architectural blueprint and migration strategy
 - [System Architecture](docs/architecture/SYSTEM_ARCHITECTURE.md) - Complete interface-based architecture
 - [Dependency Injection System](docs/architecture/dependency-injection-system.md) - DI container deep dive
 - [Service Patterns](docs/architecture/service-patterns.md) - Interface-based service design
-- [Migration Guide](docs/migration/import-migration-guide.md) - Legacy to clean architecture migration
 
 ## 🛠️ Development
 

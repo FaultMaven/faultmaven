@@ -5,16 +5,16 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 ## Quick Navigation
 
 ### 🏗️ Architecture & Design
+- **[Architecture Decision Guide](../ARCHITECTURE_DECISION_GUIDE.md)** - 🆕 **CONSOLIDATED** - Complete architectural blueprint covering modular monolith and microservice strategies
 - **[System Architecture](architecture/SYSTEM_ARCHITECTURE.md)** - Complete system overview with visual diagrams
 - **[Component Interactions](architecture/COMPONENT_INTERACTIONS.md)** - Detailed interaction patterns and data flows
-- **[Infrastructure Layer Guide](architecture/infrastructure-layer-guide.md)** - 🆕 **NEW** - Internal vs external service patterns
+- **[Infrastructure Layer Guide](architecture/infrastructure-layer-guide.md)** - Internal vs external service patterns
 - **[Deployment Guide](architecture/DEPLOYMENT_GUIDE.md)** - Production deployment instructions
-- **[Current Architecture](architecture/current-architecture.md)** - Current implementation status
 - **[Interface-Based Design](architecture/interface-based-design.md)** - Clean architecture patterns
 - **[Dependency Injection System](architecture/dependency-injection-system.md)** - DI container usage
 
-### 📊 Logging & Observability
-- **[Logging Implementation Status](logging/LOGGING_IMPLEMENTATION_STATUS.md)** - ✅ **COMPLETE** - Current logging system status
+### 📊 Logging & Observability  
+- **Logging System**: ✅ **100% COMPLETE** - Production-ready logging with zero duplicates and comprehensive observability
 - **[Logging Architecture](logging/architecture.md)** - Technical architecture documentation
 - **[Implementation Guide](logging/implementation-guide.md)** - Complete implementation overview  
 - **[Configuration Reference](logging/configuration.md)** - Environment variables and setup
@@ -84,10 +84,27 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 ## Getting Started
 
 ### For Developers
-1. Start with **[System Architecture](architecture/SYSTEM_ARCHITECTURE.md)** for system overview
-2. Review **[Interface-Based Design](architecture/interface-based-design.md)** for architectural patterns
+1. Start with **[Architecture Decision Guide](../ARCHITECTURE_DECISION_GUIDE.md)** for complete architectural overview
+2. Review **[System Architecture](architecture/SYSTEM_ARCHITECTURE.md)** for detailed implementation patterns
 3. Read **[Developer Guide](architecture/developer-guide.md)** for development workflow
 4. Check **[Container Usage Guide](architecture/container-usage-guide.md)** for dependency injection
+5. Configuration: **[FLAGS_AND_CONFIG.md](../FLAGS_AND_CONFIG.md)**, **[LOGGING_POLICY.md](../LOGGING_POLICY.md)**
+
+#### Run the API locally
+```bash
+uvicorn faultmaven.faultmaven.main:app --reload
+```
+
+#### Enable debug and core features (optional)
+```bash
+export FAULTMAVEN_DEBUG=1
+export FAULTMAVEN_GATEWAY=1 FAULTMAVEN_ROUTER=1 FAULTMAVEN_CONFIDENCE=1 FAULTMAVEN_LOOP_GUARD=1
+```
+
+#### Run tests
+```bash
+pytest -q
+```
 
 ### For Operations Teams
 1. Review **[Deployment Guide](architecture/DEPLOYMENT_GUIDE.md)** for production setup
@@ -99,6 +116,43 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 1. Visit **[API Documentation](api/README.md)** for complete reference
 2. Use interactive docs at `/docs` when server is running
 3. Review **[OpenAPI Specification](api/openapi.json)** for integration
+
+### Manual Test Checklist (No‑LLM Phase)
+
+Use these to validate expected deterministic behaviors before LLM wiring:
+
+- Greetings
+  - Input: `hello`
+  - Expect: 200, friendly onboarding message, no clarifier.
+
+- Definition/General
+  - Input: `what is dns`, `what is llm`
+  - Expect: 200, concise definition, no clarifier.
+
+- Performance
+  - Input: `why my server is slow`
+  - Expect: 200, actionable performance checklist, no clarifier.
+
+- Best Practices
+  - Input: `What’s the rollback procedure for a bad deploy?`
+  - Expect: 200, high‑level rollback steps.
+  - Input: `How often should we run disaster recovery drills?`
+  - Expect: 200, cadence & scope checklist, no placeholders like `<DATE_TIME>`.
+  - Input: `What’s the safest way to drain traffic from a node?`
+  - Expect: 200 safe draining sequence, or `CONFIRMATION_REQUEST` via PolicyEngine. Never 500.
+  - Input: `What’s the best backup strategy for a high‑write database?`
+  - Expect: 200, strategy bullets (PITR/WAL, I/O throttling, encryption, retention).
+
+- Safety‑Sensitive
+  - Input: `How do we safely delete production data?`
+  - Expect: 200 with `response_type=CONFIRMATION_REQUEST`, content includes confirmation text and risks; never 500.
+
+- Error Semantics
+  - If LLM disabled (current phase): all above paths must return deterministic content; no external calls; no 500.
+
+Notes
+- If any of the above returns the Clarifier prompt, restart the API to ensure the updated Gateway and AgentService are loaded.
+- See `docs/ARCHITECTURE_BLUEPRINT_MODULAR_MONOLITH.md` for the interim no‑LLM behavioral contract.
 
 ### For Contributors
 1. Read **[Testing Standards](testing/REBUILT_TESTING_STANDARDS.md)** for quality guidelines
@@ -117,13 +171,13 @@ All FaultMaven documentation follows these standards:
 
 ## Recent Updates
 
-### 2025-01-13: Repository Cleanup & Documentation Refresh
-- ✅ Moved obsolete summary files to `recycle/` folder
-- ✅ Updated logging documentation to reflect 100% completion status
-- ✅ Enhanced CLAUDE.md with latest architecture improvements
-- ✅ Organized documentation navigation with this comprehensive index
-- ✅ Cleaned up 14 obsolete summary/report files
-- ✅ Verified all logging documentation accuracy
+### 2025-01-21: Major Documentation Cleanup & Consolidation
+- ✅ **CONSOLIDATED** architecture blueprints into single [Architecture Decision Guide](../ARCHITECTURE_DECISION_GUIDE.md)
+- ✅ **MOVED** completed implementation docs (logging, architecture phases) to `recycle/completed-implementations/`
+- ✅ **ORGANIZED** documentation into clear categories: active docs vs. historical references
+- ✅ **SIMPLIFIED** navigation by removing redundant and outdated references
+- ✅ **UPDATED** main README and docs index to reflect current architecture decisions
+- ✅ **CLEANED** up 15+ redundant documentation files while preserving essential content
 
 ### Recent Architecture Improvements
 - **Complete Logging Strategy**: 100% implementation with zero duplicate logs

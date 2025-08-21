@@ -1064,6 +1064,20 @@ class SessionService(BaseService):
         Returns:
             Formatted conversation history string for LLM context
         """
+        # Prefer case service if available for better conversation context
+        if self.case_service:
+            try:
+                # Get conversation context from case service
+                context = await self.case_service.get_case_conversation_context(
+                    case_id=case_id,
+                    limit=limit
+                )
+                if context:
+                    return context
+            except Exception as e:
+                self.logger.warning(f"Failed to get case service conversation context: {e}")
+        
+        # Fall back to legacy case history method
         try:
             history = await self.get_case_conversation_history(session_id, case_id, limit)
             

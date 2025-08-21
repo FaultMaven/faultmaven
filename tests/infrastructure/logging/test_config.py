@@ -93,7 +93,7 @@ class TestFaultMavenLogger:
         mock_ctx.correlation_id = "test-correlation-id"
         mock_ctx.session_id = "test-session-id"
         mock_ctx.user_id = "test-user-id"
-        mock_ctx.investigation_id = "test-investigation-id"
+        mock_ctx.case_id = "test-case-id"
         mock_ctx.agent_phase = "define_blast_radius"
         
         with patch('faultmaven.infrastructure.logging.coordinator.request_context') as mock_context:
@@ -108,7 +108,7 @@ class TestFaultMavenLogger:
             assert result["correlation_id"] == "test-correlation-id"
             assert result["session_id"] == "test-session-id"
             assert result["user_id"] == "test-user-id"
-            assert result["investigation_id"] == "test-investigation-id"
+            assert result["case_id"] == "test-case-id"
             assert result["agent_phase"] == "define_blast_radius"
             assert result["message"] == "test"
     

@@ -391,9 +391,9 @@ class TestLegacyTroubleshootEndpoint:
         
         response_data = response.json()
         
-        # Verify TroubleshootingResponse structure (legacy format)
-        assert "investigation_id" in response_data
-        assert response_data["investigation_id"] == "legacy-case-456"
+        # Verify TroubleshootingResponse structure (legacy format uses case_id)
+        assert "case_id" in response_data
+        assert response_data["case_id"] == "legacy-case-456"
         assert response_data["session_id"] == "legacy-session-123"
         assert response_data["status"] == "completed"
         assert "findings" in response_data
@@ -510,7 +510,7 @@ class TestLegacyConversionFunction:
         legacy_response = _convert_to_legacy_response(agent_response, "test-session")
         
         # Verify conversion
-        assert legacy_response.investigation_id == "test-case-123"
+        assert legacy_response.case_id == "test-case-123"
         assert legacy_response.session_id == "test-session"
         assert legacy_response.status == "completed"
         assert legacy_response.root_cause == "Network timeout"
@@ -587,7 +587,7 @@ class TestLegacyConversionFunction:
 
 
 class TestGetInvestigationEndpoint:
-    """Test the /investigations/{investigation_id} endpoint."""
+    """Test the /cases/{case_id} endpoint."""
     
     @pytest.fixture
     def mock_agent_service(self):
@@ -611,7 +611,7 @@ class TestGetInvestigationEndpoint:
     def sample_troubleshooting_response(self):
         """Sample TroubleshootingResponse for testing."""
         return TroubleshootingResponse(
-            investigation_id="inv-123",
+            case_id="inv-123",
             session_id="session-456",
             status="completed",
             findings=[
@@ -632,51 +632,51 @@ class TestGetInvestigationEndpoint:
             completed_at=datetime.utcnow()
         )
     
-    def test_get_investigation_success(self, client_with_mocked_service, sample_troubleshooting_response):
-        """Test successful investigation retrieval."""
+    def test_get_case_success(self, client_with_mocked_service, sample_troubleshooting_response):
+        """Test successful case retrieval."""
         client, mock_agent_service = client_with_mocked_service
         mock_agent_service.get_investigation_results = AsyncMock(return_value=sample_troubleshooting_response)
         
-        response = client.get("/agent/investigations/inv-123?session_id=session-456")
+        response = client.get("/agent/cases/inv-123?session_id=session-456")
         
         assert response.status_code == 200
         
         response_data = response.json()
-        assert response_data["investigation_id"] == "inv-123"
+        assert response_data["case_id"] == "inv-123"
         assert response_data["session_id"] == "session-456"
         assert response_data["status"] == "completed"
         assert len(response_data["findings"]) == 1
         assert len(response_data["recommendations"]) == 2
     
-    def test_get_investigation_not_found(self, client_with_mocked_service):
-        """Test investigation not found error."""
+    def test_get_case_not_found(self, client_with_mocked_service):
+        """Test case not found error."""
         client, mock_agent_service = client_with_mocked_service
         mock_agent_service.get_investigation_results = AsyncMock(
             side_effect=FileNotFoundError("Investigation not found")
         )
         
-        response = client.get("/agent/investigations/nonexistent?session_id=session-123")
+        response = client.get("/agent/cases/nonexistent?session_id=session-123")
         
         assert response.status_code == 404
         response_data = response.json()
-        assert "Investigation not found" in response_data["detail"]
+        assert "Case not found" in response_data["detail"]
     
-    def test_get_investigation_validation_error(self, client_with_mocked_service):
-        """Test investigation validation error."""
+    def test_get_case_validation_error(self, client_with_mocked_service):
+        """Test case validation error."""
         client, mock_agent_service = client_with_mocked_service
         mock_agent_service.get_investigation_results = AsyncMock(
             side_effect=ValueError("Invalid investigation ID")
         )
         
-        response = client.get("/agent/investigations/invalid?session_id=session-123")
+        response = client.get("/agent/cases/invalid?session_id=session-123")
         
         assert response.status_code == 400
         response_data = response.json()
         assert "Invalid investigation ID" in response_data["detail"]
 
 
-class TestListSessionInvestigationsEndpoint:
-    """Test the /sessions/{session_id}/investigations endpoint."""
+class TestListSessionCasesEndpoint:
+    """Test the /sessions/{session_id}/cases endpoint."""
     
     @pytest.fixture
     def mock_agent_service(self):
@@ -698,10 +698,10 @@ class TestListSessionInvestigationsEndpoint:
     
     @pytest.fixture
     def sample_investigations_list(self):
-        """Sample investigations list for testing."""
+        """Sample cases list for testing."""
         return [
             {
-                "investigation_id": "inv-1",
+                "case_id": "inv-1",
                 "query": "Database errors query",
                 "status": "completed",
                 "priority": "high",
@@ -713,7 +713,7 @@ class TestListSessionInvestigationsEndpoint:
                 "estimated_mttr": "15 minutes"
             },
             {
-                "investigation_id": "inv-2",
+                "case_id": "inv-2",
                 "query": "Performance issues query",
                 "status": "completed",
                 "priority": "medium",
@@ -726,32 +726,32 @@ class TestListSessionInvestigationsEndpoint:
             }
         ]
     
-    def test_list_investigations_success(self, client_with_mocked_service, sample_investigations_list):
-        """Test successful investigations listing."""
+    def test_list_cases_success(self, client_with_mocked_service, sample_investigations_list):
+        """Test successful cases listing."""
         client, mock_agent_service = client_with_mocked_service
         mock_agent_service.list_session_investigations = AsyncMock(return_value=sample_investigations_list)
         
-        response = client.get("/agent/sessions/session-123/investigations")
+        response = client.get("/agent/sessions/session-123/cases")
         
         assert response.status_code == 200
         
         response_data = response.json()
         assert response_data["session_id"] == "session-123"
-        assert len(response_data["investigations"]) == 2
+        assert len(response_data["cases"]) == 2
         assert response_data["limit"] == 10  # Default limit
         assert response_data["offset"] == 0   # Default offset
         assert response_data["total"] == 2
         
-        # Verify investigation data
-        assert response_data["investigations"][0]["investigation_id"] == "inv-1"
-        assert response_data["investigations"][1]["investigation_id"] == "inv-2"
+        # Verify case data
+        assert response_data["cases"][0]["case_id"] == "inv-1"
+        assert response_data["cases"][1]["case_id"] == "inv-2"
     
-    def test_list_investigations_with_pagination(self, client_with_mocked_service, sample_investigations_list):
+    def test_list_cases_with_pagination(self, client_with_mocked_service, sample_investigations_list):
         """Test investigations listing with pagination parameters."""
         client, mock_agent_service = client_with_mocked_service
         mock_agent_service.list_session_investigations = AsyncMock(return_value=sample_investigations_list)
         
-        response = client.get("/agent/sessions/session-123/investigations?limit=5&offset=10")
+        response = client.get("/agent/sessions/session-123/cases?limit=5&offset=10")
         
         assert response.status_code == 200
         
@@ -766,27 +766,27 @@ class TestListSessionInvestigationsEndpoint:
             offset=10
         )
     
-    def test_list_investigations_session_not_found(self, client_with_mocked_service):
+    def test_list_cases_session_not_found(self, client_with_mocked_service):
         """Test investigations listing when session not found."""
         client, mock_agent_service = client_with_mocked_service
         mock_agent_service.list_session_investigations = AsyncMock(
             side_effect=FileNotFoundError("Session not found")
         )
         
-        response = client.get("/agent/sessions/nonexistent/investigations")
+        response = client.get("/agent/sessions/nonexistent/cases")
         
         assert response.status_code == 404
         response_data = response.json()
         assert "Session not found" in response_data["detail"]
     
-    def test_list_investigations_validation_error(self, client_with_mocked_service):
+    def test_list_cases_validation_error(self, client_with_mocked_service):
         """Test investigations listing with validation error."""
         client, mock_agent_service = client_with_mocked_service
         mock_agent_service.list_session_investigations = AsyncMock(
             side_effect=ValueError("Invalid pagination parameters")
         )
         
-        response = client.get("/agent/sessions/session-123/investigations?limit=-1")
+        response = client.get("/agent/sessions/session-123/cases?limit=-1")
         
         assert response.status_code == 400
         response_data = response.json()

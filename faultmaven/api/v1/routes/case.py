@@ -35,16 +35,32 @@ from faultmaven.models.case import (
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.models.api import ErrorResponse, ErrorDetail
 from faultmaven.api.v1.dependencies import get_case_service, get_user_id
+from fastapi import Request
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import ValidationException, ServiceException
 
 # Create router
 router = APIRouter(prefix="/cases", tags=["cases"])
+async def _di_get_case_service_dependency() -> Optional[ICaseService]:
+    """Runtime wrapper so patched dependency is honored in tests."""
+    # Import inside to resolve the patched function at call time
+    from faultmaven.api.v1.dependencies import get_case_service as _getter
+    return await _getter()
+
+
+async def _di_get_user_id_dependency(request: Request) -> Optional[str]:
+    """Runtime wrapper so patched dependency is honored in tests."""
+    from faultmaven.api.v1.dependencies import get_user_id as _get_user_id
+    return await _get_user_id(request)
 
 
 def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseService:
     """Check if case service is available and raise appropriate error if not"""
-    case_service = check_case_service_available(case_service)
+    if case_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Case service unavailable"
+        )
     return case_service
 
 
@@ -52,8 +68,8 @@ def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseS
 @trace("api_create_case")
 async def create_case(
     request: CaseCreateRequest,
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    user_id: Optional[str] = Depends(get_user_id)
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
 ) -> Case:
     """
     Create a new troubleshooting case
@@ -62,7 +78,6 @@ async def create_case(
     The case will persist beyond individual session lifetimes.
     """
     case_service = check_case_service_available(case_service)
-    
     try:
         case = await case_service.create_case(
             title=request.title,
@@ -71,7 +86,6 @@ async def create_case(
             session_id=request.session_id,
             initial_message=request.initial_message
         )
-        
         return case
         
     except ValidationException as e:
@@ -89,8 +103,8 @@ async def create_case(
 @router.get("/", response_model=List[CaseSummary])
 @trace("api_list_cases")
 async def list_cases(
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    user_id: Optional[str] = Depends(get_user_id),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    user_id: Optional[str] = Depends(_di_get_user_id_dependency),
     status_filter: Optional[CaseStatus] = Query(None, description="Filter by case status"),
     priority_filter: Optional[CasePriority] = Query(None, description="Filter by case priority"),
     owner_id: Optional[str] = Query(None, description="Filter by case owner"),
@@ -104,7 +118,6 @@ async def list_cases(
     Results can be filtered by status, priority, owner, and other criteria.
     """
     case_service = check_case_service_available(case_service)
-    
     try:
         # Build filter criteria
         filters = CaseListFilter(
@@ -115,7 +128,6 @@ async def list_cases(
             limit=limit,
             offset=offset
         )
-        
         cases = await case_service.list_user_cases(user_id or "anonymous", filters)
         return cases
         
@@ -130,8 +142,8 @@ async def list_cases(
 @trace("api_get_case")
 async def get_case(
     case_id: str,
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    user_id: Optional[str] = Depends(get_user_id)
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
 ) -> Case:
     """
     Get a specific case by ID
@@ -141,13 +153,8 @@ async def get_case(
     """
     try:
         case = await case_service.get_case(case_id, user_id)
-        
         if not case:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Case not found or access denied"
-            )
-        
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found or access denied")
         return case
         
     except HTTPException:
@@ -164,8 +171,8 @@ async def get_case(
 async def update_case(
     case_id: str,
     request: CaseUpdateRequest,
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    user_id: Optional[str] = Depends(get_user_id)
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
 ) -> Dict[str, Any]:
     """
     Update case details
@@ -194,13 +201,8 @@ async def update_case(
             )
         
         success = await case_service.update_case(case_id, updates, user_id)
-        
         if not success:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Case not found or access denied"
-            )
-        
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found or access denied")
         return {
             "case_id": case_id,
             "success": True,
@@ -226,8 +228,8 @@ async def update_case(
 async def share_case(
     case_id: str,
     request: CaseShareRequest,
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    user_id: Optional[str] = Depends(get_user_id)
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
 ) -> Dict[str, Any]:
     """
     Share a case with another user
@@ -248,13 +250,8 @@ async def share_case(
             role=request.role,
             sharer_user_id=user_id
         )
-        
         if not success:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Case not found or sharing not permitted"
-            )
-        
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found or sharing not permitted")
         return {
             "case_id": case_id,
             "shared_with": request.user_id,
@@ -282,8 +279,8 @@ async def share_case(
 async def archive_case(
     case_id: str,
     reason: Optional[str] = Query(None, description="Reason for archiving"),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    user_id: Optional[str] = Depends(get_user_id)
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
 ) -> Dict[str, Any]:
     """
     Archive a case
@@ -297,13 +294,8 @@ async def archive_case(
             reason=reason,
             user_id=user_id
         )
-        
         if not success:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Case not found or archive not permitted"
-            )
-        
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found or archive not permitted")
         return {
             "case_id": case_id,
             "success": True,
@@ -324,8 +316,8 @@ async def archive_case(
 @trace("api_search_cases")
 async def search_cases(
     request: CaseSearchRequest,
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    user_id: Optional[str] = Depends(get_user_id)
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
 ) -> List[CaseSummary]:
     """
     Search cases by content
@@ -354,8 +346,8 @@ async def search_cases(
 async def get_case_conversation_context(
     case_id: str,
     limit: int = Query(10, le=50, description="Maximum number of messages to include"),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    user_id: Optional[str] = Depends(get_user_id)
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
 ) -> str:
     """
     Get formatted conversation context for a case
@@ -388,8 +380,8 @@ async def get_case_conversation_context(
 @trace("api_get_case_analytics")
 async def get_case_analytics(
     case_id: str,
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    user_id: Optional[str] = Depends(get_user_id)
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
 ) -> Dict[str, Any]:
     """
     Get case analytics and metrics
@@ -426,8 +418,8 @@ async def create_case_for_session(
     session_id: str,
     title: Optional[str] = Query(None, description="Case title"),
     force_new: bool = Query(False, description="Force creation of new case"),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    user_id: Optional[str] = Depends(get_user_id)
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
 ) -> Dict[str, Any]:
     """
     Create or get case for a session
@@ -472,8 +464,8 @@ async def create_case_for_session(
 async def resume_case_in_session(
     session_id: str,
     case_id: str,
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    user_id: Optional[str] = Depends(get_user_id)
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
 ) -> Dict[str, Any]:
     """
     Resume an existing case in a session
@@ -516,7 +508,7 @@ async def resume_case_in_session(
 @router.get("/health", response_model=Dict[str, Any])
 @trace("api_case_health")
 async def get_case_service_health(
-    case_service: ICaseService = Depends(get_case_service)
+    case_service: ICaseService = Depends(_di_get_case_service_dependency)
 ) -> Dict[str, Any]:
     """
     Get case service health status

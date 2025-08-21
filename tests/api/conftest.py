@@ -5,6 +5,7 @@ Minimal test fixtures that can handle missing dependencies gracefully.
 
 from unittest.mock import Mock, AsyncMock
 from typing import Optional, Any, Dict
+from datetime import datetime
 
 # Import test doubles
 try:
@@ -237,7 +238,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                 async def mock_get_investigation_results(investigation_id, session_id=None, *args, **kwargs):
                     # Return comprehensive findings that match what process_query produces
                     return TroubleshootingResponse(
-                        investigation_id=investigation_id,
+                        case_id=investigation_id,  # Use case_id instead of investigation_id
                         session_id=session_id or "test_session_12345",
                         status="completed",
                         findings=[
@@ -250,7 +251,7 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                             "Monitor connection usage patterns"
                         ],
                         confidence_score=0.8,
-                        created_at="2024-01-01T12:00:00Z"
+                        created_at=datetime.fromisoformat("2024-01-01T12:00:00+00:00")
                     )
                     
                 async def mock_list_session_investigations(*args, **kwargs):
@@ -263,6 +264,18 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                 
                 mock_service.get_investigation_results = mock_get_investigation_results  
                 mock_service.list_session_investigations = mock_list_session_investigations
+                
+                # Add get_case_results method to match actual AgentService
+                async def mock_get_case_results(case_id, session_id=None, *args, **kwargs):
+                    return await mock_get_investigation_results(case_id, session_id, *args, **kwargs)
+                
+                mock_service.get_case_results = mock_get_case_results
+                
+                # Add list_session_cases method to match actual AgentService  
+                async def mock_list_session_cases(session_id, limit=10, offset=0, *args, **kwargs):
+                    return await mock_list_session_investigations(session_id, limit, offset, *args, **kwargs)
+                
+                mock_service.list_session_cases = mock_list_session_cases
                 return mock_service
             
             async def mock_data_service():

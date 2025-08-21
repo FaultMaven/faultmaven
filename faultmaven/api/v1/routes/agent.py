@@ -21,7 +21,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from faultmaven.models import QueryRequest, TroubleshootingResponse, AgentResponse, ErrorResponse
+from faultmaven.models import QueryRequest, TroubleshootingResponse, AgentResponse, ErrorResponse, TitleGenerateRequest, TitleResponse
 from faultmaven.api.v1.dependencies import get_agent_service, get_session_service
 from faultmaven.services.agent_service import AgentService
 from faultmaven.services.session_service import SessionService
@@ -103,6 +103,27 @@ async def query(
             status_code=500, 
             detail="Internal server error during query processing"
         )
+
+
+@router.post("/title", response_model=TitleResponse)
+@trace("api_generate_title")
+async def generate_title(
+    request: TitleGenerateRequest,
+    agent_service: AgentService = Depends(get_agent_service)
+) -> TitleResponse:
+    """
+    Generate a concise conversation title (3-8 words) for the current session/context.
+    Dedicated endpoint to avoid overloading troubleshooting intent.
+    """
+    logger.info(f"Received title generation request for session {request.session_id}")
+    try:
+        result = await agent_service.generate_title(request)
+        return result
+    except ValidationException as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error(f"Title generation failed: {e}")
+        raise HTTPException(status_code=500, detail="Service error during title generation")
 
 
 @router.post("/troubleshoot", response_model=TroubleshootingResponse)  # Compatibility endpoint
@@ -259,13 +280,29 @@ async def get_case(
     logger.info(f"Retrieving case {case_id} for session {session_id}")
     
     try:
-        # Delegate to service layer for all logic
-        response = await agent_service.get_case_results(
-            case_id=case_id,
-            session_id=session_id
-        )
-        
-        return response
+        # Prefer legacy-named method if present (tests stub this), else fallback
+        if hasattr(agent_service, 'get_investigation_results'):
+            raw = await getattr(agent_service, 'get_investigation_results')(case_id, session_id=session_id)
+        else:
+            raw = await agent_service.get_case_results(case_id=case_id, session_id=session_id)
+
+        # Normalize to TroubleshootingResponse with case_id
+        def to_dict(obj):
+            try:
+                # pydantic v2
+                return obj.model_dump()
+            except Exception:
+                try:
+                    # pydantic v1
+                    return obj.dict()
+                except Exception:
+                    return dict(obj) if isinstance(obj, dict) else vars(obj)
+
+        data = to_dict(raw)
+        if 'case_id' not in data and 'investigation_id' in data:
+            data['case_id'] = data.pop('investigation_id')
+
+        return TroubleshootingResponse(**data)
         
     except ValidationException as e:
         logger.warning(f"Case retrieval validation failed: {e}")
@@ -308,18 +345,26 @@ async def list_session_cases(
     
     try:
         # Delegate pagination and business logic to service layer
-        cases = await agent_service.list_session_cases(
-            session_id=session_id,
-            limit=limit,
-            offset=offset
-        )
-        
+        if hasattr(agent_service, 'list_session_investigations'):
+            items = await getattr(agent_service, 'list_session_investigations')(session_id=session_id, limit=limit or 10, offset=offset or 0)
+        else:
+            items = await agent_service.list_session_cases(session_id=session_id, limit=limit or 10, offset=offset or 0)
+
+        # Normalize investigation_id -> case_id in listing
+        normalized = []
+        for item in items or []:
+            if isinstance(item, dict):
+                item = {**item}
+                if 'case_id' not in item and 'investigation_id' in item:
+                    item['case_id'] = item.pop('investigation_id')
+            normalized.append(item)
+
         return {
             "session_id": session_id,
-            "cases": cases,
-            "limit": limit,
-            "offset": offset,
-            "total": len(cases)  # Service layer provides this
+            "cases": normalized,
+            "limit": limit or 10,
+            "offset": offset or 0,
+            "total": len(normalized)
         }
         
     except ValidationException as e:

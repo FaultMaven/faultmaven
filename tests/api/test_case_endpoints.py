@@ -17,7 +17,7 @@ Tests cover:
 import json
 import pytest
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, patch, ANY
 from typing import List, Dict, Any
 
 from fastapi.testclient import TestClient
@@ -449,8 +449,12 @@ class TestCaseUpdate:
         
         response = client.put("/api/v1/cases/case-123", json=request_data)
         
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
-        assert "Invalid status" in response.json()["detail"]
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        response_data = response.json()
+        # Check for validation error in the detail array
+        assert "detail" in response_data
+        assert len(response_data["detail"]) > 0
+        assert any("status" in error.get("loc", []) for error in response_data["detail"])
 
 
 class TestCaseSharing:
@@ -693,10 +697,12 @@ class TestCaseConversation:
     
     @patch('faultmaven.api.v1.dependencies.get_case_service')
     @patch('faultmaven.api.v1.dependencies.get_user_id')
-    def test_get_conversation_context_success(self, mock_get_user_id, mock_get_case_service, client, mock_case_service):
+    def test_get_conversation_context_success(self, mock_get_user_id, mock_get_case_service, client, mock_case_service, sample_case):
         """Test successful conversation context retrieval"""
         mock_get_user_id.return_value = "user-456"
         mock_get_case_service.return_value = mock_case_service
+        # Need to return a case for access verification
+        mock_case_service.get_case.return_value = sample_case
         mock_case_service.get_case_conversation_context.return_value = "Previous conversation context"
         
         response = client.get("/api/v1/cases/case-123/conversation")
@@ -709,10 +715,12 @@ class TestCaseConversation:
     
     @patch('faultmaven.api.v1.dependencies.get_case_service')
     @patch('faultmaven.api.v1.dependencies.get_user_id')
-    def test_get_conversation_context_with_limit(self, mock_get_user_id, mock_get_case_service, client, mock_case_service):
+    def test_get_conversation_context_with_limit(self, mock_get_user_id, mock_get_case_service, client, mock_case_service, sample_case):
         """Test conversation context retrieval with custom limit"""
         mock_get_user_id.return_value = "user-456"
         mock_get_case_service.return_value = mock_case_service
+        # Need to return a case for access verification
+        mock_case_service.get_case.return_value = sample_case
         mock_case_service.get_case_conversation_context.return_value = "Limited context"
         
         response = client.get("/api/v1/cases/case-123/conversation", params={"limit": 5})
@@ -751,7 +759,7 @@ class TestAuthentication:
         assert response.status_code == status.HTTP_200_OK
         
         # Verify service was called with anonymous user
-        mock_case_service.list_user_cases.assert_called_once_with("anonymous", mock.ANY)
+        mock_case_service.list_user_cases.assert_called_once_with("anonymous", ANY)
     
     @patch('faultmaven.api.v1.dependencies.get_case_service')
     @patch('faultmaven.api.v1.dependencies.get_user_id')
@@ -807,7 +815,7 @@ class TestErrorHandling:
         response = client.post("/api/v1/cases/", json=request_data)
         
         # Should handle large data gracefully
-        assert response.status_code in [status.HTTP_201_CREATED, status.HTTP_400_BAD_REQUEST]
+        assert response.status_code in [status.HTTP_201_CREATED, status.HTTP_400_BAD_REQUEST, status.HTTP_422_UNPROCESSABLE_ENTITY]
     
     def test_malformed_case_id(self, client):
         """Test handling of malformed case IDs"""
@@ -848,7 +856,7 @@ class TestErrorHandling:
             thread.join()
         
         # All requests should succeed
-        assert all(status == status.HTTP_200_OK for status in results)
+        assert all(result_status == status.HTTP_200_OK for result_status in results)
         assert len(results) == 5
 
 

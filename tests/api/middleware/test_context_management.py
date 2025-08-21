@@ -45,7 +45,7 @@ def app():
             "correlation_id": ctx.correlation_id if ctx else None,
             "session_id": ctx.session_id if ctx else None,
             "user_id": ctx.user_id if ctx else None,
-            "investigation_id": ctx.investigation_id if ctx else None,
+            "case_id": ctx.case_id if ctx else None,
         }
     
     @app.post("/test")
@@ -56,7 +56,7 @@ def app():
             "correlation_id": ctx.correlation_id if ctx else None,
             "session_id": ctx.session_id if ctx else None,
             "user_id": ctx.user_id if ctx else None,
-            "investigation_id": ctx.investigation_id if ctx else None,
+            "case_id": ctx.case_id if ctx else None,
         }
     
     return app
@@ -88,24 +88,29 @@ class TestContextExtractionFromHeaders:
         assert data["session_id"] == "header-session-123"
         assert data["correlation_id"] is not None
     
-    def test_extract_investigation_id_from_header(self, client):
-        """Test investigation_id extraction from X-Investigation-ID header."""
-        response = client.get("/test", headers={"X-Investigation-ID": "investigation-789"})
+    def test_extract_case_id_from_header(self, client):
+        """Test case_id extraction from X-Case-ID header (and legacy header)."""
+        response = client.get("/test", headers={"X-Case-ID": "case-789"})
         assert response.status_code == 200
         data = response.json()
-        assert data["investigation_id"] == "investigation-789"
+        assert data["case_id"] == "case-789"
+        # Legacy header support
+        response = client.get("/test", headers={"X-Investigation-ID": "legacy-789"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["case_id"] == "legacy-789"
     
     def test_extract_both_ids_from_headers(self, client):
-        """Test extraction of both session_id and investigation_id from headers."""
+        """Test extraction of both session_id and case_id from headers."""
         headers = {
             "X-Session-ID": "header-session-123",
-            "X-Investigation-ID": "investigation-789"
+            "X-Case-ID": "case-789"
         }
         response = client.get("/test", headers=headers)
         assert response.status_code == 200
         data = response.json()
         assert data["session_id"] == "header-session-123"
-        assert data["investigation_id"] == "investigation-789"
+        assert data["case_id"] == "case-789"
 
 
 class TestContextExtractionFromQueryParams:
@@ -118,12 +123,17 @@ class TestContextExtractionFromQueryParams:
         data = response.json()
         assert data["session_id"] == "query-session-456"
     
-    def test_extract_investigation_id_from_query(self, client):
-        """Test investigation_id extraction from query parameter."""
-        response = client.get("/test?investigation_id=query-investigation-789")
+    def test_extract_case_id_from_query(self, client):
+        """Test case_id extraction from query parameter (legacy supported)."""
+        response = client.get("/test?case_id=query-case-789")
         assert response.status_code == 200
         data = response.json()
-        assert data["investigation_id"] == "query-investigation-789"
+        assert data["case_id"] == "query-case-789"
+        # Legacy query param
+        response = client.get("/test?investigation_id=query-legacy-789")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["case_id"] == "query-legacy-789"
 
 
 class TestContextExtractionFromBody:
@@ -137,26 +147,32 @@ class TestContextExtractionFromBody:
         data = response.json()
         assert data["session_id"] == "body-session-789"
     
-    def test_extract_investigation_id_from_json_body(self, client):
-        """Test investigation_id extraction from JSON request body."""
-        payload = {"investigation_id": "body-investigation-123", "data": "test"}
+    def test_extract_case_id_from_json_body(self, client):
+        """Test case_id extraction from JSON request body (legacy supported)."""
+        payload = {"case_id": "body-case-123", "data": "test"}
         response = client.post("/test", json=payload)
         assert response.status_code == 200
         data = response.json()
-        assert data["investigation_id"] == "body-investigation-123"
+        assert data["case_id"] == "body-case-123"
+        # Legacy body
+        payload = {"investigation_id": "body-legacy-123", "data": "test"}
+        response = client.post("/test", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["case_id"] == "body-legacy-123"
     
     def test_extract_both_ids_from_json_body(self, client):
         """Test extraction of both IDs from JSON request body."""
         payload = {
             "session_id": "body-session-789",
-            "investigation_id": "body-investigation-123",
+            "case_id": "body-case-123",
             "query": "test query"
         }
         response = client.post("/test", json=payload)
         assert response.status_code == 200
         data = response.json()
         assert data["session_id"] == "body-session-789"
-        assert data["investigation_id"] == "body-investigation-123"
+        assert data["case_id"] == "body-case-123"
 
 
 class TestContextExtractionPriority:
@@ -315,7 +331,7 @@ class TestContextContinuity:
             # Verify all context components are properly populated
             assert data["session_id"] == "test-session-123"
             assert data["user_id"] == "test-user-456"
-            assert data["investigation_id"] == "test-investigation-789"
+            assert data["case_id"] == "test-investigation-789"
             assert data["correlation_id"] is not None
     
     def test_context_cleared_between_requests(self, client):
@@ -369,7 +385,7 @@ class TestErrorHandling:
         assert data["correlation_id"] is not None  # Should still have correlation ID
         assert data["session_id"] is None
         assert data["user_id"] is None
-        assert data["investigation_id"] is None
+        assert data["case_id"] is None
 
 
 class TestTargetedTracingIntegration:

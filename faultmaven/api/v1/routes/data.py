@@ -454,6 +454,7 @@ async def get_data(
 @trace("api_delete_data")
 async def delete_data(
     data_id: str,
+    session_id: str,
     data_service: DataService = Depends(get_data_service)
 ):
     """
@@ -461,16 +462,17 @@ async def delete_data(
     
     Args:
         data_id: Data identifier to delete
+        session_id: Session identifier for access control (query parameter)
         data_service: Injected DataService
         
     Returns:
         Success confirmation
     """
-    logger.info(f"Deleting data {data_id}")
+    logger.info(f"Deleting data {data_id} for session {session_id}")
     
     try:
-        # Delegate deletion logic to service layer
-        success = await data_service.delete_data(data_id)
+        # Delegate deletion logic to service layer with proper parameters
+        success = await data_service.delete_data(data_id, session_id)
         
         if success:
             return {"success": True, "data_id": data_id}

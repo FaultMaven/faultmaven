@@ -27,8 +27,9 @@ class SourceType(str, Enum):
 class Source(BaseModel):
     """Represents a single piece of citable evidence to build user trust."""
     type: SourceType
-    name: str  # e.g., "database_runbook.md"
-    snippet: str
+    content: str
+    confidence: Optional[float] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 class PlanStep(BaseModel):
     """Represents one step in a multi-step plan."""
@@ -79,6 +80,21 @@ class AgentResponse(BaseModel):
             if response_type != ResponseType.PLAN_PROPOSAL and plan is not None:
                 raise ValueError("A 'plan' can only be provided for a PLAN_PROPOSAL response type.")
         return values
+
+# --- Title generation contracts ---
+
+class TitleGenerateRequest(BaseModel):
+    """Request payload for conversation title generation."""
+    session_id: str
+    context: Optional[Dict[str, Any]] = None
+    # Optional guardrail for word count
+    max_words: int = 8
+
+class TitleResponse(BaseModel):
+    """Response payload for title generation."""
+    schema_version: Literal["3.1.0"] = "3.1.0"
+    title: str
+    view_state: ViewState
 
 class ErrorDetail(BaseModel):
     """A detailed error message."""

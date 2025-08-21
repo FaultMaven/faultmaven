@@ -527,10 +527,10 @@ class TestCaseMessages:
         messages = await redis_case_store.get_case_messages("case-123", limit=10)
         
         assert len(messages) == 2
-        assert messages[0].content == "Message 1"  # Chronological order
-        assert messages[1].content == "Message 2"
-        assert messages[0].message_type == MessageType.USER_QUERY
-        assert messages[1].message_type == MessageType.AGENT_RESPONSE
+        assert messages[0].content == "Message 2"  # Reverse chronological order (newest first)
+        assert messages[1].content == "Message 1"
+        assert messages[0].message_type == MessageType.AGENT_RESPONSE  # Message 2 (newer)
+        assert messages[1].message_type == MessageType.USER_QUERY  # Message 1 (older)
     
     @pytest.mark.asyncio
     async def test_get_case_messages_with_pagination(self, redis_case_store, mock_redis_client):
@@ -560,10 +560,10 @@ class TestCaseMessages:
         
         messages = await redis_case_store.get_case_messages("case-123")
         
-        # Should only get valid messages
+        # Should only get valid messages in reverse chronological order (newest first)
         assert len(messages) == 2
-        assert messages[0].content == "Valid"
-        assert messages[1].content == "Valid 2"
+        assert messages[0].content == "Valid 2"  # Newer message first
+        assert messages[1].content == "Valid"    # Older message second
 
 
 class TestParticipantManagement:

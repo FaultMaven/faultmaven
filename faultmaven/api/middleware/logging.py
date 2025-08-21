@@ -17,7 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
 from faultmaven.infrastructure.logging.config import get_logger
-from faultmaven.container import container
+from faultmaven.container import DIContainer
 
 
 logger = get_logger(__name__)
@@ -278,13 +278,19 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             case_id if found, None otherwise
         """
         try:
-            # Check header
+            # Check header (support legacy X-Investigation-ID for compatibility)
             if case_id := request.headers.get("x-case-id"):
                 return case_id
+            legacy = request.headers.get("x-investigation-id")
+            if legacy:
+                return legacy
                 
             # Check query parameters
             if case_id := request.query_params.get("case_id"):
                 return case_id
+            legacy_q = request.query_params.get("investigation_id")
+            if legacy_q:
+                return legacy_q
                 
             # Check request body for POST/PUT/PATCH requests
             if request.method in ["POST", "PUT", "PATCH"]:
@@ -293,6 +299,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                     data = await request.json()
                     if isinstance(data, dict) and (case_id := data.get("case_id")):
                         return case_id
+                    if isinstance(data, dict) and (legacy_body := data.get("investigation_id")):
+                        return legacy_body
                 except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
                     # Invalid JSON, encoding, or empty body - continue without case context
                     pass
@@ -316,8 +324,10 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             user_id if found, None otherwise
         """
         try:
-            # Get SessionService from DI container
-            session_service = container.get_session_service()
+            # Get SessionService from a DI container instance.
+            # Using DIContainer() allows tests to patch DIContainer.__new__ and inject a mock.
+            container_instance = DIContainer()
+            session_service = container_instance.get_session_service()
             
             # Look up session (non-validating to avoid exceptions)
             session = await session_service.get_session(session_id, validate=False)

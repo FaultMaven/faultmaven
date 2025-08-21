@@ -340,10 +340,9 @@ class TestRedisSessionStore:
         with pytest.raises(Exception, match="Redis connection error"):
             await store.get("test-key")
         
-        # Test JSON encoding errors
-        mock_client.set.side_effect = Exception("Redis set error")
-        
-        with pytest.raises(Exception, match="Redis set error"):
+        # Test connection unavailable during set operation
+        # The store checks connection health before Redis operations
+        with pytest.raises(ConnectionError, match="Redis connection not available"):
             await store.set("test-key", {"data": "test"})
     
     @pytest.mark.asyncio

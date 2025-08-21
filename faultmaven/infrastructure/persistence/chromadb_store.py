@@ -7,6 +7,7 @@ the IVectorStore interface for consistent vector database operations.
 
 from typing import List, Dict, Optional
 import os
+from urllib.parse import urlparse
 import chromadb
 from chromadb.config import Settings
 from faultmaven.models.interfaces import IVectorStore
@@ -29,22 +30,39 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         )
         
         # Get ChromaDB configuration from environment or centralized config
-        # Use environment variables directly to support testing environment changes
         chromadb_url = os.getenv("CHROMADB_URL", config.chromadb.url)
         chromadb_token = os.getenv("CHROMADB_API_KEY", config.chromadb.api_key)
-        
-        # Parse host from URL properly
-        host = chromadb_url.replace("http://", "").replace("https://", "").split(":")[0]
-        
-        # Initialize ChromaDB client
-        self.client = chromadb.HttpClient(
-            host=host,
-            port=30080,
-            settings=Settings(
-                chroma_client_auth_provider="chromadb.auth.token.TokenAuthClientProvider",
-                chroma_client_auth_credentials=chromadb_token
+
+        # Parse host/port from URL
+        parsed = urlparse(chromadb_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
+        # Initialize ChromaDB client with optional auth settings
+        settings_kwargs = {}
+        if chromadb_token:
+            # Attempt to set auth provider only if available, without binding local 'chromadb'
+            try:
+                from importlib import import_module
+                import_module("chromadb.auth.token")
+                settings_kwargs.update({
+                    "chroma_client_auth_provider": "chromadb.auth.token.TokenAuthClientProvider",
+                    "chroma_client_auth_credentials": chromadb_token,
+                })
+            except Exception:
+                # Proceed without explicit auth configuration
+                pass
+
+        try:
+            self.client = chromadb.HttpClient(
+                host=host,
+                port=port,
+                settings=Settings(**settings_kwargs) if settings_kwargs else Settings()
             )
-        )
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.error(f"Failed to initialize ChromaDB HTTP client: {e}")
+            raise
         
         # Get or create collection
         self.collection_name = os.getenv("CHROMADB_COLLECTION", config.chromadb.collection_name)
@@ -54,7 +72,11 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
                 metadata={"description": "FaultMaven knowledge base"}
             )
             if hasattr(self, 'logger'):
-                self.logger.info(f"✅ Connected to ChromaDB collection: {self.collection_name}")
+                # INFO: collection creation/connect events
+                self.logger.info(
+                    f"ChromaDB collection ready",
+                    extra={"collection": self.collection_name}
+                )
         except Exception as e:
             if hasattr(self, 'logger'):
                 self.logger.error(f"❌ Failed to connect to ChromaDB: {e}")
@@ -70,7 +92,36 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         async def _add_wrapper():
             ids = [doc['id'] for doc in documents]
             contents = [doc['content'] for doc in documents]
-            metadatas = [doc.get('metadata', {}) for doc in documents]
+            raw_metadatas = [doc.get('metadata', {}) for doc in documents]
+
+            # Normalize metadata via canonical schema
+            from faultmaven.models.vector_metadata import VectorMetadata
+            metadatas: List[Dict] = []
+            for md in raw_metadatas:
+                try:
+                    vm = VectorMetadata(
+                        title=md.get('title'),
+                        document_type=md.get('document_type'),
+                        tags=md.get('tags', []),
+                        source_url=md.get('source_url'),
+                        created_at=md.get('created_at'),
+                        updated_at=md.get('updated_at'),
+                    )
+                    metadatas.append(vm.to_chroma_metadata())
+                except Exception:
+                    # Fallback sanitizer
+                    sanitized: Dict = {}
+                    for k, v in (md or {}).items():
+                        if v is None:
+                            continue
+                        if isinstance(v, (str, int, float, bool)):
+                            sanitized[k] = v
+                        else:
+                            try:
+                                sanitized[k] = str(v)
+                            except Exception:
+                                continue
+                    metadatas.append(sanitized)
             
             self.collection.add(
                 ids=ids,
@@ -78,7 +129,17 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
                 metadatas=metadatas
             )
             
-            self.logger.info(f"Added {len(documents)} documents to vector store")
+            # INFO: embedding counts
+            if hasattr(self, 'logger'):
+                self.logger.info(
+                    f"Added documents to vector store",
+                    extra={"count": len(documents), "collection": self.collection_name}
+                )
+            # DEBUG: semantic indexing details
+            if hasattr(self, 'logger'):
+                self.logger.debug(
+                    f"Semantic indexing completed for ids={ids}"
+                )
         
         await self.call_external(
             operation_name="add_documents",

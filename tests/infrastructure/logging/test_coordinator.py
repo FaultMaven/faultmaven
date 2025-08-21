@@ -32,7 +32,7 @@ class TestRequestContext:
         assert len(ctx.correlation_id) > 0
         assert ctx.session_id is None
         assert ctx.user_id is None
-        assert ctx.investigation_id is None
+        assert ctx.case_id is None
         assert ctx.agent_phase is None
         assert isinstance(ctx.start_time, datetime)
         assert isinstance(ctx.attributes, dict)
@@ -52,7 +52,7 @@ class TestRequestContext:
             correlation_id=custom_id,
             session_id="session-123",
             user_id="user-456",
-            investigation_id="inv-789",
+            case_id="case-789",
             agent_phase="define_blast_radius",
             start_time=custom_time,
             attributes=custom_attrs
@@ -61,7 +61,7 @@ class TestRequestContext:
         assert ctx.correlation_id == custom_id
         assert ctx.session_id == "session-123"
         assert ctx.user_id == "user-456"
-        assert ctx.investigation_id == "inv-789"
+        assert ctx.case_id == "case-789"
         assert ctx.agent_phase == "define_blast_radius"
         assert ctx.start_time == custom_time
         assert ctx.attributes == custom_attrs

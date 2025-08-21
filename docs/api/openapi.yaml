@@ -1,42 +1,81 @@
 openapi: 3.1.0
 info:
   title: FaultMaven API
-  description: "\n# FaultMaven API Documentation\n\nAI-powered troubleshooting assistant\
-    \ for Engineers, SREs, and DevOps professionals.\n\n## Architecture Overview\n\
-    \nThe FaultMaven API follows clean architecture principles with:\n\n- **API Layer**:\
-    \ FastAPI routers handling HTTP requests with comprehensive middleware\n- **Service\
-    \ Layer**: Business logic orchestration using dependency injection\n- **Core Layer**:\
-    \ Domain logic including AI reasoning engine and data processing\n- **Infrastructure\
-    \ Layer**: External service integrations (LLM providers, databases, security)\n\
-    \n## Key Features\n\n- **AI-Powered Troubleshooting**: Advanced reasoning engine\
-    \ using multiple LLM providers\n- **Privacy-First Design**: Comprehensive PII\
-    \ redaction before external processing\n- **Session Management**: Redis-backed\
-    \ session persistence for multi-turn conversations\n- **Knowledge Base**: RAG-enabled\
-    \ document ingestion and retrieval using ChromaDB\n- **Data Processing**: Intelligent\
-    \ log analysis and classification\n- **Performance Monitoring**: Real-time metrics\
-    \ and health monitoring\n- **Error Recovery**: Automatic error detection and recovery\
-    \ mechanisms\n\n## Authentication\n\nCurrently, the API does not require authentication.\
-    \ This may change in future versions.\nWhen implemented, authentication will use\
-    \ API key-based authentication.\n\n## Rate Limiting\n\nAPI requests are subject\
-    \ to rate limiting to ensure fair usage and system stability.\nCurrent limits\
-    \ are applied at the infrastructure level.\n\n## Error Handling\n\nAll endpoints\
-    \ return structured error responses with appropriate HTTP status codes.\n\n###\
-    \ Standard Error Response Format\n\n```json\n{\n    \"detail\": \"Human-readable\
-    \ error description\",\n    \"error_type\": \"ErrorType\",\n    \"correlation_id\"\
-    : \"uuid-here\",\n    \"timestamp\": \"2025-01-15T10:30:00Z\"\n}\n```\n\n### Common\
-    \ HTTP Status Codes\n\n- `200`: Success\n- `400`: Bad Request - Invalid input\
-    \ data\n- `401`: Unauthorized - Authentication required (future)\n- `404`: Not\
-    \ Found - Resource not found\n- `422`: Validation Error - Request data validation\
-    \ failed\n- `429`: Too Many Requests - Rate limit exceeded\n- `500`: Internal\
-    \ Server Error - Unexpected server error\n- `503`: Service Unavailable - External\
-    \ service unavailable\n\n## Data Privacy\n\nAll data submitted to the API is processed\
-    \ through privacy-first pipelines with:\n\n- Comprehensive PII redaction using\
-    \ Microsoft Presidio\n- Data sanitization before external LLM processing\n- Session-based\
-    \ data isolation\n- Configurable data retention policies\n\n## Performance Characteristics\n\
-    \n- **Response Time**: < 200ms for typical queries (excluding LLM processing)\n\
-    - **Throughput**: Supports 100+ concurrent requests\n- **Availability**: 99.9%\
-    \ uptime target with health monitoring\n- **Scalability**: Horizontal scaling\
-    \ support via stateless design\n        "
+  description: |
+    # FaultMaven API Documentation
+
+    AI-powered troubleshooting assistant for Engineers, SREs, and DevOps professionals.
+
+    ## Architecture Overview
+
+    The FaultMaven API follows clean architecture principles with:
+
+    - **API Layer**: FastAPI routers handling HTTP requests with comprehensive middleware
+    - **Service Layer**: Business logic orchestration using dependency injection
+    - **Core Layer**: Domain logic including AI reasoning engine and data processing
+    - **Infrastructure Layer**: External service integrations (LLM providers, databases, security)
+
+    ## Key Features
+
+    - **AI-Powered Troubleshooting**: Advanced reasoning engine using multiple LLM providers
+    - **Privacy-First Design**: Comprehensive PII redaction before external processing
+    - **Session Management**: Redis-backed session persistence for multi-turn conversations
+    - **Knowledge Base**: RAG-enabled document ingestion and retrieval using ChromaDB
+    - **Data Processing**: Intelligent log analysis and classification
+    - **Performance Monitoring**: Real-time metrics and health monitoring
+    - **Error Recovery**: Automatic error detection and recovery mechanisms
+
+    ## Authentication
+
+    Currently, the API does not require authentication. This may change in future versions.
+    When implemented, authentication will use API key-based authentication.
+
+    ## Rate Limiting
+
+    API requests are subject to rate limiting to ensure fair usage and system stability.
+    Current limits are applied at the infrastructure level.
+
+    ## Error Handling
+
+    All endpoints return structured error responses with appropriate HTTP status codes.
+
+    ### Standard Error Response Format
+
+    ```json
+    {
+        "detail": "Human-readable error description",
+        "error_type": "ErrorType",
+        "correlation_id": "uuid-here",
+        "timestamp": "2025-01-15T10:30:00Z"
+    }
+    ```
+
+    ### Common HTTP Status Codes
+
+    - `200`: Success
+    - `400`: Bad Request - Invalid input data
+    - `401`: Unauthorized - Authentication required (future)
+    - `404`: Not Found - Resource not found
+    - `422`: Validation Error - Request data validation failed
+    - `429`: Too Many Requests - Rate limit exceeded
+    - `500`: Internal Server Error - Unexpected server error
+    - `503`: Service Unavailable - External service unavailable
+
+    ## Data Privacy
+
+    All data submitted to the API is processed through privacy-first pipelines with:
+
+    - Comprehensive PII redaction using Microsoft Presidio
+    - Data sanitization before external LLM processing
+    - Session-based data isolation
+    - Configurable data retention policies
+
+    ## Performance Characteristics
+
+    - **Response Time**: < 200ms for typical queries (excluding LLM processing)
+    - **Throughput**: Supports 100+ concurrent requests
+    - **Availability**: 99.9% uptime target with health monitoring
+    - **Scalability**: Horizontal scaling support via stateless design
   version: 1.0.0
   contact:
     name: FaultMaven Team
@@ -406,6 +445,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agent/title:
+    post:
+      tags:
+      - query_processing
+      summary: Generate Conversation Title
+      description: "Generate a concise conversation title (3-12 words, default 8).\n\nArgs:\n    request: TitleGenerateRequest with session_id, optional context, optional max_words\n\nReturns:\n    TitleResponse with sanitized title and view_state\n\nNotes:\n    - This endpoint is purpose-built and should be preferred over /agent/query for title generation.\n    - If still using /agent/query for backward compatibility, set context.is_title_generation=true and read title from AgentResponse.content."
+      operationId: generate_title_api_v1_agent_title_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TitleGenerateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TitleResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agent/cases/{case_id}:
     get:
       tags:
@@ -529,7 +594,7 @@ paths:
                 description: Upload team runbook for knowledge base
                 value:
                   file: '[PDF or Markdown runbook content]'
-                  document_type: runbook
+                  document_type: playbook
                   tags:
                   - database
                   - troubleshooting
@@ -540,7 +605,7 @@ paths:
                 description: Upload system architecture documentation
                 value:
                   file: '[Documentation content]'
-                  document_type: architecture_doc
+                  document_type: reference
                   tags:
                   - architecture
                   - microservices
@@ -577,6 +642,11 @@ paths:
         schema:
           anyOf:
           - type: string
+            enum:
+            - playbook
+            - troubleshooting_guide
+            - reference
+            - how_to
           - type: 'null'
           title: Document Type
       - name: tags
@@ -1729,6 +1799,7 @@ components:
       required:
       - file
       - title
+      - document_type
       title: Body_upload_document_api_v1_knowledge_documents_post
     Body_upload_document_kb_api_v1_kb_documents_post:
       properties:
@@ -1767,6 +1838,7 @@ components:
       required:
       - file
       - title
+      - document_type
       title: Body_upload_document_kb_api_v1_kb_documents_post
     DataType:
       type: string
@@ -1895,6 +1967,49 @@ components:
       - query
       title: QueryRequest
       description: Request model for troubleshooting queries
+    TitleGenerateRequest:
+      type: object
+      title: TitleGenerateRequest
+      description: Request model for conversation title generation
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+          description: Session identifier
+        context:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Context
+          description: Optional context (e.g., last_user_message, summary, messages, notes)
+        max_words:
+          type: integer
+          minimum: 3
+          maximum: 12
+          default: 8
+          title: Max Words
+          description: Maximum words for the generated title (3–12)
+      required:
+      - session_id
+    TitleResponse:
+      type: object
+      title: TitleResponse
+      description: Response model for conversation title generation
+      required:
+      - schema_version
+      - title
+      - view_state
+      properties:
+        schema_version:
+          type: string
+          enum: ["3.1.0"]
+          title: Schema Version
+        title:
+          type: string
+          title: Title
+          description: Sanitized, concise title text
+        view_state:
+          $ref: '#/components/schemas/ViewState'
     SearchRequest:
       properties:
         query:
@@ -2647,6 +2762,31 @@ components:
           user_id: user_123
           environment: production
           cases_count: 3
+    APIError:
+      type: object
+      required: ["detail", "error_type", "timestamp"]
+      properties:
+        detail:
+          type: string
+          description: Human-readable error description
+        error_type:
+          type: string
+          description: Machine-readable error category
+        correlation_id:
+          type: string
+          description: Request correlation ID for debugging
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+          description: Error timestamp in UTC timezone (ISO 8601 format with Z suffix)
+          example: "2025-01-15T10:30:00Z"
+          pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3})?Z$"
+      example:
+        detail: Session not found or has expired
+        error_type: SESSION_NOT_FOUND
+        correlation_id: 550e8400-e29b-41d4-a716-446655440000
+        timestamp: "2025-01-15T10:30:00Z"
   securitySchemes:
     ApiKeyAuth:
       type: apiKey
@@ -2667,6 +2807,8 @@ tags:
   externalDocs:
     description: Troubleshooting Guide
     url: https://docs.faultmaven.ai/troubleshooting
+- name: query_processing
+  description: AI-powered query processing and troubleshooting operations
 - name: data_ingestion
   description: File upload and data processing operations
   externalDocs:

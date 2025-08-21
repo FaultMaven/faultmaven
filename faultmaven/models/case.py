@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ValidationInfo, validator, model_validator
 
 
 class CaseStatus(str, Enum):
@@ -86,23 +86,46 @@ class CaseParticipant(BaseModel):
     added_by: Optional[str] = Field(None, description="Who added this participant")
     last_accessed: Optional[datetime] = Field(None, description="Last time user accessed case")
     
-    # Permissions
-    can_edit: bool = Field(default=False, description="Can edit case details")
-    can_share: bool = Field(default=False, description="Can share case with others")
-    can_archive: bool = Field(default=False, description="Can archive case")
+    # Permissions - use None as default to detect when not explicitly set, but always return bool
+    can_edit: bool = Field(default=None, description="Can edit case details")
+    can_share: bool = Field(default=None, description="Can share case with others")
+    can_archive: bool = Field(default=None, description="Can archive case")
     
-    @validator('can_edit', 'can_share', 'can_archive', pre=True, always=True)
-    def set_permissions_by_role(cls, v, values):
-        """Set permissions based on role"""
-        role = values.get('role')
-        if role == ParticipantRole.OWNER:
-            return True
-        elif role == ParticipantRole.COLLABORATOR:
-            return v if v is not None else True
-        elif role == ParticipantRole.SUPPORT:
-            return v if v is not None else False
+    @model_validator(mode='after')
+    def set_permissions_by_role(self):
+        """Set permissions based on role - runs after all fields are set"""
+        
+        if self.role == ParticipantRole.OWNER:
+            # Owners get all permissions unless explicitly set to False
+            if self.can_edit is None:
+                self.can_edit = True
+            if self.can_share is None:
+                self.can_share = True
+            if self.can_archive is None:
+                self.can_archive = True
+        elif self.role == ParticipantRole.COLLABORATOR:
+            # Fixed: For collaborators, default edit and share to True, archive to False
+            if self.can_edit is None:
+                self.can_edit = True
+            if self.can_share is None:
+                self.can_share = True
+            if self.can_archive is None:
+                self.can_archive = False
+        elif self.role == ParticipantRole.SUPPORT:
+            # Support gets default permissions (False) unless explicitly set
+            if self.can_edit is None:
+                self.can_edit = False
+            if self.can_share is None:
+                self.can_share = False
+            if self.can_archive is None:
+                self.can_archive = False
         else:  # VIEWER
-            return False
+            # Viewers get no permissions regardless of explicit settings
+            self.can_edit = False
+            self.can_share = False
+            self.can_archive = False
+            
+        return self
     
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
@@ -351,7 +374,7 @@ class Case(BaseModel):
 class CaseCreateRequest(BaseModel):
     """Request model for creating a new case"""
     
-    title: str = Field(..., description="Case title", min_length=1, max_length=200)
+    title: str = Field(..., description="Case title", max_length=200)
     description: Optional[str] = Field(None, description="Case description", max_length=2000)
     priority: CasePriority = Field(default=CasePriority.MEDIUM, description="Case priority")
     tags: List[str] = Field(default_factory=list, description="Case tags")

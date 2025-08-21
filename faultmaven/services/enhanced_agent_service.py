@@ -669,10 +669,12 @@ Provide a comprehensive troubleshooting response that:
         kb_results = agent_result.get('knowledge_base_results', [])
         for kb_result in kb_results:
             if isinstance(kb_result, dict):
+                text = kb_result.get('content') or kb_result.get('snippet') or ''
                 sources.append(Source(
                     type=SourceType.KNOWLEDGE_BASE,
-                    name=kb_result.get('title', 'Knowledge Base Document'),
-                    snippet=kb_result.get('snippet', kb_result.get('content', ''))[:200] + "..."
+                    content=(str(text)[:200] + ("..." if len(str(text)) > 200 else "")),
+                    confidence=None,
+                    metadata={"title": kb_result.get('title', 'Knowledge Base Document')}
                 ))
         
         # Add memory-based sources
@@ -681,8 +683,9 @@ Provide a comprehensive troubleshooting response that:
                 if isinstance(insight, dict):
                     sources.append(Source(
                         type=SourceType.KNOWLEDGE_BASE,
-                        name="Previous Interaction Insight",
-                        snippet=insight.get('description', str(insight))[:200] + "..."
+                        content=(insight.get('description', str(insight))[:200] + "..."),
+                        confidence=None,
+                        metadata={"source": "Previous Interaction Insight"}
                     ))
         
         return sources[:10]  # Limit to 10 sources

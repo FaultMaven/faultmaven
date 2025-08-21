@@ -1,8 +1,5 @@
 # FaultMaven API Reference
 
-
-# FaultMaven API Documentation
-
 AI-powered troubleshooting assistant for Engineers, SREs, and DevOps professionals.
 
 ## Architecture Overview
@@ -13,6 +10,12 @@ The FaultMaven API follows clean architecture principles with:
 - **Service Layer**: Business logic orchestration using dependency injection
 - **Core Layer**: Domain logic including AI reasoning engine and data processing
 - **Infrastructure Layer**: External service integrations (LLM providers, databases, security)
+
+## API Version
+
+**Current Version:** 1.0.0  
+**Base URL:** `/`  
+**OpenAPI Specification:** 3.1.0
 
 ## Key Features
 
@@ -28,6 +31,10 @@ The FaultMaven API follows clean architecture principles with:
 
 Currently, the API does not require authentication. This may change in future versions.
 When implemented, authentication will use API key-based authentication.
+
+**Planned Authentication Methods:**
+- **API Key**: `X-API-Key` header authentication
+- **JWT Bearer**: JWT token-based authentication
 
 ## Rate Limiting
 
@@ -75,15 +82,8 @@ All data submitted to the API is processed through privacy-first pipelines with:
 - **Throughput**: Supports 100+ concurrent requests
 - **Availability**: 99.9% uptime target with health monitoring
 - **Scalability**: Horizontal scaling support via stateless design
-        
 
-**Version:** 1.0.0  
-**Base URL:** `/`  
-**Generated:** 2025-08-13T08:06:54.142059Z
 
-## Authentication
-
-Currently, the API does not require authentication. Future versions will implement API key or JWT-based authentication.
 
 ## Endpoints
 
@@ -112,7 +112,7 @@ Health check endpoint with service delegation
 Returns:
     Service health status
 
-**Tags:** `query_processing`, `query_processing`
+**Tags:** `query_processing`
 
 **Responses:**
 
@@ -228,7 +228,7 @@ Returns:
 Raises:
     HTTPException: On service layer errors (400, 404, 422, 500)
 
-**Tags:** `query_processing`, `query_processing`
+**Tags:** `query_processing`
 
 **Request Body:**
 
@@ -314,6 +314,50 @@ Content-Type: `application/json`
 
 ---
 
+### `/api/v1/agent/title`
+
+#### POST
+
+**Generate Conversation Title**
+
+Generate a concise conversation title (3-12 words, default 8).
+
+**Args:**
+- `request`: TitleGenerateRequest with session_id, optional context, optional max_words
+
+**Returns:**
+- TitleResponse with sanitized title and view_state
+
+**Notes:**
+- This endpoint is purpose-built and should be preferred over `/api/v1/agent/query` for title generation
+- If still using `/api/v1/agent/query` for backward compatibility, set `context.is_title_generation=true` and read title from AgentResponse.content
+
+**Tags:** `query_processing`
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**200** - Successful Response
+
+```json
+{
+  "schema_version": "3.1.0",
+  "title": "Database Connection Pool Exhaustion Investigation",
+  "view_state": {
+    "show_upload_button": true,
+    "show_plan_actions": false,
+    "highlighted_sections": ["connection_pool", "database"]
+  }
+}
+```
+
+**422** - Validation Error
+
+---
+
 ### `/api/v1/agent/sessions/{session_id}/investigations`
 
 #### GET
@@ -370,7 +414,7 @@ Returns:
 Raises:
     HTTPException: On service layer errors (404, 500, etc.)
 
-**Tags:** `query_processing`, `query_processing`
+**Tags:** `query_processing`
 
 **Request Body:**
 
@@ -448,7 +492,7 @@ Compatibility endpoint for legacy tests - delegates to main upload function
 This endpoint maintains backward compatibility for existing tests that
 expect POST to /data instead of /data/upload.
 
-**Tags:** `data_ingestion`, `data_processing`
+**Tags:** `data_ingestion`
 
 **Request Body:**
 
@@ -478,7 +522,7 @@ Args:
 Returns:
     List of UploadedData results
 
-**Tags:** `data_ingestion`, `data_processing`
+**Tags:** `data_ingestion`
 
 **Request Body:**
 
@@ -715,7 +759,7 @@ Content-Type: `application/json`
 
 Get search analytics (kb prefix)
 
-**Tags:** `knowledge_base`, `knowledge_base`
+**Tags:** `knowledge_base`
 
 **Responses:**
 
@@ -731,7 +775,7 @@ Get search analytics (kb prefix)
 
 List knowledge base documents (kb prefix)
 
-**Tags:** `knowledge_base`, `knowledge_base`
+**Tags:** `knowledge_base`
 
 **Parameters:**
 
@@ -754,7 +798,7 @@ List knowledge base documents (kb prefix)
 
 Upload a document to the knowledge base (kb prefix)
 
-**Tags:** `knowledge_base`, `knowledge_base`
+**Tags:** `knowledge_base`
 
 **Request Body:**
 
@@ -1264,7 +1308,7 @@ Args:
 Returns:
     List of sessions
 
-**Tags:** `session_management`, `session_management`
+**Tags:** `session_management`
 
 **Parameters:**
 
@@ -1897,20 +1941,56 @@ Model for uploaded data processing
 
 **Properties:**
 
-- `schema_version` (string) ✅ - Always "3.1.0" for new responses
-- `error` (object) ✅ - Error details object containing code and message
+- `detail` (string) ✅ - Human-readable error description
+- `error_type` (string) ❌ - Machine-readable error classification
+- `correlation_id` (string) ❌ - Unique identifier for request tracing and support
+- `timestamp` (string) ❌ - Error occurrence timestamp in UTC timezone (ISO 8601 format with Z suffix)
+- `context` (object) ❌ - Additional error context for debugging
 
 **Example:**
 
 ```json
 {
-  "schema_version": "3.1.0",
-  "error": {
-    "code": "SESSION_NOT_FOUND",
-    "message": "The specified session ID does not exist or has expired"
+  "detail": "Invalid session ID provided",
+  "error_type": "ValidationError",
+  "correlation_id": "123e4567-e89b-12d3-a456-426614174000",
+  "timestamp": "2025-01-15T10:30:00Z",
+  "context": {
+    "session_id": "invalid_session_123",
+    "validation_errors": [
+      "Session ID format invalid"
+    ]
   }
 }
 ```
+
+### TitleGenerateRequest
+
+**Request model for conversation title generation**
+
+**Properties:**
+
+- `session_id` (string) ✅ - Session identifier
+- `context` (object) ❌ - Optional context (e.g., last_user_message, summary, messages, notes)
+- `max_words` (integer) ❌ - Maximum words for the generated title (3–12), default: 8
+
+**Required:**
+- `session_id`
+
+### TitleResponse
+
+**Response model for conversation title generation**
+
+**Properties:**
+
+- `schema_version` (string) ✅ - Always "3.1.0"
+- `title` (string) ✅ - Sanitized, concise title text
+- `view_state` (ViewState) ✅ - UI state configuration
+
+**Required:**
+- `schema_version`
+- `title`
+- `view_state`
 
 ---
 
@@ -1922,12 +2002,17 @@ Model for uploaded data processing
 
 **Properties:**
 
-- `schema_version` (string) ✅ - Always "3.1.0"
-- `content` (string) ✅ - Main response content from the AI agent
 - `response_type` (ResponseType) ✅ - Explicit agent intent for this response
-- `view_state` (ViewState) ✅ - Read-only state snapshot for frontend sync
+- `content` (string) ✅ - Primary response content for display to user (plain text or markdown)
+- `session_id` (string) ✅ - Session identifier
+- `case_id` (string) ❌ - Case identifier for this troubleshooting case within a session (optional)
+- `confidence_score` (number) ❌ - AI confidence in the response (0.0 to 1.0)
 - `sources` (array) ❌ - List of Source objects for evidence attribution
-- `plan` (array) ❌ - List of PlanStep objects (only for PLAN_PROPOSAL responses)
+- `plan` (PlanStep) ❌ - Troubleshooting plan (for PLAN_PROPOSAL responses)
+- `estimated_time_to_resolution` (string) ❌ - Estimated time to resolve the issue
+- `next_action_hint` (string) ❌ - Hint for the next user action
+- `view_state` (ViewState) ❌ - UI state configuration
+- `metadata` (object) ❌ - Additional response metadata
 
 **Example:**
 
@@ -1960,23 +2045,29 @@ Model for uploaded data processing
 
 **Values:**
 
-- `answer` - Direct answer to user's question
-- `plan_proposal` - Multi-step troubleshooting plan
-- `clarification_request` - Agent needs more information
-- `confirmation_request` - Agent needs user confirmation to proceed
+- `ANSWER` - Direct answer to user's question
+- `PLAN_PROPOSAL` - Multi-step troubleshooting plan
+- `CLARIFICATION_REQUEST` - Agent needs more information
+- `CONFIRMATION_REQUEST` - Agent needs user confirmation to proceed
+- `SOLUTION_READY` - Solution is ready to implement
+- `NEEDS_MORE_DATA` - Requires additional data uploads
+- `ESCALATION_REQUIRED` - Issue escalated to human support
+
+**Note:** All values MUST be in UPPERCASE format as defined in the OpenAPI specification.
 
 ---
 
 ### ViewState
 
-**Read-only state snapshot for frontend synchronization**
+**UI state configuration for frontend behavior**
 
 **Properties:**
 
-- `session_id` (string) ✅ - Current session identifier
-- `case_id` (string) ✅ - Persistent investigation case identifier  
-- `running_summary` (string) ✅ - Current investigation summary
-- `uploaded_data` (array) ✅ - List of UploadedData objects in this session
+- `show_upload_button` (boolean) ❌ - Whether to show file upload button
+- `show_plan_actions` (boolean) ❌ - Whether to show plan action buttons
+- `show_confirmation_dialog` (boolean) ❌ - Whether to show confirmation dialog
+- `highlighted_sections` (array) ❌ - Sections to highlight in the UI
+- `custom_actions` (array) ❌ - Custom action buttons to display
 
 ---
 
@@ -1987,8 +2078,9 @@ Model for uploaded data processing
 **Properties:**
 
 - `type` (SourceType) ✅ - Type of evidence source
-- `name` (string) ✅ - Source name (filename, document title, etc.)
-- `snippet` (string) ✅ - Relevant excerpt from the source
+- `content` (string) ✅ - Source content or description
+- `confidence` (number) ❌ - Confidence in this source (0.0 to 1.0)
+- `metadata` (object) ❌ - Additional source metadata
 
 ---
 
@@ -1998,9 +2090,12 @@ Model for uploaded data processing
 
 **Values:**
 
+- `log_analysis` - From uploaded log files analysis
 - `knowledge_base` - From ingested knowledge base documents
-- `log_file` - From uploaded log files
-- `web_search` - From web search results
+- `user_input` - From user-provided information
+- `system_metrics` - From system performance metrics
+- `external_api` - From external API responses
+- `previous_case` - From previous troubleshooting cases
 
 ---
 
@@ -2010,7 +2105,12 @@ Model for uploaded data processing
 
 **Properties:**
 
-- `description` (string) ✅ - Clear description of the step to perform
+- `step_number` (integer) ✅ - Step number in the plan
+- `action` (string) ✅ - Action to perform
+- `description` (string) ✅ - Detailed description of the step
+- `estimated_time` (string) ❌ - Estimated time to complete this step
+- `dependencies` (array) ❌ - Step numbers this step depends on
+- `required_tools` (array) ❌ - Tools or permissions required for this step
 
 ---
 
@@ -2056,6 +2156,31 @@ Model for uploaded data processing
 - `last_activity` (string) ❌ - Last activity timestamp
 - `metadata` (object) ❌ - Session metadata and context
 
+### Case
+
+**Properties:**
+
+- `case_id` (string) ✅ - Unique case identifier
+- `session_id` (string) ✅ - Session this case belongs to
+- `status` (string) ✅ - Current case status
+- `title` (string) ✅ - Case title
+- `description` (string) ❌ - Case description
+- `priority` (string) ❌ - Case priority
+- `created_at` (string) ❌ - Case creation timestamp
+- `updated_at` (string) ❌ - Last update timestamp
+- `resolved_at` (string) ❌ - Resolution timestamp
+
+### UploadedFile
+
+**Properties:**
+
+- `file_id` (string) ✅ - Unique file identifier
+- `filename` (string) ✅ - Original filename
+- `size_bytes` (integer) ✅ - File size in bytes
+- `uploaded_at` (string) ✅ - Upload timestamp
+- `file_type` (string) ❌ - Detected file type
+- `processing_status` (string) ❌ - File processing status
+
 **Example:**
 
 ```json
@@ -2073,4 +2198,389 @@ Model for uploaded data processing
 ```
 
 ---
+
+## API Tags
+
+The API is organized into the following functional areas:
+
+- **`troubleshooting`** - AI-powered troubleshooting operations
+- **`query_processing`** - AI-powered query processing and troubleshooting operations  
+- **`data_ingestion`** - File upload and data processing operations
+- **`knowledge_base`** - Knowledge base and document management operations
+- **`session_management`** - Session lifecycle and management operations
+- **`case_management`** - Case lifecycle and management operations
+- **`file_management`** - File upload and management operations
+- **`real_time`** - Real-time communication endpoints (WebSocket, SSE)
+
+---
+
+## Core Schema Concepts
+
+### Session vs Case Distinction
+
+Understanding the difference between sessions and cases is crucial for proper API usage:
+
+**session_id**
+- **Purpose**: Short-lived visitor pass for temporary connections
+- **Lifecycle**: Created per browser session, expires after inactivity
+- **Scope**: Spans multiple investigations within a single user session
+- **Example**: `sess_abc123def456`
+
+**case_id** 
+- **Purpose**: Long-lived case file number for persistent investigations
+- **Lifecycle**: Created per investigation, persists for audit and follow-up
+- **Scope**: Single investigation from start to resolution
+- **Example**: `case_789ghi012jkl`
+
+### Response Types
+
+The `ResponseType` enum explicitly defines the agent's intent for each response:
+
+| Type | Purpose | UI Rendering | Plan Field |
+|------|---------|--------------|------------|
+| `ANSWER` | Direct response to user's question | Display as conversational message | Not allowed |
+| `PLAN_PROPOSAL` | Multi-step troubleshooting plan | Show as structured steps with actions | Required |
+| `CLARIFICATION_REQUEST` | Agent needs more information | Prompt user for additional input | Not allowed |
+| `CONFIRMATION_REQUEST` | Agent needs user approval | Show confirmation dialog | Not allowed |
+| `SOLUTION_READY` | Solution is ready to implement | Show solution with action buttons | Not allowed |
+| `NEEDS_MORE_DATA` | Requires additional data uploads | Show file upload interface | Not allowed |
+| `ESCALATION_REQUIRED` | Issue escalated to human support | Show escalation notification | Not allowed |
+
+### Evidence Sources
+
+All responses include `sources` for transparency and trust:
+
+| Source Type | Description | Example Name | Typical Snippet |
+|-------------|-------------|--------------|-----------------|
+| `log_analysis` | From uploaded log files | "application.log" | "ERROR: Connection timeout after 30s" |
+| `knowledge_base` | From ingested documentation | "database_runbook.md" | "Connection pool exhaustion indicates..." |
+| `user_input` | From user-provided information | "User Description" | "User reported HTTP 500 errors" |
+| `system_metrics` | From system performance metrics | "CPU Usage" | "CPU utilization at 95%" |
+| `external_api` | From external API responses | "Monitoring Service" | "Service health check failed" |
+| `previous_case` | From previous troubleshooting cases | "Case #123" | "Similar issue resolved by..." |
+
+---
+
+## Frontend Integration Patterns
+
+### Basic Query Flow
+
+```typescript
+// TypeScript example for frontend integration
+interface QueryRequest {
+  session_id: string;
+  query: string;
+}
+
+interface AgentResponse {
+  schema_version: "3.1.0";
+  content: string;
+  response_type: "answer" | "plan_proposal" | "clarification_request" | "confirmation_request" | "solution_ready" | "needs_more_data" | "escalation_required";
+  view_state: ViewState;
+  sources?: Source[];
+  plan?: PlanStep[];
+}
+
+async function queryAgent(sessionId: string, query: string): Promise<AgentResponse> {
+  const response = await fetch('/api/v1/agent/query', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      session_id: sessionId,
+      query: query
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(`API Error: ${error.error.message}`);
+  }
+
+  return response.json();
+}
+```
+
+### Response Type Handling
+
+```typescript
+function handleAgentResponse(response: AgentResponse) {
+  switch (response.response_type) {
+    case "answer":
+      // Display as regular chat message with sources
+      displayAnswer(response.content, response.sources);
+      break;
+      
+    case "plan_proposal":
+      // Show structured plan with actionable steps
+      displayPlan(response.content, response.plan, response.sources);
+      break;
+      
+    case "clarification_request":
+      // Show form or prompt for additional information
+      showClarificationPrompt(response.content);
+      break;
+      
+    case "confirmation_request":
+      // Show confirmation dialog with approve/deny options
+      showConfirmationDialog(response.content);
+      break;
+      
+    case "solution_ready":
+      // Show solution with implementation buttons
+      showSolution(response.content, response.sources);
+      break;
+      
+    case "needs_more_data":
+      // Show file upload interface
+      showDataUploadPrompt(response.content);
+      break;
+      
+    case "escalation_required":
+      // Show escalation notification
+      showEscalationNotice(response.content);
+      break;
+  }
+  
+  // Always update view state for session tracking
+  updateViewState(response.view_state);
+}
+```
+
+### ViewState Management
+
+```typescript
+interface ViewState {
+  session_id: string;
+  case_id: string;
+  running_summary: string;
+  uploaded_data: UploadedData[];
+}
+
+function updateViewState(viewState: ViewState) {
+  // Update current case information
+  document.getElementById('case-id').textContent = viewState.case_id;
+  document.getElementById('summary').textContent = viewState.running_summary;
+  
+  // Update uploaded data list
+  const dataList = document.getElementById('uploaded-data');
+  dataList.innerHTML = '';
+  viewState.uploaded_data.forEach(data => {
+    const item = document.createElement('li');
+    item.textContent = `${data.name} (${data.type})`;
+    dataList.appendChild(item);
+  });
+}
+```
+
+## Best Practices
+
+### 1. Always Handle All Response Types
+
+Ensure your frontend can handle all seven response types appropriately:
+
+```typescript
+// ✅ Good - Handles all response types
+function handleResponse(response: AgentResponse) {
+  switch (response.response_type) {
+    case "answer":
+      return displayAnswer(response);
+    case "plan_proposal": 
+      return displayPlan(response);
+    case "clarification_request":
+      return showClarificationForm(response);
+    case "confirmation_request":
+      return showConfirmationDialog(response);
+    case "solution_ready":
+      return showSolution(response);
+    case "needs_more_data":
+      return showDataUpload(response);
+    case "escalation_required":
+      return showEscalation(response);
+    default:
+      console.error('Unknown response type:', response.response_type);
+  }
+}
+```
+
+### 2. Validate Plan Field Consistency
+
+The `plan` field should only be present for `plan_proposal` responses:
+
+```typescript
+// ✅ Good - Validates plan consistency  
+function validateResponse(response: AgentResponse): boolean {
+  if (response.response_type === "plan_proposal") {
+    return response.plan && response.plan.length > 0;
+  } else {
+    return !response.plan; // plan should not exist for other types
+  }
+}
+```
+
+### 3. Display Sources for Trust
+
+Always show source attribution to build user trust:
+
+```typescript
+// ✅ Good - Shows sources with content
+function displayAnswer(content: string, sources: Source[]) {
+  const answerElement = document.createElement('div');
+  answerElement.innerHTML = `
+    <p>${content}</p>
+    <div class="sources">
+      <h4>Sources:</h4>
+      <ul>
+        ${sources.map(source => `
+          <li>
+            <strong>${source.name}</strong> (${source.type})
+            <p><em>"${source.snippet}"</em></p>
+          </li>
+        `).join('')}
+      </ul>
+    </div>
+  `;
+}
+```
+
+### 4. Implement Proper Error Handling
+
+Handle both API errors and validation errors gracefully:
+
+```typescript
+// ✅ Good - Comprehensive error handling
+async function queryAgent(sessionId: string, query: string) {
+  try {
+    const response = await fetch('/api/v1/agent/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, query })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      if (response.status === 404 && errorData.error.code === 'SESSION_NOT_FOUND') {
+        // Handle expired session
+        return await createNewSessionAndRetry(query);
+      }
+      throw new Error(errorData.error.message);
+    }
+    
+    const agentResponse = await response.json();
+    
+    // Validate response structure
+    if (!validateResponse(agentResponse)) {
+      throw new Error('Invalid response format');
+    }
+    
+    return agentResponse;
+    
+  } catch (error) {
+    console.error('Query failed:', error);
+    showErrorMessage('Unable to process query. Please try again.');
+    throw error;
+  }
+}
+```
+
+### 5. Preserve Session Context
+
+Use ViewState to maintain context across interactions:
+
+```typescript
+// ✅ Good - Preserves context between queries
+class FaultMavenClient {
+  private currentViewState: ViewState | null = null;
+  
+  async query(query: string): Promise<AgentResponse> {
+    const sessionId = this.currentViewState?.session_id || await this.createSession();
+    
+    const response = await queryAgent(sessionId, query);
+    
+    // Always update stored view state
+    this.currentViewState = response.view_state;
+    
+    return response;
+  }
+  
+  getCurrentCase(): string | null {
+    return this.currentViewState?.case_id || null;
+  }
+  
+  getSummary(): string | null {
+    return this.currentViewState?.running_summary || null;
+  }
+}
+```
+
+## Performance Considerations
+
+### 1. Source Attribution Impact
+
+The v3.1.0 schema includes more detailed source information. Consider this in your UI design:
+
+```typescript
+// ✅ Efficient - Lazy load source details
+function displaySources(sources: Source[]) {
+  const sourcesContainer = document.createElement('div');
+  sourcesContainer.className = 'sources-collapsed';
+  
+  const summaryElement = document.createElement('button');
+  summaryElement.textContent = `${sources.length} sources`;
+  summaryElement.onclick = () => toggleSourceDetails(sourcesContainer);
+  
+  const detailsElement = document.createElement('div');
+  detailsElement.className = 'sources-details hidden';
+  detailsElement.innerHTML = sources.map(renderSourceDetail).join('');
+  
+  sourcesContainer.appendChild(summaryElement);
+  sourcesContainer.appendChild(detailsElement);
+  
+  return sourcesContainer;
+}
+```
+
+### 2. ViewState Caching
+
+Cache ViewState to avoid redundant API calls:
+
+```typescript
+// ✅ Efficient - Cache view state
+class ViewStateCache {
+  private cache = new Map<string, ViewState>();
+  private cacheExpiry = 5 * 60 * 1000; // 5 minutes
+  
+  get(sessionId: string): ViewState | null {
+    const cached = this.cache.get(sessionId);
+    if (cached && this.isValid(cached)) {
+      return cached;
+    }
+    return null;
+  }
+  
+  set(viewState: ViewState) {
+    this.cache.set(viewState.session_id, {
+      ...viewState,
+      _cached_at: Date.now()
+    });
+  }
+  
+  private isValid(viewState: any): boolean {
+    return (Date.now() - viewState._cached_at) < this.cacheExpiry;
+  }
+}
+```
+
+---
+
+## Getting Help
+
+For additional help and support:
+
+- **API Reference**: [README.md](./README.md) 
+- **Architecture Documentation**: [../architecture/SYSTEM_ARCHITECTURE.md](../architecture/SYSTEM_ARCHITECTURE.md)
+- **Support**: Create issues in the repository for API-specific problems
+
+The v3.1.0 schema provides a robust, intent-driven API that enables rich frontend experiences while maintaining backward compatibility. By following this guide and implementing the recommended patterns, you can build applications that fully leverage the structured, evidence-based responses from the FaultMaven AI agent.
 
