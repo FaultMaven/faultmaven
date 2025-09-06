@@ -4,18 +4,27 @@ This module re-exports all models from the original models.py file
 to ensure existing imports continue to work during the migration.
 """
 
-# Import everything from the original models.py for backward compatibility
+# Import everything from the legacy models for backward compatibility
 # Using explicit imports to avoid issues with star imports
-from ..models_original import (
-    AgentState,
+from .legacy import (
+    AgentState as AgentStateDict,
+    AgentStateEnum,
     DataInsightsResponse,
-    DataType,
-    KnowledgeBaseDocument,
     SearchRequest,
     SearchResult,
     SessionContext,
     TroubleshootingResponse,
+    utc_timestamp,
+    parse_utc_timestamp,
 )
+
+# Import DataType from api.py where it's currently defined
+from .api import DataType, KnowledgeBaseDocument
+
+# For backward compatibility, provide AgentState as the enum (most common usage)
+# and make the TypedDict available as AgentStateDict
+AgentState = AgentStateEnum
+AgentStateDict = AgentStateDict  # Keep this available for core agent tests
 
 # Import new v3.1.0 API models
 from .api import (
@@ -31,6 +40,10 @@ from .api import (
     ErrorResponse,
     TitleGenerateRequest,
     TitleResponse,
+    # Authentication models
+    User,
+    DevLoginRequest,
+    AuthResponse,
 )
 
 # Import new interfaces (Phase 1.1 of refactoring)
@@ -79,40 +92,14 @@ try:
 except ImportError:
     CASE_MODELS_AVAILABLE = False
 
-# Utility functions for timestamp formatting
-from datetime import datetime
-
-def utc_timestamp() -> str:
-    """Generate UTC timestamp with 'Z' suffix format required by API specification.
-    
-    Returns:
-        str: UTC timestamp in ISO format with 'Z' suffix (e.g. "2024-01-15T14:30:00.123Z")
-    """
-    return datetime.utcnow().isoformat() + 'Z'
-
-def parse_utc_timestamp(timestamp_str: str) -> datetime:
-    """Parse UTC timestamp string into timezone-naive datetime object.
-    
-    Handles both 'Z' suffix format and regular ISO format consistently,
-    returning timezone-naive datetime objects to avoid comparison issues.
-    
-    Args:
-        timestamp_str: UTC timestamp string (with or without 'Z' suffix)
-        
-    Returns:
-        datetime: Timezone-naive datetime object in UTC
-    """
-    if timestamp_str.endswith('Z'):
-        # Remove 'Z' suffix and parse as naive datetime (already UTC)
-        return datetime.fromisoformat(timestamp_str[:-1])
-    else:
-        # Parse regular ISO format
-        return datetime.fromisoformat(timestamp_str)
+# Utility functions are now imported from legacy.py
 
 # Re-export everything
 __all__ = [
     # Original models (backward compatibility)
     "AgentState",
+    "AgentStateEnum",
+    "AgentStateDict",
     "DataInsightsResponse", 
     "DataType",
     "KnowledgeBaseDocument",

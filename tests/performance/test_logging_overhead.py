@@ -21,7 +21,7 @@ from faultmaven.infrastructure.logging.coordinator import (
     request_context
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger
-from faultmaven.services.base_service import BaseService
+from faultmaven.services.base import BaseService
 from faultmaven.infrastructure.base_client import BaseExternalClient
 
 

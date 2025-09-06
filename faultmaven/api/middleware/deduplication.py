@@ -65,16 +65,6 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         
         # Endpoint configurations
         self.endpoint_configs = {
-            "/api/v1/agent/query": {
-                "ttl": self.settings.deduplication.get("agent_query", self.settings.deduplication["default"]).ttl,
-                "cache_responses": False,
-                "special_handler": self._handle_agent_query
-            },
-            "/api/v1/agent/troubleshoot": {
-                "ttl": self.settings.deduplication.get("agent_query", self.settings.deduplication["default"]).ttl,
-                "cache_responses": False,
-                "special_handler": self._handle_agent_query
-            },
             "/api/v1/data/upload": {
                 "ttl": self.settings.deduplication["default"].ttl,
                 "cache_responses": False,
@@ -255,77 +245,6 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             self.logger.error(f"Failed to generate request hash: {e}")
             return None
     
-    async def _handle_agent_query(
-        self,
-        request: Request,
-        session_id: str,
-        body: Optional[str]
-    ) -> Optional[str]:
-        """Special handling for agent query requests"""
-        
-        try:
-            # Check if this is title generation
-            if body and await self._is_title_generation_request(body):
-                # Use specialized title generation hash
-                return self.hasher.hash_title_generation_request(
-                    session_id=session_id,
-                    conversation_context=self._extract_conversation_context(body)
-                )
-            
-            # Regular agent query hash
-            return self.hasher.hash_request(
-                session_id=session_id,
-                endpoint=request.url.path,
-                method=request.method,
-                body=body,
-                query_params=dict(request.query_params),
-                headers=dict(request.headers)
-            )
-            
-        except Exception as e:
-            self.logger.error(f"Agent query hash generation failed: {e}")
-            return None
-    
-    async def _is_title_generation_request(self, body: str) -> bool:
-        """Check if request is for title generation"""
-        
-        if not body:
-            return False
-        
-        body_lower = body.lower()
-        title_indicators = [
-            "generate a title",
-            "title generation", 
-            "conversation title",
-            "is_title_generation",
-            "concise, descriptive title",
-            "3-6 words"
-        ]
-        
-        return any(indicator in body_lower for indicator in title_indicators)
-    
-    def _extract_conversation_context(self, body: str) -> Optional[str]:
-        """Extract conversation context from request body"""
-        
-        try:
-            if body.strip().startswith('{'):
-                data = json.loads(body)
-                
-                # Look for conversation or context fields
-                context_fields = ["context", "conversation", "history", "messages"]
-                for field in context_fields:
-                    if field in data:
-                        return str(data[field])
-                
-                # Check if there's meaningful query content
-                query = data.get("query", "")
-                if len(query) > 10:  # Non-trivial query
-                    return "has_content"
-            
-        except Exception:
-            pass
-        
-        return None
     
     async def _get_request_body(self, request: Request) -> Optional[str]:
         """Get request body for hashing"""

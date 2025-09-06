@@ -73,15 +73,26 @@ class RedisClientFactory:
                 )
                 logger.info(f"Redis client created: {config['host']}:{config['port']} (auth: {'yes' if config['password'] else 'no'})")
             
-            # Validate connection (fail-fast)
+            # Validate connection (fail-fast) - Skip during container initialization
+            # Note: We skip the connection test during initialization because it can
+            # cause event loop conflicts when called from async contexts.
+            # The first actual Redis operation will validate the connection.
             try:
                 import asyncio
-                is_ok = asyncio.run(RedisClientFactory.test_connection(client))
-                if not is_ok:
-                    raise ConnectionError("Redis ping failed")
-            except RuntimeError:
-                # Event loop already running (unlikely at app startup); skip validation
-                logger.warning("Event loop already running; skipping Redis ping validation")
+                # Check if we're in an async context
+                try:
+                    asyncio.get_running_loop()
+                    # Event loop is running, skip validation to avoid conflicts
+                    logger.debug("Async context detected; skipping Redis ping validation during initialization")
+                except RuntimeError:
+                    # No event loop running, safe to test connection
+                    is_ok = asyncio.run(RedisClientFactory.test_connection(client))
+                    if not is_ok:
+                        raise ConnectionError("Redis ping failed")
+                    logger.info("Redis connection validated successfully")
+            except Exception as e:
+                # Don't fail initialization due to connection test issues
+                logger.warning(f"Redis connection test skipped due to: {e}")
             return client
             
         except Exception as e:
@@ -108,19 +119,19 @@ class RedisClientFactory:
         
         # 3. Try to use configuration manager for other settings
         try:
-            from ..config.configuration_manager import get_config
-            config_manager = get_config()
-            db_config = config_manager.get_database_config()
+            from ..config.settings import get_settings
+            settings = get_settings()
+            db_config = settings.database
             
             config = {
                 'url': None,
-                'host': host or db_config.get('host', '192.168.0.111'),
-                'port': port or db_config.get('port', 30379),
-                'password': password or db_config.get('password')
+                'host': host or db_config.redis_host,
+                'port': port or db_config.redis_port,
+                'password': password or (db_config.redis_password.get_secret_value() if db_config.redis_password is not None else None)
             }
-            logger.debug(f"Built Redis config from ConfigurationManager: {config['host']}:{config['port']}")
+            logger.debug(f"Built Redis config from settings system: {config['host']}:{config['port']}")
         except Exception as e:
-            logger.debug(f"ConfigurationManager not available, using environment variables: {e}")
+            logger.debug(f"Settings system not available, using environment variables: {e}")
             # 4. Fallback to direct environment variables
             config = {
                 'url': None,

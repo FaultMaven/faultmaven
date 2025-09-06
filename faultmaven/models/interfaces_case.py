@@ -403,6 +403,33 @@ class ICaseService(ABC):
         pass
     
     @abstractmethod
+    async def hard_delete_case(
+        self, 
+        case_id: str,
+        user_id: Optional[str] = None
+    ) -> bool:
+        """Permanently delete a case and all associated data.
+        
+        This method performs a hard delete of the case, removing:
+        - The case record
+        - All associated messages
+        - All uploaded data files
+        - All index entries
+        - Any cached data
+        
+        The operation is idempotent - subsequent calls will return True
+        even if the case has already been deleted.
+        
+        Args:
+            case_id: Case identifier
+            user_id: Optional user ID for access control
+            
+        Returns:
+            True if case was deleted successfully (or already deleted)
+        """
+        pass
+    
+    @abstractmethod
     async def list_user_cases(
         self, 
         user_id: str, 
@@ -552,6 +579,65 @@ class ICaseIntegrationService(ABC):
             
         Returns:
             True if sync was successful
+        """
+        pass
+    
+    @abstractmethod
+    async def list_cases_by_session(self, session_id: str, limit: int, offset: int) -> List[Dict[str, Any]]:
+        """List cases associated with a session.
+        
+        Args:
+            session_id: Session identifier
+            limit: Maximum number of cases to return
+            offset: Number of cases to skip for pagination
+            
+        Returns:
+            List of case dictionaries (empty list if no cases found)
+        """
+        pass
+    
+    @abstractmethod 
+    async def count_cases_by_session(self, session_id: str) -> int:
+        """Count total cases for a session (for pagination).
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            Total number of cases for the session
+        """
+        pass
+    
+    @abstractmethod
+    async def check_idempotency_key(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
+        """Check if an idempotency key has been used before.
+        
+        Args:
+            idempotency_key: Idempotency key to check
+            
+        Returns:
+            Previous result if key was used, None otherwise
+        """
+        pass
+    
+    @abstractmethod
+    async def store_idempotency_result(
+        self, 
+        idempotency_key: str, 
+        status_code: int, 
+        content: Dict[str, Any], 
+        headers: Dict[str, str]
+    ) -> bool:
+        """Store result for an idempotency key.
+        
+        Args:
+            idempotency_key: Idempotency key
+            status_code: HTTP status code of the response
+            content: Response content
+            headers: Response headers
+            
+        Returns:
+            True if stored successfully
         """
         pass
     

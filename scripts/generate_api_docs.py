@@ -582,6 +582,18 @@ def _add_security_schemas(schema: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     
+    # Add common headers
+    schema["components"]["headers"] = {
+        "X-Correlation-ID": {
+            "description": "Unique identifier for request tracing and debugging",
+            "schema": {
+                "type": "string",
+                "format": "uuid"
+            },
+            "example": "550e8400-e29b-41d4-a716-446655440000"
+        }
+    }
+    
     return schema
 
 

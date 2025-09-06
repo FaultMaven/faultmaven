@@ -23,8 +23,8 @@ from enum import Enum
 from faultmaven.models.interfaces import (
     IMemoryService, IPlanningService, ILLMProvider, ITracer, IVectorStore
 )
-from faultmaven.services.enhanced_knowledge_service import EnhancedKnowledgeService
-from faultmaven.services.reasoning_service import ReasoningService
+from faultmaven.services.knowledge import KnowledgeService
+# ReasoningService removed during agentic framework migration
 from faultmaven.exceptions import ServiceException
 
 
@@ -130,8 +130,8 @@ class TroubleshootingOrchestrator:
         self,
         memory_service: Optional[IMemoryService] = None,
         planning_service: Optional[IPlanningService] = None,
-        reasoning_service: Optional[ReasoningService] = None,
-        enhanced_knowledge_service: Optional[EnhancedKnowledgeService] = None,
+        reasoning_service: Optional[Any] = None,  # Legacy parameter - service removed
+        enhanced_knowledge_service: Optional[KnowledgeService] = None,
         llm_provider: Optional[ILLMProvider] = None,
         tracer: Optional[ITracer] = None
     ):

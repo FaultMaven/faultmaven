@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from typing import Dict, Any, List
 
-from faultmaven.services.agent_service import AgentService
+from faultmaven.services.agent import AgentService
 from faultmaven.models.api import (
     QueryRequest,
     AgentResponse,

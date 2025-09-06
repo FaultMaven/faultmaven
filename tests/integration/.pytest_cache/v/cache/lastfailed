@@ -23,5 +23,16 @@
   "test_v3_schema_integration.py::TestSchemaValidation::test_complete_response_serialization": true,
   "test_v3_schema_integration.py::TestSchemaValidation::test_response_validation_edge_cases": true,
   "test_readiness_and_redis.py::test_readiness_endpoint_present": true,
-  "test_readiness_and_redis.py::test_readiness_reports_ready_with_redis_and_chroma": true
+  "test_readiness_and_redis.py::test_readiness_reports_ready_with_redis_and_chroma": true,
+  "test_case_agent_route_integration.py::TestCaseQueryRouteIntegration::test_submit_case_query_calls_agent_service": true,
+  "test_case_agent_end_to_end.py::TestCaseAgentEndToEndWorkflow::test_complete_authentication_troubleshooting_workflow": true,
+  "test_case_agent_end_to_end.py::TestCaseAgentEndToEndWorkflow::test_memory_leak_investigation_workflow": true,
+  "test_case_agent_end_to_end.py::TestCaseAgentEndToEndWorkflow::test_performance_degradation_workflow": true,
+  "test_query_classification_integration.py::TestQueryClassificationIntegration::test_query_classification_success": true,
+  "test_query_classification_integration.py::TestQueryClassificationIntegration::test_query_classification_fallback_to_skills": true,
+  "test_query_classification_integration.py::TestQueryClassificationIntegration::test_query_classification_engine_unavailable": true,
+  "test_query_classification_integration.py::TestQueryClassificationIntegration::test_api_compatibility_maintained": true,
+  "test_query_classification_integration.py::TestQueryClassificationIntegration::test_logging_and_observability": true,
+  "test_response_synthesizer_integration.py::TestResponseSynthesizerIntegration::test_response_synthesizer_unavailable": true,
+  "test_tool_skill_broker_integration.py::TestToolSkillBrokerIntegration::test_tool_skill_broker_unavailable": true
 }

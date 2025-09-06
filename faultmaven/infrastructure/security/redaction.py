@@ -43,8 +43,12 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
     Supports both Presidio-based PII detection and custom regex patterns.
     """
 
-    def __init__(self):
-        """Initialize the DataSanitizer with K8s Presidio service and custom patterns"""
+    def __init__(self, settings: Optional["FaultMavenSettings"] = None):
+        """Initialize the DataSanitizer with optional unified settings.
+
+        If settings are provided and indicate skip_service_checks, external
+        connectivity tests are skipped to avoid network calls during tests.
+        """
         # Initialize BaseExternalClient
         super().__init__(
             client_name="data_sanitizer",
@@ -54,13 +58,33 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             circuit_breaker_timeout=30    # Shorter timeout for privacy service recovery
         )
 
-        # Configure K8s Presidio service endpoints (via NGINX Ingress)
-        presidio_analyzer_host = os.getenv("PRESIDIO_ANALYZER_HOST", "presidio-analyzer.faultmaven.local")
-        presidio_anonymizer_host = os.getenv("PRESIDIO_ANONYMIZER_HOST", "presidio-anonymizer.faultmaven.local")
-        presidio_port = int(os.getenv("PRESIDIO_PORT", "30080"))
-        
-        self.analyzer_url = f"http://{presidio_analyzer_host}:{presidio_port}"
-        self.anonymizer_url = f"http://{presidio_anonymizer_host}:{presidio_port}"
+        # Lazy import to avoid circular import at module import time
+        self._settings = settings
+
+        # Determine service endpoints from unified settings if available
+        analyzer_url = None
+        anonymizer_url = None
+        if settings is not None:
+            try:
+                # Prefer explicit URLs in protection settings
+                # Use unified protection settings for Presidio configuration
+                if getattr(settings, "protection", None):
+                    analyzer_url = settings.protection.presidio_analyzer_url
+                    anonymizer_url = settings.protection.presidio_anonymizer_url
+            except Exception:
+                # Fall through to env-based defaults
+                analyzer_url = None
+                anonymizer_url = None
+
+        # Configure K8s Presidio service endpoints using unified protection settings
+        if not analyzer_url or not anonymizer_url:
+            from faultmaven.config.settings import get_settings
+            settings = get_settings()
+            analyzer_url = analyzer_url or settings.protection.presidio_analyzer_url
+            anonymizer_url = anonymizer_url or settings.protection.presidio_anonymizer_url
+
+        self.analyzer_url = analyzer_url
+        self.anonymizer_url = anonymizer_url
         
         # HTTP client configuration
         self.request_timeout = 10.0  # seconds
@@ -70,15 +94,27 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             'User-Agent': 'FaultMaven-DataSanitizer/1.0'
         })
         
-        # Test service connectivity
-        self.analyzer_available = self._test_service_health(self.analyzer_url)
-        self.anonymizer_available = self._test_service_health(self.anonymizer_url)
-        
-        if self.analyzer_available and self.anonymizer_available:
-            self.logger.info(f"✅ Connected to K8s Presidio services (Analyzer: {presidio_analyzer_host}, Anonymizer: {presidio_anonymizer_host})")
+        # Determine whether to skip external checks (e.g., in tests)
+        skip_checks = False
+        if settings is not None and getattr(settings, "server", None):
+            try:
+                skip_checks = bool(settings.server.skip_service_checks)
+            except Exception:
+                skip_checks = False
+
+        # Test service connectivity unless skipping checks
+        if skip_checks:
+            self.analyzer_available = False
+            self.anonymizer_available = False
+            self.logger.info("Skipping Presidio health checks (SKIP_SERVICE_CHECKS=True)")
         else:
-            self.logger.warning(f"⚠️ Limited Presidio connectivity - Analyzer: {self.analyzer_available}, Anonymizer: {self.anonymizer_available}")
-            self.logger.info("📝 Falling back to regex-only sanitization")
+            self.analyzer_available = self._test_service_health(self.analyzer_url)
+            self.anonymizer_available = self._test_service_health(self.anonymizer_url)
+            if self.analyzer_available and self.anonymizer_available:
+                self.logger.info("✅ Connected to K8s Presidio services")
+            else:
+                self.logger.warning(f"⚠️ Limited Presidio connectivity - Analyzer: {self.analyzer_available}, Anonymizer: {self.anonymizer_available}")
+                self.logger.info("📝 Falling back to regex-only sanitization")
 
         # Pattern-to-replacement mapping (in priority order)
         # IMPORTANT: Order matters - more specific patterns should come first

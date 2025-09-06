@@ -1,6 +1,53 @@
+import sys
+from types import SimpleNamespace
+
+
+class _DummyAPMIntegration:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def get_export_statistics(self):
+        return {"enabled": False}
+
+
+# Provide a minimal stub for apm_integration to avoid import-side initialization in tests
+sys.modules.setdefault(
+    "faultmaven.infrastructure.monitoring.apm_integration",
+    SimpleNamespace(
+        APMIntegration=_DummyAPMIntegration,
+        apm_integration=SimpleNamespace(get_export_statistics=lambda: {"enabled": False}),
+    ),
+)
+
+
+# Provide a minimal stub for metrics_collector referenced by performance middleware
+sys.modules.setdefault(
+    "faultmaven.infrastructure.monitoring.metrics_collector",
+    SimpleNamespace(
+        metrics_collector=SimpleNamespace(
+            get_metrics_summary=lambda: {},
+            get_dashboard_data=lambda window: {},
+            record_performance_metric=lambda *args, **kwargs: None,
+        )
+    ),
+)
+
+
+# Provide a minimal stub for alerting referenced by performance endpoints
+sys.modules.setdefault(
+    "faultmaven.infrastructure.monitoring.alerting",
+    SimpleNamespace(
+        alert_manager=SimpleNamespace(
+            get_active_alerts=lambda: [],
+            get_alert_statistics=lambda: {},
+        )
+    ),
+)
+
 """Shared pytest fixtures and configuration for FaultMaven tests."""
 
 import asyncio
+import os
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, Mock
 
@@ -13,7 +60,62 @@ from faultmaven.core.processing.log_analyzer import LogProcessor
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models import AgentState, DataType, SessionContext
 from faultmaven.infrastructure.security.redaction import DataSanitizer
-from faultmaven.session_management import SessionManager
+# SessionManager has been replaced by SessionService
+# from faultmaven.session_management import SessionManager
+
+
+def create_agent_state_dict(status=None, case_context=None, current_phase="initial"):
+    """Helper to create agent state dictionary from enum status"""
+    return {
+        "status": status or AgentState.IDLE,
+        "case_context": case_context or {},
+        "current_phase": current_phase,
+        "findings": [],
+        "recommendations": [],
+        "confidence_score": 0.0,
+        "tools_used": [],
+        "awaiting_user_input": False,
+        "user_feedback": ""
+    }
+
+
+@pytest.fixture(scope="function")
+def reset_container():
+    """Reset the DI container before each test"""
+    # Import here to avoid circular dependencies
+    from faultmaven.container import container
+    
+    # Reset container state
+    container.reset()
+    
+    # Ensure SKIP_SERVICE_CHECKS is set for tests
+    os.environ['SKIP_SERVICE_CHECKS'] = 'true'
+    
+    yield container
+    
+    # Reset again after test
+    container.reset()
+
+
+@pytest.fixture(scope="function")  
+def initialized_container(reset_container):
+    """Provide a properly initialized container for tests"""
+    try:
+        reset_container.initialize()
+        return reset_container
+    except Exception as e:
+        # If real initialization fails, create minimal mock container
+        from unittest.mock import MagicMock
+        mock_container = MagicMock()
+        
+        # Mock key service methods
+        mock_container.get_session_service.return_value = MagicMock()
+        mock_container.get_agent_service.return_value = MagicMock()
+        mock_container.get_case_service.return_value = MagicMock()
+        mock_container.get_knowledge_service.return_value = MagicMock()
+        mock_container.get_data_service.return_value = MagicMock()
+        
+        return mock_container
 
 
 @pytest.fixture
@@ -24,7 +126,7 @@ def sample_session_context():
         user_id="user-456",
         created_at=datetime.now(),
         last_activity=datetime.now(),
-        agent_state=AgentState.IDLE,
+        agent_state=create_agent_state_dict(),
         conversation_history=[],
         uploaded_data=[],
         insights={},
@@ -353,12 +455,16 @@ def mock_case_service():
     service.get_or_create_case_for_session = AsyncMock(return_value="test-case-123")
     service.link_session_to_case = AsyncMock(return_value=False)
     service.get_case_conversation_context = AsyncMock(return_value="")
+    service.get_case_messages = AsyncMock(return_value=[])
     service.resume_case_in_session = AsyncMock(return_value=False)
     service.archive_case = AsyncMock(return_value=False)
     service.list_user_cases = AsyncMock(return_value=[])
     service.search_cases = AsyncMock(return_value=[])
     service.get_case_analytics = AsyncMock(return_value={})
     service.cleanup_expired_cases = AsyncMock(return_value=0)
+    service.hard_delete_case = AsyncMock(return_value=True)
+    service.delete_case = AsyncMock(return_value=True)
+    service.count_user_cases = AsyncMock(return_value=0)
     return service
 
 

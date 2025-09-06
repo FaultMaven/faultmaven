@@ -43,7 +43,7 @@ from collections import defaultdict, deque
 import yaml
 
 from faultmaven.infrastructure.llm.router import LLMRouter
-from faultmaven.models import DataType
+from faultmaven.models.api import DataType
 from faultmaven.models.interfaces import IDataClassifier, IMemoryService, ConversationContext
 from faultmaven.infrastructure.observability.tracing import trace
 
@@ -99,7 +99,7 @@ class EnhancedDataClassifier(IDataClassifier):
                 # Log file extensions (low weight)
                 (r"\.(log|txt)$", 1.0),
             ],
-            DataType.ERROR_MESSAGE: [
+            DataType.ERROR_REPORT: [
                 # Error keywords (high weight)
                 (r"\b(error|exception|failed|failure|crash|abort)\b", 3.0),
                 # Exception patterns (high weight)
@@ -108,25 +108,10 @@ class EnhancedDataClassifier(IDataClassifier):
                 (r"Traceback \(most recent call last\):", 3.0),
                 # HTTP error codes (medium weight)
                 (r"\b(4\d{2}|5\d{2})\b", 2.0),
-            ],
-            DataType.STACK_TRACE: [
-                # Stack trace patterns (very high weight)
-                (r"at\s+[\w\.$<>]+\([^)]*\)", 3.5),
-                (r"Traceback \(most recent call last\):", 3.5),
-                (r'File "[^"]+", line \d+', 3.0),
-                (r'^\s+File\s+"[^"]+"', 3.0),
-                (r"^\s+at\s+", 2.5),
-            ],
-            DataType.METRICS_DATA: [
-                # JSON metrics (high weight)
-                (r'\{[^{}]*"metric[s]?":', 3.0),
-                (r'\{[^{}]*"value":\s*\d+', 2.5),
-                # Prometheus format (high weight)
-                (r"^\w+{[^}]*}\s+\d+\.?\d*", 3.0),
-                # Graphite format (medium weight)
-                (r"^\w+\.\w+\s+\d+\.?\d*\s+\d+", 2.5),
-                # CSV with numeric data (low weight)
-                (r"^\d+\.?\d*,\d+\.?\d*,\d+\.?\d*", 1.5),
+                # Stack trace patterns (high weight for error reports)
+                (r"at\s+[\w\.$<>]+\([^)]*\)", 2.8),
+                (r'File "[^"]+", line \d+', 2.5),
+                (r"^\s+at\s+", 2.0),
             ],
             DataType.CONFIG_FILE: [
                 # YAML indicators (high weight)
@@ -153,6 +138,23 @@ class EnhancedDataClassifier(IDataClassifier):
                 (r"<[^>]+>", 2.0),
                 # Code blocks (medium weight)
                 (r"```\w*", 2.5),
+            ],
+            DataType.SCREENSHOT: [
+                # Image file indicators (high weight)
+                (r"\.(png|jpg|jpeg|gif|bmp|webp)$", 3.0),
+                # Image file headers (very high weight)
+                (r"^PNG\r\n", 3.5),
+                (r"^\xff\xd8\xff", 3.5),  # JPEG header
+                (r"^GIF8[79]a", 3.5),  # GIF header
+                # Base64 image data patterns (medium weight)
+                (r"data:image/[^;]+;base64,", 2.5),
+                # Image metadata patterns (low weight)
+                (r"\b(width|height|resolution|pixels)\b", 1.0),
+            ],
+            DataType.OTHER: [
+                # Catch-all patterns for unstructured data
+                (r"^.{1,100}$", 0.5),  # Very short content (low confidence)
+                (r"^\s*$", 0.1),       # Empty or whitespace-only (very low confidence)
             ],
         }
 
@@ -204,7 +206,7 @@ class EnhancedDataClassifier(IDataClassifier):
         
         if not content or not isinstance(content, str):
             return ClassificationResult(
-                data_type=DataType.UNKNOWN,
+                data_type=DataType.OTHER,
                 confidence=0.0,
                 context_relevance=0.0,
                 pattern_matches=[],
@@ -294,7 +296,7 @@ class EnhancedDataClassifier(IDataClassifier):
         
         # Determine best classification
         if not combined_scores:
-            classification = DataType.UNKNOWN
+            classification = DataType.OTHER
             confidence = 0.0
             pattern_matches = []
         else:
@@ -621,7 +623,7 @@ class EnhancedDataClassifier(IDataClassifier):
         
         # Check domain alignment
         domain_hints = context_insights.get("domain_hints", [])
-        if domain_hints and classification != DataType.UNKNOWN:
+        if domain_hints and classification != DataType.OTHER:
             relevance += 0.1
         
         return min(1.0, relevance)
@@ -869,7 +871,7 @@ class DataClassifier(IDataClassifier):
                 # Log file extensions
                 r"\.(log|txt)$",
             ],
-            DataType.ERROR_MESSAGE: [
+            DataType.ERROR_REPORT: [
                 # Error keywords
                 r"\b(error|exception|failed|failure|crash|abort)\b",
                 # Exception patterns
@@ -878,25 +880,11 @@ class DataClassifier(IDataClassifier):
                 r"Traceback \(most recent call last\):",
                 # HTTP error codes
                 r"\b(4\d{2}|5\d{2})\b",
-            ],
-            DataType.STACK_TRACE: [
                 # Stack trace patterns
                 r"at\s+[\w\.$<>]+\([^)]*\)",
-                r"Traceback \(most recent call last\):",
                 r'File "[^"]+", line \d+',
                 r'^\s+File\s+"[^"]+"',
                 r"^\s+at\s+",
-            ],
-            DataType.METRICS_DATA: [
-                # JSON metrics
-                r'\{[^{}]*"metric[s]?":',
-                r'\{[^{}]*"value":\s*\d+',
-                # Prometheus format
-                r"^\w+{[^}]*}\s+\d+\.?\d*",
-                # Graphite format
-                r"^\w+\.\w+\s+\d+\.?\d*\s+\d+",
-                # CSV with numeric data
-                r"^\d+\.?\d*,\d+\.?\d*,\d+\.?\d*",
             ],
             DataType.CONFIG_FILE: [
                 # YAML indicators
@@ -924,6 +912,19 @@ class DataClassifier(IDataClassifier):
                 # Code blocks
                 r"```\w*",
             ],
+            DataType.SCREENSHOT: [
+                # Image file indicators
+                r"\.(png|jpg|jpeg|gif|bmp|webp)$",
+                # Base64 image data patterns
+                r"data:image/[^;]+;base64,",
+                # Image metadata patterns
+                r"\b(width|height|resolution|pixels)\b",
+            ],
+            DataType.OTHER: [
+                # Catch-all patterns
+                r"^.{1,100}$",  # Short content
+                r"^\s*$",       # Empty content
+            ],
         }
 
         # Compile patterns for efficiency
@@ -947,11 +948,11 @@ class DataClassifier(IDataClassifier):
             DataType enum value
         """
         if not content or not isinstance(content, str):
-            return DataType.UNKNOWN
+            return DataType.OTHER
 
         # Try heuristic classification first (including filename hints)
         heuristic_result = self._heuristic_classify(content, filename)
-        if heuristic_result != DataType.UNKNOWN:
+        if heuristic_result != DataType.OTHER:
             self.logger.info(f"Heuristic classification: {heuristic_result}")
             return heuristic_result
 
@@ -962,7 +963,7 @@ class DataClassifier(IDataClassifier):
             return llm_result
         except Exception as e:
             self.logger.warning(f"LLM classification failed: {e}")
-            return DataType.UNKNOWN
+            return DataType.OTHER
 
     def _heuristic_classify(self, content: str, filename: Optional[str] = None) -> DataType:
         """
@@ -993,9 +994,7 @@ class DataClassifier(IDataClassifier):
                     return DataType.METRICS_DATA
                 return DataType.CONFIG_FILE
             elif any(ext in filename_lower for ext in ['error', 'exception', 'crash']):
-                return DataType.ERROR_MESSAGE
-            elif any(ext in filename_lower for ext in ['stack', 'trace', 'dump']):
-                return DataType.STACK_TRACE
+                return DataType.ERROR_REPORT
 
         # Calculate confidence scores for each data type
         scores = {}
@@ -1014,27 +1013,17 @@ class DataClassifier(IDataClassifier):
 
         # Apply priority rules for overlapping types
         log_score = scores.get(DataType.LOG_FILE, 0)
-        stack_score = scores.get(DataType.STACK_TRACE, 0)
-        error_score = scores.get(DataType.ERROR_MESSAGE, 0)
+        error_score = scores.get(DataType.ERROR_REPORT, 0)
 
-        # If we have both log patterns and stack traces, prioritize LOG_FILE
+        # If we have both log patterns and error reports, prioritize LOG_FILE
         # when timestamps and log levels are present
         if (
             log_score > 0.1
-            and stack_score > 0
+            and error_score > 0
             and self._has_timestamps(content)
             and self._has_log_levels(content)
         ):
             return DataType.LOG_FILE
-
-        # If we have both error patterns and stack traces, prioritize STACK_TRACE
-        # when we see actual stack trace formatting
-        if (
-            error_score > 0
-            and stack_score > 0
-            and self._has_stack_trace_format(content)
-        ):
-            return DataType.STACK_TRACE
 
         # Find the data type with highest score
         if scores:
@@ -1048,9 +1037,10 @@ class DataClassifier(IDataClassifier):
         elif self._is_yaml(content):
             return DataType.CONFIG_FILE
         elif self._is_csv_with_metrics(content):
-            return DataType.METRICS_DATA
+            # For now, classify CSV metrics as OTHER since we don't have METRICS_DATA in our simplified enum
+            return DataType.OTHER
 
-        return DataType.UNKNOWN
+        return DataType.OTHER
 
     def _has_timestamps(self, content: str) -> bool:
         """Check if content has timestamp patterns"""
@@ -1129,11 +1119,11 @@ class DataClassifier(IDataClassifier):
         prompt = f"""
         Classify the following data content into one of these categories:
         - log_file: System or application logs with timestamps
-        - error_message: Error messages or exception details
-        - stack_trace: Stack traces from programming languages
-        - metrics_data: Performance metrics, monitoring data
+        - error_report: Error messages, exception details, or crash reports
         - config_file: Configuration files (YAML, JSON, INI, etc.)
-        - documentation: Documentation, guides, manuals
+        - documentation: Documentation, guides, manuals, help text
+        - screenshot: Image files or visual content
+        - other: Any other type of content that doesn't fit above categories
         
         Content to classify:
         {content[:1000]}  # Limit content length
@@ -1154,18 +1144,18 @@ class DataClassifier(IDataClassifier):
             # Map response to DataType
             category_mapping = {
                 "log_file": DataType.LOG_FILE,
-                "error_message": DataType.ERROR_MESSAGE,
-                "stack_trace": DataType.STACK_TRACE,
-                "metrics_data": DataType.METRICS_DATA,
+                "error_report": DataType.ERROR_REPORT,
                 "config_file": DataType.CONFIG_FILE,
                 "documentation": DataType.DOCUMENTATION,
+                "screenshot": DataType.SCREENSHOT,
+                "other": DataType.OTHER,
             }
 
-            return category_mapping.get(category, DataType.UNKNOWN)
+            return category_mapping.get(category, DataType.OTHER)
 
         except Exception as e:
             self.logger.error(f"LLM classification failed: {e}")
-            return DataType.UNKNOWN
+            return DataType.OTHER
 
     def get_classification_confidence(self, content: str, data_type: DataType) -> float:
         """

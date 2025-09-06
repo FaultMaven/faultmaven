@@ -23,7 +23,7 @@ from datetime import datetime
 from unittest.mock import Mock, AsyncMock, MagicMock
 from typing import Any, Dict, List, Optional
 
-from faultmaven.services.knowledge_service import KnowledgeService
+from faultmaven.services.knowledge import KnowledgeService
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
 from faultmaven.exceptions import ServiceException
 from faultmaven.models.interfaces import (

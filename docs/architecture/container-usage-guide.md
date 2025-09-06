@@ -14,18 +14,26 @@ This guide provides practical instructions for using FaultMaven's enhanced depen
 ```python
 from faultmaven.container import container
 
-# Get enhanced services through interface resolution
+# Get core services through interface resolution
 agent_service = container.get_agent_service()
-memory_service = container.get_memory_service()      # New intelligence service
-planning_service = container.get_planning_service()  # New intelligence service
-prompt_engine = container.get_prompt_engine()        # New intelligence service
-llm_provider = container.get_llm_provider()          # Returns ILLMProvider implementation
 data_service = container.get_data_service()
+knowledge_service = container.get_knowledge_service()
+session_service = container.get_session_service()
+llm_provider = container.get_llm_provider()          # Returns ILLMProvider implementation
 
-# Check enhanced container health
-health = container.get_health_status()
-print(f"Container status: {health['status']}")  # healthy | degraded | unhealthy
-print(f"Intelligence services: {health['components']['intelligence']['status']}")
+# Get agentic framework components
+workflow_engine = container.get_agentic_workflow_engine()        # Main orchestrator
+state_manager = container.get_agentic_state_manager()            # Memory & state
+classification_engine = container.get_agentic_classification_engine()  # Query analysis
+tool_broker = container.get_agentic_tool_broker()               # Tool orchestration
+guardrails = container.get_agentic_guardrails()                 # Security layer
+response_synthesizer = container.get_agentic_response_synthesizer()  # Response assembly
+error_manager = container.get_agentic_error_manager()           # Error handling
+
+# Check container health
+health = container.health_check()
+print(f"Container status: {health.get('status', 'unknown')}")
+print(f"Agentic components available: {health.get('components', {}).get('agentic_workflow_engine', False)}")
 ```
 
 ### Enhanced FastAPI Integration
@@ -33,19 +41,19 @@ print(f"Intelligence services: {health['components']['intelligence']['status']}"
 ```python
 # api/v1/dependencies.py
 from faultmaven.container import container
-from faultmaven.services.enhanced_agent_service import EnhancedAgentService
+from faultmaven.services.agent import AgentService
 
-def get_enhanced_agent_service() -> EnhancedAgentService:
-    """FastAPI dependency for enhanced agent service with intelligence"""
+def get_agent_service() -> AgentService:
+    """FastAPI dependency for agent service"""
     return container.get_agent_service()
 
-def get_memory_service() -> IMemoryService:
-    """FastAPI dependency for memory service"""
-    return container.get_memory_service()
+def get_agentic_workflow_engine():
+    """FastAPI dependency for agentic workflow engine"""
+    return container.get_agentic_workflow_engine()
 
-def get_planning_service() -> IPlanningService:
-    """FastAPI dependency for planning service"""
-    return container.get_planning_service()
+def get_agentic_state_manager():
+    """FastAPI dependency for agentic state manager"""
+    return container.get_agentic_state_manager()
 
 # api/v1/routes/agent.py
 from fastapi import APIRouter, Depends
@@ -55,16 +63,16 @@ router = APIRouter()
 @router.post("/query")
 async def process_query(
     query: QueryRequest,
-    agent_service: EnhancedAgentService = Depends(get_enhanced_agent_service),
-    memory_service: IMemoryService = Depends(get_memory_service),
-    planning_service: IPlanningService = Depends(get_planning_service)
+    agent_service: AgentService = Depends(get_agent_service),
+    workflow_engine = Depends(get_agentic_workflow_engine)
 ):
-    # Enhanced service with intelligence automatically injected
+    # Agent service with agentic framework integration
     result = await agent_service.process_query(query)
     
-    # Access intelligence services directly if needed
-    context = await memory_service.retrieve_context(query.session_id, query.query)
-    strategy = await planning_service.plan_response_strategy(query.query, context)
+    # Access agentic workflow engine for advanced processing if needed
+    if workflow_engine:
+        enhanced_result = await workflow_engine.process_query(query.query, query.session_id)
+        result.update(enhanced_result)
     
     return result
 ```

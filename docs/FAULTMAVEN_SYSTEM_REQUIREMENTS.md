@@ -66,7 +66,8 @@ FaultMaven is an intelligent, enterprise-grade troubleshooting system that combi
 #### QueryRequest
 ```typescript
 interface QueryRequest {
-  session_id: string;                    // User session identifier
+  session_id: string;                    // User session identifier (temporary connection)
+  case_id: string;                       // Case identifier (persistent investigation)
   query: string;                         // User's troubleshooting query
   context?: Dict<string, Any>;           // Additional context
   priority: 'low' | 'medium' | 'high' | 'critical';
@@ -74,20 +75,52 @@ interface QueryRequest {
 }
 ```
 
+**State Management Requirements:**
+- **Session**: Temporary authenticated connection (user login session)
+- **Case**: Persistent troubleshooting investigation owned by User
+- Backend must maintain clear distinction: Session ≠ Case
+- Cases must be owned by Users, not Sessions
+- Multiple Sessions can access the same Case
+- Session expiry does not affect Case persistence
+
 #### AgentResponse (v3.1.0)
 ```typescript
 interface AgentResponse {
   schema_version: "3.1.0";
   content: string;                       // Primary response content (plain text, NOT JSON/dict format)
-  response_type: ResponseType;            // Intent classification (UPPERCASE enum values)
-  context: ContextSnapshot;              // Current case state
+  response_type: ResponseType;           // Explicit agent intent (UPPERCASE enum values)
+  view_state: ViewState;                 // Essential frontend rendering state
   sources: Source[];                     // Evidence and references
-  plan?: PlanStep[];                     // Multi-step solutions
+  plan?: PlanStep[];                     // Multi-step solutions (only for PLAN_PROPOSAL)
   next_action_hint?: string;             // User guidance
   estimated_time_to_resolution?: string; // Time estimates
   confidence_score: number;              // 0.0-1.0 confidence
 }
 ```
+
+#### ViewState Object
+```typescript
+interface ViewState {
+  session_id: string;                    // Current session identifier
+  case_id: string;                       // Current case identifier
+  user_id: string;                       // Case owner identifier
+  case_title: string;                    // Case display title
+  case_status: 'active' | 'investigating' | 'solved' | 'stalled' | 'archived';
+  running_summary: string;               // Brief case progress summary
+  uploaded_data: UploadedData[];         // Data files associated with case
+  conversation_count: number;            // Number of exchanges in case
+  last_updated: string;                  // UTC timestamp of last activity
+  // UI control flags
+  can_upload_data: boolean;              // Whether data upload is allowed
+  needs_more_info: boolean;              // Whether agent needs clarification
+}
+```
+
+**ViewState Requirements:**
+- Contains complete state snapshot needed by frontend
+- Updated with every AgentResponse
+- Enables frontend to render correctly without additional API calls
+- Includes both data and UI control information
 
 #### ResponseType Enumeration
 ```typescript
@@ -123,6 +156,297 @@ interface ContextSnapshot {
   related_cases: string[];              // Related case IDs
 }
 ```
+
+---
+
+## Data Processing Requirements
+
+### Data Type Classification
+
+The system must automatically identify and classify uploaded data using an enhanced DataClassifier:
+
+```typescript
+interface IDataClassifier {
+  classifyData(content: string, filename?: string, metadata?: Dict<string, Any>): Promise<DataTypeResult>;
+}
+
+interface DataTypeResult {
+  primary_type: DataType;
+  confidence: number;
+  secondary_types: DataType[];
+  metadata: ProcessingMetadata;
+}
+
+enum DataType {
+  LOG_FILE = 'log_file',
+  METRICS_DATA = 'metrics_data', 
+  CONFIG_FILE = 'config_file',
+  ERROR_DUMP = 'error_dump',
+  PERFORMANCE_TRACE = 'performance_trace',
+  DATABASE_QUERY = 'database_query',
+  CODE_SNIPPET = 'code_snippet',
+  DOCUMENTATION = 'documentation',
+  UNKNOWN = 'unknown'
+}
+
+interface ProcessingMetadata {
+  file_size: number;
+  line_count: number;
+  encoding: string;
+  structure_hints: string[];
+  processing_recommendations: string[];
+}
+```
+
+### Data Processing Pipeline
+
+Each data type requires specialized processing:
+
+```typescript
+interface IDataProcessor {
+  processData(data: UploadedData, context: ProcessingContext): Promise<ProcessedData>;
+}
+
+interface ProcessingContext {
+  case_id: string;
+  user_id: string;
+  processing_priority: DataPriority;
+  extraction_requirements: string[];
+}
+
+interface ProcessedData {
+  original_data_id: string;
+  extracted_insights: Insight[];
+  structured_content: Dict<string, Any>;
+  processing_status: ProcessingStatus;
+  processing_errors: ProcessingError[];
+  next_steps: string[];
+}
+```
+
+### /data Endpoint Requirements
+
+The `/data` endpoint must provide:
+
+1. **Data Upload & Classification**
+   ```typescript
+   POST /cases/{case_id}/data
+   {
+     "session_id": string,
+     "file": File,
+     "metadata": Dict<string, Any>
+   }
+   
+   Response: {
+     "data_id": string,
+     "classified_type": DataType,
+     "confidence": number,
+     "processing_status": ProcessingStatus,
+     "estimated_processing_time": string
+   }
+   ```
+
+2. **Processing Status Monitoring**
+   ```typescript
+   GET /api/v1/data/{data_id}/status
+   
+   Response: {
+     "data_id": string,
+     "status": ProcessingStatus,
+     "progress_percentage": number,
+     "extracted_insights": Insight[],
+     "processing_errors": ProcessingError[]
+   }
+   ```
+
+3. **Case Data Retrieval**
+   ```typescript
+   GET /api/v1/data/cases/{case_id}
+   
+   Response: {
+     "case_id": string,
+     "uploaded_data": UploadedData[],
+     "processing_summary": ProcessingSummary,
+     "available_insights": Insight[]
+   }
+   ```
+
+---
+
+## Agentic Logic Requirements
+
+### Query Processing with Case Context
+
+The `/cases/{case_id}/query` endpoint processes queries within case context following REST best practices:
+
+```typescript
+// URL Path: POST /cases/{case_id}/query
+interface QueryRequest {
+  session_id: string;                    // User session identifier (temporary connection)
+  query: string;                         // User's troubleshooting query  
+  context?: Dict<string, Any>;           // Additional context
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  timestamp: string;                     // UTC ISO 8601 format
+}
+// case_id is provided in URL path parameter, not request body
+
+interface CaseContext {
+  case_id: string;
+  case_history: ConversationTurn[];
+  uploaded_data: UploadedData[];
+  previous_findings: Finding[];
+  current_hypotheses: Hypothesis[];
+  domain_context: DomainContext;
+}
+```
+
+### Agent Context Integration
+
+The agent must receive complete case context for informed responses:
+
+```typescript
+interface AgentContext {
+  current_query: QueryRequest;
+  case_context: CaseContext;
+  user_profile: UserProfile;
+  available_tools: Tool[];
+  response_constraints: ResponseConstraints;
+}
+
+interface ResponseConstraints {
+  max_response_length: number;
+  preferred_response_type: ResponseType;
+  urgency_level: UrgencyLevel;
+  technical_depth: TechnicalDepth;
+}
+```
+
+### Case-Aware Response Generation
+
+The agent must generate responses that build on case history:
+
+```typescript
+class CaseAwareAgent {
+  async processQuery(request: QueryRequest, context: CaseContext): Promise<AgentResponse> {
+    // 1. Load full case context
+    const fullContext = await this.loadCaseContext(request.case_id);
+    
+    // 2. Analyze query in context of case history
+    const queryAnalysis = await this.analyzeQueryInContext(request.query, fullContext);
+    
+    // 3. Generate contextually aware response
+    const response = await this.generateContextualResponse(queryAnalysis, fullContext);
+    
+    // 4. Update case state with new information
+    await this.updateCaseState(request.case_id, response);
+    
+    return response;
+  }
+}
+```
+
+---
+
+## API Contract Requirements
+
+### Unified AgentResponse Structure
+
+All agent interactions must return a consistent AgentResponse:
+
+```typescript
+interface AgentResponse {
+  schema_version: '3.1.0';              // API version for compatibility
+  content: string;                      // Main response content
+  response_type: ResponseType;          // Explicit agent intent
+  view_state: ViewState;               // Complete frontend state
+  sources: Source[];                   // Evidence and citations
+  plan?: PlanStep[];                   // Multi-step plans (when applicable)
+  metadata: ResponseMetadata;          // Processing details
+}
+
+interface ResponseMetadata {
+  processing_time_ms: number;
+  confidence_score: number;
+  model_used: string;
+  token_usage: TokenUsage;
+  case_phase: CasePhase;
+  next_recommended_action: string;
+}
+```
+
+### Frontend State Synchronization
+
+The view_state object provides all information needed for frontend rendering without additional API calls:
+
+```typescript
+interface ViewState {
+  session_id: string;
+  case_id: string;
+  user_id: string;
+  case_title: string;
+  case_status: 'active' | 'investigating' | 'solved' | 'stalled' | 'archived';
+  running_summary: string;
+  uploaded_data: UploadedData[];
+  conversation_count: number;
+  last_updated: string;
+  can_upload_data: boolean;
+  needs_more_info: boolean;
+  available_actions: AvailableAction[];
+  progress_indicators: ProgressIndicator[];
+}
+
+interface AvailableAction {
+  action_id: string;
+  label: string;
+  action_type: 'upload_data' | 'escalate' | 'mark_solved' | 'request_clarification';
+  enabled: boolean;
+  description?: string;
+}
+
+interface ProgressIndicator {
+  phase: CasePhase;
+  completed: boolean;
+  current: boolean;
+  description: string;
+  estimated_time?: string;
+}
+```
+
+### API Waterfall Problem Elimination
+
+The unified response eliminates the need for multiple API calls:
+
+```typescript
+// BAD: Multiple API calls required
+const response = await fetch(`/cases/${case_id}/query`, { query, session_id });
+const caseData = await fetch(`/cases/${case_id}`);
+const userData = await fetch(`/users/profile`);
+const uploadedData = await fetch(`/cases/${case_id}/data`);
+
+// GOOD: Single API call with complete state
+const response = await fetch(`/cases/${case_id}/query`, { query, session_id });
+// response.view_state contains all frontend rendering information
+```
+
+### Error Response Contract
+
+All errors must follow consistent structure:
+
+```typescript
+interface ErrorResponse {
+  schema_version: '3.1.0';
+  error: {
+    code: string;                        // Machine-readable error code
+    message: string;                     // Human-readable message
+    details?: Dict<string, Any>;         // Additional error context
+    retry_after?: number;                // Seconds to wait before retry
+    escalation_required?: boolean;       // Should user contact support
+  };
+  view_state?: ViewState;                // Partial state if available
+}
+```
+
+---
 
 #### Source Model
 ```typescript

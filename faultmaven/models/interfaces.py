@@ -1890,3 +1890,70 @@ class IPlanningService(ABC):
             Component relationships guide troubleshooting sequence.
         """
         pass
+
+
+class IJobService(ABC):
+    """Interface for async job management and tracking.
+    
+    This interface provides job management capabilities for long-running operations
+    that require asynchronous processing. Jobs have lifecycle management, status
+    tracking, and result storage with automatic cleanup.
+    
+    Job Requirements:
+        - Unique job identification with collision resistance
+        - Persistent status tracking across server restarts  
+        - TTL-based automatic cleanup and garbage collection
+        - Consistent polling semantics with Retry-After headers
+        
+    Integration Notes:
+        - Uses Redis for job state persistence and distribution
+        - Integrates with middleware for 202 → Location → 303/200 workflows
+        - Supports job cancellation and error handling
+    """
+    
+    @abstractmethod
+    async def create_job(self, job_type: str, payload: Dict[str, Any] = None, 
+                        ttl_seconds: Optional[int] = None) -> str:
+        """Create a new async job with initial pending status.
+        
+        Args:
+            job_type: Type identifier for the job (e.g., "query_processing", "data_analysis")
+            payload: Optional job parameters and context data
+            ttl_seconds: Time-to-live for job persistence (default 24 hours)
+            
+        Returns:
+            job_id: Unique identifier for tracking job status
+            
+        Raises:
+            ServiceException: When job creation fails due to storage issues
+        """
+        pass
+    
+    @abstractmethod
+    async def get_job(self, job_id: str) -> Optional["JobStatus"]:
+        """Retrieve current job status and metadata.
+        
+        Args:
+            job_id: Unique job identifier
+            
+        Returns:
+            JobStatus object with current state or None if job not found
+        """
+        pass
+    
+    @abstractmethod
+    async def update_job_status(self, job_id: str, status: str, progress: Optional[int] = None,
+                               result: Optional[Dict[str, Any]] = None, error: Optional[str] = None) -> bool:
+        """Update job status and metadata.
+        
+        Args:
+            job_id: Job identifier to update
+            status: New status (pending, running, completed, failed, cancelled)
+            progress: Completion percentage (0-100)
+            result: Final result data for completed jobs
+            error: Error message for failed jobs
+            
+        Returns:
+            True if update successful, False if job not found
+        """
+        pass

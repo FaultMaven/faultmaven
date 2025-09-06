@@ -23,8 +23,8 @@ from typing import List, Dict, Any, Optional
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app
-from faultmaven.services.case_service import CaseService
-from faultmaven.services.session_service import SessionService
+from faultmaven.services.case import CaseService
+from faultmaven.services.session import SessionService
 from faultmaven.infrastructure.persistence.redis_case_store import RedisCaseStore
 from faultmaven.models.case import (
     Case,
@@ -39,6 +39,21 @@ from faultmaven.models.case import (
 )
 from faultmaven.models import SessionContext, AgentState
 from faultmaven.exceptions import ValidationException, ServiceException
+
+
+def create_agent_state_dict(status=None, case_context=None, current_phase="initial"):
+    """Helper to create agent state dictionary from enum status"""
+    return {
+        "status": status or AgentState.IDLE,
+        "case_context": case_context or {},
+        "current_phase": current_phase,
+        "findings": [],
+        "recommendations": [],
+        "confidence_score": 0.0,
+        "tools_used": [],
+        "awaiting_user_input": False,
+        "user_feedback": ""
+    }
 
 
 class IntegrationTestEnvironment:
@@ -110,7 +125,7 @@ class IntegrationTestEnvironment:
             user_id=user_id,
             created_at=datetime.utcnow(),
             last_activity=datetime.utcnow(),
-            agent_state=AgentState.IDLE,
+            agent_state=create_agent_state_dict(),
             conversation_history=[],
             uploaded_data=[],
             insights=initial_context or {}

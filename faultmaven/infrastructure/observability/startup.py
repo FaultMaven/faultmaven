@@ -21,8 +21,8 @@ from datetime import datetime
 from faultmaven.container import container
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
 from faultmaven.infrastructure.caching.intelligent_cache import IntelligentCache
-from faultmaven.services.analytics_dashboard_service import AnalyticsDashboardService
-from faultmaven.services.performance_optimization_service import PerformanceOptimizationService
+from faultmaven.services.analytics_dashboard import AnalyticsDashboardService
+from faultmaven.services.performance_optimization import PerformanceOptimizationService
 from faultmaven.infrastructure.monitoring.sla_monitor import SLAMonitor
 
 

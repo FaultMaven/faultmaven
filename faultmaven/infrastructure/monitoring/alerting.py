@@ -89,9 +89,16 @@ class AlertChannelConfig:
 class AlertManager:
     """Manages alert rules, evaluation, and notification."""
     
-    def __init__(self):
-        """Initialize alert manager."""
+    def __init__(self, settings=None):
+        """Initialize alert manager with unified settings."""
         self.logger = logging.getLogger(__name__)
+        
+        # Get settings using unified configuration system
+        if settings is None:
+            from faultmaven.config.settings import get_settings
+            settings = get_settings()
+        self.settings = settings
+        
         self.alert_rules: Dict[str, AlertRule] = {}
         self.active_alerts: Dict[str, Alert] = {}
         self.alert_history: List[Alert] = []
@@ -113,9 +120,8 @@ class AlertManager:
             config={"log_level": "WARNING"}
         )
         
-        # Webhook channel
-        import os
-        webhook_url = os.getenv("ALERT_WEBHOOK_URL")
+        # Webhook channel (using unified settings)
+        webhook_url = self.settings.alerting.alert_webhook_url
         self.channel_configs[AlertChannel.WEBHOOK] = AlertChannelConfig(
             channel=AlertChannel.WEBHOOK,
             enabled=webhook_url is not None,
@@ -126,15 +132,16 @@ class AlertManager:
             }
         )
         
-        # Email channel (placeholder)
+        # Email channel (using unified settings)
+        to_emails = self.settings.alerting.alert_to_emails.split(",") if self.settings.alerting.alert_to_emails else []
         self.channel_configs[AlertChannel.EMAIL] = AlertChannelConfig(
             channel=AlertChannel.EMAIL,
-            enabled=False,
+            enabled=bool(self.settings.alerting.alert_from_email and to_emails),
             config={
-                "smtp_host": os.getenv("SMTP_HOST"),
-                "smtp_port": int(os.getenv("SMTP_PORT", "587")),
-                "from_email": os.getenv("ALERT_FROM_EMAIL"),
-                "to_emails": os.getenv("ALERT_TO_EMAILS", "").split(",")
+                "smtp_host": self.settings.alerting.smtp_host,
+                "smtp_port": self.settings.alerting.smtp_port,
+                "from_email": self.settings.alerting.alert_from_email,
+                "to_emails": to_emails
             }
         )
     

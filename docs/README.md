@@ -5,13 +5,17 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 ## Quick Navigation
 
 ### 🏗️ Architecture & Design
-- **[Architecture Decision Guide](../ARCHITECTURE_DECISION_GUIDE.md)** - 🆕 **CONSOLIDATED** - Complete architectural blueprint covering modular monolith and microservice strategies
 - **[System Architecture](architecture/SYSTEM_ARCHITECTURE.md)** - Complete system overview with visual diagrams
+- **[Agentic Framework Design](architecture/agentic-framework-design-specification.md)** - Comprehensive 7-component agentic framework specification
+- **[Agentic Framework Architecture](architecture/AGENTIC_FRAMEWORK_ARCHITECTURE.md)** - Implementation overview and component details
 - **[Component Interactions](architecture/COMPONENT_INTERACTIONS.md)** - Detailed interaction patterns and data flows
-- **[Infrastructure Layer Guide](architecture/infrastructure-layer-guide.md)** - Internal vs external service patterns
-- **[Deployment Guide](architecture/DEPLOYMENT_GUIDE.md)** - Production deployment instructions
+- **[Case-Agent Integration Design](architecture/CASE_AGENT_INTEGRATION_DESIGN.md)** - Technical design for case-agent integration
+- **[Configuration System Refactor](architecture/CONFIGURATION_SYSTEM_REFACTOR_DESIGN.md)** - Unified configuration system design
 - **[Interface-Based Design](architecture/interface-based-design.md)** - Clean architecture patterns
 - **[Dependency Injection System](architecture/dependency-injection-system.md)** - DI container usage
+- **[Service Patterns](architecture/service-patterns.md)** - Service layer design patterns
+- **[Infrastructure Layer Guide](architecture/infrastructure-layer-guide.md)** - Internal vs external service patterns
+- **[Deployment Guide](architecture/DEPLOYMENT_GUIDE.md)** - Production deployment instructions
 
 ### 📊 Logging & Observability  
 - **Logging System**: ✅ **100% COMPLETE** - Production-ready logging with zero duplicates and comprehensive observability
@@ -26,8 +30,10 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 
 ### 🔌 API Documentation
 - **[API Reference](api/README.md)** - Complete API documentation with examples
-- **[OpenAPI Specification](api/openapi.json)** - Machine-readable API spec
-- **[Interactive API Docs](../docs)** - Available at `/docs` when server is running
+- **[API Contract Matrix](api/API_CONTRACT_MATRIX.md)** - Single-page API contract reference
+- **[OpenAPI Specification](api/openapi.yaml)** - Authoritative API specification
+- **[Troubleshooting Guide](api/v3.1.0-TROUBLESHOOTING-GUIDE.md)** - API troubleshooting and debugging
+- **[Interactive API Docs](http://localhost:8000/docs)** - Available at `/docs` when server is running
 
 ### 🧪 Testing & Quality
 - **[Testing Architecture](testing/REBUILT_TESTING_STANDARDS.md)** - Testing standards and patterns
@@ -38,7 +44,6 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 - **[How to Add Providers](how-to-add-providers.md)** - Adding new LLM providers
 - **[Developer Guide](architecture/developer-guide.md)** - Development workflow and patterns
 - **[Container Usage Guide](architecture/container-usage-guide.md)** - Dependency injection patterns
-- **[Module Guidelines](architecture/module-guidelines.md)** - Code organization standards
 
 ### 📋 Specifications
 - **[Interface Documentation](specifications/INTERFACE_DOCUMENTATION_SPEC.md)** - Interface contracts and compliance
@@ -52,8 +57,7 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 - **[Troubleshooting](troubleshooting/)** - Common issues and solutions
 
 ### 📈 Performance & Monitoring
-- **[Performance Tuning Guide](FaultMaven_Performance_Tuning_Guide.md)** - System optimization
-- **[Context Management Analysis](Context_Management_Analysis.md)** - Context system analysis
+- **[Testing Guide](architecture/testing-guide.md)** - Architecture testing patterns
 
 ## Project Status Overview
 
@@ -84,11 +88,11 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 ## Getting Started
 
 ### For Developers
-1. Start with **[Architecture Decision Guide](../ARCHITECTURE_DECISION_GUIDE.md)** for complete architectural overview
-2. Review **[System Architecture](architecture/SYSTEM_ARCHITECTURE.md)** for detailed implementation patterns
-3. Read **[Developer Guide](architecture/developer-guide.md)** for development workflow
-4. Check **[Container Usage Guide](architecture/container-usage-guide.md)** for dependency injection
-5. Configuration: **[FLAGS_AND_CONFIG.md](../FLAGS_AND_CONFIG.md)**, **[LOGGING_POLICY.md](../LOGGING_POLICY.md)**
+1. Review **[System Architecture](architecture/SYSTEM_ARCHITECTURE.md)** for complete system overview
+2. Read **[Agentic Framework Design](architecture/agentic-framework-design-specification.md)** for detailed agentic architecture
+3. Check **[Developer Guide](architecture/developer-guide.md)** for development workflow
+4. Study **[Container Usage Guide](architecture/container-usage-guide.md)** for dependency injection patterns
+5. Configuration: **[FLAGS_AND_CONFIG.md](FLAGS_AND_CONFIG.md)**, **[LOGGING_POLICY.md](LOGGING_POLICY.md)**
 
 #### Run the API locally
 ```bash

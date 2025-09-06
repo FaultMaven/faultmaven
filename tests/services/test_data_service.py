@@ -24,7 +24,7 @@ import hashlib
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from faultmaven.services.data_service import DataService
+from faultmaven.services.data import DataService
 from faultmaven.models import (
     DataInsightsResponse,
     DataType,

@@ -18,11 +18,14 @@ from ..models.protection import (
 )
 
 
-def load_protection_settings() -> ProtectionSettings:
+def load_protection_settings(settings=None) -> ProtectionSettings:
     """
-    Load protection settings from environment variables
+    Load protection settings from unified settings or environment variables (fallback)
     
-    Environment Variables:
+    Args:
+        settings: FaultMavenSettings instance (if None, loads from environment)
+    
+    Environment Variables (used only as fallback when settings unavailable):
         # General
         PROTECTION_ENABLED: Enable all protection mechanisms (default: true)
         PROTECTION_FAIL_OPEN: Fail open on Redis errors (default: true)
@@ -54,6 +57,67 @@ def load_protection_settings() -> ProtectionSettings:
     Returns:
         ProtectionSettings instance with loaded configuration
     """
+    
+    # If settings provided, use them
+    if settings is not None:
+        # Get settings if not provided
+        try:
+            from faultmaven.config.settings import get_settings
+            if settings is None:
+                settings = get_settings()
+        except Exception:
+            settings = None
+    
+    if settings is not None:
+        # Use settings-based configuration
+        return _load_from_settings(settings)
+    else:
+        # Fallback to environment variables
+        return _load_from_environment()
+
+
+def _load_from_settings(settings) -> ProtectionSettings:
+    """Load protection settings from unified settings"""
+    # Basic protection settings are available in the settings
+    return ProtectionSettings(
+        # General - use security and database settings
+        enabled=settings.security.protection_enabled,
+        fail_open_on_redis_error=True,  # Safe default
+        protection_bypass_headers=[],   # No bypasses from settings
+        
+        # Redis
+        redis_url=settings.database.redis_url,
+        redis_key_prefix='faultmaven',
+        
+        # Rate limiting - use defaults since not in basic settings
+        rate_limiting_enabled=True,
+        rate_limits={
+            'global': RateLimitConfig(enabled=True, requests=1000, window=60),
+            'per_session': RateLimitConfig(enabled=True, requests=10, window=60),
+            'per_session_hourly': RateLimitConfig(enabled=True, requests=100, window=3600),
+            'title_generation': RateLimitConfig(enabled=True, requests=1, window=300)
+        },
+        
+        # Deduplication - use defaults
+        deduplication_enabled=True,
+        deduplication={
+            'default': DeduplicationConfig(enabled=True, ttl=300),
+            'agent_query': DeduplicationConfig(enabled=True, ttl=60)
+        },
+        
+        # Timeouts - use defaults
+        timeouts=TimeoutConfig(
+            enabled=True,
+            agent_total=300,
+            agent_phase=120,
+            llm_call=30,
+            emergency_shutdown=600
+        )
+    )
+
+
+def _load_from_environment() -> ProtectionSettings:
+    """Load protection settings from environment variables (fallback)"""
     
     # Helper function to parse rate limit string
     def parse_rate_limit(value: str, default_requests: int, default_window: int) -> RateLimitConfig:

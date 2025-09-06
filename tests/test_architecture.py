@@ -108,7 +108,7 @@ class TestArchitectureBoundaries:
         
         for file in service_files:
             # Skip test files, example files, and base classes
-            if "test_" in file.name or "example_" in file.name or file.name == "base_service.py":
+            if "test_" in file.name or "example_" in file.name or file.name == "base.py":
                 continue
                 
             content = file.read_text()

@@ -19,11 +19,11 @@ API Route (validation + delegation) → Service Layer (business logic) → Core 
 import logging
 from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Body
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Body, Response
 
 from faultmaven.models import DataInsightsResponse, UploadedData
 from faultmaven.api.v1.dependencies import get_data_service
-from faultmaven.services.data_service import DataService
+from faultmaven.services.data import DataService
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import ValidationException
 
@@ -35,13 +35,14 @@ logger = logging.getLogger(__name__)
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
-@router.post("/")
+@router.post("", status_code=201)
 @trace("api_upload_data_compat")
 async def upload_data_compat(
     file: UploadFile = File(...),
     session_id: str = Form(...),
     description: Optional[str] = Form(None),
-    data_service: DataService = Depends(get_data_service)
+    data_service: DataService = Depends(get_data_service),
+    response: Response = Response()
 ):
     """
     Compatibility endpoint for legacy tests - delegates to main upload function
@@ -49,16 +50,17 @@ async def upload_data_compat(
     This endpoint maintains backward compatibility for existing tests that
     expect POST to /data instead of /data/upload.
     """
-    return await upload_data(file, session_id, description, data_service)
+    return await upload_data(file, session_id, description, data_service, response)
 
 
-@router.post("/upload")
+@router.post("/upload", status_code=201)
 @trace("api_upload_data")
 async def upload_data(
     file: UploadFile = File(...),
     session_id: str = Form(...),
     description: Optional[str] = Form(None),
-    data_service: DataService = Depends(get_data_service)
+    data_service: DataService = Depends(get_data_service),
+    response: Response = Response()
 ):
     """
     Upload and process data with clean delegation pattern
@@ -102,7 +104,11 @@ async def upload_data(
             file_size=len(content)
         )
         
-        logger.info(f"Successfully uploaded data {uploaded_data.get('data_id', 'unknown')}")
+        # Set Location header for REST compliance
+        data_id = uploaded_data.get('data_id', uploaded_data.get('id', 'unknown'))
+        response.headers["Location"] = f"/api/v1/data/{data_id}"
+        
+        logger.info(f"Successfully uploaded data {data_id}")
         return uploaded_data
         
     except ValidationException as e:
@@ -134,7 +140,7 @@ async def upload_data(
         )
 
 
-@router.post("/batch-upload", response_model=List[UploadedData])
+@router.post("/batch-upload", response_model=List[UploadedData], status_code=201)
 @trace("api_batch_upload_data")
 async def batch_upload_data(
     files: List[UploadFile] = File(...),
@@ -265,7 +271,8 @@ async def get_session_data(
     session_id: str,
     limit: Optional[int] = 10,
     offset: Optional[int] = 0,
-    data_service: DataService = Depends(get_data_service)
+    data_service: DataService = Depends(get_data_service),
+    response: Response = Response()
 ) -> Dict[str, Any]:
     """
     Get all data for a session with clean delegation
@@ -309,13 +316,29 @@ async def get_session_data(
         start_idx = offset or 0
         end_idx = start_idx + (limit or 10)
         paginated_data = session_data[start_idx:end_idx]
+        total_count = len(session_data)
+        
+        # Add pagination headers for API compliance
+        response.headers["X-Total-Count"] = str(total_count)
+        
+        # Add Link header for pagination (next/prev links)
+        links = []
+        current_limit = limit or 10
+        if start_idx + current_limit < total_count:
+            next_offset = start_idx + current_limit
+            links.append(f'</api/v1/data/sessions/{session_id}?limit={current_limit}&offset={next_offset}>; rel="next"')
+        if start_idx > 0:
+            prev_offset = max(0, start_idx - current_limit)
+            links.append(f'</api/v1/data/sessions/{session_id}?limit={current_limit}&offset={prev_offset}>; rel="prev"')
+        if links:
+            response.headers["Link"] = ", ".join(links)
         
         # Return in expected format
         return {
             "uploads": paginated_data,
-            "total_count": len(session_data),
+            "total_count": total_count,
             "offset": start_idx,
-            "limit": limit or 10
+            "limit": current_limit
         }
         
     except ValidationException as e:
@@ -417,12 +440,12 @@ async def health_check(
 
 
 # Catch-all routes for data ID operations - these must be LAST to avoid catching specific routes
-@router.get("/{data_id}")
+@router.get("/{data_id}", response_model=UploadedData)
 @trace("api_get_data")
 async def get_data(
     data_id: str,
     data_service: DataService = Depends(get_data_service)
-):
+) -> UploadedData:
     """
     Get data by ID
     
@@ -475,7 +498,8 @@ async def delete_data(
         success = await data_service.delete_data(data_id, session_id)
         
         if success:
-            return {"success": True, "data_id": data_id}
+            # Spec: return 200 with empty object
+            return {}
         else:
             raise HTTPException(status_code=500, detail="Deletion failed")
             

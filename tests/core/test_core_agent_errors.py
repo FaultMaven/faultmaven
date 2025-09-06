@@ -4,7 +4,7 @@ import pytest
 
 from faultmaven.core.agent.agent import FaultMavenAgent
 from faultmaven.core.agent.doctrine import Phase
-from faultmaven.models import AgentState
+from faultmaven.models import AgentStateDict
 
 
 class TestCoreAgentErrors:
@@ -25,7 +25,7 @@ class TestCoreAgentErrors:
             web_search_tool=self.mock_web_search_tool,
         )
 
-        self.sample_state = AgentState(
+        self.sample_state = AgentStateDict(
             session_id="test-session-123",
             user_query="Database connection timeout",
             findings=[],
@@ -137,7 +137,7 @@ class TestCoreAgentErrors:
     def test_should_start_investigation_with_error(self):
         """Test _should_start_investigation with error in state."""
         # State with error condition
-        error_state = AgentState(
+        error_state = AgentStateDict(
             session_id="test-session",
             user_query="",
             findings=[],
@@ -154,7 +154,7 @@ class TestCoreAgentErrors:
 
     def test_decide_if_user_update_needed_with_error(self):
         """Test _decide_if_user_update_is_needed with error in investigation context."""
-        error_state = AgentState(
+        error_state = AgentStateDict(
             session_id="test-session",
             user_query="test query",
             findings=[],
@@ -174,7 +174,7 @@ class TestCoreAgentErrors:
 
     def test_process_user_input_invalid_phase(self):
         """Test _process_user_input with invalid phase transition."""
-        state = AgentState(
+        state = AgentStateDict(
             session_id="test-session",
             user_query="test query",
             findings=[],

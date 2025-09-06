@@ -8,11 +8,12 @@ layer components should inherit from for consistent logging and error
 handling patterns.
 """
 
-from .agent_service import AgentService
-from .data_service import DataService
-from .knowledge_service import KnowledgeService
-from .session_service import SessionService
-from .base_service import BaseService
+from .agent import AgentService
+from .data import DataService
+from .knowledge import KnowledgeService
+from .session import SessionService
+from .case import CaseService
+from .base import BaseService
 
 __all__ = [
     "BaseService",
@@ -20,4 +21,5 @@ __all__ = [
     "DataService", 
     "KnowledgeService",
     "SessionService",
+    "CaseService",
 ]

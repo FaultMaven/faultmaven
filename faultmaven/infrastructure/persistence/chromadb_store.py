@@ -12,7 +12,7 @@ import chromadb
 from chromadb.config import Settings
 from faultmaven.models.interfaces import IVectorStore
 from faultmaven.infrastructure.base_client import BaseExternalClient
-from faultmaven.config.config import config
+from faultmaven.config.settings import get_settings
 import logging
 
 
@@ -29,9 +29,10 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             circuit_breaker_timeout=60
         )
         
-        # Get ChromaDB configuration from environment or centralized config
-        chromadb_url = os.getenv("CHROMADB_URL", config.chromadb.url)
-        chromadb_token = os.getenv("CHROMADB_API_KEY", config.chromadb.api_key)
+        # Get ChromaDB configuration from unified settings
+        settings = get_settings()
+        chromadb_url = settings.database.chromadb_url
+        chromadb_token = settings.database.chromadb_api_key.get_secret_value() if settings.database.chromadb_api_key else None
 
         # Parse host/port from URL
         parsed = urlparse(chromadb_url)
@@ -65,7 +66,8 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             raise
         
         # Get or create collection
-        self.collection_name = os.getenv("CHROMADB_COLLECTION", config.chromadb.collection_name)
+        # Use collection name from settings via dependency injection
+        self.collection_name = settings.database.chromadb_collection if settings else config.chromadb.collection_name
         try:
             self.collection = self.client.get_or_create_collection(
                 name=self.collection_name,

@@ -112,9 +112,9 @@ with BusinessLogContext(logger, "operation_name", session_id=session_id) as ctx:
 ### **Service Modules**
 
 **Files to update:**
-- `faultmaven/services/agent_service.py`
-- `faultmaven/services/data_service.py`
-- `faultmaven/services/knowledge_service.py`
+- `faultmaven/services/agent.py`
+- `faultmaven/services/data.py`
+- `faultmaven/services/knowledge.py`
 
 **Pattern:**
 ```python

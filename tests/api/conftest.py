@@ -93,13 +93,15 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
         
         # Include the actual FaultMaven API routes with dependency overrides
         try:
-            from faultmaven.api.v1.routes import agent, data, knowledge, session
+            from faultmaven.api.v1.routes import data, knowledge, session, protection, case
             from faultmaven.api.v1.dependencies import get_agent_service, get_data_service, get_knowledge_service, get_session_service
             
-            app.include_router(agent.router, prefix="/api/v1", tags=["agent"])
+            # REMOVED: agent.router - replaced by case routes with real AgentService integration
             app.include_router(data.router, prefix="/api/v1", tags=["data"]) 
             app.include_router(knowledge.router, prefix="/api/v1", tags=["knowledge"])
             app.include_router(session.router, prefix="/api/v1", tags=["session"])
+            app.include_router(protection.router, prefix="/api/v1", tags=["protection"])
+            app.include_router(case.router, prefix="/api/v1", tags=["cases"])
             
             # Override dependencies with test doubles
             # Shared state for data service to persist across calls
@@ -202,20 +204,32 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                     )
                     
                     # Create v3.1.0 AgentResponse for process_query method
+                    from faultmaven.models import User
+                    test_user = User(
+                        user_id="test_user_123",
+                        email="test@example.com", 
+                        name="Test User"
+                    )
+                    
                     view_state = ViewState(
                         session_id=session_id,
-                        case_id=investigation_id,
-                        running_summary=f"Investigation for: {query}",
+                        user=test_user,
                         uploaded_data=[
-                            UploadedData(id="test_data_1", name="test_log.log", type="log_file")
+                            UploadedData(
+                                id="test_data_1", 
+                                name="test_log.log", 
+                                type="log_file",
+                                size_bytes=1024,
+                                upload_timestamp="2024-01-01T12:00:00Z",
+                                processing_status="completed"
+                            )
                         ]
                     )
                     
                     sources = [
                         Source(
                             type=SourceType.KNOWLEDGE_BASE,
-                            name="troubleshooting_guide.md",
-                            snippet="Database connection troubleshooting steps..."
+                            content="Database connection troubleshooting steps from troubleshooting_guide.md"
                         )
                     ]
                     
@@ -865,12 +879,12 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                     }
                 
                 # Add operation tracking methods for realistic session behavior
-                async def mock_record_query_operation(session_id, query, investigation_id, context=None, confidence_score=0.0, *args, **kwargs):
+                async def mock_record_query_operation(session_id, query, case_id, context=None, confidence_score=0.0, *args, **kwargs):
                     session = test_sessions.get(session_id)
                     if session:
                         investigation_record = {
                             "action": "query_processed",
-                            "investigation_id": investigation_id,
+                            "case_id": case_id,
                             "query": query,
                             "context": context or {},
                             "confidence_score": confidence_score,
@@ -1028,10 +1042,6 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
             
         except ImportError:
             # If routes can't be imported, add mock endpoints
-            @app.post("/api/v1/agent/query")
-            async def mock_agent_query():
-                return {"status": "mock_response"}
-            
             @app.post("/api/v1/data/upload") 
             async def mock_data_upload():
                 return {"status": "mock_response"}

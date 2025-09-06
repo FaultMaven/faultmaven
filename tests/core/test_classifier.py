@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from faultmaven.core.processing.classifier import DataClassifier
-from faultmaven.models import DataType
+from faultmaven.models.api import DataType
 
 
 class TestDataClassifier:
@@ -33,20 +33,20 @@ class TestDataClassifier:
                 "2024-01-01 12:00:00 ERROR [app] Database connection failed",
                 DataType.LOG_FILE,
             ),
-            ("[ERROR] Failed to connect to database", DataType.ERROR_MESSAGE),
+            ("[ERROR] Failed to connect to database", DataType.ERROR_REPORT),
             ("INFO: Application started successfully", DataType.LOG_FILE),
             ("DEBUG: Processing request ID 12345", DataType.LOG_FILE),
-            ("Exception: java.lang.NullPointerException", DataType.ERROR_MESSAGE),
-            ("Error: Division by zero", DataType.ERROR_MESSAGE),
-            ("Stack trace: at com.example.App.main", DataType.CONFIG_FILE),
-            ("cpu_usage{host='server1'} 85.2", DataType.METRICS_DATA),
-            ("memory_usage_percent 67.8", DataType.CONFIG_FILE),
-            ("http_requests_total{method='GET'} 1234", DataType.METRICS_DATA),
-            ("database.host=localhost", DataType.CONFIG_FILE),
-            ("api.timeout=30", DataType.CONFIG_FILE),
+            ("Exception: java.lang.NullPointerException", DataType.ERROR_REPORT),
+            ("Error: Division by zero", DataType.ERROR_REPORT),
+            ("Stack trace: at com.example.App.main", DataType.OTHER),
+            ("cpu_usage{host='server1'} 85.2", DataType.OTHER),
+            ("memory_usage_percent 67.8", DataType.OTHER),
+            ("http_requests_total{method='GET'} 1234", DataType.OTHER),
+            ("database.host=localhost", DataType.OTHER),
+            ("api.timeout=30", DataType.OTHER),
             ("logging.level=DEBUG", DataType.LOG_FILE),
             ("This is a troubleshooting guide.", DataType.DOCUMENTATION),
-            ("Some random text that doesn't match patterns", DataType.CONFIG_FILE),
+            ("Some random text that doesn't match patterns", DataType.OTHER),
         ],
     )
     async def test_heuristic_classification(self, classifier, text, expected_type):
@@ -60,7 +60,7 @@ class TestDataClassifier:
         mock_response = Mock()
         mock_response.content = "log_file"
         mock_router.route = AsyncMock(return_value=mock_response)
-        classifier._heuristic_classify = lambda _, filename=None: DataType.UNKNOWN
+        classifier._heuristic_classify = lambda _, filename=None: DataType.OTHER
         ambiguous_text = "foobar123"
         result = await classifier.classify(ambiguous_text)
         mock_router.route.assert_awaited_once()
@@ -70,12 +70,12 @@ class TestDataClassifier:
     async def test_llm_fallback_returns_valid_type(self, classifier, mock_router):
         """Test that LLM fallback returns a valid DataType."""
         mock_response = Mock()
-        mock_response.content = "metrics_data"
+        mock_response.content = "other"
         mock_router.route = AsyncMock(return_value=mock_response)
-        classifier._heuristic_classify = lambda _, filename=None: DataType.UNKNOWN
+        classifier._heuristic_classify = lambda _, filename=None: DataType.OTHER
         ambiguous_text = "foobar123"
         result = await classifier.classify(ambiguous_text)
-        assert result == DataType.METRICS_DATA
+        assert result == DataType.OTHER
 
     @pytest.mark.asyncio
     async def test_llm_fallback_invalid_response(self, classifier, mock_router):
@@ -83,10 +83,10 @@ class TestDataClassifier:
         mock_response = Mock()
         mock_response.content = "INVALID_TYPE"
         mock_router.route = AsyncMock(return_value=mock_response)
-        classifier._heuristic_classify = lambda _, filename=None: DataType.UNKNOWN
+        classifier._heuristic_classify = lambda _, filename=None: DataType.OTHER
         ambiguous_text = "foobar123"
         result = await classifier.classify(ambiguous_text)
-        assert result == DataType.UNKNOWN
+        assert result == DataType.OTHER
 
     @pytest.mark.asyncio
     async def test_llm_fallback_exception_handling(self, classifier, mock_router):
@@ -96,19 +96,19 @@ class TestDataClassifier:
             raise Exception("LLM error")
 
         mock_router.route = AsyncMock(side_effect=raise_exc)
-        classifier._heuristic_classify = lambda _, filename=None: DataType.UNKNOWN
+        classifier._heuristic_classify = lambda _, filename=None: DataType.OTHER
         ambiguous_text = "foobar123"
         result = await classifier.classify(ambiguous_text)
-        assert result == DataType.UNKNOWN
+        assert result == DataType.OTHER
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "text,expected",
         [
-            ("", DataType.UNKNOWN),
-            (None, DataType.UNKNOWN),
-            ("   ", DataType.CONFIG_FILE),
-            ("\n\t", DataType.UNKNOWN),
+            ("", DataType.OTHER),
+            (None, DataType.OTHER),
+            ("   ", DataType.OTHER),
+            ("\n\t", DataType.OTHER),
         ],
     )
     async def test_empty_or_whitespace_input(self, classifier, text, expected):
@@ -121,21 +121,21 @@ class TestDataClassifier:
         """Test that classification works regardless of case."""
         mixed_case_text = "ERROR: Database connection FAILED"
         result = await classifier.classify(mixed_case_text)
-        assert result == DataType.ERROR_MESSAGE
+        assert result == DataType.ERROR_REPORT
 
     @pytest.mark.asyncio
     async def test_multiple_patterns_in_text(self, classifier):
         """Test classification when multiple patterns are present."""
         mixed_text = "ERROR: CPU usage is 95%"
         result = await classifier.classify(mixed_text)
-        assert result == DataType.ERROR_MESSAGE
+        assert result == DataType.ERROR_REPORT
 
     @pytest.mark.asyncio
     async def test_heuristic_priority_order(self, classifier):
         """Test that heuristic patterns are checked in priority order."""
         text = "ERROR: Some error message"
         result = await classifier.classify(text)
-        assert result == DataType.ERROR_MESSAGE
+        assert result == DataType.ERROR_REPORT
 
     @pytest.mark.asyncio
     async def test_llm_router_called_only_once(self, classifier, mock_router):
@@ -143,7 +143,7 @@ class TestDataClassifier:
         mock_response = Mock()
         mock_response.content = "documentation"
         mock_router.route = AsyncMock(return_value=mock_response)
-        classifier._heuristic_classify = lambda _, filename=None: DataType.UNKNOWN
+        classifier._heuristic_classify = lambda _, filename=None: DataType.OTHER
         ambiguous_text = "foobar123"
         await classifier.classify(ambiguous_text)
         assert mock_router.route.await_count == 1
@@ -153,11 +153,11 @@ class TestDataClassifier:
         """Test classification with special characters and symbols."""
         special_text = "ERROR: @#$%^&*() connection failed!"
         result = await classifier.classify(special_text)
-        assert result == DataType.ERROR_MESSAGE
+        assert result == DataType.ERROR_REPORT
 
     @pytest.mark.asyncio
     async def test_classification_with_unicode(self, classifier):
         """Test classification with unicode characters."""
         unicode_text = "ERROR: Database connection failed 🚫"
         result = await classifier.classify(unicode_text)
-        assert result == DataType.ERROR_MESSAGE
+        assert result == DataType.ERROR_REPORT

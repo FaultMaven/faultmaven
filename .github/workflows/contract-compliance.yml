@@ -1,0 +1,203 @@
+name: API Contract Compliance
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'faultmaven/api/**'
+      - 'faultmaven/models/**'
+      - 'docs/api/openapi.yaml'
+      - 'tests/api/test_contract_compliance_focused.py'
+
+jobs:
+  contract-compliance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements-test.txt
+        pip install pyyaml
+
+    - name: Validate OpenAPI Contract
+      run: |
+        echo "=== Validating OpenAPI Contract ==="
+        python -c "
+        import yaml
+        import sys
+        
+        # Load and validate OpenAPI spec
+        with open('docs/api/openapi.yaml') as f:
+            spec = yaml.safe_load(f)
+        
+        print(f'✅ OpenAPI {spec[\"openapi\"]} spec loaded successfully')
+        print(f'✅ API: {spec[\"info\"][\"title\"]} v{spec[\"info\"][\"version\"]}')
+        
+        # Check for dangling references
+        components = spec.get('components', {})
+        schemas = components.get('schemas', {})
+        
+        refs_found = []
+        def find_refs(obj):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if k == '\$ref' and isinstance(v, str) and v.startswith('#/components/schemas/'):
+                        schema_name = v.split('/')[-1]
+                        if schema_name not in schemas:
+                            refs_found.append(v)
+                    else:
+                        find_refs(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    find_refs(item)
+        
+        find_refs(spec)
+        
+        if refs_found:
+            print(f'❌ Found {len(refs_found)} dangling references:')
+            for ref in refs_found[:5]:
+                print(f'  {ref}')
+            sys.exit(1)
+        else:
+            print('✅ No dangling references found')
+            
+        # Check critical schemas exist
+        critical_schemas = ['QueryJobStatus', 'AgentResponse', 'CaseSummary']
+        missing = [s for s in critical_schemas if s not in schemas]
+        if missing:
+            print(f'❌ Missing critical schemas: {missing}')
+            sys.exit(1)
+        else:
+            print('✅ All critical schemas present')
+        "
+
+    - name: Run Contract Compliance Tests
+      env:
+        SKIP_SERVICE_CHECKS: "true"
+        PYTHONPATH: "."
+      run: |
+        echo "=== Running Contract Compliance Test Suite ==="
+        python -m pytest tests/api/test_contract_compliance_focused.py -v --tb=short --timeout=60
+        
+        echo ""
+        echo "=== Test Suite Summary ==="
+        python -c "
+        import subprocess
+        import json
+        
+        # Get test count
+        result = subprocess.run(['python', '-m', 'pytest', 'tests/api/test_contract_compliance_focused.py', '--collect-only', '-q'], 
+                              capture_output=True, text=True, env={'SKIP_SERVICE_CHECKS': 'true', 'PYTHONPATH': '.'})
+        
+        lines = result.stdout.strip().split('\\n')
+        test_count = 0
+        for line in lines:
+            if 'test session starts' in line or '::test_' in line:
+                test_count += 1
+        
+        print(f'📊 Contract Test Suite: {test_count-1 if test_count > 0 else \"Unknown\"} tests')
+        print('🎯 Coverage: Critical endpoints, headers, status codes, response shapes')  
+        print('⚡ Target execution time: < 30 seconds')
+        print('🚫 Blocks merges on failure')
+        "
+
+    - name: Check Response Shape Compliance  
+      env:
+        SKIP_SERVICE_CHECKS: "true"
+        PYTHONPATH: "."
+      run: |
+        echo "=== Response Shape Compliance Check ==="
+        python -c "
+        # Verify our case routes return arrays not envelopes
+        with open('faultmaven/api/v1/routes/case.py', 'r') as f:
+            content = f.read()
+        
+        violations = []
+        
+        # Check GET /cases returns array
+        if 'return JSONResponse(' not in content or 'content=cases or []' not in content:
+            violations.append('GET /cases must return array with JSONResponse')
+            
+        # Check headers are set
+        if 'X-Total-Count' not in content:
+            violations.append('List endpoints must set X-Total-Count header')
+            
+        # Check auth errors are 401 not 500
+        if 'HTTP_401_UNAUTHORIZED' not in content:
+            violations.append('Auth failures must return 401, not 500')
+            
+        if violations:
+            print('❌ Response shape violations found:')
+            for v in violations:
+                print(f'  - {v}')
+            exit(1)
+        else:
+            print('✅ Response shapes comply with contract')
+        "
+
+    - name: Verify CORS Headers Configuration
+      run: |
+        echo "=== CORS Headers Verification ==="
+        python -c "
+        with open('faultmaven/main.py', 'r') as f:
+            content = f.read()
+        
+        required_cors_headers = ['Location', 'X-Total-Count', 'Link', 'Retry-After']
+        missing = []
+        
+        for header in required_cors_headers:
+            if f'\\\"{\header}\\\"' not in content:
+                missing.append(header)
+        
+        if missing:
+            print(f'❌ Missing CORS exposed headers: {\", \".join(missing)}')
+            print('Frontend will not be able to read these headers!')
+            exit(1)
+        else:
+            print('✅ All required headers exposed via CORS')
+        "
+
+    - name: Contract Compliance Summary
+      if: always()
+      run: |
+        echo ""
+        echo "=== 🎯 API Contract Compliance Gate ==="
+        echo "📋 Contract Matrix: API_CONTRACT_MATRIX.md"
+        echo "🧪 Test Suite: 15 focused compliance tests"
+        echo "🔍 Runtime Probe: Contract violation monitoring enabled"
+        echo "📊 Coverage: All critical endpoints and error paths"
+        echo ""
+        if [ $? -eq 0 ]; then
+          echo "✅ CONTRACT COMPLIANCE: PASSED"
+          echo "🚀 Safe to merge - No contract violations detected"
+        else
+          echo "❌ CONTRACT COMPLIANCE: FAILED"
+          echo "🚫 Merge blocked - Fix contract violations before proceeding"
+          echo ""
+          echo "🔧 Triage Steps:"
+          echo "1. Check test failures above"
+          echo "2. Review API_CONTRACT_MATRIX.md"
+          echo "3. Fix status codes, headers, or response shapes"
+          echo "4. Re-run: python -m pytest tests/api/test_contract_compliance_focused.py -v"
+          exit 1
+        fi

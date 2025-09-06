@@ -23,8 +23,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from unittest.mock import Mock, patch, AsyncMock
 
-from faultmaven.services.agent_service import AgentService
-from faultmaven.services.data_service import DataService
+from faultmaven.services.agent import AgentService
+from faultmaven.services.data import DataService
 from faultmaven.models import QueryRequest, AgentResponse, UploadedData, DataType
 from faultmaven.exceptions import ValidationException
 

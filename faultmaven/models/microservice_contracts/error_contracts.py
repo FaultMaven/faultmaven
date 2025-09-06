@@ -13,7 +13,7 @@ Design Principles:
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 from enum import Enum
 from pydantic import BaseModel, Field
 from uuid import uuid4
@@ -149,7 +149,7 @@ class ServiceError(BaseModel):
 
 class ValidationError(ServiceError):
     """Error for input validation failures."""
-    error_type: ErrorType = Field(default=ErrorType.VALIDATION, const=True)
+    error_type: Literal[ErrorType.VALIDATION] = ErrorType.VALIDATION
     
     # Validation-specific fields
     field_errors: List[Dict[str, str]] = Field(
@@ -172,7 +172,7 @@ class ValidationError(ServiceError):
 
 class BudgetExceededError(ServiceError):
     """Error for budget/resource limit violations."""
-    error_type: ErrorType = Field(default=ErrorType.BUDGET_EXCEEDED, const=True)
+    error_type: Literal[ErrorType.BUDGET_EXCEEDED] = ErrorType.BUDGET_EXCEEDED
     
     # Budget-specific fields
     budget_type: str = Field(description="Type of budget exceeded (time/tokens/calls)")
@@ -194,7 +194,7 @@ class BudgetExceededError(ServiceError):
 
 class CircuitBreakerError(ServiceError):
     """Error for circuit breaker activations."""
-    error_type: ErrorType = Field(default=ErrorType.CIRCUIT_BREAKER, const=True)
+    error_type: Literal[ErrorType.CIRCUIT_BREAKER] = ErrorType.CIRCUIT_BREAKER
     
     # Circuit breaker specific fields
     circuit_name: str = Field(description="Name of the circuit that is open")
@@ -217,7 +217,7 @@ class CircuitBreakerError(ServiceError):
 
 class TimeoutError(ServiceError):
     """Error for operation timeouts."""
-    error_type: ErrorType = Field(default=ErrorType.TIMEOUT, const=True)
+    error_type: Literal[ErrorType.TIMEOUT] = ErrorType.TIMEOUT
     
     # Timeout-specific fields
     timeout_ms: int = Field(description="Configured timeout in milliseconds")
@@ -243,7 +243,7 @@ class TimeoutError(ServiceError):
 
 class RateLimitError(ServiceError):
     """Error for rate limiting violations."""
-    error_type: ErrorType = Field(default=ErrorType.RATE_LIMITED, const=True)
+    error_type: Literal[ErrorType.RATE_LIMITED] = ErrorType.RATE_LIMITED
     
     # Rate limiting specific fields
     limit_type: str = Field(description="Type of rate limit (requests, tokens, etc.)")
@@ -268,7 +268,7 @@ class RateLimitError(ServiceError):
 
 class ServiceUnavailableError(ServiceError):
     """Error for service unavailability."""
-    error_type: ErrorType = Field(default=ErrorType.SERVICE_UNAVAILABLE, const=True)
+    error_type: Literal[ErrorType.SERVICE_UNAVAILABLE] = ErrorType.SERVICE_UNAVAILABLE
     
     # Service availability specific fields
     unavailable_services: List[str] = Field(
@@ -299,7 +299,7 @@ class ServiceUnavailableError(ServiceError):
 
 class AuthenticationError(ServiceError):
     """Error for authentication failures."""
-    error_type: ErrorType = Field(default=ErrorType.AUTHENTICATION, const=True)
+    error_type: Literal[ErrorType.AUTHENTICATION] = ErrorType.AUTHENTICATION
     
     # Authentication specific fields
     auth_method: str = Field(description="Authentication method that failed")
@@ -317,7 +317,7 @@ class AuthenticationError(ServiceError):
 
 class AuthorizationError(ServiceError):
     """Error for authorization failures."""
-    error_type: ErrorType = Field(default=ErrorType.AUTHORIZATION, const=True)
+    error_type: Literal[ErrorType.AUTHORIZATION] = ErrorType.AUTHORIZATION
     
     # Authorization specific fields
     required_permission: str = Field(description="Permission required for operation")
@@ -341,7 +341,7 @@ class AuthorizationError(ServiceError):
 
 class ConfigurationError(ServiceError):
     """Error for configuration issues."""
-    error_type: ErrorType = Field(default=ErrorType.CONFIGURATION, const=True)
+    error_type: Literal[ErrorType.CONFIGURATION] = ErrorType.CONFIGURATION
     
     # Configuration specific fields
     missing_config: List[str] = Field(
@@ -369,7 +369,7 @@ class ConfigurationError(ServiceError):
 # Error response wrapper for HTTP APIs
 class ErrorResponse(BaseModel):
     """Standardized error response for HTTP APIs."""
-    success: bool = Field(default=False, const=True)
+    success: Literal[False] = False
     error: ServiceError = Field(description="Error details")
     
     # Request context

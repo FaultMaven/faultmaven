@@ -19,7 +19,8 @@ from faultmaven.infrastructure.redis_client import (
     create_k8s_redis_client, 
     validate_redis_connection
 )
-from faultmaven.session_management import SessionManager
+# SessionManager has been replaced by SessionService
+# from faultmaven.services.session import SessionService as SessionManager
 
 
 async def test_k8s_redis_integration():

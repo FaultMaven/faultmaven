@@ -165,6 +165,9 @@ class Case(BaseModel):
     title: str = Field(..., description="Case title/summary")
     description: Optional[str] = Field(None, description="Detailed case description")
     
+    # Phase 3: Auto-title generation tracking
+    title_manually_set: bool = Field(default=False, description="Whether title was manually set by user")
+    
     # Ownership and collaboration
     owner_id: Optional[str] = Field(None, description="Case owner user ID")
     participants: List[CaseParticipant] = Field(default_factory=list, description="Case participants")
@@ -410,6 +413,12 @@ class CaseListFilter(BaseModel):
     tags: Optional[List[str]] = Field(None, description="Filter by tags (any match)")
     created_after: Optional[datetime] = Field(None, description="Filter by creation date")
     created_before: Optional[datetime] = Field(None, description="Filter by creation date")
+    
+    # New filtering parameters for Phase 1 implementation
+    include_empty: bool = Field(default=False, description="Include cases with message_count == 0")
+    include_archived: bool = Field(default=False, description="Include archived cases")
+    include_deleted: bool = Field(default=False, description="Include deleted cases (admin only)")
+    
     limit: int = Field(default=50, description="Maximum number of results", le=100)
     offset: int = Field(default=0, description="Result offset for pagination", ge=0)
 

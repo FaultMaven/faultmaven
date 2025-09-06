@@ -39,7 +39,7 @@ import statistics
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
-from faultmaven.services.analytics_dashboard_service import AnalyticsDashboardService
+from faultmaven.services.analytics_dashboard import AnalyticsDashboardService
 from faultmaven.models.interfaces import ITracer
 
 

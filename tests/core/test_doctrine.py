@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.agent.doctrine import Phase, TroubleshootingDoctrine
-from faultmaven.models import AgentState
+from faultmaven.models import AgentStateDict
 
 
 class TestTroubleshootingDoctrine:
@@ -23,7 +23,7 @@ class TestTroubleshootingDoctrine:
     def setup_method(self):
         """Set up test fixtures."""
         self.doctrine = TroubleshootingDoctrine()
-        self.sample_agent_state = AgentState(
+        self.sample_agent_state = AgentStateDict(
             session_id="test-session-123",
             user_query="Database timeout in production",
             findings=[
@@ -219,7 +219,7 @@ class TestTroubleshootingDoctrine:
     async def test_execute_phase_validation_with_llm(self):
         """Test execute_phase for validation with LLM."""
         # Set up agent state with hypothesis from previous phase
-        agent_state = AgentState(
+        agent_state = AgentStateDict(
             session_id="test-session-123",
             user_query="Database connection timeout",
             findings=[],
@@ -255,7 +255,7 @@ class TestTroubleshootingDoctrine:
     async def test_execute_phase_solution_with_llm(self):
         """Test execute_phase for solution with LLM."""
         # Set up agent state with validated hypothesis
-        agent_state = AgentState(
+        agent_state = AgentStateDict(
             session_id="test-session-123",
             user_query="Database connection timeout",
             findings=[],
@@ -479,7 +479,7 @@ class TestTroubleshootingDoctrine:
 
     def test_fallback_methods_with_previous_findings(self):
         """Test fallback methods using previous findings."""
-        agent_state_with_findings = AgentState(
+        agent_state_with_findings = AgentStateDict(
             session_id="test-session-123",
             user_query="Database error",
             findings=[
@@ -510,7 +510,7 @@ class TestTroubleshootingDoctrine:
 
     def test_fallback_validation_with_hypothesis(self):
         """Test validation fallback with existing hypothesis."""
-        agent_state_with_hypothesis = AgentState(
+        agent_state_with_hypothesis = AgentStateDict(
             session_id="test-session-123",
             user_query="Database error",
             findings=[],
@@ -534,7 +534,7 @@ class TestTroubleshootingDoctrine:
 
     def test_fallback_solution_with_validated_hypothesis(self):
         """Test solution fallback with validated hypothesis."""
-        agent_state_with_validation = AgentState(
+        agent_state_with_validation = AgentStateDict(
             session_id="test-session-123",
             user_query="Database error",
             findings=[],

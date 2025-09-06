@@ -103,8 +103,12 @@ class OpikTracer(BaseExternalClient, ITracer):
     with graceful fallback to local metrics when Opik is unavailable.
     """
     
-    def __init__(self):
-        """Initialize OpikTracer with proper BaseExternalClient setup"""
+    def __init__(self, settings=None):
+        """Initialize OpikTracer with settings-based configuration
+        
+        Args:
+            settings: FaultMavenSettings instance for configuration
+        """
         super().__init__(
             client_name="OpikTracer",
             service_name="CometOpik",
@@ -113,12 +117,18 @@ class OpikTracer(BaseExternalClient, ITracer):
             circuit_breaker_timeout=30
         )
         
+        # Use settings-based configuration
+        if settings is None:
+            from faultmaven.config.settings import get_settings
+            settings = get_settings()
+        
+        self.settings = settings
         self.opik_available = OPIK_AVAILABLE
         
-        # Local Opik configuration
-        self.use_local_opik = os.getenv("OPIK_USE_LOCAL", "true").lower() == "true"
-        self.local_opik_url = os.getenv("OPIK_LOCAL_URL", "http://opik.faultmaven.local:30080")
-        self.local_opik_host = os.getenv("OPIK_LOCAL_HOST", "opik.faultmaven.local")
+        # Configuration from enhanced observability settings
+        self.use_local_opik = settings.observability.opik_use_local
+        self.local_opik_url = settings.observability.opik_local_url  
+        self.local_opik_host = settings.observability.opik_local_host
         
     def trace(self, operation: str):
         """
@@ -287,7 +297,7 @@ class OpikTracer(BaseExternalClient, ITracer):
             True if tracing should be enabled, False otherwise
         """
         # Global disable check
-        if os.getenv("OPIK_TRACK_DISABLE", "false").lower() == "true":
+        if self.settings.observability.opik_track_disable:
             return False
         
         # Get current request context for targeted tracing
@@ -298,7 +308,7 @@ class OpikTracer(BaseExternalClient, ITracer):
             context = None
         
         # Check for targeted user tracing
-        target_users = os.getenv("OPIK_TRACK_USERS", "").strip()
+        target_users = self.settings.observability.opik_track_users.strip()
         if target_users:
             target_user_list = [u.strip() for u in target_users.split(",") if u.strip()]
             if target_user_list:
@@ -308,7 +318,7 @@ class OpikTracer(BaseExternalClient, ITracer):
                     return False  # User not in target list
         
         # Check for targeted session tracing
-        target_sessions = os.getenv("OPIK_TRACK_SESSIONS", "").strip()
+        target_sessions = self.settings.observability.opik_track_sessions.strip()
         if target_sessions:
             target_session_list = [s.strip() for s in target_sessions.split(",") if s.strip()]
             if target_session_list:
@@ -318,7 +328,7 @@ class OpikTracer(BaseExternalClient, ITracer):
                     return False  # Session not in target list
         
         # Check for targeted operation tracing
-        target_operations = os.getenv("OPIK_TRACK_OPERATIONS", "").strip()
+        target_operations = self.settings.observability.opik_track_operations.strip()
         if target_operations:
             target_op_list = [op.strip() for op in target_operations.split(",") if op.strip()]
             if target_op_list:
@@ -349,29 +359,35 @@ class OpikTracer(BaseExternalClient, ITracer):
                 self.logger.warning(f"Failed to record fallback metrics: {e}")
 
 
-def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "FaultMaven Development"):
+def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "FaultMaven Development", settings=None):
     """
     Initialize Comet Opik tracing with support for local and cloud instances.
     
     This function uses BaseExternalClient patterns for robust service connectivity.
 
     Args:
-        api_key: Comet API key (optional, can be set via environment)
+        api_key: Comet API key (optional, can be set via settings)
         project_name: Project name for tracing
+        settings: FaultMavenSettings instance for configuration
     """
     if not OPIK_AVAILABLE:
         logging.warning("Comet Opik not available, skipping tracing initialization")
         return
 
+    # Get settings if not provided
+    if settings is None:
+        from faultmaven.config.settings import get_settings
+        settings = get_settings()
+
     try:
         # Check for local Opik configuration first
-        local_opik_url = os.getenv("OPIK_LOCAL_URL", "http://opik.faultmaven.local:30080")
-        local_opik_host = os.getenv("OPIK_LOCAL_HOST", "opik.faultmaven.local")
-        use_local_opik = os.getenv("OPIK_USE_LOCAL", "true").lower() == "true"
+        local_opik_url = settings.observability.opik_local_url
+        local_opik_host = settings.observability.opik_local_host
+        use_local_opik = settings.observability.opik_use_local
         
         # Check for cloud Opik configuration
-        url_override = os.getenv("OPIK_URL_OVERRIDE")
-        api_key = api_key or os.getenv("COMET_API_KEY")
+        url_override = settings.observability.opik_url_override
+        api_key = api_key or (settings.observability.opik_api_key.get_secret_value() if settings.observability.opik_api_key else None)
 
         # Determine which Opik instance to use
         if use_local_opik:
@@ -414,7 +430,7 @@ def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "FaultM
                         return True  # Continue with basic capability
                     
                     # Try with default API key
-                    local_api_key = api_key or os.getenv("OPIK_API_KEY", "local-dev-key")
+                    local_api_key = api_key or (settings.observability.opik_api_key.get_secret_value() if settings.observability.opik_api_key else "local-dev-key")
                     opik.configure(url=local_opik_url, api_key=local_api_key)
                     return True
             
@@ -459,8 +475,8 @@ def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "FaultM
             
             # Set project name and workspace as environment variables
             os.environ["OPIK_PROJECT_NAME"] = project_name
-            if os.getenv("COMET_WORKSPACE"):
-                os.environ["COMET_WORKSPACE"] = os.getenv("COMET_WORKSPACE", "default")
+            if settings.observability.comet_workspace:
+                os.environ["COMET_WORKSPACE"] = settings.observability.comet_workspace
             
             logging.info("Cloud Opik tracing initialized successfully")
             
@@ -476,7 +492,7 @@ def init_opik_tracing(api_key: Optional[str] = None, project_name: str = "FaultM
         logging.info("Continuing without tracing...")
 
 
-def trace(name: str, tags: Optional[dict] = None):
+def trace(name: str, tags: Optional[dict] = None, settings=None):
     """
     Decorator to trace function calls with external service protection.
     
@@ -485,6 +501,7 @@ def trace(name: str, tags: Optional[dict] = None):
     Args:
         name: Name for the trace span
         tags: Optional tags for the span
+        settings: Optional FaultMavenSettings instance
 
     Returns:
         Decorated function
@@ -493,10 +510,19 @@ def trace(name: str, tags: Optional[dict] = None):
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            # Get settings if not provided
+            trace_settings = settings
+            if trace_settings is None:
+                try:
+                    from faultmaven.config.settings import get_settings
+                    trace_settings = get_settings()
+                except:
+                    trace_settings = None
+            
             start_time = time.time()
 
             # Runtime check for tracing disable/targeting
-            if not _should_trace_operation(name):
+            if not _should_trace_operation(name, trace_settings):
                 logging.debug(f"Tracing disabled for function: {name}")
                 try:
                     result = func(*args, **kwargs)
@@ -514,10 +540,10 @@ def trace(name: str, tags: Optional[dict] = None):
                 try:
                     # Add local Opik headers if using local instance
                     span_tags = tags or {}
-                    if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
+                    if trace_settings and trace_settings.observability.opik_use_local:
                         span_tags.update({
-                            "opik_local_host": os.getenv("OPIK_LOCAL_HOST", "opik.faultmaven.local"),
-                            "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://opik.faultmaven.local:30080")
+                            "opik_local_host": trace_settings.observability.opik_local_host,
+                            "opik_local_url": trace_settings.observability.opik_local_url
                         })
                     
                     # Simple span tracking for local Opik instance with protection
@@ -560,10 +586,19 @@ def trace(name: str, tags: Optional[dict] = None):
 
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
+            # Get settings if not provided
+            trace_settings = settings
+            if trace_settings is None:
+                try:
+                    from faultmaven.config.settings import get_settings
+                    trace_settings = get_settings()
+                except:
+                    trace_settings = None
+            
             start_time = time.time()
 
             # Runtime check for tracing disable/targeting
-            if not _should_trace_operation(name):
+            if not _should_trace_operation(name, trace_settings):
                 logging.debug(f"Tracing disabled for async function: {name}")
                 try:
                     result = await func(*args, **kwargs)
@@ -581,10 +616,10 @@ def trace(name: str, tags: Optional[dict] = None):
                 try:
                     # Add local Opik headers if using local instance
                     span_tags = tags or {}
-                    if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
+                    if trace_settings and trace_settings.observability.opik_use_local:
                         span_tags.update({
-                            "opik_local_host": os.getenv("OPIK_LOCAL_HOST", "opik.faultmaven.local"),
-                            "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://opik.faultmaven.local:30080")
+                            "opik_local_host": trace_settings.observability.opik_local_host,
+                            "opik_local_url": trace_settings.observability.opik_local_url
                         })
                     
                     # Simple span tracking for local Opik instance with protection
@@ -694,17 +729,26 @@ def _record_metrics(function_name: str, duration: float, status: str):
         logging.warning(f"Failed to record metrics: {e}")
 
 
-def create_span(name: str, tags: Optional[dict] = None):
+def create_span(name: str, tags: Optional[dict] = None, settings=None):
     """
     Context manager for creating spans with external service protection.
 
     Args:
         name: Name for the span
         tags: Optional tags for the span
+        settings: Optional FaultMavenSettings instance
 
     Returns:
         Span context manager
     """
+    # Get settings if not provided
+    if settings is None:
+        try:
+            from faultmaven.config.settings import get_settings
+            settings = get_settings()
+        except:
+            settings = None
+    
     class DummySpan:
         def __enter__(self):
             return self
@@ -712,7 +756,7 @@ def create_span(name: str, tags: Optional[dict] = None):
             pass
     
     # Runtime check for tracing disable/targeting
-    if not _should_trace_operation(name):
+    if not _should_trace_operation(name, settings):
         logging.debug(f"Tracing disabled for span: {name}")
         return DummySpan()
     
@@ -733,10 +777,10 @@ def create_span(name: str, tags: Optional[dict] = None):
                 pass
         
         span_tags = tags or {}
-        if os.getenv("OPIK_USE_LOCAL", "true").lower() == "true":
+        if settings and settings.observability.opik_use_local:
             span_tags.update({
-                "opik_local_host": os.getenv("OPIK_LOCAL_HOST", "opik.faultmaven.local"),
-                "opik_local_url": os.getenv("OPIK_LOCAL_URL", "http://opik.faultmaven.local:30080")
+                "opik_local_host": settings.observability.opik_local_host,
+                "opik_local_url": settings.observability.opik_local_url
             })
         
         return ProtectedSpan(name, span_tags)
@@ -764,19 +808,29 @@ def set_global_tags(tags: dict):
         logging.error(f"Failed to set global tags: {e}")
 
 
-def _should_trace_operation(operation_name: str) -> bool:
+def _should_trace_operation(operation_name: str, settings=None) -> bool:
     """
     Standalone function to check if an operation should be traced.
     Used by decorators and standalone functions.
     
     Args:
         operation_name: Name of the operation
+        settings: Optional FaultMavenSettings instance
         
     Returns:
         True if tracing should be enabled, False otherwise
     """
+    # Get settings if not provided
+    if settings is None:
+        try:
+            from faultmaven.config.settings import get_settings
+            settings = get_settings()
+        except:
+            # If settings can't be loaded, default to enabled
+            return True
+    
     # Global disable check
-    if os.getenv("OPIK_TRACK_DISABLE", "false").lower() == "true":
+    if settings.observability.opik_track_disable:
         return False
     
     # Get current request context for targeted tracing
@@ -787,7 +841,7 @@ def _should_trace_operation(operation_name: str) -> bool:
         context = None
     
     # Check for targeted user tracing
-    target_users = os.getenv("OPIK_TRACK_USERS", "").strip()
+    target_users = settings.observability.opik_track_users.strip()
     if target_users:
         target_user_list = [u.strip() for u in target_users.split(",") if u.strip()]
         if target_user_list:
@@ -797,7 +851,7 @@ def _should_trace_operation(operation_name: str) -> bool:
                 return False  # User not in target list
     
     # Check for targeted session tracing
-    target_sessions = os.getenv("OPIK_TRACK_SESSIONS", "").strip()
+    target_sessions = settings.observability.opik_track_sessions.strip()
     if target_sessions:
         target_session_list = [s.strip() for s in target_sessions.split(",") if s.strip()]
         if target_session_list:
@@ -807,7 +861,7 @@ def _should_trace_operation(operation_name: str) -> bool:
                 return False  # Session not in target list
     
     # Check for targeted operation tracing
-    target_operations = os.getenv("OPIK_TRACK_OPERATIONS", "").strip()
+    target_operations = settings.observability.opik_track_operations.strip()
     if target_operations:
         target_op_list = [op.strip() for op in target_operations.split(",") if op.strip()]
         if target_op_list:

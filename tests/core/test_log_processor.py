@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from faultmaven.core.processing.log_analyzer import LogProcessor
-from faultmaven.models import AgentState, DataInsightsResponse, DataType
+from faultmaven.models import AgentStateDict, DataInsightsResponse, DataType
 
 
 @pytest.fixture
@@ -14,7 +14,7 @@ def processor():
 @pytest.fixture
 def sample_agent_state():
     """Sample agent state for testing."""
-    return AgentState(
+    return AgentStateDict(
         session_id="test-session-123",
         user_query="Database connection issues with auth-service",
         current_phase="formulate_hypothesis",

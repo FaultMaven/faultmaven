@@ -55,7 +55,7 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
     _logger: logging.Logger = PrivateAttr()
     _knowledge_ingester: KnowledgeIngester = PrivateAttr()
 
-    def __init__(self, knowledge_ingester: KnowledgeIngester):
+    def __init__(self, knowledge_ingester: KnowledgeIngester, **kwargs):
         # Initialize both parent classes properly
         LangChainBaseTool.__init__(self)
         IBaseTool.__init__(self)
@@ -476,7 +476,7 @@ class KnowledgeBaseFilteredTool(LangChainBaseTool, IBaseTool):
     _logger: logging.Logger = PrivateAttr()
     _knowledge_ingester: KnowledgeIngester = PrivateAttr()
 
-    def __init__(self, knowledge_ingester: KnowledgeIngester):
+    def __init__(self, knowledge_ingester: KnowledgeIngester, **kwargs):
         super().__init__()
         self._logger = logging.getLogger(__name__)
         self._knowledge_ingester = knowledge_ingester

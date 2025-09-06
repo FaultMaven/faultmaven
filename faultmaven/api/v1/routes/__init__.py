@@ -1,11 +1,12 @@
 """API Routes Package
 """
 
-# Import routes
-from . import agent
+# Import routes  
+# REMOVED: agent - replaced by case routes with real AgentService integration
 from . import data
 from . import knowledge
 from . import session
+from . import auth
 
 # Import case persistence routes
 try:
@@ -15,39 +16,18 @@ except ImportError:
     CASE_ROUTES_AVAILABLE = False
     case = None
 
-# Import Phase 2 enhanced routes
-try:
-    from . import enhanced_agent
-    from . import orchestration
-    ENHANCED_ROUTES_AVAILABLE = True
-except ImportError:
-    ENHANCED_ROUTES_AVAILABLE = False
-    enhanced_agent = None
-    orchestration = None
-
-# Import monitoring and performance routes
-try:
-    from . import monitoring
-    MONITORING_ROUTES_AVAILABLE = True
-except ImportError:
-    MONITORING_ROUTES_AVAILABLE = False
-    monitoring = None
+"""Locked spec excludes enhanced_agent, orchestration, monitoring routes."""
 
 __all__ = [
-    "agent", 
+    # "agent",  # REMOVED: replaced by case routes with real AgentService integration
     "data",
-    "knowledge",
+    "knowledge", 
     "session",
+    "auth",
 ]
 
 # Add case routes if available
 if CASE_ROUTES_AVAILABLE:
     __all__.append("case")
 
-# Add enhanced routes if available
-if ENHANCED_ROUTES_AVAILABLE:
-    __all__.extend(["enhanced_agent", "orchestration"])
-
-# Add monitoring routes if available
-if MONITORING_ROUTES_AVAILABLE:
-    __all__.append("monitoring")
+# Excluded: enhanced_agent, orchestration, monitoring

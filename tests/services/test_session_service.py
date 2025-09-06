@@ -20,9 +20,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
 
-from faultmaven.services.session_service import SessionService
+from faultmaven.services.session import SessionService
 from faultmaven.models import AgentState, SessionContext
-from faultmaven.session_management import SessionManager
+# SessionManager has been replaced by SessionService architecture
+# from faultmaven.session_management import SessionManager
 from faultmaven.exceptions import ValidationException, ServiceException
 
 
@@ -57,10 +58,9 @@ class ComprehensiveMockSessionManager:
             data_uploads=[],
             case_history=[],
             agent_state={
-                "session_id": session_id,
-                "user_query": "",
-                "current_phase": "initial",
+                "status": AgentState.IDLE,
                 "case_context": initial_context or {},
+                "current_phase": "initial",
                 "findings": [],
                 "recommendations": [],
                 "confidence_score": 0.0,
@@ -638,7 +638,7 @@ class TestSessionServiceComprehensive:
         await session_service.record_query_operation(
             session_id=session_id,
             query="Database connection timeout troubleshooting",
-            investigation_id="inv_001",
+            case_id="inv_001",
             context={"service": "database", "priority": "high"},
             confidence_score=0.85
         )
@@ -949,7 +949,7 @@ class TestSessionServiceComprehensive:
         await session_service.record_query_operation(
             session_id=session_id,
             query="Database connection timeout affecting user transactions",
-            investigation_id="inv_business_001",
+            case_id="inv_business_001",
             context={"urgency": "high", "impact": "multiple_users"},
             confidence_score=0.85
         )

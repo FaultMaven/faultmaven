@@ -46,15 +46,37 @@ from faultmaven.infrastructure.model_cache import model_cache
 class KnowledgeIngester:
     """Handles asynchronous ingestion of documents into the knowledge base"""
 
-    def __init__(self, chroma_persist_directory: str = "./chroma_db"):
+    def __init__(self, chroma_persist_directory: str = "./chroma_db", settings=None):
         self.logger = logging.getLogger(__name__)
         self.sanitizer = DataSanitizer()
-
+        
+        # Get settings if not provided
+        if settings is None:
+            try:
+                from faultmaven.config.settings import get_settings
+                settings = get_settings()
+            except Exception:
+                settings = None
+        
         # Initialize ChromaDB - default to K8s cluster for production-like development
-        chromadb_url = os.getenv("CHROMADB_URL")
-        chromadb_host = os.getenv("CHROMADB_HOST", "chromadb.faultmaven.local")
-        chromadb_port = int(os.getenv("CHROMADB_PORT", "30080"))
-        chromadb_auth_token = os.getenv("CHROMADB_AUTH_TOKEN", "faultmaven-dev-chromadb-2025")
+        if settings:
+            # Use settings-based configuration
+            chromadb_url = settings.database.chromadb_url
+            chromadb_host = settings.database.chromadb_host
+            chromadb_port = settings.database.chromadb_port
+            chromadb_auth_token = (
+                settings.database.chromadb_auth_token.get_secret_value() 
+                if settings.database.chromadb_auth_token 
+                else "faultmaven-dev-chromadb-2025"
+            )
+        else:
+            # No fallback - unified settings system is mandatory
+            from faultmaven.models.exceptions import KnowledgeBaseError
+            raise KnowledgeBaseError(
+                "Knowledge ingestion requires unified settings system to be available",
+                error_code="KNOWLEDGE_CONFIG_ERROR",
+                context={"settings_available": settings is not None}
+            )
         
         if chromadb_url:
             # Legacy URL-based configuration

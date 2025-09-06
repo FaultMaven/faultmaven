@@ -1,17 +1,56 @@
 # FaultMaven Integration Tests
 
-This directory contains integration tests that validate cross-layer functionality and complete system workflows with minimal external dependencies.
+This directory contains integration tests that validate cross-layer functionality and complete system workflows after the major test architecture overhaul, featuring **new architecture workflow testing** with **Clean Architecture** and **dependency injection** patterns.
 
-## Overview
+## Overview - Post-Architecture Overhaul
 
 This directory contains integration test infrastructure focused on:
 
-1. **Mock API Infrastructure** - External service simulation for testing without dependencies
-2. **Cross-Layer Test Utilities** - Shared fixtures and test infrastructure
+1. **New Architecture Workflows** - End-to-end testing of Clean Architecture patterns with DI container
+2. **Container-Based Integration** - Cross-layer validation using dependency injection container
+3. **Interface Compliance Testing** - Integration testing with proper interface contracts
+4. **Mock API Infrastructure** - External service simulation for testing without dependencies
+5. **Cross-Layer Test Utilities** - Shared fixtures and test infrastructure with container support
 
-## Current Test Structure
+## Current Test Structure - After Architecture Overhaul
 
-The integration directory contains shared test infrastructure and utilities:
+The integration directory contains comprehensive integration test infrastructure with new architecture workflow testing:
+
+### New Architecture Integration Tests
+
+#### `test_new_architecture_workflows.py` ✅ NEW
+Comprehensive end-to-end architecture testing with 18+ tests across 5 test classes:
+
+- **TestSettingsContainerServicesFlow** (4 tests) - Settings → Container → Services integration flow
+- **TestEndToEndWorkflows** (4 tests) - Complete troubleshooting workflows through all layers
+- **TestErrorHandlingAcrossLayers** (4 tests) - Cross-layer error propagation and recovery
+- **TestInterfaceComplianceInRealScenarios** (3 tests) - Interface compliance in production scenarios
+- **TestCrossLayerCommunicationPatterns** (3 tests) - Layer communication and data flow patterns
+
+**Key Features Tested**:
+- Complete troubleshooting workflow from query to response
+- Settings system integration with container initialization
+- Multi-session case continuity with proper state management
+- Error handling and graceful degradation across architectural layers
+- Interface compliance validation in real usage scenarios
+- Cross-layer communication patterns and data flow
+
+### Additional Integration Tests
+
+#### `test_kb_ingestion_and_indexing.py`
+Knowledge base integration testing with vector store operations
+
+#### `test_readiness_and_redis.py`
+System readiness and Redis integration validation
+
+#### `test_case_persistence_end_to_end.py`
+Complete case persistence workflow testing
+
+#### `test_system_performance_integration.py`
+Performance integration testing across architectural layers
+
+#### `test_api_compliance_integration.py`
+API compliance and schema validation integration testing
 
 ### Core Infrastructure Files
 
@@ -33,21 +72,24 @@ Integration test fixtures and configuration:
 - **Async Test Support**: Async test infrastructure and cleanup
 - **Test Environment**: Integration test environment setup and teardown
 
-## Test Philosophy
+## Test Philosophy - New Architecture Integration
 
-### Minimal External Dependencies
-- **Real Business Logic**: Tests use actual business logic where possible
-- **External Boundary Mocking**: Only mock true external systems (APIs, databases)
-- **Interface Compliance**: All mocks implement proper interface contracts
-- **Realistic Behavior**: Mocks provide meaningful responses, not just pass-through
+### Container-Based Integration Testing
+- **Dependency Injection**: All integration tests use DI container patterns for service resolution
+- **Clean Architecture Compliance**: Tests validate proper layer separation and communication
+- **Interface-Based Testing**: All mocks implement proper interface contracts (`ILLMProvider`, `ISanitizer`, etc.)
+- **Real Business Logic**: Tests use actual business logic with minimal external mocking
+- **Container Lifecycle**: Proper container initialization, service resolution, and cleanup
 
-### Cross-Layer Integration
-- **Layer Coordination**: Tests validate proper interaction between architectural layers
-- **Context Propagation**: Request context and correlation IDs flow correctly
-- **Error Handling**: Errors propagate appropriately across layer boundaries
-- **Performance Characteristics**: Real timing and resource usage validation
+### Cross-Layer Architecture Validation
+- **Settings → Container → Services Flow**: Complete configuration and dependency resolution
+- **Layer Coordination**: Tests validate proper interaction between all architectural layers
+- **Interface Compliance**: Real-world validation that implementations meet interface contracts
+- **Error Propagation**: Errors flow correctly across layer boundaries with proper recovery
+- **Context Propagation**: Request context and correlation IDs maintained across container services
+- **Performance Characteristics**: Container overhead validation and service performance testing
 
-## Running Integration Tests
+## Running Integration Tests - New Architecture
 
 ### Prerequisites
 
@@ -56,19 +98,49 @@ Install test dependencies:
 pip install -r ../../requirements-test.txt
 ```
 
-### Basic Execution
-
-Run all integration tests:
+**Environment Configuration for Integration Testing**:
 ```bash
-# From project root
-pytest tests/integration/ -v
+# Skip external service checks for integration testing
+export SKIP_SERVICE_CHECKS=true
 
-# From integration directory
-cd tests/integration
-pytest -v
+# Enable debug logging for integration test debugging
+export LOG_LEVEL=DEBUG
+
+# Set integration test configuration
+export REDIS_HOST=192.168.0.111
+export REDIS_PORT=30379
+export CHROMADB_URL=http://chromadb.faultmaven.local:30080
 ```
 
-Integration testing primarily occurs through mock API infrastructure and shared test utilities.
+### Basic Execution
+
+**New Architecture Integration Tests**:
+```bash
+# Run new architecture workflow tests (18+ tests)
+pytest tests/integration/test_new_architecture_workflows.py -v
+
+# Run all integration tests with container patterns
+SKIP_SERVICE_CHECKS=true pytest tests/integration/ -v
+
+# Run from integration directory
+cd tests/integration
+SKIP_SERVICE_CHECKS=true pytest -v
+```
+
+**Specific Integration Test Categories**:
+```bash
+# End-to-end troubleshooting workflow testing
+pytest tests/integration/test_new_architecture_workflows.py::TestEndToEndWorkflows -v
+
+# Settings and container integration flow
+pytest tests/integration/test_new_architecture_workflows.py::TestSettingsContainerServicesFlow -v
+
+# Cross-layer error handling validation
+pytest tests/integration/test_new_architecture_workflows.py::TestErrorHandlingAcrossLayers -v
+
+# Interface compliance in production scenarios
+pytest tests/integration/test_new_architecture_workflows.py::TestInterfaceComplianceInRealScenarios -v
+```
 
 ### Mock Server Testing
 
@@ -97,18 +169,72 @@ LOG_LEVEL=DEBUG pytest tests/integration/ -v
 - **Memory Usage**: < 50MB peak during execution
 - **Async Operations**: Proper async/await patterns with cleanup
 
-### Common Patterns
+### Common Patterns - New Architecture Integration
 
-#### Mock API Testing
+#### Container-Based Integration Testing
+```python
+from faultmaven.container import container
+from faultmaven.config.settings import get_settings
+
+@pytest.mark.asyncio
+async def test_settings_container_services_integration():
+    """Test complete Settings → Container → Services flow."""
+    # Reset container for clean state
+    container.reset()
+    
+    # Test with realistic environment configuration
+    test_env = {
+        'CHAT_PROVIDER': 'fireworks',
+        'FIREWORKS_API_KEY': 'test-key',
+        'REDIS_HOST': 'localhost'
+    }
+    
+    with patch.dict(os.environ, test_env):
+        # Validate settings layer
+        settings = get_settings()
+        assert settings.llm.provider == LLMProvider.FIREWORKS
+        
+        # Validate container initialization
+        agent_service = container.get_agent_service()
+        assert agent_service is not None
+        
+        # Validate end-to-end service operation
+        result = await agent_service.process_query(
+            "Test troubleshooting query",
+            "integration-test-session"
+        )
+        
+        assert result.session_id == "integration-test-session"
+        assert len(result.response) > 50
+```
+
+#### Interface Compliance Integration Testing
 ```python
 @pytest.mark.asyncio
-async def test_llm_provider_mock(mock_servers):
-    """Test LLM provider with mock API."""
-    # Mock API server provides realistic responses
-    router = LLMRouter()
-    response = await router.route("test query")
-    assert len(response) > 700
-    assert "test" in response.lower()
+async def test_interface_compliance_real_scenario():
+    """Test interface compliance in production-like scenarios."""
+    container.reset()
+    
+    # Get services through container (interface resolution)
+    agent_service = container.get_agent_service()
+    knowledge_service = container.get_knowledge_service()
+    
+    # Validate services implement expected interfaces
+    assert hasattr(agent_service, 'process_query')
+    assert hasattr(knowledge_service, 'search_knowledge_base')
+    
+    # Test cross-service integration
+    kb_result = await knowledge_service.search_knowledge_base(
+        "database connection issues", limit=3
+    )
+    assert isinstance(kb_result, list)
+    
+    # Test agent service with knowledge integration
+    agent_result = await agent_service.process_query(
+        "Database connection problems",
+        "interface-test-session"
+    )
+    assert agent_result.session_id == "interface-test-session"
 ```
 
 ## Troubleshooting
@@ -167,30 +293,39 @@ All integration tests use the same interface-based dependency injection as the m
 
 ## Maintenance
 
-### Adding New Integration Tests
+### Adding New Integration Tests - Architecture Focus
 
 New integration tests should focus on:
-1. **External API Simulation**: Mock servers for testing without external dependencies
-2. **Cross-Service Integration**: Testing service interactions through proper interfaces
-3. **End-to-End Workflows**: Realistic user scenarios with minimal mocking
-4. **Infrastructure Testing**: External service integration with fallback behavior
+1. **Container Integration**: Testing service resolution and lifecycle through DI container
+2. **Cross-Layer Communication**: Validating proper layer interaction and data flow patterns
+3. **Interface Compliance**: Testing that all services properly implement interface contracts
+4. **End-to-End Architecture Workflows**: Complete user scenarios through all architectural layers
+5. **Settings Integration**: Testing configuration propagation through container to services
+6. **Error Handling Integration**: Cross-layer error propagation and graceful degradation
+7. **Performance Integration**: Container overhead and cross-layer performance characteristics
 
-### Maintenance Philosophy
+### Maintenance Philosophy - New Architecture
 
-1. **Business Value First**: Only add tests that validate real business scenarios
-2. **Service Layer Focus**: Most integration testing happens at service layer
-3. **External Boundary Testing**: Integration tests focus on external service interactions
-4. **Maintainability**: Favor simple, focused tests over complex integration scenarios
+1. **Architecture Compliance First**: Validate Clean Architecture principles in all integration tests
+2. **Container Lifecycle Management**: Ensure proper container reset and service isolation
+3. **Interface-Based Testing**: Focus on interface compliance rather than implementation details
+4. **Cross-Layer Coordination**: Test complete workflows through all architectural layers
+5. **Business Value Integration**: Validate end-to-end business scenarios with realistic data
+6. **Performance Awareness**: Monitor container overhead and cross-layer performance impacts
+7. **Error Scenario Coverage**: Test all error propagation and recovery patterns across layers
 
 ## Contributing
 
 When adding new integration tests:
 
-1. **Follow existing patterns** for async testing and logging verification
-2. **Use provided fixtures** from `conftest.py` for consistent setup
-3. **Test realistic scenarios** that reflect actual application usage
-4. **Document test purpose** clearly in docstrings and comments
-5. **Ensure proper cleanup** to prevent test interference
+1. **Container-First Approach**: Always use container patterns for service resolution and state management
+2. **Interface Compliance**: Mock interfaces rather than concrete implementations
+3. **Environment Isolation**: Use clean environment fixtures for proper test isolation
+4. **Cross-Layer Validation**: Test complete workflows through all architectural layers
+5. **Error Scenario Coverage**: Include error handling and graceful degradation testing
+6. **Performance Consideration**: Monitor container overhead and service performance
+7. **Architecture Alignment**: Ensure tests validate Clean Architecture principles
+8. **Documentation**: Clearly document architecture patterns and integration flows being tested
 
 ## Resources
 

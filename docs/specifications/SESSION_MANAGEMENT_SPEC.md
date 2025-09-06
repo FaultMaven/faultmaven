@@ -21,7 +21,7 @@ This specification defines the implementation requirements for session cleanup f
 
 ### 1. SessionManager Enhancement
 
-**File**: `faultmaven/session_management.py`
+**File**: `faultmaven/services/session.py` (SessionService replaces SessionManager)
 
 #### 1.1 Core Cleanup Method
 ```python
@@ -165,7 +165,7 @@ logger.info(
 
 ### Unit Tests
 ```python
-# tests/unit/test_session_management_enhanced.py
+# tests/unit/test_session_service_enhanced.py (SessionService tests)
 class TestSessionCleanup:
     async def test_cleanup_inactive_sessions_success(self):
         """Test successful cleanup of expired sessions."""

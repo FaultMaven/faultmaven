@@ -110,8 +110,18 @@ PROVIDER_SCHEMA = {
 class ProviderRegistry:
     """Central registry for managing LLM providers"""
     
-    def __init__(self):
+    def __init__(self, settings=None):
         self.logger = logging.getLogger(__name__)
+        
+        # Get settings if not provided
+        if settings is None:
+            try:
+                from faultmaven.config.settings import get_settings
+                settings = get_settings()
+            except:
+                settings = None
+        
+        self.settings = settings
         self._providers: Dict[str, BaseLLMProvider] = {}
         self._fallback_chain: List[str] = []
         self._initialized = False
@@ -150,22 +160,32 @@ class ProviderRegistry:
             except ImportError:
                 self.logger.info("🔍 dotenv not available, using system environment")
             
-            self._initialize_from_environment()
+            self._initialize_from_settings()
             self._initialized = True
     
-    def _initialize_from_environment(self):
-        """Initialize providers based on environment configuration using schema"""
-        # Debug environment variable reading
-        self.logger.info(f"🔍 Environment variables check:")
-        self.logger.info(f"🔍 CHAT_PROVIDER: {os.getenv('CHAT_PROVIDER', 'NOT_SET')}")
-        self.logger.info(f"🔍 LOCAL_LLM_URL: {os.getenv('LOCAL_LLM_URL', 'NOT_SET')}")
-        self.logger.info(f"🔍 LOCAL_LLM_MODEL: {os.getenv('LOCAL_LLM_MODEL', 'NOT_SET')}")
-        self.logger.info(f"🔍 FIREWORKS_API_KEY: {os.getenv('FIREWORKS_API_KEY', 'NOT_SET')[:10] if os.getenv('FIREWORKS_API_KEY') else 'NOT_SET'}...")
-        self.logger.info(f"🔍 Current working directory: {os.getcwd()}")
-        self.logger.info(f"🔍 .env file exists: {os.path.exists('.env')}")
-        
-        # Get primary provider from environment
-        primary_provider = os.getenv("CHAT_PROVIDER", "local")
+    def _initialize_from_settings(self):
+        """Initialize providers based on settings configuration using schema"""
+        if self.settings:
+            # Use settings-based configuration
+            self.logger.info(f"🔍 Settings-based provider configuration:")
+            self.logger.info(f"🔍 CHAT_PROVIDER: {self.settings.llm.provider}")
+            self.logger.info(f"🔍 LOCAL_LLM_URL: {self.settings.llm.local_url or 'NOT_SET'}")
+            self.logger.info(f"🔍 LOCAL_LLM_MODEL: {self.settings.llm.local_model or 'NOT_SET'}")
+            fireworks_key_preview = "NOT_SET"
+            if self.settings.llm.fireworks_api_key:
+                fireworks_key_preview = self.settings.llm.fireworks_api_key.get_secret_value()[:10] + "..."
+            self.logger.info(f"🔍 FIREWORKS_API_KEY: {fireworks_key_preview}")
+            
+            # Get primary provider from settings
+            primary_provider = self.settings.llm.provider
+        else:
+            # No fallback - unified settings system is mandatory
+            from faultmaven.models.exceptions import LLMProviderError
+            raise LLMProviderError(
+                "LLM provider registry requires unified settings system to be available",
+                error_code="LLM_CONFIG_ERROR",
+                context={"settings_available": self.settings is not None}
+            )
         
         # Validate that primary_provider is in schema
         if primary_provider not in PROVIDER_SCHEMA:
@@ -189,20 +209,60 @@ class ProviderRegistry:
         self._setup_fallback_chain(primary_provider)
     
     def _create_provider_config(self, provider_name: str, schema: Dict) -> Optional[ProviderConfig]:
-        """Create provider configuration from schema and environment variables"""
+        """Create provider configuration from schema and settings/environment variables"""
         
-        # Check if API key is required and available
-        api_key_var = schema.get("api_key_var")
         api_key = None
-        if api_key_var:
-            api_key = os.getenv(api_key_var)
-            if not api_key:
-                # Skip providers without required API keys
-                return None
+        model = None
+        base_url = None
         
-        # Get configuration values from environment or defaults
-        model = os.getenv(schema["model_var"], schema["default_model"])
-        base_url = os.getenv(schema.get("base_url_var", ""), schema["default_base_url"])
+        if self.settings:
+            # Use settings-based configuration
+            if provider_name == "fireworks":
+                api_key = self.settings.llm.fireworks_api_key.get_secret_value() if self.settings.llm.fireworks_api_key else None
+                model = self.settings.llm.fireworks_model or schema["default_model"]
+                base_url = self.settings.llm.fireworks_base_url or schema["default_base_url"]
+            elif provider_name == "openai":
+                api_key = self.settings.llm.openai_api_key.get_secret_value() if self.settings.llm.openai_api_key else None
+                model = self.settings.llm.openai_model or schema["default_model"]
+                base_url = self.settings.llm.openai_base_url or schema["default_base_url"]
+            elif provider_name == "local":
+                api_key = None  # Local doesn't need API key
+                model = self.settings.llm.local_model
+                base_url = self.settings.llm.local_url
+            elif provider_name == "anthropic":
+                api_key = self.settings.llm.anthropic_api_key.get_secret_value() if self.settings.llm.anthropic_api_key else None
+                model = self.settings.llm.anthropic_model or schema["default_model"]
+                base_url = self.settings.llm.anthropic_base_url or schema["default_base_url"]
+            elif provider_name == "gemini":
+                api_key = self.settings.llm.gemini_api_key.get_secret_value() if self.settings.llm.gemini_api_key else None
+                model = self.settings.llm.gemini_model or schema["default_model"]
+                base_url = self.settings.llm.gemini_base_url or schema["default_base_url"]
+            elif provider_name == "huggingface":
+                api_key = self.settings.llm.huggingface_api_key.get_secret_value() if self.settings.llm.huggingface_api_key else None
+                model = self.settings.llm.huggingface_model or schema["default_model"]
+                base_url = self.settings.llm.huggingface_base_url or schema["default_base_url"]
+            elif provider_name == "openrouter":
+                api_key = self.settings.llm.openrouter_api_key.get_secret_value() if self.settings.llm.openrouter_api_key else None
+                model = self.settings.llm.openrouter_model or schema["default_model"]
+                base_url = self.settings.llm.openrouter_base_url or schema["default_base_url"]
+            
+            # Skip providers without required API keys (except local)
+            if schema.get("api_key_var") and not api_key and provider_name != "local":
+                return None
+                
+        else:
+            # Fallback to environment variables when settings unavailable
+            # Check if API key is required and available
+            api_key_var = schema.get("api_key_var")
+            if api_key_var:
+                api_key = os.getenv(api_key_var)
+                if not api_key:
+                    # Skip providers without required API keys
+                    return None
+            
+            # Get configuration values from environment or defaults
+            model = os.getenv(schema["model_var"], schema["default_model"])
+            base_url = os.getenv(schema.get("base_url_var", ""), schema["default_base_url"])
         
         # For local provider, require environment variables
         if provider_name == "local":
@@ -379,12 +439,12 @@ class ProviderRegistry:
 _registry = None
 
 
-def get_registry() -> ProviderRegistry:
+def get_registry(settings=None) -> ProviderRegistry:
     """Get the global provider registry instance"""
     global _registry
     if _registry is None:
         print("🔍 Creating new ProviderRegistry instance...")
-        _registry = ProviderRegistry()
+        _registry = ProviderRegistry(settings=settings)
         print("🔍 ProviderRegistry instance created")
     return _registry
 

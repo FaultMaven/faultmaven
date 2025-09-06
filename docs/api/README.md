@@ -1,5 +1,8 @@
 # FaultMaven API Reference
 
+
+# FaultMaven API Documentation
+
 AI-powered troubleshooting assistant for Engineers, SREs, and DevOps professionals.
 
 ## Architecture Overview
@@ -10,12 +13,6 @@ The FaultMaven API follows clean architecture principles with:
 - **Service Layer**: Business logic orchestration using dependency injection
 - **Core Layer**: Domain logic including AI reasoning engine and data processing
 - **Infrastructure Layer**: External service integrations (LLM providers, databases, security)
-
-## API Version
-
-**Current Version:** 1.0.0  
-**Base URL:** `/`  
-**OpenAPI Specification:** 3.1.0
 
 ## Key Features
 
@@ -31,10 +28,6 @@ The FaultMaven API follows clean architecture principles with:
 
 Currently, the API does not require authentication. This may change in future versions.
 When implemented, authentication will use API key-based authentication.
-
-**Planned Authentication Methods:**
-- **API Key**: `X-API-Key` header authentication
-- **JWT Bearer**: JWT token-based authentication
 
 ## Rate Limiting
 
@@ -82,8 +75,15 @@ All data submitted to the API is processed through privacy-first pipelines with:
 - **Throughput**: Supports 100+ concurrent requests
 - **Availability**: 99.9% uptime target with health monitoring
 - **Scalability**: Horizontal scaling support via stateless design
+        
 
+**Version:** 1.0.0  
+**Base URL:** `/`  
+**Generated:** 2025-09-01T02:30:01.365337Z
 
+## Authentication
+
+Currently, the API does not require authentication. Future versions will implement API key or JWT-based authentication.
 
 ## Endpoints
 
@@ -101,18 +101,13 @@ Root endpoint with API information.
 
 ---
 
-### `/api/v1/agent/health`
+### `/admin/optimization/trigger-cleanup`
 
 #### GET
 
-**Health Check**
+**Trigger System Cleanup**
 
-Health check endpoint with service delegation
-
-Returns:
-    Service health status
-
-**Tags:** `query_processing`
+Trigger comprehensive system cleanup and optimization.
 
 **Responses:**
 
@@ -120,219 +115,25 @@ Returns:
 
 ---
 
-### `/api/v1/agent/investigations/{investigation_id}`
-
-#### GET
-
-**Get Investigation**
-
-Get investigation results by ID with clean delegation
-
-Args:
-    investigation_id: Investigation identifier
-    session_id: Session identifier for validation
-    agent_service: Injected AgentServiceRefactored
-    
-Returns:
-    TroubleshootingResponse with investigation results
-
-**Tags:** `query_processing`, `query_processing`
-
-**Parameters:**
-
-- `investigation_id` (path) ✅ - No description
-- `session_id` (query) ✅ - No description
-
-**Responses:**
-
-**200** - Successful Response
-
-```json
-{
-  "investigation_id": "inv_789",
-  "status": "completed",
-  "findings": [
-    {
-      "type": "root_cause",
-      "message": "Database connection pool exhausted due to connection leak",
-      "severity": "high",
-      "confidence": 0.9,
-      "evidence": [
-        "Connection pool size: 20, Active connections: 20",
-        "No idle connections available",
-        "Long-running transactions detected"
-      ]
-    }
-  ],
-  "recommendations": [
-    {
-      "action": "Increase database connection pool size to 50",
-      "priority": "immediate",
-      "impact": "Should restore service within 5 minutes",
-      "effort": "low"
-    },
-    {
-      "action": "Review application code for connection leaks",
-      "priority": "high",
-      "impact": "Prevents future occurrences",
-      "effort": "medium"
-    }
-  ],
-  "session_id": "session_db_123",
-  "reasoning_trace": [
-    {
-      "step": "symptom_analysis",
-      "reasoning": "HTTP 500 errors correlate with database timeout errors",
-      "data_sources": [
-        "application_logs",
-        "database_metrics"
-      ]
-    },
-    {
-      "step": "hypothesis_formation",
-      "reasoning": "Connection pool exhaustion is most likely cause given metrics",
-      "data_sources": [
-        "connection_pool_metrics",
-        "transaction_logs"
-      ]
-    }
-  ]
-}
-```
-
-**422** - Validation Error
-
----
-
-### `/api/v1/agent/query`
+### `/api/v1/auth/dev-login`
 
 #### POST
 
-**Query v3.1.0 Schema**
+**Dev Login**
 
-Process troubleshooting query using the modern v3.1.0 schema with structured responses
+Developer login mock endpoint.
 
-This endpoint provides:
-1. Intent-driven responses with explicit `ResponseType`
-2. Evidence-based answers with structured `Source` attribution
-3. ViewState for session and case tracking
-4. Multi-step plans for complex troubleshooting workflows
+Creates or authenticates a user with minimal validation (username/email only).
+Returns complete ViewState for immediate UI rendering.
 
 Args:
-    request: QueryRequest with query, session_id
-    agent_service: Injected AgentService from DI container
+    request: DevLoginRequest with username (email)
+    session_service: Injected session service
     
 Returns:
-    AgentResponse with v3.1.0 schema including content, response_type, view_state, sources, and optional plan
-    
-Raises:
-    HTTPException: On service layer errors (400, 404, 422, 500)
+    AuthResponse with ViewState containing user context and initial data
 
-**Tags:** `query_processing`
-
-**Request Body:**
-
-Content-Type: `application/json`
-
-**Responses:**
-
-**200** - Successful Response (v3.1.0 Schema)
-
-```json
-{
-  "schema_version": "3.1.0",
-  "content": "Database connection pool exhausted. The application is unable to establish new database connections, causing HTTP 500 errors. I recommend immediately increasing the connection pool size and reviewing the application for connection leaks.",
-  "response_type": "answer",
-  "view_state": {
-    "session_id": "session_db_123",
-    "case_id": "case_def456",
-    "running_summary": "Investigating HTTP 500 errors in production API. Found database connection pool exhaustion as root cause.",
-    "uploaded_data": [
-      {
-        "id": "data_123",
-        "name": "application.log",
-        "type": "log_file"
-      }
-    ]
-  },
-  "sources": [
-    {
-      "type": "log_file",
-      "name": "application.log",
-      "snippet": "Connection pool size: 20, Active connections: 20, Queue length: 15"
-    },
-    {
-      "type": "knowledge_base",
-      "name": "database_troubleshooting.md",
-      "snippet": "Connection pool exhaustion is indicated by maxActive = activeCount and queue buildup"
-    }
-  ]
-}
-```
-
-**Example PLAN_PROPOSAL Response:**
-
-```json
-{
-  "schema_version": "3.1.0",
-  "content": "I've identified the root cause as database connection pool exhaustion. Here's a step-by-step plan to resolve this issue:",
-  "response_type": "plan_proposal",
-  "view_state": {
-    "session_id": "session_db_123", 
-    "case_id": "case_def456",
-    "running_summary": "Database connection pool exhaustion causing HTTP 500 errors. Multi-step resolution plan prepared.",
-    "uploaded_data": []
-  },
-  "sources": [
-    {
-      "type": "knowledge_base",
-      "name": "incident_response_playbook.md", 
-      "snippet": "For immediate relief, increase pool size by 50%, then investigate leaks"
-    }
-  ],
-  "plan": [
-    {
-      "description": "Immediately increase database connection pool size from 20 to 50"
-    },
-    {
-      "description": "Monitor active connections and response times for 10 minutes"
-    },
-    {
-      "description": "Review application logs for connection leak patterns"
-    },
-    {
-      "description": "Implement connection pool monitoring alerts"
-    }
-  ]
-}
-```
-
-**400** - Bad Request - Invalid input data  
-**404** - Not Found - Session or resource not found  
-**422** - Validation Error - Request validation failed  
-**500** - Internal Server Error - Service processing error
-
----
-
-### `/api/v1/agent/title`
-
-#### POST
-
-**Generate Conversation Title**
-
-Generate a concise conversation title (3-12 words, default 8).
-
-**Args:**
-- `request`: TitleGenerateRequest with session_id, optional context, optional max_words
-
-**Returns:**
-- TitleResponse with sanitized title and view_state
-
-**Notes:**
-- This endpoint is purpose-built and should be preferred over `/api/v1/agent/query` for title generation
-- If still using `/api/v1/agent/query` for backward compatibility, set `context.is_title_generation=true` and read title from AgentResponse.content
-
-**Tags:** `query_processing`
+**Tags:** `authentication`, `authentication`
 
 **Request Body:**
 
@@ -342,44 +143,483 @@ Content-Type: `application/json`
 
 **200** - Successful Response
 
-```json
-{
-  "schema_version": "3.1.0",
-  "title": "Database Connection Pool Exhaustion Investigation",
-  "view_state": {
-    "show_upload_button": true,
-    "show_plan_actions": false,
-    "highlighted_sections": ["connection_pool", "database"]
-  }
-}
-```
-
 **422** - Validation Error
 
 ---
 
-### `/api/v1/agent/sessions/{session_id}/investigations`
+### `/api/v1/auth/logout`
+
+#### POST
+
+**Logout**
+
+Logout endpoint to clean up session.
+
+Returns:
+    Success confirmation
+
+**Tags:** `authentication`, `authentication`
+
+**Responses:**
+
+**200** - Successful Response
+
+---
+
+### `/api/v1/auth/session/{session_id}`
 
 #### GET
 
-**List Session Investigations**
+**Verify Session**
 
-List investigations for a session with clean delegation
+Verify existing session and return current ViewState.
+
+Used by frontend to restore session on app startup.
 
 Args:
-    session_id: Session identifier
-    limit: Maximum number of results
-    offset: Pagination offset
-    agent_service: Injected AgentServiceRefactored
+    session_id: Session ID to verify
+    session_service: Injected session service
     
 Returns:
-    List of investigation summaries
+    AuthResponse with current ViewState if session is valid
 
-**Tags:** `query_processing`, `query_processing`
+**Tags:** `authentication`, `authentication`
 
 **Parameters:**
 
 - `session_id` (path) ✅ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases`
+
+#### GET
+
+**List Cases**
+
+List cases with pagination
+
+Returns a list of cases accessible to the authenticated user.
+Always returns 200 with raw array (Case[]); returns [] when no results.
+Supports pagination via page/limit parameters with X-Total-Count and Link headers.
+
+Default Filtering Behavior:
+- Excludes empty cases (message_count == 0) unless include_empty=true
+- Excludes archived cases unless include_archived=true  
+- Excludes deleted cases unless include_deleted=true (admin only)
+- Only returns active cases with messages by default
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `page` (query) ❌ - Page number
+- `limit` (query) ❌ - Items per page
+- `include_empty` (query) ❌ - Include cases with message_count == 0
+- `include_archived` (query) ❌ - Include archived cases
+- `include_deleted` (query) ❌ - Include deleted cases (admin only)
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+#### POST
+
+**Create Case**
+
+Create a new troubleshooting case
+
+Creates a new case for tracking troubleshooting sessions and conversations.
+The case will persist beyond individual session lifetimes.
+
+**Tags:** `case_persistence`, `cases`
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**201** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/health`
+
+#### GET
+
+**Get Case Service Health**
+
+Get case service health status
+
+Returns health information about the case persistence system,
+including connectivity and performance metrics.
+
+**Tags:** `case_persistence`, `cases`
+
+**Responses:**
+
+**200** - Successful Response
+
+---
+
+### `/api/v1/cases/search`
+
+#### POST
+
+**Search Cases**
+
+Search cases by content
+
+Searches case titles, descriptions, and optionally message content
+for the specified query terms.
+
+**Tags:** `case_persistence`, `cases`
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/sessions/{session_id}/case`
+
+#### POST
+
+**Create Case For Session**
+
+Create or get case for a session
+
+Associates a case with the given session. If no case exists, creates a new one.
+If force_new is true, always creates a new case.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `session_id` (path) ✅ - No description
+- `title` (query) ❌ - Case title
+- `force_new` (query) ❌ - Force creation of new case
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/sessions/{session_id}/resume/{case_id}`
+
+#### POST
+
+**Resume Case In Session**
+
+Resume an existing case in a session
+
+Links the session to an existing case, allowing the user to continue
+a previous troubleshooting conversation.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `session_id` (path) ✅ - No description
+- `case_id` (path) ✅ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}`
+
+#### GET
+
+**Get Case**
+
+Get a specific case by ID
+
+Returns the full case details including conversation history,
+participants, and context information.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+#### PUT
+
+**Update Case**
+
+Update case details
+
+Updates case metadata such as title, description, status, priority, and tags.
+Requires edit permissions on the case.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**204** - Successful Response
+
+**422** - Validation Error
+
+---
+
+#### DELETE
+
+**Delete Case**
+
+Permanently delete a case and all associated data.
+
+This endpoint provides hard delete functionality. Once deleted, 
+the case and all associated data are permanently removed.
+
+The operation is idempotent - subsequent requests will return 
+204 No Content even if the case has already been deleted.
+
+Returns 204 No Content on success.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+
+**Responses:**
+
+**204** - Case deleted successfully
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/analytics`
+
+#### GET
+
+**Get Case Analytics**
+
+Get case analytics and metrics
+
+Returns analytics data including message counts, participant activity,
+resolution time, and other case metrics.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/archive`
+
+#### POST
+
+**Archive Case**
+
+Archive a case
+
+Archives the case, marking it as completed and removing it from active lists.
+Requires owner or collaborator permissions.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `reason` (query) ❌ - Reason for archiving
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/conversation`
+
+#### GET
+
+**Get Case Conversation Context**
+
+Get conversation messages for a case
+
+Returns conversation history as JSON array of messages.
+Each message: { message_id, role: user|agent, content, created_at }
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `limit` (query) ❌ - Maximum number of messages to include
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/data`
+
+#### GET
+
+**List Case Data**
+
+List data files associated with a case.
+
+Returns array of data records with pagination headers.
+Always returns 200 with empty array if no data exists.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `limit` (query) ❌ - Maximum number of items to return
+- `offset` (query) ❌ - Number of items to skip
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+#### POST
+
+**Upload Case Data**
+
+Upload data file to a specific case.
+
+Associates uploaded data with the case for context-aware troubleshooting.
+Returns 201 with Location header pointing to the created data resource.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `description` (query) ❌ - Description of uploaded data
+- `expected_type` (query) ❌ - Expected data type
+
+**Responses:**
+
+**201** - Data uploaded successfully
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/data/{data_id}`
+
+#### GET
+
+**Get Case Data**
+
+Get specific data file details for a case.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `data_id` (path) ✅ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+#### DELETE
+
+**Delete Case Data**
+
+Remove data file from a case. Returns 204 No Content on success.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `data_id` (path) ✅ - No description
+
+**Responses:**
+
+**204** - Data deleted successfully
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/messages`
+
+#### GET
+
+**List Case Messages**
+
+Return conversation messages for a case in a UI-friendly format.
+Each item: { message_id, role: user|agent, content, created_at }
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
 - `limit` (query) ❌ - No description
 - `offset` (query) ❌ - No description
 
@@ -391,30 +631,132 @@ Returns:
 
 ---
 
-### `/api/v1/agent/troubleshoot`
+### `/api/v1/cases/{case_id}/queries`
+
+#### GET
+
+**List Case Queries**
+
+List queries for a specific case with pagination.
+
+CRITICAL: Must return 200 [] for empty results, NOT 404
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `limit` (query) ❌ - No description
+- `offset` (query) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
 
 #### POST
 
-**Troubleshoot**
+**Submit Case Query**
 
-Process troubleshooting query with clean delegation pattern
+Submit a query to a case.
 
-This endpoint follows the thin controller pattern:
-1. Minimal input validation (handled by Pydantic models)
-2. Pure delegation to service layer
-3. Clean error boundary handling
+CRITICAL: Must return 201 (sync) or 202 (async) per OpenAPI spec, NOT 404
 
 Args:
-    request: QueryRequest with query, session_id, context, priority
-    agent_service: Injected AgentServiceRefactored from DI container
-    
-Returns:
-    TroubleshootingResponse with findings and recommendations
-    
-Raises:
-    HTTPException: On service layer errors (404, 500, etc.)
+    case_id: Case identifier  
+    request: FastAPI request containing query data
 
-**Tags:** `query_processing`
+Returns:
+    201 with immediate result OR 202 with job Location for async processing
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**201** - Query processed synchronously
+
+**202** - Query processing asynchronously
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/queries/{query_id}`
+
+#### GET
+
+**Get Case Query**
+
+Get query status and result (for async polling).
+
+Returns 200 with AgentResponse when completed, or 202 with QueryJobStatus while processing.
+Supports Retry-After header for polling guidance.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `query_id` (path) ✅ - No description
+
+**Responses:**
+
+**200** - Query completed - returns AgentResponse
+
+**202** - Query still processing - returns job status
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/queries/{query_id}/result`
+
+#### GET
+
+**Get Case Query Result**
+
+Return the final AgentResponse for a completed query.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `query_id` (path) ✅ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/share`
+
+#### POST
+
+**Share Case**
+
+Share a case with another user
+
+Grants access to the case for the specified user with the given role.
+Requires share permissions on the case.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
 
 **Request Body:**
 
@@ -424,83 +766,80 @@ Content-Type: `application/json`
 
 **200** - Successful Response
 
-```json
-{
-  "investigation_id": "inv_789",
-  "status": "completed",
-  "findings": [
-    {
-      "type": "root_cause",
-      "message": "Database connection pool exhausted due to connection leak",
-      "severity": "high",
-      "confidence": 0.9,
-      "evidence": [
-        "Connection pool size: 20, Active connections: 20",
-        "No idle connections available",
-        "Long-running transactions detected"
-      ]
-    }
-  ],
-  "recommendations": [
-    {
-      "action": "Increase database connection pool size to 50",
-      "priority": "immediate",
-      "impact": "Should restore service within 5 minutes",
-      "effort": "low"
-    },
-    {
-      "action": "Review application code for connection leaks",
-      "priority": "high",
-      "impact": "Prevents future occurrences",
-      "effort": "medium"
-    }
-  ],
-  "session_id": "session_db_123",
-  "reasoning_trace": [
-    {
-      "step": "symptom_analysis",
-      "reasoning": "HTTP 500 errors correlate with database timeout errors",
-      "data_sources": [
-        "application_logs",
-        "database_metrics"
-      ]
-    },
-    {
-      "step": "hypothesis_formation",
-      "reasoning": "Connection pool exhaustion is most likely cause given metrics",
-      "data_sources": [
-        "connection_pool_metrics",
-        "transaction_logs"
-      ]
-    }
-  ]
-}
-```
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/title`
+
+#### POST
+
+**Generate Case Title**
+
+Generate a concise, case-specific title
+
+Generates a title from the case's existing messages and metadata.
+Returns 422 if insufficient context to generate a meaningful title.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**200** - Successful Response
 
 **422** - Validation Error
 
 ---
 
-### `/api/v1/data/`
+### `/api/v1/data`
 
 #### POST
 
 **Upload Data Compat**
 
-Compatibility endpoint for legacy tests - delegates to main upload function
+Upload and process log files, configuration files, or other diagnostic data
 
-This endpoint maintains backward compatibility for existing tests that
-expect POST to /data instead of /data/upload.
-
-**Tags:** `data_ingestion`
+**Tags:** `data_ingestion`, `data_processing`
 
 **Request Body:**
 
 Content-Type: `multipart/form-data`
 
+**Example: Application Log File**
+
+Upload application logs for analysis
+
+```json
+{
+  "file": "[Binary log file content]",
+  "file_type": "application_logs",
+  "description": "Production API server logs from the last 24 hours"
+}
+```
+
+**Example: Kubernetes Configuration**
+
+Upload Kubernetes YAML for configuration analysis
+
+```json
+{
+  "file": "[YAML configuration content]",
+  "file_type": "kubernetes_config",
+  "description": "Deployment configuration showing resource issues"
+}
+```
+
 **Responses:**
 
-**200** - Successful Response
+**201** - Successful Response
 
 **422** - Validation Error
 
@@ -517,12 +856,12 @@ Batch upload multiple files with clean delegation
 Args:
     files: List of files to upload
     session_id: Session identifier
-    data_service: Injected DataServiceRefactored
+    data_service: Injected DataService
     
 Returns:
     List of UploadedData results
 
-**Tags:** `data_ingestion`
+**Tags:** `data_ingestion`, `data_processing`
 
 **Request Body:**
 
@@ -530,7 +869,7 @@ Content-Type: `multipart/form-data`
 
 **Responses:**
 
-**200** - Successful Response
+**201** - Successful Response
 
 **422** - Validation Error
 
@@ -567,7 +906,7 @@ Args:
     session_id: Session identifier
     limit: Maximum number of results
     offset: Pagination offset
-    data_service: Injected DataServiceRefactored
+    data_service: Injected DataService
     
 Returns:
     List of UploadedData for the session
@@ -639,7 +978,7 @@ Args:
     file: File to upload
     session_id: Session identifier 
     description: Optional description of the data
-    data_service: Injected DataServiceRefactored from DI container
+    data_service: Injected DataService from DI container
     
 Returns:
     UploadedData with processing results
@@ -655,7 +994,7 @@ Content-Type: `multipart/form-data`
 
 **Responses:**
 
-**200** - Successful Response
+**201** - Successful Response
 
 **422** - Validation Error
 
@@ -698,7 +1037,8 @@ Delete uploaded data with clean delegation
 
 Args:
     data_id: Data identifier to delete
-    data_service: Injected DataServiceRefactored
+    session_id: Session identifier for access control (query parameter)
+    data_service: Injected DataService
     
 Returns:
     Success confirmation
@@ -708,6 +1048,7 @@ Returns:
 **Parameters:**
 
 - `data_id` (path) ✅ - No description
+- `session_id` (query) ✅ - No description
 
 **Responses:**
 
@@ -728,7 +1069,7 @@ Analyze uploaded data with clean delegation
 Args:
     data_id: Data identifier to analyze
     analysis_request: Request containing session_id and analysis parameters
-    data_service: Injected DataServiceRefactored
+    data_service: Injected DataService
     
 Returns:
     DataInsightsResponse with analysis results
@@ -751,6 +1092,102 @@ Content-Type: `application/json`
 
 ---
 
+### `/api/v1/jobs`
+
+#### GET
+
+**List Jobs**
+
+List jobs with optional filtering and pagination
+
+Returns a paginated list of jobs with proper pagination headers.
+Supports filtering by job status.
+
+**Tags:** `job_management`, `job_management`
+
+**Parameters:**
+
+- `status_filter` (query) ❌ - Filter by job status
+- `limit` (query) ❌ - Maximum number of results
+- `offset` (query) ❌ - Result offset for pagination
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/jobs/health`
+
+#### GET
+
+**Get Job Service Health**
+
+Get job service health status
+
+Returns health information about the job management system,
+including connectivity and performance metrics.
+
+**Tags:** `job_management`, `job_management`
+
+**Responses:**
+
+**200** - Successful Response
+
+---
+
+### `/api/v1/jobs/{job_id}`
+
+#### GET
+
+**Get Job Status**
+
+Get job status with proper polling semantics
+
+Implements consistent job polling with appropriate headers:
+- 200 OK for running/pending jobs with Retry-After header
+- 303 See Other redirect for completed jobs with results
+- 200 OK for failed/cancelled jobs (terminal states)
+
+**Tags:** `job_management`, `job_management`
+
+**Parameters:**
+
+- `job_id` (path) ✅ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+#### DELETE
+
+**Cancel Job**
+
+Cancel a running job
+
+Attempts to cancel a job if it's still in a cancellable state.
+Returns 204 No Content on success.
+
+**Tags:** `job_management`, `job_management`
+
+**Parameters:**
+
+- `job_id` (path) ✅ - No description
+
+**Responses:**
+
+**204** - Successful Response
+
+**422** - Validation Error
+
+---
+
 ### `/api/v1/kb/analytics/search`
 
 #### GET
@@ -759,7 +1196,7 @@ Content-Type: `application/json`
 
 Get search analytics (kb prefix)
 
-**Tags:** `knowledge_base`
+**Tags:** `knowledge_base`, `knowledge_base`
 
 **Responses:**
 
@@ -775,7 +1212,7 @@ Get search analytics (kb prefix)
 
 List knowledge base documents (kb prefix)
 
-**Tags:** `knowledge_base`
+**Tags:** `knowledge_base`, `knowledge_base`
 
 **Parameters:**
 
@@ -798,7 +1235,7 @@ List knowledge base documents (kb prefix)
 
 Upload a document to the knowledge base (kb prefix)
 
-**Tags:** `knowledge_base`
+**Tags:** `knowledge_base`, `knowledge_base`
 
 **Request Body:**
 
@@ -806,7 +1243,7 @@ Content-Type: `multipart/form-data`
 
 **Responses:**
 
-**200** - Successful Response
+**201** - Successful Response
 
 **422** - Validation Error
 
@@ -916,7 +1353,7 @@ Delete a document (kb prefix)
 
 **Responses:**
 
-**200** - Successful Response
+**204** - Successful Response
 
 **422** - Validation Error
 
@@ -1090,7 +1527,7 @@ Upload system architecture documentation
 
 **Responses:**
 
-**200** - Successful Response
+**201** - Successful Response
 
 **422** - Validation Error
 
@@ -1212,7 +1649,7 @@ Returns:
 
 **Responses:**
 
-**200** - Successful Response
+**204** - Successful Response
 
 **422** - Validation Error
 
@@ -1290,7 +1727,84 @@ Get knowledge base statistics.
 
 ---
 
-### `/api/v1/sessions/`
+### `/api/v1/protection/config`
+
+#### GET
+
+**Get Protection Config**
+
+Get current protection system configuration
+
+Returns sanitized configuration information (no sensitive data)
+for both basic and intelligent protection components.
+
+Returns:
+    Dict with protection configuration including enabled features,
+    rate limits, timeouts, and security settings (sanitized)
+    
+Raises:
+    HTTPException: On service layer errors (503, 500)
+
+**Tags:** `protection`, `protection`
+
+**Responses:**
+
+**200** - Successful Response
+
+---
+
+### `/api/v1/protection/health`
+
+#### GET
+
+**Get Protection Health**
+
+Get protection system health status
+
+Returns comprehensive health information for both basic and intelligent
+protection components including middleware status and configuration validation.
+
+Returns:
+    Dict with protection system health status, active components, and validation results
+    
+Raises:
+    HTTPException: On service layer errors (503, 500)
+
+**Tags:** `protection`, `protection`
+
+**Responses:**
+
+**200** - Successful Response
+
+---
+
+### `/api/v1/protection/metrics`
+
+#### GET
+
+**Get Protection Metrics**
+
+Get protection system metrics for monitoring
+
+Returns detailed metrics for rate limiting, request deduplication, 
+behavioral analysis, ML anomaly detection, and reputation system.
+
+Returns:
+    Dict with protection system metrics including request counts, 
+    protection rates, and component-specific statistics
+    
+Raises:
+    HTTPException: On service layer errors (503, 500)
+
+**Tags:** `protection`, `protection`
+
+**Responses:**
+
+**200** - Successful Response
+
+---
+
+### `/api/v1/sessions`
 
 #### GET
 
@@ -1308,7 +1822,7 @@ Args:
 Returns:
     List of sessions
 
-**Tags:** `session_management`
+**Tags:** `session_management`, `session_management`
 
 **Parameters:**
 
@@ -1349,9 +1863,24 @@ Returns:
 
 Content-Type: `application/json`
 
+**Example: Create New Session**
+
+Start a new troubleshooting session
+
+```json
+{
+  "session_metadata": {
+    "user_id": "user_123",
+    "environment": "production",
+    "team": "platform-team",
+    "incident_priority": "high"
+  }
+}
+```
+
 **Responses:**
 
-**200** - Successful Response
+**201** - Successful Response
 
 **422** - Validation Error
 
@@ -1381,6 +1910,20 @@ Returns:
 
 **200** - Successful Response
 
+```json
+{
+  "session_id": "session_abc123",
+  "status": "active",
+  "created_at": "2025-01-15T10:00:00Z",
+  "last_activity": "2025-01-15T10:25:00Z",
+  "metadata": {
+    "user_id": "user_123",
+    "environment": "production",
+    "investigations_count": 3
+  }
+}
+```
+
 **422** - Validation Error
 
 ---
@@ -1402,6 +1945,43 @@ Returns:
 **Parameters:**
 
 - `session_id` (path) ✅ - No description
+
+**Responses:**
+
+**204** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/sessions/{session_id}/cases`
+
+#### GET
+
+**List Session Cases**
+
+List all cases associated with a session.
+
+CRITICAL: Must return 200 [] for empty results, NOT 404
+
+Args:
+    session_id: Session identifier
+    limit: Maximum number of cases to return (1-100)
+    offset: Number of cases to skip for pagination
+
+Returns:
+    List of cases (empty list if no cases found)
+
+**Tags:** `session_management`, `session_management`
+
+**Parameters:**
+
+- `session_id` (path) ✅ - No description
+- `limit` (query) ❌ - No description
+- `offset` (query) ❌ - No description
+- `include_empty` (query) ❌ - Include cases with message_count == 0
+- `include_archived` (query) ❌ - Include archived cases
+- `include_deleted` (query) ❌ - Include deleted cases (admin only)
 
 **Responses:**
 
@@ -1556,6 +2136,34 @@ Returns:
 
 ---
 
+### `/debug/health`
+
+#### GET
+
+**Debug Health**
+
+Minimal debug health endpoint.
+
+**Responses:**
+
+**200** - Successful Response
+
+---
+
+### `/debug/routes`
+
+#### GET
+
+**Debug Routes**
+
+List all registered routes (path + methods).
+
+**Responses:**
+
+**200** - Successful Response
+
+---
+
 ### `/health`
 
 #### GET
@@ -1660,6 +2268,20 @@ Get current alert status and statistics.
 
 ---
 
+### `/metrics/optimization`
+
+#### GET
+
+**Get System Optimization Metrics**
+
+Get comprehensive system optimization metrics.
+
+**Responses:**
+
+**200** - Successful Response
+
+---
+
 ### `/metrics/performance`
 
 #### GET
@@ -1694,7 +2316,52 @@ Get real-time performance metrics.
 
 ---
 
+### `/readiness`
+
+#### GET
+
+**Readiness**
+
+Readiness probe: return unready if Redis or ChromaDB are unavailable.
+
+**Responses:**
+
+**200** - Successful Response
+
+---
+
 ## Data Models
+
+### AgentResponse
+
+The single, unified JSON payload returned from the backend.
+
+**Properties:**
+
+- `schema_version` (string) ❌ - No description
+- `content` (string) ✅ - No description
+- `response_type` (unknown) ✅ - No description
+- `session_id` (string) ✅ - No description
+- `case_id` (unknown) ❌ - No description
+- `confidence_score` (unknown) ❌ - No description
+- `sources` (array) ❌ - No description
+- `next_action_hint` (unknown) ❌ - No description
+- `view_state` (unknown) ❌ - No description
+- `plan` (unknown) ❌ - No description
+
+---
+
+### AuthResponse
+
+Response payload for authentication operations with ViewState.
+
+**Properties:**
+
+- `schema_version` (string) ❌ - No description
+- `success` (boolean) ❌ - No description
+- `view_state` (unknown) ✅ - No description
+
+---
 
 ### Body_batch_upload_data_api_v1_data_batch_upload_post
 
@@ -1715,7 +2382,7 @@ Get real-time performance metrics.
 
 ---
 
-### Body_upload_data_compat_api_v1_data__post
+### Body_upload_data_compat_api_v1_data_post
 
 **Properties:**
 
@@ -1731,7 +2398,7 @@ Get real-time performance metrics.
 
 - `file` (string) ✅ - No description
 - `title` (string) ✅ - No description
-- `document_type` (string) ❌ - No description
+- `document_type` (string) ✅ - No description
 - `category` (unknown) ❌ - No description
 - `tags` (unknown) ❌ - No description
 - `source_url` (unknown) ❌ - No description
@@ -1753,9 +2420,155 @@ Get real-time performance metrics.
 
 ---
 
+### Case
+
+Represents a troubleshooting case.
+
+**Properties:**
+
+- `case_id` (string) ✅ - No description
+- `title` (string) ✅ - No description
+- `description` (unknown) ❌ - No description
+- `status` (string) ❌ - No description
+- `priority` (string) ❌ - No description
+- `created_at` (string) ❌ - No description
+- `updated_at` (string) ❌ - No description
+- `message_count` (integer) ❌ - No description
+- `session_id` (unknown) ❌ - No description
+
+---
+
+### CaseCreateRequest
+
+Request model for creating a new case
+
+**Properties:**
+
+- `title` (string) ✅ - Case title
+- `description` (unknown) ❌ - Case description
+- `priority` (unknown) ❌ - Case priority
+- `tags` (array) ❌ - Case tags
+- `session_id` (unknown) ❌ - Associated session ID
+- `initial_message` (unknown) ❌ - Initial case message
+
+---
+
+### CaseListFilter
+
+Filter criteria for listing cases
+
+**Properties:**
+
+- `user_id` (unknown) ❌ - Filter by participant user ID
+- `status` (unknown) ❌ - Filter by case status
+- `priority` (unknown) ❌ - Filter by case priority
+- `owner_id` (unknown) ❌ - Filter by case owner
+- `tags` (unknown) ❌ - Filter by tags (any match)
+- `created_after` (unknown) ❌ - Filter by creation date
+- `created_before` (unknown) ❌ - Filter by creation date
+- `include_empty` (boolean) ❌ - Include cases with message_count == 0
+- `include_archived` (boolean) ❌ - Include archived cases
+- `include_deleted` (boolean) ❌ - Include deleted cases (admin only)
+- `limit` (integer) ❌ - Maximum number of results
+- `offset` (integer) ❌ - Result offset for pagination
+
+---
+
+### CasePriority
+
+Case priority levels
+
+---
+
+### CaseResponse
+
+Response payload for case creation.
+
+**Properties:**
+
+- `schema_version` (string) ❌ - No description
+- `case` (unknown) ✅ - No description
+
+---
+
+### CaseSearchRequest
+
+Request model for searching cases
+
+**Properties:**
+
+- `query` (string) ✅ - Search query
+- `filters` (unknown) ❌ - Additional filters
+- `search_in_messages` (boolean) ❌ - Search in message content
+- `search_in_context` (boolean) ❌ - Search in case context
+
+---
+
+### CaseShareRequest
+
+Request model for sharing a case with other users
+
+**Properties:**
+
+- `user_id` (string) ✅ - User ID to share with
+- `role` (unknown) ❌ - Role to assign
+- `message` (unknown) ❌ - Optional message to include
+
+---
+
+### CaseStatus
+
+Case lifecycle status enumeration
+
+---
+
+### CaseSummary
+
+Summary view of a case for list operations
+
+**Properties:**
+
+- `case_id` (string) ✅ - No description
+- `title` (string) ✅ - No description
+- `status` (unknown) ✅ - No description
+- `priority` (unknown) ✅ - No description
+- `owner_id` (unknown) ✅ - No description
+- `created_at` (string) ✅ - No description
+- `updated_at` (string) ✅ - No description
+- `last_activity_at` (string) ✅ - No description
+- `message_count` (integer) ✅ - No description
+- `participant_count` (integer) ✅ - No description
+- `tags` (array) ✅ - No description
+
+---
+
+### CaseUpdateRequest
+
+Request model for updating case details
+
+**Properties:**
+
+- `title` (unknown) ❌ - Updated case title
+- `description` (unknown) ❌ - Updated case description
+- `status` (unknown) ❌ - Updated case status
+- `priority` (unknown) ❌ - Updated case priority
+- `tags` (unknown) ❌ - Updated case tags
+
+---
+
 ### DataType
 
-Enumeration of supported data types for classification
+Defines the type of data uploaded by users.
+
+---
+
+### DevLoginRequest
+
+Request payload for developer login.
+
+**Properties:**
+
+- `username` (string) ✅ - No description
 
 ---
 
@@ -1764,6 +2577,22 @@ Enumeration of supported data types for classification
 **Properties:**
 
 - `detail` (array) ❌ - No description
+
+---
+
+### JobStatus
+
+Async job status tracking model.
+
+**Properties:**
+
+- `job_id` (string) ✅ - No description
+- `status` (string) ✅ - No description
+- `progress` (unknown) ❌ - No description
+- `result` (unknown) ❌ - No description
+- `error` (unknown) ❌ - No description
+- `created_at` (string) ✅ - No description
+- `updated_at` (string) ✅ - No description
 
 ---
 
@@ -1787,16 +2616,61 @@ Model for knowledge base documents
 
 ---
 
-### QueryRequest
+### Message
 
-Request model for troubleshooting queries
+Message model for conversation endpoints.
 
 **Properties:**
 
-- `session_id` (string) ✅ - Session identifier
-- `query` (string) ✅ - User's troubleshooting query
-- `context` (unknown) ❌ - Additional context for the query
-- `priority` (string) ❌ - Query priority level
+- `message_id` (string) ✅ - No description
+- `role` (string) ✅ - No description
+- `content` (string) ✅ - No description
+- `created_at` (string) ✅ - ISO 8601 datetime string
+
+---
+
+### ParticipantRole
+
+Participant roles in case collaboration
+
+---
+
+### PlanStep
+
+Represents one step in a multi-step plan.
+
+**Properties:**
+
+- `description` (string) ✅ - No description
+
+---
+
+### ProcessingStatus
+
+Defines the status of data processing operations.
+
+---
+
+### QueryJobStatus
+
+Case-scoped query job status tracking model.
+
+**Properties:**
+
+- `query_id` (string) ✅ - No description
+- `case_id` (string) ✅ - No description
+- `status` (string) ✅ - No description
+- `progress_percentage` (unknown) ❌ - Processing progress percentage
+- `started_at` (unknown) ❌ - Job start time (UTC ISO 8601)
+- `last_updated_at` (string) ❌ - No description
+- `error` (unknown) ❌ - Error details if status is failed
+- `result` (unknown) ❌ - Final result if completed
+
+---
+
+### ResponseType
+
+Defines the agent's primary intent for this turn.
 
 ---
 
@@ -1829,6 +2703,34 @@ Request model for session creation.
 
 ---
 
+### SessionResponse
+
+**Properties:**
+
+- `session_id` (string) ✅ - Unique session identifier
+- `status` (string) ✅ - Current session status
+- `created_at` (string) ❌ - Session creation timestamp
+- `last_activity` (string) ❌ - Last activity timestamp
+- `metadata` (object) ❌ - Session metadata and context
+
+**Example:**
+
+```json
+{
+  "session_id": "session_abc123",
+  "status": "active",
+  "created_at": "2025-01-15T10:00:00Z",
+  "last_activity": "2025-01-15T10:25:00Z",
+  "metadata": {
+    "user_id": "user_123",
+    "environment": "production",
+    "investigations_count": 3
+  }
+}
+```
+
+---
+
 ### SessionRestoreRequest
 
 Request model for session restoration.
@@ -1838,6 +2740,125 @@ Request model for session restoration.
 - `restore_point` (string) ✅ - No description
 - `include_data` (boolean) ❌ - No description
 - `type` (unknown) ❌ - No description
+
+---
+
+### Source
+
+Represents a single piece of citable evidence to build user trust.
+
+**Properties:**
+
+- `type` (unknown) ✅ - No description
+- `content` (string) ✅ - No description
+- `confidence` (unknown) ❌ - No description
+- `metadata` (unknown) ❌ - No description
+
+---
+
+### SourceType
+
+Defines the origin of a piece of evidence.
+
+---
+
+### TitleResponse
+
+Simplified title response schema per API spec.
+
+**Properties:**
+
+- `schema_version` (string) ❌ - No description
+- `title` (string) ✅ - No description
+
+---
+
+### UploadedData
+
+A strongly-typed model for data uploaded by the user.
+
+**Properties:**
+
+- `id` (string) ✅ - No description
+- `name` (string) ✅ - No description
+- `type` (unknown) ✅ - No description
+- `size_bytes` (integer) ✅ - No description
+- `upload_timestamp` (string) ✅ - No description
+- `processing_status` (unknown) ✅ - No description
+- `processing_summary` (unknown) ❌ - No description
+- `confidence_score` (unknown) ❌ - No description
+
+---
+
+### User
+
+Represents a user in the system.
+
+**Properties:**
+
+- `user_id` (string) ✅ - No description
+- `email` (string) ✅ - No description
+- `name` (string) ✅ - No description
+- `created_at` (string) ❌ - No description
+- `last_login` (unknown) ❌ - No description
+
+---
+
+### ValidationError
+
+**Properties:**
+
+- `loc` (array) ✅ - No description
+- `msg` (string) ✅ - No description
+- `type` (string) ✅ - No description
+
+---
+
+### ViewState
+
+Comprehensive view state representing the complete frontend rendering state.
+This is the single source of truth for what the frontend should display.
+
+**Properties:**
+
+- `session_id` (string) ✅ - No description
+- `user` (unknown) ✅ - No description
+- `active_case` (unknown) ❌ - No description
+- `cases` (array) ❌ - No description
+- `messages` (array) ❌ - No description
+- `uploaded_data` (array) ❌ - No description
+- `show_case_selector` (boolean) ❌ - No description
+- `show_data_upload` (boolean) ❌ - No description
+- `loading_state` (unknown) ❌ - No description
+
+---
+
+### ErrorResponse
+
+**Properties:**
+
+- `detail` (string) ✅ - Human-readable error description
+- `error_type` (string) ❌ - Machine-readable error classification
+- `correlation_id` (string) ❌ - Unique identifier for request tracing and support
+- `timestamp` (string) ❌ - Error occurrence timestamp in ISO format
+- `context` (object) ❌ - Additional error context for debugging
+
+**Example:**
+
+```json
+{
+  "detail": "Invalid session ID provided",
+  "error_type": "ValidationError",
+  "correlation_id": "123e4567-e89b-12d3-a456-426614174000",
+  "timestamp": "2025-01-15T10:30:00Z",
+  "context": {
+    "session_id": "invalid_session_123",
+    "validation_errors": [
+      "Session ID format invalid"
+    ]
+  }
+}
+```
 
 ---
 
@@ -1909,211 +2930,6 @@ Request model for session restoration.
 
 ---
 
-### UploadedData
-
-Model for uploaded data processing
-
-**Properties:**
-
-- `data_id` (string) ✅ - Unique identifier for the uploaded data
-- `session_id` (string) ✅ - Session this data belongs to
-- `data_type` (unknown) ✅ - Classified type of the data
-- `content` (string) ✅ - Raw content of the uploaded data
-- `file_name` (unknown) ❌ - Original filename if applicable
-- `file_size` (unknown) ❌ - File size in bytes
-- `uploaded_at` (string) ❌ - Upload timestamp
-- `processing_status` (string) ❌ - Processing status
-- `insights` (unknown) ❌ - Extracted insights from the data
-
----
-
-### ValidationError
-
-**Properties:**
-
-- `loc` (array) ✅ - No description
-- `msg` (string) ✅ - No description
-- `type` (string) ✅ - No description
-
----
-
-### ErrorResponse
-
-**Properties:**
-
-- `detail` (string) ✅ - Human-readable error description
-- `error_type` (string) ❌ - Machine-readable error classification
-- `correlation_id` (string) ❌ - Unique identifier for request tracing and support
-- `timestamp` (string) ❌ - Error occurrence timestamp in UTC timezone (ISO 8601 format with Z suffix)
-- `context` (object) ❌ - Additional error context for debugging
-
-**Example:**
-
-```json
-{
-  "detail": "Invalid session ID provided",
-  "error_type": "ValidationError",
-  "correlation_id": "123e4567-e89b-12d3-a456-426614174000",
-  "timestamp": "2025-01-15T10:30:00Z",
-  "context": {
-    "session_id": "invalid_session_123",
-    "validation_errors": [
-      "Session ID format invalid"
-    ]
-  }
-}
-```
-
-### TitleGenerateRequest
-
-**Request model for conversation title generation**
-
-**Properties:**
-
-- `session_id` (string) ✅ - Session identifier
-- `context` (object) ❌ - Optional context (e.g., last_user_message, summary, messages, notes)
-- `max_words` (integer) ❌ - Maximum words for the generated title (3–12), default: 8
-
-**Required:**
-- `session_id`
-
-### TitleResponse
-
-**Response model for conversation title generation**
-
-**Properties:**
-
-- `schema_version` (string) ✅ - Always "3.1.0"
-- `title` (string) ✅ - Sanitized, concise title text
-- `view_state` (ViewState) ✅ - UI state configuration
-
-**Required:**
-- `schema_version`
-- `title`
-- `view_state`
-
----
-
-## v3.1.0 Schema Models
-
-### AgentResponse
-
-**Primary response model for the v3.1.0 API schema**
-
-**Properties:**
-
-- `response_type` (ResponseType) ✅ - Explicit agent intent for this response
-- `content` (string) ✅ - Primary response content for display to user (plain text or markdown)
-- `session_id` (string) ✅ - Session identifier
-- `case_id` (string) ❌ - Case identifier for this troubleshooting case within a session (optional)
-- `confidence_score` (number) ❌ - AI confidence in the response (0.0 to 1.0)
-- `sources` (array) ❌ - List of Source objects for evidence attribution
-- `plan` (PlanStep) ❌ - Troubleshooting plan (for PLAN_PROPOSAL responses)
-- `estimated_time_to_resolution` (string) ❌ - Estimated time to resolve the issue
-- `next_action_hint` (string) ❌ - Hint for the next user action
-- `view_state` (ViewState) ❌ - UI state configuration
-- `metadata` (object) ❌ - Additional response metadata
-
-**Example:**
-
-```json
-{
-  "schema_version": "3.1.0",
-  "content": "Your database connection pool is exhausted...",
-  "response_type": "answer",
-  "view_state": {
-    "session_id": "sess_123",
-    "case_id": "case_456",
-    "running_summary": "Investigating connection issues",
-    "uploaded_data": []
-  },
-  "sources": [
-    {
-      "type": "log_file",
-      "name": "app.log", 
-      "snippet": "Connection pool exhausted"
-    }
-  ]
-}
-```
-
----
-
-### ResponseType
-
-**Enumeration defining the agent's primary intent**
-
-**Values:**
-
-- `ANSWER` - Direct answer to user's question
-- `PLAN_PROPOSAL` - Multi-step troubleshooting plan
-- `CLARIFICATION_REQUEST` - Agent needs more information
-- `CONFIRMATION_REQUEST` - Agent needs user confirmation to proceed
-- `SOLUTION_READY` - Solution is ready to implement
-- `NEEDS_MORE_DATA` - Requires additional data uploads
-- `ESCALATION_REQUIRED` - Issue escalated to human support
-
-**Note:** All values MUST be in UPPERCASE format as defined in the OpenAPI specification.
-
----
-
-### ViewState
-
-**UI state configuration for frontend behavior**
-
-**Properties:**
-
-- `show_upload_button` (boolean) ❌ - Whether to show file upload button
-- `show_plan_actions` (boolean) ❌ - Whether to show plan action buttons
-- `show_confirmation_dialog` (boolean) ❌ - Whether to show confirmation dialog
-- `highlighted_sections` (array) ❌ - Sections to highlight in the UI
-- `custom_actions` (array) ❌ - Custom action buttons to display
-
----
-
-### Source
-
-**Evidence attribution for user trust and verifiability**
-
-**Properties:**
-
-- `type` (SourceType) ✅ - Type of evidence source
-- `content` (string) ✅ - Source content or description
-- `confidence` (number) ❌ - Confidence in this source (0.0 to 1.0)
-- `metadata` (object) ❌ - Additional source metadata
-
----
-
-### SourceType
-
-**Enumeration defining the origin of evidence**
-
-**Values:**
-
-- `log_analysis` - From uploaded log files analysis
-- `knowledge_base` - From ingested knowledge base documents
-- `user_input` - From user-provided information
-- `system_metrics` - From system performance metrics
-- `external_api` - From external API responses
-- `previous_case` - From previous troubleshooting cases
-
----
-
-### PlanStep
-
-**Individual step in a multi-step troubleshooting plan**
-
-**Properties:**
-
-- `step_number` (integer) ✅ - Step number in the plan
-- `action` (string) ✅ - Action to perform
-- `description` (string) ✅ - Detailed description of the step
-- `estimated_time` (string) ❌ - Estimated time to complete this step
-- `dependencies` (array) ❌ - Step numbers this step depends on
-- `required_tools` (array) ❌ - Tools or permissions required for this step
-
----
-
 ### DataIngestionResponse
 
 **Properties:**
@@ -2145,442 +2961,4 @@ Model for uploaded data processing
 ```
 
 ---
-
-### SessionResponse
-
-**Properties:**
-
-- `session_id` (string) ✅ - Unique session identifier
-- `status` (string) ✅ - Current session status
-- `created_at` (string) ❌ - Session creation timestamp
-- `last_activity` (string) ❌ - Last activity timestamp
-- `metadata` (object) ❌ - Session metadata and context
-
-### Case
-
-**Properties:**
-
-- `case_id` (string) ✅ - Unique case identifier
-- `session_id` (string) ✅ - Session this case belongs to
-- `status` (string) ✅ - Current case status
-- `title` (string) ✅ - Case title
-- `description` (string) ❌ - Case description
-- `priority` (string) ❌ - Case priority
-- `created_at` (string) ❌ - Case creation timestamp
-- `updated_at` (string) ❌ - Last update timestamp
-- `resolved_at` (string) ❌ - Resolution timestamp
-
-### UploadedFile
-
-**Properties:**
-
-- `file_id` (string) ✅ - Unique file identifier
-- `filename` (string) ✅ - Original filename
-- `size_bytes` (integer) ✅ - File size in bytes
-- `uploaded_at` (string) ✅ - Upload timestamp
-- `file_type` (string) ❌ - Detected file type
-- `processing_status` (string) ❌ - File processing status
-
-**Example:**
-
-```json
-{
-  "session_id": "session_abc123",
-  "status": "active",
-  "created_at": "2025-01-15T10:00:00Z",
-  "last_activity": "2025-01-15T10:25:00Z",
-  "metadata": {
-    "user_id": "user_123",
-    "environment": "production",
-    "investigations_count": 3
-  }
-}
-```
-
----
-
-## API Tags
-
-The API is organized into the following functional areas:
-
-- **`troubleshooting`** - AI-powered troubleshooting operations
-- **`query_processing`** - AI-powered query processing and troubleshooting operations  
-- **`data_ingestion`** - File upload and data processing operations
-- **`knowledge_base`** - Knowledge base and document management operations
-- **`session_management`** - Session lifecycle and management operations
-- **`case_management`** - Case lifecycle and management operations
-- **`file_management`** - File upload and management operations
-- **`real_time`** - Real-time communication endpoints (WebSocket, SSE)
-
----
-
-## Core Schema Concepts
-
-### Session vs Case Distinction
-
-Understanding the difference between sessions and cases is crucial for proper API usage:
-
-**session_id**
-- **Purpose**: Short-lived visitor pass for temporary connections
-- **Lifecycle**: Created per browser session, expires after inactivity
-- **Scope**: Spans multiple investigations within a single user session
-- **Example**: `sess_abc123def456`
-
-**case_id** 
-- **Purpose**: Long-lived case file number for persistent investigations
-- **Lifecycle**: Created per investigation, persists for audit and follow-up
-- **Scope**: Single investigation from start to resolution
-- **Example**: `case_789ghi012jkl`
-
-### Response Types
-
-The `ResponseType` enum explicitly defines the agent's intent for each response:
-
-| Type | Purpose | UI Rendering | Plan Field |
-|------|---------|--------------|------------|
-| `ANSWER` | Direct response to user's question | Display as conversational message | Not allowed |
-| `PLAN_PROPOSAL` | Multi-step troubleshooting plan | Show as structured steps with actions | Required |
-| `CLARIFICATION_REQUEST` | Agent needs more information | Prompt user for additional input | Not allowed |
-| `CONFIRMATION_REQUEST` | Agent needs user approval | Show confirmation dialog | Not allowed |
-| `SOLUTION_READY` | Solution is ready to implement | Show solution with action buttons | Not allowed |
-| `NEEDS_MORE_DATA` | Requires additional data uploads | Show file upload interface | Not allowed |
-| `ESCALATION_REQUIRED` | Issue escalated to human support | Show escalation notification | Not allowed |
-
-### Evidence Sources
-
-All responses include `sources` for transparency and trust:
-
-| Source Type | Description | Example Name | Typical Snippet |
-|-------------|-------------|--------------|-----------------|
-| `log_analysis` | From uploaded log files | "application.log" | "ERROR: Connection timeout after 30s" |
-| `knowledge_base` | From ingested documentation | "database_runbook.md" | "Connection pool exhaustion indicates..." |
-| `user_input` | From user-provided information | "User Description" | "User reported HTTP 500 errors" |
-| `system_metrics` | From system performance metrics | "CPU Usage" | "CPU utilization at 95%" |
-| `external_api` | From external API responses | "Monitoring Service" | "Service health check failed" |
-| `previous_case` | From previous troubleshooting cases | "Case #123" | "Similar issue resolved by..." |
-
----
-
-## Frontend Integration Patterns
-
-### Basic Query Flow
-
-```typescript
-// TypeScript example for frontend integration
-interface QueryRequest {
-  session_id: string;
-  query: string;
-}
-
-interface AgentResponse {
-  schema_version: "3.1.0";
-  content: string;
-  response_type: "answer" | "plan_proposal" | "clarification_request" | "confirmation_request" | "solution_ready" | "needs_more_data" | "escalation_required";
-  view_state: ViewState;
-  sources?: Source[];
-  plan?: PlanStep[];
-}
-
-async function queryAgent(sessionId: string, query: string): Promise<AgentResponse> {
-  const response = await fetch('/api/v1/agent/query', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      session_id: sessionId,
-      query: query
-    })
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(`API Error: ${error.error.message}`);
-  }
-
-  return response.json();
-}
-```
-
-### Response Type Handling
-
-```typescript
-function handleAgentResponse(response: AgentResponse) {
-  switch (response.response_type) {
-    case "answer":
-      // Display as regular chat message with sources
-      displayAnswer(response.content, response.sources);
-      break;
-      
-    case "plan_proposal":
-      // Show structured plan with actionable steps
-      displayPlan(response.content, response.plan, response.sources);
-      break;
-      
-    case "clarification_request":
-      // Show form or prompt for additional information
-      showClarificationPrompt(response.content);
-      break;
-      
-    case "confirmation_request":
-      // Show confirmation dialog with approve/deny options
-      showConfirmationDialog(response.content);
-      break;
-      
-    case "solution_ready":
-      // Show solution with implementation buttons
-      showSolution(response.content, response.sources);
-      break;
-      
-    case "needs_more_data":
-      // Show file upload interface
-      showDataUploadPrompt(response.content);
-      break;
-      
-    case "escalation_required":
-      // Show escalation notification
-      showEscalationNotice(response.content);
-      break;
-  }
-  
-  // Always update view state for session tracking
-  updateViewState(response.view_state);
-}
-```
-
-### ViewState Management
-
-```typescript
-interface ViewState {
-  session_id: string;
-  case_id: string;
-  running_summary: string;
-  uploaded_data: UploadedData[];
-}
-
-function updateViewState(viewState: ViewState) {
-  // Update current case information
-  document.getElementById('case-id').textContent = viewState.case_id;
-  document.getElementById('summary').textContent = viewState.running_summary;
-  
-  // Update uploaded data list
-  const dataList = document.getElementById('uploaded-data');
-  dataList.innerHTML = '';
-  viewState.uploaded_data.forEach(data => {
-    const item = document.createElement('li');
-    item.textContent = `${data.name} (${data.type})`;
-    dataList.appendChild(item);
-  });
-}
-```
-
-## Best Practices
-
-### 1. Always Handle All Response Types
-
-Ensure your frontend can handle all seven response types appropriately:
-
-```typescript
-// ✅ Good - Handles all response types
-function handleResponse(response: AgentResponse) {
-  switch (response.response_type) {
-    case "answer":
-      return displayAnswer(response);
-    case "plan_proposal": 
-      return displayPlan(response);
-    case "clarification_request":
-      return showClarificationForm(response);
-    case "confirmation_request":
-      return showConfirmationDialog(response);
-    case "solution_ready":
-      return showSolution(response);
-    case "needs_more_data":
-      return showDataUpload(response);
-    case "escalation_required":
-      return showEscalation(response);
-    default:
-      console.error('Unknown response type:', response.response_type);
-  }
-}
-```
-
-### 2. Validate Plan Field Consistency
-
-The `plan` field should only be present for `plan_proposal` responses:
-
-```typescript
-// ✅ Good - Validates plan consistency  
-function validateResponse(response: AgentResponse): boolean {
-  if (response.response_type === "plan_proposal") {
-    return response.plan && response.plan.length > 0;
-  } else {
-    return !response.plan; // plan should not exist for other types
-  }
-}
-```
-
-### 3. Display Sources for Trust
-
-Always show source attribution to build user trust:
-
-```typescript
-// ✅ Good - Shows sources with content
-function displayAnswer(content: string, sources: Source[]) {
-  const answerElement = document.createElement('div');
-  answerElement.innerHTML = `
-    <p>${content}</p>
-    <div class="sources">
-      <h4>Sources:</h4>
-      <ul>
-        ${sources.map(source => `
-          <li>
-            <strong>${source.name}</strong> (${source.type})
-            <p><em>"${source.snippet}"</em></p>
-          </li>
-        `).join('')}
-      </ul>
-    </div>
-  `;
-}
-```
-
-### 4. Implement Proper Error Handling
-
-Handle both API errors and validation errors gracefully:
-
-```typescript
-// ✅ Good - Comprehensive error handling
-async function queryAgent(sessionId: string, query: string) {
-  try {
-    const response = await fetch('/api/v1/agent/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, query })
-    });
-    
-    if (!response.ok) {
-      const errorData = await response.json();
-      if (response.status === 404 && errorData.error.code === 'SESSION_NOT_FOUND') {
-        // Handle expired session
-        return await createNewSessionAndRetry(query);
-      }
-      throw new Error(errorData.error.message);
-    }
-    
-    const agentResponse = await response.json();
-    
-    // Validate response structure
-    if (!validateResponse(agentResponse)) {
-      throw new Error('Invalid response format');
-    }
-    
-    return agentResponse;
-    
-  } catch (error) {
-    console.error('Query failed:', error);
-    showErrorMessage('Unable to process query. Please try again.');
-    throw error;
-  }
-}
-```
-
-### 5. Preserve Session Context
-
-Use ViewState to maintain context across interactions:
-
-```typescript
-// ✅ Good - Preserves context between queries
-class FaultMavenClient {
-  private currentViewState: ViewState | null = null;
-  
-  async query(query: string): Promise<AgentResponse> {
-    const sessionId = this.currentViewState?.session_id || await this.createSession();
-    
-    const response = await queryAgent(sessionId, query);
-    
-    // Always update stored view state
-    this.currentViewState = response.view_state;
-    
-    return response;
-  }
-  
-  getCurrentCase(): string | null {
-    return this.currentViewState?.case_id || null;
-  }
-  
-  getSummary(): string | null {
-    return this.currentViewState?.running_summary || null;
-  }
-}
-```
-
-## Performance Considerations
-
-### 1. Source Attribution Impact
-
-The v3.1.0 schema includes more detailed source information. Consider this in your UI design:
-
-```typescript
-// ✅ Efficient - Lazy load source details
-function displaySources(sources: Source[]) {
-  const sourcesContainer = document.createElement('div');
-  sourcesContainer.className = 'sources-collapsed';
-  
-  const summaryElement = document.createElement('button');
-  summaryElement.textContent = `${sources.length} sources`;
-  summaryElement.onclick = () => toggleSourceDetails(sourcesContainer);
-  
-  const detailsElement = document.createElement('div');
-  detailsElement.className = 'sources-details hidden';
-  detailsElement.innerHTML = sources.map(renderSourceDetail).join('');
-  
-  sourcesContainer.appendChild(summaryElement);
-  sourcesContainer.appendChild(detailsElement);
-  
-  return sourcesContainer;
-}
-```
-
-### 2. ViewState Caching
-
-Cache ViewState to avoid redundant API calls:
-
-```typescript
-// ✅ Efficient - Cache view state
-class ViewStateCache {
-  private cache = new Map<string, ViewState>();
-  private cacheExpiry = 5 * 60 * 1000; // 5 minutes
-  
-  get(sessionId: string): ViewState | null {
-    const cached = this.cache.get(sessionId);
-    if (cached && this.isValid(cached)) {
-      return cached;
-    }
-    return null;
-  }
-  
-  set(viewState: ViewState) {
-    this.cache.set(viewState.session_id, {
-      ...viewState,
-      _cached_at: Date.now()
-    });
-  }
-  
-  private isValid(viewState: any): boolean {
-    return (Date.now() - viewState._cached_at) < this.cacheExpiry;
-  }
-}
-```
-
----
-
-## Getting Help
-
-For additional help and support:
-
-- **API Reference**: [README.md](./README.md) 
-- **Architecture Documentation**: [../architecture/SYSTEM_ARCHITECTURE.md](../architecture/SYSTEM_ARCHITECTURE.md)
-- **Support**: Create issues in the repository for API-specific problems
-
-The v3.1.0 schema provides a robust, intent-driven API that enables rich frontend experiences while maintaining backward compatibility. By following this guide and implementing the recommended patterns, you can build applications that fully leverage the structured, evidence-based responses from the FaultMaven AI agent.
 

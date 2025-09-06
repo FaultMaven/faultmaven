@@ -5,15 +5,29 @@
 
 ## Overview
 
-This document provides comprehensive guidance for integrating the FaultMaven frontend with the backend API. It covers authentication, API patterns, error handling, and real-time communication.
+This document defines the frontend requirements for integrating with the FaultMaven backend API, following a stateless frontend/stateful backend architecture.
 
-**⚠️ Important**: This document should be used in conjunction with the **OpenAPI specification** (`docs/api/openapi.json` or `docs/api/openapi.yaml`) which is the authoritative source for:
-- Available endpoints and their exact paths
-- Request/response schemas and data types
-- Authentication requirements
-- Error response formats
+**⚠️ Important**: The frontend must be a **stateless renderer** that relies on the backend as the single source of truth. All UI state comes from the `view_state` object returned by the backend.
 
-## API Architecture
+## Architecture Requirements
+
+### Core Principles
+
+**Frontend Requirements:**
+- **Stateless UI**: Frontend renders based on `view_state` objects from backend
+- **Developer Login**: Establish user identity and obtain session_id
+- **Case Management**: Display user's Cases, allow creation/switching
+- **Distinct Data/Query Methods**: Separate endpoints for data submission vs questions
+- **Markdown Rendering**: Render agent content as Markdown with rich formatting
+- **Response-Type Rendering**: Use `response_type` enum for component decisions
+- **Source Display**: Show evidence sources to build user trust
+
+**Backend Contract:**
+- **Single Source of Truth**: Backend manages all user and investigation data
+- **Session vs Case Model**: Sessions (temporary connections) vs Cases (persistent investigations)
+- **User-Owned Cases**: Cases belong to Users, not Sessions
+- **Unified AgentResponse**: Single response format with explicit `response_type`
+- **View State Management**: Complete UI state provided in `view_state` object
 
 ### Base Configuration
 
@@ -28,47 +42,738 @@ export const API_CONFIG = {
   }
 };
 
-// API client setup
+// API client setup with session token interceptor
 export const faultMavenApi = axios.create(API_CONFIG);
-```
 
-### Authentication & Headers
-
-```typescript
-// Request interceptor for authentication
+// Request interceptor to add session token
 faultMavenApi.interceptors.request.use((config) => {
-  const token = localStorage.getItem('auth_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+  const sessionToken = localStorage.getItem('session_token');
+  if (sessionToken) {
+    config.headers.Authorization = `Bearer ${sessionToken}`;
   }
-  
-  // Add session context
-  const sessionId = useFaultMavenStore.getState().currentSession?.id;
-  if (sessionId) {
-    config.headers['X-Session-ID'] = sessionId;
-  }
-  
   return config;
 });
-
-// Response interceptor for error handling
-faultMavenApi.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      // Handle authentication errors
-      useFaultMavenStore.getState().actions.logout();
-    }
-    return Promise.reject(error);
-  }
-);
 ```
 
-## Core API Endpoints
+## Core API Implementation
 
-### 1. Agent Query Endpoint
+### 1. Session Management
+
+#### Create Session
+```typescript
+interface SessionRequest {
+  user_id: string;
+  metadata?: Record<string, any>;
+}
+
+interface SessionResponse {
+  session_id: string;
+  session_token: string;
+  expires_at: string;
+}
+
+// Create authenticated session and return session token
+export const createSession = async (userId: string): Promise<SessionResponse> => {
+  const response = await faultMavenApi.post('/api/v1/sessions', { 
+    user_id: userId,
+    metadata: {
+      created_at: new Date().toISOString(),
+      client: 'browser_extension'
+    }
+  });
+  
+  // Store session token for subsequent requests
+  localStorage.setItem('session_token', response.data.session_token);
+  localStorage.setItem('session_id', response.data.session_id);
+  
+  return response.data;
+};
+```
+
+### 2. Developer Login (Required)
 
 ```typescript
+interface DevLoginRequest {
+  email: string;
+}
+
+interface AuthResponse {
+  session_id: string;
+  view_state: ViewState;
+}
+
+// Developer login implementation
+export const developerLogin = async (email: string): Promise<AuthResponse> => {
+  const response = await faultMavenApi.post('/api/v1/auth/dev-login', { email });
+  
+  // Extract user_id from response and create session
+  const sessionResponse = await createSession(response.data.view_state.user.user_id);
+  
+  // Return complete view_state for immediate UI rendering
+  return response.data;
+};
+```
+
+### 3. Case Management
+
+#### List Cases
+```typescript
+interface CaseListParams {
+  status?: 'active' | 'resolved' | 'archived';
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  limit?: number;
+  offset?: number;
+}
+
+// Retrieve user's past cases
+export const getCases = async (params?: CaseListParams): Promise<{cases: CaseWithMetadata[], total: number}> => {
+  const response = await faultMavenApi.get('/api/v1/cases', { params });
+  return response.data;
+};
+```
+
+#### Create Case
+```typescript
+interface CreateCaseRequest {
+  title: string;
+  description?: string;
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  tags?: string[];
+}
+
+// Create new, empty case and return case_id
+export const createCase = async (request: CreateCaseRequest): Promise<AgentResponse> => {
+  const response = await faultMavenApi.post('/api/v1/cases', request);
+  return response.data;
+};
+```
+
+### 4. Data Submission (Case-Specific)
+
+```typescript
+interface DataSubmissionRequest {
+  case_id: string;
+  content?: string;          // Raw text data
+  file?: File;              // Uploaded file
+  description?: string;     // Optional description
+}
+
+// Submit data to specific case
+export const submitDataToCase = async (request: DataSubmissionRequest): Promise<AgentResponse> => {
+  const formData = new FormData();
+  
+  if (request.content) {
+    formData.append('content', request.content);
+  }
+  
+  if (request.file) {
+    formData.append('file', request.file);
+  }
+  
+  if (request.description) {
+    formData.append('description', request.description);
+  }
+  
+  const response = await faultMavenApi.post(`/api/v1/cases/${request.case_id}/data`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  });
+  
+  return response.data;
+};
+```
+
+### 5. Query Submission (Case-Specific)
+
+```typescript
+interface QueryRequest {
+  case_id: string;
+  query: string;
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+}
+
+// Submit questions to specific case
+export const submitQueryToCase = async (request: QueryRequest): Promise<AgentResponse> => {
+  const response = await faultMavenApi.post(`/api/v1/cases/${request.case_id}/query`, {
+    query: request.query,
+    priority: request.priority || 'medium'
+  });
+  
+  return response.data;
+};
+```
+
+## Stateless Frontend Implementation
+
+### 4. Response Handling & View State
+
+```typescript
+interface AgentResponse {
+  response_type: ResponseType;
+  content: string;           // Markdown content for rendering
+  view_state: ViewState;     // Complete UI state from backend
+  sources?: Source[];        // Evidence sources for trust
+  confidence_score?: number;
+  plan?: PlanStep[];        // For PLAN_PROPOSAL responses
+}
+
+interface ViewState {
+  session_id: string;
+  user: User;
+  active_case: Case | null;
+  cases: Case[];
+  conversation: {
+    message_count: number;
+    last_updated: string;
+  };
+}
+
+enum ResponseType {
+  ANSWER = 'ANSWER',
+  PLAN_PROPOSAL = 'PLAN_PROPOSAL', 
+  CLARIFICATION_REQUEST = 'CLARIFICATION_REQUEST',
+  DATA_REQUEST = 'DATA_REQUEST',
+  ERROR = 'ERROR'
+}
+
+// Stateless response handler - re-render entire UI from view_state
+export const handleAgentResponse = (response: AgentResponse) => {
+  // 1. Update entire UI state from view_state (not local state)
+  updateUIFromViewState(response.view_state);
+  
+  // 2. Render content as Markdown
+  const contentElement = renderMarkdown(response.content);
+  
+  // 3. Use response_type for component rendering decisions
+  const componentType = getComponentForResponseType(response.response_type);
+  
+  // 4. Display sources for evidence and trust
+  if (response.sources) {
+    renderSources(response.sources);
+  }
+  
+  // 5. Handle specific response types
+  switch (response.response_type) {
+    case ResponseType.ANSWER:
+      renderTextBubble(contentElement);
+      break;
+    case ResponseType.PLAN_PROPOSAL:
+      renderInteractiveChecklist(response.plan, contentElement);
+      break;
+    case ResponseType.CLARIFICATION_REQUEST:
+      renderClarificationPrompt(contentElement);
+      break;
+    // ... other response types
+  }
+};
+```
+
+### 5. Case Management (User Interface Requirements)
+
+```typescript
+interface Case {
+  id: string;
+  title: string;
+  status: 'active' | 'resolved' | 'archived';
+  created_at: string;
+  updated_at: string;
+  user_id: string;  // Cases are owned by Users, not Sessions
+}
+
+// Display list of user's Cases (from view_state)
+export const renderCaseList = (cases: Case[]) => {
+  return (
+    <div className="case-list">
+      {cases.map(case => (
+        <CaseItem 
+          key={case.id}
+          case={case}
+          onClick={() => switchToCase(case.id)}
+        />
+      ))}
+      <CreateCaseButton onClick={() => createNewCase()} />
+    </div>
+  );
+};
+
+// Create new Case
+export const createNewCase = async (title: string): Promise<AgentResponse> => {
+  const sessionId = localStorage.getItem('session_id');
+  const response = await faultMavenApi.post('/api/v1/cases', {
+    session_id: sessionId,
+    title: title
+  });
+  
+  // Backend returns updated view_state with new case
+  return response.data;
+};
+
+// Switch between existing Cases
+export const switchToCase = async (caseId: string): Promise<AgentResponse> => {
+  const sessionId = localStorage.getItem('session_id');
+  const response = await faultMavenApi.post(`/api/v1/cases/${caseId}/switch`, {
+    session_id: sessionId
+  });
+  
+  // Backend returns view_state with switched case context
+  return response.data;
+};
+
+// Get all user cases with filtering
+export const getUserCases = async (filters?: CaseFilters): Promise<CaseListResponse> => {
+  const sessionId = localStorage.getItem('session_id');
+  const params = new URLSearchParams({ session_id: sessionId });
+  
+  if (filters?.status) params.append('status', filters.status);
+  if (filters?.priority) params.append('priority', filters.priority);
+  if (filters?.search) params.append('search', filters.search);
+  if (filters?.tags) filters.tags.forEach(tag => params.append('tags', tag));
+  if (filters?.limit) params.append('limit', filters.limit.toString());
+  if (filters?.offset) params.append('offset', filters.offset.toString());
+  
+  const response = await faultMavenApi.get(`/api/v1/cases?${params.toString()}`);
+  return response.data;
+};
+
+// Get detailed case information
+export const getCaseDetails = async (caseId: string): Promise<CaseWithMetadata> => {
+  const sessionId = localStorage.getItem('session_id');
+  const response = await faultMavenApi.get(`/api/v1/cases/${caseId}?session_id=${sessionId}`);
+  return response.data;
+};
+
+// Update case metadata
+export const updateCase = async (caseId: string, updates: CaseUpdateRequest): Promise<AgentResponse> => {
+  const sessionId = localStorage.getItem('session_id');
+  const response = await faultMavenApi.put(`/api/v1/cases/${caseId}`, {
+    session_id: sessionId,
+    ...updates
+  });
+  
+  // Backend returns updated view_state
+  return response.data;
+};
+
+// Delete case with confirmation
+export const deleteCase = async (caseId: string, confirm: boolean = true): Promise<AgentResponse> => {
+  const sessionId = localStorage.getItem('session_id');
+  const response = await faultMavenApi.delete(`/api/v1/cases/${caseId}?session_id=${sessionId}&confirm=${confirm}`);
+  
+  // Backend returns updated view_state
+  return response.data;
+};
+
+// Advanced case search
+export const searchCases = async (searchRequest: CaseSearchRequest): Promise<CaseSearchResponse> => {
+  const sessionId = localStorage.getItem('session_id');
+  const response = await faultMavenApi.post('/api/v1/cases/search', {
+    session_id: sessionId,
+    ...searchRequest
+  });
+  
+  return response.data;
+};
+```
+
+### 6. Enhanced Case Management Interfaces
+
+```typescript
+interface CaseWithMetadata {
+  id: string;
+  title: string;
+  description?: string;
+  status: 'active' | 'resolved' | 'archived';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  tags: string[];          // Max 5 tags
+  user_id: string;         // Cases are owned by Users
+  created_at: string;
+  updated_at: string;
+  conversation_count: number;
+  last_activity: string;
+  progress: {
+    total_steps: number;
+    completed_steps: number;
+    percentage: number;
+  };
+  session_duration: number;  // For CaseStatusDisplay real-time tracking
+  draft_message?: string;    // For draft management
+}
+
+interface CaseFilters {
+  status?: 'active' | 'resolved' | 'archived';
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  search?: string;           // Search in title/description  
+  tags?: string[];
+  limit?: number;            // For pagination
+  offset?: number;
+}
+
+interface CaseListResponse {
+  cases: CaseWithMetadata[];
+  total: number;
+  has_more: boolean;
+}
+
+interface CaseUpdateRequest {
+  title?: string;
+  description?: string;
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  status?: 'active' | 'resolved' | 'archived';
+  tags?: string[];  // Max 5 tags
+}
+
+interface CaseSearchRequest {
+  query?: string;
+  filters?: {
+    status?: ('active' | 'resolved' | 'archived')[];
+    priority?: ('low' | 'medium' | 'high' | 'urgent')[];
+    tags?: string[];
+    date_range?: {
+      from: string;
+      to: string;
+    };
+  };
+  limit?: number;
+}
+
+interface CaseSearchResponse {
+  results: (CaseWithMetadata & { relevance_score: number })[];
+  total: number;
+}
+```
+
+### 7. Component Integration for Case Management
+
+```typescript
+// CaseSelector integration with search and filtering
+export const useCaseSelector = () => {
+  const [cases, setCases] = useState<CaseWithMetadata[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Debounced search for CaseSelector dropdown
+  const debouncedSearch = useCallback(
+    debounce(async (query: string) => {
+      if (!query) {
+        const response = await getUserCases();
+        setCases(response.cases);
+      } else {
+        const response = await searchCases({
+          query,
+          limit: 20
+        });
+        setCases(response.results);
+      }
+    }, 300),
+    []
+  );
+  
+  useEffect(() => {
+    debouncedSearch(searchQuery);
+  }, [searchQuery, debouncedSearch]);
+  
+  const handleCaseSelect = async (caseId: string) => {
+    setLoading(true);
+    try {
+      const response = await switchToCase(caseId);
+      // Update entire UI from returned view_state
+      updateUIFromViewState(response.view_state);
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  return {
+    cases,
+    loading,
+    searchQuery,
+    setSearchQuery,
+    onCaseSelect: handleCaseSelect
+  };
+};
+
+// CaseManagementPanel integration with validation
+export const useCaseManagement = () => {
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  
+  const validateCaseData = (data: CaseUpdateRequest): boolean => {
+    const errors: Record<string, string> = {};
+    
+    if (data.title && data.title.length > 200) {
+      errors.title = 'Title must be 200 characters or less';
+    }
+    
+    if (data.description && data.description.length > 1000) {
+      errors.description = 'Description must be 1000 characters or less';
+    }
+    
+    if (data.tags && data.tags.length > 5) {
+      errors.tags = 'Maximum 5 tags allowed';
+    }
+    
+    setValidationErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+  
+  const createCaseWithValidation = async (data: { title: string; description?: string; tags?: string[]; priority?: string }): Promise<AgentResponse | null> => {
+    if (!validateCaseData(data)) return null;
+    
+    const response = await createNewCase(data.title);
+    
+    // Update additional metadata if needed
+    if (data.description || data.tags || data.priority) {
+      await updateCase(response.view_state.active_case?.id!, {
+        description: data.description,
+        tags: data.tags,
+        priority: data.priority as any
+      });
+    }
+    
+    return response;
+  };
+  
+  return {
+    validationErrors,
+    validateCaseData,
+    createCaseWithValidation,
+    updateCase,
+    deleteCase
+  };
+};
+
+// CaseStatusDisplay integration with real-time updates
+export const useCaseStatusDisplay = (caseId: string) => {
+  const [caseDetails, setCaseDetails] = useState<CaseWithMetadata | null>(null);
+  const [sessionDuration, setSessionDuration] = useState(0);
+  
+  // Real-time session duration tracking
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setSessionDuration(prev => prev + 1);
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, []);
+  
+  // Load case details for progress tracking
+  useEffect(() => {
+    if (caseId) {
+      getCaseDetails(caseId).then(setCaseDetails);
+    }
+  }, [caseId]);
+  
+  const formatSessionDuration = (seconds: number): string => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    
+    if (hours > 0) {
+      return `${hours}h ${minutes}m ${secs}s`;
+    } else if (minutes > 0) {
+      return `${minutes}m ${secs}s`;
+    } else {
+      return `${secs}s`;
+    }
+  };
+  
+  return {
+    caseDetails,
+    sessionDuration: formatSessionDuration(sessionDuration),
+    progressPercentage: caseDetails?.progress?.percentage || 0
+  };
+};
+```
+
+## UI Rendering Requirements
+
+### 8. Markdown Content Rendering
+
+```typescript
+import ReactMarkdown from 'react-markdown';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+
+// Render agent content as Markdown with rich formatting
+export const renderMarkdown = (content: string) => {
+  return (
+    <ReactMarkdown
+      components={{
+        // Code blocks
+        code({ node, inline, className, children, ...props }) {
+          const match = /language-(\w+)/.exec(className || '');
+          return !inline && match ? (
+            <SyntaxHighlighter
+              style={prism}
+              language={match[1]}
+              PreTag="div"
+              {...props}
+            >
+              {String(children).replace(/\n$/, '')}
+            </SyntaxHighlighter>
+          ) : (
+            <code className={className} {...props}>
+              {children}
+            </code>
+          );
+        },
+        // Tables
+        table: ({ children }) => (
+          <table className="table-auto border-collapse border border-gray-300">
+            {children}
+          </table>
+        ),
+        // Lists
+        ul: ({ children }) => (
+          <ul className="list-disc ml-6 space-y-1">
+            {children}
+          </ul>
+        ),
+        ol: ({ children }) => (
+          <ol className="list-decimal ml-6 space-y-1">
+            {children}
+          </ol>
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+};
+```
+
+### 7. Source Display for Trust
+
+```typescript
+interface Source {
+  type: string;
+  content: string;
+  confidence?: number;
+}
+
+// Display evidence sources to build user trust
+export const renderSources = (sources: Source[]) => {
+  return (
+    <div className="sources-section">
+      <h4>Evidence Sources:</h4>
+      {sources.map((source, index) => (
+        <div key={index} className="source-item">
+          <span className="source-type">{source.type}</span>
+          <span className="source-content">{source.content}</span>
+          {source.confidence && (
+            <span className="confidence">
+              ({Math.round(source.confidence * 100)}% confidence)
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+};
+```
+
+### 8. Response Type Component Rendering
+
+```typescript
+// Use response_type for different UI components
+export const getComponentForResponseType = (responseType: ResponseType) => {
+  switch (responseType) {
+    case ResponseType.ANSWER:
+      return 'TextBubble';  // Simple text display
+      
+    case ResponseType.PLAN_PROPOSAL:
+      return 'InteractiveChecklist';  // Interactive plan steps
+      
+    case ResponseType.CLARIFICATION_REQUEST:
+      return 'ClarificationPrompt';  // Input form for clarification
+      
+    case ResponseType.DATA_REQUEST:
+      return 'DataUploadPrompt';  // File/data upload interface
+      
+    case ResponseType.ERROR:
+      return 'ErrorDisplay';  // Error message with retry options
+      
+    default:
+      return 'TextBubble';
+  }
+};
+```
+
+## Complete Integration Example
+
+```typescript
+// Main application integration
+export class FaultMavenApp {
+  private sessionId: string | null = null;
+  
+  async initialize() {
+    // 1. Developer login to establish identity
+    const email = await promptForEmail();
+    const authResponse = await developerLogin(email);
+    
+    this.sessionId = authResponse.session_id;
+    
+    // 2. Render initial UI from view_state
+    this.renderFromViewState(authResponse.view_state);
+  }
+  
+  async submitData(content: string, file?: File) {
+    if (!this.sessionId) throw new Error('Not authenticated');
+    
+    const activeCaseId = this.getActiveCaseId();
+    const response = await submitData({
+      session_id: this.sessionId,
+      case_id: activeCaseId,
+      content,
+      file
+    });
+    
+    // Re-render UI from updated view_state
+    this.handleResponse(response);
+  }
+  
+  async askQuestion(query: string) {
+    if (!this.sessionId) throw new Error('Not authenticated');
+    
+    const activeCaseId = this.getActiveCaseId();
+    const response = await submitQuery({
+      session_id: this.sessionId,
+      case_id: activeCaseId,
+      query
+    });
+    
+    // Re-render UI from updated view_state
+    this.handleResponse(response);
+  }
+  
+  private handleResponse(response: AgentResponse) {
+    // Stateless rendering from view_state
+    handleAgentResponse(response);
+  }
+  
+  private renderFromViewState(viewState: ViewState) {
+    // Update entire UI from backend state
+    updateUIFromViewState(viewState);
+  }
+}
+```
+
+## Summary
+
+This integration guide ensures the frontend meets all requirements:
+
+**✅ User and Case Management:**
+- Developer login establishes user identity and session_id
+- UI displays list of user's Cases from view_state
+- Users can create new Cases and switch between existing ones
+
+**✅ Interaction Model:**
+- Distinct methods for data submission (/data) vs questions (/query)
+- Frontend is stateless renderer using view_state objects
+- All UI state comes from backend, not local frontend state
+
+**✅ Response Rendering:**
+- Agent content rendered as Markdown with rich formatting
+- response_type enum drives component rendering decisions
+- Sources displayed for evidence and user trust
+- Interactive components for different response types (plans, clarifications, etc.)
 // Submit troubleshooting query
 export const submitQuery = async (request: SubmitQueryRequest): Promise<AgentResponse> => {
   const response = await faultMavenApi.post('/api/v1/agent/query', request);

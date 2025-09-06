@@ -17,8 +17,8 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, Mock, patch
 from typing import Optional, Dict, Any
 
-from faultmaven.services.session_service import SessionService
-from faultmaven.services.case_service import CaseService
+from faultmaven.services.session import SessionService
+from faultmaven.services.case import CaseService
 from faultmaven.models.case import (
     Case,
     CaseMessage,
@@ -30,6 +30,21 @@ from faultmaven.models.case import (
 from faultmaven.models import SessionContext, AgentState
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.exceptions import ValidationException, ServiceException
+
+
+def create_agent_state_dict(status=None, case_context=None, current_phase="initial"):
+    """Helper to create agent state dictionary from enum status"""
+    return {
+        "status": status or AgentState.IDLE,
+        "case_context": case_context or {},
+        "current_phase": current_phase,
+        "findings": [],
+        "recommendations": [],
+        "confidence_score": 0.0,
+        "tools_used": [],
+        "awaiting_user_input": False,
+        "user_feedback": ""
+    }
 
 
 class MockCaseService:
@@ -93,7 +108,7 @@ def sample_session_context():
         user_id="user-456",
         created_at=datetime.utcnow(),
         last_activity=datetime.utcnow(),
-        agent_state=AgentState.IDLE,
+        agent_state=create_agent_state_dict(),
         conversation_history=[],
         uploaded_data=[],
         insights={}
@@ -127,7 +142,7 @@ class TestSessionCaseIntegration:
             user_id="user-456",
             created_at=datetime.utcnow(),
             last_activity=datetime.utcnow(),
-            agent_state=AgentState.IDLE,
+            agent_state=create_agent_state_dict(),
             conversation_history=[],
             uploaded_data=[],
             insights={}
@@ -137,7 +152,7 @@ class TestSessionCaseIntegration:
         mock_case_service.create_case.return_value = sample_case
         
         # Test session creation with case integration
-        with patch.object(session_service, '_create_case_for_session') as mock_create_case:
+        with patch.object(session_service, 'get_or_create_case_for_session') as mock_create_case:
             mock_create_case.return_value = sample_case
             
             result = await session_service.create_session(
@@ -162,7 +177,7 @@ class TestSessionCaseIntegration:
             user_id="user-456",
             created_at=datetime.utcnow(),
             last_activity=datetime.utcnow(),
-            agent_state=AgentState.IDLE,
+            agent_state=create_agent_state_dict(),
             conversation_history=[],
             uploaded_data=[],
             insights={"current_case_id": "case-123"}
@@ -308,7 +323,7 @@ class TestSessionCaseIntegration:
             user_id="user-456",
             created_at=datetime.utcnow() - timedelta(hours=2),
             last_activity=datetime.utcnow() - timedelta(hours=2),
-            agent_state=AgentState.COMPLETED,
+            agent_state=create_agent_state_dict(status=AgentState.COMPLETED),
             conversation_history=[],
             uploaded_data=[],
             insights={"current_case_id": "case-123"}
@@ -320,7 +335,7 @@ class TestSessionCaseIntegration:
             user_id="user-456",
             created_at=datetime.utcnow(),
             last_activity=datetime.utcnow(),
-            agent_state=AgentState.IDLE,
+            agent_state=create_agent_state_dict(),
             conversation_history=[],
             uploaded_data=[],
             insights={}
@@ -451,7 +466,7 @@ class TestSessionCaseLifecycle:
             user_id="user-456",
             created_at=datetime.utcnow(),
             last_activity=datetime.utcnow(),
-            agent_state=AgentState.IDLE,
+            agent_state=create_agent_state_dict(),
             conversation_history=[],
             uploaded_data=[],
             insights={}
@@ -495,7 +510,7 @@ class TestSessionCaseLifecycle:
             user_id="user-456",
             created_at=datetime.utcnow() - timedelta(days=2),
             last_activity=datetime.utcnow() - timedelta(days=1),
-            agent_state=AgentState.COMPLETED,
+            agent_state=create_agent_state_dict(status=AgentState.COMPLETED),
             conversation_history=[],
             uploaded_data=[],
             insights={"current_case_id": "case-123"}
@@ -567,11 +582,11 @@ class TestSessionCaseLifecycle:
             
             # Update session state based on case status
             if case.status == CaseStatus.SOLVED:
-                session.agent_state = AgentState.COMPLETED
+                session.agent_state = create_agent_state_dict(status=AgentState.COMPLETED)
             elif case.status == CaseStatus.INVESTIGATING:
-                session.agent_state = AgentState.PROCESSING
+                session.agent_state = create_agent_state_dict(status=AgentState.RUNNING)
             elif case.status == CaseStatus.ARCHIVED:
-                session.agent_state = AgentState.COMPLETED
+                session.agent_state = create_agent_state_dict(status=AgentState.COMPLETED)
             
             session.insights["case_status"] = case.status.value
             return await session_service.session_manager.update_session(session_id, session)
@@ -725,7 +740,7 @@ class TestPerformanceAndScaling:
                 user_id=f"user-{i}",
                 created_at=datetime.utcnow(),
                 last_activity=datetime.utcnow(),
-                agent_state=AgentState.IDLE,
+                agent_state=create_agent_state_dict(),
                 conversation_history=[],
                 uploaded_data=[],
                 insights={"current_case_id": f"case-{i}"}

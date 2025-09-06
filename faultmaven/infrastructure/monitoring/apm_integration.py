@@ -57,14 +57,25 @@ class APMConfiguration:
 class APMIntegration:
     """Manages APM integrations and metrics export."""
     
-    def __init__(self, service_name: str = "faultmaven"):
+    def __init__(self, service_name: str = "faultmaven", settings=None):
         """Initialize APM integration.
         
         Args:
             service_name: Name of the service for APM identification
+            settings: FaultMavenSettings instance for configuration
         """
         self.logger = logging.getLogger(__name__)
         self.service_name = service_name
+        
+        # Get settings if not provided
+        if settings is None:
+            try:
+                from faultmaven.config.settings import get_settings
+                settings = get_settings()
+            except:
+                settings = None
+        
+        self.settings = settings
         self.configurations: Dict[APMProvider, APMConfiguration] = {}
         self.metrics_buffer: List[APMMetrics] = []
         self.export_callbacks: Dict[APMProvider, Callable] = {}
@@ -77,48 +88,92 @@ class APMIntegration:
     
     def _initialize_default_configurations(self) -> None:
         """Initialize default configurations for supported APM providers."""
-        import os
+        # Use fallback values if settings are not available
+        fallback_environment = "development"
+        fallback_instance_id = "localhost:8000"
         
-        # Opik configuration (FaultMaven's primary observability tool)
-        opik_config = APMConfiguration(
-            provider=APMProvider.OPIK,
-            enabled=os.getenv("OPIK_ENABLED", "true").lower() == "true",
-            endpoint_url=os.getenv("OPIK_URL", "http://localhost:3003"),
-            api_key=os.getenv("OPIK_API_KEY"),
-            project_name=os.getenv("OPIK_PROJECT_NAME", "faultmaven"),
-            custom_headers={
-                "User-Agent": "FaultMaven-APM-Integration/1.0"
-            },
-            custom_tags={
-                "service": self.service_name,
-                "version": "1.0.0",
-                "environment": os.getenv("ENVIRONMENT", "development")
-            }
-        )
+        if self.settings:
+            # Use settings-based configuration
+            # Opik configuration (FaultMaven's primary observability tool)
+            opik_config = APMConfiguration(
+                provider=APMProvider.OPIK,
+                enabled=self.settings.observability.opik_enabled,
+                endpoint_url=self.settings.observability.opik_url_override or "http://localhost:3003",
+                api_key=(self.settings.observability.opik_api_key.get_secret_value() 
+                        if self.settings.observability.opik_api_key else None),
+                project_name=self.settings.observability.opik_project_name,
+                custom_headers={
+                    "User-Agent": "FaultMaven-APM-Integration/1.0"
+                },
+                custom_tags={
+                    "service": self.service_name,
+                    "version": "1.0.0",
+                    "environment": self.settings.server.environment
+                }
+            )
+            
+            # Prometheus configuration
+            prometheus_config = APMConfiguration(
+                provider=APMProvider.PROMETHEUS,
+                enabled=self.settings.observability.prometheus_enabled,
+                endpoint_url=self.settings.observability.prometheus_pushgateway_url,
+                custom_tags={
+                    "job": self.service_name,
+                    "instance": self.settings.observability.instance_id
+                }
+            )
+            
+            # Generic HTTP endpoint configuration
+            generic_config = APMConfiguration(
+                provider=APMProvider.GENERIC,
+                enabled=self.settings.observability.generic_apm_enabled,
+                endpoint_url=self.settings.observability.generic_apm_url,
+                api_key=(self.settings.observability.generic_apm_api_key.get_secret_value() 
+                        if self.settings.observability.generic_apm_api_key else None),
+                custom_headers={
+                    "Content-Type": "application/json"
+                }
+            )
+        else:
+            # Fallback configuration when settings are unavailable
+            opik_config = APMConfiguration(
+                provider=APMProvider.OPIK,
+                enabled=True,
+                endpoint_url="http://localhost:3003",
+                api_key=None,
+                project_name="faultmaven",
+                custom_headers={
+                    "User-Agent": "FaultMaven-APM-Integration/1.0"
+                },
+                custom_tags={
+                    "service": self.service_name,
+                    "version": "1.0.0",
+                    "environment": fallback_environment
+                }
+            )
+            
+            prometheus_config = APMConfiguration(
+                provider=APMProvider.PROMETHEUS,
+                enabled=False,
+                endpoint_url="http://localhost:9091",
+                custom_tags={
+                    "job": self.service_name,
+                    "instance": fallback_instance_id
+                }
+            )
+            
+            generic_config = APMConfiguration(
+                provider=APMProvider.GENERIC,
+                enabled=False,
+                endpoint_url=None,
+                api_key=None,
+                custom_headers={
+                    "Content-Type": "application/json"
+                }
+            )
+        
         self.configurations[APMProvider.OPIK] = opik_config
-        
-        # Prometheus configuration
-        prometheus_config = APMConfiguration(
-            provider=APMProvider.PROMETHEUS,
-            enabled=os.getenv("PROMETHEUS_ENABLED", "false").lower() == "true",
-            endpoint_url=os.getenv("PROMETHEUS_PUSHGATEWAY_URL", "http://localhost:9091"),
-            custom_tags={
-                "job": self.service_name,
-                "instance": os.getenv("INSTANCE_ID", "localhost:8000")
-            }
-        )
         self.configurations[APMProvider.PROMETHEUS] = prometheus_config
-        
-        # Generic HTTP endpoint configuration
-        generic_config = APMConfiguration(
-            provider=APMProvider.GENERIC,
-            enabled=os.getenv("GENERIC_APM_ENABLED", "false").lower() == "true",
-            endpoint_url=os.getenv("GENERIC_APM_URL"),
-            api_key=os.getenv("GENERIC_APM_API_KEY"),
-            custom_headers={
-                "Content-Type": "application/json"
-            }
-        )
         self.configurations[APMProvider.GENERIC] = generic_config
     
     def _register_default_exporters(self) -> None:
@@ -440,5 +495,5 @@ class APMIntegration:
         self.logger.info(f"Added custom exporter for {provider.value}")
 
 
-# Global APM integration instance
+# Global APM integration instance - will use default settings
 apm_integration = APMIntegration()

@@ -311,13 +311,18 @@ class TestDIContainerGetterMethods:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
             
-            # Access service before explicit initialization
-            service = container.get_agent_service()
-            
-            # Should have logged warning about uninitialized access
-            mock_logger.warning.assert_called()
-            warning_call = mock_logger.warning.call_args[0][0]
-            assert "not initialized" in warning_call
+            # Mock initialize to prevent actual initialization and constructor errors
+            with patch.object(container, 'initialize') as mock_initialize:
+                # Access service before explicit initialization
+                service = container.get_agent_service()
+                
+                # Should have logged warning about uninitialized access
+                mock_logger.warning.assert_called()
+                warning_call = mock_logger.warning.call_args[0][0]
+                assert "not initialized" in warning_call
+                
+                # Should have attempted to initialize automatically
+                mock_initialize.assert_called_once()
 
 
 class TestDIContainerHealthCheck:

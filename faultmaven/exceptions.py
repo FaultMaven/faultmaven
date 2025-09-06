@@ -91,3 +91,13 @@ class PlanningException(FaultMavenException):
 class ReasoningException(FaultMavenException):
     """Raised when reasoning operations fail."""
     pass
+
+
+class BudgetExceededException(FaultMavenException):
+    """Raised when operational budget limits are exceeded."""
+    pass
+
+
+class ServiceUnavailableException(FaultMavenException):
+    """Raised when a required service is not available."""
+    pass

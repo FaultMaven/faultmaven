@@ -27,18 +27,23 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.api.v1.dependencies import get_session_service
-from faultmaven.services.session_service import SessionService
+from faultmaven.api.v1.dependencies import get_session_service, get_case_service
+from faultmaven.services.session import SessionService
+from faultmaven.services.converters import CaseConverter
 from faultmaven.models import utc_timestamp
+from faultmaven.models.api import SessionResponse, SessionCasesResponse, ErrorResponse, ErrorDetail
+from faultmaven.models.case import CaseListFilter
 import logging
+import uuid
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
 
@@ -121,12 +126,13 @@ class SessionRestoreRequest(BaseModel):
 
 
 
-@router.post("/")
+@router.post("", status_code=201)
 @trace("api_create_session")
 async def create_session(
     request: Optional[SessionCreateRequest] = Body(None),
     user_id: Optional[str] = Query(None),
     session_service: SessionService = Depends(get_session_service),
+    response: Response = Response(),
 ):
     """
     Create a new troubleshooting session.
@@ -153,6 +159,10 @@ async def create_session(
         # Create session with metadata
         session = await session_service.create_session(user_id, metadata=metadata if metadata else None)
         logger.info(f"Session created successfully: {session.session_id}")
+        
+        # Set Location header for REST compliance
+        response.headers["Location"] = f"/api/v1/sessions/{session.session_id}"
+        
         return {
             "session_id": session.session_id,
             "user_id": session.user_id,
@@ -168,11 +178,11 @@ async def create_session(
         )
 
 
-@router.get("/{session_id}")
+@router.get("/{session_id}", response_model=SessionResponse)
 async def get_session(
     session_id: str,
     session_service: SessionService = Depends(get_session_service),
-):
+) -> SessionResponse:
     """
     Retrieve a specific session by ID.
 
@@ -187,15 +197,17 @@ async def get_session(
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
-        return {
-            "session_id": session.session_id,
-            "user_id": session.user_id,
-            "created_at": _safe_datetime_to_utc_string(session.created_at),
-            "last_activity": _safe_datetime_to_utc_string(session.last_activity),
-            "status": "active",
-            "data_uploads_count": len(session.data_uploads),
-            "case_history_count": len(session.case_history),
-        }
+        return SessionResponse(
+            session_id=session.session_id,
+            user_id=session.user_id,
+            status="active",
+            created_at=_safe_datetime_to_utc_string(session.created_at),
+            metadata={
+                "last_activity": _safe_datetime_to_utc_string(session.last_activity),
+                "data_uploads_count": len(session.data_uploads),
+                "case_history_count": len(session.case_history),
+            }
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -205,7 +217,7 @@ async def get_session(
         )
 
 
-@router.get("/")
+@router.get("")
 async def list_sessions(
     user_id: Optional[str] = Query(None),
     session_type: Optional[str] = Query(None),
@@ -307,7 +319,107 @@ async def list_sessions(
         )
 
 
-@router.delete("/{session_id}")
+@router.get("/{session_id}/cases")
+async def list_session_cases(
+    session_id: str,
+    response: Response,
+    limit: int = Query(50, le=100, ge=1),
+    offset: int = Query(0, ge=0),
+    # Phase 1: New filtering parameters (default to exclude non-active cases)
+    include_empty: bool = Query(False, description="Include cases with message_count == 0"),
+    include_archived: bool = Query(False, description="Include archived cases"),
+    include_deleted: bool = Query(False, description="Include deleted cases (admin only)"),
+    session_service: SessionService = Depends(get_session_service),
+    case_service = Depends(get_case_service)
+):
+    """
+    List all cases associated with a session.
+    
+    CRITICAL: Must return 200 [] for empty results, NOT 404
+    
+    Args:
+        session_id: Session identifier
+        limit: Maximum number of cases to return (1-100)
+        offset: Number of cases to skip for pagination
+    
+    Returns:
+        List of cases (empty list if no cases found)
+    """
+    try:
+        # First verify session exists (404 if session not found)
+        session = await session_service.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Get cases for this session (empty list is valid, not an error)
+        cases = []
+        total_count = 0
+        
+        try:
+            # Get cases from case service - Phase 1: Pass filtering parameters
+            if hasattr(case_service, 'list_cases_by_session'):
+                # Create filters for session-scoped listing
+                filters = CaseListFilter(
+                    include_empty=include_empty,
+                    include_archived=include_archived,
+                    include_deleted=include_deleted,
+                    limit=limit,
+                    offset=offset
+                )
+                
+                case_entities = await case_service.list_cases_by_session(session_id, limit, offset, filters)
+                total_count = await case_service.count_cases_by_session(session_id, filters)
+                
+                # Convert Case entities to API objects using centralized converter
+                cases = CaseConverter.entities_to_api_list(case_entities)
+            else:
+                # Case service not available - return empty list
+                logger.warning(f"Case service not available for session {session_id}")
+                cases = []
+                total_count = 0
+        except Exception as e:
+            logger.error(f"Error fetching cases for session {session_id}: {e}")
+            cases = []
+            total_count = 0
+        
+        # Add required pagination headers
+        headers = {"X-Total-Count": str(total_count)}
+
+        # RFC 5988 Link header for pagination
+        base_url = f"/api/v1/sessions/{session_id}/cases"
+        links = []
+
+        if offset > 0:
+            links.append(f'<{base_url}?limit={limit}&offset=0>; rel="first"')
+            prev_offset = max(0, offset - limit)
+            links.append(f'<{base_url}?limit={limit}&offset={prev_offset}>; rel="prev"')
+
+        if offset + limit < total_count:
+            next_offset = offset + limit
+            links.append(f'<{base_url}?limit={limit}&offset={next_offset}>; rel="next"')
+            last_offset = ((total_count - 1) // limit) * limit
+            links.append(f'<{base_url}?limit={limit}&offset={last_offset}>; rel="last"')
+
+        # Set Link header only if there are links (RFC 5988 compliance)
+        if links:
+            headers["Link"] = ", ".join(links)
+
+        logger.info(f"Returning {len(cases)} cases for session {session_id} (total: {total_count})")
+        # Convert CaseAPI objects to dictionaries for JSON serialization
+        cases_data = [case.dict() for case in cases] if cases else []
+        return JSONResponse(status_code=200, content=cases_data, headers=headers)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        correlation_id = str(uuid.uuid4())
+        logger.error(f"Failed to list cases for session {session_id}: {e}", extra={"correlation_id": correlation_id})
+        # Return empty response instead of 500 error for robustness per OpenAPI requirement
+        headers = {"X-Total-Count": "0", "x-correlation-id": correlation_id}
+        return JSONResponse(status_code=200, content=[], headers=headers)
+
+
+@router.delete("/{session_id}", status_code=204)
 async def delete_session(
     session_id: str,
     session_service: SessionService = Depends(get_session_service),
@@ -332,12 +444,8 @@ async def delete_session(
         if not success:
             raise HTTPException(status_code=500, detail="Failed to delete session")
 
-        return {
-            "session_id": session_id,
-            "status": "deleted",
-            "deleted": True,
-            "message": "Session deleted successfully",
-        }
+        # Return no content for 204 status code
+        return None
     except HTTPException:
         raise
     except Exception as e:

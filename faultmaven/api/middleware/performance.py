@@ -36,7 +36,7 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
         self.endpoint_thresholds = {
             "/health": 100.0,  # Health checks should be very fast
             "/health/": 100.0,
-            "/api/v1/agent": 5000.0,  # Agent endpoints can be slower
+            "/api/v1/cases": 5000.0,  # Case endpoints can be slower
             "/api/v1/data": 2000.0,  # Data endpoints moderate
             "/api/v1/knowledge": 3000.0,  # Knowledge endpoints moderate
             "/api/v1/session": 500.0,  # Session endpoints should be fast
@@ -174,8 +174,8 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
         """
         if path.startswith("/health"):
             return "health"
-        elif path.startswith("/api/v1/agent"):
-            return "agent"
+        elif path.startswith("/api/v1/cases"):
+            return "cases"
         elif path.startswith("/api/v1/data"):
             return "data"
         elif path.startswith("/api/v1/knowledge"):

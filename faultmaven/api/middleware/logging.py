@@ -288,9 +288,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             # Check query parameters
             if case_id := request.query_params.get("case_id"):
                 return case_id
-            legacy_q = request.query_params.get("investigation_id")
-            if legacy_q:
-                return legacy_q
+            # Legacy investigation_id support
+            if legacy_id := request.query_params.get("investigation_id"):
+                return legacy_id
                 
             # Check request body for POST/PUT/PATCH requests
             if request.method in ["POST", "PUT", "PATCH"]:
@@ -299,8 +299,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                     data = await request.json()
                     if isinstance(data, dict) and (case_id := data.get("case_id")):
                         return case_id
-                    if isinstance(data, dict) and (legacy_body := data.get("investigation_id")):
-                        return legacy_body
+                    # Legacy investigation_id support
+                    if isinstance(data, dict) and (legacy_id := data.get("investigation_id")):
+                        return legacy_id
                 except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
                     # Invalid JSON, encoding, or empty body - continue without case context
                     pass

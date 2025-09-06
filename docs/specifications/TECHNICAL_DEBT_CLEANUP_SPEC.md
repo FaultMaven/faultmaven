@@ -507,10 +507,10 @@ graph TB
 - **Purpose**: Business logic orchestration
 - **Components**: Service classes with interface dependencies
 - **Key Files**:
-  - `faultmaven/services/agent_service.py`
-  - `faultmaven/services/data_service.py`
-  - `faultmaven/services/knowledge_service.py`
-  - `faultmaven/services/session_service.py`
+  - `faultmaven/services/agent.py`
+  - `faultmaven/services/data.py`
+  - `faultmaven/services/knowledge.py`
+  - `faultmaven/services/session.py`
 
 ### Core Domain
 - **Purpose**: Core business logic and domain models

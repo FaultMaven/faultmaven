@@ -7,7 +7,6 @@ base doesn't have relevant information.
 """
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -39,6 +38,7 @@ class WebSearchTool(LangChainBaseTool, IBaseTool):
     # Define as private attributes to avoid Pydantic field conflicts
     _api_key: str = ""
     _api_endpoint: str = ""
+    _search_engine_id: str = ""
     _trusted_domains: List[str] = []
     _max_results: int = 3
     _logger: Optional[logging.Logger] = None
@@ -50,6 +50,7 @@ class WebSearchTool(LangChainBaseTool, IBaseTool):
         trusted_domains: Optional[List[str]] = None,
         max_results: int = 3,
         knowledge_ingester=None,  # Accept but ignore this parameter from tool registry
+        settings=None,  # Accept settings for configuration
         **kwargs  # Accept any other parameters that might be passed by the registry
     ):
         """
@@ -61,19 +62,35 @@ class WebSearchTool(LangChainBaseTool, IBaseTool):
             trusted_domains: List of trusted domains to search
             max_results: Maximum number of results to return
             knowledge_ingester: Knowledge ingester instance (ignored by this tool)
+            settings: Settings instance for configuration (replaces os.getenv calls)
             **kwargs: Additional parameters from tool registry (ignored)
         """
         # Initialize both parent classes properly
         LangChainBaseTool.__init__(self)
         IBaseTool.__init__(self)
 
-        # Initialize from environment variables if not provided
-        self._api_key = api_key or os.getenv("WEB_SEARCH_API_KEY") or ""
-        self._api_endpoint = (
-            api_endpoint
-            or os.getenv("WEB_SEARCH_API_ENDPOINT")
-            or "https://www.googleapis.com/customsearch/v1"
-        )
+        # Use settings-based configuration or fallback to direct parameters
+        if settings:
+            self._api_key = api_key or (
+                settings.tools.web_search_api_key.get_secret_value() 
+                if settings.tools.web_search_api_key else ""
+            )
+            self._api_endpoint = (
+                api_endpoint or settings.tools.web_search_api_endpoint
+            )
+            self._search_engine_id = settings.tools.web_search_engine_id
+        else:
+            # Fallback to environment variables if settings not provided
+            from faultmaven.config.settings import get_settings
+            settings = get_settings()
+            self._api_key = api_key or (
+                settings.tools.web_search_api_key.get_secret_value() 
+                if settings.tools.web_search_api_key else ""
+            )
+            self._api_endpoint = (
+                api_endpoint or settings.tools.web_search_api_endpoint
+            )
+            self._search_engine_id = settings.tools.web_search_engine_id
 
         # Default trusted domains for technical documentation
         self._trusted_domains = trusted_domains or [
@@ -206,11 +223,9 @@ class WebSearchTool(LangChainBaseTool, IBaseTool):
             Exception: Other unexpected errors
         """
         # Using Google Custom Search API as default
-        search_engine_id = os.getenv("WEB_SEARCH_ENGINE_ID", "")
-
         params: Dict[str, str] = {
             "key": self._api_key,
-            "cx": search_engine_id,
+            "cx": self._search_engine_id,
             "q": query,
             "num": str(self._max_results),
         }

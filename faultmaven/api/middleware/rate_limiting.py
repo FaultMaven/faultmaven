@@ -58,14 +58,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         # Endpoint-specific configurations
         self.endpoint_configs = {
-            "/api/v1/agent/query": {
-                "limit_types": [LimitType.PER_SESSION, LimitType.GLOBAL],
-                "special_handling": self._handle_agent_query
-            },
-            "/api/v1/agent/troubleshoot": {
-                "limit_types": [LimitType.PER_SESSION, LimitType.GLOBAL],
-                "special_handling": self._handle_agent_query
-            },
             "/api/v1/data/upload": {
                 "limit_types": [LimitType.PER_SESSION, LimitType.GLOBAL],
                 "special_handling": None
@@ -264,61 +256,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if config.get("special_handling"):
             await config["special_handling"](request, session_id)
     
-    async def _handle_agent_query(
-        self,
-        request: Request,
-        session_id: Optional[str]
-    ) -> None:
-        """Special handling for agent query endpoints"""
-        
-        if not session_id:
-            return
-        
-        # Check if this is a title generation request
-        if await self._is_title_generation_request(request):
-            result = await self.rate_limiter.check_rate_limit(
-                key=session_id,
-                limit_type=LimitType.TITLE_GENERATION,
-                identifier=f"title_gen:{session_id}"
-            )
-            
-            if not result.allowed:
-                raise RateLimitError(
-                    retry_after=result.retry_after or 300,
-                    limit_type="title_generation",
-                    current_count=result.current_count,
-                    limit=result.limit
-                )
-    
-    async def _is_title_generation_request(self, request: Request) -> bool:
-        """Detect if request is for title generation"""
-        
-        try:
-            # Check request body for title generation indicators
-            if hasattr(request, '_body'):
-                body = request._body
-            else:
-                # Read body (this consumes it, so we need to be careful)
-                body = await request.body()
-                # Store it for later use
-                request._body = body
-            
-            if body:
-                body_str = body.decode('utf-8').lower()
-                title_indicators = [
-                    "generate a title",
-                    "title generation",
-                    "conversation title",
-                    "is_title_generation",
-                    "concise, descriptive title"
-                ]
-                
-                return any(indicator in body_str for indicator in title_indicators)
-            
-        except Exception as e:
-            self.logger.warning(f"Failed to check for title generation: {e}")
-        
-        return False
     
     def _extract_session_id(self, request: Request) -> Optional[str]:
         """Extract session ID from request"""

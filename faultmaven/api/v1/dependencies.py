@@ -19,6 +19,7 @@ from fastapi import Depends, HTTPException, Request
 from ...container import container
 from ...models import SessionContext
 from ...models.interfaces_case import ICaseService
+from ...models.interfaces import IJobService
 from ...services import AgentService, DataService, KnowledgeService, SessionService
 
 
@@ -99,6 +100,17 @@ async def get_knowledge_service() -> KnowledgeService:
 async def get_tracer():
     """Get tracer instance from container"""
     return container.get_tracer()
+
+
+async def get_protection_system(request: Request):
+    """Get protection system instance from app.extra"""
+    protection_system = request.app.extra.get("protection_system")
+    if not protection_system:
+        raise HTTPException(
+            status_code=503, 
+            detail="Protection system not available"
+        )
+    return protection_system
 
 
 
@@ -340,3 +352,14 @@ async def check_service_health() -> dict:
     # Add more health checks as needed
     
     return health_status
+
+
+# Job Service Dependencies
+
+async def get_job_service() -> Optional[IJobService]:
+    """Get JobService instance from container"""
+    try:
+        return container.get_job_service()
+    except Exception:
+        # Job service is optional - return None if not available
+        return None

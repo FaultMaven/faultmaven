@@ -15,7 +15,7 @@ import pytest
 
 from faultmaven.core.agent.agent import FaultMavenAgent
 from faultmaven.core.agent.doctrine import Phase
-from faultmaven.models import AgentState
+from faultmaven.models import AgentStateDict
 
 
 class TestCoreAgent:
@@ -33,7 +33,7 @@ class TestCoreAgent:
             llm_router=self.mock_llm_router, knowledge_base_tool=self.mock_kb_tool
         )
 
-        self.sample_agent_state = AgentState(
+        self.sample_agent_state = AgentStateDict(
             session_id="test-session-123",
             user_query="Database connection timeout in production",
             findings=[],

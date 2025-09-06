@@ -1138,7 +1138,7 @@ on:
     branches: [ main, develop ]
     paths: 
       - 'faultmaven/infrastructure/logging/**'
-      - 'faultmaven/services/base_service.py'
+      - 'faultmaven/services/base.py'
       - 'faultmaven/infrastructure/base_client.py'
   pull_request:
     branches: [ main ]
@@ -1174,9 +1174,9 @@ jobs:
     
     - name: Run base class tests
       run: |
-        pytest tests/services/test_base_service.py \
+        pytest tests/services/test_base.py \
                tests/infrastructure/test_base_client.py \
-          --cov=faultmaven.services.base_service \
+          --cov=faultmaven.services.base \
           --cov=faultmaven.infrastructure.base_client \
           --cov-report=xml \
           --cov-append \
@@ -1305,7 +1305,7 @@ tests/
 │   │   └── test_error_context.py        # Error handling tests
 │   └── test_base_client.py              # BaseExternalClient tests
 ├── services/
-│   └── test_base_service.py             # BaseService tests
+│   └── test_base.py             # BaseService tests
 ├── integration/
 │   ├── logging/
 │   │   ├── test_cross_layer_context.py  # Context propagation tests

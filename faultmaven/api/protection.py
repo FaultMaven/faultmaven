@@ -45,15 +45,21 @@ class ProtectionSystem:
     - Intelligent: Behavioral analysis, ML anomaly detection, reputation system
     """
 
-    def __init__(self, app: FastAPI, session_store: Optional[ISessionStore] = None):
+    def __init__(self, app: FastAPI, session_store: Optional[ISessionStore] = None, settings=None):
         self.app = app
         self.session_store = session_store
         self.logger = logging.getLogger(__name__)
         
-        # Configuration
-        self.environment = os.getenv("ENVIRONMENT", "development")
-        self.basic_protection_enabled = os.getenv("BASIC_PROTECTION_ENABLED", "true").lower() == "true"
-        self.intelligent_protection_enabled = os.getenv("INTELLIGENT_PROTECTION_ENABLED", "true").lower() == "true"
+        # Get settings if not provided (unified settings system only)
+        if settings is None:
+            from faultmaven.config.settings import get_settings
+            settings = get_settings()
+        
+        # Configuration from unified settings system
+        self.settings = settings
+        self.environment = settings.server.environment
+        self.basic_protection_enabled = settings.protection.basic_protection_enabled
+        self.intelligent_protection_enabled = settings.protection.intelligent_protection_enabled
         
         # Middleware instances
         self.rate_limit_middleware = None
@@ -84,32 +90,42 @@ class ProtectionSystem:
 
     def _create_intelligent_config(self) -> ProtectionConfig:
         """Create intelligent protection configuration"""
-        return ProtectionConfig(
-            # Behavioral analysis
-            enable_behavioral_analysis=os.getenv("BEHAVIORAL_ANALYSIS_ENABLED", "true").lower() == "true",
-            behavioral_analysis_window=int(os.getenv("BEHAVIOR_ANALYSIS_WINDOW", "3600")),
-            behavioral_pattern_threshold=float(os.getenv("BEHAVIOR_PATTERN_THRESHOLD", "0.8")),
-            
-            # ML anomaly detection
-            enable_ml_detection=os.getenv("ML_ANOMALY_DETECTION_ENABLED", "true").lower() == "true",
-            ml_model_path=os.getenv("ML_MODEL_PATH", "/tmp/faultmaven_ml_models"),
-            ml_training_enabled=os.getenv("ML_TRAINING_ENABLED", "true").lower() == "true",
-            ml_online_learning=os.getenv("ML_ONLINE_LEARNING_ENABLED", "true").lower() == "true",
-            
-            # Reputation system
-            enable_reputation_system=os.getenv("REPUTATION_SYSTEM_ENABLED", "true").lower() == "true",
-            reputation_decay_rate=float(os.getenv("REPUTATION_DECAY_RATE", "0.05")),
-            reputation_recovery_threshold=float(os.getenv("REPUTATION_RECOVERY_THRESHOLD", "0.1")),
-            
-            # Smart circuit breakers
-            enable_smart_circuit_breakers=os.getenv("SMART_CIRCUIT_BREAKERS_ENABLED", "true").lower() == "true",
-            circuit_failure_threshold=int(os.getenv("CIRCUIT_FAILURE_THRESHOLD", "5")),
-            circuit_timeout_seconds=int(os.getenv("CIRCUIT_TIMEOUT_SECONDS", "60")),
-            
-            # System monitoring
-            monitoring_interval=int(os.getenv("PROTECTION_MONITORING_INTERVAL", "300")),
-            cleanup_interval=int(os.getenv("PROTECTION_CLEANUP_INTERVAL", "3600"))
-        )
+        if self.settings:
+            # Use settings-based configuration
+            return ProtectionConfig(
+                # Behavioral analysis
+                enable_behavioral_analysis=self.settings.protection.behavioral_analysis_enabled,
+                behavioral_analysis_window=self.settings.protection.behavior_analysis_window,
+                behavioral_pattern_threshold=self.settings.protection.behavior_pattern_threshold,
+                
+                # ML anomaly detection
+                enable_ml_detection=self.settings.protection.ml_anomaly_detection_enabled,
+                ml_model_path=self.settings.protection.ml_model_path,
+                ml_training_enabled=self.settings.protection.ml_training_enabled,
+                ml_online_learning=self.settings.protection.ml_online_learning_enabled,
+                
+                # Reputation system
+                enable_reputation_system=self.settings.protection.reputation_system_enabled,
+                reputation_decay_rate=self.settings.protection.reputation_decay_rate,
+                reputation_recovery_threshold=self.settings.protection.reputation_recovery_threshold,
+                
+                # Smart circuit breakers
+                enable_smart_circuit_breakers=self.settings.protection.smart_circuit_breakers_enabled,
+                circuit_failure_threshold=self.settings.protection.circuit_failure_threshold,
+                circuit_timeout_seconds=self.settings.protection.circuit_timeout_seconds,
+                
+                # System monitoring
+                monitoring_interval=self.settings.protection.protection_monitoring_interval,
+                cleanup_interval=self.settings.protection.protection_cleanup_interval
+            )
+        else:
+            # No fallback - unified settings system is mandatory
+            from faultmaven.models.exceptions import ProtectionSystemError
+            raise ProtectionSystemError(
+                "Protection system requires unified settings system to be available",
+                error_code="PROTECTION_CONFIG_ERROR",
+                context={"settings_available": self.settings is not None}
+            )
 
     async def setup_protection_system(self) -> Dict[str, Any]:
         """
@@ -425,7 +441,14 @@ def setup_protection_middleware(
     
     # If session store is provided, use unified protection system
     if session_store is not None:
-        protection_system = ProtectionSystem(app, session_store)
+        # Get settings for the protection system
+        try:
+            from faultmaven.config.settings import get_settings
+            protection_settings = get_settings()
+        except Exception:
+            protection_settings = None
+        
+        protection_system = ProtectionSystem(app, session_store, settings=protection_settings)
         protection_system.environment = environment
         
         # Override basic config if settings provided
@@ -683,7 +706,14 @@ async def setup_unified_protection_middleware(
     Returns:
         Setup results and configuration
     """
-    protection_system = ProtectionSystem(app, session_store)
+    # Get settings for the protection system
+    try:
+        from faultmaven.config.settings import get_settings
+        protection_settings = get_settings()
+    except Exception:
+        protection_settings = None
+    
+    protection_system = ProtectionSystem(app, session_store, settings=protection_settings)
     
     # Set environment
     protection_system.environment = environment

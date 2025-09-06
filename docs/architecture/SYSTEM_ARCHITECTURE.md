@@ -5,11 +5,12 @@
 FaultMaven implements a sophisticated clean architecture pattern with dependency injection, interface-based design, and comprehensive observability. The system features a modern v3.1.0 schema-driven API that provides intent-driven responses, evidence-based troubleshooting, and structured state management. Designed as a privacy-first, AI-powered troubleshooting assistant that scales horizontally and integrates seamlessly with existing DevOps toolchains.
 
 **Key Architectural Principles:**
-- **Intelligent Communication**: Advanced memory management, dynamic prompting, and strategic planning
-- **Context-Aware Processing**: Hierarchical memory systems with semantic understanding
-- **Proactive Problem Solving**: Planning-driven troubleshooting with multiple solution strategies
-- **Continuous Learning**: System improvement through conversation analysis and feedback
-- **Enterprise-Grade Reliability**: Comprehensive error handling, monitoring, and SLA tracking
+- **7-Component Agentic Framework**: Modern AI agent architecture with Plan→Execute→Observe→Re-plan cycles
+- **Interface-Based Dependencies**: Clean architecture with dependency injection and interface compliance
+- **Multi-Dimensional Query Processing**: Intent, complexity, domain, and urgency classification
+- **Persistent State Management**: Redis-backed conversation memory with execution planning
+- **Comprehensive Security**: PII protection, guardrails, and policy enforcement
+- **Enterprise-Grade Reliability**: Circuit breakers, error handling, and fallback strategies
 
 ## Architecture Diagram
 
@@ -35,8 +36,16 @@ graph TB
         DS[Data Service]
         KS[Knowledge Service]
         SS[Session Service]
-        MS[Memory Service]
-        PS[Planning Service]
+    end
+    
+    subgraph "Agentic Framework"
+        AWE[Business Logic & Workflow Engine]
+        ASM[State & Session Manager]
+        ACE[Query Classification Engine]
+        ATB[Tool & Skill Broker]
+        AGL[Guardrails & Policy Layer]
+        ARS[Response Synthesizer]
+        AEM[Error Handling & Fallback Manager]
     end
     
     subgraph "Core Domain"
@@ -46,8 +55,6 @@ graph TB
         TOOLS[Agent Tools]
         CLASS[Data Classifier]
         LOG_ANALYZER[Log Analyzer]
-        MEMORY[Memory Manager]
-        PLANNER[Planning Engine]
         PROMPT[Prompt Engine]
     end
     
@@ -89,20 +96,24 @@ graph TB
     DEP --> DS
     DEP --> KS
     DEP --> SS
-    DEP --> MS
-    DEP --> PS
     
     %% Core domain connections
     AS --> AGENT
-    AS --> MEMORY
-    AS --> PLANNER
-    AS --> PROMPT
+    AS --> AWE
     DS --> PROC
     DS --> CLASS
     DS --> LOG_ANALYZER
     KS --> KB
     SS --> PERSIST
-    MS --> CACHE
+    
+    %% Agentic framework connections
+    AWE --> ASM
+    AWE --> ACE
+    AWE --> ATB
+    AWE --> AGL
+    AWE --> ARS
+    AWE --> AEM
+    ASM --> CACHE
     
     %% Agent tools
     AGENT --> TOOLS
@@ -114,9 +125,13 @@ graph TB
     DS --> SEC
     KS --> PERSIST
     AGENT --> OBS
-    MEMORY --> PERSIST
-    PLANNER --> LLM
-    PROMPT --> LLM
+    AWE --> LLM
+    AWE --> OBS
+    ASM --> PERSIST
+    ACE --> LLM
+    ATB --> KB
+    AGL --> SEC
+    ARS --> LLM
     
     %% External service connections
     LLM --> OPENAI
@@ -145,8 +160,9 @@ graph TB
     
     class BE,API_CLIENT,CURL external
     class CORS,LOG,PERF,OPIK,ROUTE,DEP api
-    class AS,DS,KS,SS,MS,PS service
-    class AGENT,PROC,KB,TOOLS,CLASS,LOG_ANALYZER,MEMORY,PLANNER,PROMPT core
+    class AS,DS,KS,SS service
+    class AWE,ASM,ACE,ATB,AGL,ARS,AEM agentic
+    class AGENT,PROC,KB,TOOLS,CLASS,LOG_ANALYZER core
     class LLM,SEC,OBS,PERSIST,HEALTH,METRICS,ALERT,CACHE infra
     class REDIS,CHROMA,PRESIDIO,OPIK_SVC,OPENAI,ANTHROPIC,FIREWORKS storage
 ```
@@ -178,20 +194,38 @@ graph TB
 **Purpose**: Business logic orchestration and transaction management
 
 **Components**:
-- **Agent Service**: AI reasoning workflow orchestration with memory and planning
+- **Agent Service**: AI reasoning workflow orchestration with agentic framework integration
 - **Data Service**: File upload and data processing coordination
 - **Knowledge Service**: Document ingestion and retrieval management
 - **Session Service**: Multi-turn conversation state management
-- **Memory Service**: Hierarchical memory management and context consolidation
-- **Planning Service**: Strategic troubleshooting planning and problem decomposition
 
 **Key Files**:
-- `faultmaven/services/agent_service.py` - AI agent orchestration
-- `faultmaven/services/data_service.py` - Data processing workflows
-- `faultmaven/services/knowledge_service.py` - Knowledge base operations
-- `faultmaven/services/session_service.py` - Session lifecycle management
-- `faultmaven/services/memory_service.py` - Memory management and consolidation
-- `faultmaven/services/planning_service.py` - Strategic planning and decomposition
+- `faultmaven/services/agent.py` - AI agent orchestration
+- `faultmaven/services/data.py` - Data processing workflows
+- `faultmaven/services/knowledge.py` - Knowledge base operations
+- `faultmaven/services/session.py` - Session lifecycle management
+
+### Agentic Framework
+**Purpose**: Modern 7-component AI agent architecture implementing Plan→Execute→Observe→Re-plan cycles
+
+**Components**:
+- **Business Logic & Workflow Engine**: Main orchestrator managing all agentic components
+- **State & Session Manager**: Persistent memory backbone with execution planning
+- **Query Classification Engine**: Multi-dimensional query analysis (intent, complexity, domain, urgency)
+- **Tool & Skill Broker**: Dynamic capability discovery and orchestration
+- **Guardrails & Policy Layer**: Multi-layer security validation and PII protection
+- **Response Synthesizer**: Multi-source response assembly with quality validation
+- **Error Handling & Fallback Manager**: Comprehensive error recovery with circuit breakers
+
+**Key Files**:
+- `faultmaven/services/agentic/workflow_engine.py` - Main orchestrator
+- `faultmaven/services/agentic/state_manager.py` - Memory and state management
+- `faultmaven/services/agentic/classification_engine.py` - Query processing
+- `faultmaven/services/agentic/tool_broker.py` - Tool orchestration
+- `faultmaven/services/agentic/guardrails_layer.py` - Security and validation
+- `faultmaven/services/agentic/response_synthesizer.py` - Response assembly
+- `faultmaven/services/agentic/error_manager.py` - Error handling
+- `faultmaven/models/agentic.py` - Core interfaces and models
 
 **Design Patterns**:
 - Interface-based dependency injection
@@ -205,46 +239,38 @@ graph TB
 **Purpose**: Core business logic and domain models
 
 **Components**:
-- **AI Agent Core**: Multi-phase troubleshooting reasoning engine with planning capabilities
+- **AI Agent Core**: Multi-phase troubleshooting reasoning engine integrated with agentic framework
 - **Data Processing**: Log analysis and insight extraction
 - **Knowledge Base**: RAG-enabled document retrieval with semantic search
-- **Agent Tools**: Knowledge search and web search capabilities
+- **Agent Tools**: Knowledge search and web search capabilities  
 - **Data Classifier**: Automatic file type and content detection
 - **Log Analyzer**: Structured log parsing and anomaly detection
-- **Memory Manager**: Hierarchical memory system with consolidation and retrieval
-- **Planning Engine**: Strategic problem decomposition and solution planning
-- **Prompt Engine**: Dynamic prompt assembly and optimization
 
 **Key Files**:
 - `faultmaven/core/agent/` - AI reasoning engine
 - `faultmaven/core/processing/` - Data analysis algorithms
 - `faultmaven/core/knowledge/` - Knowledge management
-- `faultmaven/core/memory/` - Memory management system
-- `faultmaven/core/planning/` - Strategic planning engine
-- `faultmaven/core/prompting/` - Advanced prompt management
 - `faultmaven/tools/` - Agent tool implementations
 
-**AI Reasoning Doctrine**:
-1. **Memory Retrieval** - Access relevant conversation history and insights
-2. **Problem Analysis** - Systematic problem decomposition and classification
-3. **Strategic Planning** - Multi-phase solution development with alternatives
-4. **Evidence Gathering** - Knowledge base search and external research
-5. **Solution Validation** - Risk assessment and feasibility analysis
-6. **Response Planning** - Context-aware response structure and content
-7. **Memory Consolidation** - Extract insights and update long-term memory
+**AI Reasoning Doctrine** (5-Phase SRE):
+1. **Define Blast Radius** - Scope the impact and affected systems
+2. **Establish Timeline** - Understand when issues started and progression
+3. **Formulate Hypothesis** - Generate potential causes based on evidence
+4. **Validate Hypothesis** - Test theories with additional evidence gathering
+5. **Propose Solution** - Recommend fixes with risk assessment
 
 ### Infrastructure Layer
 **Purpose**: External service integrations and cross-cutting concerns
 
 **Components**:
-- **LLM Router**: Multi-provider routing with failover, caching, and prompt optimization
-- **Security/PII**: Data sanitization and privacy protection
-- **Observability**: Comprehensive tracing and metrics collection
-- **Persistence**: Database abstraction and session storage with optimized Redis clients
+- **LLM Router**: Multi-provider routing with failover and automatic provider selection
+- **Security/PII**: Data sanitization and privacy protection with Presidio integration
+- **Observability**: Comprehensive tracing and metrics collection with Opik integration
+- **Persistence**: Database abstraction and session storage with Redis and ChromaDB
 - **Health Monitor**: Component health checking and SLA tracking
 - **Metrics Collector**: Performance metrics aggregation
 - **Alert Manager**: Real-time alerting and notification
-- **Memory Cache**: Distributed memory caching with semantic search
+- **Cache**: Redis-backed caching for session and state management
 
 **Key Files**:
 - `faultmaven/infrastructure/llm/` - LLM provider implementations
@@ -1123,10 +1149,10 @@ except ServiceException as e:
 - **Encryption**: Data encrypted in transit and at rest
 - **Audit Logging**: Comprehensive audit trail for all operations
 
-### Authentication (Future)
-- **API Key Authentication**: Planned for production deployment
+### Authentication (Future Enhancement)
+- **API Key Authentication**: High priority for production deployment
 - **JWT Tokens**: Support for bearer token authentication
-- **Role-Based Access**: Planned RBAC implementation
+- **Role-Based Access**: Medium priority RBAC implementation
 - **Rate Limiting**: Per-authentication-context rate limiting
 
 ### Network Security
@@ -1165,4 +1191,184 @@ except ServiceException as e:
 - **Circuit Breakers**: Automatic failover for external service outages
 - **Memory Redundancy**: Distributed memory storage for high availability
 
-This architecture provides a robust, scalable, and maintainable foundation for the FaultMaven AI troubleshooting platform, with clear separation of concerns, comprehensive observability, and advanced intelligent communication capabilities.
+## Implementation Module Mapping
+
+This section documents how each architectural component maps to specific Python modules within the `/faultmaven/` directory structure.
+
+### API Layer Components
+
+**FastAPI Application & Middleware**
+- **Module**: `main.py` - FastAPI application setup, middleware registration, health endpoints
+- **Middleware**: `api/middleware/` - Request processing middleware
+  - `logging.py` - Request/response logging with correlation IDs
+  - `performance.py` - Performance tracking and metrics collection
+  - `intelligent_protection.py` - Multi-phase client protection system
+  - `trailing_slash.py` - URL normalization and redirect prevention
+  - `contract_probe.py` - API contract compliance monitoring
+
+**API Routes & Dependencies**
+- **Routes**: `api/v1/routes/` - RESTful endpoint implementations
+  - `case.py` - Case persistence and conversation management
+  - `data.py` - File upload and data processing endpoints  
+  - `knowledge.py` - Knowledge base operations and search
+  - `session.py` - Session lifecycle management
+  - `auth.py` - Authentication endpoints
+  - `jobs.py` - Background job management
+  - `protection.py` - Protection system monitoring
+- **Dependencies**: `api/v1/dependencies.py` - Dependency injection configuration
+
+### Service Layer Components
+
+**Core Business Services**
+- **Agent Service**: `services/agent.py` - AI agent orchestration and reasoning workflows
+- **Data Service**: `services/data.py` - File processing with memory-aware capabilities
+- **Knowledge Service**: `services/knowledge.py` - Document ingestion and semantic search
+- **Session Service**: `services/session.py` - Multi-turn conversation state management
+- **Case Service**: `services/case.py` - Case lifecycle and persistence management
+
+**Supporting Services**
+- **Gateway Service**: `services/gateway.py` - Request routing and processing coordination
+- **Job Service**: `services/job.py` - Background task management and scheduling
+- **Analytics Service**: `services/analytics_dashboard.py` - Metrics aggregation and analysis
+- **Confidence Service**: `services/confidence.py` - Response confidence scoring
+
+**Service Utilities**
+- **Base Service**: `services/base.py` - Abstract base class with common service patterns
+- **Case Converter**: `services/converters/case_converter.py` - Case model transformations
+
+### Agentic Framework Components
+
+**7-Component Architecture** (`services/agentic/`)
+- **Business Logic Workflow Engine**: `workflow_engine.py` - Main orchestrator implementing Plan→Execute→Observe→Re-plan cycles
+- **State & Session Manager**: `state_manager.py` - Persistent memory backbone with Redis storage
+- **Query Classification Engine**: `classification_engine.py` - Multi-dimensional query analysis (intent, complexity, domain, urgency)
+- **Tool & Skill Broker**: `tool_broker.py` - Dynamic capability discovery and orchestration
+- **Guardrails & Policy Layer**: `guardrails_layer.py` - Multi-layer security validation and PII protection
+- **Response Synthesizer**: `response_synthesizer.py` - Multi-source response assembly with quality validation
+- **Error Fallback Manager**: `error_manager.py` - Comprehensive error recovery with circuit breakers
+
+### Core Domain Components
+
+**AI Agent & Reasoning**
+- **Agent Core**: `core/agent/` - Multi-phase troubleshooting reasoning engine
+  - `agent.py` - LangGraph-based agent implementation
+  - `doctrine.py` - 5-phase SRE troubleshooting methodology
+- **Reasoning Engine**: `core/reasoning/enhanced_workflows.py` - Advanced reasoning workflows
+- **Planning System**: `core/planning/` - Strategic planning and problem decomposition
+  - `planning_engine.py` - Core planning orchestration
+  - `strategy_planner.py` - Strategic approach development
+  - `risk_assessor.py` - Risk analysis and mitigation planning
+  - `problem_decomposer.py` - Complex problem breakdown
+
+**Memory & Knowledge Management**
+- **Memory System**: `core/memory/` - Hierarchical memory management
+  - `memory_manager.py` - Memory lifecycle and consolidation
+  - `hierarchical_memory.py` - Multi-tier memory architecture
+- **Knowledge Base**: `core/knowledge/` - RAG-enabled document management
+  - `ingestion.py` - Document processing and embedding generation
+  - `advanced_retrieval.py` - Semantic search with context awareness
+
+**Data Processing**
+- **Classification**: `core/processing/classifier.py` - Automatic content type detection
+- **Log Analysis**: `core/processing/log_analyzer.py` - Structured log parsing and anomaly detection
+- **Pattern Learning**: `core/processing/pattern_learner.py` - ML-based pattern recognition
+
+**Orchestration & Coordination**
+- **Orchestrator**: `core/orchestrator/` - Service coordination and routing
+  - `router.py` - Request routing logic
+  - `skill_registry.py` - Skill management and discovery
+- **Troubleshooting Orchestrator**: `core/orchestration/troubleshooting_orchestrator.py` - End-to-end workflow coordination
+- **Loop Guard**: `core/loop_guard/loop_guard.py` - Circular dependency and infinite loop prevention
+- **Gateway**: `core/gateway/gateway.py` - Core gateway operations
+
+### Infrastructure Layer Components
+
+**External Service Integrations**
+- **LLM Router**: `infrastructure/llm/` - Multi-provider LLM routing
+  - `router.py` - Provider selection and failover logic
+  - `enhanced_router.py` - Advanced routing with optimization
+  - `providers/` - Individual LLM provider implementations
+    - `registry.py` - Centralized provider configuration
+    - `openai_provider.py`, `anthropic.py`, `fireworks_provider.py`, etc.
+- **Persistence Layer**: `infrastructure/persistence/` - Data storage abstractions
+  - `redis_session_store.py` - Session storage with Redis
+  - `redis_case_store.py` - Case persistence
+  - `chromadb_store.py` - Vector database integration
+- **Security & Privacy**: `infrastructure/security/` - Data protection and sanitization
+  - `redaction.py` - PII detection and redaction with Presidio integration
+  - `enhanced_security_assessment.py` - Comprehensive security analysis
+
+**Cross-Cutting Concerns**
+- **Observability**: `infrastructure/observability/` - Tracing and metrics collection
+  - `tracing.py` - Distributed tracing with Opik integration
+  - `metrics_collector.py` - Performance metrics aggregation
+  - `performance_monitoring.py` - Real-time performance analysis
+  - `startup.py` - Observability system initialization
+- **Logging System**: `infrastructure/logging/` - Unified logging architecture
+  - `config.py` - Logging configuration and setup
+  - `unified.py` - Centralized logging coordination
+  - `coordinator.py` - Log management and correlation
+- **Health Monitoring**: `infrastructure/health/` - Component health and SLA tracking
+  - `component_monitor.py` - Individual component health checks
+  - `sla_tracker.py` - Service level agreement monitoring
+
+**Protection & Monitoring**
+- **Protection System**: `infrastructure/protection/` - Multi-layer client protection
+  - `protection_coordinator.py` - Protection system orchestration
+  - `anomaly_detector.py` - ML-based anomaly detection
+  - `behavioral_analyzer.py` - User behavior pattern analysis
+  - `reputation_engine.py` - Client reputation management
+  - `smart_circuit_breaker.py` - Intelligent circuit breaking
+  - `rate_limiter.py` - Advanced rate limiting
+- **Monitoring & Alerting**: `infrastructure/monitoring/` - System monitoring
+  - `alerting.py` - Alert management and notification
+  - `apm_integration.py` - Application performance monitoring
+  - `sla_monitor.py` - SLA compliance monitoring
+  - `protection_monitoring.py` - Protection system monitoring
+
+**Caching & Performance**
+- **Intelligent Caching**: `infrastructure/caching/intelligent_cache.py` - Multi-tier caching system
+- **Model Cache**: `infrastructure/model_cache.py` - ML model caching and optimization
+- **Telemetry**: `infrastructure/telemetry/decision_recorder.py` - Decision tracking and analysis
+
+### Agent Tools & Capabilities
+
+**Tool System** (`tools/`)
+- **Knowledge Base Tool**: `knowledge_base.py` - RAG operations and document search
+- **Enhanced Knowledge Tool**: `enhanced_knowledge_tool.py` - Advanced knowledge capabilities
+- **Web Search Tool**: `web_search.py` - External search integration
+- **Tool Registry**: `registry.py` - Dynamic tool registration and management
+
+### Data Models & Interfaces
+
+**Interface Definitions** (`models/`)
+- **Core Interfaces**: `interfaces.py` - Service and infrastructure interfaces
+- **Case Interfaces**: `interfaces_case.py` - Case management interfaces  
+- **Agentic Interfaces**: `agentic.py` - Agentic framework component interfaces
+- **API Models**: `api.py` - v3.1.0 schema models (ResponseType, ViewState, Source)
+- **Domain Models**: Core business models and data structures
+- **Microservice Contracts**: `microservice_contracts/` - Inter-service communication contracts
+
+### Configuration & Dependency Injection
+
+**System Configuration**
+- **Settings Management**: `config/settings.py` - Unified configuration system
+- **Feature Flags**: `config/feature_flags.py` - Runtime feature toggles
+- **Protection Config**: `config/protection.py` - Protection system configuration
+
+**Dependency Injection**
+- **DI Container**: `container.py` - Centralized service management with health monitoring
+- **Service Registration**: Comprehensive service lifecycle management with 35+ registered services
+
+### Legacy & Skills
+
+**Skills System** (`skills/`) - Agent capability implementations
+- `clarifier.py` - Query clarification capabilities
+- `diagnoser.py` - Problem diagnosis skills
+- `validator.py` - Solution validation capabilities
+
+**Legacy Support**
+- `session_management.py` - Legacy session management (being phased out)
+- `exceptions.py` - Custom exception definitions
+
+This mapping provides a comprehensive view of how FaultMaven's architectural components are implemented across the Python module structure, enabling developers to quickly locate and understand the codebase organization.

@@ -21,7 +21,7 @@ from langchain.tools import BaseTool as LangChainBaseTool
 from pydantic import PrivateAttr
 
 from faultmaven.models.interfaces import BaseTool as IBaseTool, ToolResult
-from faultmaven.services.enhanced_knowledge_service import EnhancedKnowledgeService
+from faultmaven.services.knowledge import KnowledgeService
 from faultmaven.tools.registry import register_tool
 
 
@@ -69,10 +69,10 @@ class EnhancedKnowledgeTool(LangChainBaseTool, IBaseTool):
     - Comprehensive: {"query": "microservices architecture", "reasoning_type": "strategic", "depth": "exhaustive"}
     """
     
-    _enhanced_knowledge_service: EnhancedKnowledgeService = PrivateAttr()
+    _enhanced_knowledge_service: KnowledgeService = PrivateAttr()
     _logger: logging.Logger = PrivateAttr()
 
-    def __init__(self, enhanced_knowledge_service: EnhancedKnowledgeService):
+    def __init__(self, enhanced_knowledge_service: KnowledgeService):
         """Initialize Enhanced Knowledge Tool
         
         Args:
@@ -586,10 +586,10 @@ class KnowledgeDiscoveryTool(LangChainBaseTool, IBaseTool):
     Input: Document ID or concept to explore
     """
     
-    _enhanced_knowledge_service: EnhancedKnowledgeService = PrivateAttr()
+    _enhanced_knowledge_service: KnowledgeService = PrivateAttr()
     _logger: logging.Logger = PrivateAttr()
 
-    def __init__(self, enhanced_knowledge_service: EnhancedKnowledgeService):
+    def __init__(self, enhanced_knowledge_service: KnowledgeService):
         LangChainBaseTool.__init__(self)
         IBaseTool.__init__(self)
         self._enhanced_knowledge_service = enhanced_knowledge_service

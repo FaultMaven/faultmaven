@@ -19,8 +19,8 @@ Key Components:
 """
 
 from typing import List, Optional, Any
-import os
 import logging
+from faultmaven.config.settings import FaultMavenSettings, get_settings
 
 # Import interfaces with graceful fallback for testing environments
 try:
@@ -39,6 +39,31 @@ except ImportError as e:
     ICaseStore = Any
     ICaseService = Any
     INTERFACES_AVAILABLE = False
+# Agentic Framework Components
+try:
+    from faultmaven.services.agentic import (
+        AgentStateManager,
+        QueryClassificationEngine,
+        ToolSkillBroker,
+        GuardrailsPolicyLayer,
+        ResponseSynthesizer,
+        ErrorFallbackManager,
+        BusinessLogicWorkflowEngine
+    )
+    from faultmaven.models.agentic import (
+        IAgentStateManager,
+        IQueryClassificationEngine,
+        IToolSkillBroker,
+        IGuardrailsPolicyLayer,
+        IResponseSynthesizer,
+        IErrorFallbackManager,
+        IBusinessLogicWorkflowEngine
+    )
+    AGENTIC_AVAILABLE = True
+except ImportError as e:
+    logging.getLogger(__name__).warning(f"Agentic framework not available: {e}")
+    AGENTIC_AVAILABLE = False
+
 
 
 class DIContainer:
@@ -51,6 +76,7 @@ class DIContainer:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
             cls._instance._initializing = False  # Prevent re-entrant initialization
+            cls._instance.settings = None  # Will be initialized on first access
         return cls._instance
     
     def initialize(self):
@@ -66,7 +92,16 @@ class DIContainer:
             return
             
         self._initializing = True
-        logger.info("Initializing DI Container with interface-based dependencies")
+        logger.info("Initializing DI Container with unified settings system")
+        
+        # Initialize settings as the single source of truth
+        try:
+            self.settings = get_settings()
+            logger.info("✅ Unified settings system initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize settings system: {e}")
+            self._initializing = False
+            raise
         
         try:
             # Always try to create infrastructure layer first - even if interfaces not available
@@ -123,93 +158,110 @@ class DIContainer:
         logging.getLogger(__name__).info("Created minimal container for testing")
     
     def _create_infrastructure_layer(self):
-        """Create infrastructure components with interface implementations"""
-        # Initialize configuration manager first
-        try:
-            from faultmaven.config.configuration_manager import get_config
-            self.config = get_config()
-            logging.getLogger(__name__).info("✅ Configuration manager initialized")
-            
-            # Debug configuration during infrastructure creation
-            llm_config = self.config.get_llm_config()
-            logging.getLogger(__name__).info(f"🔍 Container: Configuration check during infrastructure creation:")
-            logging.getLogger(__name__).info(f"🔍 Container: CHAT_PROVIDER = {llm_config.get('provider', 'NOT_SET')}")
-            logging.getLogger(__name__).info(f"🔍 Container: LLM_REQUEST_TIMEOUT = {llm_config.get('timeout', 'NOT_SET')}")
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"Configuration manager not available: {e}")
-            # Fallback to direct environment variable access
-            import os
-            logging.getLogger(__name__).info(f"🔍 Container: Environment check during infrastructure creation:")
-            logging.getLogger(__name__).info(f"🔍 Container: CHAT_PROVIDER = {os.getenv('CHAT_PROVIDER', 'NOT_SET')}")
-            self.config = None
+        """Create infrastructure components with interface implementations using unified settings"""
+        logger = logging.getLogger(__name__)
+        
+        # Ensure settings are available
+        if not hasattr(self, 'settings') or self.settings is None:
+            self.settings = get_settings()
+        
+        # Log current configuration using settings system
+        logger.info(f"🔍 Container: Configuration check during infrastructure creation:")
+        logger.info(f"🔍 Container: CHAT_PROVIDER = {self.settings.llm.provider}")
+        logger.info(f"🔍 Container: LLM_REQUEST_TIMEOUT = {self.settings.llm.request_timeout}")
+        logger.info(f"🔍 Container: SKIP_SERVICE_CHECKS = {self.settings.server.skip_service_checks}")
+        
+        # Legacy config removed - now using unified settings system exclusively
         
         # Data sanitization for PII protection
         from faultmaven.infrastructure.security.redaction import DataSanitizer
-        if self.config:
-            security_config = self.config.get_security_config()
-            logging.getLogger(__name__).debug(f"Security config loaded: {security_config}")
-        self.sanitizer: ISanitizer = DataSanitizer()
+        logger.debug(f"Protection config loaded: enabled={self.settings.protection.protection_enabled}")
+        self.sanitizer: ISanitizer = DataSanitizer(settings=self.settings)
         
         # Distributed tracing (initialize first to set up environment variables)
         from faultmaven.infrastructure.observability.tracing import OpikTracer
-        if self.config:
-            observability_config = self.config.get_observability_config()
-            logging.getLogger(__name__).debug(f"Observability config loaded: {observability_config}")
-        self.tracer: ITracer = OpikTracer()
+        logger.debug(f"Observability config loaded: enabled={self.settings.observability.tracing_enabled}")
+        self.tracer: ITracer = OpikTracer(settings=self.settings)
         
         # LLM Provider (initialize after Opik tracer to ensure environment is properly set up)
         from faultmaven.infrastructure.llm.router import LLMRouter
+        # LLMRouter does not accept settings; it reads runtime config internally
         self.llm_provider: ILLMProvider = LLMRouter()
         
         # Core processing interfaces
         from faultmaven.core.processing.classifier import DataClassifier
         from faultmaven.core.processing.log_analyzer import LogProcessor
-        self.data_classifier = DataClassifier()  # Already implements IDataClassifier
-        self.log_processor = LogProcessor()  # Already implements ILogProcessor
+        self.data_classifier = DataClassifier()
+        self.log_processor = LogProcessor()
         
         # Vector store for knowledge base
         from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
         try:
-            self.vector_store: IVectorStore = ChromaDBVectorStore()
-            logging.getLogger(__name__).debug("Vector store initialized")
+            if not self.settings.server.skip_service_checks:
+                self.vector_store: IVectorStore = ChromaDBVectorStore()
+                logger.debug("Vector store initialized")
+            else:
+                logger.info("Skipping vector store initialization (SKIP_SERVICE_CHECKS=True)")
+                self.vector_store = None
         except Exception as e:
-            logging.getLogger(__name__).warning(f"Vector store initialization failed: {e}")
+            logger.warning(f"Vector store initialization failed: {e}")
             self.vector_store = None
         
         # Redis client for persistence (sessions, cases, KB metadata)
         try:
-            from faultmaven.infrastructure.redis_client import create_redis_client
-            self.redis_client = create_redis_client()
-            logging.getLogger(__name__).info("✅ Redis client initialized for application persistence")
+            if not self.settings.server.skip_service_checks:
+                from faultmaven.infrastructure.redis_client import create_redis_client
+                self.redis_client = create_redis_client()
+                logger.info("✅ Redis client initialized for application persistence")
+                
+            else:
+                logger.info("Skipping Redis client initialization (SKIP_SERVICE_CHECKS=True)")
+                self.redis_client = None
         except Exception as e:
-            logging.getLogger(__name__).warning(f"Redis client initialization failed: {e}")
+            logger.warning(f"Redis client initialization failed: {e}")
             self.redis_client = None
         
-        # Session store for session management (fail-fast)
+        # Session store for session management (fail-fast unless skipped)
         from faultmaven.infrastructure.persistence.redis_session_store import RedisSessionStore
         try:
-            self.session_store: ISessionStore = RedisSessionStore()
-            logging.getLogger(__name__).debug("Session store initialized")
+            if not self.settings.server.skip_service_checks:
+                self.session_store: ISessionStore = RedisSessionStore()
+                logger.debug("Session store initialized")
+            else:
+                logger.info("Skipping session store initialization (SKIP_SERVICE_CHECKS=True)")
+                self.session_store = None
         except Exception as e:
-            logging.getLogger(__name__).error(f"Session store initialization failed; aborting startup: {e}")
-            raise
+            # In production, Redis session store is a hard dependency - fail fast
+            if self.settings.is_production() and not self.settings.server.skip_service_checks:
+                logger.error(f"CRITICAL: Redis session store required in production but initialization failed: {e}")
+                logger.error("Production deployment cannot continue without Redis session store")
+                raise RuntimeError(f"Redis session store required in production: {e}") from e
+            
+            # Only fall back to minimal service in non-production environments
+            logger.warning(f"Redis session store initialization failed in non-production environment; continuing with in-memory minimal service: {e}")
+            self.session_store = None
         
         # Case store for case persistence (optional feature)
         try:
             from faultmaven.infrastructure.persistence.redis_case_store import RedisCaseStore
-            self.case_store: ICaseStore = RedisCaseStore()
-            logging.getLogger(__name__).debug("Case store initialized")
+            if not self.settings.server.skip_service_checks:
+                self.case_store: ICaseStore = RedisCaseStore(redis_client=self.redis_client)
+                logger.debug("Case store initialized")
+            else:
+                logger.debug("Case store skipped (SKIP_SERVICE_CHECKS=True)")
+                self.case_store = None
         except ImportError:
-            logging.getLogger(__name__).debug("Case store not available - case persistence disabled")
+            logger.debug("Case store not available - case persistence disabled")
             self.case_store = None
         except Exception as e:
-            logging.getLogger(__name__).warning(f"Case store initialization failed: {e}")
+            logger.warning(f"Case store initialization failed: {e}")
             self.case_store = None
         
-        logging.getLogger(__name__).debug("Infrastructure layer created")
+        logger.debug("Infrastructure layer created with settings-based dependency injection")
     
     def _create_tools_layer(self):
-        """Create tools using the registry pattern"""
+        """Create tools using the registry pattern with settings injection"""
+        logger = logging.getLogger(__name__)
         from faultmaven.tools.registry import tool_registry
         from faultmaven.core.knowledge.ingestion import KnowledgeIngester
         
@@ -219,71 +271,100 @@ class DIContainer:
         
         # Create knowledge ingester for tools that need it
         try:
-            ingester = KnowledgeIngester()
+            if not self.settings.server.skip_service_checks:
+                ingester = KnowledgeIngester(settings=self.settings)
+            else:
+                logger.debug("KnowledgeIngester skipped (SKIP_SERVICE_CHECKS=True)")
+                ingester = None
         except Exception as e:
-            logging.getLogger(__name__).warning(f"KnowledgeIngester creation failed: {e}")
+            logger.warning(f"KnowledgeIngester creation failed: {e}")
             ingester = None
         
-        # Create all registered tools
+        # Create all registered tools with settings
         self.tools: List[BaseTool] = tool_registry.create_all_tools(
-            knowledge_ingester=ingester
+            knowledge_ingester=ingester,
+            settings=self.settings
         )
         
-        logging.getLogger(__name__).debug(
+        logger.debug(
             f"Tools layer created with {len(self.tools)} tools: {tool_registry.list_tools()}"
         )
     
     def _create_service_layer(self):
         """Create service layer with interface dependencies"""
-        from faultmaven.services.agent_service import AgentService
-        from faultmaven.services.data_service import DataService  
-        from faultmaven.services.knowledge_service import KnowledgeService
-        from faultmaven.services.session_service import SessionService
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        from faultmaven.services.agent import AgentService
+        from faultmaven.services.data import DataService  
+        from faultmaven.services.knowledge import KnowledgeService
+        from faultmaven.services.session import SessionService
         
         # Case Service - Case persistence and management (optional)
         try:
-            from faultmaven.services.case_service import CaseService
+            from faultmaven.services.case import CaseService
             if hasattr(self, 'case_store') and self.case_store:
                 self.case_service: ICaseService = CaseService(
                     case_store=self.case_store,
-                    session_store=self.get_session_store()
+                    session_store=self.get_session_store(),
+                    settings=self.settings
                 )
-                logging.getLogger(__name__).debug("Case service initialized")
+                logger.debug("Case service initialized")
             else:
-                self.case_service = None
-                logging.getLogger(__name__).debug("Case service disabled - case store not available")
+                # Use cached minimal case service to maintain state across requests
+                self.case_service = self._create_minimal_case_service()
+                logger.debug("Case service using minimal in-memory implementation - case store not available")
         except ImportError:
-            logging.getLogger(__name__).debug("Case service not available")
-            self.case_service = None
+            logger.debug("Case service not available, using cached minimal implementation")
+            # Use cached minimal case service to maintain state across requests
+            self.case_service = self._create_minimal_case_service()
         except Exception as e:
-            logging.getLogger(__name__).warning(f"Case service initialization failed: {e}")
-            self.case_service = None
+            logger.warning(f"Case service initialization failed: {e}, using cached minimal implementation")
+            # Use cached minimal case service to maintain state across requests  
+            self.case_service = self._create_minimal_case_service()
 
         # Session Service - Session management and validation
         try:
-            from faultmaven.session_management import SessionManager
-            session_manager = SessionManager(session_store=self.get_session_store())
-            self.session_service = SessionService(
-                session_manager=session_manager,
-                case_service=self.case_service  # Inject case service for enhanced features
-            )
+            # If no real session store is available, use minimal in-memory service
+            if self.get_session_store() is None:
+                logging.getLogger(__name__).info("Session store unavailable; using minimal in-memory session service")
+                self.session_service = self._create_minimal_session_service()
+            else:
+                # Create session service directly with session store
+                self.session_service = SessionService(
+                    session_store=self.get_session_store(),
+                    case_service=self.case_service,  # Inject case service for enhanced features
+                    settings=self.settings
+                )
         except Exception:
             # Create a minimal session service for testing
             self.session_service = self._create_minimal_session_service()
             
-        # Agent Service - Core troubleshooting orchestration
+        # Agentic Framework Services - Must be created before AgentService
+        self._create_agentic_framework_services()
+            
+        # Agent Service - Core troubleshooting orchestration with Agentic Framework
         self.agent_service = AgentService(
             llm_provider=self.get_llm_provider(),
             tools=self.get_tools(),
             tracer=self.get_tracer(),
             sanitizer=self.get_sanitizer(),
-            session_service=self.session_service
+            session_service=self.session_service,
+            settings=self.settings,
+            # Agentic Framework Components (required - direct access during initialization)
+            business_logic_workflow_engine=self.business_logic_workflow_engine,
+            query_classification_engine=self.query_classification_engine,
+            tool_skill_broker=self.tool_skill_broker,
+            guardrails_policy_layer=self.guardrails_policy_layer,
+            response_synthesizer=self.response_synthesizer,
+            error_fallback_manager=self.error_fallback_manager,
+            agent_state_manager=self.agent_state_manager
         )
         
         # Data Service - Data processing and analysis
         # Create simple storage backend for development
-        from faultmaven.services.data_service import SimpleStorageBackend
-        storage_backend = SimpleStorageBackend()
+        from faultmaven.services.data import SimpleStorageBackend
+        storage_backend = SimpleStorageBackend(settings=self.settings)
         
         self.data_service = DataService(
             data_classifier=self.get_data_classifier(),
@@ -291,16 +372,21 @@ class DIContainer:
             sanitizer=self.get_sanitizer(),
             tracer=self.get_tracer(),
             storage_backend=storage_backend,
-            session_service=self.session_service
+            session_service=self.session_service,
+            settings=self.settings
         )
         
         # Knowledge Service - Knowledge base operations
         # Create knowledge ingester and vector store placeholders
         from faultmaven.core.knowledge.ingestion import KnowledgeIngester
         try:
-            knowledge_ingester = KnowledgeIngester()
+            if not self.settings.server.skip_service_checks:
+                knowledge_ingester = KnowledgeIngester(settings=self.settings)
+            else:
+                logger.debug("KnowledgeIngester skipped for KnowledgeService (SKIP_SERVICE_CHECKS=True)")
+                knowledge_ingester = None
         except Exception as e:
-            logging.getLogger(__name__).warning(f"KnowledgeIngester creation failed: {e}")
+            logger.warning(f"KnowledgeIngester creation failed: {e}")
             knowledge_ingester = None
         
         # Always create KnowledgeService; it can operate without an ingester for API upload path
@@ -310,6 +396,7 @@ class DIContainer:
             tracer=self.get_tracer(),
             vector_store=self.get_vector_store(),
             redis_client=getattr(self, 'redis_client', None),
+            settings=self.settings
         )
         
         # Phase 2: Advanced Intelligence Services
@@ -324,116 +411,22 @@ class DIContainer:
         # Phase A: Microservice Foundation Services
         self._create_microservice_foundation_services()
             
-        logging.getLogger(__name__).debug("Service layer created")
+        logger.debug("Service layer created with settings-based dependency injection")
 
-        # Modular-monolith skill graph registration
-        try:
-            from faultmaven.core.orchestrator.skill_registry import SkillRegistry
-            from faultmaven.core.orchestrator.router import Router as SkillRouter
-            from faultmaven.skills.clarifier import ClarifierSkill
-            from faultmaven.skills.diagnoser import DiagnoserSkill
-            from faultmaven.skills.validator import ValidatorSkill
-            from faultmaven.core.confidence.aggregator import ConfidenceAggregator
-            from faultmaven.core.loop_guard.loop_guard import LoopGuard
-            
-            # Create basic skills without retrieval service dependency for now
-            skills = [
-                ClarifierSkill(),
-                DiagnoserSkill(),
-                ValidatorSkill(),
-            ]
-            self.skill_registry = SkillRegistry(skills=skills)
-            self.skill_router = SkillRouter()
-            self.confidence = ConfidenceAggregator()
-            self.loop_guard = LoopGuard()
-            
-            # Create in-memory bus if available
-            try:
-                from faultmaven.bus.in_memory_bus import InMemoryBus
-                self.event_bus = InMemoryBus()
-            except ImportError:
-                logging.getLogger(__name__).debug("InMemoryBus not available, skipping")
-                
-            logging.getLogger(__name__).info("✅ SkillRegistry and Router initialized (modular monolith)")
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"Failed to initialize skill graph components: {e}")
-            import traceback
-            logging.getLogger(__name__).debug(f"Skill graph error details: {traceback.format_exc()}")
+        # Legacy Skills system completely removed - Pure Agentic Framework only
+        logging.getLogger(__name__).info("✅ Legacy Skills system removed - Pure Agentic Framework")
     
     def _create_advanced_intelligence_services(self):
-        """Create Phase 2 advanced intelligence services (Memory & Planning)"""
-        try:
-            # Memory Service - Intelligent conversation context management
-            from faultmaven.services.memory_service import MemoryService
-            self.memory_service = MemoryService(
-                llm_provider=self.get_llm_provider()
-            )
-            logging.getLogger(__name__).debug("Memory service created")
-            
-            # Planning Service - Strategic planning and problem decomposition
-            from faultmaven.services.planning_service import PlanningService
-            self.planning_service = PlanningService(
-                llm_provider=self.get_llm_provider(),
-                memory_service=self.memory_service
-            )
-            logging.getLogger(__name__).debug("Planning service created")
-            
-            # Enhanced Agent Service - Integrates memory and planning
-            from faultmaven.services.enhanced_agent_service import EnhancedAgentService
-            self.enhanced_agent_service = EnhancedAgentService(
-                llm_provider=self.get_llm_provider(),
-                tools=self.get_tools(),
-                tracer=self.get_tracer(),
-                sanitizer=self.get_sanitizer(),
-                memory_service=self.memory_service,
-                planning_service=self.planning_service,
-                session_service=self.session_service
-            )
-            logging.getLogger(__name__).debug("Enhanced agent service created")
-            
-            # Orchestration Service - Multi-step troubleshooting workflow management
-            from faultmaven.services.orchestration_service import OrchestrationService
-            from faultmaven.services.reasoning_service import ReasoningService
-            from faultmaven.services.enhanced_knowledge_service import EnhancedKnowledgeService
-            
-            # Create supporting services for orchestration
-            reasoning_service = ReasoningService(
-                llm_provider=self.get_llm_provider(),
-                memory_service=self.memory_service,
-                planning_service=self.planning_service
-            )
-            
-            enhanced_knowledge_service = EnhancedKnowledgeService(
-                llm_provider=self.get_llm_provider(),
-                memory_service=self.memory_service,
-                vector_store=self.get_vector_store(),
-                sanitizer=self.get_sanitizer(),
-                tracer=self.get_tracer()
-            )
-            
-            self.orchestration_service = OrchestrationService(
-                memory_service=self.memory_service,
-                planning_service=self.planning_service,
-                reasoning_service=reasoning_service,
-                enhanced_knowledge_service=enhanced_knowledge_service,
-                llm_provider=self.get_llm_provider(),
-                tracer=self.get_tracer()
-            )
-            logging.getLogger(__name__).debug("Orchestration service created")
-            
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"Advanced intelligence services creation failed: {e}")
-            # Set fallback services
-            self.memory_service = None
-            self.planning_service = None
-            self.enhanced_agent_service = None
-            self.orchestration_service = None
+        """Legacy advanced intelligence services removed - replaced by Agentic Framework"""
+        # Memory and Planning services replaced by AgentStateManager and BusinessLogicWorkflowEngine
+        logging.getLogger(__name__).info("✅ Advanced intelligence services replaced by Agentic Framework")
+        # All functionality now handled by the 7-component Agentic Framework
     
     def _create_performance_monitoring_services(self):
         """Create Phase 2 performance monitoring and optimization services"""
         try:
             # Metrics Collector - Advanced performance metrics collection
-            from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
+            from faultmaven.infrastructure.monitoring.metrics_collector import MetricsCollector
             self.metrics_collector = MetricsCollector(
                 tracer=self.get_tracer(),
                 buffer_size=10000,
@@ -450,13 +443,13 @@ class DIContainer:
                 l2_ttl_seconds=3600,
                 l3_ttl_seconds=86400,
                 metrics_collector=self.metrics_collector,
-                redis_client=None,  # Would connect to Redis in production
+                redis_client=self.get_redis_client(),
                 enable_analytics=True
             )
             logging.getLogger(__name__).debug("Intelligent cache created")
             
             # Analytics Dashboard Service - System performance insights
-            from faultmaven.services.analytics_dashboard_service import AnalyticsDashboardService
+            from faultmaven.services.analytics_dashboard import AnalyticsDashboardService
             self.analytics_dashboard_service = AnalyticsDashboardService(
                 metrics_collector=self.metrics_collector,
                 intelligent_cache=self.intelligent_cache,
@@ -465,7 +458,7 @@ class DIContainer:
             logging.getLogger(__name__).debug("Analytics dashboard service created")
             
             # Performance Optimization Service - Proactive optimization
-            from faultmaven.services.performance_optimization_service import PerformanceOptimizationService
+            from faultmaven.services.performance_optimization import PerformanceOptimizationService
             self.performance_optimization_service = PerformanceOptimizationService(
                 metrics_collector=self.metrics_collector,
                 intelligent_cache=self.intelligent_cache,
@@ -540,16 +533,17 @@ class DIContainer:
             logging.getLogger(__name__).debug("Enhanced security assessment created")
             
             # Enhanced Data Service - Comprehensive data processing with all enhancements
-            from faultmaven.services.enhanced_data_service import EnhancedDataService
-            self.enhanced_data_service = EnhancedDataService(
-                memory_service=self.get_memory_service(),
+            from faultmaven.services.data import DataService
+            self.enhanced_data_service = DataService(
                 data_classifier=self.enhanced_data_classifier,
                 log_processor=self.enhanced_log_processor,
                 sanitizer=self.get_sanitizer(),
                 tracer=self.get_tracer(),
                 storage_backend=None,  # Will use default storage
                 session_service=self.get_session_service(),
-                pattern_learner=self.pattern_learner
+                settings=self.settings,
+                memory_service=self.get_memory_service(),  # Enhanced capability
+                pattern_learner=self.pattern_learner  # Enhanced capability
             )
             logging.getLogger(__name__).debug("Enhanced data service created")
             
@@ -566,43 +560,59 @@ class DIContainer:
         """Create Phase A microservice foundation services"""
         try:
             # Microservice Session Service - Enhanced session/case management
-            from faultmaven.services.microservice_session_service import MicroserviceSessionService
-            self.microservice_session_service = MicroserviceSessionService(
-                base_session_service=self.get_session_service(),
-                tracer=self.get_tracer()
-            )
-            logging.getLogger(__name__).debug("Microservice session service created")
+            try:
+                from faultmaven.services.microservice_session import MicroserviceSessionService
+                self.microservice_session_service = MicroserviceSessionService(
+                    base_session_service=self.get_session_service(),
+                    tracer=self.get_tracer()
+                )
+                logging.getLogger(__name__).debug("Microservice session service created")
+            except ImportError as e:
+                logging.getLogger(__name__).debug(f"Microservice session service import failed: {e}")
+                self.microservice_session_service = None
             
             # Global Confidence Service - Calibrated confidence scoring
-            from faultmaven.services.confidence_service import GlobalConfidenceService
-            self.confidence_service = GlobalConfidenceService(
-                calibration_method="platt",
-                model_version="conf-v1",
-                hysteresis_up_turns=1,
-                hysteresis_down_turns=2
-            )
-            logging.getLogger(__name__).debug("Global confidence service created")
+            try:
+                from faultmaven.services.confidence import GlobalConfidenceService
+                self.confidence_service = GlobalConfidenceService(
+                    calibration_method="platt",
+                    model_version="conf-v1",
+                    hysteresis_up_turns=1,
+                    hysteresis_down_turns=2
+                )
+                logging.getLogger(__name__).debug("Global confidence service created")
+            except ImportError as e:
+                logging.getLogger(__name__).debug(f"Confidence service import failed: {e}")
+                self.confidence_service = None
             
             # Policy/Safety Service - Action classification and safety
-            from faultmaven.services.policy_service import PolicySafetyService
-            self.policy_service = PolicySafetyService(
-                enforcement_mode="strict",
-                enable_compliance_checking=True,
-                auto_approve_low_risk=False
-            )
-            logging.getLogger(__name__).debug("Policy/safety service created")
+            try:
+                from faultmaven.services.policy import PolicySafetyService
+                self.policy_service = PolicySafetyService(
+                    enforcement_mode="strict",
+                    enable_compliance_checking=True,
+                    auto_approve_low_risk=False
+                )
+                logging.getLogger(__name__).debug("Policy/safety service created")
+            except ImportError as e:
+                logging.getLogger(__name__).debug(f"Policy service import failed: {e}")
+                self.policy_service = None
             
             # Unified Retrieval Service - Federated knowledge access
-            from faultmaven.services.unified_retrieval_service import UnifiedRetrievalService
-            self.unified_retrieval_service = UnifiedRetrievalService(
-                knowledge_service=self.get_knowledge_service(),
-                vector_store=self.get_vector_store(),
-                sanitizer=self.get_sanitizer(),
-                tracer=self.get_tracer(),
-                enable_caching=True,
-                cache_ttl_seconds=3600
-            )
-            logging.getLogger(__name__).debug("Unified retrieval service created")
+            try:
+                from faultmaven.services.unified_retrieval import UnifiedRetrievalService
+                self.unified_retrieval_service = UnifiedRetrievalService(
+                    knowledge_service=self.get_knowledge_service(),
+                    vector_store=self.get_vector_store(),
+                    sanitizer=self.get_sanitizer(),
+                    tracer=self.get_tracer(),
+                    enable_caching=True,
+                    cache_ttl_seconds=3600
+                )
+                logging.getLogger(__name__).debug("Unified retrieval service created")
+            except ImportError as e:
+                logging.getLogger(__name__).debug(f"Unified retrieval service import failed: {e}")
+                self.unified_retrieval_service = None
             
             # Decision Records & Telemetry Service - Observability infrastructure
             from faultmaven.infrastructure.telemetry.decision_recorder import DecisionRecorder
@@ -633,44 +643,44 @@ class DIContainer:
     def _create_phase_b_orchestration_services(self):
         """Create Phase B orchestration and coordination services"""
         try:
-            # Gateway Processing Service - Pre-processing and filtering
-            from faultmaven.services.gateway_service import GatewayProcessingService
-            self.gateway_service = GatewayProcessingService(
-                llm_provider=self.get_llm_provider(),
-                sanitizer=self.get_sanitizer(),
-                tracer=self.get_tracer(),
-                clarity_threshold=0.6,
-                reality_threshold=0.8,
-                enable_assumption_extraction=True
-            )
-            logging.getLogger(__name__).debug("Gateway processing service created")
+            # Gateway Service - Request processing and routing
+            try:
+                from faultmaven.services.gateway import GatewayProcessingService
+                self.gateway_service = GatewayProcessingService(
+                    llm_provider=self.get_llm_provider(),
+                    sanitizer=self.get_sanitizer(),
+                    tracer=self.get_tracer(),
+                    settings=self.settings
+                )
+                logging.getLogger(__name__).debug("Gateway processing service created")
+            except ImportError as e:
+                logging.getLogger(__name__).debug(f"Gateway service import failed: {e}")
+                self.gateway_service = None
             
-            # LoopGuard Service - Loop detection and recovery
-            from faultmaven.services.loop_guard_service import LoopGuardService
-            self.loop_guard_service = LoopGuardService(
-                embedding_similarity_threshold=0.85,
-                confidence_slope_threshold=0.05,
-                novelty_threshold=0.3,
-                debounce_required=2,
-                state_ttl_hours=24,
-                cooldown_minutes=10
-            )
-            logging.getLogger(__name__).debug("LoopGuard service created")
+            # Loop Guard Service - Prevents infinite processing loops
+            try:
+                from faultmaven.core.loop_guard.loop_guard import LoopGuard
+                self.loop_guard_service = LoopGuard()
+                logging.getLogger(__name__).debug("Loop guard service created")
+            except ImportError as e:
+                logging.getLogger(__name__).debug(f"Loop guard service import failed: {e}")
+                self.loop_guard_service = None
             
-            # Orchestrator/Router Service - Central coordination and routing
-            from faultmaven.services.orchestrator_service import OrchestratorService
-            self.orchestrator_service = OrchestratorService(
-                agent_service=self.get_agent_service(),
-                gateway_service=self.gateway_service,
-                confidence_service=getattr(self, 'confidence_service', None),
-                loop_guard_service=self.loop_guard_service,
-                decision_recorder=getattr(self, 'decision_recorder', None),
-                tracer=self.get_tracer(),
-                exploration_epsilon=0.05,
-                max_agents_per_turn=2,
-                circuit_breaker_enabled=True
-            )
-            logging.getLogger(__name__).debug("Orchestrator service created")
+            # Orchestrator Service - Multi-service coordination
+            try:
+                from faultmaven.core.orchestration.troubleshooting_orchestrator import TroubleshootingOrchestrator
+                self.orchestrator_service = TroubleshootingOrchestrator(
+                    agent_service=self.get_agent_service(),
+                    data_service=self.get_data_service(),
+                    knowledge_service=self.get_knowledge_service(),
+                    session_service=self.get_session_service(),
+                    tracer=self.get_tracer(),
+                    settings=self.settings
+                )
+                logging.getLogger(__name__).debug("Troubleshooting orchestrator service created")
+            except ImportError as e:
+                logging.getLogger(__name__).debug(f"Orchestrator service import failed: {e}")
+                self.orchestrator_service = None
             
         except Exception as e:
             logging.getLogger(__name__).warning(f"Phase B orchestration services creation failed: {e}")
@@ -678,8 +688,116 @@ class DIContainer:
             self.gateway_service = None
             self.loop_guard_service = None
             self.orchestrator_service = None
-    
-    # Public getter methods for dependency injection
+
+    def _create_agentic_framework_services(self):
+        """Create Agentic Framework Services - Next-generation agent architecture"""
+        logger = logging.getLogger(__name__)
+        
+        if not AGENTIC_AVAILABLE:
+            logger.warning("Agentic Framework not available - creating placeholder services")
+            # Create placeholder services for backward compatibility
+            self.business_logic_workflow_engine = None
+            self.agent_state_manager = None
+            self.query_classification_engine = None
+            self.tool_skill_broker = None
+            self.guardrails_policy_layer = None
+            self.response_synthesizer = None
+            self.error_fallback_manager = None
+            return
+        
+        try:
+            # 1. Agent State Manager - Persistent memory and execution state management
+            try:
+                self.agent_state_manager: IAgentStateManager = AgentStateManager(
+                    session_store=self.get_session_store(),
+                    tracer=self.get_tracer()
+                )
+                logger.debug("✅ Agent State Manager initialized")
+            except Exception as e:
+                logger.warning(f"Agent State Manager initialization failed: {e}")
+                self.agent_state_manager = None
+            
+            # 3. Query Classification Engine - Intelligent query processing and routing
+            try:
+                self.query_classification_engine: IQueryClassificationEngine = QueryClassificationEngine(
+                    llm_provider=self.get_llm_provider(),
+                    tracer=self.get_tracer()
+                )
+                logger.debug("✅ Query Classification Engine initialized")
+            except Exception as e:
+                logger.warning(f"Query Classification Engine initialization failed: {e}")
+                self.query_classification_engine = None
+            
+            # 4. Tool & Skill Broker - Dynamic orchestration of tools and skills
+            try:
+                self.tool_skill_broker: IToolSkillBroker = ToolSkillBroker(
+                    tracer=self.get_tracer()
+                )
+                logger.debug("✅ Tool Skill Broker initialized")
+            except Exception as e:
+                logger.warning(f"Tool Skill Broker initialization failed: {e}")
+                self.tool_skill_broker = None
+            
+            # 5. Guardrails & Policy Layer - Safety, security, and compliance enforcement
+            try:
+                self.guardrails_policy_layer: IGuardrailsPolicyLayer = GuardrailsPolicyLayer()
+                logger.debug("✅ Guardrails Policy Layer initialized")
+            except Exception as e:
+                logger.warning(f"Guardrails Policy Layer initialization failed: {e}")
+                self.guardrails_policy_layer = None
+            
+            # 6. Response Synthesizer - Intelligent response generation and formatting
+            try:
+                self.response_synthesizer: IResponseSynthesizer = ResponseSynthesizer()
+                logger.debug("✅ Response Synthesizer initialized")
+            except Exception as e:
+                logger.warning(f"Response Synthesizer initialization failed: {e}")
+                self.response_synthesizer = None
+            
+            # 7. Error Handling & Fallback Manager - Robust error recovery and graceful degradation
+            try:
+                self.error_fallback_manager: IErrorFallbackManager = ErrorFallbackManager()
+                logger.debug("✅ Error Fallback Manager initialized")
+            except Exception as e:
+                logger.warning(f"Error Fallback Manager initialization failed: {e}")
+                self.error_fallback_manager = None
+            
+            # 7. Business Logic & Workflow Engine - Plan-execute-observe-adapt workflow orchestration
+            # Initialize last since it depends on all other agentic components
+            try:
+                self.business_logic_workflow_engine: IBusinessLogicWorkflowEngine = BusinessLogicWorkflowEngine(
+                    state_manager=getattr(self, 'agent_state_manager', None),
+                    classification_engine=getattr(self, 'query_classification_engine', None),
+                    tool_broker=getattr(self, 'tool_skill_broker', None),
+                    guardrails_layer=getattr(self, 'guardrails_policy_layer', None),
+                    response_synthesizer=getattr(self, 'response_synthesizer', None),
+                    error_manager=getattr(self, 'error_fallback_manager', None)
+                )
+                logger.debug("✅ Business Logic Workflow Engine initialized")
+            except Exception as e:
+                logger.warning(f"Business Logic Workflow Engine initialization failed: {e}")
+                self.business_logic_workflow_engine = None
+            
+            logger.info("🚀 Agentic Framework Services initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Critical error during Agentic Framework initialization: {e}")
+            import traceback
+            logger.debug(f"Agentic Framework error details: {traceback.format_exc()}")
+            # Set all services to None on critical failure
+            self.business_logic_workflow_engine = None
+            self.agent_state_manager = None
+            self.query_classification_engine = None
+            self.tool_skill_broker = None
+            self.guardrails_policy_layer = None
+            self.response_synthesizer = None
+            self.error_fallback_manager = None
+
+    def get_settings(self) -> FaultMavenSettings:
+        """Get the unified settings instance"""
+        if not hasattr(self, 'settings') or self.settings is None:
+            self.settings = get_settings()
+        return self.settings
     
     def get_agent_service(self):
         """Get the agent service with all dependencies injected"""
@@ -714,46 +832,6 @@ class DIContainer:
             return self._create_minimal_knowledge_service()
         return knowledge_service
     
-    def get_memory_service(self):
-        """Get the memory service with all dependencies injected"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Memory service requested but container not initialized")
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        return getattr(self, 'memory_service', None)
-    
-    def get_planning_service(self):
-        """Get the planning service with all dependencies injected"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Planning service requested but container not initialized")
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        return getattr(self, 'planning_service', None)
-    
-    def get_enhanced_agent_service(self):
-        """Get the enhanced agent service with memory and planning integration"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Enhanced agent service requested but container not initialized")
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        enhanced_service = getattr(self, 'enhanced_agent_service', None)
-        if enhanced_service is None:
-            # Fallback to regular agent service if enhanced is not available
-            return self.get_agent_service()
-        return enhanced_service
-    
-    def get_orchestration_service(self):
-        """Get the orchestration service for multi-step troubleshooting workflows"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Orchestration service requested but container not initialized")
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        return getattr(self, 'orchestration_service', None)
-    
     def get_metrics_collector(self):
         """Get the metrics collector service"""
         if not self._initialized:
@@ -781,15 +859,6 @@ class DIContainer:
                 self.initialize()
         return getattr(self, 'analytics_dashboard_service', None)
     
-    def get_performance_optimization_service(self):
-        """Get the performance optimization service"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Performance optimization service requested but container not initialized")
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        return getattr(self, 'performance_optimization_service', None)
-    
     def get_sla_monitor(self):
         """Get the SLA monitor service"""
         if not self._initialized:
@@ -807,6 +876,49 @@ class DIContainer:
             if not getattr(self, '_initializing', False):
                 self.initialize()
         return getattr(self, 'performance_monitor', None)
+    
+    # Phase 2: Advanced Intelligence Services Getters
+    
+    def get_memory_service(self):
+        """Get the memory service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Memory service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'memory_service', None)
+    
+    def get_planning_service(self):
+        """Get the planning service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Planning service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'planning_service', None)
+    
+    def get_enhanced_agent_service(self):
+        """Get the enhanced agent service with memory and planning capabilities"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Enhanced agent service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        enhanced_service = getattr(self, 'enhanced_agent_service', None)
+        if enhanced_service is None:
+            # Fallback to standard agent service
+            return self.get_agent_service()
+        return enhanced_service
+    
+    def get_orchestration_service(self):
+        """Get the orchestration service for multi-step workflows"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Orchestration service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'orchestration_service', None)
+    
     
     def _create_minimal_knowledge_service(self):
         """Create a minimal knowledge service for testing environments"""
@@ -1208,9 +1320,10 @@ class DIContainer:
         import uuid
         
         class MockSessionContext:
-            def __init__(self, session_id, user_id=None):
+            def __init__(self, session_id, user_id=None, metadata=None):
                 self.session_id = session_id
                 self.user_id = user_id
+                self.metadata = metadata or {}
                 self.created_at = datetime.utcnow()
                 self.last_activity = datetime.utcnow()
                 self.data_uploads = []
@@ -1234,9 +1347,10 @@ class DIContainer:
                 self.session_manager = MockSessionManager()  # Add mock session manager
                 self.session_manager.sessions = self.sessions  # Share session storage
                 
-            async def create_session(self, user_id=None, metadata=None):
-                session_id = str(uuid.uuid4())
-                session = MockSessionContext(session_id, user_id)
+            async def create_session(self, user_id=None, session_id=None, metadata=None):
+                if not session_id:
+                    session_id = str(uuid.uuid4())
+                session = MockSessionContext(session_id, user_id, metadata)
                 self.sessions[session_id] = session
                 return session
             
@@ -1309,8 +1423,477 @@ class DIContainer:
                     })
                     return True
                 return False
+            
+            async def record_case_message(
+                self,
+                session_id: str,
+                message_content: str,
+                message_type=None,  # Use Any to avoid import issues in container
+                author_id=None,
+                metadata=None
+            ) -> bool:
+                """
+                Record a message in the current case for this session
+                
+                Args:
+                    session_id: Session identifier
+                    message_content: Message content
+                    message_type: Type of message (ignored in minimal impl)
+                    author_id: Optional message author (ignored in minimal impl)
+                    metadata: Optional message metadata (ignored in minimal impl)
+                    
+                Returns:
+                    True if message was recorded successfully
+                """
+                if session_id in self.sessions:
+                    session = self.sessions[session_id]
+                    if not hasattr(session, 'case_messages'):
+                        session.case_messages = []
+                    session.case_messages.append({
+                        "content": message_content,
+                        "message_type": str(message_type) if message_type else "user_query",
+                        "author_id": author_id,
+                        "metadata": metadata or {},
+                        "timestamp": datetime.utcnow()
+                    })
+                    return True
+                return False
         
         return MinimalSessionService()
+    
+    def _create_minimal_case_service(self):
+        """Create a minimal case service for testing environments"""
+        from datetime import datetime
+        import uuid
+        from faultmaven.models.case import Case, CaseStatus, CasePriority
+        
+        class MinimalCaseService:
+            def __init__(self):
+                self.cases = {}  # Store cases in memory for testing
+                self.case_messages = {}  # Store messages per case: {case_id: [messages]}
+                
+            async def create_case(self, title=None, description=None, owner_id=None, session_id=None, initial_message=None, initial_query=None, priority=None, user_id=None, metadata=None):
+                case_id = str(uuid.uuid4())
+                
+                # Create case with proper Case model structure
+                # Default to "anonymous" if no owner specified (API contract compliance)
+                final_owner_id = user_id or owner_id or "anonymous"
+                
+                # Phase 2: Handle initial_message transactionally
+                current_time = datetime.utcnow()
+                message_count = 0
+                
+                # Phase 2: If initial_message provided, set message_count=1 and update timestamp
+                if initial_message and initial_message.strip():
+                    message_count = 1
+                    current_time = datetime.utcnow()  # Refresh timestamp for message creation
+                
+                # Phase 3: Handle auto-title generation - set title_manually_set flag
+                provided_title = title or "New Chat"
+                title_manually_set = bool(title and title.strip() and title.strip() != "New Chat")  # True if user explicitly provided a non-default title
+                
+                # Phase 3: Auto-title generation after first committed message
+                # Debug: Check if conditions are met
+                should_auto_title = (initial_message and initial_message.strip() and 
+                    provided_title == "New Chat" and not title_manually_set)
+                
+                if should_auto_title:
+                    # Generate auto-title: chat-<UTC ISO 8601 Z>
+                    provided_title = f"chat-{current_time.isoformat()}Z"
+                
+                case = Case(
+                    case_id=case_id,
+                    title=provided_title,
+                    description=description or "",
+                    status=CaseStatus.ACTIVE,  # Use enum value
+                    priority=CasePriority(priority) if priority else CasePriority.MEDIUM,  # Use enum value
+                    owner_id=final_owner_id,
+                    message_count=message_count,
+                    created_at=current_time,
+                    updated_at=current_time,
+                    title_manually_set=title_manually_set
+                )
+                
+                # Set session relationship for API conversion
+                if session_id:
+                    case.current_session_id = session_id
+                
+                self.cases[case_id] = case
+                
+                # Store initial_message as first user message if provided
+                if initial_message and initial_message.strip():
+                    if case_id not in self.case_messages:
+                        self.case_messages[case_id] = []
+                    
+                    initial_msg = {
+                        "message_id": f"initial_{case_id}",
+                        "case_id": case_id,
+                        "message_type": "user_query",
+                        "content": initial_message.strip(),
+                        "timestamp": current_time,
+                        "user_id": final_owner_id
+                    }
+                    self.case_messages[case_id].append(initial_msg)
+                
+                return case
+            
+            async def get_case(self, case_id, user_id=None):
+                return self.cases.get(case_id)
+            
+            async def list_cases_for_session(self, session_id, limit=20, offset=0):
+                # Filter cases by checking if session_id matches case.current_session_id
+                session_cases = [case for case in self.cases.values() if case.current_session_id == session_id]
+                total = len(session_cases)
+                paginated = session_cases[offset:offset + limit]
+                return paginated, total
+                
+            async def list_cases_by_session(self, session_id, limit=50, offset=0, filters=None):
+                """List cases by session_id - Phase 1: Apply default filtering like list_user_cases"""
+                session_cases = [case for case in self.cases.values() if case.current_session_id == session_id]
+                
+                # Phase 1: Apply same core filtering as list_user_cases
+                if filters:
+                    # Phase 1: Default filtering behavior (exclude non-active cases)
+                    if not getattr(filters, 'include_deleted', False):
+                        # Exclude cases marked as deleted
+                        session_cases = [case for case in session_cases if case.status != CaseStatus.ARCHIVED]
+                    
+                    if not getattr(filters, 'include_archived', False):
+                        # Exclude archived cases
+                        session_cases = [case for case in session_cases if case.status != CaseStatus.ARCHIVED]
+                    
+                    if not getattr(filters, 'include_empty', False):
+                        # Exclude empty cases (message_count == 0)
+                        session_cases = [case for case in session_cases if getattr(case, 'message_count', 1) > 0]
+                else:
+                    # Phase 1: No filters provided - apply default exclusions (same as list_user_cases)
+                    # Exclude archived/deleted cases by default
+                    session_cases = [case for case in session_cases if case.status == CaseStatus.ACTIVE]
+                    # Exclude empty cases by default
+                    session_cases = [case for case in session_cases if getattr(case, 'message_count', 1) > 0]
+                
+                return session_cases[offset:offset + limit]
+                
+            async def count_cases_by_session(self, session_id, filters=None):
+                """Count cases by session_id - Phase 1: Apply default filtering like list_cases_by_session"""
+                session_cases = [case for case in self.cases.values() if case.current_session_id == session_id]
+                
+                # Phase 1: Apply same core filtering as list_cases_by_session
+                if filters:
+                    # Phase 1: Default filtering behavior (exclude non-active cases)
+                    if not getattr(filters, 'include_deleted', False):
+                        # Exclude cases marked as deleted
+                        session_cases = [case for case in session_cases if case.status != CaseStatus.ARCHIVED]
+                    
+                    if not getattr(filters, 'include_archived', False):
+                        # Exclude archived cases
+                        session_cases = [case for case in session_cases if case.status != CaseStatus.ARCHIVED]
+                    
+                    if not getattr(filters, 'include_empty', False):
+                        # Exclude empty cases (message_count == 0)
+                        session_cases = [case for case in session_cases if getattr(case, 'message_count', 1) > 0]
+                else:
+                    # Phase 1: No filters provided - apply default exclusions (same as list_cases_by_session)
+                    # Exclude archived/deleted cases by default
+                    session_cases = [case for case in session_cases if case.status == CaseStatus.ACTIVE]
+                    # Exclude empty cases by default
+                    session_cases = [case for case in session_cases if getattr(case, 'message_count', 1) > 0]
+                
+                return len(session_cases)
+            
+            async def update_case_status(self, case_id, status):
+                if case_id in self.cases:
+                    self.cases[case_id].status = status
+                    self.cases[case_id].updated_at = datetime.utcnow()
+                    return True
+                return False
+                
+            async def add_case_query(self, case_id, query, priority=None):
+                # Phase 2 & 3: Update message_count, updated_at, and handle auto-title generation
+                if case_id in self.cases:
+                    case = self.cases[case_id]
+                    current_time = datetime.utcnow()
+                    
+                    # Phase 2: Update message count and timestamp
+                    case.message_count = getattr(case, 'message_count', 0) + 1
+                    case.updated_at = current_time
+                    
+                    # Phase 3: Auto-title generation after first message
+                    # Only generate auto-title if title is "New Chat" AND not manually set
+                    if (case.title == "New Chat" and 
+                        not getattr(case, 'title_manually_set', False) and
+                        case.message_count == 1):  # This is the first query
+                        
+                        # Generate auto-title: chat-<UTC_ISO8601_Z_timestamp>
+                        auto_title = f"chat-{current_time.isoformat()}Z"
+                        case.title = auto_title
+                        # Keep title_manually_set as False since this is auto-generated
+                
+                # Mock implementation - return a simple query response
+                return {
+                    "query_id": str(uuid.uuid4()),
+                    "case_id": case_id,
+                    "query": query,
+                    "priority": priority or "medium",
+                    "created_at": datetime.utcnow()
+                }
+                
+            async def check_idempotency_key(self, idempotency_key: str):
+                # Minimal implementation - no actual idempotency checking for testing
+                return None
+                
+            async def store_idempotency_result(self, idempotency_key: str, status_code: int, content: dict, headers: dict):
+                # Minimal implementation - no actual storage for testing
+                return True
+                
+            async def list_user_cases(self, user_id=None, filters=None, limit=20, offset=0):
+                """List cases for a user with pagination - Phase 1: Core filtering implementation"""
+                # Filter cases by user_id if provided
+                if user_id:
+                    user_cases = [case for case in self.cases.values() if case.owner_id == user_id]
+                else:
+                    # Return all cases if no user filter
+                    user_cases = list(self.cases.values())
+                
+                # Phase 1: Apply core filtering - exclude deleted/archived/empty by default
+                if filters:
+                    # Phase 1: Default filtering behavior (exclude non-active cases)
+                    if not getattr(filters, 'include_deleted', False):
+                        # Exclude cases marked as deleted (we'll use ARCHIVED status as "deleted" marker for now)
+                        # In full implementation, this would check a deleted flag or soft delete status
+                        user_cases = [case for case in user_cases if case.status != CaseStatus.ARCHIVED]
+                    
+                    if not getattr(filters, 'include_archived', False):
+                        # Exclude archived cases (already handled above for delete, but explicit for clarity)
+                        user_cases = [case for case in user_cases if case.status != CaseStatus.ARCHIVED]
+                    
+                    if not getattr(filters, 'include_empty', False):
+                        # Exclude empty cases (message_count == 0)
+                        # For MinimalCaseService, we'll consider all cases as having at least 1 message unless explicitly marked
+                        user_cases = [case for case in user_cases if getattr(case, 'message_count', 1) > 0]
+                    
+                    # Apply other existing filters
+                    if hasattr(filters, 'status') and filters.status:
+                        user_cases = [case for case in user_cases if case.status == filters.status]
+                    if hasattr(filters, 'priority') and filters.priority:
+                        user_cases = [case for case in user_cases if case.priority == filters.priority]
+                    if hasattr(filters, 'owner_id') and filters.owner_id:
+                        user_cases = [case for case in user_cases if case.owner_id == filters.owner_id]
+                else:
+                    # Phase 1: No filters provided - apply default exclusions
+                    # Exclude archived/deleted cases by default
+                    user_cases = [case for case in user_cases if case.status == CaseStatus.ACTIVE]
+                    # Exclude empty cases by default
+                    user_cases = [case for case in user_cases if getattr(case, 'message_count', 1) > 0]
+                
+                # Extract pagination parameters from filters if available
+                if filters and hasattr(filters, 'limit'):
+                    limit = filters.limit
+                if filters and hasattr(filters, 'offset'):
+                    offset = filters.offset
+                
+                # Pagination
+                paginated_cases = user_cases[offset:offset + limit]
+                
+                return paginated_cases
+                
+            async def count_user_cases(self, user_id=None, filters=None):
+                """Count cases for a user with filters - Phase 1: Mirror filtering from list_user_cases"""
+                # Filter cases by user_id if provided
+                if user_id:
+                    user_cases = [case for case in self.cases.values() if case.owner_id == user_id]
+                else:
+                    # Return all cases if no user filter
+                    user_cases = list(self.cases.values())
+                
+                # Phase 1: Apply same core filtering as list_user_cases
+                if filters:
+                    # Phase 1: Default filtering behavior (exclude non-active cases)
+                    if not getattr(filters, 'include_deleted', False):
+                        # Exclude cases marked as deleted (we'll use ARCHIVED status as "deleted" marker for now)
+                        user_cases = [case for case in user_cases if case.status != CaseStatus.ARCHIVED]
+                    
+                    if not getattr(filters, 'include_archived', False):
+                        # Exclude archived cases (already handled above for delete, but explicit for clarity)
+                        user_cases = [case for case in user_cases if case.status != CaseStatus.ARCHIVED]
+                    
+                    if not getattr(filters, 'include_empty', False):
+                        # Exclude empty cases (message_count == 0)
+                        user_cases = [case for case in user_cases if getattr(case, 'message_count', 1) > 0]
+                    
+                    # Apply other existing filters
+                    if hasattr(filters, 'status') and filters.status:
+                        user_cases = [case for case in user_cases if case.status == filters.status]
+                    if hasattr(filters, 'priority') and filters.priority:
+                        user_cases = [case for case in user_cases if case.priority == filters.priority]
+                    if hasattr(filters, 'owner_id') and filters.owner_id:
+                        user_cases = [case for case in user_cases if case.owner_id == filters.owner_id]
+                else:
+                    # Phase 1: No filters provided - apply default exclusions (same as list_user_cases)
+                    # Exclude archived/deleted cases by default
+                    user_cases = [case for case in user_cases if case.status == CaseStatus.ACTIVE]
+                    # Exclude empty cases by default
+                    user_cases = [case for case in user_cases if getattr(case, 'message_count', 1) > 0]
+                
+                return len(user_cases)
+                
+            async def archive_case(self, case_id: str, reason: str = None, user_id: str = None) -> bool:
+                """Archive a case by updating its status to ARCHIVED"""
+                if case_id not in self.cases:
+                    return False
+                
+                # Update case status to archived
+                self.cases[case_id].status = CaseStatus.ARCHIVED
+                self.cases[case_id].updated_at = datetime.utcnow()
+                
+                # Store archive reason in metadata if provided
+                if reason:
+                    if not hasattr(self.cases[case_id], 'metadata') or self.cases[case_id].metadata is None:
+                        self.cases[case_id].metadata = {}
+                    self.cases[case_id].metadata['archive_reason'] = reason
+                    if user_id:
+                        self.cases[case_id].metadata['archived_by'] = user_id
+                
+                return True
+                
+            async def hard_delete_case(self, case_id: str, user_id: str = None) -> bool:
+                """Permanently delete a case and all associated data (idempotent)"""
+                # For MinimalCaseService, just remove from memory
+                # Always return True for idempotent behavior
+                if case_id in self.cases:
+                    del self.cases[case_id]
+                return True
+                
+            async def get_case_messages(self, case_id: str, limit: int = 50, offset: int = 0):
+                """Get messages for a case"""
+                if case_id not in self.case_messages:
+                    return []
+                
+                messages = self.case_messages[case_id]
+                # Apply pagination
+                start = offset
+                end = start + limit
+                return messages[start:end]
+            
+            async def add_case_query(self, case_id: str, query: str, user_id: str = None):
+                """Add a query message to a case"""
+                if case_id not in self.cases:
+                    return False
+                    
+                if case_id not in self.case_messages:
+                    self.case_messages[case_id] = []
+                
+                # Add user query message
+                query_msg = {
+                    "message_id": f"query_{len(self.case_messages[case_id])}_{case_id}",
+                    "case_id": case_id,
+                    "message_type": "user_query", 
+                    "content": query.strip(),
+                    "timestamp": datetime.utcnow(),
+                    "user_id": user_id or "anonymous"
+                }
+                self.case_messages[case_id].append(query_msg)
+                
+                # Update case metadata
+                case = self.cases[case_id]
+                case.message_count = len(self.case_messages[case_id])
+                case.updated_at = datetime.utcnow()
+                
+                return True
+            
+            async def add_assistant_response(self, case_id: str, response_content: str, response_type: str = "ANSWER", user_id: str = None):
+                """Add an assistant response message to a case"""
+                if case_id not in self.cases:
+                    return False
+                    
+                if case_id not in self.case_messages:
+                    self.case_messages[case_id] = []
+                
+                # Add assistant response message
+                response_msg = {
+                    "message_id": f"response_{len(self.case_messages[case_id])}_{case_id}",
+                    "case_id": case_id,
+                    "message_type": "agent_response", 
+                    "content": response_content.strip() if response_content else "",
+                    "response_type": response_type,
+                    "timestamp": datetime.utcnow(),
+                    "user_id": user_id or "anonymous"
+                }
+                self.case_messages[case_id].append(response_msg)
+                
+                # Update case metadata
+                case = self.cases[case_id]
+                case.message_count = len(self.case_messages[case_id])
+                case.updated_at = datetime.utcnow()
+                
+                return True
+            
+            async def get_case_conversation_context(self, case_id: str, limit: int = 10) -> str:
+                """Get formatted conversation context for LLM injection"""
+                if case_id not in self.cases:
+                    return ""
+                
+                # For minimal implementation, return a simple context format
+                # In full implementation, this would retrieve actual messages from storage
+                case = self.cases[case_id]
+                
+                context_lines = []
+                context_lines.append(f"Previous conversation for case: {case.title}")
+                context_lines.append(f"Case status: {case.status.value}")
+                context_lines.append(f"Created: {case.created_at}")
+                context_lines.append(f"Last updated: {case.updated_at}")
+                context_lines.append(f"Message count: {getattr(case, 'message_count', 0)}")
+                
+                if case.description:
+                    context_lines.append(f"Description: {case.description}")
+                
+                # Add placeholder for actual messages
+                if getattr(case, 'message_count', 0) > 0:
+                    context_lines.append("\n--- Recent conversation history would appear here ---")
+                    context_lines.append("(In full implementation, this would show actual messages)")
+                else:
+                    context_lines.append("\n--- No conversation history yet ---")
+                
+                return "\n".join(context_lines)
+            
+            async def update_case(self, case_id: str, updates: dict, user_id: str = None) -> bool:
+                """Update a case with new data - Phase 3: Handle manual title flag changes"""
+                if case_id not in self.cases:
+                    return False
+                
+                case = self.cases[case_id]
+                current_time = datetime.utcnow()
+                
+                # Phase 3: Handle manual title updates
+                if 'title' in updates:
+                    new_title = updates['title']
+                    if new_title and new_title.strip():
+                        case.title = new_title
+                        # Phase 3: Mark title as manually set to prevent auto-title override
+                        case.title_manually_set = True
+                    elif new_title == '':
+                        # Allow clearing title (reset to "New Chat")
+                        case.title = "New Chat"
+                        # Reset manual flag when clearing title
+                        case.title_manually_set = False
+                
+                # Update other fields
+                if 'description' in updates:
+                    case.description = updates.get('description', '')
+                if 'status' in updates:
+                    case.status = CaseStatus(updates['status']) if updates['status'] else case.status
+                if 'priority' in updates:
+                    case.priority = CasePriority(updates['priority']) if updates['priority'] else case.priority
+                
+                # Always update timestamp when any field is modified
+                case.updated_at = current_time
+                
+                return True
+        
+        # Cache the instance to maintain state across requests
+        if not hasattr(self, '_cached_minimal_case_service'):
+            self._cached_minimal_case_service = MinimalCaseService()
+        return self._cached_minimal_case_service
     
     # Phase 3: Enhanced Data Processing Services Getters
     
@@ -1373,19 +1956,6 @@ class DIContainer:
     
     # Phase A: Microservice Foundation Services Getters
     
-    def get_microservice_session_service(self):
-        """Get the microservice session service"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Microservice session service requested but container not initialized")
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        service = getattr(self, 'microservice_session_service', None)
-        if service is None:
-            # Fallback to base session service
-            return self.get_session_service()
-        return service
-    
     def get_confidence_service(self):
         """Get the global confidence service"""
         if not self._initialized:
@@ -1394,6 +1964,28 @@ class DIContainer:
             if not getattr(self, '_initializing', False):
                 self.initialize()
         return getattr(self, 'confidence_service', None)
+    
+    def get_decision_recorder(self):
+        """Get the decision records & telemetry service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Decision recorder requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'decision_recorder', None)
+    
+    def get_microservice_session_service(self):
+        """Get the microservice session service"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Microservice session service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        enhanced_service = getattr(self, 'microservice_session_service', None)
+        if enhanced_service is None:
+            # Fallback to standard session service
+            return self.get_session_service()
+        return enhanced_service
     
     def get_policy_service(self):
         """Get the policy/safety service"""
@@ -1411,20 +2003,7 @@ class DIContainer:
             logger.warning("Unified retrieval service requested but container not initialized")
             if not getattr(self, '_initializing', False):
                 self.initialize()
-        service = getattr(self, 'unified_retrieval_service', None)
-        if service is None:
-            # Fallback to base knowledge service
-            return self.get_knowledge_service()
-        return service
-    
-    def get_decision_recorder(self):
-        """Get the decision records & telemetry service"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Decision recorder requested but container not initialized")
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        return getattr(self, 'decision_recorder', None)
+        return getattr(self, 'unified_retrieval_service', None)
     
     # Phase B: Orchestration and Coordination Services Getters
     
@@ -1441,19 +2020,117 @@ class DIContainer:
         """Get the loop guard service"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
-            logger.warning("LoopGuard service requested but container not initialized")
+            logger.warning("Loop guard service requested but container not initialized")
             if not getattr(self, '_initializing', False):
                 self.initialize()
         return getattr(self, 'loop_guard_service', None)
     
     def get_orchestrator_service(self):
-        """Get the orchestrator/router service"""
+        """Get the orchestrator service"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
             logger.warning("Orchestrator service requested but container not initialized")
             if not getattr(self, '_initializing', False):
                 self.initialize()
         return getattr(self, 'orchestrator_service', None)
+    
+    def get_redis_client(self):
+        """Get the Redis client for job persistence and caching"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            if not getattr(self, '_initializing', False):
+                logger.warning("Redis client requested but container not initialized")
+                self.initialize()
+        return getattr(self, 'redis_client', None)
+    
+    def get_job_service(self):
+        """Get the job service for async operation management"""
+        logger = logging.getLogger(__name__)
+        if not self._initialized:
+            if not getattr(self, '_initializing', False):
+                logger.warning("Job service requested but container not initialized")
+                self.initialize()
+        
+        # Create job service if not already created
+        if not hasattr(self, '_job_service'):
+            try:
+                from faultmaven.services.job import JobService
+                redis_client = self.get_redis_client()
+                self._job_service = JobService(
+                    redis_client=redis_client,
+                    settings=self.settings
+                )
+                logger.info("✅ Job service initialized")
+            except Exception as e:
+                logger.warning(f"Job service initialization failed: {e}")
+                self._job_service = None
+        
+        return self._job_service
+    
+    # Agentic Framework Services Getters
+    
+    def get_business_logic_workflow_engine(self) -> Optional[IBusinessLogicWorkflowEngine]:
+        """Get the business logic workflow engine for plan-execute-observe-adapt orchestration"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Business Logic Workflow Engine requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'business_logic_workflow_engine', None)
+    
+    def get_agent_state_manager(self) -> Optional[IAgentStateManager]:
+        """Get the agent state manager for persistent memory and execution state management"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Agent State Manager requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'agent_state_manager', None)
+    
+    def get_query_classification_engine(self) -> Optional[IQueryClassificationEngine]:
+        """Get the query classification engine for intelligent query processing and routing"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Query Classification Engine requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'query_classification_engine', None)
+    
+    def get_tool_skill_broker(self) -> Optional[IToolSkillBroker]:
+        """Get the tool skill broker for dynamic orchestration of tools and skills"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Tool Skill Broker requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'tool_skill_broker', None)
+    
+    def get_guardrails_policy_layer(self) -> Optional[IGuardrailsPolicyLayer]:
+        """Get the guardrails policy layer for safety, security, and compliance enforcement"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Guardrails Policy Layer requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'guardrails_policy_layer', None)
+    
+    def get_response_synthesizer(self) -> Optional[IResponseSynthesizer]:
+        """Get the response synthesizer for intelligent response generation and formatting"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Response Synthesizer requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'response_synthesizer', None)
+    
+    def get_error_fallback_manager(self) -> Optional[IErrorFallbackManager]:
+        """Get the error fallback manager for robust error recovery and graceful degradation"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Error Fallback Manager requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'error_fallback_manager', None)
     
     def health_check(self) -> dict:
         """Check health of all container dependencies"""
@@ -1482,7 +2159,6 @@ class DIContainer:
             "metrics_collector": getattr(self, 'metrics_collector', None) is not None,
             "intelligent_cache": getattr(self, 'intelligent_cache', None) is not None,
             "analytics_dashboard_service": getattr(self, 'analytics_dashboard_service', None) is not None,
-            "performance_optimization_service": getattr(self, 'performance_optimization_service', None) is not None,
             "sla_monitor": getattr(self, 'sla_monitor', None) is not None,
             "performance_monitor": getattr(self, 'performance_monitor', None) is not None,
             # Phase 3 Enhanced Data Processing Services
@@ -1501,6 +2177,14 @@ class DIContainer:
             "gateway_service": getattr(self, 'gateway_service', None) is not None,
             "loop_guard_service": getattr(self, 'loop_guard_service', None) is not None,
             "orchestrator_service": getattr(self, 'orchestrator_service', None) is not None,
+            # Agentic Framework Services - Next-generation agent architecture
+            "business_logic_workflow_engine": getattr(self, 'business_logic_workflow_engine', None) is not None,
+            "agent_state_manager": getattr(self, 'agent_state_manager', None) is not None,
+            "query_classification_engine": getattr(self, 'query_classification_engine', None) is not None,
+            "tool_skill_broker": getattr(self, 'tool_skill_broker', None) is not None,
+            "guardrails_policy_layer": getattr(self, 'guardrails_policy_layer', None) is not None,
+            "response_synthesizer": getattr(self, 'response_synthesizer', None) is not None,
+            "error_fallback_manager": getattr(self, 'error_fallback_manager', None) is not None,
         }
         
         all_healthy = all(

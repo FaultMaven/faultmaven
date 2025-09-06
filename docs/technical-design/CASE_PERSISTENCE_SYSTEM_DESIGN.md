@@ -584,7 +584,7 @@ class RedisCaseStore(ICaseStore):
 #### Case Service Implementation
 
 ```python
-# File: faultmaven/services/case_service.py
+# File: faultmaven/services/case.py
 
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
@@ -905,7 +905,7 @@ class CaseService(BaseService, ICaseService):
 #### Enhanced Session Service
 
 ```python
-# File: faultmaven/services/session_service.py (additions)
+# File: faultmaven/services/session.py (additions)
 
 class SessionService(BaseService):
     """Enhanced session service with case persistence integration"""
@@ -1015,7 +1015,7 @@ class SessionService(BaseService):
 #### Enhanced Agent Service Integration
 
 ```python
-# File: faultmaven/services/agent_service.py (modifications)
+# File: faultmaven/services/agent.py (modifications)
 
 class AgentService(BaseService):
     """Enhanced agent service with case persistence"""
@@ -1466,7 +1466,7 @@ sequenceDiagram
 #### Unit Tests
 
 ```python
-# File: tests/unit/test_case_service.py
+# File: tests/unit/test_case.py
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock

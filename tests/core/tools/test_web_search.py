@@ -69,6 +69,10 @@ class TestWebSearchTool:
                 "WEB_SEARCH_API_ENDPOINT": "https://env.api.com",
             },
         ):
+            # Reset settings to force reinitialization with new environment variables
+            from faultmaven.config.settings import reset_settings
+            reset_settings()
+            
             tool = WebSearchTool()
             assert tool._api_key == "env_key"
             assert tool._api_endpoint == "https://env.api.com"

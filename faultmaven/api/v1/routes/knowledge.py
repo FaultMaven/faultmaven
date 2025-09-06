@@ -31,12 +31,13 @@ import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Response
 
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.api.v1.dependencies import get_knowledge_service
-from faultmaven.services.knowledge_service import KnowledgeService
+from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
+from faultmaven.services.knowledge import KnowledgeService
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
 
@@ -47,7 +48,7 @@ ALLOWED_DOCUMENT_TYPES = {"playbook", "troubleshooting_guide", "reference", "how
 kb_router = APIRouter(prefix="/kb", tags=["knowledge_base"])
 
 
-@router.post("/documents")
+@router.post("/documents", status_code=201)
 @trace("api_upload_document")
 async def upload_document(
     file: UploadFile = File(...),
@@ -58,6 +59,7 @@ async def upload_document(
     source_url: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    response: Response = Response(),
 ) -> dict:
     """
     Upload a document to the knowledge base
@@ -121,9 +123,7 @@ async def upload_document(
             )
 
         # Parse tags
-        tag_list = []
-        if tags:
-            tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        tag_list = parse_comma_separated_tags(tags)
 
         # Delegate to service layer
         result = await knowledge_service.upload_document(
@@ -136,7 +136,11 @@ async def upload_document(
             description=description
         )
 
-        logger.info(f"Successfully queued document {result['document_id']} for ingestion")
+        # Set Location header for REST compliance
+        document_id = result.get('document_id', result.get('id', 'unknown'))
+        response.headers["Location"] = f"/api/v1/knowledge/documents/{document_id}"
+
+        logger.info(f"Successfully queued document {document_id} for ingestion")
 
         return result
 
@@ -181,9 +185,7 @@ async def list_documents(
             )
 
         # Parse tags filter
-        tag_list = None
-        if tags:
-            tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        tag_list = parse_comma_separated_tags(tags) or None
 
         # Delegate to service layer
         return await knowledge_service.list_documents(
@@ -231,10 +233,10 @@ async def get_document(
         )
 
 
-@router.delete("/documents/{document_id}")
+@router.delete("/documents/{document_id}", status_code=204)
 async def delete_document(
     document_id: str, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
-) -> dict:
+):
     """
     Delete a knowledge base document
 
@@ -253,7 +255,8 @@ async def delete_document(
 
         logger.info(f"Successfully deleted document {document_id}")
 
-        return result
+        # Return no content for 204 status code
+        return None
 
     except HTTPException:
         raise
@@ -318,9 +321,7 @@ async def search_documents(
             raise HTTPException(status_code=422, detail="Query cannot exceed 1000 characters")
 
         # Parse tags filter
-        tag_list = None
-        if request.tags:
-            tag_list = [tag.strip() for tag in request.tags.split(",") if tag.strip()]
+        tag_list = parse_comma_separated_tags(request.tags) or None
 
         # Extract category from filters or direct field
         category = request.category
@@ -371,6 +372,10 @@ async def update_document(
                     }
                 )
 
+        # Parse tags if provided using standardized utility
+        if "tags" in update_data:
+            update_data["tags"] = parse_comma_separated_tags(update_data["tags"])
+
         result = await knowledge_service.update_document_metadata(
             document_id=document_id,
             **update_data
@@ -406,6 +411,10 @@ async def bulk_update_documents(
         
         if not document_ids:
             raise HTTPException(status_code=400, detail="Document IDs are required")
+            
+        # Parse tags in updates if provided using standardized utility
+        if "tags" in updates:
+            updates["tags"] = parse_comma_separated_tags(updates["tags"])
             
         result = await knowledge_service.bulk_update_documents(
             document_ids=document_ids,
@@ -495,7 +504,7 @@ async def get_search_analytics(
 
 
 # Duplicate all endpoints on kb_router for backward compatibility
-@kb_router.post("/documents")
+@kb_router.post("/documents", status_code=201)
 @trace("api_upload_document")
 async def upload_document_kb(
     file: UploadFile = File(...),
@@ -506,9 +515,10 @@ async def upload_document_kb(
     source_url: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    response: Response = Response(),
 ) -> dict:
     """Upload a document to the knowledge base (kb prefix)"""
-    return await upload_document(file, title, document_type, category, tags, source_url, description, knowledge_service)
+    return await upload_document(file, title, document_type, category, tags, source_url, description, knowledge_service, response)
 
 
 @kb_router.get("/documents")
@@ -531,10 +541,10 @@ async def get_document_kb(
     return await get_document(document_id, knowledge_service)
 
 
-@kb_router.delete("/documents/{document_id}")
+@kb_router.delete("/documents/{document_id}", status_code=204)
 async def delete_document_kb(
     document_id: str, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
-) -> dict:
+):
     """Delete a document (kb prefix)"""
     return await delete_document(document_id, knowledge_service)
 
