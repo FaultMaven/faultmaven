@@ -45,6 +45,12 @@ class ProcessingStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+class SessionStatus(str, Enum):
+    """Defines the status of user sessions."""
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    TERMINATED = "terminated"
+
 # --- Core Data Structures ---
 
 class Source(BaseModel):
@@ -154,10 +160,22 @@ class TitleResponse(BaseModel):
     title: str
     view_state: ViewState
 
+class SessionErrorCode(str, Enum):
+    """Session-specific error codes for better frontend error handling."""
+    SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
+    SESSION_EXPIRED = "SESSION_EXPIRED"
+    SESSION_TIMEOUT = "SESSION_TIMEOUT"
+    SESSION_INVALID = "SESSION_INVALID"
+    SESSION_CREATION_FAILED = "SESSION_CREATION_FAILED"
+    INVALID_CLIENT_ID = "INVALID_CLIENT_ID"
+    TIMEOUT_OUT_OF_RANGE = "TIMEOUT_OUT_OF_RANGE"
+
 class ErrorDetail(BaseModel):
-    """A detailed error message."""
-    code: str # e.g., "SESSION_NOT_FOUND"
+    """A detailed error message with optional session-specific error codes."""
+    code: str # General error code or SessionErrorCode value
     message: str
+    session_id: Optional[str] = None  # Session context for session-related errors
+    timeout_info: Optional[Dict[str, Any]] = None  # Additional timeout information
 
 class ErrorResponse(BaseModel):
     """The standard JSON payload returned from the backend on failure."""
@@ -176,10 +194,12 @@ class SessionResponse(BaseModel):
     schema_version: Literal["3.1.0"] = "3.1.0"
     session_id: str
     user_id: Optional[str] = None
-    status: str = "active"
+    client_id: Optional[str] = None  # Client/device identifier for session resumption
+    status: SessionStatus = SessionStatus.ACTIVE
     created_at: str  # UTC ISO 8601 format
     expires_at: Optional[str] = None  # UTC ISO 8601 format - optional for compliance
     metadata: Optional[Dict[str, Any]] = None
+    session_resumed: Optional[bool] = None  # Indicates if this was an existing session resumed
 
 class Case(BaseModel):
     """Represents a troubleshooting case."""

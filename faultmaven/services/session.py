@@ -14,7 +14,7 @@ Core Responsibilities:
 """
 
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union, Tuple
 
 from faultmaven.services.base import BaseService
 from faultmaven.models import AgentState, SessionContext, parse_utc_timestamp
@@ -67,25 +67,63 @@ class SessionService(BaseService):
         self, 
         user_id: Optional[str] = None, 
         initial_context: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> SessionContext:
+        metadata: Optional[Dict[str, Any]] = None,
+        client_id: Optional[str] = None
+    ) -> Union[SessionContext, Tuple[SessionContext, bool]]:
         """
-        Create a new session with validation and limits
+        Create a new session with validation and limits, or resume existing session if client_id provided
 
         Args:
             user_id: Optional user identifier
             initial_context: Optional initial context for the session
             metadata: Optional session metadata
+            client_id: Optional client/device identifier for session resumption
 
         Returns:
-            New SessionContext
+            SessionContext or Tuple[SessionContext, bool] where bool indicates if session was resumed
 
         Raises:
             ValueError: If session limits are exceeded
         """
-        self.logger.info(f"Creating session for user: {user_id or 'anonymous'}")
+        self.logger.info(f"Creating session for user: {user_id or 'anonymous'}, client_id: {client_id or 'none'}")
 
-        # Check user session limits
+        # If client_id provided, try to find and resume existing session
+        if client_id and user_id and self.session_store:
+            try:
+                existing_session_id = await self.session_store.find_by_user_and_client(user_id, client_id)
+                if existing_session_id:
+                    # Try to get existing session
+                    existing_session = await self.get_session(existing_session_id, validate=False)
+                    if existing_session and await self._is_active(existing_session):
+                        # Extract timeout from metadata for TTL calculation
+                        timeout_minutes = metadata.get('timeout_minutes', 180) if metadata else 180
+                        ttl_seconds = timeout_minutes * 60
+                        
+                        # Refresh session TTL with potentially new timeout value
+                        await self.session_store.extend_ttl(existing_session_id, ttl_seconds)
+                        
+                        # Update last activity
+                        await self.update_last_activity(existing_session_id)
+                        
+                        # Update client index TTL to match session TTL  
+                        await self.session_store.index_session_by_client(
+                            user_id, client_id, existing_session_id, 
+                            ttl=ttl_seconds
+                        )
+                        
+                        self.logger.info(f"Resumed existing session {existing_session_id} for client {client_id} with {timeout_minutes}min timeout")
+                        return existing_session, True
+                    else:
+                        # Session expired or invalid, clean up client index
+                        await self.session_store.remove_client_index(user_id, client_id)
+                        if existing_session_id:
+                            self.logger.warn(f"Client {client_id} attempted to resume expired session {existing_session_id}")
+                        else:
+                            self.logger.info(f"Cleaned up expired session index for client {client_id}")
+            except Exception as e:
+                self.logger.warning(f"Failed to check existing session for client {client_id}: {e}")
+
+        # Check user session limits for new session creation
         if user_id:
             try:
                 user_sessions = await self.get_user_sessions(user_id)
@@ -100,7 +138,7 @@ class SessionService(BaseService):
             except Exception as e:
                 self.logger.warning(f"Failed to check session limits for user {user_id}: {e}")
 
-        # Create session through manager
+        # Create new session through manager
         try:
             session = await self.session_manager.create_session(user_id)
 
@@ -116,11 +154,63 @@ class SessionService(BaseService):
                 if not update_success:
                     self.logger.warning(f"Failed to add context/metadata to session {session.session_id}")
 
+            # Create client index if client_id provided
+            if client_id and user_id and self.session_store:
+                try:
+                    # Use timeout from metadata for TTL calculation  
+                    timeout_minutes = metadata.get('timeout_minutes', 180) if metadata else 180
+                    ttl_seconds = timeout_minutes * 60
+                    await self.session_store.index_session_by_client(user_id, client_id, session.session_id, ttl_seconds)
+                    self.logger.info(f"Created client index for session {session.session_id}, client {client_id} with {timeout_minutes}min TTL")
+                except Exception as e:
+                    self.logger.warning(f"Failed to create client index: {e}")
+
             self.logger.info(f"Created session {session.session_id}")
-            return session
+            return session, False  # False indicates new session (not resumed)
         except Exception as e:
             self.logger.error(f"Failed to create session: {e}")
             raise RuntimeError(f"Session creation failed: {str(e)}") from e
+
+    async def cleanup_expired_sessions(self) -> int:
+        """
+        Clean up expired sessions and their associated data.
+        
+        This method should be called periodically (every 30 minutes) to remove
+        expired sessions and prevent database bloat. It handles:
+        - Removing expired session data
+        - Cleaning up client index entries
+        - Removing related case/conversation data
+        
+        Returns:
+            Number of sessions cleaned up
+        """
+        cleaned_count = 0
+        try:
+            # Get all user sessions and check which are expired
+            all_sessions = await self.session_manager.get_all_sessions()
+            
+            for session in all_sessions:
+                if not await self._is_active(session):
+                    try:
+                        # Clean up the session
+                        await self.delete_session(session.session_id)
+                        cleaned_count += 1
+                        
+                        # Log cleanup for debugging
+                        timeout_minutes = getattr(session, 'timeout_minutes', 'unknown')
+                        self.logger.info(f"Session {session.session_id} expired after {timeout_minutes} minutes - cleaned up")
+                        
+                    except Exception as e:
+                        self.logger.warning(f"Failed to cleanup session {session.session_id}: {e}")
+            
+            if cleaned_count > 0:
+                self.logger.info(f"Session cleanup completed: {cleaned_count} expired sessions removed")
+            
+            return cleaned_count
+            
+        except Exception as e:
+            self.logger.error(f"Session cleanup failed: {e}")
+            return cleaned_count
 
     @trace("session_service_get_session")
     async def get_session(

@@ -46,7 +46,7 @@ This guide provides comprehensive instructions for deploying FaultMaven in vario
 - Kubernetes 1.21+ (for K8s deployment)
 
 **External Services (Required):**
-- Redis 6.0+ (session storage, caching, and memory management)
+- Redis 6.0+ (multi-session per user storage with client-based resumption, caching, and memory management)
 - ChromaDB 0.4+ (vector database for knowledge base and memory)
 - Microsoft Presidio (PII redaction service)
 

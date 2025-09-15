@@ -1498,7 +1498,7 @@
           "session_management"
         ],
         "summary": "Create Session",
-        "description": "Create or resume a troubleshooting session.\n\n**Session Creation & Resumption:**\n- If `client_id` is provided and matches an active session, that session is resumed\n- If `client_id` matches an expired session, returns 404/410 error (frontend creates new session)\n- If `client_id` is new or not provided, creates fresh session\n\n**Session Timeout:**\n- Sessions automatically expire after `timeout_minutes` of inactivity\n- Default timeout: 180 minutes (3 hours)\n- Min timeout: 60 minutes, Max timeout: 480 minutes\n- Expired sessions cannot be resumed and return 404/410 errors\n\n**Frontend Crash Recovery:**\n- Browser crashes: Session resumes if within timeout window\n- Extended downtime: Session expires, new session created automatically\n\nArgs:\n    request: Session creation parameters including optional client_id and timeout\n    user_id: Optional user identifier (query param)\n\nReturns:\n    Session creation/resumption response with expiration information",
+        "description": "Create a new troubleshooting session.\n\nArgs:\n    request: Session creation parameters\n    user_id: Optional user identifier (query param)\n\nReturns:\n    Session creation response",
         "operationId": "create_session_api_v1_sessions_post",
         "parameters": [
           {
@@ -1565,86 +1565,19 @@
         },
         "responses": {
           "201": {
-            "description": "Session created or resumed successfully",
+            "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {},
-                "examples": {
-                  "new_session": {
-                    "summary": "New session created",
-                    "value": {
-                      "session_id": "550e8400-e29b-41d4-a716-446655440000",
-                      "user_id": "user_123",
-                      "client_id": "browser-client-abc123",
-                      "created_at": "2025-01-15T10:00:00Z",
-                      "expires_at": "2025-01-15T13:00:00Z",
-                      "status": "active",
-                      "session_type": "troubleshooting",
-                      "session_resumed": false,
-                      "timeout_minutes": 180,
-                      "message": "Session created successfully"
-                    }
-                  },
-                  "resumed_session": {
-                    "summary": "Existing session resumed",
-                    "value": {
-                      "session_id": "550e8400-e29b-41d4-a716-446655440000",
-                      "user_id": "user_123",
-                      "client_id": "browser-client-abc123",
-                      "created_at": "2025-01-15T09:30:00Z",
-                      "expires_at": "2025-01-15T14:30:00Z",
-                      "status": "active",
-                      "session_type": "troubleshooting",
-                      "session_resumed": true,
-                      "timeout_minutes": 300,
-                      "message": "Session resumed successfully"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Session expired or not found (when resuming with client_id)",
-            "content": {
-              "application/json": {
-                "examples": {
-                  "session_expired": {
-                    "summary": "Session expired",
-                    "value": {
-                      "detail": "Session expired after 180 minutes of inactivity"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "410": {
-            "description": "Session gone (alternative to 404 for expired sessions)",
-            "content": {
-              "application/json": {
-                "examples": {
-                  "session_gone": {
-                    "summary": "Session no longer available",
-                    "value": {
-                      "detail": "Session not found"
-                    }
-                  }
-                }
+                "schema": {}
               }
             }
           },
           "422": {
-            "description": "Validation error (invalid timeout_minutes)",
+            "description": "Validation Error",
             "content": {
               "application/json": {
-                "examples": {
-                  "invalid_timeout": {
-                    "summary": "Invalid timeout value",
-                    "value": {
-                      "detail": "timeout_minutes must be between 60 and 480 minutes"
-                    }
-                  }
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1928,27 +1861,6 @@
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/sessions/cleanup": {
-      "post": {
-        "tags": [
-          "session_management",
-          "session_management"
-        ],
-        "summary": "Cleanup Expired Sessions",
-        "description": "Clean up expired sessions (admin/testing endpoint).\n\nThis endpoint triggers immediate cleanup of expired sessions.\nIn production, this runs automatically every 30 minutes.\n\nReturns:\n    Number of sessions cleaned up",
-        "operationId": "cleanup_expired_sessions_api_v1_sessions_cleanup_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
               }
             }
           }
@@ -5667,21 +5579,15 @@
             "anyOf": [
               {
                 "type": "integer",
-                "maximum": 480.0,
-                "minimum": 60.0
+                "maximum": 1440.0,
+                "minimum": 1.0
               },
               {
                 "type": "null"
               }
             ],
             "title": "Timeout Minutes",
-            "description": "Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8 hours), Default: 180 (3 hours)",
-            "default": 180,
-            "examples": [
-              180,
-              240,
-              360
-            ]
+            "default": 30
           },
           "session_type": {
             "anyOf": [
@@ -5719,10 +5625,7 @@
               }
             ],
             "title": "Client Id",
-            "description": "Client/device identifier for session resumption. If provided, existing session for this client will be resumed.",
-            "examples": [
-              "550e8400-e29b-41d4-a716-446655440000"
-            ]
+            "description": "Client/device identifier for session resumption. If provided, existing session for this client will be resumed."
           }
         },
         "type": "object",
@@ -5851,16 +5754,6 @@
         ],
         "title": "SessionRestoreRequest",
         "description": "Request model for session restoration."
-      },
-      "SessionStatus": {
-        "type": "string",
-        "enum": [
-          "active",
-          "expired",
-          "terminated"
-        ],
-        "title": "SessionStatus",
-        "description": "Defines the status of user sessions."
       },
       "Source": {
         "properties": {

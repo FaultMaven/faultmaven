@@ -1,4 +1,4 @@
-# Browser Extension Session Management Issue
+# Browser Extension Session Management Issue (Updated for Multi-Session Architecture)
 
 ## Issue Summary
 
@@ -8,7 +8,8 @@
 
 **Affected Component**: faultmaven-copilot browser extension
 
-**Resolution Date**: 2025-08-07
+**Resolution Date**: 2025-08-07  
+**Architecture Update**: 2025-09-14 - Enhanced with multi-session per user support
 
 ## Root Cause Analysis
 
@@ -155,6 +156,55 @@ The FaultMaven backend was working correctly. The session management API endpoin
 3. **`src/shared/ui/SidePanelApp.tsx`** - Replaced mock calls with real API calls
 4. **`src/config.ts`** - Updated to use local development API URL
 5. **`src/lib/utils/messaging.ts`** - Created Chrome messaging utility
+
+## Multi-Session Architecture Enhancement (2025-09-14)
+
+### New Client-Based Session Management
+
+FaultMaven now supports **multiple concurrent sessions per user** with **client-based session resumption**:
+
+**Key Improvements:**
+- **Multiple Sessions**: Each user can maintain multiple active sessions (one per client/device)
+- **Session Resumption**: Same `client_id` can resume sessions across browser restarts
+- **Multi-Device Support**: Independent sessions per device for same user
+- **Multi-Tab Sharing**: Same client_id across tabs enables session sharing
+
+**Updated Session Creation:**
+```typescript
+// Enhanced session creation with client_id for resumption
+async function createSessionWithResumption() {
+  const clientId = localStorage.getItem('faultmaven_client_id') || crypto.randomUUID();
+  localStorage.setItem('faultmaven_client_id', clientId);
+  
+  const response = await fetch('/api/v1/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: clientId,
+      timeout_minutes: 60,
+      session_type: 'troubleshooting'
+    })
+  });
+  
+  const result = await response.json();
+  
+  if (result.session_resumed) {
+    console.log('Session resumed successfully:', result.session_id);
+    // Load previous session state
+  } else {
+    console.log('New session created:', result.session_id);
+    // Initialize fresh session
+  }
+  
+  return result;
+}
+```
+
+**Session Resumption Benefits:**
+- **Seamless Continuity**: Users can continue troubleshooting across browser restarts
+- **Multi-Device Workflow**: Access sessions from different devices with same user account
+- **Collaborative Experience**: Multiple tabs can share the same troubleshooting session
+- **Enhanced Reliability**: Session loss protection through persistent client identification
 
 ## Technical Lessons Learned
 

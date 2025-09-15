@@ -197,7 +197,7 @@ graph TB
 - **Agent Service**: AI reasoning workflow orchestration with agentic framework integration
 - **Data Service**: File upload and data processing coordination
 - **Knowledge Service**: Document ingestion and retrieval management
-- **Session Service**: Multi-turn conversation state management
+- **Session Service**: Multi-session per user state management with client-based session resumption
 
 **Key Files**:
 - `faultmaven/services/agent.py` - AI agent orchestration
@@ -620,7 +620,7 @@ graph TB
     end
     
     subgraph "API Gateway"
-        ENDPOINT[POST /api/v1/agent/query]
+        ENDPOINT[POST /api/v1/cases/{case_id}/queries]
         VALIDATION[Request Validation]
         ROUTING[Route to AgentService]
     end
@@ -640,12 +640,12 @@ graph TB
         RESPONSE_TYPE[ResponseType Determination]
         VIEW_STATE[ViewState Construction]
         SOURCES[Source Attribution]
-        PLAN[Plan Generation (if applicable)]
+        PLAN[Plan Generation]
         MEMORY_UPDATE[Memory Consolidation]
     end
     
     subgraph "v3.1.0 Response"
-        SCHEMA_VER[schema_version: "3.1.0"]
+        SCHEMA_VER[schema_version: 3.1.0]
         AGENT_RESPONSE[AgentResponse]
         CLIENT_UPDATE[Client State Update]
     end
@@ -670,15 +670,15 @@ graph TB
     RESPONSE_FORMAT --> PLAN
     RESPONSE_FORMAT --> MEMORY_UPDATE
     
-    CONTENT --> SCHEMA_VER
-    RESPONSE_TYPE --> SCHEMA_VER
-    VIEW_STATE --> SCHEMA_VER
-    SOURCES --> SCHEMA_VER
-    PLAN --> SCHEMA_VER
-    MEMORY_UPDATE --> SCHEMA_VER
+    CONTENT --> AGENT_RESPONSE
+    RESPONSE_TYPE --> AGENT_RESPONSE
+    VIEW_STATE --> AGENT_RESPONSE
+    SOURCES --> AGENT_RESPONSE
+    PLAN --> AGENT_RESPONSE
+    MEMORY_UPDATE --> AGENT_RESPONSE
     
-    SCHEMA_VER --> AGENT_RESPONSE
-    AGENT_RESPONSE --> CLIENT_UPDATE
+    AGENT_RESPONSE --> SCHEMA_VER
+    SCHEMA_VER --> CLIENT_UPDATE
 ```
 
 ### Core Schema Components
@@ -721,11 +721,12 @@ graph LR
 ```
 
 **Session Management**:
-- **Purpose**: Temporary visitor context for browser sessions
-- **Lifecycle**: Short-lived, expires after inactivity
-- **Scope**: Multiple investigations within single user session
-- **Storage**: Redis-backed with TTL
-- **Memory Integration**: Automatic context consolidation and learning
+- **Purpose**: Client-based authentication and session continuity
+- **Lifecycle**: Configurable TTL with automatic cleanup and resumption support
+- **Scope**: Multiple concurrent sessions per user (one per client/device)
+- **Storage**: Redis-backed with multi-index (user_id, client_id) → session_id mapping
+- **Client Resumption**: Same client_id can resume sessions across browser restarts
+- **Multi-Device Support**: Independent sessions per device for same user
 
 **Case Management**:
 - **Purpose**: Persistent investigation tracking
@@ -839,7 +840,7 @@ graph TB
         SESSION_ID[session_id]
         CASE_ID[case_id]
         SUMMARY[running_summary]
-        UPLOADED[uploaded_data[]]
+        UPLOADED[uploaded_data]
         MEMORY_CONTEXT[memory_context]
         PLANNING_STATE[planning_state]
     end
@@ -893,7 +894,7 @@ sequenceDiagram
     participant AIAgent
     participant Knowledge
     
-    Client->>API: POST /api/v1/agent/query
+    Client->>API: POST /api/v1/cases/{case_id}/queries
     Note over Client,API: QueryRequest{session_id, query}
     
     API->>AgentService: process_query(request)
@@ -1191,6 +1192,31 @@ except ServiceException as e:
 - **Circuit Breakers**: Automatic failover for external service outages
 - **Memory Redundancy**: Distributed memory storage for high availability
 
+## Session Architecture Evolution
+
+### Multi-Session Per User Design
+
+FaultMaven now implements **client-based session management** enabling multiple concurrent sessions per user:
+
+**Key Changes**:
+- **Before**: Single session per user (new sessions replaced old ones)
+- **After**: Multiple concurrent sessions per user (one per client/device)
+- **Session Resumption**: Same client can resume sessions across browser restarts
+- **Multi-Device Support**: Each device maintains independent session for same user
+- **Multi-Tab Sharing**: Same client_id across tabs enables session sharing
+
+**Technical Implementation**:
+- **SessionCreateRequest**: Optional `client_id` field for session resumption
+- **Redis Multi-Index**: Atomic (user_id, client_id) → session_id mapping operations
+- **Enhanced SessionService**: Client-based session lookup and resumption logic
+- **API Responses**: Include `session_resumed` flag and enhanced status messages
+
+**Frontend Integration**:
+- Generate persistent `client_id` using `crypto.randomUUID()` stored in `localStorage`
+- Include `client_id` in all session creation requests
+- Handle both new session creation and existing session resumption
+- Support collaborative multi-tab experience with shared session state
+
 ## Implementation Module Mapping
 
 This section documents how each architectural component maps to specific Python modules within the `/faultmaven/` directory structure.
@@ -1223,7 +1249,7 @@ This section documents how each architectural component maps to specific Python 
 - **Agent Service**: `services/agent.py` - AI agent orchestration and reasoning workflows
 - **Data Service**: `services/data.py` - File processing with memory-aware capabilities
 - **Knowledge Service**: `services/knowledge.py` - Document ingestion and semantic search
-- **Session Service**: `services/session.py` - Multi-turn conversation state management
+- **Session Service**: `services/session.py` - Multi-session per user with client-based resumption management
 - **Case Service**: `services/case.py` - Case lifecycle and persistence management
 
 **Supporting Services**

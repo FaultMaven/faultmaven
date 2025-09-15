@@ -226,7 +226,7 @@ protection_duration_seconds = Histogram(
 {
     "event": "rate_limit_exceeded",
     "session_id": "abc123",
-    "endpoint": "/api/v1/agent/query",
+    "endpoint": "/api/v1/cases/{case_id}/queries",
     "limit_type": "per_session",
     "current_count": 15,
     "limit": 10,

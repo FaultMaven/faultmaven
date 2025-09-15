@@ -19,7 +19,7 @@ sequenceDiagram
     participant LLM as LLM Provider
     participant Tracer as Opik Tracer
     
-    Browser->>Agent: POST /api/v1/agent/query
+    Browser->>Agent: POST /api/v1/cases/{case_id}/queries
     note over Browser,Agent: User submits troubleshooting query
     
     Agent->>Service: process_query(query, session_id, context)

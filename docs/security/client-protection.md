@@ -158,8 +158,7 @@ AGENT_LLM_TIMEOUT=30
 ```python
 # Per-endpoint rate limits (requests per minute)
 ENDPOINT_RATE_LIMITS = {
-    "/api/v1/agent/query": 5,
-    "/api/v1/agent/troubleshoot": 5,
+    "/api/v1/cases/{case_id}/queries": 5,
     "/api/v1/data/upload": 10,
     "/api/v1/sessions/": 20,
     "title_generation": 1,  # Special case: 1 per 5 minutes

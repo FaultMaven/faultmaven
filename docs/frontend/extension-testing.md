@@ -513,7 +513,7 @@ test.describe('Troubleshooting Flow', () => {
 
   test('should handle errors gracefully', async ({ page }) => {
     // Mock API error
-    await page.route('/api/v1/agent/query', route => {
+    await page.route('/api/v1/cases/{case_id}/queries', route => {
       route.fulfill({
         status: 500,
         contentType: 'application/json',
@@ -820,7 +820,7 @@ describe('Accessibility Tests', () => {
 import { rest } from 'msw';
 
 export const handlers = [
-  rest.post('/api/v1/agent/query', (req, res, ctx) => {
+  rest.post('/api/v1/cases/{case_id}/queries', (req, res, ctx) => {
     const { query } = req.body as { query: string };
     
     if (query.includes('error')) {

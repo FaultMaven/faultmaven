@@ -28,7 +28,7 @@ Core Design Principles:
 """
 
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Response
@@ -40,10 +40,11 @@ from faultmaven.api.v1.dependencies import get_session_service, get_case_service
 from faultmaven.services.session import SessionService
 from faultmaven.services.converters import CaseConverter
 from faultmaven.models import utc_timestamp
-from faultmaven.models.api import SessionResponse, SessionCasesResponse, ErrorResponse, ErrorDetail
+from faultmaven.models.api import SessionResponse, SessionCasesResponse, ErrorResponse, ErrorDetail, SessionErrorCode, SessionStatus
 from faultmaven.models.case import CaseListFilter
 import logging
 import uuid
+import os
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
 
@@ -53,6 +54,40 @@ logger = logging.getLogger(__name__)
 # Rate-limited logging for repeated session not found errors
 _session_not_found_log_tracker = {}
 _SESSION_NOT_FOUND_LOG_INTERVAL = 30  # Log every 30 seconds per session_id
+
+# Session timeout configuration
+SESSION_MIN_TIMEOUT_MINUTES = int(os.getenv("SESSION_MIN_TIMEOUT_MINUTES", "60"))     # 1 hour
+SESSION_MAX_TIMEOUT_MINUTES = int(os.getenv("SESSION_MAX_TIMEOUT_MINUTES", "480"))   # 8 hours  
+SESSION_DEFAULT_TIMEOUT_MINUTES = int(os.getenv("SESSION_DEFAULT_TIMEOUT_MINUTES", "180"))  # 3 hours
+
+
+def validate_session_timeout(timeout_minutes: Optional[int]) -> int:
+    """
+    Validate and clamp session timeout parameter to safe ranges.
+    
+    Frontend crash recovery requires specific timeout behavior:
+    - Min: 60 minutes (1 hour) - prevents too-frequent expiration
+    - Max: 480 minutes (8 hours) - prevents indefinite sessions
+    - Default: 180 minutes (3 hours) - good balance for troubleshooting sessions
+    
+    Args:
+        timeout_minutes: Requested timeout in minutes
+        
+    Returns:
+        Validated timeout in minutes, clamped to safe range
+    """
+    if not timeout_minutes or timeout_minutes <= 0:
+        logger.debug(f"Using default session timeout: {SESSION_DEFAULT_TIMEOUT_MINUTES} minutes")
+        return SESSION_DEFAULT_TIMEOUT_MINUTES
+    
+    original_timeout = timeout_minutes
+    # Clamp to safe range
+    validated_timeout = max(SESSION_MIN_TIMEOUT_MINUTES, min(SESSION_MAX_TIMEOUT_MINUTES, timeout_minutes))
+    
+    if validated_timeout != original_timeout:
+        logger.info(f"Session timeout clamped from {original_timeout} to {validated_timeout} minutes")
+    
+    return validated_timeout
 
 
 def _safe_datetime_to_utc_string(dt: datetime) -> str:
@@ -112,9 +147,22 @@ def _log_session_not_found_rate_limited(session_id: str) -> None:
 
 class SessionCreateRequest(BaseModel):
     """Request model for session creation."""
-    timeout_minutes: Optional[int] = Field(default=30, ge=1, le=1440)  # 1 min to 24 hours
+    timeout_minutes: Optional[int] = Field(
+        default=180, 
+        ge=60, 
+        le=480, 
+        description="Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8 hours), Default: 180 (3 hours)",
+        examples=[180, 240, 360]
+    )
     session_type: Optional[str] = Field(default="troubleshooting", min_length=1)
     metadata: Optional[dict] = None
+    client_id: Optional[str] = Field(
+        None, 
+        min_length=1, 
+        max_length=255, 
+        description="Client/device identifier for session resumption. If provided, existing session for this client will be resumed.",
+        examples=["550e8400-e29b-41d4-a716-446655440000"]
+    )
 
 
 class SessionRestoreRequest(BaseModel):
@@ -126,7 +174,92 @@ class SessionRestoreRequest(BaseModel):
 
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, responses={
+    201: {
+        "description": "Session created or resumed successfully",
+        "content": {
+            "application/json": {
+                "examples": {
+                    "new_session": {
+                        "summary": "New session created",
+                        "value": {
+                            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                            "user_id": "user_123",
+                            "client_id": "browser-client-abc123",
+                            "created_at": "2025-01-15T10:00:00Z",
+                            "expires_at": "2025-01-15T13:00:00Z",
+                            "status": "active",
+                            "session_type": "troubleshooting",
+                            "session_resumed": False,
+                            "timeout_minutes": 180,
+                            "message": "Session created successfully"
+                        }
+                    },
+                    "resumed_session": {
+                        "summary": "Existing session resumed",
+                        "value": {
+                            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                            "user_id": "user_123", 
+                            "client_id": "browser-client-abc123",
+                            "created_at": "2025-01-15T09:30:00Z",
+                            "expires_at": "2025-01-15T14:30:00Z",
+                            "status": "active",
+                            "session_type": "troubleshooting",
+                            "session_resumed": True,
+                            "timeout_minutes": 300,
+                            "message": "Session resumed successfully"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    404: {
+        "description": "Session expired or not found (when resuming with client_id)",
+        "content": {
+            "application/json": {
+                "examples": {
+                    "session_expired": {
+                        "summary": "Session expired",
+                        "value": {
+                            "detail": "Session expired after 180 minutes of inactivity"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    410: {
+        "description": "Session gone (alternative to 404 for expired sessions)",
+        "content": {
+            "application/json": {
+                "examples": {
+                    "session_gone": {
+                        "summary": "Session no longer available",
+                        "value": {
+                            "detail": "Session not found"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    422: {
+        "description": "Validation error (invalid timeout_minutes)",
+        "content": {
+            "application/json": {
+                "examples": {
+                    "invalid_timeout": {
+                        "summary": "Invalid timeout value",
+                        "value": {
+                            "detail": "timeout_minutes must be between 60 and 480 minutes"
+                        }
+                    }
+                }
+            }
+        }
+    }
+})
 @trace("api_create_session")
 async def create_session(
     request: Optional[SessionCreateRequest] = Body(None),
@@ -135,41 +268,90 @@ async def create_session(
     response: Response = Response(),
 ):
     """
-    Create a new troubleshooting session.
+    Create or resume a troubleshooting session.
+
+    **Session Creation & Resumption:**
+    - If `client_id` is provided and matches an active session, that session is resumed
+    - If `client_id` matches an expired session, returns 404/410 error (frontend creates new session)
+    - If `client_id` is new or not provided, creates fresh session
+
+    **Session Timeout:**
+    - Sessions automatically expire after `timeout_minutes` of inactivity
+    - Default timeout: 180 minutes (3 hours)
+    - Min timeout: 60 minutes, Max timeout: 480 minutes
+    - Expired sessions cannot be resumed and return 404/410 errors
+
+    **Frontend Crash Recovery:**
+    - Browser crashes: Session resumes if within timeout window
+    - Extended downtime: Session expires, new session created automatically
 
     Args:
-        request: Session creation parameters
+        request: Session creation parameters including optional client_id and timeout
         user_id: Optional user identifier (query param)
 
     Returns:
-        Session creation response
+        Session creation/resumption response with expiration information
     """
     try:
-        # Prepare metadata from request
+        # Prepare metadata from request with validated timeout
         metadata = {}
+        validated_timeout_minutes = validate_session_timeout(
+            request.timeout_minutes if request else None
+        )
+        
         if request:
             if request.session_type:
                 metadata["session_type"] = request.session_type
                 metadata["usage_type"] = request.session_type  # For backward compatibility
-            if request.timeout_minutes:
-                metadata["timeout_minutes"] = request.timeout_minutes
             if request.metadata:
                 metadata.update(request.metadata)
         
-        # Create session with metadata
-        session = await session_service.create_session(user_id, metadata=metadata if metadata else None)
-        logger.info(f"Session created successfully: {session.session_id}")
+        # Always set validated timeout in metadata
+        metadata["timeout_minutes"] = validated_timeout_minutes
+        
+        # Create session with metadata and client_id
+        session_result = await session_service.create_session(
+            user_id, 
+            metadata=metadata if metadata else None,
+            client_id=request.client_id if request else None
+        )
+        
+        # Handle both new session and resumed session scenarios
+        if isinstance(session_result, tuple):
+            session, was_resumed = session_result
+        else:
+            session, was_resumed = session_result, False
+            
+        action_verb = "resumed" if was_resumed else "created"
+        
+        # Enhanced logging for session lifecycle tracking
+        log_details = {
+            "session_id": session.session_id,
+            "user_id": user_id,
+            "client_id": request.client_id if request else None,
+            "timeout_minutes": validated_timeout_minutes,
+            "session_type": metadata.get("session_type", "troubleshooting"),
+            "was_resumed": was_resumed
+        }
+        logger.info(f"Session {action_verb} successfully: {session.session_id} (timeout: {validated_timeout_minutes}min, client: {request.client_id if request else 'none'})")
         
         # Set Location header for REST compliance
         response.headers["Location"] = f"/api/v1/sessions/{session.session_id}"
         
+        # Calculate expires_at timestamp
+        expires_at = session.created_at + timedelta(minutes=validated_timeout_minutes)
+        
         return {
             "session_id": session.session_id,
             "user_id": session.user_id,
+            "client_id": request.client_id if request else None,
             "created_at": _safe_datetime_to_utc_string(session.created_at),
-            "status": "active",
+            "expires_at": _safe_datetime_to_utc_string(expires_at),  # NEW: Session expiration time
+            "status": SessionStatus.ACTIVE.value,
             "session_type": metadata.get("session_type", "troubleshooting"),
-            "message": "Session created successfully",
+            "session_resumed": was_resumed,
+            "timeout_minutes": validated_timeout_minutes,  # Return validated timeout to frontend
+            "message": f"Session {action_verb} successfully",
         }
     except Exception as e:
         logger.error(f"Failed to create session: {e}")
@@ -195,12 +377,20 @@ async def get_session(
     try:
         session = await session_service.get_session(session_id)
         if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+            _log_session_not_found_rate_limited(session_id)
+            raise HTTPException(
+                status_code=404, 
+                detail=ErrorDetail(
+                    code=SessionErrorCode.SESSION_NOT_FOUND.value,
+                    message=f"Session not found: {session_id}",
+                    session_id=session_id
+                ).model_dump()
+            )
 
         return SessionResponse(
             session_id=session.session_id,
             user_id=session.user_id,
-            status="active",
+            status=SessionStatus.ACTIVE,
             created_at=_safe_datetime_to_utc_string(session.created_at),
             metadata={
                 "last_activity": _safe_datetime_to_utc_string(session.last_activity),
@@ -437,7 +627,15 @@ async def delete_session(
         # Check if session exists first
         session = await session_service.get_session(session_id)
         if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+            _log_session_not_found_rate_limited(session_id)
+            raise HTTPException(
+                status_code=404, 
+                detail=ErrorDetail(
+                    code=SessionErrorCode.SESSION_NOT_FOUND.value,
+                    message=f"Session not found: {session_id}",
+                    session_id=session_id
+                ).model_dump()
+            )
         
         # Delete session
         success = await session_service.delete_session(session_id)
@@ -452,6 +650,38 @@ async def delete_session(
         logger.error(f"Failed to delete session {session_id}: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to delete session: {str(e)}"
+        )
+
+
+@router.post("/cleanup", status_code=200)
+async def cleanup_expired_sessions(
+    session_service: SessionService = Depends(get_session_service),
+):
+    """
+    Manually trigger cleanup of expired sessions.
+    
+    This endpoint allows manual cleanup of sessions that have exceeded their
+    timeout period. It's useful for maintenance operations and ensuring
+    database hygiene.
+    
+    Returns:
+        Cleanup results including number of sessions cleaned up
+    """
+    try:
+        cleaned_count = await session_service.cleanup_expired_sessions()
+        
+        logger.info(f"Manual session cleanup completed: {cleaned_count} sessions cleaned")
+        
+        return {
+            "message": f"Successfully cleaned up {cleaned_count} expired sessions",
+            "cleaned_sessions": cleaned_count,
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
+        }
+    except Exception as e:
+        logger.error(f"Failed to cleanup expired sessions: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to cleanup expired sessions: {str(e)}"
         )
 
 
@@ -484,7 +714,14 @@ async def session_heartbeat(
             result = await session_service.update_last_activity(session_id)
         except FileNotFoundError:
             _log_session_not_found_rate_limited(session_id)
-            raise HTTPException(status_code=404, detail="Session not found or expired")
+            raise HTTPException(
+                status_code=404, 
+                detail=ErrorDetail(
+                    code=SessionErrorCode.SESSION_NOT_FOUND.value,
+                    message=f"Session not found or expired: {session_id}",
+                    session_id=session_id
+                ).model_dump()
+            )
         except RuntimeError as e:
             # Handle specific runtime errors from session service
             if "Session store unavailable" in str(e):
@@ -745,6 +982,35 @@ async def get_session_recovery_info(
         logger.error(f"Failed to get recovery info for session {session_id}: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to get recovery info: {str(e)}"
+        )
+
+
+@router.post("/cleanup")
+async def cleanup_expired_sessions(
+    session_service: SessionService = Depends(get_session_service),
+):
+    """
+    Clean up expired sessions (admin/testing endpoint).
+    
+    This endpoint triggers immediate cleanup of expired sessions.
+    In production, this runs automatically every 30 minutes.
+    
+    Returns:
+        Number of sessions cleaned up
+    """
+    try:
+        cleaned_count = await session_service.cleanup_expired_sessions()
+        logger.info(f"Manual session cleanup completed: {cleaned_count} sessions removed")
+        
+        return {
+            "cleaned_sessions": cleaned_count,
+            "message": f"Successfully cleaned up {cleaned_count} expired sessions"
+        }
+    except Exception as e:
+        logger.error(f"Failed to cleanup sessions: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to cleanup sessions: {str(e)}"
         )
 
 

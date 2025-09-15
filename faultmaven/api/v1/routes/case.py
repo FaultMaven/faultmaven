@@ -888,12 +888,19 @@ async def _generate_title_with_llm(context_text: str, case, max_words: int = 8, 
         
         # Prepare the prompt with NONE option for deterministic handling
         hint_text = f"\nHint: {hint}" if hint else ""
+        # Compose a robust prompt that prefers a concise, domain-specific title but
+        # falls back conservatively to an extractive short phrase when the LLM
+        # determines no coherent title can be produced. The NONE token provides a
+        # deterministic escape hatch; the final fallback uses the user's initial
+        # message first-words as a safe title.
         prompt = (
             f"Generate ONLY a concise, specific title (<= {max_words} words). "
             "Return ONLY the title, no quotes or punctuation, Title Case, avoid generic words "
             "(Issue/Problem/Troubleshooting/Conversation/Discussion/Untitled/New Chat). "
             "Use precise domain terms present in the content. If multiple themes exist, choose the dominant one.\n"
-            f"If a compliant title cannot be produced, return ONLY the token NONE.{hint_text}\n\n"
+            f"If the LLM cannot produce a compliant title, return ONLY the token NONE.{hint_text}\n\n"
+            "If the context does not suggest a coherent message, instead return the first few words "
+            "of the user's initial meaningful message as the title (this is a final fallback).\n\n"
             "Conversation (user messages emphasized):\n"
             f"{context_text}\n\n"
             "Title:"

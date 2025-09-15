@@ -62,6 +62,7 @@ graph LR
 | **Client Protection System** | Two-phase protection against malicious clients | Rate limiting, ML anomaly detection, Reputation |
 | **Interface-Based Tools** | Pluggable tool system with `BaseTool` interface | `KnowledgeBaseTool`, `WebSearchTool` |
 | **Context-Aware Analysis** | Intelligent evidence processing with interfaces | `IDataClassifier`, `ILogProcessor` |
+| **Multi-Session Management** | Client-based session resumption with concurrent sessions | Multiple sessions per user, device continuity |
 | **Comprehensive Observability** | LLM tracing and performance monitoring | Opik, `ITracer` interface |
 | **Dual Frontend Architecture** | Website for auth/management, Extension for troubleshooting | Website + Copilot Extension |
 | **User Management** | Authentication, billing, usage tracking | User accounts, subscriptions, billing |
@@ -211,7 +212,7 @@ FaultMaven implements a **modern 7-component Agentic Framework** ✅ **IMPLEMENT
 - **AgentService**: Orchestrates troubleshooting workflows using `ILLMProvider`, `ISanitizer`, `ITracer`, `List[BaseTool]`
 - **DataService**: Manages data processing using `IDataClassifier`, `ILogProcessor`, `IStorageBackend`
 - **KnowledgeService**: Handles knowledge base operations using `IVectorStore`, `IKnowledgeIngester`
-- **SessionService**: Provides session lifecycle management using `ISessionStore`
+- **SessionService**: Provides multi-session per user lifecycle management with client-based resumption using `ISessionStore`
 
 #### 3. **Core Domain** (`core/`)
 - **Agent**: LangGraph-based troubleshooting engine with 5-phase doctrine

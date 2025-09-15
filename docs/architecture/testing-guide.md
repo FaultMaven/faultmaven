@@ -154,7 +154,7 @@ pytest -m llm
 # Data processing pipeline tests
 pytest -m data_processing
 
-# Enhanced session management tests
+# Enhanced multi-session management tests (client-based resumption)
 pytest -m session
 
 # Intelligence system tests (new)

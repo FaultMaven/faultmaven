@@ -55,16 +55,42 @@ You can interact with the FaultMaven server using any API client (like `curl`, P
 
 ### Step 1: Submit Data
 
-First, let's submit a log file to start a new session. This `curl` command sends a log file to the `/data` endpoint. The server will respond with an initial analysis and a new `session-id`.
+First, let's create a new session or resume an existing one. FaultMaven now supports **multiple concurrent sessions per user** and **session resumption** across browser restarts using client-based session management.
 
 ```bash
 curl -X POST -F "file=@/path/to/your/logfile.log" http://localhost:8000/data
 ```
-Response: You'll get back a JSON object with insights and a session_id. Make sure to save the session-id for the next step.
+**Create New Session:**
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"timeout_minutes": 60, "session_type": "troubleshooting"}' \
+  http://localhost:8000/api/v1/sessions
+```
+
+**Resume Session with Client ID:**
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"client_id": "my-device-123", "timeout_minutes": 60, "session_type": "troubleshooting"}' \
+  http://localhost:8000/api/v1/sessions
+```
+
+Response: You'll get back a JSON object with `session_id`, and if resuming, `session_resumed: true`. The response indicates whether a new session was created or an existing session was resumed.
 
 ### Step 2: Ask a Question
 
-Now, use the session-id you received to ask a question about the data you just uploaded. This curl command sends a query to the /query endpoint, passing the session-id in the headers.
+Now, upload data to your session and then ask questions. With multi-session support, you can maintain multiple troubleshooting contexts simultaneously.
+
+**Upload Data to Session:**
+```bash
+curl -X POST \
+  -F "file=@/path/to/your/logfile.log" \
+  -F "session_id=<your-session-id>" \
+  http://localhost:8000/api/v1/data/upload
+```
+
+**Ask Questions:** Use the session-id you received to ask questions about the data.
 
 ```bash
 curl -X POST \
@@ -74,3 +100,9 @@ curl -X POST \
   http://localhost:8000/query
 ```
 Response: FaultMaven will provide a detailed answer based on its analysis of the log file in the context of your session.
+
+**Multi-Session Benefits:**
+- **Session Resumption**: Use the same `client_id` to resume sessions across browser restarts
+- **Multiple Contexts**: Maintain separate troubleshooting sessions for different issues
+- **Device Continuity**: Access your sessions from multiple devices
+- **Collaborative Tabs**: Multiple browser tabs can share the same session using the same `client_id`

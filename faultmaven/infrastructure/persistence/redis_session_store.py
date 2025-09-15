@@ -132,3 +132,82 @@ class RedisSessionStore(ISessionStore):
         full_key = f"{self.prefix}{key}"
         ttl = ttl if ttl is not None else self.default_ttl
         return await self.redis_client.expire(full_key, ttl)
+    
+    async def find_by_user_and_client(self, user_id: str, client_id: str) -> Optional[str]:
+        """
+        Find session ID by user_id and client_id combination.
+        
+        Args:
+            user_id: User identifier to search for
+            client_id: Client/device identifier to search for
+            
+        Returns:
+            Session ID if found, None if no matching session exists
+        """
+        if not self._connection_healthy or not self.redis_client:
+            raise ConnectionError("Redis connection not available")
+        
+        try:
+            client_index_key = f"client_index:{user_id}:{client_id}"
+            session_id = await self.redis_client.get(client_index_key)
+            
+            if session_id:
+                # Decode bytes to string if needed
+                if isinstance(session_id, bytes):
+                    session_id = session_id.decode('utf-8')
+                return session_id
+            return None
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Redis find_by_user_and_client operation failed for user {user_id}, client {client_id}: {e}")
+            self._connection_healthy = False
+            raise ConnectionError(f"Redis operation failed: {e}")
+    
+    async def index_session_by_client(self, user_id: str, client_id: str, session_id: str, ttl: int) -> None:
+        """
+        Create or update index entry for (user_id, client_id) -> session_id mapping.
+        
+        Args:
+            user_id: User identifier for the index key
+            client_id: Client/device identifier for the index key
+            session_id: Session ID to index
+            ttl: Time to live in seconds
+        """
+        if not self._connection_healthy or not self.redis_client:
+            raise ConnectionError("Redis connection not available")
+        
+        try:
+            client_index_key = f"client_index:{user_id}:{client_id}"
+            
+            # Use Redis pipeline for atomic operation
+            pipe = self.redis_client.pipeline()
+            pipe.set(client_index_key, session_id, ex=ttl)
+            await pipe.execute()
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Redis index_session_by_client operation failed for user {user_id}, client {client_id}, session {session_id}: {e}")
+            self._connection_healthy = False
+            raise ConnectionError(f"Redis operation failed: {e}")
+    
+    async def remove_client_index(self, user_id: str, client_id: str) -> None:
+        """
+        Remove client index entry for cleanup.
+        
+        Args:
+            user_id: User identifier for the index key
+            client_id: Client/device identifier for the index key
+        """
+        if not self._connection_healthy or not self.redis_client:
+            raise ConnectionError("Redis connection not available")
+        
+        try:
+            client_index_key = f"client_index:{user_id}:{client_id}"
+            await self.redis_client.delete(client_index_key)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Redis remove_client_index operation failed for user {user_id}, client {client_id}: {e}")
+            # Don't mark connection as unhealthy for cleanup operations
+            # Just log and continue

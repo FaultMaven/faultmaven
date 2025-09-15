@@ -4,6 +4,13 @@
 
 This guide provides step-by-step instructions for integrating the new 7-component agentic framework with the existing FaultMaven infrastructure. The integration process involves updating the dependency injection container, modifying API endpoints, and ensuring seamless backward compatibility.
 
+## API Compatibility and Deprecation
+
+- **Deprecated endpoints**: legacy `/api/v1/agent/*` endpoints have been removed from the live API specification and should no longer be used. The live spec in `FaultMaven/docs/api/openapi.live.json` has been updated and a backup was preserved.
+- **Authoritative contract**: the canonical API contract is maintained in `FaultMaven/docs/api/openapi.locked.yaml`. Consult that file for the current supported endpoints and data models.
+- **Canonical usage**: integrations should use the case-scoped endpoints (for example, create a case with `POST /api/v1/cases` and submit queries with `POST /api/v1/cases/{case_id}/queries`) instead of legacy agent endpoints.
+- **Why this changed**: the case-scoped model improves REST compliance, simplifies multi-tenant/case isolation, and aligns the frontend client with the locked OpenAPI contract.
+
 ## Prerequisites
 
 ### System Requirements

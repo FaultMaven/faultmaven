@@ -763,6 +763,113 @@ class ISessionStore(ABC):
         """
         pass
 
+    @abstractmethod
+    async def find_by_user_and_client(self, user_id: str, client_id: str) -> Optional[str]:
+        """Find session ID by user_id and client_id combination.
+        
+        This method enables client-based session resumption by looking up
+        existing sessions associated with a specific user and client/device
+        identifier combination.
+        
+        Args:
+            user_id: User identifier to search for
+            client_id: Client/device identifier to search for
+            
+        Returns:
+            Session ID if found, None if no matching session exists or
+            if the client index has expired.
+            
+        Raises:
+            SessionStoreException: When search operation fails
+            
+        Example:
+            Find existing session for client resumption:
+            
+            >>> session_id = await session_store.find_by_user_and_client("user_123", "client_456")
+            >>> if session_id:
+                # Resume existing session
+                session = await session_store.get(session_id)
+            else:
+                # Create new session for this client
+                new_session = await create_new_session(user_id, client_id)
+            
+        Note:
+            Returns None for expired or invalid client indexes.
+            Client indexes automatically expire with their associated sessions.
+            This operation should be fast and not require full session data retrieval.
+        """
+        pass
+        
+    @abstractmethod
+    async def index_session_by_client(self, user_id: str, client_id: str, session_id: str, ttl: int) -> None:
+        """Create or update index entry for (user_id, client_id) -> session_id mapping.
+        
+        This method maintains a reverse index that allows efficient lookup of
+        sessions by client identifier. The index should have the same TTL as
+        the session to ensure consistency.
+        
+        Args:
+            user_id: User identifier for the index key
+            client_id: Client/device identifier for the index key
+            session_id: Session ID to index
+            ttl: Time to live in seconds (should match session TTL)
+            
+        Raises:
+            SessionStoreException: When index creation fails
+            
+        Example:
+            Create client index for new session:
+            
+            >>> await session_store.index_session_by_client("user_123", "client_456", "session_789", 1800)
+            
+            Update client index TTL to match session extension:
+            
+            >>> await session_store.extend_ttl("session_789", 3600)
+            >>> await session_store.index_session_by_client("user_123", "client_456", "session_789", 3600)
+            
+        Note:
+            This operation should be atomic to prevent race conditions.
+            Index TTL should be synchronized with session TTL for consistency.
+            Multiple clients for same user should be supported.
+        """
+        pass
+        
+    @abstractmethod
+    async def remove_client_index(self, user_id: str, client_id: str) -> None:
+        """Remove client index entry for cleanup.
+        
+        This method removes stale client index entries when sessions expire
+        or are explicitly deleted. Essential for preventing index pollution
+        and false positive lookups.
+        
+        Args:
+            user_id: User identifier for the index key
+            client_id: Client/device identifier for the index key
+            
+        Raises:
+            SessionStoreException: When index removal fails
+            
+        Example:
+            Clean up expired session index:
+            
+            >>> session_id = await session_store.find_by_user_and_client("user_123", "client_456")
+            >>> if session_id:
+                session = await session_store.get(session_id)
+                if not session:  # Session expired but index remains
+                    await session_store.remove_client_index("user_123", "client_456")
+            
+            Clean up index during explicit session deletion:
+            
+            >>> await session_store.delete("session_789")
+            >>> await session_store.remove_client_index("user_123", "client_456")
+            
+        Note:
+            This operation is idempotent - safe to call multiple times.
+            Should be called during session cleanup operations.
+            Does not affect the actual session data, only the client index.
+        """
+        pass
+
 
 class IConfiguration(ABC):
     """Interface for centralized configuration management.

@@ -6,25 +6,32 @@ This document defines the fundamental concepts of **Cases** and **Sessions** in 
 
 ## Key Concepts
 
-### Session (Temporary Connection)
-A **Session** represents a user's **temporary authentication state** with FaultMaven. It is a short-lived identifier used for authentication and authorization purposes only.
+### Session (Client-Based Authentication)
+A **Session** represents a user's **client-based authentication state** with FaultMaven, enabling multiple concurrent sessions per user with session resumption capabilities.
 
-**Characteristics:**
-- **Lifespan**: 24 hours by default (configurable)
-- **Scope**: User-specific authentication token
-- **Purpose**: **Authentication and authorization only** - NOT a container for cases
-- **Persistence**: Redis-backed with TTL for security
-- **Identifier**: `session_id` (UUID)
+**Enhanced Characteristics:**
+- **Lifespan**: Configurable TTL (default: 24 hours) with resumption support
+- **Scope**: **Multiple concurrent sessions per user** (one per client/device)
+- **Purpose**: **Client-based authentication with session continuity**
+- **Persistence**: Redis-backed with multi-index (user_id, client_id) → session_id mapping
+- **Identifier**: `session_id` (UUID) + optional `client_id` for resumption
+- **Multi-Session Support**: Each user can maintain multiple active sessions simultaneously
+- **Session Resumption**: Same `client_id` can resume sessions across browser restarts
 
 **Contains:**
 - User authentication state
-- Session creation/expiry timestamps
+- Session creation/expiry timestamps 
 - User identity information
+- **Client identification** for session resumption
+- **Session resumption status** and metadata
+- **Multi-device session tracking**
 
 **Does NOT Contain:**
 - ❌ Cases (cases are independent resources)
 - ❌ Case history (cases manage their own history)  
 - ❌ Current active case ID (frontend UI state)
+- ❌ Other users' session data (strict isolation)
+- ❌ Cross-client session data (each client maintains independent session)
 
 ### Case (Permanent Investigation Record)
 A **Case** represents a **permanent, independent troubleshooting investigation**. Each case is a top-level resource that maintains its own complete lifecycle and data.
@@ -46,21 +53,38 @@ A **Case** represents a **permanent, independent troubleshooting investigation**
 
 ## Relationship Architecture
 
-**CORRECT: Independent Top-Level Resources**
+**ENHANCED: Multi-Session Independent Resources**
 ```
-User Authentication Session (24h TTL) ──── Authentication ────┐
-│                                                             │
-├── session_id: str                                           │
-├── user_id: str                                              │
-├── created_at: datetime                                      │
-├── last_activity: datetime                                   │ 
-└── expires_at: datetime                                      │
-                                                              │
-                                                              │ 
-Case (Permanent Resource) ◄──── Authorized Access ───────────┘
+User Multi-Session Architecture ──── Authentication ────┐
+│                                                        │
+├── User ID: user_123                                    │
+│                                                        │
+├── Session 1 (Client: browser-chrome-abc)              │
+│   ├── session_id: session_abc123                      │
+│   ├── client_id: browser-chrome-abc                   │
+│   ├── created_at: datetime                             │
+│   ├── last_activity: datetime                         │ 
+│   ├── expires_at: datetime (24h TTL)                  │
+│   └── session_resumed: false                          │
+│                                                        │
+├── Session 2 (Client: mobile-app-def)                  │
+│   ├── session_id: session_def456                      │
+│   ├── client_id: mobile-app-def                       │
+│   ├── created_at: datetime                             │
+│   ├── last_activity: datetime                         │ 
+│   ├── expires_at: datetime (24h TTL)                  │
+│   └── session_resumed: true                           │
+│                                                        │
+└── Session 3 (Client: browser-firefox-ghi)             │
+    ├── session_id: session_ghi789                      │
+    ├── client_id: browser-firefox-ghi                  │
+    └── ... (similar structure)                         │
+                                                         │
+                                                         │ 
+Case (Permanent Resource) ◄──── Authorized Access ──────┘
 │
 ├── case_id: str (PRIMARY KEY)
-├── user_id: str (authorization reference)
+├── user_id: str (authorization reference - shared across all user sessions)
 ├── title: str  
 ├── status: enum ("active", "investigating", "solved", "stalled", "archived")
 ├── priority: enum ("low", "medium", "high", "critical")
@@ -72,44 +96,58 @@ Case (Permanent Resource) ◄──── Authorized Access ──────�
 └── recommended_actions: List[Action]
 ```
 
-**Key Architectural Principle**: Cases are **NOT** nested under sessions. Sessions provide **authentication context only**.
+**Key Architectural Principles**: 
+- Cases are **NOT** nested under sessions. Sessions provide **authentication context only**.
+- **Multiple concurrent sessions per user**: Each client/device maintains independent session
+- **Session resumption**: Same client_id can resume sessions across browser restarts
+- **Cross-session case access**: All user sessions can access same cases (authorization via user_id)
+- **Session isolation**: Each session maintains independent authentication state
 
 ## Correct Usage Flows
 
-### User Authentication
+### User Authentication (Multi-Session Enhanced)
 1. User opens FaultMaven browser extension
-2. System creates new `session_id` (24h TTL for authentication only)
-3. Session stores: user_id, timestamps, expiry
-4. **No case data stored in session**
+2. Frontend generates persistent `client_id` (stored in localStorage)
+3. System creates new `session_id` or resumes existing session for (user_id, client_id)
+4. Session stores: user_id, client_id, timestamps, expiry, resumption status
+5. **Multiple concurrent sessions supported per user**
+6. **No case data stored in session** (cases remain independent)
 
-### Creating a New Case
-1. User clicks "New Case" or submits first query
+### Creating a New Case (Multi-Session Compatible)
+1. User clicks "New Case" or submits first query from any active session
 2. Frontend sends: `POST /api/v1/cases` with `X-Session-ID: {session_id}` header
-3. Backend validates session authentication
+3. Backend validates session authentication (works with any user session)
 4. System generates new `case_id` as **top-level resource**
 5. Case stores: title, user_id, initial query, timestamps
-6. Returns complete ViewState for frontend rendering
+6. **Case accessible from all user sessions** (authorization via user_id)
+7. Returns complete ViewState for frontend rendering
 
-### Querying an Existing Case
-1. User submits follow-up query in existing case
+### Querying an Existing Case (Multi-Session Enhanced)
+1. User submits follow-up query in existing case from any active session
 2. Frontend sends: `POST /api/v1/cases/{case_id}/query` with `X-Session-ID: {session_id}` header
-3. Backend validates session authentication AND case authorization
-4. System retrieves conversation history from case record
-5. Injects full conversation context into LLM prompt
-6. Records new query/response in case conversation history
-7. Returns updated ViewState with complete case context
+3. Backend validates session authentication AND case authorization (user_id match)
+4. **Works across all user sessions**: Case accessible from any user's active session
+5. System retrieves conversation history from case record
+6. Injects full conversation context into LLM prompt
+7. Records new query/response in case conversation history
+8. Returns updated ViewState with complete case context
 
-### Case List and Navigation
-1. User wants to see all their cases
+### Case List and Navigation (Multi-Session Enhanced)
+1. User wants to see all their cases from any active session
 2. Frontend sends: `GET /api/v1/cases` with `X-Session-ID: {session_id}` header  
 3. Backend validates session and returns cases where case.user_id matches session.user_id
-4. User can switch between cases without losing any conversation history
+4. **Consistent case list across all user sessions**: Same cases visible from all devices
+5. User can switch between cases without losing any conversation history
+6. **Cross-session case continuity**: Cases started on one device accessible on all devices
 
-### Session Expiry and Case Persistence
-1. User session expires after 24 hours (authentication timeout)
+### Session Management and Case Persistence (Multi-Session)
+1. Individual sessions expire after configured TTL (authentication timeout)
 2. **Cases remain permanently accessible** - they are independent resources
-3. User re-authenticates → new session_id created
-4. All existing cases remain available through case_id references
+3. **Session resumption**: Same client_id can resume expired sessions
+4. **Multi-session resilience**: Other active sessions continue if one expires
+5. User creates new session or resumes existing → new/resumed session_id
+6. All existing cases remain available through case_id references
+7. **Enhanced continuity**: Session resumption provides seamless user experience
 
 ## Implementation Details
 
@@ -117,13 +155,16 @@ Case (Permanent Resource) ◄──── Authorized Access ──────�
 
 ```python
 class SessionContext(BaseModel):
-    """Authentication session - DOES NOT contain case data"""
+    """Multi-session authentication - DOES NOT contain case data"""
     session_id: str
     user_id: str
+    client_id: Optional[str]  # For session resumption
     created_at: datetime
     last_activity: datetime
     expires_at: datetime
+    session_resumed: bool = False  # Indicates if session was resumed
     # NO case_history, NO current_case_id - sessions are for auth only
+    # Multiple concurrent sessions per user supported
 
 class Case(BaseModel):
     """Independent case resource with complete lifecycle"""

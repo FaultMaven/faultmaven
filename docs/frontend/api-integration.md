@@ -776,7 +776,7 @@ This integration guide ensures the frontend meets all requirements:
 - Interactive components for different response types (plans, clarifications, etc.)
 // Submit troubleshooting query
 export const submitQuery = async (request: SubmitQueryRequest): Promise<AgentResponse> => {
-  const response = await faultMavenApi.post('/api/v1/agent/query', request);
+  const response = await faultMavenApi.post('/api/v1/cases/{case_id}/queries', request);
   return response.data;
 };
 
@@ -792,7 +792,7 @@ export const submitQueryWithFiles = async (
     formData.append(`file_${index}`, file);
   });
   
-  const response = await faultMavenApi.post('/api/v1/agent/query', formData, {
+  const response = await faultMavenApi.post('/api/v1/cases/{case_id}/queries', formData, {
     headers: {
       'Content-Type': 'multipart/form-data'
     }
@@ -1339,11 +1339,11 @@ The following endpoints are available according to the OpenAPI specification:
 - **Implementation**: Frontend uses session_id for navigation, case_id for troubleshooting context
 
 #### Agent Operations
-- `POST /api/v1/agent/query` - Submit troubleshooting query (returns `AgentResponse`)
+- `POST /api/v1/cases/{case_id}/queries` - Submit troubleshooting query (returns `AgentResponse`)
 
 #### Case Management
-- `GET /api/v1/agent/cases/{case_id}` - Get case details
-- `GET /api/v1/agent/sessions/{session_id}/cases` - List cases for a session
+- `GET /api/v1/cases/{case_id}` - Get case details
+- `GET /api/v1/sessions/{session_id}/cases` - List cases for a session
 
 #### Session Management
 - `POST /api/v1/sessions` - Create new session

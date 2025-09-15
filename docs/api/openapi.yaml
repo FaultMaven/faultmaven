@@ -1,9 +1,50 @@
 openapi: 3.1.0
 info:
   title: FaultMaven API
-  description: AI-powered troubleshooting assistant for Engineers, SREs, and DevOps
-    professionals
+  description: "\n# FaultMaven API Documentation\n\nAI-powered troubleshooting assistant\
+    \ for Engineers, SREs, and DevOps professionals.\n\n## Architecture Overview\n\
+    \nThe FaultMaven API follows clean architecture principles with:\n\n- **API Layer**:\
+    \ FastAPI routers handling HTTP requests with comprehensive middleware\n- **Service\
+    \ Layer**: Business logic orchestration using dependency injection\n- **Core Layer**:\
+    \ Domain logic including AI reasoning engine and data processing\n- **Infrastructure\
+    \ Layer**: External service integrations (LLM providers, databases, security)\n\
+    \n## Key Features\n\n- **AI-Powered Troubleshooting**: Advanced reasoning engine\
+    \ using multiple LLM providers\n- **Privacy-First Design**: Comprehensive PII\
+    \ redaction before external processing\n- **Session Management**: Redis-backed\
+    \ session persistence for multi-turn conversations\n- **Knowledge Base**: RAG-enabled\
+    \ document ingestion and retrieval using ChromaDB\n- **Data Processing**: Intelligent\
+    \ log analysis and classification\n- **Performance Monitoring**: Real-time metrics\
+    \ and health monitoring\n- **Error Recovery**: Automatic error detection and recovery\
+    \ mechanisms\n\n## Authentication\n\nCurrently, the API does not require authentication.\
+    \ This may change in future versions.\nWhen implemented, authentication will use\
+    \ API key-based authentication.\n\n## Rate Limiting\n\nAPI requests are subject\
+    \ to rate limiting to ensure fair usage and system stability.\nCurrent limits\
+    \ are applied at the infrastructure level.\n\n## Error Handling\n\nAll endpoints\
+    \ return structured error responses with appropriate HTTP status codes.\n\n###\
+    \ Standard Error Response Format\n\n```json\n{\n    \"detail\": \"Human-readable\
+    \ error description\",\n    \"error_type\": \"ErrorType\",\n    \"correlation_id\"\
+    : \"uuid-here\",\n    \"timestamp\": \"2025-01-15T10:30:00Z\"\n}\n```\n\n### Common\
+    \ HTTP Status Codes\n\n- `200`: Success\n- `400`: Bad Request - Invalid input\
+    \ data\n- `401`: Unauthorized - Authentication required (future)\n- `404`: Not\
+    \ Found - Resource not found\n- `422`: Validation Error - Request data validation\
+    \ failed\n- `429`: Too Many Requests - Rate limit exceeded\n- `500`: Internal\
+    \ Server Error - Unexpected server error\n- `503`: Service Unavailable - External\
+    \ service unavailable\n\n## Data Privacy\n\nAll data submitted to the API is processed\
+    \ through privacy-first pipelines with:\n\n- Comprehensive PII redaction using\
+    \ Microsoft Presidio\n- Data sanitization before external LLM processing\n- Session-based\
+    \ data isolation\n- Configurable data retention policies\n\n## Performance Characteristics\n\
+    \n- **Response Time**: < 200ms for typical queries (excluding LLM processing)\n\
+    - **Throughput**: Supports 100+ concurrent requests\n- **Availability**: 99.9%\
+    \ uptime target with health monitoring\n- **Scalability**: Horizontal scaling\
+    \ support via stateless design\n        "
   version: 1.0.0
+  contact:
+    name: FaultMaven Team
+    email: support@faultmaven.ai
+    url: https://faultmaven.ai
+  license:
+    name: Proprietary
+    url: https://faultmaven.ai/license
 paths:
   /api/v1/data:
     post:
@@ -11,19 +52,29 @@ paths:
       - data_ingestion
       - data_processing
       summary: Upload Data Compat
-      description: 'Compatibility endpoint for legacy tests - delegates to main upload
-        function
-
-
-        This endpoint maintains backward compatibility for existing tests that
-
-        expect POST to /data instead of /data/upload.'
+      description: Upload and process log files, configuration files, or other diagnostic
+        data
       operationId: upload_data_compat_api_v1_data_post
       requestBody:
         content:
           multipart/form-data:
             schema:
               $ref: '#/components/schemas/Body_upload_data_compat_api_v1_data_post'
+            examples:
+              log_file_upload:
+                summary: Application Log File
+                description: Upload application logs for analysis
+                value:
+                  file: '[Binary log file content]'
+                  file_type: application_logs
+                  description: Production API server logs from the last 24 hours
+              kubernetes_yaml:
+                summary: Kubernetes Configuration
+                description: Upload Kubernetes YAML for configuration analysis
+                value:
+                  file: '[YAML configuration content]'
+                  file_type: kubernetes_config
+                  description: Deployment configuration showing resource issues
         required: true
       responses:
         '201':
@@ -327,6 +378,29 @@ paths:
           multipart/form-data:
             schema:
               $ref: '#/components/schemas/Body_upload_document_api_v1_knowledge_documents_post'
+            examples:
+              runbook_upload:
+                summary: Troubleshooting Runbook
+                description: Upload team runbook for knowledge base
+                value:
+                  file: '[PDF or Markdown runbook content]'
+                  document_type: runbook
+                  tags:
+                  - database
+                  - troubleshooting
+                  - postgresql
+                  description: Database troubleshooting procedures and common fixes
+              documentation_upload:
+                summary: System Documentation
+                description: Upload system architecture documentation
+                value:
+                  file: '[Documentation content]'
+                  document_type: architecture_doc
+                  tags:
+                  - architecture
+                  - microservices
+                  - system_design
+                  description: Microservices architecture overview and dependencies
       responses:
         '201':
           description: Successful Response
@@ -967,9 +1041,19 @@ paths:
       - session_management
       - session_management
       summary: Create Session
-      description: "Create a new troubleshooting session.\n\nArgs:\n    request: Session\
-        \ creation parameters\n    user_id: Optional user identifier (query param)\n\
-        \nReturns:\n    Session creation response"
+      description: "Create or resume a troubleshooting session.\n\n**Session Creation\
+        \ & Resumption:**\n- If `client_id` is provided and matches an active session,\
+        \ that session is resumed\n- If `client_id` matches an expired session, returns\
+        \ 404/410 error (frontend creates new session)\n- If `client_id` is new or\
+        \ not provided, creates fresh session\n\n**Session Timeout:**\n- Sessions\
+        \ automatically expire after `timeout_minutes` of inactivity\n- Default timeout:\
+        \ 180 minutes (3 hours)\n- Min timeout: 60 minutes, Max timeout: 480 minutes\n\
+        - Expired sessions cannot be resumed and return 404/410 errors\n\n**Frontend\
+        \ Crash Recovery:**\n- Browser crashes: Session resumes if within timeout\
+        \ window\n- Extended downtime: Session expires, new session created automatically\n\
+        \nArgs:\n    request: Session creation parameters including optional client_id\
+        \ and timeout\n    user_id: Optional user identifier (query param)\n\nReturns:\n\
+        \    Session creation/resumption response with expiration information"
       operationId: create_session_api_v1_sessions_post
       parameters:
       - name: user_id
@@ -988,18 +1072,88 @@ paths:
               - $ref: '#/components/schemas/SessionCreateRequest'
               - type: 'null'
               title: Request
+            examples:
+              new_session:
+                summary: Create New Session
+                description: Start a new troubleshooting session
+                value:
+                  timeout_minutes: 60
+                  session_type: troubleshooting
+                  metadata:
+                    environment: production
+                    team: platform-team
+                    incident_priority: high
+              resume_session_with_client_id:
+                summary: Resume Session with Client ID
+                description: Resume existing session using client identifier for session
+                  continuity
+                value:
+                  timeout_minutes: 60
+                  session_type: troubleshooting
+                  client_id: browser-client-abc123
+                  metadata:
+                    environment: production
+                    team: platform-team
       responses:
         '201':
-          description: Successful Response
+          description: Session created or resumed successfully
           content:
             application/json:
               schema: {}
-        '422':
-          description: Validation Error
+              examples:
+                new_session:
+                  summary: New session created
+                  value:
+                    session_id: 550e8400-e29b-41d4-a716-446655440000
+                    user_id: user_123
+                    client_id: browser-client-abc123
+                    created_at: '2025-01-15T10:00:00Z'
+                    expires_at: '2025-01-15T13:00:00Z'
+                    status: active
+                    session_type: troubleshooting
+                    session_resumed: false
+                    timeout_minutes: 180
+                    message: Session created successfully
+                resumed_session:
+                  summary: Existing session resumed
+                  value:
+                    session_id: 550e8400-e29b-41d4-a716-446655440000
+                    user_id: user_123
+                    client_id: browser-client-abc123
+                    created_at: '2025-01-15T09:30:00Z'
+                    expires_at: '2025-01-15T14:30:00Z'
+                    status: active
+                    session_type: troubleshooting
+                    session_resumed: true
+                    timeout_minutes: 300
+                    message: Session resumed successfully
+        '404':
+          description: Session expired or not found (when resuming with client_id)
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+              examples:
+                session_expired:
+                  summary: Session expired
+                  value:
+                    detail: Session expired after 180 minutes of inactivity
+        '410':
+          description: Session gone (alternative to 404 for expired sessions)
+          content:
+            application/json:
+              examples:
+                session_gone:
+                  summary: Session no longer available
+                  value:
+                    detail: Session not found
+        '422':
+          description: Validation error (invalid timeout_minutes)
+          content:
+            application/json:
+              examples:
+                invalid_timeout:
+                  summary: Invalid timeout value
+                  value:
+                    detail: timeout_minutes must be between 60 and 480 minutes
     get:
       tags:
       - session_management
@@ -1193,6 +1347,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/sessions/cleanup:
+    post:
+      tags:
+      - session_management
+      - session_management
+      summary: Cleanup Expired Sessions
+      description: "Clean up expired sessions (admin/testing endpoint).\n\nThis endpoint\
+        \ triggers immediate cleanup of expired sessions.\nIn production, this runs\
+        \ automatically every 30 minutes.\n\nReturns:\n    Number of sessions cleaned\
+        \ up"
+      operationId: cleanup_expired_sessions_api_v1_sessions_cleanup_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
   /api/v1/sessions/{session_id}/heartbeat:
     post:
       tags:
@@ -1511,8 +1682,11 @@ paths:
             schema:
               $ref: '#/components/schemas/CaseUpdateRequest'
       responses:
-        '204':
+        '200':
           description: Successful Response
+          content:
+            application/json:
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2045,6 +2219,12 @@ paths:
         schema:
           type: string
           title: Case Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
       responses:
         '200':
           description: Successful Response
@@ -2846,9 +3026,6 @@ components:
       properties:
         schema_version:
           type: string
-          enum:
-          - 3.1.0
-          const: 3.1.0
           title: Schema Version
           default: 3.1.0
         content:
@@ -3093,6 +3270,11 @@ components:
           - type: string
           - type: 'null'
           title: Session Id
+        owner_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Id
       type: object
       required:
       - case_id
@@ -3467,66 +3649,55 @@ components:
         document_id:
           type: string
           title: Document Id
-          description: Unique document identifier
         title:
           type: string
           title: Title
-          description: Document title
         content:
           type: string
           title: Content
-          description: Document content
         document_type:
           type: string
           title: Document Type
-          description: Type of document (e.g., troubleshooting guide, FAQ)
         category:
           anyOf:
           - type: string
           - type: 'null'
           title: Category
-          description: Document category for organization
         status:
           type: string
           title: Status
-          description: Document processing status
           default: processed
         tags:
           items:
             type: string
           type: array
           title: Tags
-          description: Tags for categorization
         source_url:
           anyOf:
           - type: string
           - type: 'null'
           title: Source Url
-          description: Source URL if applicable
         created_at:
           type: string
-          format: date-time
           title: Created At
-          description: Document creation timestamp
         updated_at:
           type: string
-          format: date-time
           title: Updated At
-          description: Last update timestamp
         metadata:
           anyOf:
           - type: object
           - type: 'null'
           title: Metadata
-          description: Additional document metadata
       type: object
       required:
       - document_id
       - title
       - content
       - document_type
+      - created_at
+      - updated_at
       title: KnowledgeBaseDocument
-      description: Model for knowledge base documents
+      description: Response model for knowledge base document operations.
     Message:
       properties:
         message_id:
@@ -3593,6 +3764,7 @@ components:
           type: string
           enum:
           - pending
+          - processing
           - running
           - completed
           - failed
@@ -3633,6 +3805,40 @@ components:
       - status
       title: QueryJobStatus
       description: Case-scoped query job status tracking model.
+    QueryRequest:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        query:
+          type: string
+          title: Query
+        context:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Context
+        priority:
+          type: string
+          enum:
+          - low
+          - normal
+          - medium
+          - high
+          - critical
+          title: Priority
+          default: normal
+        timestamp:
+          type: string
+          title: Timestamp
+      type: object
+      required:
+      - session_id
+      - query
+      title: QueryRequest
+      description: 'The JSON payload sent from the frontend when the user asks a question.
+
+        Note: case_id is provided in the URL path, not in the request body.'
     ResponseType:
       type: string
       enum:
@@ -3709,11 +3915,17 @@ components:
         timeout_minutes:
           anyOf:
           - type: integer
-            maximum: 1440.0
-            minimum: 1.0
+            maximum: 480.0
+            minimum: 60.0
           - type: 'null'
           title: Timeout Minutes
-          default: 30
+          description: 'Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8
+            hours), Default: 180 (3 hours)'
+          default: 180
+          examples:
+          - 180
+          - 240
+          - 360
         session_type:
           anyOf:
           - type: string
@@ -3726,49 +3938,91 @@ components:
           - type: object
           - type: 'null'
           title: Metadata
+        client_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Client Id
+          description: Client/device identifier for session resumption. If provided,
+            existing session for this client will be resumed.
+          examples:
+          - 550e8400-e29b-41d4-a716-446655440000
       type: object
       title: SessionCreateRequest
       description: Request model for session creation.
     SessionResponse:
-      properties:
-        schema_version:
-          type: string
-          enum:
-          - 3.1.0
-          const: 3.1.0
-          title: Schema Version
-          default: 3.1.0
-        session_id:
-          type: string
-          title: Session Id
-        user_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: User Id
-        status:
-          type: string
-          title: Status
-          default: active
-        created_at:
-          type: string
-          title: Created At
-        expires_at:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Expires At
-        metadata:
-          anyOf:
-          - type: object
-          - type: 'null'
-          title: Metadata
       type: object
       required:
       - session_id
-      - created_at
-      title: SessionResponse
-      description: Response payload for session operations - API spec compliance.
+      - status
+      properties:
+        session_id:
+          type: string
+          description: Unique session identifier
+        user_id:
+          type: string
+          description: Associated user identifier
+          nullable: true
+        client_id:
+          type: string
+          description: Client/device identifier for session resumption
+          nullable: true
+        status:
+          type: string
+          enum:
+          - active
+          - idle
+          - expired
+          description: Current session status
+        created_at:
+          type: string
+          format: date-time
+          description: Session creation timestamp
+        session_resumed:
+          type: boolean
+          description: Indicates if this was an existing session resumed
+          nullable: true
+        session_type:
+          type: string
+          description: Type of session (e.g., troubleshooting)
+        message:
+          type: string
+          description: Status message about session creation/resumption
+        metadata:
+          type: object
+          description: Session metadata and context
+      examples:
+        new_session:
+          summary: New Session Created
+          value:
+            session_id: session_abc123
+            user_id: user_123
+            client_id: browser-client-abc123
+            status: active
+            created_at: '2025-01-15T10:00:00Z'
+            session_resumed: false
+            session_type: troubleshooting
+            message: Session created successfully
+            metadata:
+              environment: production
+              team: platform-team
+        resumed_session:
+          summary: Existing Session Resumed
+          value:
+            session_id: session_existing_456
+            user_id: user_123
+            client_id: browser-client-abc123
+            status: active
+            created_at: '2025-01-15T09:30:00Z'
+            session_resumed: true
+            session_type: troubleshooting
+            message: Session resumed successfully
+            metadata:
+              environment: production
+              team: platform-team
+              investigations_count: 2
     SessionRestoreRequest:
       properties:
         restore_point:
@@ -3790,6 +4044,14 @@ components:
       - restore_point
       title: SessionRestoreRequest
       description: Request model for session restoration.
+    SessionStatus:
+      type: string
+      enum:
+      - active
+      - expired
+      - terminated
+      title: SessionStatus
+      description: Defines the status of user sessions.
     Source:
       properties:
         type:
@@ -3962,6 +4224,16 @@ components:
           - type: string
           - type: 'null'
           title: Loading State
+        memory_context:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Memory Context
+        planning_state:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Planning State
       type: object
       required:
       - session_id
@@ -3971,3 +4243,265 @@ components:
         state.
 
         This is the single source of truth for what the frontend should display.'
+    ErrorResponse:
+      type: object
+      required:
+      - detail
+      properties:
+        detail:
+          type: string
+          description: Human-readable error description
+        error_type:
+          type: string
+          description: Machine-readable error classification
+          enum:
+          - ValidationError
+          - AuthenticationError
+          - AuthorizationError
+          - NotFoundError
+          - RateLimitError
+          - ServiceUnavailableError
+          - InternalServerError
+        correlation_id:
+          type: string
+          format: uuid
+          description: Unique identifier for request tracing and support
+        timestamp:
+          type: string
+          format: date-time
+          description: Error occurrence timestamp in ISO format
+        context:
+          type: object
+          description: Additional error context for debugging
+      example:
+        detail: Invalid session ID provided
+        error_type: ValidationError
+        correlation_id: 123e4567-e89b-12d3-a456-426614174000
+        timestamp: '2025-01-15T10:30:00Z'
+        context:
+          session_id: invalid_session_123
+          validation_errors:
+          - Session ID format invalid
+    TroubleshootingResponse:
+      type: object
+      required:
+      - investigation_id
+      - status
+      - session_id
+      properties:
+        investigation_id:
+          type: string
+          description: Unique identifier for this troubleshooting investigation
+        status:
+          type: string
+          enum:
+          - in_progress
+          - completed
+          - failed
+          - requires_input
+          description: Current status of the investigation
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+                description: Finding category
+                enum:
+                - root_cause
+                - contributing_factor
+                - symptom
+                - recommendation
+              message:
+                type: string
+                description: Finding description
+              severity:
+                type: string
+                enum:
+                - critical
+                - high
+                - medium
+                - low
+                - info
+                description: Finding severity level
+              confidence:
+                type: number
+                minimum: 0
+                maximum: 1
+                description: AI confidence in this finding (0.0 to 1.0)
+              evidence:
+                type: array
+                items:
+                  type: string
+                description: Supporting evidence for this finding
+          description: List of findings from the investigation
+        recommendations:
+          type: array
+          items:
+            type: object
+            properties:
+              action:
+                type: string
+                description: Recommended action to take
+              priority:
+                type: string
+                enum:
+                - immediate
+                - high
+                - medium
+                - low
+                description: Action priority
+              impact:
+                type: string
+                description: Expected impact of this action
+              effort:
+                type: string
+                enum:
+                - low
+                - medium
+                - high
+                description: Estimated effort required
+          description: Recommended actions based on findings
+        session_id:
+          type: string
+          description: Session ID for this troubleshooting session
+        reasoning_trace:
+          type: array
+          items:
+            type: object
+            properties:
+              step:
+                type: string
+              reasoning:
+                type: string
+              data_sources:
+                type: array
+                items:
+                  type: string
+          description: AI reasoning process trace for transparency
+      example:
+        investigation_id: inv_789
+        status: completed
+        findings:
+        - type: root_cause
+          message: Database connection pool exhausted due to connection leak
+          severity: high
+          confidence: 0.9
+          evidence:
+          - 'Connection pool size: 20, Active connections: 20'
+          - No idle connections available
+          - Long-running transactions detected
+        recommendations:
+        - action: Increase database connection pool size to 50
+          priority: immediate
+          impact: Should restore service within 5 minutes
+          effort: low
+        - action: Review application code for connection leaks
+          priority: high
+          impact: Prevents future occurrences
+          effort: medium
+        session_id: session_db_123
+        reasoning_trace:
+        - step: symptom_analysis
+          reasoning: HTTP 500 errors correlate with database timeout errors
+          data_sources:
+          - application_logs
+          - database_metrics
+        - step: hypothesis_formation
+          reasoning: Connection pool exhaustion is most likely cause given metrics
+          data_sources:
+          - connection_pool_metrics
+          - transaction_logs
+    DataIngestionResponse:
+      type: object
+      required:
+      - ingestion_id
+      - status
+      properties:
+        ingestion_id:
+          type: string
+          description: Unique identifier for this data ingestion
+        status:
+          type: string
+          enum:
+          - processing
+          - completed
+          - failed
+          description: Current processing status
+        file_info:
+          type: object
+          properties:
+            filename:
+              type: string
+            size_bytes:
+              type: integer
+            file_type:
+              type: string
+            detected_format:
+              type: string
+          description: Information about the uploaded file
+        processing_results:
+          type: object
+          properties:
+            lines_processed:
+              type: integer
+            errors_found:
+              type: integer
+            insights_extracted:
+              type: integer
+            processing_time_ms:
+              type: integer
+          description: Results of data processing
+      example:
+        ingestion_id: ingest_456
+        status: completed
+        file_info:
+          filename: app.log
+          size_bytes: 1048576
+          file_type: application/log
+          detected_format: json_logs
+        processing_results:
+          lines_processed: 15420
+          errors_found: 23
+          insights_extracted: 8
+          processing_time_ms: 2340
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key authentication (planned for future implementation)
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT Bearer token authentication (planned for future implementation)
+  headers:
+    X-Correlation-ID:
+      description: Unique identifier for request tracing and debugging
+      schema:
+        type: string
+        format: uuid
+      example: 550e8400-e29b-41d4-a716-446655440000
+externalDocs:
+  description: FaultMaven Documentation
+  url: https://docs.faultmaven.ai
+tags:
+- name: troubleshooting
+  description: AI-powered troubleshooting operations
+  externalDocs:
+    description: Troubleshooting Guide
+    url: https://docs.faultmaven.ai/troubleshooting
+- name: data_ingestion
+  description: File upload and data processing operations
+  externalDocs:
+    description: Data Ingestion Guide
+    url: https://docs.faultmaven.ai/data-ingestion
+- name: knowledge_base
+  description: Knowledge base and document management operations
+  externalDocs:
+    description: Knowledge Base Guide
+    url: https://docs.faultmaven.ai/knowledge-base
+- name: session_management
+  description: Session lifecycle and management operations

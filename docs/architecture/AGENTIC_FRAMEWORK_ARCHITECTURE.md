@@ -318,6 +318,12 @@ workflow_engine = BusinessLogicWorkflowEngine(
 
 The framework implements full OpenAPI compliance as specified:
 
+## API Compatibility and Deprecation
+
+- **Deprecated endpoints**: legacy `/api/v1/agent/*` endpoints have been removed from the live API specification and are deprecated. Please update integrations to avoid calling these paths.
+- **Authoritative contract**: consult `FaultMaven/docs/api/openapi.locked.yaml` for the canonical API contract.
+- **Canonical pattern**: prefer case-scoped endpoints such as `POST /api/v1/cases` and `POST /api/v1/cases/{case_id}/queries` for query submission and case management.
+
 ### Dual-Mode Async Semantics
 
 ```python

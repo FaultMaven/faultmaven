@@ -261,11 +261,25 @@ def _add_endpoint_examples(schema: Dict[str, Any]) -> Dict[str, Any]:
                         "summary": "Create New Session",
                         "description": "Start a new troubleshooting session",
                         "value": {
-                            "session_metadata": {
-                                "user_id": "user_123",
+                            "timeout_minutes": 60,
+                            "session_type": "troubleshooting",
+                            "metadata": {
                                 "environment": "production",
                                 "team": "platform-team",
                                 "incident_priority": "high"
+                            }
+                        }
+                    },
+                    "resume_session_with_client_id": {
+                        "summary": "Resume Session with Client ID",
+                        "description": "Resume existing session using client identifier for session continuity",
+                        "value": {
+                            "timeout_minutes": 60,
+                            "session_type": "troubleshooting", 
+                            "client_id": "browser-client-abc123",
+                            "metadata": {
+                                "environment": "production",
+                                "team": "platform-team"
                             }
                         }
                     }
@@ -524,6 +538,16 @@ def _add_response_schemas(schema: Dict[str, Any]) -> Dict[str, Any]:
                 "type": "string",
                 "description": "Unique session identifier"
             },
+            "user_id": {
+                "type": "string",
+                "description": "Associated user identifier",
+                "nullable": True
+            },
+            "client_id": {
+                "type": "string",
+                "description": "Client/device identifier for session resumption",
+                "nullable": True
+            },
             "status": {
                 "type": "string",
                 "enum": ["active", "idle", "expired"],
@@ -534,25 +558,59 @@ def _add_response_schemas(schema: Dict[str, Any]) -> Dict[str, Any]:
                 "format": "date-time",
                 "description": "Session creation timestamp"
             },
-            "last_activity": {
+            "session_resumed": {
+                "type": "boolean",
+                "description": "Indicates if this was an existing session resumed",
+                "nullable": True
+            },
+            "session_type": {
                 "type": "string",
-                "format": "date-time",
-                "description": "Last activity timestamp"
+                "description": "Type of session (e.g., troubleshooting)"
+            },
+            "message": {
+                "type": "string",
+                "description": "Status message about session creation/resumption"
             },
             "metadata": {
                 "type": "object",
                 "description": "Session metadata and context"
             }
         },
-        "example": {
-            "session_id": "session_abc123",
-            "status": "active",
-            "created_at": "2025-01-15T10:00:00Z",
-            "last_activity": "2025-01-15T10:25:00Z",
-            "metadata": {
-                "user_id": "user_123",
-                "environment": "production",
-                "investigations_count": 3
+        "examples": {
+            "new_session": {
+                "summary": "New Session Created",
+                "value": {
+                    "session_id": "session_abc123",
+                    "user_id": "user_123",
+                    "client_id": "browser-client-abc123",
+                    "status": "active",
+                    "created_at": "2025-01-15T10:00:00Z",
+                    "session_resumed": False,
+                    "session_type": "troubleshooting",
+                    "message": "Session created successfully",
+                    "metadata": {
+                        "environment": "production",
+                        "team": "platform-team"
+                    }
+                }
+            },
+            "resumed_session": {
+                "summary": "Existing Session Resumed",
+                "value": {
+                    "session_id": "session_existing_456",
+                    "user_id": "user_123",
+                    "client_id": "browser-client-abc123",
+                    "status": "active",
+                    "created_at": "2025-01-15T09:30:00Z",
+                    "session_resumed": True,
+                    "session_type": "troubleshooting",
+                    "message": "Session resumed successfully",
+                    "metadata": {
+                        "environment": "production",
+                        "team": "platform-team",
+                        "investigations_count": 2
+                    }
+                }
             }
         }
     }

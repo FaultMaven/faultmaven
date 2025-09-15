@@ -79,7 +79,7 @@ All data submitted to the API is processed through privacy-first pipelines with:
 
 **Version:** 1.0.0  
 **Base URL:** `/`  
-**Generated:** 2025-09-01T02:30:01.365337Z
+**Generated:** 2025-09-14T10:48:35.595364Z
 
 ## Authentication
 
@@ -399,7 +399,7 @@ Content-Type: `application/json`
 
 **Responses:**
 
-**204** - Successful Response
+**200** - Successful Response
 
 **422** - Validation Error
 
@@ -678,6 +678,10 @@ Returns:
 
 - `case_id` (path) ✅ - No description
 
+**Request Body:**
+
+Content-Type: `application/json`
+
 **Responses:**
 
 **200** - Successful Response
@@ -776,16 +780,26 @@ Content-Type: `application/json`
 
 **Generate Case Title**
 
-Generate a concise, case-specific title
+Generate a concise, case-specific title from case messages and metadata.
 
-Generates a title from the case's existing messages and metadata.
-Returns 422 if insufficient context to generate a meaningful title.
+**Request body (optional):**
+- `max_words`: integer (3–12, default 8) - Maximum words in generated title
+- `hint`: string - Optional hint to guide title generation
+- `force`: boolean (default false) - Only overwrite non-default titles when true
+
+**Returns:**
+- 200: TitleResponse with X-Correlation-ID header
+- 422: ErrorResponse with code INSUFFICIENT_CONTEXT and X-Correlation-ID header
+
+**Description:** Returns 422 when insufficient meaningful context; clients SHOULD keep 
+existing title unchanged and may retry later.
 
 **Tags:** `case_persistence`, `cases`
 
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
+- `force` (query) ❌ - Only overwrite non-default titles when true
 
 **Request Body:**
 
@@ -1844,14 +1858,29 @@ Returns:
 
 **Create Session**
 
-Create a new troubleshooting session.
+Create or resume a troubleshooting session.
+
+**Session Creation & Resumption:**
+- If `client_id` is provided and matches an active session, that session is resumed
+- If `client_id` matches an expired session, returns 404/410 error (frontend creates new session)
+- If `client_id` is new or not provided, creates fresh session
+
+**Session Timeout:**
+- Sessions automatically expire after `timeout_minutes` of inactivity
+- Default timeout: 180 minutes (3 hours)
+- Min timeout: 60 minutes, Max timeout: 480 minutes
+- Expired sessions cannot be resumed and return 404/410 errors
+
+**Frontend Crash Recovery:**
+- Browser crashes: Session resumes if within timeout window
+- Extended downtime: Session expires, new session created automatically
 
 Args:
-    request: Session creation parameters
+    request: Session creation parameters including optional client_id and timeout
     user_id: Optional user identifier (query param)
 
 Returns:
-    Session creation response
+    Session creation/resumption response with expiration information
 
 **Tags:** `session_management`, `session_management`
 
@@ -1869,8 +1898,9 @@ Start a new troubleshooting session
 
 ```json
 {
-  "session_metadata": {
-    "user_id": "user_123",
+  "timeout_minutes": 60,
+  "session_type": "troubleshooting",
+  "metadata": {
     "environment": "production",
     "team": "platform-team",
     "incident_priority": "high"
@@ -1878,11 +1908,53 @@ Start a new troubleshooting session
 }
 ```
 
+**Example: Resume Session with Client ID**
+
+Resume existing session using client identifier for session continuity
+
+```json
+{
+  "timeout_minutes": 60,
+  "session_type": "troubleshooting",
+  "client_id": "browser-client-abc123",
+  "metadata": {
+    "environment": "production",
+    "team": "platform-team"
+  }
+}
+```
+
 **Responses:**
 
-**201** - Successful Response
+**201** - Session created or resumed successfully
 
-**422** - Validation Error
+**404** - Session expired or not found (when resuming with client_id)
+
+**410** - Session gone (alternative to 404 for expired sessions)
+
+**422** - Validation error (invalid timeout_minutes)
+
+---
+
+### `/api/v1/sessions/cleanup`
+
+#### POST
+
+**Cleanup Expired Sessions**
+
+Clean up expired sessions (admin/testing endpoint).
+
+This endpoint triggers immediate cleanup of expired sessions.
+In production, this runs automatically every 30 minutes.
+
+Returns:
+    Number of sessions cleaned up
+
+**Tags:** `session_management`, `session_management`
+
+**Responses:**
+
+**200** - Successful Response
 
 ---
 
@@ -1909,20 +1981,6 @@ Returns:
 **Responses:**
 
 **200** - Successful Response
-
-```json
-{
-  "session_id": "session_abc123",
-  "status": "active",
-  "created_at": "2025-01-15T10:00:00Z",
-  "last_activity": "2025-01-15T10:25:00Z",
-  "metadata": {
-    "user_id": "user_123",
-    "environment": "production",
-    "investigations_count": 3
-  }
-}
-```
 
 **422** - Validation Error
 
@@ -2435,6 +2493,7 @@ Represents a troubleshooting case.
 - `updated_at` (string) ❌ - No description
 - `message_count` (integer) ❌ - No description
 - `session_id` (unknown) ❌ - No description
+- `owner_id` (unknown) ❌ - No description
 
 ---
 
@@ -2598,21 +2657,21 @@ Async job status tracking model.
 
 ### KnowledgeBaseDocument
 
-Model for knowledge base documents
+Response model for knowledge base document operations.
 
 **Properties:**
 
-- `document_id` (string) ✅ - Unique document identifier
-- `title` (string) ✅ - Document title
-- `content` (string) ✅ - Document content
-- `document_type` (string) ✅ - Type of document (e.g., troubleshooting guide, FAQ)
-- `category` (unknown) ❌ - Document category for organization
-- `status` (string) ❌ - Document processing status
-- `tags` (array) ❌ - Tags for categorization
-- `source_url` (unknown) ❌ - Source URL if applicable
-- `created_at` (string) ❌ - Document creation timestamp
-- `updated_at` (string) ❌ - Last update timestamp
-- `metadata` (unknown) ❌ - Additional document metadata
+- `document_id` (string) ✅ - No description
+- `title` (string) ✅ - No description
+- `content` (string) ✅ - No description
+- `document_type` (string) ✅ - No description
+- `category` (unknown) ❌ - No description
+- `status` (string) ❌ - No description
+- `tags` (array) ❌ - No description
+- `source_url` (unknown) ❌ - No description
+- `created_at` (string) ✅ - No description
+- `updated_at` (string) ✅ - No description
+- `metadata` (unknown) ❌ - No description
 
 ---
 
@@ -2668,6 +2727,21 @@ Case-scoped query job status tracking model.
 
 ---
 
+### QueryRequest
+
+The JSON payload sent from the frontend when the user asks a question.
+Note: case_id is provided in the URL path, not in the request body.
+
+**Properties:**
+
+- `session_id` (string) ✅ - No description
+- `query` (string) ✅ - No description
+- `context` (unknown) ❌ - No description
+- `priority` (string) ❌ - No description
+- `timestamp` (string) ❌ - No description
+
+---
+
 ### ResponseType
 
 Defines the agent's primary intent for this turn.
@@ -2697,9 +2771,10 @@ Request model for session creation.
 
 **Properties:**
 
-- `timeout_minutes` (unknown) ❌ - No description
+- `timeout_minutes` (unknown) ❌ - Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8 hours), Default: 180 (3 hours)
 - `session_type` (unknown) ❌ - No description
 - `metadata` (unknown) ❌ - No description
+- `client_id` (unknown) ❌ - Client/device identifier for session resumption. If provided, existing session for this client will be resumed.
 
 ---
 
@@ -2708,26 +2783,14 @@ Request model for session creation.
 **Properties:**
 
 - `session_id` (string) ✅ - Unique session identifier
+- `user_id` (string) ❌ - Associated user identifier
+- `client_id` (string) ❌ - Client/device identifier for session resumption
 - `status` (string) ✅ - Current session status
 - `created_at` (string) ❌ - Session creation timestamp
-- `last_activity` (string) ❌ - Last activity timestamp
+- `session_resumed` (boolean) ❌ - Indicates if this was an existing session resumed
+- `session_type` (string) ❌ - Type of session (e.g., troubleshooting)
+- `message` (string) ❌ - Status message about session creation/resumption
 - `metadata` (object) ❌ - Session metadata and context
-
-**Example:**
-
-```json
-{
-  "session_id": "session_abc123",
-  "status": "active",
-  "created_at": "2025-01-15T10:00:00Z",
-  "last_activity": "2025-01-15T10:25:00Z",
-  "metadata": {
-    "user_id": "user_123",
-    "environment": "production",
-    "investigations_count": 3
-  }
-}
-```
 
 ---
 
@@ -2740,6 +2803,12 @@ Request model for session restoration.
 - `restore_point` (string) ✅ - No description
 - `include_data` (boolean) ❌ - No description
 - `type` (unknown) ❌ - No description
+
+---
+
+### SessionStatus
+
+Defines the status of user sessions.
 
 ---
 
@@ -2830,6 +2899,8 @@ This is the single source of truth for what the frontend should display.
 - `show_case_selector` (boolean) ❌ - No description
 - `show_data_upload` (boolean) ❌ - No description
 - `loading_state` (unknown) ❌ - No description
+- `memory_context` (unknown) ❌ - No description
+- `planning_state` (unknown) ❌ - No description
 
 ---
 
