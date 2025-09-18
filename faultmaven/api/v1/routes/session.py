@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.api.v1.dependencies import get_session_service, get_case_service
-from faultmaven.services.session import SessionService
+from faultmaven.services.domain.session_service import SessionService
 from faultmaven.services.converters import CaseConverter
 from faultmaven.models import utc_timestamp
 from faultmaven.models.api import SessionResponse, SessionCasesResponse, ErrorResponse, ErrorDetail, SessionErrorCode, SessionStatus

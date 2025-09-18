@@ -1137,7 +1137,7 @@ async def request_context_middleware(request: Request, call_next):
 
 ```python
 from faultmaven.container import container
-from faultmaven.services.base_service import BaseService
+from faultmaven.services.base import BaseService
 
 class IntegratedService(BaseService):
     """Service that integrates with DI container."""

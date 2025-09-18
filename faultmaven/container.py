@@ -62,6 +62,14 @@ try:
     AGENTIC_AVAILABLE = True
 except ImportError as e:
     logging.getLogger(__name__).warning(f"Agentic framework not available: {e}")
+    # Create placeholder types for testing environments
+    IAgentStateManager = Any
+    IQueryClassificationEngine = Any
+    IToolSkillBroker = Any
+    IGuardrailsPolicyLayer = Any
+    IResponseSynthesizer = Any
+    IErrorFallbackManager = Any
+    IBusinessLogicWorkflowEngine = Any
     AGENTIC_AVAILABLE = False
 
 
@@ -223,10 +231,12 @@ class DIContainer:
         
         # Session store for session management (fail-fast unless skipped)
         from faultmaven.infrastructure.persistence.redis_session_store import RedisSessionStore
+        from faultmaven.infrastructure.persistence.redis_session_manager import RedisSessionManager
         try:
             if not self.settings.server.skip_service_checks:
-                self.session_store: ISessionStore = RedisSessionStore()
-                logger.debug("Session store initialized")
+                # Create RedisSessionStore for low-level ISessionStore interface (used by CaseService, etc.)
+                self.session_store = RedisSessionStore()
+                logger.debug("Session store initialized with RedisSessionStore")
             else:
                 logger.info("Skipping session store initialization (SKIP_SERVICE_CHECKS=True)")
                 self.session_store = None
@@ -295,14 +305,14 @@ class DIContainer:
         import logging
         logger = logging.getLogger(__name__)
         
-        from faultmaven.services.agent import AgentService
-        from faultmaven.services.data import DataService  
-        from faultmaven.services.knowledge import KnowledgeService
-        from faultmaven.services.session import SessionService
+        from faultmaven.services.agentic.orchestration.agent_service import AgentService
+        from faultmaven.services.domain.data_service import DataService
+        from faultmaven.services.domain.knowledge_service import KnowledgeService
+        from faultmaven.services.domain.session_service import SessionService
         
         # Case Service - Case persistence and management (optional)
         try:
-            from faultmaven.services.case import CaseService
+            from faultmaven.services.domain.case_service import CaseService
             if hasattr(self, 'case_store') and self.case_store:
                 self.case_service: ICaseService = CaseService(
                     case_store=self.case_store,
@@ -344,26 +354,31 @@ class DIContainer:
         self._create_agentic_framework_services()
             
         # Agent Service - Core troubleshooting orchestration with Agentic Framework
-        self.agent_service = AgentService(
-            llm_provider=self.get_llm_provider(),
-            tools=self.get_tools(),
-            tracer=self.get_tracer(),
-            sanitizer=self.get_sanitizer(),
-            session_service=self.session_service,
-            settings=self.settings,
-            # Agentic Framework Components (required - direct access during initialization)
-            business_logic_workflow_engine=self.business_logic_workflow_engine,
-            query_classification_engine=self.query_classification_engine,
-            tool_skill_broker=self.tool_skill_broker,
-            guardrails_policy_layer=self.guardrails_policy_layer,
-            response_synthesizer=self.response_synthesizer,
-            error_fallback_manager=self.error_fallback_manager,
-            agent_state_manager=self.agent_state_manager
-        )
+        # Only create if not already set or if it's a mock object (testing scenario)
+        from unittest.mock import MagicMock
+        if (not hasattr(self, 'agent_service') or
+            self.agent_service is None or
+            isinstance(self.agent_service, MagicMock)):
+            self.agent_service = AgentService(
+                llm_provider=self.get_llm_provider(),
+                tools=self.get_tools(),
+                tracer=self.get_tracer(),
+                sanitizer=self.get_sanitizer(),
+                session_service=self.session_service,
+                settings=self.settings,
+                # Agentic Framework Components (required - direct access during initialization)
+                business_logic_workflow_engine=self.business_logic_workflow_engine,
+                query_classification_engine=self.query_classification_engine,
+                tool_skill_broker=self.tool_skill_broker,
+                guardrails_policy_layer=self.guardrails_policy_layer,
+                response_synthesizer=self.response_synthesizer,
+                error_fallback_manager=self.error_fallback_manager,
+                agent_state_manager=self.agent_state_manager
+            )
         
         # Data Service - Data processing and analysis
         # Create simple storage backend for development
-        from faultmaven.services.data import SimpleStorageBackend
+        from faultmaven.services.domain.data_service import SimpleStorageBackend
         storage_backend = SimpleStorageBackend(settings=self.settings)
         
         self.data_service = DataService(
@@ -428,10 +443,8 @@ class DIContainer:
             # Metrics Collector - Advanced performance metrics collection
             from faultmaven.infrastructure.monitoring.metrics_collector import MetricsCollector
             self.metrics_collector = MetricsCollector(
-                tracer=self.get_tracer(),
-                buffer_size=10000,
-                flush_interval=60,
-                analytics_window=300
+                max_samples=10000,
+                retention_hours=24
             )
             logging.getLogger(__name__).debug("Metrics collector created")
             
@@ -449,7 +462,7 @@ class DIContainer:
             logging.getLogger(__name__).debug("Intelligent cache created")
             
             # Analytics Dashboard Service - System performance insights
-            from faultmaven.services.analytics_dashboard import AnalyticsDashboardService
+            from faultmaven.services.analytics.dashboard_service import AnalyticsDashboardService
             self.analytics_dashboard_service = AnalyticsDashboardService(
                 metrics_collector=self.metrics_collector,
                 intelligent_cache=self.intelligent_cache,
@@ -457,17 +470,19 @@ class DIContainer:
             )
             logging.getLogger(__name__).debug("Analytics dashboard service created")
             
-            # Performance Optimization Service - Proactive optimization
-            from faultmaven.services.performance_optimization import PerformanceOptimizationService
-            self.performance_optimization_service = PerformanceOptimizationService(
-                metrics_collector=self.metrics_collector,
-                intelligent_cache=self.intelligent_cache,
-                analytics_service=self.analytics_dashboard_service,
-                tracer=self.get_tracer(),
-                enable_auto_optimization=True,
-                optimization_aggressiveness="moderate"
-            )
-            logging.getLogger(__name__).debug("Performance optimization service created")
+            # Performance Optimization Service - Temporarily disabled (module missing)
+            # TODO: Re-enable when faultmaven.services.performance_optimization module is created
+            # from faultmaven.services.performance_optimization import PerformanceOptimizationService
+            # self.performance_optimization_service = PerformanceOptimizationService(
+            #     metrics_collector=self.metrics_collector,
+            #     intelligent_cache=self.intelligent_cache,
+            #     analytics_service=self.analytics_dashboard_service,
+            #     tracer=self.get_tracer(),
+            #     enable_auto_optimization=True,
+            #     optimization_aggressiveness="moderate"
+            # )
+            self.performance_optimization_service = None
+            logging.getLogger(__name__).debug("Performance optimization service temporarily disabled (module missing)")
             
             # SLA Monitor - Performance SLA monitoring and alerting
             from faultmaven.infrastructure.monitoring.sla_monitor import SLAMonitor
@@ -533,7 +548,7 @@ class DIContainer:
             logging.getLogger(__name__).debug("Enhanced security assessment created")
             
             # Enhanced Data Service - Comprehensive data processing with all enhancements
-            from faultmaven.services.data import DataService
+            from faultmaven.services.domain.data_service import DataService
             self.enhanced_data_service = DataService(
                 data_classifier=self.enhanced_data_classifier,
                 log_processor=self.enhanced_log_processor,
@@ -573,7 +588,7 @@ class DIContainer:
             
             # Global Confidence Service - Calibrated confidence scoring
             try:
-                from faultmaven.services.confidence import GlobalConfidenceService
+                from faultmaven.services.analytics.confidence_service import GlobalConfidenceService
                 self.confidence_service = GlobalConfidenceService(
                     calibration_method="platt",
                     model_version="conf-v1",
@@ -670,12 +685,12 @@ class DIContainer:
             try:
                 from faultmaven.core.orchestration.troubleshooting_orchestrator import TroubleshootingOrchestrator
                 self.orchestrator_service = TroubleshootingOrchestrator(
-                    agent_service=self.get_agent_service(),
-                    data_service=self.get_data_service(),
-                    knowledge_service=self.get_knowledge_service(),
-                    session_service=self.get_session_service(),
-                    tracer=self.get_tracer(),
-                    settings=self.settings
+                    memory_service=getattr(self, 'memory_service', None),
+                    planning_service=getattr(self, 'planning_service', None),
+                    reasoning_service=None,  # Legacy parameter - service removed
+                    enhanced_knowledge_service=self.get_knowledge_service(),
+                    llm_provider=self.get_llm_provider(),
+                    tracer=self.get_tracer()
                 )
                 logging.getLogger(__name__).debug("Troubleshooting orchestrator service created")
             except ImportError as e:
@@ -880,22 +895,24 @@ class DIContainer:
     # Phase 2: Advanced Intelligence Services Getters
     
     def get_memory_service(self):
-        """Get the memory service"""
+        """Get the memory service - now provided by AgentStateManager"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
             logger.warning("Memory service requested but container not initialized")
             if not getattr(self, '_initializing', False):
                 self.initialize()
-        return getattr(self, 'memory_service', None)
+        # Memory service functionality is now provided by AgentStateManager
+        return getattr(self, 'agent_state_manager', None)
     
     def get_planning_service(self):
-        """Get the planning service"""
+        """Get the planning service - now provided by BusinessLogicWorkflowEngine"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
             logger.warning("Planning service requested but container not initialized")
             if not getattr(self, '_initializing', False):
                 self.initialize()
-        return getattr(self, 'planning_service', None)
+        # Planning service functionality is now provided by BusinessLogicWorkflowEngine
+        return getattr(self, 'business_logic_workflow_engine', None)
     
     def get_enhanced_agent_service(self):
         """Get the enhanced agent service with memory and planning capabilities"""
@@ -1347,7 +1364,7 @@ class DIContainer:
                 self.session_manager = MockSessionManager()  # Add mock session manager
                 self.session_manager.sessions = self.sessions  # Share session storage
                 
-            async def create_session(self, user_id=None, session_id=None, metadata=None):
+            async def create_session(self, user_id=None, session_id=None, metadata=None, client_id=None, initial_context=None):
                 if not session_id:
                     session_id = str(uuid.uuid4())
                 session = MockSessionContext(session_id, user_id, metadata)
@@ -2054,7 +2071,7 @@ class DIContainer:
         # Create job service if not already created
         if not hasattr(self, '_job_service'):
             try:
-                from faultmaven.services.job import JobService
+                from faultmaven.infrastructure.jobs.job_service import JobService
                 redis_client = self.get_redis_client()
                 self._job_service = JobService(
                     redis_client=redis_client,

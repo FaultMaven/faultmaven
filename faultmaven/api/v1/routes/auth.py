@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from ....models.api import DevLoginRequest, AuthResponse, ViewState, User, Case, ErrorResponse, ErrorDetail
-from ....services.session import SessionService
+from ....services.domain.session_service import SessionService
 from ....api.v1.dependencies import get_session_service
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -56,7 +56,7 @@ async def dev_login(
         )
         
         # Create new session (service will generate session_id)
-        session_context = await session_service.create_session(
+        session_result = await session_service.create_session(
             user_id=user.user_id,
             metadata={
                 "user_email": email,
@@ -64,7 +64,14 @@ async def dev_login(
                 "created_at": datetime.utcnow().isoformat() + 'Z'
             }
         )
-        
+
+        # Handle both SessionContext and (SessionContext, bool) return types
+        if isinstance(session_result, tuple):
+            session_context, was_resumed = session_result
+        else:
+            session_context = session_result
+            was_resumed = False
+
         # Use the session_id from the created session
         session_id = session_context.session_id
         
@@ -145,8 +152,8 @@ async def verify_session(
                 detail="Session not found or expired"
             )
         
-        # Reconstruct user from session metadata
-        metadata = session.metadata or {}
+        # Reconstruct user from session metadata (handle missing metadata attribute)
+        metadata = getattr(session, 'metadata', {}) or {}
         user = User(
             user_id=session.user_id or f"user_{session.session_id[:8]}",
             email=metadata.get("user_email", "unknown@dev.local"),

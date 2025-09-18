@@ -360,12 +360,12 @@ class TestServiceLifecycleManagement:
         container.case_store = mock_services['case_store']
         container.tools = mock_services['tools']
         
-        # Mock service classes
-        with patch('faultmaven.services.agent.AgentService') as mock_agent, \
-             patch('faultmaven.services.data.DataService') as mock_data, \
-             patch('faultmaven.services.knowledge.KnowledgeService') as mock_knowledge, \
-             patch('faultmaven.services.session.SessionService') as mock_session, \
-             patch('faultmaven.services.case.CaseService') as mock_case:
+        # Mock service classes with updated import paths
+        with patch('faultmaven.services.agentic.orchestration.agent_service.AgentService') as mock_agent, \
+             patch('faultmaven.services.domain.data_service.DataService') as mock_data, \
+             patch('faultmaven.services.domain.knowledge_service.KnowledgeService') as mock_knowledge, \
+             patch('faultmaven.services.domain.session_service.SessionService') as mock_session, \
+             patch('faultmaven.services.domain.case_service.CaseService') as mock_case:
             
             mock_agent.return_value = Mock()
             mock_data.return_value = Mock()
@@ -464,7 +464,7 @@ class TestInterfaceResolutionAndInjection:
         container.tracer = mock_services['tracer']
         container.tools = mock_services['tools']
         
-        with patch('faultmaven.services.agent.AgentService', mock_agent_service_class):
+        with patch('faultmaven.services.agentic.orchestration.agent_service.AgentService', mock_agent_service_class):
             container._create_service_layer()
             
             # Verify AgentService was called with correct dependencies

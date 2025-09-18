@@ -139,15 +139,12 @@ def _create_tools_layer(self):
 
 ```python
 def _create_service_layer(self):
-    # Agent Service - Core troubleshooting orchestration with intelligence
-    self.agent_service = EnhancedAgentService(
+    # Agent Service - Core troubleshooting orchestration with pure agentic framework
+    self.agent_service = AgentService(
         llm_provider=self.llm_provider,    # Interface injection
         tools=self.tools,                  # Interface list injection
         tracer=self.tracer,               # Interface injection
-        sanitizer=self.sanitizer,         # Interface injection
-        memory_service=self.memory_service, # New intelligence dependency
-        planning_service=self.planning_service, # New intelligence dependency
-        prompt_engine=self.prompt_engine   # New intelligence dependency
+        sanitizer=self.sanitizer          # Interface injection
     )
     
     # Data Service - Enhanced with memory integration
@@ -184,22 +181,19 @@ def _create_service_layer(self):
 The container now resolves dependencies with intelligence context:
 
 ```python
-def get_agent_service(self) -> EnhancedAgentService:
-    """Get agent service with all intelligence dependencies injected"""
+def get_agent_service(self) -> AgentService:
+    """Get agent service with pure agentic framework implementation"""
     if not hasattr(self, 'agent_service'):
         # Ensure intelligence layer is initialized first
         if not hasattr(self, 'memory_service'):
             self._create_intelligence_layer()
         
-        # Create agent service with intelligence
-        self.agent_service = EnhancedAgentService(
+        # Create agent service with pure agentic framework
+        self.agent_service = AgentService(
             llm_provider=self.llm_provider,
             tools=self.tools,
             tracer=self.tracer,
-            sanitizer=self.sanitizer,
-            memory_service=self.memory_service,
-            planning_service=self.planning_service,
-            prompt_engine=self.prompt_engine
+            sanitizer=self.sanitizer
         )
     
     return self.agent_service
@@ -246,25 +240,20 @@ def _get_redis_store(self) -> ISessionStore:
 Services now receive memory dependencies for context-aware operation:
 
 ```python
-# Enhanced Agent Service with Memory
-class EnhancedAgentService:
+# Pure Agent Service with Agentic Framework
+class AgentService:
     def __init__(
         self,
         llm_provider: ILLMProvider,
         tools: List[BaseTool],
         tracer: ITracer,
-        sanitizer: ISanitizer,
-        memory_service: IMemoryService,      # New memory dependency
-        planning_service: IPlanningService,  # New planning dependency
-        prompt_engine: IPromptEngine         # New prompt dependency
+        sanitizer: ISanitizer
     ):
         self._llm = llm_provider
         self._tools = tools
         self._tracer = tracer
         self._sanitizer = sanitizer
-        self._memory = memory_service        # Store memory service
-        self._planning = planning_service    # Store planning service
-        self._prompt_engine = prompt_engine  # Store prompt engine
+        # Agentic framework components are internally managed
     
     async def process_query(self, request: QueryRequest) -> AgentResponse:
         # Get memory context

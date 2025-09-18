@@ -27,7 +27,7 @@ class TestSessionAPIEndpointsRebuilt:
         
         # Create new session
         with performance_tracker.time_request("session_creation"):
-            create_response = await client.post("/api/v1/sessions/")
+            create_response = await client.post("/api/v1/sessions")
         
         assert create_response.status_code == 201
         session_data = create_response.json()
@@ -101,7 +101,7 @@ class TestSessionAPIEndpointsRebuilt:
         """Test session state persists across multiple HTTP requests."""
         
         # Create session
-        create_response = await client.post("/api/v1/sessions/")
+        create_response = await client.post("/api/v1/sessions")
         assert create_response.status_code == 201
         session_id = create_response.json()["session_id"]
         
@@ -188,7 +188,7 @@ class TestSessionAPIEndpointsRebuilt:
         """Test concurrent operations on same session handle state correctly."""
         
         # Create session for concurrent testing
-        create_response = await client.post("/api/v1/sessions/")
+        create_response = await client.post("/api/v1/sessions")
         assert create_response.status_code == 201
         session_id = create_response.json()["session_id"]
         
@@ -251,7 +251,7 @@ class TestSessionAPIEndpointsRebuilt:
         
         # Create session with custom timeout
         create_response = await client.post(
-            "/api/v1/sessions/",
+            "/api/v1/sessions",
             json={"timeout_minutes": 1}  # Very short timeout for testing
         )
         
@@ -305,7 +305,7 @@ class TestSessionAPIEndpointsRebuilt:
         
         for i, session_type in enumerate(session_types):
             create_response = await client.post(
-                "/api/v1/sessions/",
+                "/api/v1/sessions",
                 json={
                     "session_type": session_type,
                     "description": f"Test session {i} for {session_type}"
@@ -322,7 +322,7 @@ class TestSessionAPIEndpointsRebuilt:
         
         # List all sessions
         with performance_tracker.time_request("session_listing"):
-            list_response = await client.get("/api/v1/sessions/")
+            list_response = await client.get("/api/v1/sessions")
         
         assert list_response.status_code == 200
         list_data = list_response.json()
@@ -340,7 +340,7 @@ class TestSessionAPIEndpointsRebuilt:
         
         # Test filtering by session type
         filter_response = await client.get(
-            "/api/v1/sessions/",
+            "/api/v1/sessions",
             params={"session_type": "troubleshooting"}
         )
         
@@ -356,7 +356,7 @@ class TestSessionAPIEndpointsRebuilt:
         
         # Test pagination
         paginated_response = await client.get(
-            "/api/v1/sessions/",
+            "/api/v1/sessions",
             params={"limit": 2, "offset": 0}
         )
         
@@ -376,7 +376,7 @@ class TestSessionAPIEndpointsRebuilt:
         """Test association of data and operations with sessions."""
         
         # Create session
-        create_response = await client.post("/api/v1/sessions/")
+        create_response = await client.post("/api/v1/sessions")
         assert create_response.status_code == 200
         session_id = create_response.json()["session_id"]
         
@@ -438,7 +438,7 @@ class TestSessionAPIEndpointsRebuilt:
         
         # Create session with specific state
         create_response = await client.post(
-            "/api/v1/sessions/",
+            "/api/v1/sessions",
             json={
                 "session_type": "recovery_test",
                 "metadata": {
@@ -494,7 +494,7 @@ class TestSessionAPIEndpointsRebuilt:
         """Test session performance under concurrent load."""
         
         # Create session for load testing
-        create_response = await client.post("/api/v1/sessions/")
+        create_response = await client.post("/api/v1/sessions")
         assert create_response.status_code == 200
         session_id = create_response.json()["session_id"]
         
@@ -575,21 +575,21 @@ class TestSessionAPIErrorScenarios:
         
         # Invalid timeout
         response = await client.post(
-            "/api/v1/sessions/",
+            "/api/v1/sessions",
             json={"timeout_minutes": -1}
         )
         assert response.status_code == 422
         
         # Invalid session type
         response = await client.post(
-            "/api/v1/sessions/",
+            "/api/v1/sessions",
             json={"session_type": ""}
         )
         assert response.status_code == 422
         
         # Malformed request
         response = await client.post(
-            "/api/v1/sessions/",
+            "/api/v1/sessions",
             json={"invalid_field": "invalid_value"}
         )
         # Should either accept (ignoring invalid fields) or reject
@@ -600,7 +600,7 @@ class TestSessionAPIErrorScenarios:
         """Test session resource limits and constraints."""
         
         # Create session
-        create_response = await client.post("/api/v1/sessions/")
+        create_response = await client.post("/api/v1/sessions")
         assert create_response.status_code == 200
         session_id = create_response.json()["session_id"]
         
@@ -633,14 +633,14 @@ class TestSessionAPIErrorScenarios:
         """Test handling of malformed session requests."""
         
         # Create valid session first
-        create_response = await client.post("/api/v1/sessions/")
+        create_response = await client.post("/api/v1/sessions")
         assert create_response.status_code == 200
         session_id = create_response.json()["session_id"]
         
         # Test malformed JSON in requests
         malformed_requests = [
             # Malformed JSON content
-            ("/api/v1/sessions/", '{"invalid": json}'),
+            ("/api/v1/sessions", '{"invalid": json}'),
             (f"/api/v1/sessions/{session_id}/restore", '{"restore_point":}'),
         ]
         
@@ -660,7 +660,7 @@ class TestSessionAPIErrorScenarios:
         """Test session cleanup with edge cases."""
         
         # Create session
-        create_response = await client.post("/api/v1/sessions/")
+        create_response = await client.post("/api/v1/sessions")
         assert create_response.status_code == 200
         session_id = create_response.json()["session_id"]
         

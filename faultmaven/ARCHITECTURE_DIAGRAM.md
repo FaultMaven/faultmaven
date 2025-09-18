@@ -193,3 +193,4 @@
 - **Interfaces**: Check `models/interfaces.py` for contracts
 - **Configuration**: All settings in `config/settings.py`
 
+

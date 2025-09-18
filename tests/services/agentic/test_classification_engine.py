@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import Mock, AsyncMock, patch
 import asyncio
 
-from faultmaven.services.agentic.classification_engine import QueryClassificationEngine
+from faultmaven.services.agentic.engines.classification_engine import QueryClassificationEngine
 from faultmaven.models.agentic import (
     QueryInput, QueryClassification, QueryIntent, QueryComplexity,
     QueryDomain, QueryUrgency, ClassificationResult
@@ -39,19 +39,26 @@ class TestQueryClassificationEngine:
         return mock
 
     @pytest.fixture
-    def classification_engine(self, mock_llm_provider, mock_knowledge_base):
+    def mock_tracer(self):
+        """Mock tracer for observability."""
+        mock = Mock()
+        mock.trace = Mock()
+        return mock
+
+    @pytest.fixture
+    def classification_engine(self, mock_llm_provider, mock_tracer):
         """Create classification engine with mocked dependencies."""
         return QueryClassificationEngine(
             llm_provider=mock_llm_provider,
-            knowledge_base=mock_knowledge_base
+            tracer=mock_tracer
         )
 
     @pytest.mark.asyncio
     async def test_init_classification_engine(self, classification_engine):
         """Test classification engine initialization."""
         assert classification_engine.llm_provider is not None
-        assert classification_engine.knowledge_base is not None
-        assert hasattr(classification_engine, 'pattern_cache')
+        assert classification_engine.tracer is not None
+        assert hasattr(classification_engine, 'enable_llm_classification')
 
     @pytest.mark.asyncio
     async def test_classify_query_troubleshooting_intent(self, classification_engine):

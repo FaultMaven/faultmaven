@@ -369,7 +369,7 @@ class TestUnifiedLogger:
 ```python
 import pytest
 from unittest.mock import AsyncMock, Mock, patch
-from faultmaven.services.base_service import BaseService
+from faultmaven.services.base import BaseService
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
 
 class TestServiceIntegration:

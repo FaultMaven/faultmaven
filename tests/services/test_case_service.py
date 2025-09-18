@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, Mock, patch
 from typing import List, Optional
 
-from faultmaven.services.case import CaseService
+from faultmaven.services.domain.case_service import CaseService
 from faultmaven.models.case import (
     Case,
     CaseMessage,

@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
 
-from faultmaven.services.session import SessionService
+from faultmaven.services.domain.session_service import SessionService
 from faultmaven.models import AgentState, SessionContext
 # SessionManager has been replaced by SessionService architecture
 # from faultmaven.session_management import SessionManager
@@ -258,7 +258,7 @@ class TestSessionServiceComprehensive:
     def session_service(self, mock_session_manager):
         """SessionService with mocked dependencies"""
         return SessionService(
-            session_manager=mock_session_manager,
+            session_store=mock_session_manager,
             max_sessions_per_user=5,
             inactive_threshold_hours=24
         )
@@ -267,7 +267,7 @@ class TestSessionServiceComprehensive:
     def session_service_strict(self, mock_session_manager):
         """SessionService with strict limits for testing"""
         return SessionService(
-            session_manager=mock_session_manager,
+            session_store=mock_session_manager,
             max_sessions_per_user=2,
             inactive_threshold_hours=1
         )
@@ -287,13 +287,14 @@ class TestSessionServiceComprehensive:
         }
         
         # Create session
-        session = await session_service.create_session(
+        session, was_resumed = await session_service.create_session(
             user_id=user_id,
             initial_context=initial_context
         )
         
         # Validate session creation
         assert isinstance(session, SessionContext)
+        assert isinstance(was_resumed, bool)
         assert session.session_id.startswith("session_")
         assert mock_session_manager.call_count >= 1  # May involve multiple operations (create, get, update)
         session_id = session.session_id
@@ -320,7 +321,7 @@ class TestSessionServiceComprehensive:
         user_id = "lifecycle_user"
         
         # 1. Create session
-        session = await session_service.create_session(user_id)
+        session, was_resumed = await session_service.create_session(user_id)
         assert session is not None
         session_id = session.session_id
         
@@ -365,17 +366,17 @@ class TestSessionServiceComprehensive:
     async def test_session_validation_edge_cases(self, session_service):
         """Test session validation for various edge cases"""
         # Test empty user ID (should succeed - anonymous session)
-        empty_session = await session_service.create_session("")
+        empty_session, was_resumed = await session_service.create_session("")
         assert empty_session is not None
         assert empty_session.user_id == ""
         
         # Test None user ID (should succeed - anonymous session)
-        none_session = await session_service.create_session(None)
+        none_session, was_resumed = await session_service.create_session(None)
         assert none_session is not None
         assert none_session.user_id is None
         
         # Test whitespace-only user ID (should succeed)
-        whitespace_session = await session_service.create_session("   \\n\\t   ")
+        whitespace_session, was_resumed = await session_service.create_session("   \\n\\t   ")
         assert whitespace_session is not None
         assert whitespace_session.user_id == "   \\n\\t   "
         
@@ -392,7 +393,7 @@ class TestSessionServiceComprehensive:
         
         # Test very long user ID (should succeed)
         long_user_id = "user_" + "a" * 1000
-        session = await session_service.create_session(long_user_id)
+        session, was_resumed = await session_service.create_session(long_user_id)
         assert isinstance(session, SessionContext)
     
     # Test 4: Maximum Sessions Per User Limit
@@ -407,7 +408,7 @@ class TestSessionServiceComprehensive:
         
         # Create sessions up to the limit
         for i in range(2):  # limit is 2 for strict service
-            session = await session_service_strict.create_session(user_id)
+            session, was_resumed = await session_service_strict.create_session(user_id)
             session_ids.append(session.session_id)
         
         # Verify both sessions were created
@@ -416,14 +417,14 @@ class TestSessionServiceComprehensive:
         assert len(user_sessions) == 2
         
         # Attempt to create one more session (should succeed by cleaning up oldest)
-        third_session = await session_service_strict.create_session(user_id)
+        third_session, was_resumed = await session_service_strict.create_session(user_id)
         assert third_session is not None
-        
+
         # Delete one session and try again
         await session_service_strict.delete_session(session_ids[0])
-        
+
         # Should now be able to create a new session
-        new_session = await session_service_strict.create_session(user_id)
+        new_session, was_resumed = await session_service_strict.create_session(user_id)
         assert isinstance(new_session, SessionContext)
     
     # Test 5: Session Context Management
@@ -434,7 +435,7 @@ class TestSessionServiceComprehensive:
     ):
         """Test comprehensive session context management"""
         user_id = "context_user"
-        session = await session_service.create_session(user_id)
+        session, was_resumed = await session_service.create_session(user_id)
         session_id = session.session_id
         
         # Test incremental context updates
@@ -500,7 +501,7 @@ class TestSessionServiceComprehensive:
     ):
         """Test agent state transitions throughout session lifecycle"""
         user_id = "state_user"
-        session = await session_service.create_session(user_id)
+        session, was_resumed = await session_service.create_session(user_id)
         session_id = session.session_id
         
         # Test state transition sequence with proper agent state structure
@@ -549,7 +550,7 @@ class TestSessionServiceComprehensive:
         users_and_sessions = []
         for i in range(5):
             user_id = f"analytics_user_{i}"
-            session = await session_service.create_session(
+            session, was_resumed = await session_service.create_session(
                 user_id, {"user_type": "test", "created_for": "analytics"}
             )
             users_and_sessions.append((user_id, session.session_id))
@@ -593,7 +594,7 @@ class TestSessionServiceComprehensive:
         session_ids = []
         
         for user in users:
-            session = await session_service_strict.create_session(user)
+            session, was_resumed = await session_service_strict.create_session(user)
             session_ids.append(session.session_id)
         
         # Manually age some sessions by modifying the mock
@@ -631,7 +632,7 @@ class TestSessionServiceComprehensive:
     ):
         """Test session operations that coordinate with other services"""
         user_id = "cross_service_user"
-        session = await session_service.create_session(user_id)
+        session, was_resumed = await session_service.create_session(user_id)
         session_id = session.session_id
         
         # Test recording query operation
@@ -689,7 +690,7 @@ class TestSessionServiceComprehensive:
         mock_session_manager.should_fail = False
         
         # Create a session for update tests
-        session = await session_service.create_session("update_user")
+        session, was_resumed = await session_service.create_session("update_user")
         session_id = session.session_id
         
         # Test session manager update failure
@@ -735,14 +736,15 @@ class TestSessionServiceComprehensive:
         user_ids = [f"concurrent_user_{i}" for i in range(10)]
         
         start_time = datetime.utcnow()
-        sessions = await asyncio.gather(*[
+        session_results = await asyncio.gather(*[
             session_service.create_session(user_id) for user_id in user_ids
         ])
         end_time = datetime.utcnow()
-        
+
         creation_time = (end_time - start_time).total_seconds()
-        
-        # Extract session IDs from SessionContext objects
+
+        # Extract session IDs from SessionContext objects (unpack tuples)
+        sessions = [result[0] for result in session_results]  # Get SessionContext from tuples
         session_ids = [session.session_id for session in sessions]
         
         # Validate all sessions were created
@@ -778,7 +780,7 @@ class TestSessionServiceComprehensive:
     ):
         """Test session context with large data and limits"""
         user_id = "large_context_user"
-        session = await session_service.create_session(user_id)
+        session, was_resumed = await session_service.create_session(user_id)
         session_id = session.session_id
         
         # Test with large context data
@@ -821,7 +823,7 @@ class TestSessionServiceComprehensive:
         
         created_sessions = []
         for user_id, context in session_configs:
-            session = await session_service.create_session(user_id, context)
+            session, was_resumed = await session_service.create_session(user_id, context)
             created_sessions.append((session.session_id, user_id, context))
         
         # Test filtering by environment
@@ -853,7 +855,7 @@ class TestSessionServiceComprehensive:
         user_sessions = []
         for i in range(5):
             user_id = f"health_user_{i}"
-            session = await session_service.create_session(user_id)
+            session, was_resumed = await session_service.create_session(user_id)
             session_id = session.session_id
             
             # Set different agent states - disable state validation for testing health monitoring
@@ -911,7 +913,7 @@ class TestSessionServiceComprehensive:
             "environment": "production",
             "region": "us-east-1"
         }
-        session = await session_service.create_session(user_id, initial_context)
+        session, was_resumed = await session_service.create_session(user_id, initial_context)
         session_id = session.session_id
         
         # 2. Simulate troubleshooting workflow steps with valid state transitions

@@ -7,10 +7,38 @@ in the case-to-agent integration workflow.
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 
-from faultmaven.services.agent import AgentService
+from faultmaven.services.agentic.orchestration.agent_service import AgentService
 from faultmaven.models import QueryRequest, AgentResponse, ResponseType
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models.exceptions import ProtectionSystemError
+from faultmaven.models import ViewState
+from faultmaven.models.api import User, Case
+
+
+def create_test_view_state(session_id: str) -> ViewState:
+    """Helper to create ViewState for security tests."""
+    user = User(
+        user_id="security-test-user",
+        username="security_user",
+        email="security@test.com",
+        name="Security Test User"
+    )
+
+    # Create active case object that can be modified
+    active_case = Case(
+        case_id=f"case-{session_id}",
+        title="Security Test Case",
+        status="active",
+        created_at="2025-09-16T00:00:00Z",
+        updated_at="2025-09-16T00:00:00Z",
+        session_id=session_id
+    )
+
+    return ViewState(
+        session_id=session_id,
+        user=user,
+        active_case=active_case
+    )
 
 
 @pytest.fixture
@@ -44,24 +72,80 @@ def security_test_agent_service(mock_presidio_sanitizer):
     """AgentService configured for security testing."""
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value="Sanitized AI response")
-    
+
     mock_tracer = Mock()
     mock_tracer.trace = Mock()
     mock_tracer.trace.return_value.__enter__ = Mock()
     mock_tracer.trace.return_value.__exit__ = Mock(return_value=None)
-    
+
     mock_session_service = AsyncMock()
     mock_session_service.record_case_message = AsyncMock()
     mock_session_service.format_conversation_context = AsyncMock(return_value="")
-    
-    return AgentService(
-        llm_provider=mock_llm,
-        tools=[],
-        tracer=mock_tracer,
-        sanitizer=mock_presidio_sanitizer,
-        session_service=mock_session_service,
-        settings=Mock()
-    )
+
+    # Add missing session service method
+    async def get_case_id(session_id):
+        return f"case-{session_id}"
+
+    mock_session_service.get_or_create_current_case_id = get_case_id
+
+    # Setup agentic framework components for security testing
+    mock_agentic_components = {
+        "business_logic_workflow_engine": AsyncMock(),
+        "query_classification_engine": AsyncMock(),
+        "tool_skill_broker": AsyncMock(),
+        "guardrails_policy_layer": AsyncMock(),
+        "response_synthesizer": AsyncMock(),
+        "error_fallback_manager": AsyncMock(),
+        "agent_state_manager": AsyncMock()
+    }
+
+    # Setup default behaviors for security testing
+    mock_agentic_components["query_classification_engine"].classify_query = AsyncMock(return_value={
+        "intent": "troubleshooting",
+        "complexity": "medium",
+        "urgency": "normal",
+        "domain": "security"
+    })
+
+    mock_agentic_components["tool_skill_broker"].orchestrate_capabilities = AsyncMock(return_value={
+        "evidence": []
+    })
+
+    mock_agentic_components["business_logic_workflow_engine"].execute_agentic_workflow = AsyncMock(return_value={
+        "evidence": [],
+        "confidence_boost": 0.8,
+        "plan_executed": True,
+        "observations": [],
+        "adaptations": [],
+        "execution_plan": None
+    })
+
+    mock_agentic_components["response_synthesizer"].synthesize_response = AsyncMock(return_value={
+        "content": "Sanitized AI response",
+        "sources": []
+    })
+
+    mock_agentic_components["agent_state_manager"].get_enhanced_context = AsyncMock(return_value={
+        "success": False
+    })
+
+    mock_agentic_components["agent_state_manager"].update_agent_state = AsyncMock()
+
+    mock_agentic_components["error_fallback_manager"].handle_execution_error = AsyncMock(return_value={
+        "recovery_message": "Security fallback response"
+    })
+
+    # Bypass type validation for security testing
+    with patch.object(AgentService, '_validate_agentic_components'):
+        return AgentService(
+            llm_provider=mock_llm,
+            tools=[],
+            tracer=mock_tracer,
+            sanitizer=mock_presidio_sanitizer,
+            session_service=mock_session_service,
+            settings=Mock(),
+            **mock_agentic_components
+        )
 
 
 @pytest.mark.security
@@ -85,7 +169,8 @@ class TestCaseAgentSecurityIntegration:
             mock_response = AgentResponse(
                 content="Processed securely",
                 response_type=ResponseType.ANSWER,
-                view_state=Mock(),
+                session_id="security-session-001",
+                view_state=create_test_view_state("security-session-001"),
                 sources=[],
                 plan=None
             )
@@ -141,7 +226,8 @@ class TestCaseAgentSecurityIntegration:
             mock_response = AgentResponse(
                 content="Continued securely",
                 response_type=ResponseType.ANSWER,
-                view_state=Mock(),
+                session_id="security-session-002",
+                view_state=create_test_view_state("security-session-002"),
                 sources=[],
                 plan=None
             )
@@ -194,7 +280,8 @@ class TestCaseAgentSecurityIntegration:
             mock_response = AgentResponse(
                 content="Support ticket processed",
                 response_type=ResponseType.ANSWER,
-                view_state=Mock(),
+                session_id="security-session-004",
+                view_state=create_test_view_state("security-session-004"),
                 sources=[],
                 plan=None
             )
@@ -237,7 +324,8 @@ class TestCaseAgentSecurityIntegration:
             mock_response = AgentResponse(
                 content="Response despite sanitizer failure",
                 response_type=ResponseType.ANSWER,
-                view_state=Mock(),
+                session_id="security-session-005",
+                view_state=create_test_view_state("security-session-005"),
                 sources=[],
                 plan=None
             )
@@ -270,7 +358,8 @@ class TestCaseAgentSecurityIntegration:
             mock_response = AgentResponse(
                 content="Case status updated",
                 response_type=ResponseType.ANSWER,
-                view_state=Mock(),
+                session_id="security-session-006",
+                view_state=create_test_view_state("security-session-006"),
                 sources=[],
                 plan=None
             )
@@ -301,7 +390,8 @@ class TestCaseAgentSecurityIntegration:
             mock_response = AgentResponse(
                 content="User login issue resolved",
                 response_type=ResponseType.ANSWER,
-                view_state=Mock(),
+                session_id="security-session-007",
+                view_state=create_test_view_state("security-session-007"),
                 sources=[],
                 plan=None
             )
@@ -346,7 +436,8 @@ class TestCaseAgentSecurityIntegration:
             mock_response = AgentResponse(
                 content="Documentation found",
                 response_type=ResponseType.ANSWER,
-                view_state=Mock(),
+                session_id="security-session-008",
+                view_state=create_test_view_state("security-session-008"),
                 sources=[pii_source],
                 plan=None
             )
@@ -385,7 +476,8 @@ class TestCaseAgentSecurityIntegration:
             mock_response = AgentResponse(
                 content="Large query processed",
                 response_type=ResponseType.ANSWER,
-                view_state=Mock(),
+                session_id="security-session-009",
+                view_state=create_test_view_state("security-session-009"),
                 sources=[],
                 plan=None
             )
@@ -418,7 +510,8 @@ class TestCaseAgentSecurityIntegration:
             mock_response = AgentResponse(
                 content="I can help you troubleshoot technical issues. Please provide details about the problem you're experiencing.",
                 response_type=ResponseType.ANSWER,
-                view_state=Mock(),
+                session_id="security-session-010",
+                view_state=create_test_view_state("security-session-010"),
                 sources=[],
                 plan=None
             )

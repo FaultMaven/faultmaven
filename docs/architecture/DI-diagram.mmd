@@ -1,0 +1,67 @@
+---
+config:
+  theme: redux
+  layout: dagre
+  look: classic
+---
+flowchart RL
+ subgraph CONTAINER["DIContainer (initialize)"]
+  end
+ subgraph INFRA["Infrastructure"]
+        Settings["settings"]
+        Sanitizer["sanitizer"]
+        Tracer["tracer"]
+        LLM["llm_provider"]
+        Classifier["data_classifier"]
+        LogProcessor["log_processor"]
+        VectorStore["vector_store"]
+        Redis["redis_client"]
+        SessionStore["session_store"]
+        CaseStore["case_store"]
+  end
+ subgraph TOOLS["Tools"]
+        Ingester["knowledge_ingester"]
+        ToolsList["tools"]
+  end
+ subgraph AGENTIC["Agentic Framework"]
+        AgentState["agent_state_manager"]
+        QueryEngine["query_classification_engine"]
+        ToolBroker["tool_skill_broker"]
+        Guardrails["guardrails_policy_layer"]
+        Synthesizer["response_synthesizer"]
+        ErrorMgr["error_fallback_manager"]
+        Workflow["business_logic_workflow_engine"]
+  end
+ subgraph SERVICES["Service Layer"]
+        CaseSvc["case_service"]
+        SessionSvc["session_service"]
+        AgentSvc["agent_service"]
+        DataSvc["data_service"]
+        KnowledgeSvc["knowledge_service"]
+        JobSvc["job_service"]
+  end
+    CONTAINER --> INFRA & TOOLS & AGENTIC & SERVICES
+    CaseStore --> CaseSvc
+    SessionStore --> CaseSvc & SessionSvc
+    Settings --> CaseSvc & SessionSvc & LLM & VectorStore & Redis
+    CaseSvc --> SessionSvc
+    LLM --> AgentSvc
+    ToolsList --> AgentSvc
+    Tracer --> AgentSvc & DataSvc & KnowledgeSvc
+    Sanitizer --> AgentSvc & DataSvc & KnowledgeSvc
+    SessionSvc --> AgentSvc & DataSvc
+    Workflow --> AgentSvc
+    QueryEngine --> AgentSvc
+    ToolBroker --> AgentSvc
+    Guardrails --> AgentSvc
+    Synthesizer --> AgentSvc
+    ErrorMgr --> AgentSvc
+    Classifier --> DataSvc
+    LogProcessor --> DataSvc
+    StorageBackend["storage_backend"] --> DataSvc
+    Ingester --> KnowledgeSvc
+    VectorStore --> KnowledgeSvc
+    Redis --> KnowledgeSvc & SessionStore & CaseStore & JobSvc
+    JobSvc -. created on first get_job_service .-> CONTAINER
+    CaseSvc -. "may fallback to minimal in-memory implementation" .-> CONTAINER
+    KnowledgeSvc -. creates minimal fallback if needed .-> CONTAINER

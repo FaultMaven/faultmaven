@@ -16,6 +16,7 @@ import pytest
 from faultmaven.core.agent.agent import FaultMavenAgent
 from faultmaven.core.agent.doctrine import Phase
 from faultmaven.models import AgentStateDict
+from faultmaven.models.legacy import AgentState
 
 
 class TestCoreAgent:
@@ -28,9 +29,10 @@ class TestCoreAgent:
         self.mock_llm_router = AsyncMock()
         self.mock_kb_tool = MagicMock()
 
-        # Initialize agent with mocked dependencies
+        # Initialize agent with interface dependencies
         self.agent = FaultMavenAgent(
-            llm_router=self.mock_llm_router, knowledge_base_tool=self.mock_kb_tool
+            llm_interface=self.mock_llm_router,
+            tools=[self.mock_kb_tool]
         )
 
         self.sample_agent_state = AgentStateDict(

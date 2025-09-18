@@ -84,8 +84,12 @@ class TestWebSearchTool:
 
     def test_is_available_without_api_key(self):
         """Test is_available method without API key"""
-        tool = WebSearchTool(api_key="")
-        assert tool.is_available() is False
+        # Ensure no environment variables are set that could provide API keys
+        with patch.dict("os.environ", {}, clear=True):
+            from faultmaven.config.settings import reset_settings
+            reset_settings()
+            tool = WebSearchTool(api_key="", api_endpoint="")
+            assert tool.is_available() is False
 
     def test_synchronous_run_raises_not_implemented(self):
         """Test that synchronous _run method raises NotImplementedError"""
@@ -95,10 +99,14 @@ class TestWebSearchTool:
     @pytest.mark.asyncio
     async def test_arun_without_api_key(self):
         """Test _arun method without API key"""
-        tool = WebSearchTool(api_key="")
-        result = await tool._arun("test query")
-        assert "Web search is not available" in result
-        assert "No API key configured" in result
+        # Ensure no environment variables are set that could provide API keys
+        with patch.dict("os.environ", {}, clear=True):
+            from faultmaven.config.settings import reset_settings
+            reset_settings()
+            tool = WebSearchTool(api_key="", api_endpoint="")
+            result = await tool._arun("test query")
+            assert "Web search is not available" in result
+            assert "No API key configured" in result
 
     @pytest.mark.asyncio
     async def test_arun_with_successful_search(self):

@@ -9,7 +9,7 @@ from unittest.mock import Mock, AsyncMock, patch
 import asyncio
 from datetime import datetime
 
-from faultmaven.services.agentic.response_synthesizer import ResponseSynthesizer
+from faultmaven.services.agentic.engines.response_synthesizer import ResponseSynthesizer
 from faultmaven.models.agentic import (
     ProcessingResult, QualityMetrics, ResponseTemplate, ResponseSource,
     SynthesisRequest, SynthesisResult, ContentFormat, QualityAssessment
@@ -37,8 +37,9 @@ class TestResponseSynthesizer:
         """
         mock.get_template.return_value = ResponseTemplate(
             name='troubleshooting_response',
-            format='markdown',
-            sections=['analysis', 'solutions', 'resources']
+            format_type='markdown',
+            template_content='# Troubleshooting Response\n\n## Issue Analysis\n{{analysis}}\n\n## Recommended Solutions\n{{solutions}}\n\n## Additional Resources\n{{resources}}',
+            variables=['analysis', 'solutions', 'resources']
         )
         return mock
 
@@ -46,13 +47,17 @@ class TestResponseSynthesizer:
     def mock_quality_checker(self):
         """Mock quality checker for response validation."""
         mock = AsyncMock()
+        quality_metrics = QualityMetrics(
+            accuracy=0.85,
+            completeness=0.9,
+            relevance=0.8,
+            coherence=0.85,
+            overall_score=0.85
+        )
         mock.assess_quality.return_value = QualityAssessment(
-            overall_score=0.85,
-            completeness_score=0.9,
-            relevance_score=0.8,
-            clarity_score=0.85,
-            actionability_score=0.88,
-            issues=[]
+            content_id='test-content-123',
+            metrics=quality_metrics,
+            feedback=[]
         )
         mock.validate_format.return_value = True
         return mock

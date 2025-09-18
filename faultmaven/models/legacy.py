@@ -59,6 +59,7 @@ class SessionContext(BaseModel):
     )
     current_case_id: Optional[str] = Field(None, description="Current active case/conversation thread ID")
     agent_state: Optional[Dict[str, Any]] = Field(None, description="Current agent state and context")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional session metadata")
 
     @property
     def active(self) -> bool:

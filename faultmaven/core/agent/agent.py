@@ -37,7 +37,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from faultmaven.infrastructure.llm.router import LLMRouter
-from faultmaven.models import AgentState
+from faultmaven.models import AgentStateDict as AgentState
 from faultmaven.models.interfaces import ILLMProvider, BaseTool
 from faultmaven.infrastructure.observability.tracing import trace
 from .doctrine import Phase, TroubleshootingDoctrine
@@ -50,39 +50,26 @@ class FaultMavenAgent:
 
     def __init__(
         self,
-        llm_interface: Optional[ILLMProvider] = None,
-        tools: Optional[List[BaseTool]] = None,
-        # Backward compatibility parameters
-        llm_router: Optional[LLMRouter] = None,
-        knowledge_base_tool: Optional[KnowledgeBaseTool] = None,
-        web_search_tool: Optional[WebSearchTool] = None,
+        llm_interface: ILLMProvider,
+        tools: List[BaseTool]
     ):
         self.logger = logging.getLogger(__name__)
-        
-        # Handle interface vs concrete implementation
-        if llm_interface:
-            self.llm_router = llm_interface
-        elif llm_router:
-            self.llm_router = llm_router
-        else:
-            # Default to LLMRouter if nothing provided
-            self.llm_router = LLMRouter()
-            
-        # Handle tools - prefer interface-based tools
-        if tools:
-            self.tools = tools
-        else:
-            # Backward compatibility - create tools from concrete implementations
-            self.tools = []
-            if knowledge_base_tool:
-                self.tools.append(knowledge_base_tool)
-            if web_search_tool and web_search_tool.is_available():
-                self.tools.append(web_search_tool)
-                
-        # Store concrete implementations for backward compatibility
-        self.knowledge_base_tool = knowledge_base_tool
-        self.web_search_tool = web_search_tool
+
+        # Use interface-based dependencies
+        self.llm_router = llm_interface
+        self.tools = tools
         self.doctrine = TroubleshootingDoctrine()
+
+        # Initialize tool references for the doctrine phases
+        self.knowledge_base_tool = None
+        self.web_search_tool = None
+
+        # Find specific tools in the tools list
+        for tool in tools:
+            if isinstance(tool, KnowledgeBaseTool):
+                self.knowledge_base_tool = tool
+            elif isinstance(tool, WebSearchTool):
+                self.web_search_tool = tool
 
         # Build the agent graph
         self.graph = self._build_agent_graph()

@@ -24,7 +24,7 @@ All logging components are automatically configured. Simply use the appropriate 
 
 ```python
 # Service Layer
-from faultmaven.services.base_service import BaseService
+from faultmaven.services.base import BaseService
 
 class YourService(BaseService):
     def __init__(self):
@@ -59,7 +59,7 @@ from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
 from faultmaven.infrastructure.logging.unified import get_unified_logger
 
 # Base classes for different infrastructure patterns
-from faultmaven.services.base_service import BaseService
+from faultmaven.services.base import BaseService
 from faultmaven.infrastructure.base_client import BaseExternalClient  # External services only
 
 # Lightweight clients for internal infrastructure
@@ -142,7 +142,7 @@ async def process_user_query(
 Inherit from `BaseService` and use `execute_operation()`:
 
 ```python
-from faultmaven.services.base_service import BaseService
+from faultmaven.services.base import BaseService
 from typing import Dict, Any, List
 
 class AgentService(BaseService):
@@ -511,7 +511,7 @@ def process_data(data):
 
 **After:**
 ```python
-from faultmaven.services.base_service import BaseService
+from faultmaven.services.base import BaseService
 
 class DataProcessor(BaseService):
     def __init__(self):

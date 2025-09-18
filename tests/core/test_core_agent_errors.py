@@ -20,9 +20,8 @@ class TestCoreAgentErrors:
         self.mock_web_search_tool.is_available.return_value = True
 
         self.agent = FaultMavenAgent(
-            llm_router=self.mock_llm_router,
-            knowledge_base_tool=self.mock_kb_tool,
-            web_search_tool=self.mock_web_search_tool,
+            llm_interface=self.mock_llm_router,
+            tools=[self.mock_kb_tool, self.mock_web_search_tool]
         )
 
         self.sample_state = AgentStateDict(

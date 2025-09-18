@@ -41,7 +41,7 @@ print(f"Agentic components available: {health.get('components', {}).get('agentic
 ```python
 # api/v1/dependencies.py
 from faultmaven.container import container
-from faultmaven.services.agent import AgentService
+from faultmaven.services.agentic.orchestration.agent_service import AgentService
 
 def get_agent_service() -> AgentService:
     """FastAPI dependency for agent service"""
@@ -136,7 +136,7 @@ The container now provides the following enhanced service getters:
 
 ```python
 # Enhanced Core Services with Intelligence
-agent_service = container.get_agent_service()        # EnhancedAgentService
+agent_service = container.get_agent_service()        # Pure AgentService
 data_service = container.get_data_service()          # EnhancedDataService  
 knowledge_service = container.get_knowledge_service() # EnhancedKnowledgeService
 session_service = container.get_session_service()    # EnhancedSessionService
@@ -164,8 +164,8 @@ tools = container.get_tools()                       # List[EnhancedBaseTool]
 Enhanced services now receive intelligence dependencies automatically:
 
 ```python
-# EnhancedAgentService receives these dependencies automatically:
-class EnhancedAgentService:
+# AgentService receives these dependencies automatically:
+class AgentService:
     def __init__(
         self,
         llm_provider: ILLMProvider,      # Multi-provider routing
@@ -564,16 +564,12 @@ class CustomEnhancedContainer(DIContainer):
             super()._create_intelligence_layer()
     
     def _create_service_layer(self):
-        # Enhanced service configuration with intelligence
-        self.agent_service = EnhancedAgentService(
+        # Pure interface-based service configuration
+        self.agent_service = AgentService(
             llm_provider=self.llm_provider,
             tools=self.tools,
             tracer=self.tracer,
-            sanitizer=self.sanitizer,
-            memory_service=self.memory_service,
-            planning_service=self.planning_service,
-            prompt_engine=self.prompt_engine,
-            custom_intelligence_feature=True  # Additional intelligence feature
+            sanitizer=self.sanitizer
         )
 ```
 
@@ -628,7 +624,7 @@ def _create_minimal_enhanced_container(self):
     self.tools = []
     
     # Mock enhanced service layer
-    self.agent_service = MagicMock(spec=EnhancedAgentService)
+    self.agent_service = MagicMock(spec=AgentService)
     self.data_service = MagicMock(spec=EnhancedDataService)
     self.knowledge_service = MagicMock(spec=EnhancedKnowledgeService)
     

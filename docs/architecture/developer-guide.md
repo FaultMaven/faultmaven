@@ -113,7 +113,7 @@ FaultMaven now features a sophisticated hierarchical memory architecture:
 
 ```python
 # Memory Service Usage
-from faultmaven.services.memory_service import IMemoryService
+from faultmaven.services.agentic.management.state_manager import IAgentStateManager
 
 class EnhancedAgentService:
     def __init__(self, memory_service: IMemoryService):
@@ -150,7 +150,7 @@ The system now includes intelligent planning capabilities:
 
 ```python
 # Planning Service Usage
-from faultmaven.services.planning_service import IPlanningService
+from faultmaven.services.domain.planning_service import IPlanningService
 
 class EnhancedAgentService:
     def __init__(self, planning_service: IPlanningService):

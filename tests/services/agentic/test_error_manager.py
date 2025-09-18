@@ -9,11 +9,22 @@ from unittest.mock import Mock, AsyncMock, patch
 import asyncio
 from datetime import datetime, timedelta
 
-from faultmaven.services.agentic.error_manager import ErrorFallbackManager
+from faultmaven.services.agentic.safety.error_manager import ErrorFallbackManager
 from faultmaven.models.agentic import (
     ErrorContext, ErrorType, ErrorSeverity, RecoveryStrategy, CircuitBreakerState,
     HealthStatus, AlertLevel, ErrorClassification, RecoveryResult, FallbackConfig
 )
+
+# Define missing model for tests
+from dataclasses import dataclass
+
+@dataclass
+class ComponentHealthStatus:
+    """Component health status for testing"""
+    component: str
+    status: str
+    response_time: float
+    last_check: datetime
 
 
 class TestErrorFallbackManager:
@@ -23,7 +34,7 @@ class TestErrorFallbackManager:
     def mock_health_checker(self):
         """Mock health checker for system monitoring."""
         mock = AsyncMock()
-        mock.check_component_health.return_value = HealthStatus(
+        mock.check_component_health.return_value = ComponentHealthStatus(
             component='test_component',
             status='healthy',
             response_time=0.1,
@@ -59,13 +70,15 @@ class TestErrorFallbackManager:
         assert error_manager.alert_manager is not None
         assert hasattr(error_manager, 'circuit_breakers')
         assert hasattr(error_manager, 'error_history')
-        assert hasattr(error_manager, 'recovery_strategies')
+        assert hasattr(error_manager, 'fallback_strategies')
 
     @pytest.mark.asyncio
     async def test_handle_error_transient(self, error_manager):
         """Test handling of transient errors with automatic recovery."""
         error_context = ErrorContext(
-            error_type=ErrorType.NETWORK_TIMEOUT,
+            session_id='test-session',
+            operation='llm_provider_call',
+            error_type=ErrorType.TIMEOUT_ERROR,
             severity=ErrorSeverity.LOW,
             component='llm_provider',
             message='Request timeout after 30 seconds',
@@ -83,7 +96,9 @@ class TestErrorFallbackManager:
     async def test_handle_error_critical(self, error_manager, mock_alert_manager):
         """Test handling of critical errors with alerting."""
         error_context = ErrorContext(
-            error_type=ErrorType.SYSTEM_FAILURE,
+            session_id='test-session',
+            operation='workflow_execution',
+            error_type=ErrorType.SYSTEM_ERROR,
             severity=ErrorSeverity.CRITICAL,
             component='workflow_engine',
             message='Core system component failure',
@@ -106,7 +121,7 @@ class TestErrorFallbackManager:
             (ValueError("Invalid input"), ErrorType.VALIDATION_ERROR, ErrorSeverity.MEDIUM),
             (ConnectionError("Network unavailable"), ErrorType.NETWORK_ERROR, ErrorSeverity.HIGH),
             (TimeoutError("Operation timeout"), ErrorType.TIMEOUT_ERROR, ErrorSeverity.LOW),
-            (RuntimeError("System malfunction"), ErrorType.SYSTEM_FAILURE, ErrorSeverity.CRITICAL)
+            (RuntimeError("System malfunction"), ErrorType.SYSTEM_ERROR, ErrorSeverity.CRITICAL)
         ]
         
         for exception, expected_type, expected_severity in test_cases:
@@ -137,7 +152,7 @@ class TestErrorFallbackManager:
         # Simulate multiple failures to trip circuit breaker
         for _ in range(5):  # Exceed threshold
             error_context = ErrorContext(
-                error_type=ErrorType.SERVICE_ERROR,
+                error_type=ErrorType.SYSTEM_ERROR,
                 severity=ErrorSeverity.HIGH,
                 component=component,
                 message='Service failure',
@@ -161,7 +176,7 @@ class TestErrorFallbackManager:
         # Trip circuit breaker
         for _ in range(5):
             error_context = ErrorContext(
-                error_type=ErrorType.SERVICE_ERROR,
+                error_type=ErrorType.SYSTEM_ERROR,
                 severity=ErrorSeverity.HIGH,
                 component=component,
                 message='Service failure',
@@ -182,7 +197,7 @@ class TestErrorFallbackManager:
     async def test_recovery_strategy_retry(self, error_manager):
         """Test retry recovery strategy."""
         error_context = ErrorContext(
-            error_type=ErrorType.NETWORK_TIMEOUT,
+            error_type=ErrorType.TIMEOUT_ERROR,
             severity=ErrorSeverity.LOW,
             component='api_client',
             message='Temporary network issue',
@@ -202,7 +217,7 @@ class TestErrorFallbackManager:
     async def test_recovery_strategy_fallback(self, error_manager):
         """Test fallback recovery strategy."""
         error_context = ErrorContext(
-            error_type=ErrorType.SERVICE_UNAVAILABLE,
+            error_type=ErrorType.SYSTEM_ERROR,
             severity=ErrorSeverity.HIGH,
             component='primary_llm',
             message='Primary LLM service down',
@@ -260,7 +275,7 @@ class TestErrorFallbackManager:
         # Generate multiple critical errors
         for _ in range(3):
             error_context = ErrorContext(
-                error_type=ErrorType.SYSTEM_FAILURE,
+                error_type=ErrorType.SYSTEM_ERROR,
                 severity=ErrorSeverity.CRITICAL,
                 component=component,
                 message='Critical system failure',
@@ -295,7 +310,7 @@ class TestErrorFallbackManager:
         
         for component in components:
             error_context = ErrorContext(
-                error_type=ErrorType.SERVICE_ERROR,
+                error_type=ErrorType.SYSTEM_ERROR,
                 severity=ErrorSeverity.HIGH,
                 component=component,
                 message=f'{component} failure',
@@ -316,9 +331,9 @@ class TestErrorFallbackManager:
         """Test collection of error recovery metrics."""
         # Generate various errors with different outcomes
         error_scenarios = [
-            (ErrorType.NETWORK_TIMEOUT, True),   # Recoverable
+            (ErrorType.TIMEOUT_ERROR, True),   # Recoverable
             (ErrorType.VALIDATION_ERROR, True),  # Recoverable
-            (ErrorType.SYSTEM_FAILURE, False),   # Not recoverable
+            (ErrorType.SYSTEM_ERROR, False),   # Not recoverable
         ]
         
         for error_type, recoverable in error_scenarios:
@@ -368,16 +383,16 @@ class TestErrorFallbackManager:
             'recovery_difficulty': 'easy'
         }
         
-        severity = error_manager.calculate_error_severity(ErrorType.SERVICE_ERROR, factors)
+        severity = error_manager.calculate_error_severity(ErrorType.SYSTEM_ERROR, factors)
         assert severity in [s for s in ErrorSeverity]
 
     def test_recovery_strategy_selection(self, error_manager):
         """Test selection of appropriate recovery strategy."""
         error_scenarios = [
-            (ErrorType.NETWORK_TIMEOUT, RecoveryStrategy.RETRY),
-            (ErrorType.SERVICE_UNAVAILABLE, RecoveryStrategy.FALLBACK),
+            (ErrorType.TIMEOUT_ERROR, RecoveryStrategy.RETRY),
+            (ErrorType.SYSTEM_ERROR, RecoveryStrategy.FALLBACK),
             (ErrorType.VALIDATION_ERROR, RecoveryStrategy.SKIP),
-            (ErrorType.SYSTEM_FAILURE, RecoveryStrategy.ALERT_AND_STOP)
+            (ErrorType.SYSTEM_ERROR, RecoveryStrategy.ALERT_AND_STOP)
         ]
         
         for error_type, expected_strategy in error_scenarios:
@@ -413,14 +428,14 @@ class TestErrorFallbackManager:
         # Generate related errors
         related_errors = [
             ErrorContext(
-                error_type=ErrorType.DATABASE_ERROR,
+                error_type=ErrorType.SYSTEM_ERROR,
                 severity=ErrorSeverity.HIGH,
                 component='database',
                 message='Connection pool exhausted',
                 metadata={'correlation_id': 'issue_123'}
             ),
             ErrorContext(
-                error_type=ErrorType.SERVICE_ERROR,
+                error_type=ErrorType.SYSTEM_ERROR,
                 severity=ErrorSeverity.HIGH,
                 component='api_service',
                 message='Database operation failed',

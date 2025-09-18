@@ -146,14 +146,14 @@ def mock_infrastructure_components():
         confidence=0.9,
         usage={"prompt_tokens": 50, "completion_tokens": 100, "total_tokens": 150}
     ))
-    llm_provider.is_available.return_value = True
-    llm_provider.get_supported_models.return_value = ["mock-model"]
+    llm_provider.is_available = Mock(return_value=True)
+    llm_provider.get_supported_models = Mock(return_value=["mock-model"])
     components['llm_provider'] = llm_provider
     
     # Mock Sanitizer
     sanitizer = Mock(spec=ISanitizer)
     sanitizer.sanitize = AsyncMock(return_value="Sanitized user query without PII")
-    sanitizer.is_sensitive.return_value = False
+    sanitizer.is_sensitive = Mock(return_value=False)
     components['sanitizer'] = sanitizer
     
     # Mock Tracer
@@ -813,7 +813,7 @@ class TestInterfaceComplianceInRealScenarios:
         # Mock infrastructure with proper interface compliance
         llm_provider = Mock(spec=ILLMProvider)
         llm_provider.generate = AsyncMock()
-        llm_provider.is_available.return_value = True
+        llm_provider.is_available = Mock(return_value=True)
         
         sanitizer = Mock(spec=ISanitizer)
         sanitizer.sanitize = AsyncMock()

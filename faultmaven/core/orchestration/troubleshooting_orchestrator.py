@@ -23,7 +23,7 @@ from enum import Enum
 from faultmaven.models.interfaces import (
     IMemoryService, IPlanningService, ILLMProvider, ITracer, IVectorStore
 )
-from faultmaven.services.knowledge import KnowledgeService
+from faultmaven.services.domain.knowledge_service import KnowledgeService
 # ReasoningService removed during agentic framework migration
 from faultmaven.exceptions import ServiceException
 

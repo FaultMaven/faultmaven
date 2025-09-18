@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import Mock, AsyncMock, patch
 import asyncio
 
-from faultmaven.services.agentic.guardrails_layer import GuardrailsPolicyLayer
+from faultmaven.services.agentic.safety.guardrails_layer import GuardrailsPolicyLayer
 from faultmaven.models.agentic import (
     SecurityBoundary, ContentPolicy, ComplianceResult, PIIDetectionResult,
     ValidationRequest, ValidationResult, SecurityLevel, PolicyViolation

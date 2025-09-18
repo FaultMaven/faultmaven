@@ -11,8 +11,8 @@ import uuid
 from datetime import datetime, timedelta
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 
-from faultmaven.services.agent import AgentService
-from faultmaven.services.session import SessionService
+from faultmaven.services.agentic.orchestration.agent_service import AgentService
+from faultmaven.services.domain.session_service import SessionService
 from faultmaven.models import QueryRequest, AgentResponse, ResponseType, ViewState, Source, SourceType, SessionContext
 from faultmaven.models.case import Case, CaseStatus, CasePriority, MessageType
 from faultmaven.models.api import User, Case as APICase
@@ -80,7 +80,9 @@ def mock_session_service():
     service.format_conversation_context = mock_format_conversation_context
     service.record_case_message = mock_record_case_message
     service.get_session = AsyncMock(return_value=Mock(session_id="test-session"))
-    
+    service.get_or_create_current_case_id = AsyncMock(return_value="e2e-test-case-123")
+    service.update_case_query_count = AsyncMock()
+
     return service
 
 
@@ -128,9 +130,11 @@ def mock_case_service():
 def mock_tracer():
     """Mock tracer for observability."""
     tracer = Mock()
-    tracer.trace = Mock()
-    tracer.trace.return_value.__enter__ = Mock()
-    tracer.trace.return_value.__exit__ = Mock(return_value=None)
+    # Create a proper context manager mock
+    context_manager = Mock()
+    context_manager.__enter__ = Mock(return_value=context_manager)
+    context_manager.__exit__ = Mock(return_value=None)
+    tracer.trace.return_value = context_manager
     return tracer
 
 
@@ -143,16 +147,85 @@ def mock_sanitizer():
 
 
 @pytest.fixture
-def agent_service_with_mocks(mock_llm_provider, mock_session_service, mock_tracer, mock_sanitizer):
+def mock_agentic_components():
+    """Mock agentic framework components for E2E testing."""
+    return {
+        "business_logic_workflow_engine": AsyncMock(),
+        "query_classification_engine": AsyncMock(),
+        "tool_skill_broker": AsyncMock(),
+        "guardrails_policy_layer": AsyncMock(),
+        "response_synthesizer": AsyncMock(),
+        "error_fallback_manager": AsyncMock(),
+        "agent_state_manager": AsyncMock()
+    }
+
+
+@pytest.fixture
+def agent_service_with_mocks(mock_llm_provider, mock_session_service, mock_tracer, mock_sanitizer, mock_agentic_components):
     """AgentService with mocked dependencies for E2E testing."""
-    return AgentService(
-        llm_provider=mock_llm_provider,
-        tools=[],
-        tracer=mock_tracer,
-        sanitizer=mock_sanitizer,
-        session_service=mock_session_service,
-        settings=Mock()
-    )
+    # Setup default mock behaviors for E2E testing
+    mock_agentic_components["query_classification_engine"].classify_query = AsyncMock(return_value={
+        "intent": "troubleshooting",
+        "complexity": "medium",
+        "urgency": "normal",
+        "domain": "e2e_test"
+    })
+
+    mock_agentic_components["tool_skill_broker"].orchestrate_capabilities = AsyncMock(return_value={
+        "evidence": []
+    })
+
+    mock_agentic_components["business_logic_workflow_engine"].execute_agentic_workflow = AsyncMock(return_value={
+        "evidence": [],
+        "confidence_boost": 0.8,
+        "plan_executed": True,
+        "observations": [],
+        "adaptations": [],
+        "execution_plan": None
+    })
+
+    mock_agentic_components["response_synthesizer"].synthesize_response = AsyncMock(return_value={
+        "content": "E2E test response",
+        "sources": []
+    })
+
+    mock_agentic_components["agent_state_manager"].get_enhanced_context = AsyncMock(return_value={
+        "success": False
+    })
+
+    mock_agentic_components["agent_state_manager"].update_agent_state = AsyncMock()
+
+    mock_agentic_components["error_fallback_manager"].handle_execution_error = AsyncMock(return_value={
+        "recovery_message": "E2E fallback response"
+    })
+
+    # Use patches to bypass type validation like in the other test file
+    with patch.object(AgentService, '_validate_agentic_components'), \
+         patch.object(AgentService, '_create_view_state') as mock_view_state:
+        from faultmaven.models.api import User
+        from faultmaven.models import ViewState
+
+        mock_view_state.return_value = ViewState(
+            session_id="e2e-test-session",
+            user=User(
+                user_id="e2e-test-user",
+                username="e2etestuser",
+                email="e2e@example.com",
+                name="E2E Test User"
+            )
+        )
+
+        agent = AgentService(
+            llm_provider=mock_llm_provider,
+            tools=[],
+            tracer=mock_tracer,
+            sanitizer=mock_sanitizer,
+            session_service=mock_session_service,
+            settings=Mock(),
+            **mock_agentic_components
+        )
+        agent._mock_view_state = mock_view_state  # Store for test inspection
+        return agent
 
 
 @pytest.mark.integration

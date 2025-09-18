@@ -591,7 +591,7 @@ from datetime import datetime, timedelta
 import uuid
 import logging
 
-from faultmaven.services.base_service import BaseService
+from faultmaven.services.base import BaseService
 from faultmaven.models.interfaces import ICaseStore, ICaseService, ISessionStore
 from faultmaven.models.case import (
     Case, CaseMessage, CaseParticipant, CaseSummary, 
@@ -1351,7 +1351,7 @@ class DIContainer:
         super()._create_service_layer()
         
         # Case service
-        from faultmaven.services.case_service import CaseService
+        from faultmaven.services.domain.case_service import CaseService
         
         try:
             self._case_service = CaseService(
@@ -1472,7 +1472,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime
 
-from faultmaven.services.case_service import CaseService
+from faultmaven.services.domain.case_service import CaseService
 from faultmaven.models.case import Case, CaseMessage, CaseStatus
 
 @pytest.fixture
@@ -1571,7 +1571,7 @@ async def test_link_session_to_case(case_service, mock_case_store, mock_session_
 import pytest
 from datetime import datetime
 
-from faultmaven.services.case_service import CaseService
+from faultmaven.services.domain.case_service import CaseService
 from faultmaven.infrastructure.persistence.redis_case_store import RedisCaseStore
 from faultmaven.models.case import Case, CaseMessage
 

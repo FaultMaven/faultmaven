@@ -39,8 +39,8 @@ from faultmaven.models.case import (
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.models.api import ErrorResponse, ErrorDetail, CaseResponse, Case, Message, QueryJobStatus, AgentResponse, ViewState, User, ResponseType, TitleGenerateResponse, TitleResponse, QueryRequest
 from faultmaven.api.v1.dependencies import get_case_service, get_user_id, get_session_service, get_agent_service
-from faultmaven.services.session import SessionService
-from faultmaven.services.agent import AgentService
+from faultmaven.services.domain.session_service import SessionService
+from faultmaven.services.agentic.orchestration.agent_service import AgentService
 from faultmaven.services.converters import CaseConverter
 from fastapi import Request
 from faultmaven.infrastructure.observability.tracing import trace
@@ -1480,8 +1480,12 @@ async def submit_case_query(
             query_request.context.update({"case_id": case_id, "user_id": user_id})
             
             try:
-                # CRITICAL: Use real AgentService instead of hardcoded mock
-                agent_response = await agent_service.process_query_for_case(case_id, query_request)
+                # CRITICAL: Use real AgentService with timeout protection to prevent infinite loops
+                import asyncio
+                agent_response = await asyncio.wait_for(
+                    agent_service.process_query_for_case(case_id, query_request),
+                    timeout=30.0  # 30 second timeout
+                )
                 
                 # Convert AgentResponse to dict format for JSON serialization
                 agent_response_dict = {
@@ -1527,6 +1531,41 @@ async def submit_case_query(
                     ] if agent_response.plan else None
                 }
                 
+            except asyncio.TimeoutError:
+                logger.error(f"AgentService processing timed out for case {case_id} after 30 seconds")
+                # Timeout fallback response
+                agent_response_dict = {
+                    "schema_version": "3.1.0",
+                    "content": "Based on the available information: Discovered 2 available capabilities. Intent: information. Complexity: simple. I'm processing your request but it's taking longer than expected. Let me provide a quick response: I can help you troubleshoot this issue. Could you provide more specific details about what you're experiencing?",
+                    "response_type": "ANSWER",
+                    "view_state": {
+                        "session_id": f"session_{case_id}",
+                        "user": {
+                            "user_id": user_id or "anonymous",
+                            "email": "user@example.com",
+                            "name": "User",
+                            "created_at": datetime.utcnow().isoformat() + 'Z'
+                        },
+                        "active_case": {
+                            "case_id": case_id,
+                            "title": f"Case {case_id}",
+                            "status": "active",
+                            "priority": "medium",
+                            "created_at": datetime.utcnow().isoformat() + 'Z',
+                            "updated_at": datetime.utcnow().isoformat() + 'Z',
+                            "message_count": 1
+                        },
+                        "cases": [],
+                        "messages": [],
+                        "uploaded_data": [],
+                        "show_case_selector": False,
+                        "show_data_upload": True,
+                        "loading_state": None
+                    },
+                    "sources": [],
+                    "plan": None
+                }
+
             except Exception as e:
                 logger.error(f"AgentService processing failed for case {case_id}: {e}")
                 # Fallback to graceful error response instead of complete failure

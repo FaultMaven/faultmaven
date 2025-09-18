@@ -56,6 +56,13 @@ from faultmaven.observability.tracing import trace, init_opik_tracing
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.infrastructure.observability.tracing import trace, init_opik_tracing
+
+# Job service migration (moved from services to infrastructure)
+# Before
+from faultmaven.services.job import JobService
+
+# After
+from faultmaven.infrastructure.jobs.job_service import JobService
 ```
 
 ### Tools
@@ -69,13 +76,31 @@ from faultmaven.tools.knowledge_base import KnowledgeBaseTool
 from faultmaven.tools.web_search import WebSearchTool
 ```
 
-### Services (New)
+### Services (Updated Structure)
 ```python
-# New service layer imports
-from faultmaven.services.agent_service import AgentService
-from faultmaven.services.data_service import DataService
-from faultmaven.services.knowledge_service import KnowledgeService
-from faultmaven.services.session_service import SessionService
+# Domain services
+from faultmaven.services.domain.case_service import CaseService
+from faultmaven.services.domain.data_service import DataService
+from faultmaven.services.domain.knowledge_service import KnowledgeService
+from faultmaven.services.domain.session_service import SessionService
+from faultmaven.services.domain.planning_service import PlanningService
+
+# Analytics services
+from faultmaven.services.analytics.dashboard_service import DashboardService
+from faultmaven.services.analytics.confidence_service import ConfidenceService
+
+# Agentic framework services
+from faultmaven.services.agentic.orchestration.agent_service import AgentService
+from faultmaven.services.agentic.engines.workflow_engine import BusinessLogicWorkflowEngine
+from faultmaven.services.agentic.engines.classification_engine import QueryClassificationEngine
+from faultmaven.services.agentic.engines.response_synthesizer import ResponseSynthesizer
+from faultmaven.services.agentic.management.state_manager import AgentStateManager
+from faultmaven.services.agentic.management.tool_broker import ToolSkillBroker
+from faultmaven.services.agentic.safety.guardrails_layer import GuardrailsPolicyLayer
+from faultmaven.services.agentic.safety.error_manager import ErrorFallbackManager
+
+# Converter services
+from faultmaven.services.converters.case_converter import CaseConverter
 ```
 
 ### Dependency Injection (New)

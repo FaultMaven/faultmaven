@@ -9,7 +9,7 @@ from unittest.mock import Mock, AsyncMock, patch
 import asyncio
 from datetime import datetime, timedelta
 
-from faultmaven.services.agentic.tool_broker import ToolSkillBroker
+from faultmaven.services.agentic.management.tool_broker import ToolSkillBroker
 from faultmaven.models.agentic import (
     AgentCapabilities, ToolExecutionRequest, ToolExecutionResult,
     SafetyAssessment, PerformanceMetrics, CapabilityDiscovery
@@ -49,42 +49,57 @@ class TestToolSkillBroker:
             'success_rate': 0.95
         }
         mock.get_performance_metrics.return_value = PerformanceMetrics(
-            average_response_time=0.15,
-            success_rate=0.92,
-            total_executions=100,
-            error_count=8
+            operation_type='tool_execution',
+            latency=0.15,
+            throughput=0.92,
+            error_rate=0.08,
+            resource_usage={'cpu': 0.3, 'memory': 0.5}
         )
         return mock
 
     @pytest.fixture
     def tool_broker(self, mock_knowledge_base, mock_health_monitor):
         """Create tool broker with mocked dependencies."""
-        return ToolSkillBroker(
-            knowledge_base=mock_knowledge_base,
-            health_monitor=mock_health_monitor
+        mock_tracer = Mock()
+        mock_tracer.trace = Mock()
+        mock_tracer.trace.return_value.__enter__ = Mock()
+        mock_tracer.trace.return_value.__exit__ = Mock(return_value=None)
+
+        broker = ToolSkillBroker(
+            tracer=mock_tracer,
+            enable_safety_checks=True,
+            max_concurrent_executions=5
         )
+
+        # Monkey patch the dependencies for the tests
+        broker.knowledge_base = mock_knowledge_base
+        broker.health_monitor = mock_health_monitor
+
+        return broker
 
     @pytest.mark.asyncio
     async def test_init_tool_broker(self, tool_broker):
         """Test tool broker initialization."""
-        assert tool_broker.knowledge_base is not None
-        assert tool_broker.health_monitor is not None
-        assert hasattr(tool_broker, 'available_tools')
-        assert hasattr(tool_broker, 'performance_cache')
+        assert tool_broker.tracer is not None
+        assert hasattr(tool_broker, 'registered_tools')
+        assert hasattr(tool_broker, 'capability_index')
+        assert hasattr(tool_broker, 'performance_history')
 
     @pytest.mark.asyncio
     async def test_discover_capabilities_basic(self, tool_broker):
         """Test basic capability discovery."""
-        query_context = "Need to search for troubleshooting information"
-        
-        capabilities = await tool_broker.discover_capabilities(query_context)
-        
-        assert isinstance(capabilities, AgentCapabilities)
-        assert len(capabilities.tools) > 0
-        assert 'knowledge_search' in capabilities.tools
-        
-        # Verify knowledge base was searched
-        tool_broker.knowledge_base.search.assert_called_once()
+        requirements = {
+            "capability_types": ["knowledge_retrieval"],
+            "user_context": {"query": "troubleshooting information"}
+        }
+
+        capabilities = await tool_broker.discover_capabilities(requirements)
+
+        assert isinstance(capabilities, list)
+        assert len(capabilities) > 0
+        # Should find the built-in knowledge_search capability
+        capability_ids = [cap.capability_id for cap in capabilities]
+        assert 'knowledge_search' in capability_ids
 
     @pytest.mark.asyncio
     async def test_discover_capabilities_complex_query(self, tool_broker, mock_knowledge_base):

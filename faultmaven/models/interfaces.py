@@ -1631,6 +1631,349 @@ redis:
         pass
 
 
+# Confidence Service Interfaces
+class IGlobalConfidenceService(ABC):
+    """Interface for global confidence scoring operations.
+
+    This interface abstracts global confidence scoring operations for decision
+    making in troubleshooting workflows. Implementations should provide calibrated
+    confidence scores using machine learning models with hysteresis, confidence
+    band classification, and model management capabilities.
+
+    Responsibilities:
+        - Compute calibrated confidence from feature vectors
+        - Apply hysteresis and dwell time for stability
+        - Expose model version and calibration metrics
+        - Support confidence band thresholds
+
+    Performance Requirements:
+        - p95 latency < 50ms for responsive decision making
+        - 99.95% availability for system reliability
+        - Calibration error < 0.1 (ECE) for accuracy
+
+    Model Features (v1):
+        - retrieval_score: Quality of knowledge base matches (0.0-1.0)
+        - provider_confidence: LLM provider confidence score (0.0-1.0)
+        - hypothesis_score: Strength of diagnostic hypothesis (0.0-1.0)
+        - validation_result: Validation agent assessment (0.0-1.0)
+        - pattern_boost: Pattern matching confidence bonus (0.0-0.2)
+        - history_slope: Confidence trend over last 3 turns (-1.0-1.0)
+    """
+
+    @abstractmethod
+    async def score_confidence(self, request: 'ConfidenceRequest') -> 'ConfidenceResponse':
+        """Compute calibrated confidence score from feature vector.
+
+        This method takes extracted features from the troubleshooting workflow
+        and returns a calibrated confidence score with band classification and
+        recommended actions based on thresholds.
+
+        Args:
+            request: ConfidenceRequest with feature vector and context containing:
+                    - features: Dict of feature values for confidence calculation
+                    - context: Additional context for scoring (session_id, etc.)
+
+        Returns:
+            ConfidenceResponse with:
+            - raw_score: Uncalibrated confidence score (0.0-1.0)
+            - calibrated_score: Calibrated confidence score (0.0-1.0)
+            - confidence_band: Band classification (low/gray/high/apply/resolved)
+            - model_version: Current model identifier
+            - calibration_method: Calibration method used (Platt/Isotonic)
+            - recommended_actions: List of recommended actions for the band
+            - feature_contributions: Feature importance for explainability
+            - calibration_error: Expected calibration error for this model
+            - uncertainty: Model uncertainty estimate
+
+        Raises:
+            ValidationException: When feature vector is invalid or incomplete
+            ServiceException: When confidence scoring fails
+
+        Example:
+            Feature extraction and scoring:
+
+            >>> features = {
+                'retrieval_score': 0.85,
+                'provider_confidence': 0.72,
+                'hypothesis_score': 0.91,
+                'validation_result': 0.88,
+                'pattern_boost': 0.15,
+                'history_slope': 0.2
+            }
+            >>> request = ConfidenceRequest(features=features, context={'session_id': 'sess_123'})
+            >>> response = await confidence_service.score_confidence(request)
+            >>> response.calibrated_score
+            0.87
+            >>> response.confidence_band
+            ConfidenceBand.HIGH
+            >>> response.recommended_actions[0]
+            'Propose solution confidently'
+
+        Confidence Band Thresholds:
+            - LOW (< 0.5): Request clarification or gather more evidence
+            - GRAY (0.5-0.8): Propose solution with caveats and explanations
+            - HIGH (≥ 0.8): Propose solution confidently with implementation steps
+            - APPLY (≥ 0.9): Apply solution with user confirmation
+            - RESOLVED (≥ 0.95): Mark issue as resolved after verification
+
+        Note:
+            Hysteresis is applied to prevent rapid band transitions.
+            Feature contributions help explain confidence scores.
+            Model calibration ensures probabilistic accuracy.
+        """
+        pass
+
+    @abstractmethod
+    async def get_model_info(self) -> Dict[str, Any]:
+        """Get confidence model information and calibration metrics.
+
+        This method returns comprehensive information about the current
+        confidence model including metadata, calibration metrics, performance
+        statistics, and feature definitions for monitoring and debugging.
+
+        Returns:
+            Dictionary containing model information:
+            {
+                'model_version': str,           # Current model identifier
+                'calibration_method': str,      # 'platt' or 'isotonic'
+                'last_calibration': str,        # ISO timestamp of last calibration
+                'model_available': bool,        # Whether model is loaded and ready
+                'ml_backend_available': bool,   # Whether ML libraries are available
+                'feature_definitions': {        # Feature schemas and ranges
+                    'feature_name': {
+                        'range': [min_val, max_val],
+                        'description': 'Feature description'
+                    }
+                },
+                'confidence_bands': {           # Band thresholds and actions
+                    'band_name': {
+                        'range': [min_val, max_val],
+                        'actions': ['action1', 'action2']
+                    }
+                },
+                'hysteresis_config': {          # Hysteresis parameters
+                    'up_turns': int,
+                    'down_turns': int
+                },
+                'calibration_metrics': {        # Model accuracy metrics
+                    'ece_score': float,         # Expected Calibration Error
+                    'brier_score': float,       # Brier score for accuracy
+                    'log_loss': float,          # Logarithmic loss
+                    'training_samples': int,    # Training dataset size
+                    'training_date': str        # Training timestamp
+                },
+                'performance_metrics': {        # Runtime performance metrics
+                    'predictions_made': int,
+                    'avg_prediction_time_ms': float,
+                    'model_updates': int,
+                    'hysteresis_adjustments': int
+                },
+                'model_metadata': {             # Additional model metadata
+                    'version': str,
+                    'calibration_method': str,
+                    'feature_count': int,
+                    'training_date': str,
+                    'model_type': str,
+                    'synthetic_training': bool
+                }
+            }
+
+        Raises:
+            ServiceException: When model info retrieval fails
+
+        Example:
+            Checking model status and metrics:
+
+            >>> info = await confidence_service.get_model_info()
+            >>> info['model_version']
+            'conf-v1.2'
+            >>> info['calibration_metrics']['ece_score']
+            0.034
+            >>> info['performance_metrics']['avg_prediction_time_ms']
+            23.5
+            >>> len(info['feature_definitions'])
+            6
+
+        Note:
+            Model info is used for monitoring, debugging, and API documentation.
+            Calibration metrics indicate model reliability and accuracy.
+            Performance metrics help track system health and SLO compliance.
+        """
+        pass
+
+    @abstractmethod
+    async def update_model(self, model_data: bytes, version: str) -> bool:
+        """Update confidence model with new calibration data.
+
+        This method supports hot-swapping of confidence models for continuous
+        improvement without service downtime. The update process validates
+        the new model, performs backup of current model, and supports
+        automatic rollback on failure.
+
+        Args:
+            model_data: Serialized model binary data containing:
+                       - raw_model: Base machine learning model
+                       - calibrated_model: Calibrated version for scoring
+                       - metadata: Model training and validation metadata
+                       - metrics: Calibration accuracy metrics
+            version: New model version identifier (e.g., 'conf-v1.3')
+                    Must be unique and follow semantic versioning
+
+        Returns:
+            True if model update was successful and model is ready for use,
+            False if update failed and previous model remains active
+
+        Raises:
+            ValidationException: When model data is invalid or corrupted
+            ServiceException: When update process fails critically
+
+        Example:
+            Model update with validation:
+
+            >>> # Load new model data
+            >>> with open('confidence_model_v1_3.pkl', 'rb') as f:
+                    model_data = f.read()
+            >>> success = await confidence_service.update_model(model_data, 'conf-v1.3')
+            >>> success
+            True
+            >>> # Verify update
+            >>> info = await confidence_service.get_model_info()
+            >>> info['model_version']
+            'conf-v1.3'
+
+        Update Process:
+            1. Validate model data structure and format
+            2. Create backup of current model state
+            3. Load and validate new model components
+            4. Test new model with validation dataset
+            5. Switch to new model atomically
+            6. Update metadata and metrics
+            7. Clean up temporary data
+
+        Rollback Scenarios:
+            - Model deserialization fails
+            - Validation accuracy below threshold
+            - Runtime errors during model loading
+            - Memory allocation failures
+
+        Note:
+            Model updates are atomic - either fully succeed or fully fail.
+            Previous model remains active during update process.
+            Model validation includes accuracy and performance checks.
+            Automatic rollback preserves service availability.
+        """
+        pass
+
+    @abstractmethod
+    async def health_check(self) -> Dict[str, Any]:
+        """Get service health status and diagnostics.
+
+        This method provides comprehensive health information for monitoring,
+        alerting, and troubleshooting the confidence service. It checks model
+        availability, performance metrics, and system dependencies.
+
+        Returns:
+            Dictionary containing health status:
+            {
+                'service': str,                 # Service name identifier
+                'status': str,                  # 'healthy', 'degraded', 'unhealthy'
+                'timestamp': str,               # Health check timestamp (ISO)
+                'version': str,                 # Service version
+                'model_version': str,           # Current model version
+                'ml_available': bool,           # ML libraries availability
+                'model_available': bool,        # Model loaded and ready
+                'predictions_made': int,        # Total predictions served
+                'avg_latency_ms': float,        # Average prediction latency
+                'calibration_method': str,      # Current calibration method
+                'last_calibration': str,        # Last calibration timestamp
+                'errors': List[str],            # Current error conditions
+                'metrics': Dict[str, Any]       # Detailed performance metrics
+            }
+
+        Health Status Meanings:
+            - healthy: All systems operational, meeting SLOs
+            - degraded: Functional but with reduced performance/capabilities
+            - unhealthy: Critical failures, service unavailable
+
+        Common Error Conditions:
+            - 'No calibrated model available': Model not loaded
+            - 'ML libraries not available': Missing dependencies
+            - 'Model calibration age: X days': Outdated model
+            - 'Average latency: Xms': Performance degradation
+
+        Raises:
+            ServiceException: When health check itself fails (returns unhealthy status)
+
+        Example:
+            Health monitoring integration:
+
+            >>> health = await confidence_service.health_check()
+            >>> health['status']
+            'healthy'
+            >>> health['avg_latency_ms']
+            18.3
+            >>> if health['status'] != 'healthy':
+                    print(f"Service issues: {health['errors']}")
+
+        Monitoring Integration:
+            Health check results are designed for integration with monitoring
+            systems like Prometheus, DataDog, or custom alerting systems.
+            Status transitions trigger appropriate alerts and notifications.
+
+        Note:
+            Health checks are lightweight and safe to call frequently.
+            Degraded status indicates service is functional but suboptimal.
+            Unhealthy status indicates immediate attention required.
+        """
+        pass
+
+    @abstractmethod
+    async def ready_check(self) -> bool:
+        """Check if service is ready to handle requests.
+
+        This method provides a simple boolean check for service readiness,
+        primarily used by load balancers, Kubernetes readiness probes, and
+        service discovery systems to determine if the service can accept traffic.
+
+        Returns:
+            True if service is ready to handle confidence scoring requests,
+            False if service is starting up, updating, or has critical issues
+
+        Ready Conditions:
+            - Service has finished initialization
+            - At least one confidence scoring method is available
+            - Critical dependencies are accessible
+            - Model loading is complete (if ML backend available)
+
+        Not Ready Conditions:
+            - Service is still starting up
+            - Critical configuration missing
+            - Model update in progress
+            - Memory/resource constraints
+
+        Example:
+            Load balancer integration:
+
+            >>> ready = await confidence_service.ready_check()
+            >>> ready
+            True
+
+            Startup sequence check:
+
+            >>> while not await confidence_service.ready_check():
+                    await asyncio.sleep(1)
+                    print("Waiting for confidence service...")
+            >>> print("Service ready!")
+
+        Note:
+            This method is designed for high-frequency polling by infrastructure.
+            Always returns True for fallback confidence scoring capability.
+            More detailed status information available via health_check().
+            Ready state persists through model updates when possible.
+        """
+        pass
+
+
 # Memory Management Interfaces
 class ConversationContext(BaseModel):
     """Represents conversation context retrieved from memory"""

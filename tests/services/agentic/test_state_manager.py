@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 import json
 
-from faultmaven.services.agentic.state_manager import AgentStateManager
+from faultmaven.services.agentic.management.state_manager import AgentStateManager
 from faultmaven.models.agentic import (
     AgentExecutionState,
     ConversationMemory,

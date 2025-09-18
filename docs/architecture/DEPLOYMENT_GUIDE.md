@@ -334,7 +334,7 @@ export MEMORY_SERVICE_CONFIG="{
 
 # Initialize memory collections
 python -c "
-from faultmaven.services.memory_service import MemoryService
+from faultmaven.services.agentic.management.state_manager import AgentStateManager
 from faultmaven.infrastructure.persistence.redis_store import RedisMemoryStore
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBMemoryStore
 
@@ -371,7 +371,7 @@ export PLANNING_SERVICE_CONFIG="{
 
 # Initialize planning service
 python -c "
-from faultmaven.services.planning_service import PlanningService
+from faultmaven.services.domain.planning_service import PlanningService
 from faultmaven.infrastructure.llm.router import LLMRouter
 
 # Initialize LLM router
@@ -411,7 +411,7 @@ export PROMPT_ENGINE_CONFIG="{
 python -c "
 from faultmaven.core.prompting import AdvancedPromptEngine
 from faultmaven.infrastructure.llm.router import LLMRouter
-from faultmaven.services.memory_service import MemoryService
+from faultmaven.services.agentic.management.state_manager import AgentStateManager
 
 # Initialize dependencies
 llm_router = LLMRouter()
@@ -855,7 +855,7 @@ kubectl exec -it deployment/faultmaven -- curl -s http://localhost:8000/health/i
 
 # Check memory service connectivity
 kubectl exec -it deployment/faultmaven -- python -c "
-from faultmaven.services.memory_service import MemoryService
+from faultmaven.services.agentic.management.state_manager import AgentStateManager
 try:
     memory_service = MemoryService()
     status = memory_service.get_health_status()
@@ -866,7 +866,7 @@ except Exception as e:
 
 # Check planning service connectivity
 kubectl exec -it deployment/faultmaven -- python -c "
-from faultmaven.services.planning_service import PlanningService
+from faultmaven.services.domain.planning_service import PlanningService
 try:
     planning_service = PlanningService()
     status = planning_service.get_health_status()

@@ -23,7 +23,7 @@ from datetime import datetime
 from unittest.mock import Mock, AsyncMock, MagicMock
 from typing import Any, Dict, List, Optional
 
-from faultmaven.services.knowledge import KnowledgeService
+from faultmaven.services.domain.knowledge_service import KnowledgeService
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
 from faultmaven.exceptions import ServiceException
 from faultmaven.models.interfaces import (
@@ -176,8 +176,8 @@ class TestKnowledgeService:
             document_type="manual",
             tags=["test", "documentation"],
             source_url="https://example.com/docs",
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            created_at=datetime.utcnow().isoformat(),
+            updated_at=datetime.utcnow().isoformat()
         )
 
     @pytest.mark.asyncio

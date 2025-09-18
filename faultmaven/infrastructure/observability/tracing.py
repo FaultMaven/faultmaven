@@ -508,168 +508,149 @@ def trace(name: str, tags: Optional[dict] = None, settings=None):
     """
 
     def decorator(func: Callable) -> Callable:
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            # Get settings if not provided
-            trace_settings = settings
-            if trace_settings is None:
-                try:
-                    from faultmaven.config.settings import get_settings
-                    trace_settings = get_settings()
-                except:
-                    trace_settings = None
-            
-            start_time = time.time()
-
-            # Runtime check for tracing disable/targeting
-            if not _should_trace_operation(name, trace_settings):
-                logging.debug(f"Tracing disabled for function: {name}")
-                try:
-                    result = func(*args, **kwargs)
-                    duration = time.time() - start_time
-                    _record_metrics(name, duration, "success_no_trace")
-                    return result
-                except Exception as e:
-                    duration = time.time() - start_time
-                    _record_metrics(name, duration, "error_no_trace")
-                    raise
-
-            # Create span if Opik is available
-            span = None
-            if OPIK_AVAILABLE:
-                try:
-                    # Add local Opik headers if using local instance
-                    span_tags = tags or {}
-                    if trace_settings and trace_settings.observability.opik_use_local:
-                        span_tags.update({
-                            "opik_local_host": trace_settings.observability.opik_local_host,
-                            "opik_local_url": trace_settings.observability.opik_local_url
-                        })
-                    
-                    # Simple span tracking for local Opik instance with protection
-                    def create_simple_span():
-                        return {"name": name, "tags": span_tags, "start_time": start_time}
-                    
-                    span = create_simple_span()
-                    # Reduce logging noise for heartbeat operations
-                    if not ('heartbeat' in name.lower() or 'update_last_activity' in name.lower()):
-                        logging.debug(f"Opik span started: {name}")
-                except Exception as e:
-                    logging.warning(f"Failed to create Opik span: {e}")
-
-            try:
-                # Execute the function
-                result = func(*args, **kwargs)
-
-                # Record success metrics
-                duration = time.time() - start_time
-                _record_metrics(name, duration, "success")
-
-                return result
-
-            except Exception as e:
-                # Record error metrics
-                duration = time.time() - start_time
-                _record_metrics(name, duration, "error")
-
-                # Log error
-                logging.error(f"Function {name} failed after {duration:.3f}s: {e}")
-                raise
-
-            finally:
-                # Finalize span logging
-                if span and OPIK_AVAILABLE:
-                    duration = time.time() - start_time
-                    # Reduce logging noise for heartbeat operations
-                    if not ('heartbeat' in span.get('name', '').lower() or 'update_last_activity' in span.get('name', '').lower()):
-                        logging.debug(f"Opik span completed: {span.get('name', 'unknown')} ({duration:.3f}s)")
-
-        @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            # Get settings if not provided
-            trace_settings = settings
-            if trace_settings is None:
-                try:
-                    from faultmaven.config.settings import get_settings
-                    trace_settings = get_settings()
-                except:
-                    trace_settings = None
-            
-            start_time = time.time()
-
-            # Runtime check for tracing disable/targeting
-            if not _should_trace_operation(name, trace_settings):
-                logging.debug(f"Tracing disabled for async function: {name}")
-                try:
-                    result = await func(*args, **kwargs)
-                    duration = time.time() - start_time
-                    _record_metrics(name, duration, "success_no_trace")
-                    return result
-                except Exception as e:
-                    duration = time.time() - start_time
-                    _record_metrics(name, duration, "error_no_trace")
-                    raise
-
-            # Create span if Opik is available
-            span = None
-            if OPIK_AVAILABLE:
-                try:
-                    # Add local Opik headers if using local instance
-                    span_tags = tags or {}
-                    if trace_settings and trace_settings.observability.opik_use_local:
-                        span_tags.update({
-                            "opik_local_host": trace_settings.observability.opik_local_host,
-                            "opik_local_url": trace_settings.observability.opik_local_url
-                        })
-                    
-                    # Simple span tracking for local Opik instance with protection
-                    def create_simple_span():
-                        return {"name": name, "tags": span_tags, "start_time": start_time}
-                    
-                    span = create_simple_span()
-                    # Reduce logging noise for heartbeat operations
-                    if not ('heartbeat' in name.lower() or 'update_last_activity' in name.lower()):
-                        logging.debug(f"Opik span started: {name}")
-                except Exception as e:
-                    logging.warning(f"Failed to create Opik span: {e}")
-
-            try:
-                # Execute the async function
-                result = await func(*args, **kwargs)
-
-                # Record success metrics
-                duration = time.time() - start_time
-                _record_metrics(name, duration, "success")
-
-                return result
-
-            except Exception as e:
-                # Record error metrics
-                duration = time.time() - start_time
-                _record_metrics(name, duration, "error")
-
-                # Log error
-                logging.error(
-                    f"Async function {name} failed after {duration:.3f}s: {e}"
-                )
-                raise
-
-            finally:
-                # Finalize span logging
-                if span and OPIK_AVAILABLE:
-                    duration = time.time() - start_time
-                    # Reduce logging noise for heartbeat operations
-                    if not ('heartbeat' in span.get('name', '').lower() or 'update_last_activity' in span.get('name', '').lower()):
-                        logging.debug(f"Opik span completed: {span.get('name', 'unknown')} ({duration:.3f}s)")
-
-        # Return appropriate wrapper based on function type
         if asyncio.iscoroutinefunction(func):
-            # Ensure __wrapped__ attribute is always set for async functions
-            async_wrapper.__wrapped__ = func
+            @functools.wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                # Get settings if not provided
+                trace_settings = settings
+                if trace_settings is None:
+                    try:
+                        from faultmaven.config.settings import get_settings
+                        trace_settings = get_settings()
+                    except:
+                        trace_settings = None
+
+                start_time = time.time()
+
+                # Runtime check for tracing disable/targeting
+                if not _should_trace_operation(name, trace_settings):
+                    logging.debug(f"Tracing disabled for async function: {name}")
+                    try:
+                        result = await func(*args, **kwargs)
+                        duration = time.time() - start_time
+                        _record_metrics(name, duration, "success_no_trace")
+                        return result
+                    except Exception as e:
+                        duration = time.time() - start_time
+                        _record_metrics(name, duration, "error_no_trace")
+                        raise
+
+                # Create span if Opik is available
+                span = None
+                if OPIK_AVAILABLE:
+                    try:
+                        # Add local Opik headers if using local instance
+                        span_tags = tags or {}
+                        if trace_settings and trace_settings.observability.opik_use_local:
+                            span_tags.update({
+                                "opik_local_host": trace_settings.observability.opik_local_host,
+                                "opik_local_url": trace_settings.observability.opik_local_url
+                            })
+
+                        # Simple span tracking for local Opik instance with protection
+                        def create_simple_span():
+                            return {"name": name, "tags": span_tags, "start_time": start_time}
+
+                        span = create_simple_span()
+                        # Reduce logging noise for heartbeat operations
+                        if not ('heartbeat' in name.lower() or 'update_last_activity' in name.lower()):
+                            logging.debug(f"Opik span started: {name}")
+                    except Exception as e:
+                        logging.warning(f"Failed to create Opik span: {e}")
+
+                try:
+                    # Execute the async function
+                    result = await func(*args, **kwargs)
+
+                    # Record success metrics
+                    duration = time.time() - start_time
+                    _record_metrics(name, duration, "success")
+
+                    return result
+
+                except Exception as e:
+                    # Record error metrics
+                    duration = time.time() - start_time
+                    _record_metrics(name, duration, "error")
+                    raise
             return async_wrapper
         else:
-            # Ensure __wrapped__ attribute is always set for sync functions
-            wrapper.__wrapped__ = func
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                # Get settings if not provided
+                trace_settings = settings
+                if trace_settings is None:
+                    try:
+                        from faultmaven.config.settings import get_settings
+                        trace_settings = get_settings()
+                    except:
+                        trace_settings = None
+
+                start_time = time.time()
+
+                # Runtime check for tracing disable/targeting
+                if not _should_trace_operation(name, trace_settings):
+                    logging.debug(f"Tracing disabled for function: {name}")
+                    try:
+                        result = func(*args, **kwargs)
+                        duration = time.time() - start_time
+                        _record_metrics(name, duration, "success_no_trace")
+                        return result
+                    except Exception as e:
+                        duration = time.time() - start_time
+                        _record_metrics(name, duration, "error_no_trace")
+                        raise
+
+                # Create span if Opik is available
+                span = None
+                if OPIK_AVAILABLE:
+                    try:
+                        # Add local Opik headers if using local instance
+                        span_tags = tags or {}
+                        if trace_settings and trace_settings.observability.opik_use_local:
+                            span_tags.update({
+                                "opik_local_host": trace_settings.observability.opik_local_host,
+                                "opik_local_url": trace_settings.observability.opik_local_url
+                            })
+
+                        # Simple span tracking for local Opik instance with protection
+                        def create_simple_span():
+                            return {"name": name, "tags": span_tags, "start_time": start_time}
+
+                        span = create_simple_span()
+                        # Reduce logging noise for heartbeat operations
+                        if not ('heartbeat' in name.lower() or 'update_last_activity' in name.lower()):
+                            logging.debug(f"Opik span started: {name}")
+                    except Exception as e:
+                        logging.warning(f"Failed to create Opik span: {e}")
+
+                try:
+                    # Execute the function
+                    result = func(*args, **kwargs)
+
+                    # Record success metrics
+                    duration = time.time() - start_time
+                    _record_metrics(name, duration, "success")
+
+                    return result
+
+                except Exception as e:
+                    # Record error metrics
+                    duration = time.time() - start_time
+                    _record_metrics(name, duration, "error")
+
+                    # Log error
+                    logging.error(f"Function {name} failed after {duration:.3f}s: {e}")
+                    raise
+
+                finally:
+                    # Finalize span logging
+                    if span and OPIK_AVAILABLE:
+                        duration = time.time() - start_time
+                        # Reduce logging noise for heartbeat operations
+                        if not ('heartbeat' in span.get('name', '').lower() or 'update_last_activity' in span.get('name', '').lower()):
+                            logging.debug(f"Opik span completed: {span.get('name', 'unknown')} ({duration:.3f}s)")
+
             return wrapper
 
     return decorator

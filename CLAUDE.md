@@ -5,15 +5,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository Overview
 
 FaultMaven is an AI-powered troubleshooting copilot backend featuring:
-- **7-Component Agentic Framework**: ✅ **IMPLEMENTED** - Advanced AI agent architecture with true Plan→Execute→Observe→Re-plan autonomous behavior
-- **Clean Architecture**: Interface-based design with comprehensive dependency injection
-- **Multi-LLM Support**: 7 providers (Fireworks, OpenAI, Anthropic, Gemini, HuggingFace, OpenRouter, Local)
-- **Intelligent Memory System**: Hierarchical memory management with context consolidation and strategic planning
-- **Centralized Registry**: Data-driven provider management with automatic fallback
-- **Advanced Reasoning**: Autonomous decision-making with sophisticated error handling and recovery
-- **Privacy-First**: Comprehensive PII redaction with Presidio integration and guardrails layer
-- **RAG Knowledge Base**: ChromaDB with BGE-M3 embeddings
-- **Service-Oriented**: Clear separation between API, Service, Agentic Framework, Core, and Infrastructure layers
+- **Agentic Framework**: ✅ **PRODUCTION READY** - 7-component autonomous AI system with true Plan→Execute→Observe→Re-plan cycles
+- **Interface-Based Architecture**: Clean dependency injection design with comprehensive container management
+- **Multi-LLM Support**: 7 providers (Fireworks, OpenAI, Anthropic, Gemini, HuggingFace, OpenRouter, Local) with intelligent routing
+- **Hierarchical Memory System**: Context consolidation and strategic planning with persistent state management
+- **Centralized Provider Registry**: Unified LLM provider management with automatic health monitoring
+- **Autonomous Decision-Making**: Sophisticated reasoning with comprehensive error handling and recovery
+- **Privacy-First**: Advanced PII redaction with Presidio integration and multi-layer guardrails
+- **RAG Knowledge Base**: ChromaDB with BGE-M3 embeddings for intelligent document retrieval
+- **Service-Oriented**: Clean layer separation between API, Service, Agentic Framework, Core, and Infrastructure
 
 ## Development Commands
 
@@ -143,11 +143,11 @@ FaultMaven follows a **Clean Architecture** pattern with interface-based design 
 │                      Service Layer                           │
 │  (Business Logic, Orchestration, Domain Operations)          │
 ├─────────────────────────────────────────────────────────────┤
-│            Agentic Framework ✅ ACTIVE                       │
-│  (7-Component System: Memory, Planning, Workflows, Safety)   │
+│               Agentic Framework                              │
+│  (7-Component Autonomous System: Planning, Memory, Safety)   │
 ├─────────────────────────────────────────────────────────────┤
 │                    Core Components                           │
-│  (Agent, Data Processing, Knowledge Base)                    │
+│  (Agent Workflows, Data Processing, Knowledge Base)          │
 ├─────────────────────────────────────────────────────────────┤
 │                   Infrastructure Layer                       │
 │  (LLM Router, Redis, ChromaDB, Security, Observability)      │
@@ -172,6 +172,87 @@ FaultMaven follows a **Clean Architecture** pattern with interface-based design 
 4. **Validate Hypothesis** - Test theories with evidence
 5. **Propose Solution** - Recommend fixes
 
+### Directory Structure
+
+The FaultMaven codebase follows Clean Architecture principles with a well-organized directory structure:
+
+```
+faultmaven/
+├── api/v1/                     # API Layer - HTTP endpoints and routing
+│   ├── routes/                 # FastAPI routers (agent, case, data, knowledge, session)
+│   └── dependencies.py         # FastAPI dependency injection
+├── services/                   # Service Layer - Business logic orchestration
+│   ├── domain/                 # Core domain services
+│   │   ├── case_service.py     # Case lifecycle management
+│   │   ├── data_service.py     # Data processing coordination
+│   │   ├── knowledge_service.py # Knowledge base operations
+│   │   ├── session_service.py  # Session lifecycle management
+│   │   └── planning_service.py # Strategic planning coordination
+│   ├── analytics/              # Analytics and reporting services
+│   │   ├── dashboard_service.py # Analytics dashboard (formerly analytics_dashboard.py)
+│   │   └── confidence_service.py # Confidence scoring (formerly confidence.py)
+│   ├── agentic/               # Agentic Framework - 7-component autonomous system
+│   │   ├── orchestration/     # Main orchestration layer
+│   │   │   └── agent_service.py # Primary agentic orchestrator
+│   │   ├── engines/           # Processing engines
+│   │   │   ├── workflow_engine.py # Business logic workflows
+│   │   │   ├── classification_engine.py # Query classification
+│   │   │   └── response_synthesizer.py # Response assembly
+│   │   ├── management/        # State and resource management
+│   │   │   ├── state_manager.py # Hierarchical memory management
+│   │   │   └── tool_broker.py # Dynamic tool orchestration
+│   │   └── safety/            # Safety and error handling
+│   │       ├── guardrails_layer.py # Security validation
+│   │       └── error_manager.py # Intelligent error recovery
+│   ├── converters/            # Data transformation services
+│   │   └── case_converter.py  # Case data mapping
+│   └── base.py               # Base service classes
+├── core/                      # Core Domain - Business logic and domain models
+│   ├── agent/                # Agent reasoning engine
+│   │   ├── agent.py          # LangGraph-based agent
+│   │   └── doctrine.py       # Five-phase SRE troubleshooting methodology
+│   ├── processing/           # Data classification and analysis
+│   │   ├── classifier.py     # Data type classification
+│   │   └── log_processor.py  # Log analysis capabilities
+│   └── knowledge/            # Knowledge base operations
+│       └── ingestion.py      # RAG document ingestion
+├── infrastructure/           # Infrastructure Layer - External integrations
+│   ├── jobs/                 # Background job processing (formerly services/job.py)
+│   │   └── job_service.py    # Job management and execution
+│   ├── llm/                  # LLM provider integrations
+│   │   ├── router.py         # Multi-provider routing with failover
+│   │   └── providers/        # Individual provider implementations
+│   ├── security/             # Security and PII protection
+│   │   └── redaction.py      # Presidio-based data sanitization
+│   ├── observability/        # Monitoring and tracing
+│   │   └── tracing.py        # Opik integration for LLM observability
+│   ├── persistence/          # Data storage integrations
+│   │   ├── redis_*.py        # Redis-based stores
+│   │   └── chromadb_*.py     # ChromaDB vector store
+│   ├── logging/              # Centralized logging system
+│   │   ├── coordinator.py    # Logging coordination
+│   │   └── unified.py        # Unified logging interface
+│   ├── protection/           # Client protection systems
+│   │   ├── protection_coordinator.py # ML-based threat detection
+│   │   └── *.py             # Rate limiting, circuit breakers, etc.
+│   ├── monitoring/           # Advanced monitoring
+│   │   └── *.py             # Metrics, alerting, SLA tracking
+│   ├── health/               # Component health monitoring
+│   │   └── *.py             # Health checks and monitoring
+│   └── caching/              # Intelligent caching
+│       └── *.py             # Cache strategies and management
+├── tools/                    # Agent Tools - Capabilities for AI agents
+│   ├── knowledge_base.py     # RAG operations
+│   └── web_search.py         # External search capability
+├── models/                   # Data Models - Pydantic schemas and interfaces
+│   ├── interfaces.py         # Interface contracts
+│   ├── case.py              # Case-related models
+│   ├── session.py           # Session models
+│   └── *.py                 # Domain models
+├── container.py              # Dependency Injection - Service management
+└── main.py                   # FastAPI Application - Entry point
+```
+
 ### Key Components by Layer
 
 #### 1. API Layer (`api/v1/`)
@@ -184,22 +265,40 @@ FaultMaven follows a **Clean Architecture** pattern with interface-based design 
 #### 2. Service Layer (`services/`)
 **Purpose**: Business logic orchestration with interface dependencies
 
-- **AgentService**: Troubleshooting workflow orchestration with injected `ILLMProvider`, `ISanitizer`, `ITracer`
-- **DataService**: Data processing pipeline management with pluggable processors
-- **KnowledgeService**: Knowledge base operations with vector store abstraction  
+**Domain Services** (`services/domain/`):
+- **CaseService**: Case lifecycle and management operations
 - **SessionService**: Session lifecycle and analytics
+- **DataService**: Data processing pipeline management with pluggable processors
+- **KnowledgeService**: Knowledge base operations with vector store abstraction
+- **PlanningService**: Strategic planning and decision-making coordination
 
-#### 2.1. Agentic Framework (`services/agentic/`) ✅ ACTIVE
-**Purpose**: Advanced autonomous AI system with Plan→Execute→Observe→Re-plan cycles
+**Analytics Services** (`services/analytics/`):
+- **DashboardService**: Analytics dashboard and reporting (formerly analytics_dashboard.py)
+- **ConfidenceService**: Confidence scoring and evaluation (formerly confidence.py)
 
-**7 Core Components** (7,770 lines of code, 55 classes, Production Ready):
-- **BusinessLogicWorkflowEngine**: Main orchestrator implementing agentic loops
-- **AgentStateManager**: Persistent memory backbone with Redis storage
+**Converter Services** (`services/converters/`):
+- **CaseConverter**: Case data transformation and mapping
+
+#### 2.1. Agentic Framework (`services/agentic/`) ✅ PRODUCTION READY
+**Purpose**: Autonomous AI system with true Plan→Execute→Observe→Re-plan cycles
+
+**Orchestration** (`services/agentic/orchestration/`):
+- **AgentService**: Main orchestrator implementing autonomous agentic loops
+
+**Processing Engines** (`services/agentic/engines/`):
+- **BusinessLogicWorkflowEngine**: Primary workflow orchestrator
 - **QueryClassificationEngine**: Multi-dimensional query analysis (intent, complexity, domain, urgency)
-- **ToolSkillBroker**: Dynamic capability discovery and orchestration
-- **GuardrailsPolicyLayer**: Multi-layer security validation and PII protection
 - **ResponseSynthesizer**: Multi-source response assembly with quality validation
-- **ErrorFallbackManager**: Comprehensive error recovery with circuit breakers
+
+**Management** (`services/agentic/management/`):
+- **AgentStateManager**: Hierarchical memory backbone with persistent Redis storage
+- **ToolSkillBroker**: Dynamic capability discovery and intelligent orchestration
+
+**Safety** (`services/agentic/safety/`):
+- **GuardrailsPolicyLayer**: Multi-layer security validation and advanced PII protection
+- **ErrorFallbackManager**: Intelligent error recovery with circuit breakers and learning
+
+**7 Core Components** (7,770 lines of code, 55 classes, Full Implementation)
 
 #### 3. Core Domain (`core/`)
 **Purpose**: Core business logic and domain models
@@ -211,12 +310,16 @@ FaultMaven follows a **Clean Architecture** pattern with interface-based design 
 #### 4. Infrastructure Layer (`infrastructure/`)
 **Purpose**: External service integrations and technical concerns
 
+- **Jobs** (`infrastructure/jobs/`): Background job processing and management (formerly services/job.py)
 - **LLM Router** (`infrastructure/llm/`): Multi-provider routing with automatic fallback implementing `ILLMProvider`
 - **Security** (`infrastructure/security/`): K8s Presidio microservice integration implementing `ISanitizer`
 - **Protection** (`infrastructure/protection/`): Comprehensive client protection system with ML-based threat detection
 - **Monitoring** (`infrastructure/monitoring/`): Advanced monitoring and alerting for protection systems
 - **Observability** (`infrastructure/observability/`): Opik tracing implementing `ITracer`
 - **Persistence** (`infrastructure/persistence/`): Redis and ChromaDB integrations
+- **Logging** (`infrastructure/logging/`): Centralized logging coordination and management
+- **Health** (`infrastructure/health/`): Component monitoring and SLA tracking
+- **Caching** (`infrastructure/caching/`): Intelligent caching strategies
 
 #### 5. Tools (`tools/`)
 **Purpose**: Agent capabilities with interface compliance
@@ -403,7 +506,7 @@ export LOG_LEVEL=DEBUG
 - **Context Propagation**: Full request context maintained across all architectural layers
 - **Opik Integration**: Team server integration at `opik.faultmaven.local:30080` with targeted tracing
 - **Health Monitoring**: `/health/logging` dedicated endpoint for logging system health
-- **Legacy Cleanup**: All obsolete logging components removed (312 lines of technical debt eliminated)
+- **Logging Improvements**: Previous logging implementation refined and optimized (312 lines of technical debt eliminated)
 - **Environment Configuration**: Complete environment variable support for all logging features
 
 ## Quick Reference for Common Tasks

@@ -104,7 +104,7 @@ class AgentExecutionState(BaseModel):
 
 class ConversationMemory(BaseModel):
     """Rich conversation memory with semantic understanding"""
-    conversation_id: str
+    conversation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_profile: Dict[str, Any] = Field(default_factory=dict)
     interaction_patterns: Dict[str, Any] = Field(default_factory=dict)
     domain_context: Dict[str, Any] = Field(default_factory=dict)
@@ -281,7 +281,7 @@ class IQueryClassificationEngine(ABC):
     """Interface for query intake and classification"""
     
     @abstractmethod
-    async def classify_query(self, query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def classify_query(self, query: str, context: Optional[Dict[str, Any]] = None) -> "QueryClassification":
         """Classify a user query and determine processing strategy"""
         pass
     
@@ -571,24 +571,39 @@ class QueryInput(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
+class QueryIntent(str, Enum):
+    """Query intent classification"""
+    TROUBLESHOOTING = "troubleshooting"
+    EXPLANATION = "explanation"
+    STATUS_CHECK = "status_check"
+    CONFIGURATION = "configuration"
+    INFORMATION = "information"
+    OPTIMIZATION = "optimization"
+    PROBLEM_RESOLUTION = "problem_resolution"
+    BEST_PRACTICES = "best_practices"
+    ROOT_CAUSE_ANALYSIS = "root_cause_analysis"
+    INCIDENT_RESPONSE = "incident_response"
+    MONITORING = "monitoring"
+    DOCUMENTATION = "documentation"
+    UNKNOWN = "unknown"
+
+
 class QueryClassification(BaseModel):
-    """Classification result for a user query"""
+    """Complete query classification result"""
     classification_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    query_id: str
-    category: str
+    query: str
+    normalized_query: str
+    intent: QueryIntent
     confidence: float
-    processing_strategy: str
-    estimated_complexity: str
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-class QueryIntent(BaseModel):
-    """Extracted user intent from query"""
-    intent_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    primary_intent: str
-    secondary_intents: List[str] = Field(default_factory=list)
-    confidence: float
+    complexity: str = "moderate"  # simple, moderate, complex
+    domain: str = "general"
+    urgency: str = "medium"  # low, medium, high, critical
     entities: List[Dict[str, Any]] = Field(default_factory=list)
+    context: Dict[str, Any] = Field(default_factory=dict)
+    classification_timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    classification_method: str = "pattern_based"
+    processing_recommendations: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class QueryComplexity(BaseModel):
@@ -1013,6 +1028,9 @@ class WorkflowExecution(BaseModel):
     execution_context: Dict[str, Any] = Field(default_factory=dict)
     started_at: datetime = Field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None
+    steps_completed: List[str] = Field(default_factory=list)
+    steps_failed: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowStep(BaseModel):

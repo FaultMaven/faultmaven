@@ -48,7 +48,7 @@ The FaultMaven Agentic Framework represents a complete architectural transformat
 **Purpose**: Persistent memory backbone for agentic framework
 
 ```python
-from faultmaven.services.agentic import AgentStateManager
+from faultmaven.services.agentic.management.state_manager import AgentStateManager
 
 # Core capabilities
 state_manager = AgentStateManager(redis_client, tracer, ttl=7200)
@@ -71,7 +71,7 @@ plan = await state_manager.create_execution_plan(session_id, query, context)
 **Purpose**: Intelligent query processing and routing
 
 ```python
-from faultmaven.services.agentic import QueryClassificationEngine
+from faultmaven.services.agentic.engines.classification_engine import QueryClassificationEngine
 
 # Multi-dimensional classification
 engine = QueryClassificationEngine(llm_provider, knowledge_base)
@@ -92,7 +92,7 @@ result = await engine.classify_query(query, context)
 **Purpose**: Dynamic tool orchestration with safety enforcement
 
 ```python
-from faultmaven.services.agentic import ToolSkillBroker
+from faultmaven.services.agentic.management.tool_broker import ToolSkillBroker
 
 # Capability-based tool selection
 broker = ToolSkillBroker()
@@ -113,7 +113,7 @@ result = await broker.execute_tool_request(request)
 **Purpose**: Pervasive security boundary for the agentic core
 
 ```python
-from faultmaven.services.agentic import GuardrailsPolicyLayer
+from faultmaven.services.agentic.safety.guardrails_layer import GuardrailsPolicyLayer
 
 # Multi-layer security validation
 guardrails = GuardrailsPolicyLayer(presidio_client, validators)
@@ -136,7 +136,7 @@ safety = await guardrails.classify_safety(content, context)
 **Purpose**: Intelligent response generation with context awareness
 
 ```python
-from faultmaven.services.agentic import ResponseSynthesizer
+from faultmaven.services.agentic.engines.response_synthesizer import ResponseSynthesizer
 
 # Multi-source synthesis
 synthesizer = ResponseSynthesizer(template_engine, quality_checker)
@@ -158,7 +158,7 @@ formatted = await synthesizer.format_content(content, format_type, context)
 **Purpose**: Robust error recovery and graceful degradation
 
 ```python
-from faultmaven.services.agentic import ErrorFallbackManager
+from faultmaven.services.agentic.safety.error_manager import ErrorFallbackManager
 
 # Comprehensive error handling
 error_manager = ErrorFallbackManager(health_checker, alert_manager)
@@ -181,7 +181,7 @@ health = await error_manager.get_system_health()
 **Purpose**: Plan-Execute-Observe-Adapt workflow orchestration
 
 ```python
-from faultmaven.services.agentic import BusinessLogicWorkflowEngine
+from faultmaven.services.agentic.engines.workflow_engine import BusinessLogicWorkflowEngine
 
 # True agentic orchestration
 engine = BusinessLogicWorkflowEngine(
@@ -456,7 +456,10 @@ GET /health/agentic/workflow-engine
 ```python
 # Integration with existing FaultMaven container
 from faultmaven.container import DIContainer
-from faultmaven.services.agentic import *
+from faultmaven.services.agentic.orchestration.agent_service import AgentService
+from faultmaven.services.agentic.engines import *
+from faultmaven.services.agentic.management import *
+from faultmaven.services.agentic.safety import *
 
 # Register agentic components
 container.register_singleton(IAgentStateManager, AgentStateManager)
@@ -472,7 +475,7 @@ workflow_engine = container.get(IBusinessLogicWorkflowEngine)
 ```python
 # FastAPI integration
 from fastapi import FastAPI, Depends
-from faultmaven.services.agentic import BusinessLogicWorkflowEngine
+from faultmaven.services.agentic.engines.workflow_engine import BusinessLogicWorkflowEngine
 
 app = FastAPI()
 
@@ -489,18 +492,21 @@ async def process_agentic_query(
 ## Implementation Status
 
 ### Critical Priority: Framework Foundation ✅ COMPLETED
+
 - [x] Interface design and modeling (COMPLETE)
 - [x] Core component implementation (COMPLETE)
 - [x] Unit testing and validation (COMPLETE)
 - [x] Documentation creation (COMPLETE)
 
 ### High Priority: Integration ✅ COMPLETED
+
 - [x] Container integration (COMPLETE)
 - [x] API endpoint updates (COMPLETE)
 - [x] Existing service migration (COMPLETE)
 - [x] Integration testing (COMPLETE)
 
 ### Medium Priority: Enhancement
+
 - [ ] Performance optimization
 - [ ] Advanced ML integration
 - [ ] Enhanced observability
@@ -518,7 +524,10 @@ async def process_agentic_query(
 
 ```python
 # Initialize the agentic framework
-from faultmaven.services.agentic import *
+from faultmaven.services.agentic.orchestration.agent_service import AgentService
+from faultmaven.services.agentic.engines import *
+from faultmaven.services.agentic.management import *
+from faultmaven.services.agentic.safety import *
 
 # 1. Create component instances
 state_manager = AgentStateManager(redis_client=redis)
@@ -558,7 +567,7 @@ adaptations = await workflow_engine.adapt_workflow(execution.execution_id, obser
 ```python
 # Comprehensive testing approach
 import pytest
-from faultmaven.services.agentic import AgentStateManager
+from faultmaven.services.agentic.management.state_manager import AgentStateManager
 
 @pytest.mark.asyncio
 async def test_state_manager_operations():
@@ -643,18 +652,21 @@ curl http://localhost:8000/analytics/agentic/errors?timeframe=24h
 ## Feature Prioritization
 
 ### Critical Priority
+
 - Complete container integration
 - Production deployment
 - Performance optimization
 - Advanced monitoring
 
 ### High Priority
+
 - Multi-agent coordination
 - Advanced reasoning capabilities
 - Federated learning integration
 - Enhanced security features
 
 ### Future Enhancement
+
 - Autonomous system improvement
 - Cross-domain knowledge transfer
 - Advanced ML/AI integration
@@ -669,6 +681,7 @@ The FaultMaven Agentic Framework represents a significant architectural advancem
 The framework's interface-based design, comprehensive error handling, and extensive observability make it suitable for production deployment while maintaining the flexibility for ongoing enhancements and customizations.
 
 **Key Achievements:**
+
 - ✅ 100% Design Specification Compliance
 - ✅ Complete OpenAPI Standards Adherence
 - ✅ Comprehensive Interface Implementation

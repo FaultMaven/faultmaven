@@ -7,10 +7,19 @@ This test validates the first Agentic Framework replacement:
 """
 
 import pytest
-from unittest.mock import Mock, AsyncMock, patch
-from faultmaven.services.agent import AgentService
+from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from faultmaven.services.agentic.orchestration.agent_service import AgentService
 from faultmaven.models import QueryRequest, ResponseType
 from faultmaven.models.interfaces import ILLMProvider, BaseTool, ITracer, ISanitizer
+
+# Import the agentic classes to create proper mocks
+from faultmaven.services.agentic.engines.workflow_engine import BusinessLogicWorkflowEngine
+from faultmaven.services.agentic.engines.classification_engine import QueryClassificationEngine
+from faultmaven.services.agentic.engines.response_synthesizer import ResponseSynthesizer
+from faultmaven.services.agentic.management.tool_broker import ToolSkillBroker
+from faultmaven.services.agentic.management.state_manager import AgentStateManager
+from faultmaven.services.agentic.safety.guardrails_layer import GuardrailsPolicyLayer
+from faultmaven.services.agentic.safety.error_manager import ErrorFallbackManager
 
 
 @pytest.fixture
@@ -28,14 +37,30 @@ def mock_dependencies():
     session_service.record_case_message.return_value = None
     session_service.get_conversation_context.return_value = ""
     session_service.update_case_query_count.return_value = None
-    
+
+    # Agentic framework components - use spec_set to make them pass isinstance checks
+    business_logic_workflow_engine = Mock(spec=BusinessLogicWorkflowEngine)
+    query_classification_engine = Mock(spec=QueryClassificationEngine)
+    tool_skill_broker = Mock(spec=ToolSkillBroker)
+    guardrails_policy_layer = Mock(spec=GuardrailsPolicyLayer)
+    response_synthesizer = Mock(spec=ResponseSynthesizer)
+    error_fallback_manager = Mock(spec=ErrorFallbackManager)
+    agent_state_manager = Mock(spec=AgentStateManager)
+
     return {
         "llm_provider": llm_provider,
         "tools": tools,
         "tracer": tracer,
         "sanitizer": sanitizer,
         "session_service": session_service,
-        "settings": Mock()
+        "settings": Mock(),
+        "business_logic_workflow_engine": business_logic_workflow_engine,
+        "query_classification_engine": query_classification_engine,
+        "tool_skill_broker": tool_skill_broker,
+        "guardrails_policy_layer": guardrails_policy_layer,
+        "response_synthesizer": response_synthesizer,
+        "error_fallback_manager": error_fallback_manager,
+        "agent_state_manager": agent_state_manager
     }
 
 

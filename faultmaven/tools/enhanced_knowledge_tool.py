@@ -21,7 +21,7 @@ from langchain.tools import BaseTool as LangChainBaseTool
 from pydantic import PrivateAttr
 
 from faultmaven.models.interfaces import BaseTool as IBaseTool, ToolResult
-from faultmaven.services.knowledge import KnowledgeService
+from faultmaven.services.domain.knowledge_service import KnowledgeService
 from faultmaven.tools.registry import register_tool
 
 

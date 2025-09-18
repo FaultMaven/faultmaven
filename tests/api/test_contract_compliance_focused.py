@@ -22,8 +22,8 @@ from fastapi import status
 # Import the FastAPI app
 from faultmaven.main import app
 from faultmaven.container import container
-from faultmaven.models.case import CaseSummary, Case as CaseEntity, CaseStatus, CasePriority
-from faultmaven.models.api import Case, CaseResponse
+from faultmaven.models.case import Case as CaseEntity, CaseStatus, CasePriority
+from faultmaven.models.api import Case, CaseResponse, CaseSummary
 
 
 @pytest.fixture
@@ -47,12 +47,11 @@ def mock_case_service():
     sample_case = CaseSummary(
         case_id="test-case-123",
         title="Test Case",
-        status=CaseStatus.ACTIVE,
-        priority=CasePriority.MEDIUM,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-        message_count=1,
-        participant_count=1
+        status="active",
+        priority="medium",
+        created_at=datetime.utcnow().isoformat(),
+        updated_at=datetime.utcnow().isoformat(),
+        message_count=1
     )
     
     return mock, sample_case

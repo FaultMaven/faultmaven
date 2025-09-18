@@ -94,12 +94,10 @@ def mock_provider_classes():
             return_value=LLMResponse(
                 content="Test response",
                 model="test-model",
-                usage={
-                    "prompt_tokens": 10,
-                    "completion_tokens": 20,
-                    "total_tokens": 30,
-                },
                 confidence=0.85,
+                provider="test-provider",
+                tokens_used=30,
+                response_time_ms=100
             )
         )
         providers[provider_name] = mock_provider

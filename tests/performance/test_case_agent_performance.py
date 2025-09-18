@@ -13,7 +13,7 @@ import gc
 import psutil
 import os
 
-from faultmaven.services.agent import AgentService  
+from faultmaven.services.agentic.orchestration.agent_service import AgentService  
 from faultmaven.models import QueryRequest, AgentResponse, ResponseType
 from faultmaven.exceptions import ServiceException
 
@@ -22,44 +22,114 @@ from faultmaven.exceptions import ServiceException
 def performance_agent_service():
     """AgentService configured for performance testing."""
     mock_llm = AsyncMock()
-    
+
     # Simulate variable LLM response times
     async def mock_generate_with_delay(prompt, **kwargs):
         # Simulate realistic LLM processing time (100-500ms)
         await asyncio.sleep(0.1 + (len(prompt) % 5) * 0.08)
         return f"AI response to: {prompt[:50]}..."
-    
+
     mock_llm.generate = mock_generate_with_delay
-    
+
     mock_tracer = Mock()
     mock_tracer.trace = Mock()
     mock_tracer.trace.return_value.__enter__ = Mock()
     mock_tracer.trace.return_value.__exit__ = Mock(return_value=None)
-    
+
     mock_sanitizer = Mock()
     mock_sanitizer.sanitize = Mock(side_effect=lambda x: x)  # Fast pass-through
-    
+
     mock_session_service = AsyncMock()
-    
+
     # Fast session operations
     async def fast_record_message(*args, **kwargs):
         await asyncio.sleep(0.01)  # 10ms simulation
-    
+
     async def fast_format_context(session_id, case_id, limit=10):
         await asyncio.sleep(0.02)  # 20ms simulation
         return f"Context for {session_id}/{case_id}" if limit > 0 else ""
-    
+
+    async def fast_get_or_create_case_id(session_id):
+        await asyncio.sleep(0.005)  # 5ms session lookup
+        return f"case-{session_id}"  # Return proper string case_id
+
     mock_session_service.record_case_message = fast_record_message
     mock_session_service.format_conversation_context = fast_format_context
-    
-    return AgentService(
-        llm_provider=mock_llm,
-        tools=[],
-        tracer=mock_tracer,
-        sanitizer=mock_sanitizer,
-        session_service=mock_session_service,
-        settings=Mock()
-    )
+    mock_session_service.get_or_create_current_case_id = fast_get_or_create_case_id
+
+    # Setup agentic framework components for performance testing
+    mock_agentic_components = {
+        "business_logic_workflow_engine": AsyncMock(),
+        "query_classification_engine": AsyncMock(),
+        "tool_skill_broker": AsyncMock(),
+        "guardrails_policy_layer": AsyncMock(),
+        "response_synthesizer": AsyncMock(),
+        "error_fallback_manager": AsyncMock(),
+        "agent_state_manager": AsyncMock()
+    }
+
+    # Setup fast mock behaviors for performance testing
+    async def fast_classify_query(*args, **kwargs):
+        await asyncio.sleep(0.005)  # 5ms classification
+        return {
+            "intent": "troubleshooting",
+            "complexity": "medium",
+            "urgency": "normal",
+            "domain": "performance"
+        }
+
+    async def fast_orchestrate_capabilities(*args, **kwargs):
+        await asyncio.sleep(0.008)  # 8ms orchestration
+        return {"evidence": []}
+
+    async def fast_execute_workflow(*args, **kwargs):
+        await asyncio.sleep(0.012)  # 12ms workflow execution
+        return {
+            "evidence": [],
+            "confidence_boost": 0.8,
+            "plan_executed": True,
+            "observations": [],
+            "adaptations": [],
+            "execution_plan": None
+        }
+
+    async def fast_synthesize_response(*args, **kwargs):
+        await asyncio.sleep(0.015)  # 15ms response synthesis
+        return {
+            "content": "Performance test response",
+            "sources": []
+        }
+
+    async def fast_get_enhanced_context(*args, **kwargs):
+        await asyncio.sleep(0.005)  # 5ms context retrieval
+        return {"success": False}
+
+    async def fast_update_agent_state(*args, **kwargs):
+        await asyncio.sleep(0.003)  # 3ms state update
+
+    async def fast_handle_execution_error(*args, **kwargs):
+        await asyncio.sleep(0.010)  # 10ms error handling
+        return {"recovery_message": "Performance fallback"}
+
+    mock_agentic_components["query_classification_engine"].classify_query = fast_classify_query
+    mock_agentic_components["tool_skill_broker"].orchestrate_capabilities = fast_orchestrate_capabilities
+    mock_agentic_components["business_logic_workflow_engine"].execute_agentic_workflow = fast_execute_workflow
+    mock_agentic_components["response_synthesizer"].synthesize_response = fast_synthesize_response
+    mock_agentic_components["agent_state_manager"].get_enhanced_context = fast_get_enhanced_context
+    mock_agentic_components["agent_state_manager"].update_agent_state = fast_update_agent_state
+    mock_agentic_components["error_fallback_manager"].handle_execution_error = fast_handle_execution_error
+
+    # Bypass type validation for performance testing
+    with patch.object(AgentService, '_validate_agentic_components'):
+        return AgentService(
+            llm_provider=mock_llm,
+            tools=[],
+            tracer=mock_tracer,
+            sanitizer=mock_sanitizer,
+            session_service=mock_session_service,
+            settings=Mock(),
+            **mock_agentic_components
+        )
 
 
 @pytest.fixture
@@ -69,11 +139,8 @@ def mock_case_service():
     
     async def fast_get_case(case_id, user_id=None):
         await asyncio.sleep(0.005)  # 5ms database simulation
-        case = Mock()
-        case.case_id = case_id
-        case.title = f"Case {case_id}"
-        case.message_count = 1
-        return case
+        # Return proper string case_id instead of Mock object
+        return case_id
     
     async def fast_add_query(*args, **kwargs):
         await asyncio.sleep(0.003)  # 3ms update simulation

@@ -20,7 +20,8 @@ from ...container import container
 from ...models import SessionContext
 from ...models.interfaces_case import ICaseService
 from ...models.interfaces import IJobService
-from ...services import AgentService, DataService, KnowledgeService, SessionService
+from ...services import DataService, KnowledgeService, SessionService
+from ...services.agentic.orchestration.agent_service import AgentService
 
 
 # Service Dependencies

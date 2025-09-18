@@ -37,7 +37,7 @@ from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.api.v1.dependencies import get_knowledge_service
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
-from faultmaven.services.knowledge import KnowledgeService
+from faultmaven.services.domain.knowledge_service import KnowledgeService
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
 

@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, B
 
 from faultmaven.models import DataInsightsResponse, UploadedData
 from faultmaven.api.v1.dependencies import get_data_service
-from faultmaven.services.data import DataService
+from faultmaven.services.domain.data_service import DataService
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import ValidationException
 
