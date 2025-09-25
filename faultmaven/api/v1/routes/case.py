@@ -17,6 +17,7 @@ Key Endpoints:
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 import asyncio
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Response, Body
 from fastapi.responses import JSONResponse
@@ -1480,13 +1481,18 @@ async def submit_case_query(
             query_request.context.update({"case_id": case_id, "user_id": user_id})
             
             try:
-                # CRITICAL: Use real AgentService with timeout protection to prevent infinite loops
-                import asyncio
+                # API Route Level Timeout (35 seconds) - outermost timeout layer
+                logger.info(f"🕐 API Route: Starting query processing for case {case_id} with 35s timeout")
+                start_time = time.time()
+
                 agent_response = await asyncio.wait_for(
                     agent_service.process_query_for_case(case_id, query_request),
-                    timeout=30.0  # 30 second timeout
+                    timeout=35.0
                 )
-                
+
+                processing_time = time.time() - start_time
+                logger.info(f"✅ API Route: Query processed successfully in {processing_time:.2f}s for case {case_id}")
+
                 # Convert AgentResponse to dict format for JSON serialization
                 agent_response_dict = {
                     "schema_version": "3.1.0",
@@ -1532,7 +1538,7 @@ async def submit_case_query(
                 }
                 
             except asyncio.TimeoutError:
-                logger.error(f"AgentService processing timed out for case {case_id} after 30 seconds")
+                logger.error(f"AgentService processing timed out for case {case_id} after 45 seconds")
                 # Timeout fallback response
                 agent_response_dict = {
                     "schema_version": "3.1.0",
@@ -1563,6 +1569,43 @@ async def submit_case_query(
                         "loading_state": None
                     },
                     "sources": [],
+                    "plan": None
+                }
+
+            except asyncio.TimeoutError:
+                processing_time = time.time() - start_time
+                logger.error(f"⏰ API Route TIMEOUT: Query processing exceeded 35s timeout ({processing_time:.2f}s) for case {case_id}")
+                # Return timeout fallback response
+                agent_response_dict = {
+                    "schema_version": "3.1.0",
+                    "content": "⏳ **Request Processing Timeout**\n\nYour request took longer than expected to process (>35 seconds). This might be due to:\n\n• High system load or complex query processing\n• Temporary connectivity issues with AI services\n• Large data processing requirements\n\n**Please try:**\n• Submitting your request again\n• Breaking complex queries into smaller parts\n• Waiting a few moments before retrying",
+                    "response_type": "ANSWER",
+                    "view_state": {
+                        "session_id": f"session_{case_id}",
+                        "user": {
+                            "user_id": user_id or "anonymous",
+                            "email": "user@example.com",
+                            "name": "User",
+                            "created_at": datetime.utcnow().isoformat() + 'Z'
+                        },
+                        "active_case": {
+                            "case_id": case_id,
+                            "title": f"Case {case_id}",
+                            "status": "active",
+                            "priority": "medium",
+                            "created_at": datetime.utcnow().isoformat() + 'Z',
+                            "updated_at": datetime.utcnow().isoformat() + 'Z',
+                            "message_count": 1
+                        },
+                        "cases": [],
+                        "session_analytics": {
+                            "cases_created": 1,
+                            "messages_sent": 1,
+                            "total_session_time": "0:00:35",
+                            "last_activity": datetime.utcnow().isoformat() + 'Z'
+                        }
+                    },
+                    "sources": [{"type": "TIMEOUT", "content": f"API route timeout after {processing_time:.2f}s", "metadata": {"timeout_type": "api_route", "timeout_seconds": 35}}],
                     "plan": None
                 }
 

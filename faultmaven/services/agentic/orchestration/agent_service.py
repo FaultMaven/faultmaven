@@ -4,6 +4,7 @@ Handles slow, failing, and unpredictable responses from external APIs.
 """
 
 import uuid
+import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 import asyncio
@@ -171,13 +172,22 @@ class AgentService(BaseService):
         logger.info(f"Processing query for case {case_id} in session {request.session_id}")
 
         try:
-            # Add global timeout to prevent hanging
-            return await asyncio.wait_for(
+            # Service Level Timeout (32 seconds) - middle timeout layer
+            logger.info(f"🕐 Service Level: Starting query processing for case {case_id} with 32s timeout")
+            start_time = time.time()
+
+            result = await asyncio.wait_for(
                 self._execute_case_query_processing(case_id, request),
-                timeout=25.0  # 25 second timeout
+                timeout=32.0
             )
+
+            processing_time = time.time() - start_time
+            logger.info(f"✅ Service Level: Query processed successfully in {processing_time:.2f}s for case {case_id}")
+            return result
+
         except asyncio.TimeoutError:
-            logger.error(f"Query processing timed out for case {case_id}")
+            processing_time = time.time() - start_time
+            logger.error(f"⏰ Service Level TIMEOUT: Query processing exceeded 32s timeout ({processing_time:.2f}s) for case {case_id}")
             # Return immediate fallback response
             return await self._create_timeout_fallback_response(case_id, request)
 
@@ -346,13 +356,10 @@ We apologize for the inconvenience and appreciate your patience while we resolve
         try:
             self.logger.info(f"LLM Circuit Breaker: Calling LLM for case {case_id} (State: {self.circuit_breaker.state.value})")
 
-            llm_response = await asyncio.wait_for(
-                self._llm.generate(
-                    prompt=preprocessed_query,
-                    max_tokens=500,
-                    temperature=0.7
-                ),
-                timeout=20.0
+            llm_response = await self._llm.generate(
+                prompt=preprocessed_query,
+                max_tokens=500,
+                temperature=0.7
             )
 
             # Record success and measure response time
@@ -369,9 +376,12 @@ We apologize for the inconvenience and appreciate your patience while we resolve
                 "circuit_state": self.circuit_breaker.state.value
             }
 
-        except asyncio.TimeoutError:
-            # Record timeout failure
-            self.circuit_breaker.record_failure("timeout", f"LLM call timed out after 20 seconds for case {case_id}")
+        except (asyncio.TimeoutError, TimeoutError, Exception) as e:
+            # Record failure for any timeout or exception from LLM provider
+            if "timeout" in str(e).lower() or isinstance(e, (asyncio.TimeoutError, TimeoutError)):
+                self.circuit_breaker.record_failure("timeout", f"LLM call timed out for case {case_id}: {str(e)}")
+            else:
+                self.circuit_breaker.record_failure("error", f"LLM call failed for case {case_id}: {str(e)}")
 
             timeout_message = """⏳ **AI Service Response Delay**
 
@@ -397,8 +407,8 @@ I'll keep trying to process your request and will provide a detailed response on
             return timeout_message, {
                 "type": "llm_timeout",
                 "source_info": "Timeout with circuit breaker tracking",
-                "response_time": "timeout_20s",
-                "fallback_reason": "LLM did not respond within 20 seconds",
+                "response_time": "timeout_35s",
+                "fallback_reason": "LLM did not respond within 35 seconds",
                 "circuit_state": self.circuit_breaker.state.value,
                 "reference_id": f"TIMEOUT-{case_id[:8]}"
             }

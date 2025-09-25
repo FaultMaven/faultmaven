@@ -10,6 +10,7 @@ circuit breaker patterns for external LLM provider calls.
 """
 
 import logging
+import os
 from typing import Optional
 
 from faultmaven.models import DataType
@@ -17,6 +18,7 @@ from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.security.redaction import DataSanitizer
+from faultmaven.config.settings import get_settings
 from .providers import LLMResponse, get_registry
 from .cache import SemanticCache
 
@@ -33,14 +35,19 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             circuit_breaker_threshold=3,  # Lower threshold for LLM failures
             circuit_breaker_timeout=30    # Shorter timeout for LLM recovery
         )
-        
+
         self.sanitizer = DataSanitizer()
         self.cache = SemanticCache()
         self.confidence_threshold = confidence_threshold
         self.registry = get_registry()
-        
+
+        # Get timeout from settings with environment variable override
+        self.settings = get_settings()
+        self.request_timeout = float(os.getenv("LLM_REQUEST_TIMEOUT", str(self.settings.llm.request_timeout)))
+
         # Don't initialize registry immediately - wait for first use
-        self.logger.info("🔍 LLMRouter created, registry will be initialized on first use")
+        self.logger.info(f"🔍 LLMRouter created, request timeout: {self.request_timeout}s")
+        self.logger.info("🔍 LLMRouter registry will be initialized on first use")
     
     @trace("llm_router_route")
     async def route(
@@ -100,7 +107,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 confidence_threshold=self.confidence_threshold,
-                timeout=60.0,  # 60 second timeout for LLM calls
+                timeout=self.request_timeout,  # Configurable timeout from environment/settings
                 retries=1,     # Single retry for failed LLM calls
                 retry_delay=2.0
             )

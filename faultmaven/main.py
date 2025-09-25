@@ -191,6 +191,39 @@ async def lifespan(app: FastAPI):
     # Setup tracing
     init_opik_tracing()
 
+    # Check and start local LLM services if needed
+    try:
+        from .infrastructure.llm.local_llm_manager import check_and_start_local_llm_service
+
+        # Check if we're configured to use local LLM providers
+        chat_provider = os.getenv("CHAT_PROVIDER", "").lower()
+        classifier_provider = os.getenv("CLASSIFIER_PROVIDER", "").lower()
+
+        local_llm_model = os.getenv("LOCAL_LLM_MODEL", "llama2-7b")
+        local_llm_base_url = os.getenv("LOCAL_LLM_URL", "http://localhost:8080")
+
+        if chat_provider == "local":
+            logger.info("Chat provider set to 'local', checking local LLM service...")
+            success = await check_and_start_local_llm_service("local", local_llm_base_url, local_llm_model)
+            if success:
+                logger.info("✅ Local LLM service ready for chat provider")
+            else:
+                logger.warning("⚠️ Failed to start local LLM service for chat provider")
+
+        if classifier_provider == "local":
+            logger.info("Classifier provider set to 'local', checking local LLM service...")
+            success = await check_and_start_local_llm_service("local", local_llm_base_url, local_llm_model)
+            if success:
+                logger.info("✅ Local LLM service ready for classifier provider")
+            else:
+                logger.warning("⚠️ Failed to start local LLM service for classifier provider")
+
+        if chat_provider != "local" and classifier_provider != "local":
+            logger.info("No local LLM providers configured, skipping local service check")
+
+    except Exception as e:
+        logger.warning(f"Local LLM service check failed (non-critical): {e}")
+
     # Initialize Phase 2 monitoring components
     try:
         from .infrastructure.monitoring.apm_integration import apm_integration
@@ -511,6 +544,44 @@ async def debug_routes():
 async def debug_health():
     """Minimal debug health endpoint."""
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat() + 'Z'}
+
+
+@app.get("/debug/llm-providers")
+async def debug_llm_providers():
+    """Get current LLM provider status and fallback chain."""
+    try:
+        from .container import container
+
+        # Get the LLM provider (router) from the container
+        llm_provider = container.get_llm_provider()
+
+        # Get provider status
+        provider_status = llm_provider.get_provider_status()
+
+        # Get fallback chain
+        fallback_chain = llm_provider.registry.get_fallback_chain()
+
+        # Get available providers
+        available_providers = llm_provider.registry.get_available_providers()
+
+        # Check if strict mode is enabled
+        strict_mode = os.getenv("STRICT_PROVIDER_MODE", "false").lower() == "true"
+
+        return {
+            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "primary_provider": fallback_chain[0] if fallback_chain else "none",
+            "strict_mode": strict_mode,
+            "fallback_chain": fallback_chain,
+            "available_providers": available_providers,
+            "provider_details": provider_status
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get LLM provider status: {e}")
+        return {
+            "error": f"Failed to get LLM provider status: {e}",
+            "timestamp": datetime.utcnow().isoformat() + 'Z'
+        }
 
 # Modular monolith pivot: keep only core endpoints; advanced routes disabled
 

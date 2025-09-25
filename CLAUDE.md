@@ -62,6 +62,13 @@ LOG_LEVEL=DEBUG python -m faultmaven.main
 
 # Skip external service checks for local development
 SKIP_SERVICE_CHECKS=true python -m faultmaven.main
+
+# Local LLM Service Management (Container-Based)
+./scripts/local_llm_service.sh start <model_name>  # Start local LLM Docker container
+./scripts/local_llm_service.sh stop                # Stop local LLM service
+./scripts/local_llm_service.sh status              # Show service status and model consistency
+./scripts/local_llm_service.sh check               # Check model consistency and auto-fix
+./scripts/local_llm_service.sh restart <model>     # Restart with new model
 ```
 
 ### Testing - Post-Architecture Overhaul (1425+ Tests)
@@ -340,6 +347,12 @@ faultmaven/
 - `LOG_DEDUPE=true` - Prevent duplicate log entries (95% deduplication success)
 - `LOG_BUFFER_SIZE=100` - Log buffer optimization
 - `LOG_FLUSH_INTERVAL=5` - Flush interval in seconds
+
+**LLM Timeout Configuration**: Three-layer timeout architecture for robust response handling:
+- `LLM_REQUEST_TIMEOUT=30` - Base timeout for LLM requests (applies to both local and cloud providers)
+  - Infrastructure Layer: 30 seconds
+  - Service Layer: 32 seconds (infrastructure + 2s buffer)
+  - API Layer: 35 seconds (service + 3s buffer)
 
 **Protection System Configuration**: Comprehensive client protection with two-phase approach:
 - `PROTECTION_ENABLED=true` - Master protection system toggle

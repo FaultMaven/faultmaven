@@ -70,7 +70,7 @@ class ServerSettings(BaseSettings):
 
 class LLMSettings(BaseSettings):
     """LLM provider configuration"""
-    provider: LLMProvider = Field(default=LLMProvider.FIREWORKS, env="CHAT_PROVIDER")
+    provider: LLMProvider = Field(default=LLMProvider.FIREWORKS, alias="CHAT_PROVIDER")
     
     # API Keys (SecretStr for security)
     openai_api_key: Optional[SecretStr] = Field(default=None, env="OPENAI_API_KEY")
@@ -91,8 +91,8 @@ class LLMSettings(BaseSettings):
     openrouter_model: str = Field(default="openrouter-default", env="OPENROUTER_MODEL")
     
     # Local provider configuration
-    local_url: Optional[str] = Field(default=None, env="LOCAL_LLM_URL")
-    local_model: Optional[str] = Field(default=None, env="LOCAL_LLM_MODEL")
+    local_url: Optional[str] = Field(default=None, alias="LOCAL_LLM_URL")
+    local_model: Optional[str] = Field(default=None, alias="LOCAL_LLM_MODEL")
     
     # Base URLs for each provider
     openai_base_url: str = Field(default="https://api.openai.com/v1", env="OPENAI_API_BASE")
@@ -134,8 +134,14 @@ class LLMSettings(BaseSettings):
             LLMProvider.LOCAL: self.local_model,
         }
         return model_map.get(self.provider, "")
-    
-    model_config = {"env_prefix": "", "extra": "ignore"}
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "env_prefix": "",
+        "extra": "ignore"
+    }
 
 
 class DatabaseSettings(BaseSettings):
@@ -604,8 +610,18 @@ def get_settings() -> FaultMavenSettings:
         try:
             # Ensure .env file is loaded before creating settings
             from dotenv import load_dotenv
-            load_dotenv(override=False)  # Don't override existing environment variables
-            
+            import os
+
+            # Force load .env file with override to ensure fresh values
+            load_dotenv(override=True)
+
+            # Debug: Log what we're loading
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Settings loading - CHAT_PROVIDER={os.getenv('CHAT_PROVIDER')}")
+            logger.info(f"Settings loading - LOCAL_LLM_URL={os.getenv('LOCAL_LLM_URL')}")
+            logger.info(f"Settings loading - LOCAL_LLM_MODEL={os.getenv('LOCAL_LLM_MODEL')}")
+
             _settings_instance = FaultMavenSettings()
         except Exception as e:
             from faultmaven.models.exceptions import ConfigurationError

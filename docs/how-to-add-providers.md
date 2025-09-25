@@ -141,24 +141,47 @@ CHAT_PROVIDER="openrouter"
 
 **Features**: One API for multiple providers, competitive pricing, provider flexibility.
 
-### 7. Local (Self-Hosted)
+### 7. Local (Self-Hosted) - Container-Based Service
 
 **Best for**: Privacy, customization, cost control
 
 ```bash
 # Environment Configuration (no API key needed)
-LOCAL_LLM_URL="http://192.168.0.47:5000"
-LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"
+LOCAL_LLM_URL="http://localhost:8080"           # Default container endpoint
+LOCAL_LLM_MODEL="unsloth-DeepSeek-R1-Distill-Qwen-1.5B-GGUF"  # Model directory name
 CHAT_PROVIDER="local"
 ```
 
+**Container-Based LLM Service**: FaultMaven includes a Docker-based local LLM service with automated lifecycle management:
+
+```bash
+# Service Management Commands
+./scripts/local_llm_service.sh start <model_name>  # Start LLM container
+./scripts/local_llm_service.sh stop                # Stop LLM service
+./scripts/local_llm_service.sh status              # Show service status and model consistency
+./scripts/local_llm_service.sh check               # Auto-fix model mismatches
+./scripts/local_llm_service.sh restart <model>     # Restart with new model
+```
+
+**Automatic Model Management**:
+- **Model Verification**: Automatically detects when running model differs from `LOCAL_LLM_MODEL` configuration
+- **Auto-Restart**: Stops wrong model and starts correct one automatically
+- **Health Monitoring**: Continuous health checks with service discovery
+- **Resource Management**: Configurable CPU cores and memory limits
+
 **Supported Servers**:
+- **llama.cpp server** (Default, Docker-based) - Recommended
 - Ollama
 - vLLM
 - Text Generation Inference
 - Custom OpenAI-compatible servers
 
-**Features**: Complete privacy, customizable models, no external dependencies.
+**Features**:
+- **Complete Privacy**: No external dependencies, local processing only
+- **Container Isolation**: Clean, reproducible deployments
+- **Model Consistency**: Automatic verification and restart on mismatch
+- **Resource Control**: Configurable CPU/memory allocation
+- **Zero Configuration**: Auto-detects models from configured directory
 
 ## Provider Selection Guide
 
@@ -659,6 +682,20 @@ __all__ = [
 | `max_retries` | Yes | Number of retry attempts | `3` |
 | `timeout` | Yes | Request timeout in seconds | `30` |
 | `confidence_score` | Yes | Default confidence for responses | `0.85` |
+
+**Global Timeout Configuration**: The `LLM_REQUEST_TIMEOUT` environment variable overrides individual provider timeout settings:
+
+```bash
+# Global timeout configuration (applies to all providers)
+LLM_REQUEST_TIMEOUT=30  # Base timeout for all LLM requests
+
+# Three-layer timeout architecture:
+# - Infrastructure Layer: 30 seconds (LLM_REQUEST_TIMEOUT value)
+# - Service Layer: 32 seconds (infrastructure + 2s buffer)
+# - API Layer: 35 seconds (service + 3s buffer)
+```
+
+This ensures consistent timeout behavior across all providers while providing appropriate buffer layers for robust error handling.
 
 ## Testing New Providers
 

@@ -143,9 +143,24 @@ For local development without Docker:
    ```bash
    # Standard startup
    ./run_faultmaven.sh
-   
+
    # Or development mode (full transparency, all logs)
    ./run_faultmaven_dev.sh
+   ```
+
+4. **Local LLM Service Management** (Optional - for local LLM provider):
+   ```bash
+   # Start local LLM Docker container service
+   ./scripts/local_llm_service.sh start <model_name>
+
+   # Check service status and model consistency
+   ./scripts/local_llm_service.sh status
+
+   # Auto-fix model mismatches (stops wrong model, starts correct one)
+   ./scripts/local_llm_service.sh check
+
+   # Stop local LLM service
+   ./scripts/local_llm_service.sh stop
    ```
 
 ## 🧪 Testing
@@ -356,6 +371,8 @@ For detailed configuration and adding new providers, see: [How to Add Providers]
 Copy `.env.example` to `.env` and configure:
 - **Required**: At least one LLM provider API key
 - **Optional**: Observability, web search, local model servers
+- **Timeout Configuration**: `LLM_REQUEST_TIMEOUT=30` (applies to all providers)
+- **Local LLM Setup**: `LOCAL_LLM_URL` and `LOCAL_LLM_MODEL` for containerized local models
 
 ### Observability & Monitoring
 

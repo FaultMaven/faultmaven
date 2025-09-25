@@ -52,9 +52,9 @@ PROVIDER_SCHEMA = {
     "local": {
         "api_key_var": None,  # No API key needed
         "model_var": "LOCAL_LLM_MODEL",
-        "base_url_var": "LOCAL_LLM_URL",
-        "default_base_url": None,  # Will use environment variable or fail gracefully
-        "default_model": None,     # Will use environment variable or fail gracefully
+        "base_url_var": "LOCAL_LLM_BASE_URL",
+        "default_base_url": "http://localhost:5000",  # Default llama.cpp server endpoint
+        "default_model": "llama2-7b",     # Default model name
         "provider_class": LocalProvider,
         "max_retries": 1,
         "timeout": 60,
@@ -278,14 +278,18 @@ class ProviderRegistry:
         self.logger.info(f"🔍   Model: {model} (from {schema['model_var']})")
         self.logger.info(f"🔍   Base URL: {base_url} (from {schema.get('base_url_var', 'default')})")
         self.logger.info(f"🔍   API Key: {'SET' if api_key else 'NOT_SET'}")
-        
+
+        # Use LLM_REQUEST_TIMEOUT environment variable if set, otherwise use schema default
+        timeout = int(os.getenv("LLM_REQUEST_TIMEOUT", schema["timeout"]))
+        self.logger.info(f"🔍   Timeout: {timeout}s (from {'LLM_REQUEST_TIMEOUT' if os.getenv('LLM_REQUEST_TIMEOUT') else 'schema'})")
+
         return ProviderConfig(
             name=provider_name,
             api_key=api_key,
             base_url=base_url,
             models=[model],
             max_retries=schema["max_retries"],
-            timeout=schema["timeout"],
+            timeout=timeout,
             confidence_score=schema["confidence_score"]
         )
     
@@ -313,15 +317,25 @@ class ProviderRegistry:
         """Set up the provider fallback chain"""
         # Start with primary provider
         chain = [primary_provider] if primary_provider in self._providers else []
-        
-        # Add other available providers as fallbacks
-        fallback_order = ["fireworks", "openai", "local"]
-        for provider in fallback_order:
-            if provider != primary_provider and provider in self._providers:
-                chain.append(provider)
-        
+
+        # Check if strict mode is enabled
+        strict_mode = os.getenv("STRICT_PROVIDER_MODE", "false").lower() == "true"
+
+        if strict_mode:
+            # In strict mode, only use the primary provider
+            self.logger.info(f"🔒 Strict provider mode enabled - using only '{primary_provider}', no fallbacks")
+        else:
+            # Add other available providers as fallbacks
+            fallback_order = ["fireworks", "openai", "local"]
+            for provider in fallback_order:
+                if provider != primary_provider and provider in self._providers:
+                    chain.append(provider)
+
         self._fallback_chain = chain
-        self.logger.info(f"Provider fallback chain: {' -> '.join(chain)}")
+        if strict_mode and len(chain) == 1:
+            self.logger.info(f"Provider chain (strict mode): {chain[0]} ONLY")
+        else:
+            self.logger.info(f"Provider fallback chain: {' -> '.join(chain)}")
     
     def register_provider(self, name: str, provider_class: Type[BaseLLMProvider]):
         """Register a custom provider class"""
@@ -359,10 +373,10 @@ class ProviderRegistry:
     ) -> LLMResponse:
         """Route request through the fallback chain until success"""
         self._ensure_initialized()
-        
+
         """
         Route request through the fallback chain until success
-        
+
         Args:
             prompt: Input prompt
             model: Specific model to use (optional)
@@ -370,23 +384,25 @@ class ProviderRegistry:
             temperature: Sampling temperature
             confidence_threshold: Minimum confidence threshold
             **kwargs: Additional parameters
-            
+
         Returns:
             LLMResponse from successful provider
-            
+
         Raises:
             Exception: If all providers fail
         """
         last_error = None
-        
+        best_low_confidence_response = None
+        best_low_confidence_score = 0.0
+
         for provider_name in self._fallback_chain:
             provider = self._providers.get(provider_name)
             if not provider:
                 continue
-            
+
             try:
                 self.logger.info(f"Trying provider: {provider_name}")
-                
+
                 response = await provider.generate(
                     prompt=prompt,
                     model=model,
@@ -394,7 +410,7 @@ class ProviderRegistry:
                     temperature=temperature,
                     **kwargs
                 )
-                
+
                 # Check confidence threshold
                 if response.confidence >= confidence_threshold:
                     self.logger.info(
@@ -403,18 +419,43 @@ class ProviderRegistry:
                     )
                     return response
                 else:
+                    # Log the actual response content for debugging
                     self.logger.warning(
                         f"⚠️ Low confidence from {provider_name} "
                         f"({response.confidence:.2f} < {confidence_threshold})"
                     )
+                    self.logger.info(
+                        f"🔍 Low confidence response content from {provider_name}: "
+                        f"{response.content[:200]}{'...' if len(response.content) > 200 else ''}"
+                    )
+
+                    # Keep track of the best low-confidence response
+                    if response.confidence > best_low_confidence_score:
+                        best_low_confidence_response = response
+                        best_low_confidence_score = response.confidence
+                        self.logger.info(
+                            f"📝 Keeping {provider_name} as best low-confidence option "
+                            f"(confidence: {response.confidence:.2f})"
+                        )
+
                     continue
-                    
+
             except Exception as e:
                 self.logger.warning(f"❌ Provider {provider_name} failed: {e}")
                 last_error = e
                 continue
-        
-        # All providers failed
+
+        # If we have a low-confidence response, return it with appropriate metadata
+        if best_low_confidence_response:
+            self.logger.info(
+                f"🎯 Returning best low-confidence response "
+                f"(confidence: {best_low_confidence_score:.2f}) instead of failing completely"
+            )
+            # Add metadata to indicate this is a low-confidence response
+            best_low_confidence_response.provider = f"{best_low_confidence_response.provider} (low-confidence)"
+            return best_low_confidence_response
+
+        # All providers failed completely
         error_msg = f"All providers failed. Last error: {last_error}"
         self.logger.error(error_msg)
         raise Exception(error_msg)
