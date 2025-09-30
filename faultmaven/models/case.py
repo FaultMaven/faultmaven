@@ -23,6 +23,7 @@ class CaseStatus(str, Enum):
     ACTIVE = "active"
     INVESTIGATING = "investigating"
     SOLVED = "solved"
+    RESOLVED = "resolved"  # Alias for solved - used by frontend/API
     STALLED = "stalled"
     ARCHIVED = "archived"
     SHARED = "shared"
@@ -31,6 +32,7 @@ class CaseStatus(str, Enum):
 class CasePriority(str, Enum):
     """Case priority levels"""
     LOW = "low"
+    NORMAL = "normal"  # Added for API compatibility
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
@@ -186,10 +188,6 @@ class Case(BaseModel):
     # Conversation and content
     messages: List[CaseMessage] = Field(default_factory=list, description="Case conversation messages")
     message_count: int = Field(default=0, description="Total message count")
-    
-    # Associated sessions
-    session_ids: Set[str] = Field(default_factory=set, description="Sessions that have accessed this case")
-    current_session_id: Optional[str] = Field(None, description="Currently active session")
     
     # Context and artifacts
     context: CaseContext = Field(default_factory=CaseContext, description="Case context and artifacts")
@@ -359,7 +357,6 @@ class Case(BaseModel):
             'total_messages': self.message_count,
             'message_types': message_types,
             'participants': len(self.participants),
-            'sessions_involved': len(self.session_ids),
             'recent_activity': recent_activity,
             'case_duration_hours': (
                 (self.last_activity_at - self.created_at).total_seconds() / 3600
@@ -434,7 +431,7 @@ class CaseSearchRequest(BaseModel):
 
 class CaseSummary(BaseModel):
     """Summary view of a case for list operations"""
-    
+
     case_id: str
     title: str
     status: CaseStatus
@@ -446,6 +443,6 @@ class CaseSummary(BaseModel):
     message_count: int
     participant_count: int
     tags: List[str]
-    
+
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}

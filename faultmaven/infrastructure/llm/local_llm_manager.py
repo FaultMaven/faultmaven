@@ -75,7 +75,7 @@ class LocalLLMServiceManager:
             cmd,
             capture_output=True,
             text=True,
-            timeout=30  # 30 second timeout for script commands
+            timeout=120  # 120 second timeout for script commands (container startup can be slow)
         )
 
         if result.returncode != 0:
@@ -167,7 +167,15 @@ class LocalLLMServiceManager:
             logger.info("Checking and fixing local LLM service model consistency...")
             result = self._run_script_command("check")
             logger.info(f"Service check completed: {result.stdout}")
-            return True
+
+            # Verify the fix actually worked by checking if warnings are gone
+            status_result = self._run_script_command("status")
+            if "[WARNING] Model mismatch detected" in status_result.stdout:
+                logger.error("❌ Model mismatch still exists after fix attempt")
+                return False
+            else:
+                logger.info("✅ Model consistency verified after fix")
+                return True
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to check/fix service: {e.stderr}")
@@ -257,19 +265,8 @@ async def check_and_start_local_llm_service(
     manager = get_local_llm_manager(base_url)
 
     try:
-        # Check if service is already running
-        if await manager.is_service_running():
-            logger.info("Local LLM service is already running")
-            return True
-
-        # Service is not running, try to start it
-        logger.info(f"Local LLM service not detected, starting with model: {model_name}")
-        success = await manager.start_service(model_name)
-
-        if success:
-            logger.info("Local LLM service started successfully")
-        else:
-            logger.error("Failed to start local LLM service")
+        # Ensure service is running with the correct model (includes verification and auto-restart)
+        success = await manager.ensure_service_running(model_name)
 
         return success
 

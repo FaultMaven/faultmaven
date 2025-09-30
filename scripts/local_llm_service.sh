@@ -10,7 +10,7 @@ set -e
 # Default configuration
 CONTAINER_NAME="local-llm-service"
 HOST_ENDPOINT="8080"
-CPU_CORES="8"
+CPU_CORES="16"
 MEMORY_LIMIT="16g"
 LLM_MODELS_DIR="/var/lib/llm"
 

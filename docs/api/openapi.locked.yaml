@@ -15,9 +15,22 @@ info:
     \ document ingestion and retrieval using ChromaDB\n- **Data Processing**: Intelligent\
     \ log analysis and classification\n- **Performance Monitoring**: Real-time metrics\
     \ and health monitoring\n- **Error Recovery**: Automatic error detection and recovery\
-    \ mechanisms\n\n## Authentication\n\nCurrently, the API does not require authentication.\
-    \ This may change in future versions.\nWhen implemented, authentication will use\
-    \ API key-based authentication.\n\n## Rate Limiting\n\nAPI requests are subject\
+    \ mechanisms\n\n## Authentication\n\nThe API now includes a complete authentication\
+    \ system with development endpoints.\nThese endpoints provide token-based authentication\
+    \ for secure access to protected resources.\n\n**Available Authentication Endpoints:**\n\
+    \n- `POST /api/v1/auth/dev-register` - Create new user accounts (development)\n\
+    - `POST /api/v1/auth/dev-login` - Authenticate existing users (development)\n\
+    - `POST /api/v1/auth/logout` - Revoke current authentication token\n- `GET /api/v1/auth/me`\
+    \ - Get current user profile information\n- `GET /api/v1/auth/health` - Check\
+    \ authentication system health\n- `POST /api/v1/auth/dev/revoke-all-tokens` -\
+    \ Development utility for token management\n\n**Token Management:**\n\n- Tokens\
+    \ are Bearer tokens included in the `Authorization` header\n- Default expiration:\
+    \ 24 hours\n- Tokens can be revoked individually or all at once\n\n**Security\
+    \ Features:**\n\n- Input validation and sanitization\n- Duplicate account prevention\n\
+    - Proper OAuth2-compatible error responses\n- Token-based session management\n\
+    \n**Development vs Production:**\n\nCurrent endpoints are designed for development\
+    \ environments. Production authentication will use OAuth2/OIDC integration with\
+    \ enterprise identity providers.\n\n## Rate Limiting\n\nAPI requests are subject\
     \ to rate limiting to ensure fair usage and system stability.\nCurrent limits\
     \ are applied at the infrastructure level.\n\n## Error Handling\n\nAll endpoints\
     \ return structured error responses with appropriate HTTP status codes.\n\n###\
@@ -1226,6 +1239,8 @@ paths:
         \ of cases to skip for pagination\n\nReturns:\n    List of cases (empty list\
         \ if no cases found)"
       operationId: list_session_cases_api_v1_sessions__session_id__cases_get
+      security:
+      - BearerAuth: []
       parameters:
       - name: session_id
         in: path
@@ -1436,86 +1451,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/auth/dev-login:
-    post:
-      tags:
-      - authentication
-      - authentication
-      summary: Dev Login
-      description: "Developer login mock endpoint.\n\nCreates or authenticates a user\
-        \ with minimal validation (username/email only).\nReturns complete ViewState\
-        \ for immediate UI rendering.\n\nArgs:\n    request: DevLoginRequest with\
-        \ username (email)\n    session_service: Injected session service\n    \n\
-        Returns:\n    AuthResponse with ViewState containing user context and initial\
-        \ data"
-      operationId: dev_login_api_v1_auth_dev_login_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DevLoginRequest'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/auth/logout:
-    post:
-      tags:
-      - authentication
-      - authentication
-      summary: Logout
-      description: "Logout endpoint to clean up session.\n\nReturns:\n    Success\
-        \ confirmation"
-      operationId: logout_api_v1_auth_logout_post
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                title: Response Logout Api V1 Auth Logout Post
-  /api/v1/auth/session/{session_id}:
-    get:
-      tags:
-      - authentication
-      - authentication
-      summary: Verify Session
-      description: "Verify existing session and return current ViewState.\n\nUsed\
-        \ by frontend to restore session on app startup.\n\nArgs:\n    session_id:\
-        \ Session ID to verify\n    session_service: Injected session service\n  \
-        \  \nReturns:\n    AuthResponse with current ViewState if session is valid"
-      operationId: verify_session_api_v1_auth_session__session_id__get
-      parameters:
-      - name: session_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Session Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/cases/{case_id}:
     delete:
       tags:
@@ -1528,6 +1463,8 @@ paths:
         \ requests will return \n204 No Content even if the case has already been\
         \ deleted.\n\nReturns 204 No Content on success."
       operationId: delete_case_api_v1_cases__case_id__delete
+      security:
+      - BearerAuth: []
       parameters:
       - name: case_id
         in: path
@@ -1561,6 +1498,8 @@ paths:
 
         participants, and context information.'
       operationId: get_case_api_v1_cases__case_id__get
+      security:
+      - BearerAuth: []
       parameters:
       - name: case_id
         in: path
@@ -1593,6 +1532,8 @@ paths:
 
         Requires edit permissions on the case.'
       operationId: update_case_api_v1_cases__case_id__put
+      security:
+      - BearerAuth: []
       parameters:
       - name: case_id
         in: path
@@ -1631,6 +1572,8 @@ paths:
 
         The case will persist beyond individual session lifetimes.'
       operationId: create_case_api_v1_cases_post
+      security:
+      - BearerAuth: []
       requestBody:
         required: true
         content:
@@ -1663,6 +1606,8 @@ paths:
         \ cases unless include_archived=true  \n- Excludes deleted cases unless include_deleted=true\
         \ (admin only)\n- Only returns active cases with messages by default"
       operationId: list_cases_api_v1_cases_get
+      security:
+      - BearerAuth: []
       parameters:
       - name: page
         in: query
@@ -1741,6 +1686,8 @@ paths:
 
         Requires share permissions on the case.'
       operationId: share_case_api_v1_cases__case_id__share_post
+      security:
+      - BearerAuth: []
       parameters:
       - name: case_id
         in: path
@@ -1775,8 +1722,8 @@ paths:
       - cases
       summary: Generate Case Title
       description: "Generate a concise, case-specific title from case messages and\
-        \ metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3\u2013\
-        12, default 8) - Maximum words in generated title\n- `hint`: string - Optional\
+        \ metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3–12,\
+        \ default 8) - Maximum words in generated title\n- `hint`: string - Optional\
         \ hint to guide title generation\n- `force`: boolean (default false) - Only\
         \ overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse\
         \ with X-Correlation-ID header\n- 422: ErrorResponse with code INSUFFICIENT_CONTEXT\
@@ -1901,54 +1848,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/conversation:
-    get:
-      tags:
-      - case_persistence
-      - cases
-      summary: Get Case Conversation Context
-      description: 'Get conversation messages for a case
-
-
-        Returns conversation history as JSON array of messages.
-
-        Each message: { message_id, role: user|agent, content, created_at }'
-      operationId: get_case_conversation_context_api_v1_cases__case_id__conversation_get
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          maximum: 100
-          minimum: 1
-          description: Maximum number of messages to include
-          default: 50
-          title: Limit
-        description: Maximum number of messages to include
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Message'
-                title: Response Get Case Conversation Context Api V1 Cases  Case Id  Conversation
-                  Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/cases/{case_id}/analytics:
     get:
       tags:
@@ -1989,11 +1888,20 @@ paths:
       tags:
       - case_persistence
       - cases
-      summary: List Case Messages
-      description: 'Return conversation messages for a case in a UI-friendly format.
+      summary: Get Case Messages Enhanced
+      description: 'Enhanced message retrieval with debugging support and comprehensive metadata.
 
-        Each item: { message_id, role: user|agent, content, created_at }'
-      operationId: list_case_messages_api_v1_cases__case_id__messages_get
+        Returns conversation messages for a case with pagination, metadata, and optional debugging information.
+
+        Features:
+        - Paginated message retrieval with offset/limit
+        - Total count and retrieved count for UI pagination
+        - Optional debug information for troubleshooting
+        - Response headers with storage metadata
+        - Error differentiation between empty case vs retrieval failure'
+      operationId: get_case_messages_enhanced_api_v1_cases__case_id__messages_get
+      security:
+      - BearerAuth: []
       parameters:
       - name: case_id
         in: path
@@ -2010,6 +1918,7 @@ paths:
           minimum: 1
           default: 50
           title: Limit
+        description: Maximum number of messages to return
       - name: offset
         in: query
         required: false
@@ -2018,12 +1927,35 @@ paths:
           minimum: 0
           default: 0
           title: Offset
+        description: Offset for pagination
+      - name: include_debug
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Debug
+        description: Include debug information for troubleshooting
       responses:
         '200':
           description: Successful Response
+          headers:
+            X-Message-Count:
+              description: Total number of messages in the case
+              schema:
+                type: integer
+            X-Retrieved-Count:
+              description: Number of messages successfully retrieved
+              schema:
+                type: integer
+            X-Storage-Status:
+              description: Storage operation status
+              schema:
+                type: string
           content:
             application/json:
-              schema: {}
+              schema:
+                $ref: '#/components/schemas/CaseMessagesResponse'
         '422':
           description: Validation Error
           content:
@@ -2137,6 +2069,8 @@ paths:
         \  \n    request: FastAPI request containing query data\n\nReturns:\n    201\
         \ with immediate result OR 202 with job Location for async processing"
       operationId: submit_case_query_api_v1_cases__case_id__queries_post
+      security:
+      - BearerAuth: []
       parameters:
       - name: case_id
         in: path
@@ -2198,6 +2132,8 @@ paths:
 
         CRITICAL: Must return 200 [] for empty results, NOT 404'
       operationId: list_case_queries_api_v1_cases__case_id__queries_get
+      security:
+      - BearerAuth: []
       parameters:
       - name: case_id
         in: path
@@ -2367,6 +2303,8 @@ paths:
 
         Returns 201 with Location header pointing to the created data resource.'
       operationId: upload_case_data_api_v1_cases__case_id__data_post
+      security:
+      - BearerAuth: []
       parameters:
       - name: case_id
         in: path
@@ -2945,6 +2883,253 @@ paths:
           content:
             application/json:
               schema: {}
+  /api/v1/auth/dev-login:
+    post:
+      tags:
+      - authentication
+      - authentication
+      summary: Dev Login
+      description: 'Development login endpoint
+
+
+        Authenticates existing users and generates authentication tokens.
+
+        This endpoint is designed for development environments and will be replaced
+
+        with production OAuth2/OIDC integration later.
+
+
+        **Flow:**
+
+        1. Validate username format
+
+        2. Find existing user (returns 401 if user doesn''t exist)
+
+        3. Generate authentication token
+
+        4. Return token with user profile
+
+
+        **Security:**
+
+        - Only authenticates existing users (no account creation)
+
+        - Tokens expire after 24 hours
+
+        - Input validation and sanitization
+
+        - Proper OAuth2 error responses'
+      operationId: dev_login_api_v1_auth_dev_login_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DevLoginRequest'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/dev-register:
+    post:
+      tags:
+      - authentication
+      - authentication
+      summary: Dev Register
+      description: 'Development registration endpoint
+
+
+        Creates a new user account and generates an authentication token.
+
+        This endpoint is designed for development environments and will be replaced
+
+        with production registration flows later.
+
+
+        **Flow:**
+
+        1. Validate username format
+
+        2. Check if user already exists (returns 409 if exists)
+
+        3. Create new user account
+
+        4. Generate authentication token
+
+        5. Return token with user profile
+
+
+        **Security:**
+
+        - Prevents duplicate account creation
+
+        - Tokens expire after 24 hours
+
+        - Input validation and sanitization
+
+        - Auto-generates email and display name if not provided'
+      operationId: dev_register_api_v1_auth_dev_register_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DevLoginRequest'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/logout:
+    post:
+      tags:
+      - authentication
+      - authentication
+      summary: Logout
+      description: 'Logout current user
+
+
+        Revokes the current authentication token. The user will need to login
+
+        again to access protected resources.
+
+
+        **Flow:**
+
+        1. Validate current authentication
+
+        2. Revoke the current token
+
+        3. Return confirmation'
+      operationId: logout_api_v1_auth_logout_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/me:
+    get:
+      tags:
+      - authentication
+      - authentication
+      summary: Get Current User Profile
+      description: 'Get current user profile
+
+
+        Returns detailed information about the currently authenticated user,
+
+        including profile data and token statistics.'
+      operationId: get_current_user_profile_api_v1_auth_me_get
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInfoResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/auth/health:
+    get:
+      tags:
+      - authentication
+      - authentication
+      summary: Auth Health Check
+      description: 'Authentication system health check
+
+
+        Returns the status of authentication services including token management
+
+        and user storage systems.'
+      operationId: auth_health_check_api_v1_auth_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/auth/dev/revoke-all-tokens:
+    post:
+      tags:
+      - authentication
+      - authentication
+      summary: Dev Revoke All User Tokens
+      description: 'Development endpoint: Revoke all tokens for current user
+
+
+        **WARNING:** This endpoint is for development use only.
+
+        It will be removed in production builds.'
+      operationId: dev_revoke_all_user_tokens_api_v1_auth_dev_revoke_all_tokens_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AgentResponse:
@@ -3000,26 +3185,6 @@ components:
       - session_id
       title: AgentResponse
       description: The single, unified JSON payload returned from the backend.
-    AuthResponse:
-      properties:
-        schema_version:
-          type: string
-          enum:
-          - 3.1.0
-          const: 3.1.0
-          title: Schema Version
-          default: 3.1.0
-        success:
-          type: boolean
-          title: Success
-          default: true
-        view_state:
-          $ref: '#/components/schemas/ViewState'
-      type: object
-      required:
-      - view_state
-      title: AuthResponse
-      description: Response payload for authentication operations with ViewState.
     Body_batch_upload_data_api_v1_data_batch_upload_post:
       properties:
         files:
@@ -3512,12 +3677,36 @@ components:
       properties:
         username:
           type: string
+          maxLength: 50
+          minLength: 3
           title: Username
+          description: Username or email address (3-50 chars)
+          example: developer@example.com
+        email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email
+          description: Optional email address (will auto-generate if not provided)
+          example: john.doe@faultmaven.local
+        display_name:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Display Name
+          description: Optional display name (will auto-generate if not provided)
+          example: John Doe
       type: object
       required:
       - username
       title: DevLoginRequest
-      description: Request payload for developer login.
+      description: 'Request model for development login
+
+
+        Validates user input for the dev-login endpoint.
+
+        Supports username-based login with optional user details.'
     HTTPValidationError:
       properties:
         detail:
@@ -3649,6 +3838,74 @@ components:
       - created_at
       title: Message
       description: Message model for conversation endpoints.
+    MessageRetrievalDebugInfo:
+      properties:
+        redis_key:
+          type: string
+          title: Redis Key
+          description: Redis key used for message storage
+        redis_operation_time_ms:
+          type: number
+          title: Redis Operation Time Ms
+          description: Time taken for Redis operation
+        storage_errors:
+          items:
+            type: string
+          type: array
+          title: Storage Errors
+          description: Any storage-related errors encountered
+          default: []
+        message_parsing_errors:
+          type: integer
+          title: Message Parsing Errors
+          description: Number of messages that failed to parse
+          default: 0
+      type: object
+      required:
+      - redis_key
+      - redis_operation_time_ms
+      title: MessageRetrievalDebugInfo
+      description: Debug information for message retrieval operations.
+    CaseMessagesResponse:
+      properties:
+        messages:
+          items:
+            $ref: '#/components/schemas/Message'
+          type: array
+          title: Messages
+          description: Array of conversation messages
+        total_count:
+          type: integer
+          title: Total Count
+          description: Total number of messages in the case
+        retrieved_count:
+          type: integer
+          title: Retrieved Count
+          description: Number of messages successfully retrieved
+        has_more:
+          type: boolean
+          title: Has More
+          description: Whether more messages are available for pagination
+        next_offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Next Offset
+          description: Offset for next page (null if no more pages)
+        debug_info:
+          anyOf:
+          - $ref: '#/components/schemas/MessageRetrievalDebugInfo'
+          - type: 'null'
+          title: Debug Info
+          description: Debug information (only when include_debug=true)
+      type: object
+      required:
+      - messages
+      - total_count
+      - retrieved_count
+      - has_more
+      title: CaseMessagesResponse
+      description: Enhanced response model for case message retrieval with debugging support.
     ParticipantRole:
       type: string
       enum:
@@ -4375,6 +4632,164 @@ components:
           errors_found: 23
           insights_extracted: 8
           processing_time_ms: 2340
+    AuthTokenResponse:
+      properties:
+        access_token:
+          type: string
+          title: Access Token
+          description: Bearer access token
+          example: 550e8400-e29b-41d4-a716-446655440000
+        token_type:
+          type: string
+          title: Token Type
+          description: Token type (always 'bearer')
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+          description: Token expiration time in seconds
+          example: 86400
+        session_id:
+          type: string
+          title: Session Id
+          description: Session identifier for multi-turn conversations
+          example: session-550e8400-e29b-41d4-a716-446655440000
+        user:
+          $ref: '#/components/schemas/UserProfile'
+          description: Authenticated user profile
+      type: object
+      required:
+      - access_token
+      - expires_in
+      - session_id
+      - user
+      title: AuthTokenResponse
+      description: 'Authentication token response
+
+
+        Standard OAuth2-compatible token response format.
+
+        Includes token, expiration, and user information.'
+    UserProfile:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+          description: Unique user identifier
+          example: 550e8400-e29b-41d4-a716-446655440000
+        username:
+          type: string
+          title: Username
+          description: Username
+          example: john.doe
+        email:
+          type: string
+          title: Email
+          description: Email address
+          example: john.doe@faultmaven.local
+        display_name:
+          type: string
+          title: Display Name
+          description: Display name
+          example: John Doe
+        created_at:
+          type: string
+          title: Created At
+          description: Account creation timestamp (ISO format)
+          example: '2025-01-15T10:00:00Z'
+        is_dev_user:
+          type: boolean
+          title: Is Dev User
+          description: Development user flag
+          default: true
+      type: object
+      required:
+      - user_id
+      - username
+      - email
+      - display_name
+      - created_at
+      title: UserProfile
+      description: 'Public user profile information
+
+
+        Represents user information safe for API responses.
+
+        Excludes sensitive information like hashed passwords.'
+    UserInfoResponse:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+          description: Unique user identifier
+          example: 550e8400-e29b-41d4-a716-446655440000
+        username:
+          type: string
+          title: Username
+          description: Username
+          example: john.doe
+        email:
+          type: string
+          title: Email
+          description: Email address
+          example: john.doe@faultmaven.local
+        display_name:
+          type: string
+          title: Display Name
+          description: Display name
+          example: John Doe
+        created_at:
+          type: string
+          title: Created At
+          description: Account creation timestamp (ISO format)
+          example: '2025-01-15T10:00:00Z'
+        is_dev_user:
+          type: boolean
+          title: Is Dev User
+          description: Development user flag
+          default: true
+        last_login:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Login
+          description: Last login timestamp (ISO format)
+          example: '2025-01-15T14:30:00Z'
+        token_count:
+          type: integer
+          title: Token Count
+          description: Number of active tokens for this user
+          default: 0
+          example: 2
+      type: object
+      required:
+      - user_id
+      - username
+      - email
+      - display_name
+      - created_at
+      title: UserInfoResponse
+      description: 'Extended user information response
+
+
+        Includes additional metadata for the current user.'
+    LogoutResponse:
+      properties:
+        message:
+          type: string
+          title: Message
+          description: Logout confirmation message
+          default: Logged out successfully
+        revoked_tokens:
+          type: integer
+          title: Revoked Tokens
+          description: Number of tokens that were revoked
+          example: 1
+      type: object
+      required:
+      - revoked_tokens
+      title: LogoutResponse
+      description: Logout response model
   securitySchemes:
     ApiKeyAuth:
       type: apiKey
@@ -4384,8 +4799,8 @@ components:
     BearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
-      description: JWT Bearer token authentication (planned for future implementation)
+      bearerFormat: UUID
+      description: Bearer token authentication using UUID tokens from /auth/dev-login
   headers:
     X-Correlation-ID:
       description: Unique identifier for request tracing and debugging

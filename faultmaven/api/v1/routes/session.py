@@ -37,11 +37,13 @@ from pydantic import BaseModel, Field, ValidationError
 
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.api.v1.dependencies import get_session_service, get_case_service
+from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.services.domain.session_service import SessionService
 from faultmaven.services.converters import CaseConverter
 from faultmaven.models import utc_timestamp
 from faultmaven.models.api import SessionResponse, SessionCasesResponse, ErrorResponse, ErrorDetail, SessionErrorCode, SessionStatus
 from faultmaven.models.case import CaseListFilter
+from faultmaven.models.auth import DevUser
 import logging
 import uuid
 import os
@@ -308,10 +310,16 @@ async def create_session(
         
         # Always set validated timeout in metadata
         metadata["timeout_minutes"] = validated_timeout_minutes
-        
+
+        # Auto-generate user_id for development if not provided
+        if not user_id:
+            import uuid
+            user_id = f"user_{str(uuid.uuid4())[:8]}"
+            logger.info(f"Auto-generated user_id for session: {user_id}")
+
         # Create session with metadata and client_id
         session_result = await session_service.create_session(
-            user_id, 
+            user_id,
             metadata=metadata if metadata else None,
             client_id=request.client_id if request else None
         )
@@ -520,7 +528,8 @@ async def list_session_cases(
     include_archived: bool = Query(False, description="Include archived cases"),
     include_deleted: bool = Query(False, description="Include deleted cases (admin only)"),
     session_service: SessionService = Depends(get_session_service),
-    case_service = Depends(get_case_service)
+    case_service = Depends(get_case_service),
+    current_user: DevUser = Depends(require_authentication)
 ):
     """
     List all cases associated with a session.
@@ -546,9 +555,9 @@ async def list_session_cases(
         total_count = 0
         
         try:
-            # Get cases from case service - Phase 1: Pass filtering parameters
-            if hasattr(case_service, 'list_cases_by_session'):
-                # Create filters for session-scoped listing
+            # Get user's cases with access control, then filter by session
+            if hasattr(case_service, 'list_user_cases'):
+                # Create filters for user cases with session filtering
                 filters = CaseListFilter(
                     include_empty=include_empty,
                     include_archived=include_archived,
@@ -556,12 +565,18 @@ async def list_session_cases(
                     limit=limit,
                     offset=offset
                 )
-                
-                case_entities = await case_service.list_cases_by_session(session_id, limit, offset, filters)
-                total_count = await case_service.count_cases_by_session(session_id, filters)
-                
-                # Convert Case entities to API objects using centralized converter
-                cases = CaseConverter.entities_to_api_list(case_entities)
+
+                # Get user's cases (session provides authentication context)
+                # Architecture: Session → User → User's Cases (indirect relationship)
+                user_cases = await case_service.list_user_cases(current_user.user_id, filters)
+                logger.debug(f"Session {session_id} accessing {len(user_cases)} cases for user {current_user.user_id}")
+
+                # No additional filtering needed - session authenticates access to all user's cases
+                total_count = len(user_cases)
+                paginated_cases = user_cases[offset:offset + limit]
+
+                # Convert Case entities to API objects (consistent with /api/v1/cases)
+                cases = CaseConverter.entities_to_api_list(paginated_cases)
             else:
                 # Case service not available - return empty list
                 logger.warning(f"Case service not available for session {session_id}")

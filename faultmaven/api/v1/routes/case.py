@@ -28,18 +28,24 @@ from faultmaven.models.case import (
     Case as CaseEntity,
     CaseCreateRequest,
     CaseListFilter,
+    CaseMessage,
     CaseSearchRequest,
     CaseShareRequest,
     CaseSummary,
     CaseUpdateRequest,
+    MessageType,
     ParticipantRole,
     CaseStatus,
-    CasePriority,
-    CaseMessage
+    CasePriority
 )
 from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.models.api import ErrorResponse, ErrorDetail, CaseResponse, Case, Message, QueryJobStatus, AgentResponse, ViewState, User, ResponseType, TitleGenerateResponse, TitleResponse, QueryRequest
-from faultmaven.api.v1.dependencies import get_case_service, get_user_id, get_session_service, get_agent_service
+from faultmaven.models.api import ErrorResponse, ErrorDetail, CaseResponse, Case, Message, QueryJobStatus, AgentResponse, ViewState, User, ResponseType, TitleGenerateResponse, TitleResponse, QueryRequest, CaseMessagesResponse
+from faultmaven.api.v1.dependencies import get_case_service, get_session_id, get_session_service, get_agent_service
+from faultmaven.api.v1.auth_dependencies import (
+    require_authentication,
+    get_current_user_id
+)
+from faultmaven.models.auth import DevUser
 from faultmaven.services.domain.session_service import SessionService
 from faultmaven.services.agentic.orchestration.agent_service import AgentService
 from faultmaven.services.converters import CaseConverter
@@ -120,10 +126,13 @@ async def _di_get_case_service_dependency() -> Optional[ICaseService]:
     return await _getter()
 
 
-async def _di_get_user_id_dependency(request: Request) -> Optional[str]:
+# Legacy dependency functions removed - using new auth_dependencies directly
+
+
+async def _di_get_session_id_dependency(request: Request) -> Optional[str]:
     """Runtime wrapper so patched dependency is honored in tests."""
-    from faultmaven.api.v1.dependencies import get_user_id as _get_user_id
-    return await _get_user_id(request)
+    from faultmaven.api.v1.dependencies import get_session_id as _get_session_id
+    return await _get_session_id(request)
 
 
 async def _di_get_session_service_dependency() -> SessionService:
@@ -153,7 +162,7 @@ def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseS
 async def delete_case(
     case_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ):
     """
     Permanently delete a case and all associated data.
@@ -172,8 +181,7 @@ async def delete_case(
     try:
         # Proceed to hard delete via service if supported; otherwise emulate success
         # DELETE is idempotent - always returns 204 No Content regardless of whether case existed
-        if hasattr(case_service, "hard_delete_case"):
-            await case_service.hard_delete_case(case_id, user_id)
+        await case_service.hard_delete_case(case_id, current_user.user_id)
             # Service layer handles the deletion and cascade behavior
             # Idempotent: No error even if case doesn't exist
         
@@ -204,7 +212,7 @@ async def create_case(
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     session_service: SessionService = Depends(_di_get_session_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> CaseResponse:
     """
     Create a new troubleshooting case
@@ -233,7 +241,7 @@ async def create_case(
         case_entity = await case_service.create_case(
             title=request.title,
             description=request.description,
-            owner_id=user_id,
+            owner_id=current_user.user_id,
             session_id=request.session_id,
             initial_message=request.initial_message
         )
@@ -291,7 +299,7 @@ async def create_case(
 async def list_cases(
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency),
+    current_user: DevUser = Depends(require_authentication),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     # Phase 1: New filtering parameters (default to exclude non-active cases)
@@ -322,7 +330,7 @@ async def list_cases(
         
         # Build filter criteria with Phase 1 filtering parameters
         filters = CaseListFilter(
-            user_id=user_id,
+            user_id=current_user.user_id if current_user else None,
             status=None,
             priority=None,
             owner_id=None,
@@ -334,13 +342,12 @@ async def list_cases(
             include_deleted=include_deleted
         )
         
-        case_entities = await case_service.list_user_cases(user_id or "anonymous", filters)
+        case_entities = await case_service.list_user_cases(current_user.user_id, filters)
         
         # Get total count for pagination
         total_count = 0
         try:
-            if hasattr(case_service, 'count_user_cases'):
-                total_count = await case_service.count_user_cases(user_id or "anonymous", filters)
+            total_count = await case_service.count_user_cases(current_user.user_id, filters)
         except Exception:
             total_count = len(case_entities) if case_entities else 0
         
@@ -410,7 +417,7 @@ async def get_case(
     case_id: str,
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> Case:
     """
     Get a specific case by ID
@@ -422,7 +429,7 @@ async def get_case(
     response.headers["x-correlation-id"] = correlation_id
     
     try:
-        case = await case_service.get_case(case_id, user_id)
+        case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             error_response = ErrorResponse(
                 schema_version="3.1.0", 
@@ -460,7 +467,7 @@ async def update_case(
     request: CaseUpdateRequest,
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ):
     """
     Update case details
@@ -491,7 +498,7 @@ async def update_case(
                 detail="No updates provided"
             )
         
-        success = await case_service.update_case(case_id, updates, user_id)
+        success = await case_service.update_case(case_id, updates, current_user.user_id)
         if not success:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found or access denied")
         
@@ -522,7 +529,7 @@ async def share_case(
     case_id: str,
     request: CaseShareRequest,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> Dict[str, Any]:
     """
     Share a case with another user
@@ -541,7 +548,7 @@ async def share_case(
             case_id=case_id,
             target_user_id=request.user_id,
             role=request.role,
-            sharer_user_id=user_id
+            sharer_user_id=current_user.user_id if current_user else None
         )
         if not success:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found or sharing not permitted")
@@ -575,7 +582,7 @@ async def generate_case_title(
     request_body: Optional[Dict[str, Any]] = Body(None, description="Optional request parameters"),
     force: bool = Query(False, description="Only overwrite non-default titles when true"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> TitleResponse:
     """
     Generate a concise, case-specific title from case messages and metadata.
@@ -619,7 +626,7 @@ async def generate_case_title(
         logger.info(f"🔍 Effective parameters: max_words={max_words}, hint='{hint}', force={effective_force}", 
                    extra={"max_words": max_words, "hint": hint, "effective_force": effective_force})
         # Verify user has access to the case
-        case = await case_service.get_case(case_id, user_id)
+        case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -635,7 +642,7 @@ async def generate_case_title(
             # Check if title is generic/banned (always check for existing titles)
             is_meaningful_title = (
                 case.title not in default_titles and 
-                not case.title.startswith("chat-") and 
+                not case.title.lower().startswith("chat-") and
                 len(case.title.split()) >= 3 and  # At least 3 words
                 case.title.lower().strip() not in BANNED_GENERIC_WORDS and  # Not exact match
                 not any(generic in case.title.lower() for generic in BANNED_GENERIC_WORDS)  # No substring match
@@ -656,11 +663,7 @@ async def generate_case_title(
         # Get conversation context
         context_text = ""
         try:
-            if hasattr(case_service, 'get_case_conversation_context'):
-                context_text = await case_service.get_case_conversation_context(case_id, limit=10)
-            else:
-                # Fallback to basic case information
-                context_text = f"Case: {case.title}\nDescription: {case.description or 'No description'}"
+            context_text = await case_service.get_case_conversation_context(case_id, limit=10)
         except Exception:
             context_text = f"Case: {case.title}\nDescription: {case.description or 'No description'}"
         
@@ -695,7 +698,27 @@ async def generate_case_title(
                 detail=error_response.dict(),
                 headers={"x-correlation-id": correlation_id}
             )
-        
+
+        # Persist the generated title to database (Approach 1: Generate AND persist)
+        try:
+            success = await case_service.update_case(case_id, {"title": generated_title}, current_user.user_id)
+            if not success:
+                logger = logging.getLogger(__name__)
+                logger.error(f"Failed to persist generated title for case {case_id}", extra={"case_id": case_id, "generated_title": generated_title})
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to persist generated title",
+                    headers={"x-correlation-id": correlation_id}
+                )
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error persisting generated title: {e}", extra={"case_id": case_id, "correlation_id": correlation_id})
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to persist generated title: {str(e)}",
+                headers={"x-correlation-id": correlation_id}
+            )
+
         # Persist success atomically and return X-Correlation-ID on all responses
         response.headers["x-correlation-id"] = correlation_id
         response.headers["x-title-source"] = title_source  # Log source=llm vs fallback for telemetry
@@ -987,7 +1010,7 @@ async def archive_case(
     case_id: str,
     reason: Optional[str] = Query(None, description="Reason for archiving"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> Dict[str, Any]:
     """
     Archive a case
@@ -999,7 +1022,7 @@ async def archive_case(
         success = await case_service.archive_case(
             case_id=case_id,
             reason=reason,
-            user_id=user_id
+            user_id=current_user.user_id if current_user else None
         )
         if not success:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found or archive not permitted")
@@ -1024,7 +1047,7 @@ async def archive_case(
 async def search_cases(
     request: CaseSearchRequest,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> List[CaseSummary]:
     """
     Search cases by content
@@ -1033,7 +1056,7 @@ async def search_cases(
     for the specified query terms.
     """
     try:
-        cases = await case_service.search_cases(request, user_id)
+        cases = await case_service.search_cases(request, current_user.user_id if current_user else None)
         return cases
         
     except ValidationException as e:
@@ -1048,118 +1071,12 @@ async def search_cases(
         )
 
 
-@router.get("/{case_id}/conversation", response_model=List[Message])
-@trace("api_get_case_conversation")
-async def get_case_conversation_context(
-    case_id: str,
-    response: Response,
-    limit: int = Query(50, ge=1, le=100, description="Maximum number of messages to include"),
-    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
-) -> List[Message]:
-    """
-    Get conversation messages for a case
-    
-    Returns conversation history as JSON array of messages.
-    Each message: { message_id, role: user|agent, content, created_at }
-    """
-    case_service = check_case_service_available(case_service)
-    correlation_id = str(uuid.uuid4())
-    response.headers["x-correlation-id"] = correlation_id
-    
-    try:
-        # Verify user has access to the case
-        case = await case_service.get_case(case_id, user_id)
-        if not case:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Case not found or access denied"
-            )
-        
-        # Get messages if supported, otherwise return empty array
-        messages = []
-        try:
-            if hasattr(case_service, 'get_case_messages'):
-                raw_messages = await case_service.get_case_messages(case_id, limit=limit, offset=0)
-                # Map to UI schema
-                for m in raw_messages:
-                    # Handle both dict and object formats
-                    if isinstance(m, dict):
-                        msg_type = m.get('message_type')
-                        message_id = m.get('message_id')
-                        content = m.get('content', '')
-                        timestamp = m.get('timestamp')
-                    else:
-                        msg_type = getattr(m, 'message_type', None)
-                        message_id = getattr(m, 'message_id', None)
-                        content = getattr(m, 'content', '')
-                        timestamp = getattr(m, 'timestamp', None)
-                    
-                    # Map message_type to role
-                    role = None
-                    if hasattr(msg_type, 'value'):
-                        msg_type = msg_type.value
-                    if msg_type in ("user_query", "CASE_NOTE"):
-                        role = "user"
-                    elif msg_type in ("agent_response",):
-                        role = "agent"
-                    # Skip non user/agent roles
-                    if role is None:
-                        continue
-                        
-                    # Format timestamp
-                    created_at = None
-                    if timestamp:
-                        try:
-                            if hasattr(timestamp, 'isoformat'):
-                                created_at = timestamp.isoformat() + 'Z'
-                            else:
-                                created_at = str(timestamp)
-                        except Exception:
-                            created_at = str(timestamp)
-                    
-                    messages.append(Message(
-                        message_id=message_id or f"msg_{len(messages)}",
-                        role=role,
-                        content=content,
-                        created_at=created_at or datetime.utcnow().isoformat() + 'Z'
-                    ))
-            else:
-                # For cases with initial_message, create a user message
-                if hasattr(case, 'message_count') and case.message_count > 0:
-                    # Check if case has initial content to display
-                    initial_content = getattr(case, 'description', '') or 'Initial case created'
-                    if initial_content and initial_content.strip():
-                        messages.append(Message(
-                            message_id=f"initial_{case_id}",
-                            role="user", 
-                            content=initial_content,
-                            created_at=case.created_at.isoformat() + 'Z' if hasattr(case, 'created_at') else datetime.utcnow().isoformat() + 'Z'
-                        ))
-        except Exception:
-            messages = []
-
-        return messages
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        correlation_id = str(uuid.uuid4())
-        logger = logging.getLogger(__name__)
-        logger.error(f"Unexpected error in get_case_conversation_context: {e}", extra={"correlation_id": correlation_id})
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get conversation context: {str(e)}",
-            headers={"x-correlation-id": correlation_id}
-        )
-
-
 @router.get("/{case_id}/analytics", response_model=Dict[str, Any])
 @trace("api_get_case_analytics")
 async def get_case_analytics(
     case_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> Dict[str, Any]:
     """
     Get case analytics and metrics
@@ -1169,7 +1086,7 @@ async def get_case_analytics(
     """
     try:
         # Verify user has access to the case
-        case = await case_service.get_case(case_id, user_id)
+        case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1189,78 +1106,63 @@ async def get_case_analytics(
 
 
 # Conversation thread retrieval (messages)
-@router.get("/{case_id}/messages")
-@trace("api_list_case_messages")
-async def list_case_messages(
+@router.get("/{case_id}/messages", response_model=CaseMessagesResponse)
+@trace("api_get_case_messages_enhanced")
+async def get_case_messages_enhanced(
     case_id: str,
-    limit: int = Query(50, le=100, ge=1),
-    offset: int = Query(0, ge=0),
+    response: Response,
+    limit: int = Query(50, le=100, ge=1, description="Maximum number of messages to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    include_debug: bool = Query(False, description="Include debug information for troubleshooting"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
-):
+    current_user: DevUser = Depends(require_authentication)
+) -> CaseMessagesResponse:
     """
-    Return conversation messages for a case in a UI-friendly format.
-    Each item: { message_id, role: user|agent, content, created_at }
+    Retrieve conversation messages for a case with enhanced debugging info.
+    Supports pagination and includes metadata about message retrieval status.
     """
     case_service = check_case_service_available(case_service)
+    correlation_id = str(uuid.uuid4())
+    response.headers["x-correlation-id"] = correlation_id
+
     try:
-        # Verify access
-        case = await case_service.get_case(case_id, user_id)
+        # Verify user has access to the case
+        case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found or access denied")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Case not found or access denied"
+            )
 
-        # Fetch messages if supported, otherwise return empty
-        messages = []
-        total_count = 0
-        try:
-            if hasattr(case_service, 'get_case_messages'):
-                raw_messages = await case_service.get_case_messages(case_id, limit=limit, offset=offset)
-                total_count = getattr(case, 'message_count', len(raw_messages) if raw_messages else 0)
-                # Map to UI schema
-                for m in raw_messages:
-                    # Map message_type to role
-                    msg_type = getattr(m, 'message_type', None)
-                    role = None
-                    if msg_type and hasattr(msg_type, 'value'):
-                        msg_type = msg_type.value
-                    if msg_type in ("user_query", "CASE_NOTE"):
-                        role = "user"
-                    elif msg_type in ("agent_response",):
-                        role = "agent"
-                    # Skip non user/agent roles
-                    if role is None:
-                        continue
-                    created_at = getattr(m, 'timestamp', None)
-                    if created_at:
-                        try:
-                            created_at = created_at.isoformat() + 'Z'
-                        except Exception:
-                            created_at = str(created_at)
-                    messages.append({
-                        "message_id": getattr(m, 'message_id', None),
-                        "role": role,
-                        "content": getattr(m, 'content', ""),
-                        "created_at": created_at
-                    })
-            else:
-                messages = []
-                total_count = 0
-        except Exception:
-            messages = []
-            total_count = 0
-
-        return JSONResponse(
-            status_code=200, 
-            content=messages, 
-            headers={
-                "X-Total-Count": str(total_count),
-                "x-correlation-id": str(uuid.uuid4())
-            }
+        # Use the enhanced message retrieval method
+        message_response = await case_service.get_case_messages_enhanced(
+            case_id=case_id,
+            limit=limit,
+            offset=offset,
+            include_debug=include_debug
         )
+
+        # Add headers for metadata
+        response.headers["X-Message-Count"] = str(message_response.total_count)
+        response.headers["X-Retrieved-Count"] = str(message_response.retrieved_count)
+
+        # Determine storage status
+        storage_status = "success"
+        if message_response.debug_info and message_response.debug_info.storage_errors:
+            storage_status = "error" if message_response.retrieved_count == 0 else "partial"
+        response.headers["X-Storage-Status"] = storage_status
+
+        return message_response
+
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list messages: {str(e)}")
+        logger.error(f"Unexpected error in get_case_messages_enhanced: {e}", extra={"correlation_id": correlation_id})
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get messages: {str(e)}",
+            headers={"x-correlation-id": correlation_id}
+        )
 
 # Session-case integration endpoints
 
@@ -1271,7 +1173,7 @@ async def create_case_for_session(
     title: Optional[str] = Query(None, description="Case title"),
     force_new: bool = Query(False, description="Force creation of new case"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> Dict[str, Any]:
     """
     Create or get case for a session
@@ -1282,7 +1184,7 @@ async def create_case_for_session(
     try:
         case_id = await case_service.get_or_create_case_for_session(
             session_id=session_id,
-            user_id=user_id,
+            user_id=current_user.user_id if current_user else None,
             force_new=force_new
         )
         
@@ -1317,7 +1219,7 @@ async def resume_case_in_session(
     session_id: str,
     case_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> Dict[str, Any]:
     """
     Resume an existing case in a session
@@ -1365,7 +1267,7 @@ async def submit_case_query(
     request: Request,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     agent_service: AgentService = Depends(_di_get_agent_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ):
     """
     Submit a query to a case.
@@ -1398,7 +1300,9 @@ async def submit_case_query(
             )
         
         # Verify case exists first (404 if case not found)
-        case = await case_service.get_case(case_id, user_id)
+        # Use consistent authentication fallback logic with list_cases endpoint
+        user_id_for_access = current_user.user_id
+        case = await case_service.get_case(case_id, user_id_for_access)
         if not case:
             raise HTTPException(
                 status_code=404,
@@ -1407,8 +1311,7 @@ async def submit_case_query(
         
         # Query flow consistency: Update case message_count and updated_at immediately
         # This ensures consistency as per spec requirement
-        if hasattr(case_service, 'add_case_query'):
-            await case_service.add_case_query(case_id, query_text, user_id)
+        await case_service.add_case_query(case_id, query_text, current_user.user_id if current_user else None)
         
         # Check idempotency key if provided
         idempotency_key = request.headers.get("idempotency-key")
@@ -1442,11 +1345,11 @@ async def submit_case_query(
                 "query": query_text,
                 "status": "processing",
                 "created_at": datetime.utcnow().isoformat() + 'Z',
-                "user_id": user_id
+                "user_id": current_user.user_id
             }
             
             # Trigger actual background processing
-            asyncio.create_task(_process_async_query(job_id, case_id, query_request, agent_service, user_id))
+            asyncio.create_task(_process_async_query(job_id, case_id, query_request, agent_service, current_user.user_id))
             
             response_headers = {
                 "Location": f"/api/v1/cases/{case_id}/queries/{job_id}",
@@ -1478,7 +1381,7 @@ async def submit_case_query(
             # Add case context if not already present
             if not query_request.context:
                 query_request.context = {}
-            query_request.context.update({"case_id": case_id, "user_id": user_id})
+            query_request.context.update({"case_id": case_id, "user_id": current_user.user_id})
             
             try:
                 # API Route Level Timeout (35 seconds) - outermost timeout layer
@@ -1493,7 +1396,11 @@ async def submit_case_query(
                 processing_time = time.time() - start_time
                 logger.info(f"✅ API Route: Query processed successfully in {processing_time:.2f}s for case {case_id}")
 
-                # Convert AgentResponse to dict format for JSON serialization
+                # Validate AgentResponse has required content
+                if not hasattr(agent_response, 'content') or not isinstance(agent_response.content, str):
+                    raise ValueError(f"AgentResponse contract violation: content must be str, got {type(agent_response.content) if hasattr(agent_response, 'content') else 'missing'}")
+
+                # Convert AgentResponse to dict format for JSON serialization - MUST match OpenAPI spec
                 agent_response_dict = {
                     "schema_version": "3.1.0",
                     "content": agent_response.content,
@@ -1547,7 +1454,7 @@ async def submit_case_query(
                     "view_state": {
                         "session_id": f"session_{case_id}",
                         "user": {
-                            "user_id": user_id or "anonymous",
+                            "user_id": current_user.user_id,
                             "email": "user@example.com",
                             "name": "User",
                             "created_at": datetime.utcnow().isoformat() + 'Z'
@@ -1583,7 +1490,7 @@ async def submit_case_query(
                     "view_state": {
                         "session_id": f"session_{case_id}",
                         "user": {
-                            "user_id": user_id or "anonymous",
+                            "user_id": current_user.user_id,
                             "email": "user@example.com",
                             "name": "User",
                             "created_at": datetime.utcnow().isoformat() + 'Z'
@@ -1619,7 +1526,7 @@ async def submit_case_query(
                     "view_state": {
                         "session_id": f"session_{case_id}",
                         "user": {
-                            "user_id": user_id or "anonymous",
+                            "user_id": current_user.user_id,
                             "email": "user@example.com",
                             "name": "User",
                             "created_at": datetime.utcnow().isoformat() + 'Z'
@@ -1654,13 +1561,25 @@ async def submit_case_query(
                 )
             
             # Persist assistant response to case messages
-            if hasattr(case_service, 'add_assistant_response'):
-                await case_service.add_assistant_response(
-                    case_id, 
-                    agent_response_dict.get("content", ""),
-                    agent_response_dict.get("response_type", "ANSWER"),
-                    user_id
+            try:
+                assistant_message = CaseMessage(
+                    case_id=case_id,
+                    session_id=query_request.session_id,
+                    author_id=current_user.user_id if current_user else None,
+                    message_type=MessageType.AGENT_RESPONSE,
+                    content=agent_response_dict.get("content", ""),
+                    metadata={
+                        "response_type": agent_response_dict.get("response_type", "ANSWER"),
+                        "confidence_score": agent_response_dict.get("confidence_score"),
+                        "processing_time_ms": agent_response_dict.get("processing_time_ms")
+                    }
                 )
+
+                await case_service.add_message_to_case(case_id, assistant_message, query_request.session_id)
+                logger.debug(f"Successfully persisted assistant response for case {case_id}")
+            except Exception as persist_error:
+                logger.error(f"Failed to persist assistant response for case {case_id}: {persist_error}")
+                # Continue anyway - don't fail the entire request due to persistence issues
             
             return JSONResponse(
                 status_code=201,
@@ -1691,7 +1610,7 @@ async def get_case_query(
     query_id: str,
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ):
     """
     Get query status and result (for async polling).
@@ -1705,7 +1624,7 @@ async def get_case_query(
     
     try:
         # Verify case exists
-        case = await case_service.get_case(case_id, user_id)
+        case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
                 status_code=404,
@@ -1839,7 +1758,7 @@ async def get_case_query_result(
     query_id: str,
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> AgentResponse:
     """
     Return the final AgentResponse for a completed query.
@@ -1850,17 +1769,16 @@ async def get_case_query_result(
     
     try:
         # Verify access
-        case = await case_service.get_case(case_id, user_id)
+        case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(status_code=404, detail="Case not found or access denied")
 
         # If service exposes a getter, use it; otherwise return synthesized response
         agent_response = None
-        if hasattr(case_service, 'get_query_result'):
-            try:
-                agent_response = await case_service.get_query_result(case_id, query_id)
-            except Exception:
-                agent_response = None
+        try:
+            agent_response = await case_service.get_query_result(case_id, query_id)
+        except Exception:
+            agent_response = None
 
         if not agent_response:
             # Synthesized minimal AgentResponse
@@ -1872,7 +1790,7 @@ async def get_case_query_result(
                 "view_state": {
                     "session_id": case.metadata.get("last_session_id") if hasattr(case, 'metadata') else None,
                     "user": {
-                        "user_id": user_id or "anonymous",
+                        "user_id": current_user.user_id if current_user else None or "anonymous",
                         "email": "user@example.com",
                         "name": "User",
                         "created_at": now
@@ -1910,7 +1828,7 @@ async def list_case_queries(
     limit: int = Query(50, le=100, ge=1),
     offset: int = Query(0, ge=0), 
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ):
     """
     List queries for a specific case with pagination.
@@ -1921,7 +1839,7 @@ async def list_case_queries(
     
     try:
         # Verify case exists (404 if case not found)
-        case = await case_service.get_case(case_id, user_id)
+        case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
                 status_code=404,
@@ -1933,13 +1851,8 @@ async def list_case_queries(
         total_count = 0
         
         try:
-            if hasattr(case_service, 'list_case_queries'):
-                queries = await case_service.list_case_queries(case_id, limit, offset)
-                total_count = await case_service.count_case_queries(case_id)
-            else:
-                # Fallback implementation - return empty for now
-                queries = []
-                total_count = 0
+            queries = await case_service.list_case_queries(case_id, limit, offset)
+            total_count = await case_service.count_case_queries(case_id)
         except Exception as e:
             # Log but don't fail - return empty list
             queries = []
@@ -2018,7 +1931,7 @@ async def upload_case_data(
     description: Optional[str] = Query(None, description="Description of uploaded data"),
     expected_type: Optional[str] = Query(None, description="Expected data type"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ):
     """
     Upload data file to a specific case.
@@ -2032,7 +1945,7 @@ async def upload_case_data(
     
     try:
         # Verify case exists
-        case = await case_service.get_case(case_id, user_id)
+        case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
                 status_code=404,
@@ -2051,7 +1964,7 @@ async def upload_case_data(
             "content_type": "text/plain",
             "upload_timestamp": datetime.utcnow().isoformat() + 'Z',
             "processing_status": "completed",
-            "user_id": user_id
+            "user_id": current_user.user_id
         }
         
         return JSONResponse(
@@ -2076,7 +1989,7 @@ async def list_case_data(
     limit: int = Query(50, ge=1, le=200, description="Maximum number of items to return"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> JSONResponse:
     """
     List data files associated with a case.
@@ -2088,7 +2001,7 @@ async def list_case_data(
     
     try:
         # Verify case exists
-        case = await case_service.get_case(case_id, user_id)
+        case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
                 status_code=404,
@@ -2126,14 +2039,14 @@ async def get_case_data(
     case_id: str,
     data_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ) -> Dict[str, Any]:
     """Get specific data file details for a case."""
     case_service = check_case_service_available(case_service)
     
     try:
         # Verify case exists
-        case = await case_service.get_case(case_id, user_id)
+        case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
                 status_code=404,
@@ -2173,14 +2086,14 @@ async def delete_case_data(
     case_id: str,
     data_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    user_id: Optional[str] = Depends(_di_get_user_id_dependency)
+    current_user: DevUser = Depends(require_authentication)
 ):
     """Remove data file from a case. Returns 204 No Content on success."""
     case_service = check_case_service_available(case_service)
     
     try:
         # Verify case exists
-        case = await case_service.get_case(case_id, user_id)
+        case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
                 status_code=404,

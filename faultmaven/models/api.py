@@ -340,9 +340,25 @@ class CaseSummary(BaseModel):
 class Message(BaseModel):
     """Message model for conversation endpoints."""
     message_id: str
-    role: Literal["user", "agent"]
+    role: Literal["user", "agent", "assistant", "system"]
     content: str
     created_at: str = Field(..., description="ISO 8601 datetime string")
+
+class MessageRetrievalDebugInfo(BaseModel):
+    """Debug information for message retrieval operations."""
+    redis_key: str = Field(..., description="Redis key used for message storage")
+    redis_operation_time_ms: float = Field(..., description="Time taken for Redis operation")
+    storage_errors: List[str] = Field(default_factory=list, description="Any storage-related errors encountered")
+    message_parsing_errors: int = Field(default=0, description="Number of messages that failed to parse")
+
+class CaseMessagesResponse(BaseModel):
+    """Enhanced response model for case message retrieval with debugging support."""
+    messages: List[Message] = Field(..., description="Array of conversation messages")
+    total_count: int = Field(..., description="Total number of messages in the case")
+    retrieved_count: int = Field(..., description="Number of messages successfully retrieved")
+    has_more: bool = Field(..., description="Whether more messages are available for pagination")
+    next_offset: Optional[int] = Field(None, description="Offset for next page (null if no more pages)")
+    debug_info: Optional[MessageRetrievalDebugInfo] = Field(None, description="Debug information (only when include_debug=true)")
 
 class TitleGenerateResponse(BaseModel):
     """Response model for title generation."""

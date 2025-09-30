@@ -44,18 +44,19 @@ class CaseConverter:
             created_at=case_entity.created_at.isoformat() + 'Z' if hasattr(case_entity.created_at, 'isoformat') else str(getattr(case_entity, 'created_at', datetime.utcnow().isoformat() + 'Z')),
             updated_at=case_entity.updated_at.isoformat() + 'Z' if hasattr(case_entity.updated_at, 'isoformat') else str(getattr(case_entity, 'updated_at', datetime.utcnow().isoformat() + 'Z')),
             message_count=getattr(case_entity, 'message_count', 0),
-            session_id=getattr(case_entity, 'current_session_id', None),  # Resolve session relationship
+            session_id=getattr(case_entity, 'metadata', {}).get('session_id', None),  # Extract from metadata if available
             owner_id=getattr(case_entity, 'owner_id', None)  # Case owner user ID
         )
     
     @staticmethod
-    def summary_to_api(case_summary: CaseSummary) -> CaseAPI:
+    def summary_to_api(case_summary: CaseSummary, request_session_id: Optional[str] = None) -> CaseAPI:
         """
         Convert CaseSummary to API Case model.
-        
+
         Args:
             case_summary: The CaseSummary object from service layer
-            
+            request_session_id: Optional session ID from the current request context
+
         Returns:
             CaseAPI: The API response model with proper formatting
         """
@@ -68,7 +69,7 @@ class CaseConverter:
             created_at=case_summary.created_at.isoformat() + 'Z' if hasattr(case_summary.created_at, 'isoformat') else str(case_summary.created_at),
             updated_at=case_summary.updated_at.isoformat() + 'Z' if hasattr(case_summary.updated_at, 'isoformat') else str(case_summary.updated_at),
             message_count=case_summary.message_count,
-            session_id=None,  # CaseSummary doesn't have session relationship
+            session_id=None,  # Cases are not bound to sessions
             owner_id=getattr(case_summary, 'owner_id', None)  # Case owner user ID
         )
     
@@ -91,32 +92,3 @@ class CaseConverter:
                 result.append(CaseConverter.entity_to_api(entity))
         return result
     
-    @staticmethod
-    def resolve_session_id(case_entity: CaseEntity, preferred_session_id: Optional[str] = None) -> Optional[str]:
-        """
-        Resolve the appropriate session_id for API response.
-        
-        This method implements the session-case relationship resolution logic:
-        1. Use current_session_id if available
-        2. Use preferred_session_id if provided and in case's session_ids
-        3. Return None for standalone cases
-        
-        Args:
-            case_entity: The Case entity
-            preferred_session_id: Optional preferred session ID
-            
-        Returns:
-            Optional[str]: The resolved session ID for API response
-        """
-        # Priority 1: Current active session
-        if case_entity.current_session_id:
-            return case_entity.current_session_id
-        
-        # Priority 2: Preferred session if it's associated with the case
-        if (preferred_session_id and 
-            hasattr(case_entity, 'session_ids') and 
-            preferred_session_id in case_entity.session_ids):
-            return preferred_session_id
-        
-        # Priority 3: No specific session relationship
-        return None

@@ -62,25 +62,74 @@ async def get_case_service() -> Optional[ICaseService]:
 
 # Authentication Dependencies
 
+async def get_session_id(request: Request) -> Optional[str]:
+    """
+    Extract session ID from request headers
+
+    Returns the session ID if present in headers or query params.
+    Used for session-based operations and permission checks.
+    """
+    # Check for session ID in headers (primary method)
+    session_id = request.headers.get("X-Session-Id")
+
+    # Fallback: Check for session_id in query params (for testing)
+    if not session_id:
+        session_id = request.query_params.get("session_id")
+
+    return session_id
+
+
 async def get_user_id(request: Request) -> Optional[str]:
     """
-    Extract user ID from request headers or session
-    
-    This is a simplified implementation - in production, this would
-    integrate with proper authentication/authorization systems.
+    Extract user ID from validated session
+
+    Validates the session and returns the authenticated user_id.
+    Returns None only if no authentication is provided (for optional auth endpoints).
     """
-    # Check for user ID in headers
+    # Get session service for validation
+    session_service = await get_session_service()
+
+    # Check for session ID in headers (primary method)
+    session_id = request.headers.get("X-Session-Id")
+
+    # Fallback: Check for session_id in query params (for testing)
+    if not session_id:
+        session_id = request.query_params.get("session_id")
+
+    if session_id:
+        try:
+            # Validate session and get user_id from it
+            session = await session_service.get_session(session_id, validate=True)
+            if session and session.user_id:
+                return session.user_id
+        except Exception:
+            # Invalid session - do not return user_id
+            pass
+
+    # Legacy support: Direct X-User-Id header (for testing only)
+    # In production, this should be removed or restricted to admin endpoints
     user_id = request.headers.get("X-User-Id")
     if user_id:
         return user_id
-    
-    # Check for user ID in query params (for testing)
-    user_id = request.query_params.get("user_id")
-    if user_id:
-        return user_id
-    
-    # For now, return None for anonymous users
+
+    # No valid authentication found
     return None
+
+
+async def require_authenticated_user(request: Request) -> str:
+    """
+    Require authenticated user for protected endpoints
+
+    Returns user_id for authenticated users, raises HTTPException for unauthenticated.
+    Use this dependency for endpoints that require authentication.
+    """
+    user_id = await get_user_id(request)
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required. Please log in to access this resource."
+        )
+    return user_id
 
 
 async def get_orchestration_service():
@@ -201,24 +250,6 @@ async def get_current_user(request: Request) -> Optional[dict]:
     return None
 
 
-async def require_authenticated_user(
-    user: Optional[dict] = Depends(get_current_user),
-) -> dict:
-    """
-    Require authenticated user
-    
-    Args:
-        user: User from get_current_user
-        
-    Returns:
-        Authenticated user dict
-        
-    Raises:
-        HTTPException: If not authenticated
-    """
-    if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return user
 
 
 # Rate Limiting Dependencies (placeholder)

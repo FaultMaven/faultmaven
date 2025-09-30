@@ -26,8 +26,19 @@ The FaultMaven API follows clean architecture principles with:
 
 ## Authentication
 
-Currently, the API does not require authentication. This may change in future versions.
-When implemented, authentication will use API key-based authentication.
+The API uses **Bearer token authentication** for all protected endpoints. Obtain tokens via the `/api/v1/auth/dev-login` endpoint.
+
+### Authentication Headers
+
+```http
+Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000
+```
+
+### Token Lifecycle
+- **Format**: UUID v4 tokens
+- **Expiration**: 24 hours from creation
+- **Endpoints**: All case operations require authentication
+- **Development**: Use `/api/v1/auth/dev-login` with username to obtain tokens
 
 ## Rate Limiting
 
@@ -53,7 +64,7 @@ All endpoints return structured error responses with appropriate HTTP status cod
 
 - `200`: Success
 - `400`: Bad Request - Invalid input data
-- `401`: Unauthorized - Authentication required (future)
+- `401`: Unauthorized - Missing or invalid Bearer token
 - `404`: Not Found - Resource not found
 - `422`: Validation Error - Request data validation failed
 - `429`: Too Many Requests - Rate limit exceeded
@@ -83,7 +94,7 @@ All data submitted to the API is processed through privacy-first pipelines with:
 
 ## Authentication
 
-Currently, the API does not require authentication. Future versions will implement API key or JWT-based authentication.
+The API requires Bearer token authentication for protected endpoints. See the Authentication section above for details on obtaining and using tokens.
 
 ## Endpoints
 

@@ -74,9 +74,6 @@ class RedisCaseStore(ICaseStore):
                 if case_dict.get(field):
                     case_dict[field] = case_dict[field].isoformat() + 'Z'
             
-            # Handle set serialization
-            if 'session_ids' in case_dict:
-                case_dict['session_ids'] = list(case_dict['session_ids'])
             
             # Serialize participants
             if 'participants' in case_dict:
@@ -107,9 +104,6 @@ class RedisCaseStore(ICaseStore):
                 if case_data.get(field):
                     case_data[field] = parse_utc_timestamp(case_data[field])
             
-            # Handle set deserialization
-            if 'session_ids' in case_data:
-                case_data['session_ids'] = set(case_data['session_ids'])
             
             # Parse participants
             if 'participants' in case_data:
@@ -355,7 +349,7 @@ class RedisCaseStore(ICaseStore):
                     user_cases_key = self.user_cases_key_pattern.format(user_id=filters.user_id)
                     user_cases = await self.redis_client.smembers(user_cases_key)
                     case_ids = set(user_cases) if not case_ids else case_ids.intersection(user_cases)
-                
+
                 if not case_ids and (filters.status or filters.user_id):
                     return []  # No matches for specific filters
             
@@ -406,7 +400,7 @@ class RedisCaseStore(ICaseStore):
                             last_activity_at=parse_utc_timestamp(case_data['last_activity_at']),
                             message_count=case_data.get('message_count', 0),
                             participant_count=len(case_data.get('participants', [])),
-                            tags=case_data.get('tags', [])
+                            tags=case_data.get('tags', []),
                         )
                         
                         summaries.append(summary)
@@ -526,6 +520,147 @@ class RedisCaseStore(ICaseStore):
         except Exception as e:
             self.logger.error(f"Failed to get messages for case {case_id}: {e}")
             return []
+
+    async def get_case_messages_enhanced(
+        self,
+        case_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        include_debug: bool = False
+    ) -> "CaseMessagesResponse":
+        """Enhanced message retrieval with debugging support and metadata."""
+        # Import here to avoid circular dependencies
+        from faultmaven.models.api import CaseMessagesResponse, MessageRetrievalDebugInfo, Message
+        import time
+
+        start_time = time.time()
+        debug_info = None
+        storage_errors = []
+        message_parsing_errors = 0
+        redis_key = f"case:{case_id}:messages"
+
+        try:
+            # Get total message count first
+            messages_key = self.case_messages_key_pattern.format(case_id=case_id)
+            total_count = await self.redis_client.llen(messages_key)
+
+            # Get paginated messages (Redis list is in reverse chronological order)
+            messages_raw = await self.redis_client.lrange(messages_key, offset, offset + limit - 1)
+            retrieved_count = len(messages_raw)
+
+            # Convert raw messages to API Message format
+            messages = []
+            for msg_raw in reversed(messages_raw):  # Reverse to get chronological order
+                try:
+                    message_data = json.loads(msg_raw)
+
+                    # Parse message type and map to role
+                    msg_type = message_data.get('message_type', 'system_event')
+                    role = "system"  # default
+
+                    if msg_type == MessageType.USER_QUERY.value or msg_type == "user_query":
+                        role = "user"
+                    elif msg_type == MessageType.AGENT_RESPONSE.value or msg_type == "agent_response":
+                        role = "assistant"  # Use "assistant" as per API spec
+                    elif msg_type == MessageType.CASE_NOTE.value or msg_type == "case_note":
+                        role = "user"
+                    # Keep system for other types
+
+                    # Format timestamp
+                    created_at = None
+                    timestamp = message_data.get('timestamp')
+                    if timestamp:
+                        try:
+                            if isinstance(timestamp, str):
+                                created_at = timestamp
+                            else:
+                                created_at = timestamp.isoformat() + 'Z' if hasattr(timestamp, 'isoformat') else str(timestamp)
+                        except Exception as e:
+                            self.logger.warning(f"Failed to format timestamp for message: {e}")
+                            created_at = str(timestamp)
+
+                    # Create API Message object
+                    api_message = Message(
+                        message_id=message_data.get('message_id', f"msg_{len(messages)}"),
+                        role=role,
+                        content=message_data.get('content', ''),
+                        created_at=created_at,
+                        metadata=message_data.get('metadata', {})
+                    )
+                    messages.append(api_message)
+
+                except json.JSONDecodeError as e:
+                    message_parsing_errors += 1
+                    self.logger.warning(f"Failed to parse message JSON: {e}")
+                    if include_debug:
+                        storage_errors.append(f"JSON parsing error: {str(e)}")
+                except Exception as e:
+                    message_parsing_errors += 1
+                    self.logger.warning(f"Failed to convert message: {e}")
+                    if include_debug:
+                        storage_errors.append(f"Message conversion error: {str(e)}")
+
+            # Calculate performance metrics
+            processing_time_ms = int((time.time() - start_time) * 1000)
+
+            # Create debug info if requested
+            if include_debug:
+                debug_info = MessageRetrievalDebugInfo(
+                    storage_backend="redis",
+                    redis_key=redis_key,
+                    total_messages_in_storage=total_count,
+                    messages_requested=limit,
+                    messages_retrieved=retrieved_count,
+                    offset_used=offset,
+                    processing_time_ms=processing_time_ms,
+                    storage_errors=storage_errors,
+                    message_parsing_errors=message_parsing_errors
+                )
+
+            # Determine if there are more messages
+            has_more = (offset + retrieved_count) < total_count
+
+            # Create and return response
+            response = CaseMessagesResponse(
+                messages=messages,
+                total_count=total_count,
+                retrieved_count=retrieved_count,
+                has_more=has_more,
+                debug_info=debug_info
+            )
+
+            self.logger.debug(
+                f"Enhanced retrieval: {retrieved_count}/{total_count} messages for case {case_id} "
+                f"in {processing_time_ms}ms"
+            )
+
+            return response
+
+        except Exception as e:
+            self.logger.error(f"Failed to get enhanced messages for case {case_id}: {e}")
+
+            # Return empty response with error info for graceful degradation
+            processing_time_ms = int((time.time() - start_time) * 1000)
+            if include_debug:
+                debug_info = MessageRetrievalDebugInfo(
+                    storage_backend="redis",
+                    redis_key=redis_key,
+                    total_messages_in_storage=0,
+                    messages_requested=limit,
+                    messages_retrieved=0,
+                    offset_used=offset,
+                    processing_time_ms=processing_time_ms,
+                    storage_errors=[f"Redis error: {str(e)}"],
+                    message_parsing_errors=0
+                )
+
+            return CaseMessagesResponse(
+                messages=[],
+                total_count=0,
+                retrieved_count=0,
+                has_more=False,
+                debug_info=debug_info
+            )
 
     async def get_user_cases(
         self,
@@ -671,11 +806,6 @@ class RedisCaseStore(ICaseStore):
             case_data = json.loads(case_data_raw)
             case_data['last_activity_at'] = datetime.utcnow().isoformat() + 'Z'
             
-            if session_id:
-                session_ids = set(case_data.get('session_ids', []))
-                session_ids.add(session_id)
-                case_data['session_ids'] = list(session_ids)
-                case_data['current_session_id'] = session_id
             
             # Update case data
             await self.redis_client.hset(case_key, "data", json.dumps(case_data))
@@ -756,7 +886,6 @@ class RedisCaseStore(ICaseStore):
                 'message_count': len(messages),
                 'message_types': message_types,
                 'participant_count': len(case.participants),
-                'session_count': len(case.session_ids),
                 'status': case.status.value,
                 'priority': case.priority.value,
                 'is_expired': case.is_expired(),

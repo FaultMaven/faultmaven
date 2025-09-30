@@ -266,7 +266,29 @@ class DIContainer:
         except Exception as e:
             logger.warning(f"Case store initialization failed: {e}")
             self.case_store = None
-        
+
+        # Authentication services initialization
+        try:
+            from faultmaven.infrastructure.auth.token_manager import DevTokenManager
+            from faultmaven.infrastructure.auth.user_store import DevUserStore
+
+            if not self.settings.server.skip_service_checks and self.redis_client:
+                self.token_manager = DevTokenManager(redis_client=self.redis_client)
+                self.user_store = DevUserStore(redis_client=self.redis_client)
+                logger.info("✅ Authentication services initialized (token manager + user store)")
+            else:
+                logger.debug("Authentication services skipped (no Redis client or SKIP_SERVICE_CHECKS=True)")
+                self.token_manager = None
+                self.user_store = None
+        except ImportError as e:
+            logger.debug(f"Authentication services not available: {e}")
+            self.token_manager = None
+            self.user_store = None
+        except Exception as e:
+            logger.warning(f"Authentication services initialization failed: {e}")
+            self.token_manager = None
+            self.user_store = None
+
         logger.debug("Infrastructure layer created with settings-based dependency injection")
     
     def _create_tools_layer(self):
@@ -1199,11 +1221,16 @@ class DIContainer:
         # Ensure we always return a valid implementation, even if initialization failed
         llm_provider = getattr(self, 'llm_provider', None)
         if llm_provider is None:
-            # Create minimal fallback implementation
-            from unittest.mock import MagicMock
+            # Create proper fallback implementation instead of MagicMock
+            from faultmaven.models.interfaces import ILLMProvider
             logger = logging.getLogger(__name__)
-            logger.warning("Creating fallback LLM provider due to initialization failure")
-            self.llm_provider = MagicMock()
+            logger.error("LLM provider not initialized - creating minimal fallback implementation")
+
+            class MinimalLLMProvider(ILLMProvider):
+                async def generate(self, prompt: str, **kwargs) -> str:
+                    return "I apologize, but the AI service is temporarily unavailable. Please try again in a few moments."
+
+            self.llm_provider = MinimalLLMProvider()
             return self.llm_provider
         return llm_provider
     
@@ -1531,9 +1558,9 @@ class DIContainer:
                     title_manually_set=title_manually_set
                 )
                 
-                # Set session relationship for API conversion
+                # Store session relationship in metadata for tracking
                 if session_id:
-                    case.current_session_id = session_id
+                    case.metadata["session_id"] = session_id
                 
                 self.cases[case_id] = case
                 
@@ -1785,13 +1812,123 @@ class DIContainer:
                 """Get messages for a case"""
                 if case_id not in self.case_messages:
                     return []
-                
+
                 messages = self.case_messages[case_id]
                 # Apply pagination
                 start = offset
                 end = start + limit
                 return messages[start:end]
-            
+
+            async def get_case_messages_enhanced(self, case_id: str, limit: int = 50, offset: int = 0, include_debug: bool = False):
+                """Enhanced message retrieval with debugging support."""
+                import time
+                from faultmaven.models.api import CaseMessagesResponse, MessageRetrievalDebugInfo, Message
+
+                start_time = time.time()
+                debug_info = None
+                storage_errors = []
+                message_parsing_errors = 0
+
+                # Mock Redis key for debugging
+                redis_key = f"case_messages:{case_id}"
+
+                try:
+                    # Get case messages
+                    if case_id not in self.case_messages:
+                        total_count = 0
+                        raw_messages = []
+                    else:
+                        total_count = len(self.case_messages[case_id])
+                        raw_messages = self.case_messages[case_id]
+
+                    # Apply pagination
+                    start = offset
+                    end = start + limit
+                    paginated_messages = raw_messages[start:end]
+
+                    # Convert to Message format
+                    messages = []
+                    for msg in paginated_messages:
+                        try:
+                            # Handle both dict and object formats
+                            if isinstance(msg, dict):
+                                msg_type = msg.get('message_type')
+                                message_id = msg.get('message_id')
+                                content = msg.get('content', '')
+                                timestamp = msg.get('timestamp')
+                            else:
+                                msg_type = getattr(msg, 'message_type', None)
+                                message_id = getattr(msg, 'message_id', None)
+                                content = getattr(msg, 'content', '')
+                                timestamp = getattr(msg, 'timestamp', None)
+
+                            # Map message_type to role
+                            role = None
+                            if hasattr(msg_type, 'value'):
+                                msg_type = msg_type.value
+                            if msg_type in ("user_query", "case_note"):
+                                role = "user"
+                            elif msg_type in ("agent_response",):
+                                role = "assistant"  # Frontend expects "assistant", not "agent"
+
+                            # Skip non user/assistant roles
+                            if role is None:
+                                continue
+
+                            # Format timestamp
+                            created_at = None
+                            if timestamp:
+                                try:
+                                    if hasattr(timestamp, 'isoformat'):
+                                        created_at = timestamp.isoformat() + 'Z'
+                                    else:
+                                        created_at = str(timestamp)
+                                except Exception:
+                                    created_at = str(timestamp)
+
+                            messages.append(Message(
+                                message_id=message_id or f"msg_{len(messages)}",
+                                role=role,
+                                content=content,
+                                created_at=created_at or datetime.utcnow().isoformat() + 'Z'
+                            ))
+                        except Exception as e:
+                            message_parsing_errors += 1
+                            storage_errors.append(f"Failed to parse message: {str(e)}")
+
+                    retrieved_count = len(messages)
+                    has_more = (start + limit) < total_count
+                    next_offset = (start + limit) if has_more else None
+
+                except Exception as e:
+                    storage_errors.append(f"Storage error: {str(e)}")
+                    total_count = 0
+                    retrieved_count = 0
+                    messages = []
+                    has_more = False
+                    next_offset = None
+
+                # Calculate operation time
+                operation_time_ms = (time.time() - start_time) * 1000
+
+                # Create debug info if requested
+                if include_debug:
+                    debug_info = MessageRetrievalDebugInfo(
+                        redis_key=redis_key,
+                        redis_operation_time_ms=operation_time_ms,
+                        storage_errors=storage_errors,
+                        message_parsing_errors=message_parsing_errors
+                    )
+
+                return CaseMessagesResponse(
+                    messages=messages,
+                    total_count=total_count,
+                    retrieved_count=retrieved_count,
+                    has_more=has_more,
+                    next_offset=next_offset,
+                    debug_info=debug_info
+                )
+
             async def add_case_query(self, case_id: str, query: str, user_id: str = None):
                 """Add a query message to a case"""
                 if case_id not in self.cases:
@@ -2148,7 +2285,27 @@ class DIContainer:
             if not getattr(self, '_initializing', False):
                 self.initialize()
         return getattr(self, 'error_fallback_manager', None)
-    
+
+    # Authentication Services
+
+    def get_token_manager(self):
+        """Get the token manager for authentication token operations"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Token manager requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'token_manager', None)
+
+    def get_user_store(self):
+        """Get the user store for user account management"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("User store requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'user_store', None)
+
     def health_check(self) -> dict:
         """Check health of all container dependencies"""
         if not self._initialized:
@@ -2160,6 +2317,9 @@ class DIContainer:
             "tracer": self.tracer is not None,
             "vector_store": self.vector_store is not None,
             "session_store": self.session_store is not None,
+            # Authentication Services
+            "token_manager": getattr(self, 'token_manager', None) is not None,
+            "user_store": getattr(self, 'user_store', None) is not None,
             "tools_count": len(self.tools) if self.tools else 0,
             "agent_service": self.agent_service is not None,
             "data_service": self.data_service is not None,
@@ -2221,8 +2381,8 @@ class DIContainer:
         
         # Clear all cached infrastructure and service components
         infrastructure_attrs = [
-            'llm_provider', 'sanitizer', 'tracer', 'vector_store', 'session_store', 'data_classifier', 'log_processor',
-            'session_service', 'agent_service', 'data_service', 'knowledge_service'
+            'llm_provider', 'sanitizer', 'tracer', 'vector_store', 'session_store', 'token_manager', 'user_store',
+            'data_classifier', 'log_processor', 'session_service', 'agent_service', 'data_service', 'knowledge_service'
         ]
         for attr in infrastructure_attrs:
             if hasattr(self, attr):

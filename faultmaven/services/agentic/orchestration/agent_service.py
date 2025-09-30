@@ -368,6 +368,11 @@ We apologize for the inconvenience and appreciate your patience while we resolve
             self.circuit_breaker.record_success(response_time)
 
             self.logger.info(f"LLM Circuit Breaker: Success for case {case_id} in {response_time:.2f}s")
+
+            # The LLM provider MUST return a string as per ILLMProvider interface
+            if not isinstance(llm_response, str):
+                raise TypeError(f"LLM provider contract violation: expected str, got {type(llm_response)}. Response: {llm_response}")
+
             return llm_response, {
                 "type": "llm_success",
                 "source_info": "LLM generated response",

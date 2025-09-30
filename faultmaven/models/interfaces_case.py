@@ -16,6 +16,7 @@ from .case import (
     CaseSummary,
     ParticipantRole
 )
+from .api import CaseMessagesResponse
 
 
 class ICaseStore(ABC):
@@ -113,23 +114,44 @@ class ICaseStore(ABC):
     
     @abstractmethod
     async def get_case_messages(
-        self, 
-        case_id: str, 
-        limit: int = 50, 
+        self,
+        case_id: str,
+        limit: int = 50,
         offset: int = 0
     ) -> List[CaseMessage]:
         """Get messages for a case.
-        
+
         Args:
             case_id: Case identifier
             limit: Maximum number of messages to return
             offset: Offset for pagination
-            
+
         Returns:
             List of case messages
         """
         pass
-    
+
+    @abstractmethod
+    async def get_case_messages_enhanced(
+        self,
+        case_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        include_debug: bool = False
+    ) -> CaseMessagesResponse:
+        """Enhanced message retrieval with debugging support.
+
+        Args:
+            case_id: Case identifier
+            limit: Maximum number of messages to return
+            offset: Offset for pagination
+            include_debug: Whether to include debug information
+
+        Returns:
+            Enhanced response with messages and metadata
+        """
+        pass
+
     @abstractmethod
     async def get_user_cases(
         self, 
@@ -476,9 +498,37 @@ class ICaseService(ABC):
         pass
     
     @abstractmethod
+    async def get_case_messages_enhanced(
+        self,
+        case_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        include_debug: bool = False
+    ) -> CaseMessagesResponse:
+        """Enhanced message retrieval with debugging support and metadata.
+
+        This method provides comprehensive message retrieval with:
+        - Pagination support
+        - Debug information when requested
+        - Storage error tracking
+        - Message parsing error handling
+        - Performance metrics
+
+        Args:
+            case_id: Case identifier
+            limit: Maximum number of messages to return
+            offset: Offset for pagination
+            include_debug: Whether to include debug information
+
+        Returns:
+            CaseMessagesResponse with messages and metadata
+        """
+        pass
+
+    @abstractmethod
     async def cleanup_expired_cases(self) -> int:
         """Clean up expired cases.
-        
+
         Returns:
             Number of cases cleaned up
         """

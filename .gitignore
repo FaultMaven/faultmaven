@@ -177,6 +177,9 @@ cython_debug/
 # Database files (should not be committed)
 chroma_db/
 *.sqlite3
+
+# Temporary test files in root (not part of test suite)
+/test_*.py
 *.db
 
 # Benchmark results (pytest-benchmark)
