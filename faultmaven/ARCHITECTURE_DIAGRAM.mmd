@@ -1,0 +1,254 @@
+graph TB
+    %% Transport/API Layer
+    subgraph "Transport/API Layer"
+        MainApp["main.py<br/>FastAPI Application"]
+        APIRoutes["api/v1/routes/"]
+        Dependencies["api/v1/dependencies.py"]
+        Middleware["api/middleware/"]
+        
+        subgraph "API Routes"
+            DataRoute["data.py"]
+            KnowledgeRoute["knowledge.py"]
+            SessionRoute["session.py"]
+            CaseRoute["case.py"]
+            AuthRoute["auth.py"]
+            JobsRoute["jobs.py"]
+        end
+        
+        subgraph "Middleware"
+            LoggingMW["logging.py"]
+            RateLimitMW["rate_limiting.py"]
+            ProtectionMW["protection.py"]
+            IdempotencyMW["idempotency.py"]
+            PerformanceMW["performance.py"]
+            SystemOptMW["system_optimization.py"]
+        end
+    end
+
+    %% Service Layer
+    subgraph "Service Layer"
+        BaseService["services/base.py<br/>BaseService"]
+        
+        subgraph "Domain Services"
+            CaseService["services/domain/<br/>case_service.py"]
+            SessionService["services/domain/<br/>session_service.py"]
+            DataService["services/domain/<br/>data_service.py"]
+            KnowledgeService["services/domain/<br/>knowledge_service.py"]
+            PlanningService["services/domain/<br/>planning_service.py"]
+        end
+        
+        subgraph "Agentic Framework"
+            AgentService["services/agentic/<br/>orchestration/agent_service.py"]
+            
+            subgraph "Engines"
+                ClassificationEngine["services/agentic/<br/>engines/classification_engine.py"]
+                ResponseSynthesizer["services/agentic/<br/>engines/response_synthesizer.py"]
+                WorkflowEngine["services/agentic/<br/>engines/workflow_engine.py"]
+            end
+            
+            subgraph "Management"
+                StateManager["services/agentic/<br/>management/state_manager.py"]
+                ToolBroker["services/agentic/<br/>management/tool_broker.py"]
+            end
+            
+            subgraph "Safety"
+                ErrorManager["services/agentic/<br/>safety/error_manager.py"]
+                GuardrailsLayer["services/agentic/<br/>safety/guardrails_layer.py"]
+            end
+        end
+        
+        subgraph "Analytics Services"
+            AnalyticsDashboard["services/analytics/<br/>dashboard_service.py"]
+            ConfidenceService["services/analytics/<br/>confidence_service.py"]
+        end
+    end
+
+    %% Core Domain Layer
+    subgraph "Core Domain Layer"
+        subgraph "Processing"
+            LogAnalyzer["core/processing/<br/>log_analyzer.py"]
+            Classifier["core/processing/<br/>classifier.py"]
+            PatternLearner["core/processing/<br/>pattern_learner.py"]
+        end
+        
+        subgraph "Knowledge"
+            AdvancedRetrieval["core/knowledge/<br/>advanced_retrieval.py"]
+            Ingestion["core/knowledge/<br/>ingestion.py"]
+        end
+        
+        subgraph "Agent"
+            CoreAgent["core/agent/<br/>agent.py"]
+            Doctrine["core/agent/<br/>doctrine.py"]
+        end
+        
+        subgraph "Orchestration"
+            TroubleshootingOrchestrator["core/orchestration/<br/>troubleshooting_orchestrator.py"]
+            Router["core/orchestrator/<br/>router.py"]
+            SkillRegistry["core/orchestrator/<br/>skill_registry.py"]
+        end
+        
+        subgraph "Confidence"
+            Aggregator["core/confidence/<br/>aggregator.py"]
+        end
+    end
+
+    %% Infrastructure Layer
+    subgraph "Infrastructure Layer"
+        subgraph "LLM Providers"
+            OpenAI["infrastructure/llm/<br/>providers/openai_provider.py"]
+            Anthropic["infrastructure/llm/<br/>providers/anthropic.py"]
+            Fireworks["infrastructure/llm/<br/>providers/fireworks_provider.py"]
+            Gemini["infrastructure/llm/<br/>providers/gemini.py"]
+            HuggingFace["infrastructure/llm/<br/>providers/huggingface.py"]
+            LocalProvider["infrastructure/llm/<br/>providers/local_provider.py"]
+        end
+        
+        subgraph "Persistence"
+            ChromaDB["infrastructure/persistence/<br/>chromadb_store.py"]
+            RedisCaseStore["infrastructure/persistence/<br/>redis_case_store.py"]
+            RedisSessionStore["infrastructure/persistence/<br/>redis_session_store.py"]
+        end
+        
+        subgraph "Caching"
+            IntelligentCache["infrastructure/caching/<br/>intelligent_cache.py"]
+        end
+        
+        subgraph "Monitoring"
+            MetricsCollector["infrastructure/monitoring/<br/>metrics_collector.py"]
+            HealthMonitor["infrastructure/health/<br/>component_monitor.py"]
+            SLATracker["infrastructure/health/<br/>sla_tracker.py"]
+        end
+        
+        subgraph "Observability"
+            Tracing["infrastructure/observability/<br/>tracing.py"]
+            PerformanceMonitoring["infrastructure/observability/<br/>performance_monitoring.py"]
+        end
+        
+        subgraph "Protection"
+            RateLimiter["infrastructure/protection/<br/>rate_limiter.py"]
+            AnomalyDetector["infrastructure/protection/<br/>anomaly_detector.py"]
+            BehavioralAnalyzer["infrastructure/protection/<br/>behavioral_analyzer.py"]
+        end
+        
+        subgraph "Security"
+            SecurityAssessment["infrastructure/security/<br/>enhanced_security_assessment.py"]
+            Redaction["infrastructure/security/<br/>redaction.py"]
+        end
+    end
+
+    %% Tools Layer
+    subgraph "Tools Layer"
+        ToolRegistry["tools/registry.py"]
+        KnowledgeBaseTool["tools/knowledge_base.py"]
+        WebSearchTool["tools/web_search.py"]
+        EnhancedKnowledgeTool["tools/enhanced_knowledge_tool.py"]
+    end
+
+    %% Supporting Layers
+    subgraph "Models Layer"
+        Interfaces["models/interfaces.py"]
+        CaseModels["models/case.py"]
+        AgenticModels["models/agentic.py"]
+        APIModels["models/api.py"]
+        BehavioralModels["models/behavioral.py"]
+        ProtectionModels["models/protection.py"]
+        MicroserviceContracts["models/microservice_contracts/"]
+    end
+
+    subgraph "Configuration Layer"
+        Settings["config/settings.py"]
+        FeatureFlags["config/feature_flags.py"]
+        ProtectionConfig["config/protection.py"]
+    end
+
+    %% Dependency Injection
+    subgraph "Dependency Injection"
+        Container["container.py<br/>DIContainer"]
+    end
+
+    %% Request Flow
+    MainApp --> APIRoutes
+    APIRoutes --> Dependencies
+    Dependencies --> CaseService
+    Dependencies --> SessionService
+    Dependencies --> DataService
+    Dependencies --> KnowledgeService
+    Dependencies --> AgentService
+
+    %% Service Dependencies
+    CaseService --> BaseService
+    SessionService --> BaseService
+    DataService --> BaseService
+    KnowledgeService --> BaseService
+    PlanningService --> BaseService
+    AgentService --> BaseService
+
+    %% Agentic Framework Dependencies
+    AgentService --> ClassificationEngine
+    AgentService --> ResponseSynthesizer
+    AgentService --> WorkflowEngine
+    AgentService --> StateManager
+    AgentService --> ToolBroker
+    AgentService --> ErrorManager
+    AgentService --> GuardrailsLayer
+
+    %% Core Domain Dependencies
+    ClassificationEngine --> LogAnalyzer
+    ClassificationEngine --> Classifier
+    WorkflowEngine --> CoreAgent
+    WorkflowEngine --> TroubleshootingOrchestrator
+    ResponseSynthesizer --> AdvancedRetrieval
+
+    %% Infrastructure Dependencies
+    AgentService --> OpenAI
+    AgentService --> Anthropic
+    AgentService --> Fireworks
+    CaseService --> ChromaDB
+    CaseService --> RedisCaseStore
+    SessionService --> RedisSessionStore
+    KnowledgeService --> ChromaDB
+    KnowledgeService --> IntelligentCache
+
+    %% Tools Dependencies
+    ToolBroker --> ToolRegistry
+    ToolBroker --> KnowledgeBaseTool
+    ToolBroker --> WebSearchTool
+    ToolBroker --> EnhancedKnowledgeTool
+
+    %% DI Container Dependencies
+    Container --> Settings
+    Container --> OpenAI
+    Container --> Anthropic
+    Container --> Fireworks
+    Container --> ChromaDB
+    Container --> RedisCaseStore
+    Container --> RedisSessionStore
+    Container --> CaseService
+    Container --> SessionService
+    Container --> DataService
+    Container --> KnowledgeService
+    Container --> AgentService
+
+    %% Model Dependencies
+    CaseService --> CaseModels
+    AgentService --> AgenticModels
+    APIRoutes --> APIModels
+
+    %% Styling
+    classDef apiLayer fill:#e1f5fe
+    classDef serviceLayer fill:#f3e5f5
+    classDef coreLayer fill:#e8f5e8
+    classDef infraLayer fill:#fff3e0
+    classDef toolsLayer fill:#fce4ec
+    classDef modelsLayer fill:#f1f8e9
+    classDef configLayer fill:#e0f2f1
+    classDef diLayer fill:#fff8e1
+
+    class MainApp,APIRoutes,Dependencies,Middleware,DataRoute,KnowledgeRoute,SessionRoute,CaseRoute,AuthRoute,JobsRoute,LoggingMW,RateLimitMW,ProtectionMW,IdempotencyMW,PerformanceMW,SystemOptMW apiLayer
+    class BaseService,CaseService,SessionService,DataService,KnowledgeService,PlanningService,AgentService,ClassificationEngine,ResponseSynthesizer,WorkflowEngine,StateManager,ToolBroker,ErrorManager,GuardrailsLayer,AnalyticsDashboard,ConfidenceService serviceLayer
+    class LogAnalyzer,Classifier,PatternLearner,AdvancedRetrieval,Ingestion,CoreAgent,Doctrine,TroubleshootingOrchestrator,Router,SkillRegistry,Aggregator coreLayer
+    class OpenAI,Anthropic,Fireworks,Gemini,HuggingFace,LocalProvider,ChromaDB,RedisCaseStore,RedisSessionStore,IntelligentCache,MetricsCollector,HealthMonitor,SLATracker,Tracing,PerformanceMonitoring,RateLimiter,AnomalyDetector,BehavioralAnalyzer,SecurityAssessment,Redaction infraLayer
+    class ToolRegistry,KnowledgeBaseTool,WebSearchTool,EnhancedKnowledgeTool toolsLayer
+    class Interfaces,CaseModels,AgenticModels,APIModels,BehavioralModels,ProtectionModels,MicroserviceContracts modelsLayer
+    class Settings,FeatureFlags,ProtectionConfig configLayer
+    class Container diLayer

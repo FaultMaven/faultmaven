@@ -710,9 +710,22 @@ async def generate_case_title(
                     detail="Failed to persist generated title",
                     headers={"x-correlation-id": correlation_id}
                 )
-        except Exception as e:
+        except HTTPException:
+            # Re-raise HTTPException without modification to preserve original error
+            raise
+        except ServiceException as e:
+            # Handle service-level exceptions with proper error detail
             logger = logging.getLogger(__name__)
-            logger.error(f"Error persisting generated title: {e}", extra={"case_id": case_id, "correlation_id": correlation_id})
+            logger.error(f"Service error persisting generated title: {e}", extra={"case_id": case_id, "correlation_id": correlation_id})
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to persist generated title: {str(e)}",
+                headers={"x-correlation-id": correlation_id}
+            )
+        except Exception as e:
+            # Handle unexpected exceptions
+            logger = logging.getLogger(__name__)
+            logger.error(f"Unexpected error persisting generated title: {e}", extra={"case_id": case_id, "correlation_id": correlation_id})
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to persist generated title: {str(e)}",

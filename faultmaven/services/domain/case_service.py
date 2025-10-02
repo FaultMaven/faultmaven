@@ -15,6 +15,7 @@ Core Responsibilities:
 - Case analytics and metrics
 """
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -250,8 +251,22 @@ class CaseService(BaseService, ICaseService):
             raise ValidationException("Updates cannot be empty")
 
         try:
-            # Get current case and check access
-            case = await self.get_case(case_id, user_id)
+            # Get current case and check access with retry logic for race conditions
+            # This handles the case where case was just created and Redis hasn't fully committed
+            case = None
+            max_retries = 3
+            retry_delay = 0.05  # 50ms initial delay
+
+            for attempt in range(max_retries):
+                case = await self.get_case(case_id, user_id)
+                if case:
+                    break
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 50ms, 100ms, 200ms
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                    self.logger.debug(f"Retry {attempt + 1}/{max_retries} for case {case_id}")
+
             if not case:
                 return False
 

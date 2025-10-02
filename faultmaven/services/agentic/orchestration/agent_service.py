@@ -16,6 +16,12 @@ from faultmaven.models.interfaces import ILLMProvider, BaseTool, ITracer, ISanit
 from faultmaven.models import QueryRequest, AgentResponse, ViewState, Source, SourceType, ResponseType
 from faultmaven.models.case import MessageType
 from faultmaven.exceptions import ValidationException
+from faultmaven.prompts import get_system_prompt, get_few_shot_examples, format_few_shot_prompt
+
+# Intelligent prompt system imports
+from faultmaven.services.agentic.orchestration.intelligent_query_processor import IntelligentQueryProcessor
+from faultmaven.services.agentic.engines.classification_engine import QueryClassificationEngine
+from faultmaven.services.agentic.orchestration.response_type_selector import ResponseTypeSelector
 
 
 class CircuitState(str, Enum):
@@ -154,6 +160,24 @@ class AgentService(BaseService):
 
         self.logger = logging.getLogger(__name__)
 
+        # Initialize intelligent prompt system (with feature flag support)
+        try:
+            classification_engine = QueryClassificationEngine(
+                llm_provider=llm_provider,
+                tracer=tracer,
+                enable_llm_classification=True
+            )
+            response_selector = ResponseTypeSelector()
+
+            self.intelligent_processor = IntelligentQueryProcessor(
+                classification_engine=classification_engine,
+                response_selector=response_selector
+            )
+            self.logger.info("Intelligent prompt system initialized successfully")
+        except Exception as e:
+            self.logger.warning(f"Intelligent prompt system initialization failed: {e}. Using legacy mode.")
+            self.intelligent_processor = None
+
     async def process_query_for_case(
         self,
         case_id: str,
@@ -212,19 +236,56 @@ class AgentService(BaseService):
             except Exception as e:
                 logger.warning(f"Failed to record user message: {e}")
 
-        # Get conversation context for preprocessing
+        # Get conversation context for preprocessing (token-aware)
         conversation_context = ""
+        context_metadata = {}
         if self._session_service:
             try:
-                conversation_context = await self._session_service.format_conversation_context(
-                    request.session_id, case_id, limit=5
+                # Use token-aware context management for better control
+                conversation_context, context_metadata = await self._session_service.format_conversation_context_token_aware(
+                    session_id=request.session_id,
+                    case_id=case_id,
+                    max_tokens=4000,  # Default budget for context
+                    enable_summarization=True  # Enable LLM-based summarization
+                )
+                logger.info(
+                    f"Token-aware context: {context_metadata.get('total_tokens', 0)} tokens, "
+                    f"{context_metadata.get('recent_message_count', 0)} recent messages"
                 )
             except Exception as e:
-                logger.warning(f"Failed to retrieve conversation context: {e}")
+                logger.warning(f"Token-aware context failed, falling back to legacy: {e}")
+                # Fallback to legacy message count method
+                try:
+                    conversation_context = await self._session_service.format_conversation_context(
+                        request.session_id, case_id, limit=15
+                    )
+                except Exception as fallback_error:
+                    logger.error(f"Failed to retrieve conversation context: {fallback_error}")
 
-        # Preprocess query with context
-        preprocessed_query = self._preprocess_query(sanitized_query, conversation_context)
-        logger.info(f"Preprocessed query for LLM: {len(preprocessed_query)} characters")
+        # Process query with intelligent prompt system (or legacy fallback)
+        if self.intelligent_processor:
+            try:
+                preprocessed_query, response_type, processing_metadata = await self.intelligent_processor.process_query(
+                    sanitized_query=sanitized_query,
+                    session_id=request.session_id,
+                    case_id=case_id,
+                    conversation_context=conversation_context
+                )
+                logger.info(
+                    f"Intelligent processing: mode={processing_metadata['processing_mode']}, "
+                    f"response_type={response_type.value}, query_length={len(preprocessed_query)}"
+                )
+            except Exception as e:
+                # Fallback to legacy if intelligent processing fails
+                logger.warning(f"Intelligent processing failed, using legacy: {e}")
+                preprocessed_query = self._preprocess_query(sanitized_query, conversation_context)
+                response_type = ResponseType.ANSWER
+                processing_metadata = {"processing_mode": "legacy_fallback", "error": str(e)}
+        else:
+            # Legacy path when intelligent processor not available
+            preprocessed_query = self._preprocess_query(sanitized_query, conversation_context)
+            response_type = ResponseType.ANSWER
+            processing_metadata = {"processing_mode": "legacy"}
 
         # Call LLM with preprocessed query and handle three scenarios
         llm_response, response_metadata = await self._call_llm_with_scenarios(preprocessed_query, case_id)
@@ -232,17 +293,20 @@ class AgentService(BaseService):
         # Create view state
         view_state = await self._create_view_state(case_id, request.session_id)
 
-        # Create response with LLM content
+        # Merge processing metadata with response metadata
+        merged_metadata = {**response_metadata, **processing_metadata}
+
+        # Create response with LLM content and intelligent response type
         response = AgentResponse(
             content=llm_response,
-            response_type=ResponseType.ANSWER,
+            response_type=response_type,  # Use intelligent response type
             session_id=request.session_id,
             view_state=view_state,
             sources=[
                 Source(
                     type=SourceType.KNOWLEDGE_BASE,
                     content=response_metadata.get("source_info", "LLM response"),
-                    metadata=response_metadata
+                    metadata=merged_metadata  # Include processing metadata
                 )
             ],
             plan=None
@@ -282,32 +346,45 @@ class AgentService(BaseService):
         return response
 
     def _preprocess_query(self, sanitized_query: str, conversation_context: str) -> str:
-        """Preprocess the query with context and troubleshooting guidance"""
+        """Preprocess the query with comprehensive system prompt and context"""
         # Add troubleshooting context and conversation history
         preprocessed_parts = []
 
-        # Add system context for troubleshooting
-        system_context = """You are a technical troubleshooting assistant. Analyze the user's query and provide helpful insights, suggestions, or solutions. Focus on:
-1. Understanding the problem described
-2. Providing actionable troubleshooting steps
-3. Asking clarifying questions if needed
-4. Offering relevant technical knowledge
+        # Get comprehensive system prompt with 5-phase SRE doctrine
+        # Use "default" variant which automatically selects based on user expertise
+        system_prompt = get_system_prompt(variant="default", user_expertise="intermediate")
+        preprocessed_parts.append(system_prompt)
 
-Based on the available capabilities: knowledge search, web search, and analysis tools."""
-
-        preprocessed_parts.append(system_context)
+        # Add relevant few-shot examples based on query content
+        few_shot_examples = get_few_shot_examples(category="all", limit=1)
+        if few_shot_examples:
+            few_shot_section = format_few_shot_prompt(few_shot_examples)
+            preprocessed_parts.append(few_shot_section)
 
         # Add conversation context if available
         if conversation_context:
             preprocessed_parts.append(f"\nConversation History:\n{conversation_context}")
 
         # Add the current query
-        preprocessed_parts.append(f"\nCurrent Query: {sanitized_query}")
+        preprocessed_parts.append(f"\n\n---\n\n## Current User Query\n\n{sanitized_query}")
 
-        # Add instruction for response format
-        preprocessed_parts.append("\nPlease provide a helpful response that addresses the user's query with practical troubleshooting guidance.")
+        # Add instruction to follow the methodology
+        preprocessed_parts.append("""
 
-        return "\n".join(preprocessed_parts)
+## Your Task
+
+Analyze the user's query and respond following the five-phase SRE troubleshooting doctrine. Start with Phase 1 (Define Blast Radius) unless the user has already provided comprehensive information, in which case move directly to the appropriate phase.
+
+Remember:
+- Be methodical and structured in your approach
+- Ask clarifying questions to gather necessary information
+- Provide actionable commands and steps
+- Explain your reasoning
+- Guide the user to resolution
+
+Now, help the user with their troubleshooting needs.""")
+
+        return "\n\n".join(preprocessed_parts)
 
     async def _call_llm_with_scenarios(self, preprocessed_query: str, case_id: str) -> tuple[str, dict]:
         """Call LLM with preprocessed query, circuit breaker protection, and comprehensive error handling"""

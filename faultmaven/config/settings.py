@@ -388,12 +388,20 @@ class FeatureSettings(BaseSettings):
     use_refactored_services: bool = Field(default=True, env="USE_REFACTORED_SERVICES")
     use_refactored_api: bool = Field(default=True, env="USE_REFACTORED_API")
     enable_legacy_compatibility: bool = Field(default=False, env="ENABLE_LEGACY_COMPATIBILITY")
-    
+
+    # Intelligent Prompt System (Phase 0 Task 1)
+    enable_intelligent_prompts: bool = Field(default=True, env="ENABLE_INTELLIGENT_PROMPTS")
+
+    # Token-Aware Context Management (Phase 0 Task 3)
+    enable_token_aware_context: bool = Field(default=True, env="ENABLE_TOKEN_AWARE_CONTEXT")
+    context_token_budget: int = Field(default=4000, env="CONTEXT_TOKEN_BUDGET")
+    enable_conversation_summarization: bool = Field(default=True, env="ENABLE_CONVERSATION_SUMMARIZATION")
+
     # Experimental features
     enable_advanced_reasoning: bool = Field(default=False, env="ENABLE_ADVANCED_REASONING")
     enable_multi_agent: bool = Field(default=False, env="ENABLE_MULTI_AGENT")
     enable_workflow_optimization: bool = Field(default=False, env="ENABLE_WORKFLOW_OPTIMIZATION")
-    
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 

@@ -585,6 +585,12 @@ class QueryIntent(str, Enum):
     INCIDENT_RESPONSE = "incident_response"
     MONITORING = "monitoring"
     DOCUMENTATION = "documentation"
+    # Conversation intelligence intents
+    OFF_TOPIC = "off_topic"
+    META_FAULTMAVEN = "meta_faultmaven"
+    CONVERSATION_CONTROL = "conversation_control"
+    GREETING = "greeting"
+    GRATITUDE = "gratitude"
     UNKNOWN = "unknown"
 
 

@@ -71,7 +71,7 @@ class QueryClassificationEngine(IQueryClassificationEngine):
         fallback_to_patterns: bool = True
     ):
         """Initialize the query classification engine
-        
+
         Args:
             llm_provider: LLM provider for semantic classification
             tracer: Observability tracer
@@ -82,10 +82,11 @@ class QueryClassificationEngine(IQueryClassificationEngine):
         self.tracer = tracer
         self.enable_llm_classification = enable_llm_classification
         self.fallback_to_patterns = fallback_to_patterns
-        
-        # Initialize pattern matchers
+
+        # Initialize pattern matchers (with compiled regex for performance)
         self._init_pattern_matchers()
-        
+        self._compile_patterns()
+
         logger.info("QueryClassificationEngine initialized with LLM and pattern matching")
     
     def _init_pattern_matchers(self):
@@ -108,6 +109,19 @@ class QueryClassificationEngine(IQueryClassificationEngine):
                 r'\b(meaning|definition|purpose|reason)\b',
                 r'\bwhy.*\?\s*$'
             ],
+            QueryIntent.INFORMATION: [
+                # Meta-queries about methodology/doctrine/processes (not actual problems)
+                r'\b(what (are|is) the (steps|phases|process|methodology|doctrine))\b',
+                r'\b(how does .* work)\b',
+                r'\b(explain (the|how|what))\b',
+                r'\b(tell me about (the|your))\b',
+                r'\b(describe (the|how))\b',
+                r'\b(what (should|do) (i|we) (do|follow))\b',
+                # Questions about SRE practices/principles
+                r'\b(sre (doctrine|principles|methodology|practices))\b',
+                r'\b(troubleshooting (approach|methodology|steps|process))\b',
+                r'\b(best practices?)\b',
+            ],
             QueryIntent.CONFIGURATION: [
                 r'\b(configure|config|setup|install|deploy)\b',
                 r'\b(settings|parameters|options)\b',
@@ -117,6 +131,43 @@ class QueryClassificationEngine(IQueryClassificationEngine):
                 r'\b(monitor|track|watch|observe|alert)\b',
                 r'\b(metrics|logs|dashboard|stats)\b',
                 r'\b(performance|usage|utilization)\b'
+            ],
+            # Conversation intelligence intents
+            QueryIntent.OFF_TOPIC: [
+                r'\b(recipe|cooking|food|restaurant|eat|dinner|breakfast|lunch)\b',
+                r'\b(weather|forecast|temperature|climate|rain|snow|sunny)\b',
+                r'\b(movie|film|tv show|series|actor|actress|cinema)\b',
+                r'\b(sports|football|basketball|soccer|baseball|game|match)\b',
+                r'\b(music|song|album|artist|band|concert)\b',
+                r'\b(politics|election|president|government|vote)\b',
+                r'\b(travel|vacation|hotel|flight|trip|destination)\b',
+                r'\b(shopping|buy|purchase|store|price|deal)\b',
+                r'\b(health|medical|doctor|hospital|medicine|symptom)\b',
+                r'\b(personal|family|relationship|dating|friend)\b'
+            ],
+            QueryIntent.META_FAULTMAVEN: [
+                r'\b(what (are|is) you|who (are|is) you|what can you do)\b',
+                r'\b(faultmaven|your capabilities|your features|your purpose)\b',
+                r'\b(how (do|does) you work|what.*your function)\b',
+                r'\b(your limitations|what.*you (can\'?t|cannot))\b',
+                r'\b(about (you|faultmaven)|tell me about (yourself|faultmaven))\b'
+            ],
+            QueryIntent.CONVERSATION_CONTROL: [
+                r'\b(start over|reset|clear|new (topic|conversation|session))\b',
+                r'\b(go back|previous|undo|revert)\b',
+                r'\b(skip|next|move on|continue)\b',
+                r'\b(stop|quit|exit|end|cancel)\b',
+                r'\b(pause|wait|hold on)\b'
+            ],
+            QueryIntent.GREETING: [
+                r'^(hi|hello|hey|greetings|good (morning|afternoon|evening))\b',
+                r'\b(how are you|how\'s it going|what\'s up)\b',
+                r'^(yo|sup|howdy)\b'
+            ],
+            QueryIntent.GRATITUDE: [
+                r'\b(thank(s| you)|thx|ty|appreciate|grateful)\b',
+                r'\b(great (job|work|help)|well done|awesome|excellent)\b',
+                r'\b(that (helped|worked)|perfect|exactly)\b'
             ]
         }
         
@@ -180,7 +231,73 @@ class QueryClassificationEngine(IQueryClassificationEngine):
                 r'\b(customers affected|users complaining)\b'
             ]
         }
-    
+
+        # Sentiment patterns for user emotional state
+        self.sentiment_patterns = {
+            "frustration": [
+                r'\b(frustrated|annoying|annoyed|sick of|fed up)\b',
+                r'\b(still (not|doesn\'t)|again|keep (failing|breaking))\b',
+                r'\b(this is (ridiculous|stupid)|what the hell|wtf)\b',
+                r'!{2,}',  # Multiple exclamation marks
+                r'\b(why (does|is) this|how is this|seriously)\b'
+            ],
+            "confusion": [
+                r'\b(confused|confusing|don\'t understand|unclear)\b',
+                r'\b(what does.*mean|what\'s happening|i\'m lost)\b',
+                r'\b(makes no sense|doesn\'t make sense)\b',
+                r'\?{2,}'  # Multiple question marks
+            ],
+            "urgency": [
+                r'\b(urgent|asap|immediately|now|quick|quickly)\b',
+                r'\b(critical|emergency|production|down)\b',
+                r'\b(need.*now|help.*asap)\b'
+            ],
+            "satisfaction": [
+                r'\b(thanks?|thank you|appreciate|great|perfect|excellent)\b',
+                r'\b(worked|fixed|solved|resolved|good)\b',
+                r'\b(helpful|exactly|that\'s it)\b'
+            ]
+        }
+
+        # Information completeness indicators
+        self.info_completeness_patterns = {
+            "has_context": [
+                r'\b(after|since|when|started|began)\b',
+                r'\b(version|environment|setup|configuration)\b',
+                r'\b(error (message|code|log)|stacktrace)\b'
+            ],
+            "missing_context": [
+                r'^(it|this|that).*broken\b',  # Vague references
+                r'\b(doesn\'t work|not working)\s*$',  # No details
+                r'^(help|issue|problem)\s*$'  # Too brief
+            ]
+        }
+
+    def _compile_patterns(self):
+        """Compile regex patterns for performance optimization"""
+        # Compile intent patterns
+        self._intent_patterns_compiled = {}
+        for intent, patterns in self.intent_patterns.items():
+            self._intent_patterns_compiled[intent] = [
+                re.compile(p, re.IGNORECASE) for p in patterns
+            ]
+
+        # Compile sentiment patterns
+        self._sentiment_patterns_compiled = {}
+        for sentiment, patterns in self.sentiment_patterns.items():
+            self._sentiment_patterns_compiled[sentiment] = [
+                re.compile(p, re.IGNORECASE) for p in patterns
+            ]
+
+        # Compile completeness patterns
+        self._completeness_patterns_compiled = {}
+        for key, patterns in self.info_completeness_patterns.items():
+            self._completeness_patterns_compiled[key] = [
+                re.compile(p, re.IGNORECASE) for p in patterns
+            ]
+
+        logger.debug("Compiled regex patterns for optimized matching")
+
     @trace("classification_engine_classify_query")
     async def classify_query(self, query: str, context: Optional[Dict[str, Any]] = None) -> QueryClassification:
         """Classify a user query and determine processing strategy"""
@@ -562,28 +679,87 @@ Return only valid JSON."""
     
     def _validate_and_enhance_classification(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and enhance classification results"""
-        
+
+        # Meta-query override: If query is asking ABOUT methodology/processes (not actual problems),
+        # override to INFORMATION intent
+        query = results.get("query", "").lower()
+        is_meta_query = self._is_meta_query(query)
+        if is_meta_query:
+            results["intent"] = QueryIntent.INFORMATION.value
+            results["metadata"] = results.get("metadata", {})
+            results["metadata"]["is_meta_query"] = True
+            results["metadata"]["meta_query_override"] = "Query about methodology, not actual troubleshooting"
+            logger.debug(f"Meta-query detected - overriding to INFORMATION intent: {query[:50]}...")
+
         # Ensure all required fields have values
         if "intent" not in results or not results["intent"]:
             results["intent"] = QueryIntent.UNKNOWN.value
-            
+
         if "complexity" not in results or not results["complexity"]:
             results["complexity"] = ComplexityLevel.MODERATE.value
-            
+
         if "domain" not in results or not results["domain"]:
             results["domain"] = TechnicalDomain.GENERAL.value
-            
+
         if "urgency" not in results or not results["urgency"]:
             results["urgency"] = UrgencyLevel.MEDIUM.value
-        
+
         # Ensure confidence is set
         if "confidence" not in results:
             results["confidence"] = 0.5
-        
+
         # Add processing recommendations
         results["processing_recommendations"] = self._generate_processing_recommendations(results)
-        
+
         return results
+
+    def _is_meta_query(self, query: str) -> bool:
+        """Detect if query is asking ABOUT the system/methodology vs asking FOR help
+
+        Meta-queries are information requests about processes/methodology:
+        - "what are the steps to troubleshoot..."
+        - "how does the doctrine work..."
+        - "explain the methodology..."
+
+        NOT meta-queries (actual problems):
+        - "my pod is crashing..."
+        - "I'm getting errors..."
+        - "how do I fix..."
+
+        Returns:
+            bool: True if this is a meta-query about methodology
+        """
+        # Meta-query patterns (asking ABOUT methodology/processes)
+        meta_patterns = [
+            r'\b(what (are|is) the (steps|phases|process|methodology|doctrine))\b',
+            r'\b(how does .* (work|function))\b',
+            r'\b(explain (the|your) (approach|methodology|process|doctrine))\b',
+            r'\b(tell me about (the|your) (process|methodology|approach))\b',
+            r'\b(describe (the|your) (steps|process|methodology))\b',
+            r'\b(what (should|do) (i|we) (do|follow)) (to|when|for) (troubleshoot|diagnose)\b',
+            r'\b(sre (doctrine|principles|methodology|practices))\b',
+            r'\b(troubleshooting (approach|methodology|steps|process))\b',
+        ]
+
+        # Anti-patterns (actual troubleshooting queries - NOT meta)
+        actual_problem_patterns = [
+            r'\b(my|our|the) .* (is|are) (broken|crashing|failing|not working)\b',
+            r'\b(i\'?m|we\'?re) (getting|seeing|experiencing) (error|issue|problem)\b',
+            r'\b(how (do i|can i|to)) (fix|solve|resolve|debug)\b',
+            r'\b(help.*troubleshoot|help.*fix|help.*debug)\b',
+        ]
+
+        # First check anti-patterns (actual problems override)
+        for pattern in actual_problem_patterns:
+            if re.search(pattern, query, re.IGNORECASE):
+                return False  # This is an actual problem, not a meta-query
+
+        # Then check meta-patterns
+        for pattern in meta_patterns:
+            if re.search(pattern, query, re.IGNORECASE):
+                return True  # This is asking about methodology
+
+        return False  # Not a meta-query
     
     def _assess_urgency_patterns(self, query: str) -> str:
         """Assess urgency using pattern matching"""
@@ -758,5 +934,125 @@ Return only valid JSON."""
             recommendations["tools_suggested"].extend(["db_analyzer", "query_optimizer"])
         elif domain == TechnicalDomain.NETWORKING.value:
             recommendations["tools_suggested"].extend(["network_scanner", "connectivity_tester"])
-        
+
         return recommendations
+
+    def detect_sentiment(self, query: str) -> Dict[str, Any]:
+        """Detect user sentiment and emotional state
+
+        Args:
+            query: User query text
+
+        Returns:
+            Dictionary with sentiment scores and primary sentiment
+        """
+        try:
+            normalized_query = self._normalize_query(query)
+            sentiment_scores = {}
+
+            # Check each sentiment pattern (using compiled regex)
+            for sentiment_type, compiled_patterns in self._sentiment_patterns_compiled.items():
+                score = 0
+                matches = []
+                for pattern in compiled_patterns:
+                    if pattern.search(normalized_query):
+                        score += 1
+                        matches.append(pattern.pattern)
+
+                if score > 0:
+                    sentiment_scores[sentiment_type] = {
+                        "score": score,
+                        "matches": matches,
+                        "intensity": min(score / len(compiled_patterns), 1.0)
+                    }
+
+            # Determine primary sentiment
+            primary_sentiment = "neutral"
+            max_score = 0
+
+            if sentiment_scores:
+                for sentiment, data in sentiment_scores.items():
+                    if data["score"] > max_score:
+                        max_score = data["score"]
+                        primary_sentiment = sentiment
+
+            return {
+                "primary_sentiment": primary_sentiment,
+                "all_sentiments": sentiment_scores,
+                "sentiment_detected": bool(sentiment_scores)
+            }
+
+        except Exception as e:
+            logger.error(f"Sentiment detection failed: {e}")
+            return {
+                "primary_sentiment": "neutral",
+                "all_sentiments": {},
+                "sentiment_detected": False,
+                "error": str(e)
+            }
+
+    def assess_information_completeness(self, query: str) -> Dict[str, Any]:
+        """Assess how much information the user has provided
+
+        Args:
+            query: User query text
+
+        Returns:
+            Dictionary with completeness assessment
+        """
+        try:
+            normalized_query = self._normalize_query(query)
+
+            # Check for contextual information (using compiled regex)
+            has_context_score = 0
+            context_indicators = []
+
+            for pattern in self._completeness_patterns_compiled.get("has_context", []):
+                if pattern.search(normalized_query):
+                    has_context_score += 1
+                    context_indicators.append(pattern.pattern)
+
+            # Check for missing information (using compiled regex)
+            missing_context_score = 0
+            missing_indicators = []
+
+            for pattern in self._completeness_patterns_compiled.get("missing_context", []):
+                if pattern.search(normalized_query):
+                    missing_context_score += 1
+                    missing_indicators.append(pattern.pattern)
+
+            # Calculate completeness score (0-1)
+            if has_context_score + missing_context_score == 0:
+                completeness_score = 0.5  # Neutral/moderate
+            else:
+                completeness_score = has_context_score / (has_context_score + missing_context_score)
+
+            # Determine completeness level
+            if completeness_score >= 0.7:
+                completeness_level = "high"
+                needs_clarification = False
+            elif completeness_score >= 0.4:
+                completeness_level = "moderate"
+                needs_clarification = False
+            else:
+                completeness_level = "low"
+                needs_clarification = True
+
+            return {
+                "completeness_score": completeness_score,
+                "completeness_level": completeness_level,
+                "needs_clarification": needs_clarification,
+                "has_context_indicators": context_indicators,
+                "missing_context_indicators": missing_indicators,
+                "word_count": len(query.split()),
+                "query_length": len(query)
+            }
+
+        except Exception as e:
+            logger.error(f"Information completeness assessment failed: {e}")
+            return {
+                "completeness_score": 0.5,
+                "completeness_level": "moderate",
+                "needs_clarification": False,
+                "error": str(e)
+            }

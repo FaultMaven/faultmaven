@@ -1217,6 +1217,131 @@ class SessionService(BaseService):
             self.logger.warning(f"Failed to format conversation context: {e}")
             return ""
 
+    async def format_conversation_context_token_aware(
+        self,
+        session_id: str,
+        case_id: str,
+        max_tokens: int = 4000,
+        enable_summarization: bool = True
+    ) -> Tuple[str, Dict[str, any]]:
+        """
+        Format conversation history using token-based budget management.
+
+        This method provides intelligent context management:
+        1. Calculates actual token usage (not message count)
+        2. Maintains running summary of older messages
+        3. Includes full text of recent messages
+        4. Stays within LLM token limits
+
+        Args:
+            session_id: Session identifier
+            case_id: Case identifier
+            max_tokens: Maximum tokens for context (default: 4000)
+            enable_summarization: Whether to use LLM summarization (default: True)
+
+        Returns:
+            Tuple of (formatted_context, metadata)
+
+        Metadata includes:
+            - total_tokens: Actual tokens used
+            - recent_message_count: Number of full messages
+            - summary_tokens: Tokens in summary
+            - truncated: Whether older messages were summarized
+        """
+        from faultmaven.services.agentic.management.context_manager import (
+            TokenAwareContextManager,
+            ContextBudget,
+            ConversationSummarizer
+        )
+
+        try:
+            # Get conversation history
+            history = await self.get_case_conversation_history(session_id, case_id, limit=100)
+
+            if not history:
+                return "", {"total_tokens": 0, "recent_message_count": 0}
+
+            # Get case title for additional context
+            case_title = None
+            if self.case_service:
+                try:
+                    case = await self.case_service.get_case(case_id)
+                    case_title = case.get("title") if case else None
+                except Exception as e:
+                    self.logger.warning(f"Failed to get case title: {e}")
+
+            # Get existing summary from case metadata
+            existing_summary = None
+            if self.case_service:
+                try:
+                    case = await self.case_service.get_case(case_id)
+                    if case:
+                        existing_summary = case.get("metadata", {}).get("conversation_summary")
+                except Exception as e:
+                    self.logger.warning(f"Failed to get existing summary: {e}")
+
+            # Create token budget
+            budget = ContextBudget(
+                max_total_tokens=max_tokens,
+                reserved_for_recent=int(max_tokens * 0.5),  # 50% for recent messages
+                max_summary_tokens=int(max_tokens * 0.375),  # 37.5% for summary
+                min_recent_messages=3  # Always include at least 3 recent turns
+            )
+
+            # Initialize summarizer (with or without LLM)
+            summarizer = None
+            if enable_summarization:
+                # Get LLM provider from container if available
+                try:
+                    from faultmaven.container import container
+                    llm_provider = container.get_llm_provider()
+                    summarizer = ConversationSummarizer(llm_provider=llm_provider)
+                except Exception as e:
+                    self.logger.warning(f"LLM provider not available for summarization: {e}")
+                    summarizer = ConversationSummarizer()  # Fallback to extractive
+            else:
+                summarizer = ConversationSummarizer()  # No LLM summarization
+
+            # Build token-aware context
+            context_manager = TokenAwareContextManager(budget=budget, summarizer=summarizer)
+            formatted_context, metadata = await context_manager.build_context(
+                conversation_history=history,
+                existing_summary=existing_summary,
+                case_title=case_title
+            )
+
+            # Update conversation summary in case metadata if it was generated
+            if metadata.get("summary_tokens", 0) > 0 and self.case_service:
+                try:
+                    # Extract just the summary part
+                    summary_lines = formatted_context.split("Previous conversation summary:\n")
+                    if len(summary_lines) > 1:
+                        new_summary = summary_lines[1].split("\n\nRecent conversation:")[0]
+                        await self.case_service.update_case_metadata(
+                            case_id=case_id,
+                            metadata={"conversation_summary": new_summary}
+                        )
+                except Exception as e:
+                    self.logger.warning(f"Failed to update conversation summary: {e}")
+
+            self.logger.info(
+                f"Token-aware context built: {metadata['total_tokens']} tokens, "
+                f"{metadata['recent_message_count']} recent messages, "
+                f"summary={metadata.get('truncated', False)}"
+            )
+
+            return formatted_context, metadata
+
+        except Exception as e:
+            self.logger.error(f"Failed to build token-aware context: {e}", exc_info=True)
+            # Fallback to legacy method
+            legacy_context = await self.format_conversation_context(session_id, case_id, limit=15)
+            return legacy_context, {
+                "total_tokens": len(legacy_context) // 4,  # Rough estimate
+                "recent_message_count": 15,
+                "fallback": True
+            }
+
     # ==== ENHANCED CASE PERSISTENCE METHODS ====
 
     @trace("session_service_get_or_create_case")
