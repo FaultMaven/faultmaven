@@ -48,6 +48,10 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 - **[Token Estimation](development/TOKEN_ESTIMATION.md)** - 🆕 Accurate token counting and cost optimization
 - **[Environment Variables](development/ENVIRONMENT_VARIABLES.md)** - 🆕 Configuration via environment variables
 
+### 📋 Project Management
+- **[Future Enhancements](FUTURE_ENHANCEMENTS.md)** - 🆕 Planned features and roadmap
+- **[Technical Debt](TECHNICAL_DEBT.md)** - Known issues requiring attention
+
 ### 📋 Specifications
 - **[Interface Documentation](specifications/INTERFACE_DOCUMENTATION_SPEC.md)** - Interface contracts and compliance
 - **[Configuration Management](specifications/CONFIGURATION_MANAGEMENT_SPEC.md)** - Configuration patterns

@@ -71,6 +71,7 @@ try:
         CaseMessage,
         CaseParticipant,
         CaseContext,
+        CaseDiagnosticState,
         CaseStatus,
         CasePriority,
         MessageType,
@@ -91,6 +92,22 @@ try:
     CASE_MODELS_AVAILABLE = True
 except ImportError:
     CASE_MODELS_AVAILABLE = False
+
+# Import doctor/patient models (adaptive guidance architecture)
+try:
+    from .doctor_patient import (
+        ActionType,
+        CommandSafety,
+        SuggestedAction,
+        CommandSuggestion,
+        CommandValidationResponse,
+        LLMResponse,
+        DiagnosticMode
+    )
+    from .case import UrgencyLevel
+    DOCTOR_PATIENT_MODELS_AVAILABLE = True
+except ImportError:
+    DOCTOR_PATIENT_MODELS_AVAILABLE = False
 
 # Utility functions are now imported from legacy.py
 
@@ -145,8 +162,9 @@ if CASE_MODELS_AVAILABLE:
         # Case persistence models
         "Case",
         "CaseMessage",
-        "CaseParticipant", 
+        "CaseParticipant",
         "CaseContext",
+        "CaseDiagnosticState",
         "CaseStatus",
         "CasePriority",
         "MessageType",
@@ -162,6 +180,19 @@ if CASE_MODELS_AVAILABLE:
         "ICaseService",
         "ICaseNotificationService",
         "ICaseIntegrationService",
+    ])
+
+# Add doctor/patient models to exports if available
+if DOCTOR_PATIENT_MODELS_AVAILABLE:
+    __all__.extend([
+        "ActionType",
+        "CommandSafety",
+        "SuggestedAction",
+        "CommandSuggestion",
+        "CommandValidationResponse",
+        "LLMResponse",
+        "DiagnosticMode",
+        "UrgencyLevel",
     ])
 
 # As we migrate, we'll replace the above with:

@@ -14,8 +14,10 @@ strategic planning, and safety guardrails.
 
 ### Processing Engines
 1. **BusinessLogicWorkflowEngine** - Core orchestrator implementing agentic loops
-2. **QueryClassificationEngine** - Multi-dimensional query analysis and routing
-3. **ResponseSynthesizer** - Multi-source response assembly with quality validation
+2. **ResponseSynthesizer** - Multi-source response assembly with quality validation
+
+**NOTE:** QueryClassificationEngine has been superseded by the doctor/patient prompting
+architecture. See `docs/architecture/ARCHITECTURE_EVOLUTION.md` for details.
 
 ### Management Layer
 4. **ToolSkillBroker** - Dynamic capability discovery and orchestration
@@ -49,7 +51,6 @@ strategic planning, and safety guardrails.
 from faultmaven.services.agentic.orchestration import AgentService
 from faultmaven.services.agentic.engines import (
     BusinessLogicWorkflowEngine,
-    QueryClassificationEngine,
     ResponseSynthesizer
 )
 from faultmaven.services.agentic.management import (
@@ -67,7 +68,6 @@ from faultmaven.services.agentic.safety import (
 from .orchestration import AgentService
 from .engines import (
     BusinessLogicWorkflowEngine,
-    QueryClassificationEngine,
     ResponseSynthesizer
 )
 from .management import (
@@ -84,7 +84,6 @@ __all__ = [
     "AgentService",
     # Engines
     "BusinessLogicWorkflowEngine",
-    "QueryClassificationEngine",
     "ResponseSynthesizer",
     # Management
     "ToolSkillBroker",

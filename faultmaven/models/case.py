@@ -133,6 +133,13 @@ class CaseParticipant(BaseModel):
         json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
 
 
+class UrgencyLevel(str, Enum):
+    """Urgency level for problem resolution"""
+    NORMAL = "normal"  # Standard troubleshooting pace
+    HIGH = "high"  # User indicates urgency
+    CRITICAL = "critical"  # Outage, data loss risk, emergency
+
+
 class CaseDiagnosticState(BaseModel):
     """Server-side diagnostic state tracking for doctor/patient model.
 
@@ -148,6 +155,7 @@ class CaseDiagnosticState(BaseModel):
     has_active_problem: bool = Field(default=False, description="Whether user has an active technical problem")
     problem_statement: str = Field(default="", description="Concise statement of the current problem")
     problem_started_at: Optional[datetime] = Field(None, description="When problem tracking began")
+    urgency_level: UrgencyLevel = Field(default=UrgencyLevel.NORMAL, description="Problem urgency level")
 
     # SRE 5-phase methodology progression (0-5)
     # Phase 0: Intake (problem identification and scoping)
@@ -236,7 +244,10 @@ class Case(BaseModel):
     
     # Context and artifacts
     context: CaseContext = Field(default_factory=CaseContext, description="Case context and artifacts")
-    
+
+    # Diagnostic state (server-side only - not exposed in API)
+    diagnostic_state: CaseDiagnosticState = Field(default_factory=CaseDiagnosticState, description="SRE diagnostic methodology state")
+
     # Metadata and tags
     tags: List[str] = Field(default_factory=list, description="Case tags for organization")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional case metadata")

@@ -1,9 +1,27 @@
 # Query Classification & Prompt Engineering Architecture
-## Complete Design Specification - Phase 0 Implementation ✅
+## Historical Design Document - SUPERSEDED
 
-**Status**: ✅ IMPLEMENTED (2025-10-03)  
-**Test Coverage**: 28/28 passing (100%)  
-**Version**: 3.0 - Response-Format-Driven Classification System
+**Status**: ⚠️ SUPERSEDED by Doctor/Patient Prompting Architecture (2025-10-05)
+**Superseded By**: [DOCTOR_PATIENT_PROMPTING_ARCHITECTURE.md](DOCTOR_PATIENT_PROMPTING_ARCHITECTURE.md)
+**Version**: 3.0 (Final) - Response-Format-Driven Classification System
+
+---
+
+## ⚠️ IMPORTANT NOTICE
+
+**This document is retained for historical reference only.**
+
+As of 2025-10-05, FaultMaven has moved to a **revolutionary doctor/patient prompting architecture** that **eliminates query classification entirely**. The classification system described in this document (v3.0) was fully designed and tested but never deployed to production.
+
+**Current Implementation**: See [DOCTOR_PATIENT_PROMPTING_ARCHITECTURE.md](DOCTOR_PATIENT_PROMPTING_ARCHITECTURE.md)
+
+**Why Classification Was Abandoned**:
+1. **Over-engineering**: 17 intents with complex pattern matching was unnecessary
+2. **Misclassification risk**: "hello" triggering troubleshooting, rigid intent boundaries
+3. **Single powerful LLM approach**: Modern LLMs can handle everything without pre-classification
+4. **Natural conversation**: Doctor/patient model enables fluid dialogue vs. rigid turn-by-turn modes
+
+---
 
 ---
 

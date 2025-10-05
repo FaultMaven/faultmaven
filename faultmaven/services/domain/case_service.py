@@ -278,8 +278,8 @@ class CaseService(BaseService, ICaseService):
 
             # Validate update fields
             allowed_fields = {
-                'title', 'description', 'status', 'priority', 'tags', 
-                'metadata', 'context', 'auto_archive_after_days'
+                'title', 'description', 'status', 'priority', 'tags',
+                'metadata', 'context', 'auto_archive_after_days', 'diagnostic_state'
             }
             
             filtered_updates = {k: v for k, v in updates.items() if k in allowed_fields}

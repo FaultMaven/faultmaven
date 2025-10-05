@@ -43,7 +43,6 @@ except ImportError as e:
 try:
     from faultmaven.services.agentic import (
         AgentStateManager,
-        QueryClassificationEngine,
         ToolSkillBroker,
         GuardrailsPolicyLayer,
         ResponseSynthesizer,
@@ -52,7 +51,6 @@ try:
     )
     from faultmaven.models.agentic import (
         IAgentStateManager,
-        IQueryClassificationEngine,
         IToolSkillBroker,
         IGuardrailsPolicyLayer,
         IResponseSynthesizer,
@@ -64,7 +62,7 @@ except ImportError as e:
     logging.getLogger(__name__).warning(f"Agentic framework not available: {e}")
     # Create placeholder types for testing environments
     IAgentStateManager = Any
-    IQueryClassificationEngine = Any
+    # Removed: IQueryClassificationEngine (superseded by doctor/patient)
     IToolSkillBroker = Any
     IGuardrailsPolicyLayer = Any
     IResponseSynthesizer = Any
@@ -387,6 +385,7 @@ class DIContainer:
                 tracer=self.get_tracer(),
                 sanitizer=self.get_sanitizer(),
                 session_service=self.session_service,
+                case_service=self.case_service,
                 settings=self.settings,
                 # Agentic Framework Components (required - direct access during initialization)
                 business_logic_workflow_engine=self.business_logic_workflow_engine,
@@ -756,7 +755,6 @@ class DIContainer:
             
             # 3. Query Classification Engine - Intelligent query processing and routing
             try:
-                self.query_classification_engine: IQueryClassificationEngine = QueryClassificationEngine(
                     llm_provider=self.get_llm_provider(),
                     tracer=self.get_tracer(),
                     llm_classification_mode=self.settings.features.llm_classification_mode,
@@ -2247,8 +2245,6 @@ class DIContainer:
                 self.initialize()
         return getattr(self, 'agent_state_manager', None)
     
-    def get_query_classification_engine(self) -> Optional[IQueryClassificationEngine]:
-        """Get the query classification engine for intelligent query processing and routing"""
         if not self._initialized:
             logger = logging.getLogger(__name__)
             logger.warning("Query Classification Engine requested but container not initialized")

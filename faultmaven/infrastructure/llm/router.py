@@ -11,7 +11,7 @@ circuit breaker patterns for external LLM provider calls.
 
 import logging
 import os
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
@@ -57,6 +57,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         max_tokens: int = 1000,
         temperature: float = 0.7,
         data_type: Optional[DataType] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
     ) -> LLMResponse:
         """
         Route request through the centralized provider registry
@@ -106,6 +108,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 model=model,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                tools=tools,
+                tool_choice=tool_choice,
                 confidence_threshold=self.confidence_threshold,
                 timeout=self.request_timeout,  # Configurable timeout from environment/settings
                 retries=1,     # Single retry for failed LLM calls

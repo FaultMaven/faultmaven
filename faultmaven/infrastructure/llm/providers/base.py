@@ -12,9 +12,18 @@ from typing import Any, Dict, List, Optional
 
 
 @dataclass
+class ToolCall:
+    """Tool/function call from LLM"""
+
+    id: str
+    type: str  # "function"
+    function: Dict[str, Any]  # {"name": "...", "arguments": "..."}
+
+
+@dataclass
 class LLMResponse:
     """Response from LLM provider"""
-    
+
     content: str
     confidence: float
     provider: str
@@ -22,6 +31,7 @@ class LLMResponse:
     tokens_used: int
     response_time_ms: int
     cached: bool = False
+    tool_calls: Optional[List[ToolCall]] = None  # Function calling support
 
 
 @dataclass
@@ -64,6 +74,8 @@ class BaseLLMProvider(ABC):
         model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
         **kwargs
     ) -> LLMResponse:
         """

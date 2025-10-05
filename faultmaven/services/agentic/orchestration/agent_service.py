@@ -19,9 +19,6 @@ from faultmaven.exceptions import ValidationException
 from faultmaven.prompts import get_system_prompt, get_few_shot_examples, format_few_shot_prompt
 
 # Intelligent prompt system imports
-from faultmaven.services.agentic.orchestration.intelligent_query_processor import IntelligentQueryProcessor
-from faultmaven.services.agentic.engines.classification_engine import QueryClassificationEngine
-from faultmaven.services.agentic.orchestration.response_type_selector import ResponseTypeSelector
 
 
 class CircuitState(str, Enum):
@@ -140,6 +137,7 @@ class AgentService(BaseService):
         tracer: ITracer,
         sanitizer: ISanitizer,
         session_service: Optional[Any] = None,
+        case_service: Optional[Any] = None,
         settings: Optional[Any] = None,
         **kwargs
     ):
@@ -149,6 +147,7 @@ class AgentService(BaseService):
         self._tracer = tracer
         self._sanitizer = sanitizer
         self._session_service = session_service
+        self._case_service = case_service
         self._settings = settings
 
         # Initialize circuit breaker for LLM calls
@@ -160,23 +159,21 @@ class AgentService(BaseService):
 
         self.logger = logging.getLogger(__name__)
 
-        # Initialize intelligent prompt system (with feature flag support)
-        try:
-            classification_engine = QueryClassificationEngine(
-                llm_provider=llm_provider,
-                tracer=tracer,
-                enable_llm_classification=True
-            )
-            response_selector = ResponseTypeSelector()
+        # Initialize doctor/patient prompt system
+        from faultmaven.prompts.doctor_patient import PromptVersion
 
-            self.intelligent_processor = IntelligentQueryProcessor(
-                classification_engine=classification_engine,
-                response_selector=response_selector
-            )
-            self.logger.info("Intelligent prompt system initialized successfully")
-        except Exception as e:
-            self.logger.warning(f"Intelligent prompt system initialization failed: {e}. Using legacy mode.")
-            self.intelligent_processor = None
+        # Get prompt version from settings
+        if self._settings and hasattr(self._settings, 'prompts'):
+            prompt_version_str = self._settings.prompts.doctor_patient_version
+            try:
+                self.prompt_version = PromptVersion(prompt_version_str)
+            except ValueError:
+                self.logger.warning(f"Invalid prompt version '{prompt_version_str}', using STANDARD")
+                self.prompt_version = PromptVersion.STANDARD
+        else:
+            self.prompt_version = PromptVersion.STANDARD
+
+        self.logger.info(f"Doctor/Patient system initialized with prompt version: {self.prompt_version.value}")
 
     async def process_query_for_case(
         self,
@@ -216,134 +213,97 @@ class AgentService(BaseService):
             return await self._create_timeout_fallback_response(case_id, request)
 
     async def _execute_case_query_processing(self, case_id: str, request: QueryRequest) -> AgentResponse:
-        """Execute the core case query processing logic with quick fallback"""
+        """Execute the core case query processing logic using doctor/patient system"""
         import logging
         logger = logging.getLogger(__name__)
 
         # Sanitize input
         sanitized_query = self._sanitizer.sanitize(request.query)
 
-        # Record user query if session service available
-        if self._session_service:
-            try:
-                await self._session_service.record_case_message(
-                    session_id=request.session_id,
-                    message_content=sanitized_query,
-                    message_type=MessageType.USER_QUERY,
-                    author_id=None,
-                    metadata={"source": "api", "type": "user_query", "case_id": case_id}
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record user message: {e}")
+        # Get the case object from case_service
+        if not self._case_service:
+            raise ValueError("Case service is required for doctor/patient system")
 
-        # Get conversation context for preprocessing (token-aware)
-        conversation_context = ""
-        context_metadata = {}
-        if self._session_service:
-            try:
-                # Use token-aware context management for better control
-                conversation_context, context_metadata = await self._session_service.format_conversation_context_token_aware(
-                    session_id=request.session_id,
-                    case_id=case_id,
-                    max_tokens=4000,  # Default budget for context
-                    enable_summarization=True  # Enable LLM-based summarization
-                )
-                logger.info(
-                    f"Token-aware context: {context_metadata.get('total_tokens', 0)} tokens, "
-                    f"{context_metadata.get('recent_message_count', 0)} recent messages"
-                )
-            except Exception as e:
-                logger.warning(f"Token-aware context failed, falling back to legacy: {e}")
-                # Fallback to legacy message count method
-                try:
-                    conversation_context = await self._session_service.format_conversation_context(
-                        request.session_id, case_id, limit=15
-                    )
-                except Exception as fallback_error:
-                    logger.error(f"Failed to retrieve conversation context: {fallback_error}")
+        case = await self._case_service.get_case(case_id, user_id=None)  # user_id handled by auth layer
+        if not case:
+            raise ValueError(f"Case {case_id} not found")
 
-        # Process query with intelligent prompt system (or legacy fallback)
-        if self.intelligent_processor:
-            try:
-                preprocessed_query, response_type, processing_metadata = await self.intelligent_processor.process_query(
-                    sanitized_query=sanitized_query,
-                    session_id=request.session_id,
-                    case_id=case_id,
-                    conversation_context=conversation_context
-                )
-                logger.info(
-                    f"Intelligent processing: mode={processing_metadata['processing_mode']}, "
-                    f"response_type={response_type.value}, query_length={len(preprocessed_query)}"
-                )
-            except Exception as e:
-                # Fallback to legacy if intelligent processing fails
-                logger.warning(f"Intelligent processing failed, using legacy: {e}")
-                preprocessed_query = self._preprocess_query(sanitized_query, conversation_context)
-                response_type = ResponseType.ANSWER
-                processing_metadata = {"processing_mode": "legacy_fallback", "error": str(e)}
-        else:
-            # Legacy path when intelligent processor not available
-            preprocessed_query = self._preprocess_query(sanitized_query, conversation_context)
+        # Use doctor/patient turn processor
+        from faultmaven.services.agentic.doctor_patient.turn_processor import process_turn
+
+        try:
+            # Process turn with doctor/patient system
+            llm_response, updated_state = await process_turn(
+                user_query=sanitized_query,
+                case=case,
+                llm_client=self._llm,
+                prompt_version=self.prompt_version,
+                session_id=request.session_id
+            )
+
+            # Update case diagnostic state
+            case.diagnostic_state = updated_state
+            await self._case_service.update_case(
+                case_id=case_id,
+                updates={"diagnostic_state": updated_state.dict()},
+                user_id=None  # Auth handled at API layer
+            )
+
+            # Create view state
+            view_state = await self._create_view_state(case_id, request.session_id)
+
+            # Build metadata
+            processing_metadata = {
+                "processing_mode": "doctor_patient",
+                "prompt_version": self.prompt_version.value,
+                "has_active_problem": updated_state.has_active_problem,
+                "current_phase": updated_state.current_phase,
+                "urgency_level": updated_state.urgency_level.value
+            }
+
+            # Determine response type from LLM response structure
             response_type = ResponseType.ANSWER
-            processing_metadata = {"processing_mode": "legacy"}
+            if llm_response.suggested_commands:
+                response_type = ResponseType.NEEDS_MORE_DATA
+            elif llm_response.command_validation:
+                response_type = ResponseType.CONFIRMATION_REQUEST
+            elif llm_response.clarifying_questions:
+                response_type = ResponseType.CLARIFICATION_REQUEST
 
-        # Call LLM with preprocessed query and handle three scenarios
-        llm_response, response_metadata = await self._call_llm_with_scenarios(preprocessed_query, case_id)
+            # Create response
+            response = AgentResponse(
+                content=llm_response.answer,
+                response_type=response_type,
+                session_id=request.session_id,
+                view_state=view_state,
+                sources=[
+                    Source(
+                        type=SourceType.KNOWLEDGE_BASE,
+                        content="Doctor/Patient LLM Response",
+                        metadata=processing_metadata
+                    )
+                ],
+                plan=None
+            )
 
-        # Create view state
-        view_state = await self._create_view_state(case_id, request.session_id)
+            # Enhanced logging with circuit breaker status
+            circuit_status = self.circuit_breaker.get_status()
+            self.logger.info(f"Query processing completed for case {case_id}", extra={
+                "case_id": case_id,
+                "session_id": request.session_id,
+                "response_type": response_type.value,
+                "circuit_breaker_state": circuit_status["state"],
+                "circuit_failure_count": circuit_status["failure_count"],
+                "circuit_success_count": circuit_status["success_count"],
+                "total_llm_calls": circuit_status["total_calls"],
+                "doctor_patient_phase": updated_state.current_phase
+            })
 
-        # Merge processing metadata with response metadata
-        merged_metadata = {**response_metadata, **processing_metadata}
+            return response
 
-        # Create response with LLM content and intelligent response type
-        response = AgentResponse(
-            content=llm_response,
-            response_type=response_type,  # Use intelligent response type
-            session_id=request.session_id,
-            view_state=view_state,
-            sources=[
-                Source(
-                    type=SourceType.KNOWLEDGE_BASE,
-                    content=response_metadata.get("source_info", "LLM response"),
-                    metadata=merged_metadata  # Include processing metadata
-                )
-            ],
-            plan=None
-        )
-
-        # Enhanced logging with circuit breaker status
-        circuit_status = self.circuit_breaker.get_status()
-        self.logger.info(f"Query processing completed for case {case_id}", extra={
-            "case_id": case_id,
-            "session_id": request.session_id,
-            "response_type": response_metadata.get("type", "unknown"),
-            "circuit_breaker_state": circuit_status["state"],
-            "circuit_failure_count": circuit_status["failure_count"],
-            "circuit_success_count": circuit_status["success_count"],
-            "total_llm_calls": circuit_status["total_calls"]
-        })
-
-        # Record assistant response
-        if self._session_service:
-            try:
-                await self._session_service.record_case_message(
-                    session_id=request.session_id,
-                    message_content=response.content,
-                    message_type=MessageType.AGENT_RESPONSE,
-                    author_id=None,
-                    metadata={
-                        "case_id": case_id,
-                        "type": response_metadata.get("type", "llm_response"),
-                        "circuit_state": circuit_status["state"],
-                        "reference_id": response_metadata.get("reference_id", ""),
-                        "incident_id": response_metadata.get("incident_id", "")
-                    }
-                )
-            except Exception as e:
-                self.logger.warning(f"Failed to record assistant response: {e}")
-
-        return response
+        except Exception as e:
+            logger.error(f"Doctor/Patient processing failed: {e}", exc_info=True)
+            raise
 
     def _preprocess_query(self, sanitized_query: str, conversation_context: str) -> str:
         """Preprocess the query with comprehensive system prompt and context"""

@@ -395,14 +395,53 @@ class ConversationThresholds(BaseSettings):
 
     # Token budgets for prompt assembly
     context_token_budget: int = Field(default=4000, env="CONTEXT_TOKEN_BUDGET")
-    system_prompt_max_tokens: int = Field(default=500, env="SYSTEM_PROMPT_MAX_TOKENS")
-    pattern_template_max_tokens: int = Field(default=300, env="PATTERN_TEMPLATE_MAX_TOKENS")
 
     # Classification confidence thresholds
     pattern_confidence_threshold: float = Field(default=0.7, env="PATTERN_CONFIDENCE_THRESHOLD")
     confidence_override_threshold: float = Field(default=0.4, env="CONFIDENCE_OVERRIDE_THRESHOLD")
     self_correction_min_confidence: float = Field(default=0.4, env="SELF_CORRECTION_MIN_CONFIDENCE")
     self_correction_max_confidence: float = Field(default=0.7, env="SELF_CORRECTION_MAX_CONFIDENCE")
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
+class PromptSettings(BaseSettings):
+    """Doctor/Patient prompt system configuration
+
+    Controls which prompt version is used for the revolutionary doctor/patient
+    architecture. Different versions offer different trade-offs between token
+    usage, latency, and guidance quality.
+
+    Versions:
+    - minimal: ~800 tokens - Fast, cost-efficient, simple queries
+    - standard: ~1,300 tokens - Balanced, recommended default
+    - detailed: ~1,800 tokens - Maximum guidance, complex cases
+    """
+    # Prompt version selection
+    doctor_patient_version: str = Field(
+        default="standard",
+        env="DOCTOR_PATIENT_PROMPT_VERSION",
+        description="Prompt version: minimal/standard/detailed"
+    )
+
+    # Dynamic version selection (future enhancement)
+    enable_dynamic_version_selection: bool = Field(
+        default=False,
+        env="ENABLE_DYNAMIC_PROMPT_VERSION",
+        description="Automatically select prompt version based on query complexity"
+    )
+
+    # Version selection rules (when dynamic enabled)
+    minimal_threshold_tokens: int = Field(
+        default=50,
+        env="MINIMAL_PROMPT_THRESHOLD",
+        description="Query tokens below this use minimal prompt"
+    )
+    detailed_threshold_complexity: float = Field(
+        default=0.7,
+        env="DETAILED_PROMPT_THRESHOLD",
+        description="Query complexity above this uses detailed prompt"
+    )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -414,10 +453,7 @@ class FeatureSettings(BaseSettings):
     use_refactored_api: bool = Field(default=True, env="USE_REFACTORED_API")
     enable_legacy_compatibility: bool = Field(default=False, env="ENABLE_LEGACY_COMPATIBILITY")
 
-    # Intelligent Prompt System (Phase 0 Task 1)
-    enable_intelligent_prompts: bool = Field(default=True, env="ENABLE_INTELLIGENT_PROMPTS")
-
-    # Token-Aware Context Management (Phase 0 Task 3)
+    # Token-Aware Context Management
     enable_token_aware_context: bool = Field(default=True, env="ENABLE_TOKEN_AWARE_CONTEXT")
     enable_conversation_summarization: bool = Field(default=True, env="ENABLE_CONVERSATION_SUMMARIZATION")
     # Note: Token budgets and thresholds moved to ConversationThresholds class above
@@ -439,10 +475,6 @@ class FeatureSettings(BaseSettings):
     enable_entity_analysis: bool = Field(default=True, env="ENABLE_ENTITY_ANALYSIS")
     enable_context_analysis: bool = Field(default=True, env="ENABLE_CONTEXT_ANALYSIS")
     enable_disambiguation_check: bool = Field(default=True, env="ENABLE_DISAMBIGUATION_CHECK")
-
-    # Prompt Optimization (Phase 0 - Token Reduction 81%)
-    enable_tiered_prompts: bool = Field(default=True, env="ENABLE_TIERED_PROMPTS")
-    enable_pattern_templates: bool = Field(default=True, env="ENABLE_PATTERN_TEMPLATES")
 
     # Note: Self-correction thresholds moved to ConversationThresholds class above
     # Deprecated: SELF_CORRECTION_THRESHOLD → use ConversationThresholds.self_correction_max_confidence
@@ -529,7 +561,8 @@ class FaultMavenSettings(BaseSettings):
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     thresholds: ConversationThresholds = Field(default_factory=ConversationThresholds)
-    
+    prompts: PromptSettings = Field(default_factory=PromptSettings)
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
