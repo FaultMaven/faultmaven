@@ -274,11 +274,15 @@ class RedisCaseStore(ICaseStore):
                 pipe.hset(case_key, "title", updates['title'])
             
             results = await pipe.execute()
-            
-            if all(results):
+
+            # Redis hset returns 0 for updates to existing fields, 1 for new fields
+            # We just need to verify the pipeline executed without errors (returns list of results)
+            # Not checking if all results are truthy since 0 is valid for existing field updates
+            if results is not None and isinstance(results, list):
                 self.logger.debug(f"Updated case {case_id}")
                 return True
             else:
+                self.logger.error(f"Pipeline execution failed for case {case_id}: results={results}")
                 return False
                 
         except Exception as e:

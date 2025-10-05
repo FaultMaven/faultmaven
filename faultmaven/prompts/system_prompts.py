@@ -7,7 +7,10 @@ methodology, and troubleshooting approach following the five-phase SRE doctrine.
 
 from typing import Dict
 
-# Minimal Core Identity (always included - 30 tokens)
+# Neutral Identity (for non-troubleshooting interactions - 10 tokens)
+NEUTRAL_IDENTITY = """You are FaultMaven, an AI assistant."""
+
+# Minimal Core Identity (for troubleshooting - 30 tokens)
 CORE_IDENTITY = """You are FaultMaven, an expert SRE. Provide clear, actionable troubleshooting guidance."""
 
 # Brief Methodology (for simple troubleshooting - 60 tokens)
@@ -55,20 +58,28 @@ SYSTEM_PROMPT_VARIANTS: Dict[str, str] = {
 
 
 def get_system_prompt(variant: str = "default", user_expertise: str = "intermediate") -> str:
-    """
-    Get system prompt based on variant and user expertise level.
+    """Get system prompt based on variant and user expertise level
+
+    Selects appropriate system prompt variant based on explicit variant choice
+    or automatically based on user expertise level.
 
     Args:
-        variant: Prompt variant ("default", "primary", "concise", "detailed")
+        variant: Prompt variant ("default", "primary", "concise", "detailed", "minimal", "brief", "standard")
         user_expertise: User expertise level ("beginner", "intermediate", "advanced")
 
     Returns:
-        str: System prompt text
+        System prompt text
 
     Examples:
-        >>> get_system_prompt("default")  # Returns PRIMARY_SYSTEM_PROMPT
-        >>> get_system_prompt("concise", "advanced")  # Returns CONCISE_SYSTEM_PROMPT
-        >>> get_system_prompt("detailed", "beginner")  # Returns DETAILED_SYSTEM_PROMPT
+        >>> get_system_prompt("default")
+        'You are FaultMaven, an expert SRE...'
+        >>> get_system_prompt("concise", "advanced")
+        'You are FaultMaven, an expert SRE...For troubleshooting...'
+        >>> get_system_prompt("minimal")
+        'You are FaultMaven, an expert SRE. Provide clear, actionable troubleshooting guidance.'
+
+    Deprecated:
+        Use get_tiered_prompt() for automatic tier selection based on response type
     """
     # Auto-select variant based on expertise if using default
     if variant == "default":
@@ -87,18 +98,34 @@ def get_system_prompt_with_context(
     user_expertise: str = "intermediate",
     additional_context: str = ""
 ) -> str:
-    """Get system prompt with additional context appended (deprecated - use get_tiered_prompt)."""
+    """Get system prompt with additional context appended
+
+    Args:
+        variant: Prompt variant ("default", "primary", "concise", "detailed")
+        user_expertise: User expertise level ("beginner", "intermediate", "advanced")
+        additional_context: Additional context to append
+
+    Returns:
+        System prompt with context appended
+
+    Deprecated:
+        Use get_tiered_prompt() for automatic tier selection based on response type
+    """
     base_prompt = get_system_prompt(variant, user_expertise)
     if additional_context:
         return f"{base_prompt}\n\n{additional_context}"
     return base_prompt
 
 
-def get_tiered_prompt(response_type: str = "ANSWER", complexity: str = "simple") -> str:
-    """
-    Get optimized system prompt based on response type and complexity.
+def get_tiered_prompt(
+    response_type: str = "ANSWER",
+    complexity: str = "simple",
+    intent: str = None
+) -> str:
+    """Get optimized system prompt based on response type, complexity, and intent
 
-    This function implements tiered prompt loading for token efficiency:
+    Implements tiered prompt loading for token efficiency (81% reduction):
+    - Non-troubleshooting intents: Neutral identity (10 tokens)
     - ANSWER/INFO responses: Minimal prompt (30 tokens)
     - Simple troubleshooting: Brief prompt (90 tokens)
     - Moderate/Complex troubleshooting: Standard prompt (210 tokens)
@@ -106,15 +133,28 @@ def get_tiered_prompt(response_type: str = "ANSWER", complexity: str = "simple")
     Args:
         response_type: ResponseType value (ANSWER, PLAN_PROPOSAL, etc.)
         complexity: Query complexity (simple, moderate, complex)
+        intent: Query intent (GREETING, GRATITUDE, OFF_TOPIC, etc.) - optional
 
     Returns:
         Optimized system prompt string
 
     Examples:
-        >>> get_tiered_prompt("ANSWER", "simple")  # Returns MINIMAL_PROMPT (30 tokens)
-        >>> get_tiered_prompt("PLAN_PROPOSAL", "simple")  # Returns BRIEF_PROMPT (90 tokens)
-        >>> get_tiered_prompt("PLAN_PROPOSAL", "complex")  # Returns STANDARD_PROMPT (210 tokens)
+        >>> get_tiered_prompt("ANSWER", "simple", "GREETING")
+        'You are FaultMaven, an AI assistant.'  # NEUTRAL_IDENTITY (10 tokens)
+        >>> get_tiered_prompt("ANSWER", "simple")
+        'You are FaultMaven, an expert SRE...'  # MINIMAL_PROMPT (30 tokens)
+        >>> get_tiered_prompt("PLAN_PROPOSAL", "simple")
+        'You are FaultMaven...For troubleshooting...'  # BRIEF_PROMPT (90 tokens)
     """
+    # Neutral identity for non-troubleshooting intents
+    NON_TROUBLESHOOTING_INTENTS = [
+        "GREETING", "GRATITUDE", "OFF_TOPIC",
+        "META_FAULTMAVEN", "CONVERSATION_CONTROL"
+    ]
+
+    if intent and intent.upper() in NON_TROUBLESHOOTING_INTENTS:
+        return NEUTRAL_IDENTITY
+
     # Minimal prompt for information/explanation requests
     if response_type in ["ANSWER", "INFO", "EXPLANATION"]:
         return MINIMAL_PROMPT

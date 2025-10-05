@@ -395,3 +395,8 @@ async def get_job_service() -> Optional[IJobService]:
     except Exception:
         # Job service is optional - return None if not available
         return None
+
+
+async def get_classification_engine():
+    """Get QueryClassificationEngine instance from container"""
+    return container.get_query_classification_engine()

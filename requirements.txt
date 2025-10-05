@@ -10,6 +10,7 @@ langgraph>=0.1.2 # Critical for the stateful agent architecture
 fireworks-ai>=0.12.1 # For the primary Firework AI provider
 openai>=1.0.0 # For OpenAI API compatibility
 anthropic>=0.25.0 # For Anthropic Claude API
+tiktoken>=0.5.0 # For accurate OpenAI token counting
 
 # --- NEW: Security (PII Redaction) ---
 # Note: PII protection now uses K8s Presidio microservice instead of local libraries

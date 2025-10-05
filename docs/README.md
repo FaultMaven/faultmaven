@@ -44,6 +44,9 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 - **[How to Add Providers](how-to-add-providers.md)** - Adding new LLM providers
 - **[Developer Guide](architecture/developer-guide.md)** - Development workflow and patterns
 - **[Container Usage Guide](architecture/container-usage-guide.md)** - Dependency injection patterns
+- **[Context Management](development/CONTEXT_MANAGEMENT.md)** - 🆕 QueryContext usage guide (developers, admins, support)
+- **[Token Estimation](development/TOKEN_ESTIMATION.md)** - 🆕 Accurate token counting and cost optimization
+- **[Environment Variables](development/ENVIRONMENT_VARIABLES.md)** - 🆕 Configuration via environment variables
 
 ### 📋 Specifications
 - **[Interface Documentation](specifications/INTERFACE_DOCUMENTATION_SPEC.md)** - Interface contracts and compliance
@@ -55,6 +58,9 @@ This directory contains comprehensive documentation for the FaultMaven AI-powere
 - **[Opik Setup Guide](opik-setup.md)** - LLM observability setup
 - **[Migration Guides](migration/)** - System migration documentation
 - **[Troubleshooting](troubleshooting/)** - Common issues and solutions
+
+### 📦 Release Notes
+- **[Infrastructure Improvements 2025-10-04](releases/INFRASTRUCTURE_IMPROVEMENTS_2025-10-04.md)** - 🆕 QueryContext, token estimation, centralized config
 
 ### 📈 Performance & Monitoring
 - **[Testing Guide](architecture/testing-guide.md)** - Architecture testing patterns

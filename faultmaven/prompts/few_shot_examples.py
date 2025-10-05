@@ -181,35 +181,43 @@ RESPONSE_PATTERNS = {
 
 
 def get_pattern(category: str) -> str:
-    """
-    Get compact troubleshooting pattern for a specific category.
+    """Get compact troubleshooting pattern for a specific category
+
+    Retrieves optimized pattern templates (~50 tokens) instead of verbose
+    examples (~1,500 tokens), achieving 87% token reduction.
 
     Args:
-        category: Category of pattern ("kubernetes", "redis", "postgresql", etc.)
+        category: Category of pattern ("kubernetes", "redis", "postgresql",
+                 "network", "security", "performance", "deployment")
 
     Returns:
-        Compact pattern template (~50 tokens)
+        Compact pattern template string or empty string if category not found
 
     Examples:
         >>> pattern = get_pattern("kubernetes")
+        '[SYSTEM DIRECTIVE - DO NOT ECHO THIS TO USER]\\nFor Kubernetes/container issues...'
         >>> pattern = get_pattern("redis")
+        '[SYSTEM DIRECTIVE - DO NOT ECHO THIS TO USER]\\nFor Redis connection...'
+        >>> pattern = get_pattern("unknown")
+        ''
     """
     return TROUBLESHOOTING_PATTERNS.get(category, "")
 
 
 def get_response_pattern(response_type: ResponseType) -> str:
-    """
-    Get compact response pattern for a specific response type.
+    """Get compact response pattern for a specific response type
 
     Args:
         response_type: ResponseType enum value
 
     Returns:
-        Compact response pattern template (~40 tokens)
+        Compact response pattern template string (~40 tokens) or empty string
 
     Examples:
         >>> pattern = get_response_pattern(ResponseType.CLARIFICATION_REQUEST)
+        '[SYSTEM DIRECTIVE - DO NOT ECHO THIS TO USER]\\nAsk 2-3 specific...'
         >>> pattern = get_response_pattern(ResponseType.SOLUTION_READY)
+        '[SYSTEM DIRECTIVE - DO NOT ECHO THIS TO USER]\\nProvide numbered...'
     """
     return RESPONSE_PATTERNS.get(response_type, "")
 
@@ -218,21 +226,27 @@ def format_pattern_prompt(
     response_type: Optional[ResponseType] = None,
     domain: Optional[str] = None
 ) -> str:
-    """
-    Format pattern templates into a concise prompt section.
+    """Format pattern templates into a concise prompt section
 
-    Just-in-time pattern loading - only loads what's needed for the current query.
+    Just-in-time pattern loading - only loads what's needed for the current query,
+    achieving 87% token reduction compared to verbose examples.
 
     Args:
-        response_type: Optional ResponseType for response pattern
-        domain: Optional domain category for troubleshooting pattern
+        response_type: Optional ResponseType for response pattern guidance
+        domain: Optional domain category for troubleshooting pattern ("kubernetes",
+               "redis", "postgresql", "network", "security", "performance", "deployment")
 
     Returns:
-        Formatted string with relevant patterns (~100-200 tokens total)
+        Formatted string with relevant patterns (~100-200 tokens total) or empty
+        string for simple response types that don't need patterns
 
     Examples:
-        >>> prompt = format_pattern_prompt(ResponseType.CLARIFICATION_REQUEST, "kubernetes")
-        >>> prompt = format_pattern_prompt(response_type=ResponseType.ANSWER)
+        >>> format_pattern_prompt(ResponseType.CLARIFICATION_REQUEST, "kubernetes")
+        '[SYSTEM DIRECTIVE - DO NOT ECHO THIS TO USER]\\n...'
+        >>> format_pattern_prompt(response_type=ResponseType.ANSWER)
+        ''  # Simple responses skip patterns
+        >>> format_pattern_prompt(domain="redis")
+        '[SYSTEM DIRECTIVE - DO NOT ECHO THIS TO USER]\\nFor Redis connection...'
     """
     # Skip pattern templates entirely for simple informational responses
     # They don't need structured guidance and adding patterns causes LLM to echo them

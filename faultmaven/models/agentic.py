@@ -571,26 +571,83 @@ class QueryInput(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
+class QueryContext(BaseModel):
+    """Standardized context structure for query classification and processing
+
+    This model provides a typed, validated structure for passing context information
+    between components, replacing raw dictionaries for better type safety and clarity.
+
+    Attributes:
+        session_id: Unique session identifier
+        case_id: Optional case identifier if query is case-related
+        conversation_history: Previous conversation messages for context-aware classification
+        same_provider_for_response: Flag indicating if classification and response use same LLM provider
+        user_metadata: Optional user-specific metadata (preferences, permissions, etc.)
+
+    Examples:
+        >>> context = QueryContext(
+        ...     session_id="abc123",
+        ...     case_id="case456",
+        ...     conversation_history="User: What's the error?\\nAssistant: Connection timeout",
+        ...     same_provider_for_response=True
+        ... )
+        >>> context.validate_for_classification()
+        True
+    """
+    session_id: str = ""
+    case_id: Optional[str] = None
+    conversation_history: str = ""
+    same_provider_for_response: bool = False
+    user_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    def validate_for_classification(self) -> bool:
+        """Validate that context has minimum required fields for classification
+
+        Returns:
+            True if context is valid for classification, False otherwise
+        """
+        return bool(self.session_id)
+
+    def has_conversation_context(self) -> bool:
+        """Check if conversation history is available
+
+        Returns:
+            True if conversation_history is non-empty
+        """
+        return bool(self.conversation_history and self.conversation_history.strip())
+
+
 class QueryIntent(str, Enum):
-    """Query intent classification"""
-    TROUBLESHOOTING = "troubleshooting"
-    EXPLANATION = "explanation"
-    STATUS_CHECK = "status_check"
-    CONFIGURATION = "configuration"
-    INFORMATION = "information"
-    OPTIMIZATION = "optimization"
-    PROBLEM_RESOLUTION = "problem_resolution"
+    """Query intent classification - v3.0 Response-Format-Driven Design
+
+    16 intents designed backward from 9 ResponseType formats (1.8:1 ratio).
+    Each intent maps to distinct ResponseType or shares format with semantically different intents.
+    """
+    # GROUP 1: SIMPLE ANSWER INTENTS (10) → ResponseType.ANSWER
+    INFORMATION = "information"  # Merged: EXPLANATION, DOCUMENTATION into INFORMATION
+    STATUS_CHECK = "status_check"  # Merged: MONITORING into STATUS_CHECK
+    PROCEDURAL = "procedural"  # How-to and capability questions (e.g., "can I do X?", "how do I Y?")
+    VALIDATION = "validation"  # Hypothetical/confirmation questions (e.g., "this won't work, right?")
     BEST_PRACTICES = "best_practices"
-    ROOT_CAUSE_ANALYSIS = "root_cause_analysis"
-    INCIDENT_RESPONSE = "incident_response"
-    MONITORING = "monitoring"
-    DOCUMENTATION = "documentation"
-    # Conversation intelligence intents
+    GREETING = "greeting"
+    GRATITUDE = "gratitude"
     OFF_TOPIC = "off_topic"
     META_FAULTMAVEN = "meta_faultmaven"
     CONVERSATION_CONTROL = "conversation_control"
-    GREETING = "greeting"
-    GRATITUDE = "gratitude"
+
+    # GROUP 2: STRUCTURED PLAN INTENTS (3) → ResponseType.PLAN_PROPOSAL
+    CONFIGURATION = "configuration"
+    OPTIMIZATION = "optimization"
+    DEPLOYMENT = "deployment"  # NEW v3.0: Deployment planning and execution
+
+    # GROUP 3: VISUAL RESPONSE INTENTS (2) → Specialized ResponseTypes
+    VISUALIZATION = "visualization"  # NEW v3.0: Diagrams, flowcharts → ResponseType.VISUAL_DIAGRAM
+    COMPARISON = "comparison"  # NEW v3.0: Feature comparisons, pros/cons → ResponseType.COMPARISON_TABLE
+
+    # GROUP 4: DIAGNOSTIC INTENT (1) → Dynamic ResponseType (workflow-driven)
+    TROUBLESHOOTING = "troubleshooting"  # Merged: PROBLEM_RESOLUTION, ROOT_CAUSE_ANALYSIS, INCIDENT_RESPONSE
+
+    # GROUP 5: FALLBACK (1)
     UNKNOWN = "unknown"
 
 
@@ -629,9 +686,9 @@ class QueryDomain(BaseModel):
 
 
 class QueryUrgency(str, Enum):
-    """Urgency levels for queries"""
+    """Urgency levels for queries - v3.0 standardized naming"""
     LOW = "low"
-    NORMAL = "normal"
+    MEDIUM = "medium"  # Renamed from NORMAL for consistency
     HIGH = "high"
     CRITICAL = "critical"
 

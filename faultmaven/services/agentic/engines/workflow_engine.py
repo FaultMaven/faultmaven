@@ -835,20 +835,20 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
                 "type": "general",
                 "complexity": "medium",
                 "domain": "general",
-                "urgency": "normal",
+                "urgency": "medium",  # v3.0: renamed from "normal"
                 "confidence": 0.6
             }
 
     async def _select_planning_strategy(
-        self, 
-        classification: Dict[str, Any], 
-        context: WorkflowContext, 
+        self,
+        classification: Dict[str, Any],
+        context: WorkflowContext,
         request: Dict[str, Any]
     ) -> str:
         """Select the most appropriate planning strategy."""
-        
+
         complexity = classification.get("complexity", "medium")
-        urgency = classification.get("urgency", "normal")
+        urgency = classification.get("urgency", "medium")  # v3.0: renamed from "normal"
         
         # High complexity or urgent requests benefit from proactive planning
         if complexity == "high" or urgency == "high":

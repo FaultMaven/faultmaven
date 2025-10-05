@@ -70,7 +70,7 @@ class SynthesisContext:
     include_references: bool = True
     language: str = "en"
     domain: str = "general"
-    urgency_level: str = "normal"  # low, normal, high, critical
+    urgency_level: str = "medium"  # v3.0: low, medium, high, critical (renamed from normal)
 
 
 class ResponseSynthesizer(IResponseSynthesizer):
@@ -523,7 +523,7 @@ class ResponseSynthesizer(IResponseSynthesizer):
             include_references=context_data.get("include_references", True),
             language=context_data.get("language", "en"),
             domain=context_data.get("domain", "general"),
-            urgency_level=context_data.get("urgency_level", "normal")
+            urgency_level=context_data.get("urgency_level", "medium")  # v3.0: renamed from "normal"
         )
 
     async def _analyze_sources(self, sources: List[Dict[str, Any]], context: SynthesisContext) -> List[Dict[str, Any]]:
@@ -994,7 +994,7 @@ timestamp: {datetime.utcnow().isoformat()}"""
         """Synthesize a response from multiple data sources"""
         synthesis_context = SynthesisContext(
             domain=context.get('domain', 'general'),
-            urgency_level=context.get('urgency', 'normal'),
+            urgency_level=context.get('urgency', 'medium'),  # v3.0: renamed from 'normal'
             output_format=user_preferences.get('format', 'markdown'),
             user_expertise=user_preferences.get('technical_level', 'intermediate'),
             include_examples=user_preferences.get('include_examples', True),

@@ -386,11 +386,11 @@ class EnhancedLogProcessor(ILogProcessor):
             "user_expertise": "unknown",
             "previous_issues": [],
             "service_context": [],
-            "urgency_level": "normal",
+            "urgency_level": "medium",  # v3.0: renamed from "normal"
             "expected_patterns": [],
             "case_keywords": []
         }
-        
+
         if not memory_context:
             return insights
         
@@ -516,7 +516,7 @@ class EnhancedLogProcessor(ILogProcessor):
         
         # Enhanced pattern matching with context weights
         technical_focus = context_insights.get("technical_focus", [])
-        urgency_level = context_insights.get("urgency_level", "normal")
+        urgency_level = context_insights.get("urgency_level", "medium")  # v3.0: renamed from "normal"
         case_keywords = context_insights.get("case_keywords", [])
         
         # Standard field extraction with enhanced patterns

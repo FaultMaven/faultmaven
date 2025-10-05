@@ -111,7 +111,8 @@ paths:
         \ endpoint follows the thin controller pattern:\n1. Basic input validation\
         \ (file size, type)\n2. Pure delegation to service layer for all business\
         \ logic\n3. Clean error boundary handling\n\nArgs:\n    file: File to upload\n\
-        \    session_id: Session identifier \n    description: Optional description\
+        \    session_id: Session identifier\n    case_id: Case identifier for associating\
+        \ data with a troubleshooting case\n    description: Optional description\
         \ of the data\n    data_service: Injected DataService from DI container\n\
         \    \nReturns:\n    UploadedData with processing results\n    \nRaises:\n\
         \    HTTPException: On service layer errors (400, 404, 413, 500)"
@@ -3210,6 +3211,10 @@ components:
         session_id:
           type: string
           title: Session Id
+        case_id:
+          type: string
+          title: Case Id
+          description: Case identifier for associating uploaded data with a troubleshooting case
         description:
           anyOf:
           - type: string
@@ -3219,6 +3224,7 @@ components:
       required:
       - file
       - session_id
+      - case_id
       title: Body_upload_data_api_v1_data_upload_post
     Body_upload_data_compat_api_v1_data_post:
       properties:

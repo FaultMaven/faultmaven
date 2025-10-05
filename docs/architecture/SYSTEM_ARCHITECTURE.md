@@ -11,6 +11,9 @@ FaultMaven implements a sophisticated clean architecture pattern with dependency
 - **Persistent State Management**: Redis-backed conversation memory with execution planning
 - **Comprehensive Security**: PII protection, guardrails, and policy enforcement
 - **Enterprise-Grade Reliability**: Circuit breakers, error handling, and fallback strategies
+- **Typed Context System**: Strongly-typed QueryContext for type safety and validation
+- **Accurate Token Estimation**: Provider-specific tokenizers for cost optimization
+- **Centralized Configuration**: Unified settings management with environment-based overrides
 
 ## Architecture Diagram
 
@@ -165,6 +168,172 @@ graph TB
     class AGENT,PROC,KB,TOOLS,CLASS,LOG_ANALYZER core
     class LLM,SEC,OBS,PERSIST,HEALTH,METRICS,ALERT,CACHE infra
     class REDIS,CHROMA,PRESIDIO,OPIK_SVC,OPENAI,ANTHROPIC,FIREWORKS storage
+```
+
+## Recent Infrastructure Enhancements (2025-10-04)
+
+### 1. Typed Context System
+
+**Status**: ✅ IMPLEMENTED
+
+FaultMaven now uses a strongly-typed `QueryContext` model instead of loose dictionaries for passing context between components.
+
+**Benefits**:
+- **Type Safety**: IDE autocomplete and static type checking
+- **Validation**: Pydantic automatically validates data structure
+- **Clearer Intent**: Explicit fields document what context is needed
+- **Better Errors**: Invalid context caught at creation time, not runtime
+
+**Usage**:
+```python
+from faultmaven.models.agentic import QueryContext
+
+context = QueryContext(
+    session_id="abc-123",
+    case_id="case-456",
+    conversation_history="User: Hello\nAssistant: Hi there",
+    same_provider_for_response=True
+)
+
+classification = await engine.classify_query(query, context)
+```
+
+**Developer Documentation**: [Context Management Guide](../development/CONTEXT_MANAGEMENT.md)
+
+### 2. Accurate Token Estimation
+
+**Status**: ✅ IMPLEMENTED
+
+Provider-specific tokenizers replace character-based estimation (±20% error) with exact token counts.
+
+**Supported Providers**:
+- **OpenAI**: tiktoken with cl100k_base encoding
+- **Anthropic**: Official Anthropic tokenizer
+- **Fireworks**: tiktoken (most models are OpenAI-compatible)
+- **Fallback**: Character-based for unsupported providers
+
+**Usage**:
+```python
+from faultmaven.utils.token_estimation import estimate_tokens, estimate_prompt_tokens
+
+# Single text
+tokens = estimate_tokens(text, provider="fireworks", model="llama-v3p1-405b-instruct")
+
+# Complete prompt breakdown
+breakdown = estimate_prompt_tokens(
+    system_prompt=system,
+    user_message=query,
+    conversation_history=history,
+    provider="fireworks"
+)
+# Returns: {"system": 210, "user": 15, "history": 340, "total": 565}
+```
+
+**Impact**:
+- **Cost Optimization**: Accurate token tracking prevents overages
+- **Context Management**: Stay within model context limits
+- **Performance Monitoring**: Track token usage patterns by response type and complexity
+
+**Developer Documentation**: [Token Estimation Guide](../development/TOKEN_ESTIMATION.md)
+
+### 3. Centralized Configuration
+
+**Status**: ✅ IMPLEMENTED
+
+All conversation and classification thresholds centralized in `ConversationThresholds` configuration class.
+
+**Configurable Thresholds**:
+```bash
+# Conversation limits
+MAX_CLARIFICATIONS=3
+MAX_CONVERSATION_TURNS=20
+MAX_CONVERSATION_TOKENS=4000
+
+# Token budgets
+CONTEXT_TOKEN_BUDGET=4000
+SYSTEM_PROMPT_MAX_TOKENS=500
+PATTERN_TEMPLATE_MAX_TOKENS=300
+
+# Classification thresholds
+PATTERN_CONFIDENCE_THRESHOLD=0.7
+CONFIDENCE_OVERRIDE_THRESHOLD=0.4
+SELF_CORRECTION_MIN_CONFIDENCE=0.4
+SELF_CORRECTION_MAX_CONFIDENCE=0.7
+```
+
+**Benefits**:
+- **Single Source of Truth**: No hardcoded magic numbers
+- **Environment-Based**: Different values per environment (dev/staging/prod)
+- **Runtime Adjustable**: Change thresholds without code changes
+- **Consistent Behavior**: Same thresholds used across all components
+
+**Usage**:
+```python
+from faultmaven.config.settings import get_settings
+
+settings = get_settings()
+
+# Access thresholds
+if clarifications >= settings.thresholds.max_clarifications:
+    return escalate()
+
+if confidence < settings.thresholds.pattern_confidence_threshold:
+    use_llm_classification()
+```
+
+### 4. Enhanced Prompt Validation
+
+**Status**: ✅ IMPLEMENTED
+
+Prompt assembly now includes input validation to catch errors early.
+
+**Validations**:
+- Base system prompt cannot be empty
+- Response type must be ResponseType enum
+- Warning if prompt exceeds 2000 chars (~500 tokens)
+
+**Example Error**:
+```python
+# This will raise ValueError
+assemble_intelligent_prompt(
+    base_system_prompt="",  # Invalid!
+    response_type=ResponseType.ANSWER
+)
+# ValueError: base_system_prompt cannot be empty
+```
+
+### 5. Improved Documentation
+
+**Status**: ✅ IMPLEMENTED
+
+Standardized docstrings across all prompts modules with consistent format:
+- Summary line
+- Args with types
+- Returns with structure
+- Examples showing actual usage
+- Deprecation warnings where applicable
+
+**Example**:
+```python
+def get_tiered_prompt(response_type: str = "ANSWER", complexity: str = "simple") -> str:
+    """Get optimized system prompt based on response type and complexity
+
+    Implements tiered prompt loading for token efficiency (81% reduction):
+    - ANSWER/INFO responses: Minimal prompt (30 tokens)
+    - Simple troubleshooting: Brief prompt (90 tokens)
+    - Moderate/Complex troubleshooting: Standard prompt (210 tokens)
+
+    Args:
+        response_type: ResponseType value (ANSWER, PLAN_PROPOSAL, etc.)
+        complexity: Query complexity (simple, moderate, complex)
+
+    Returns:
+        Optimized system prompt string
+
+    Examples:
+        >>> get_tiered_prompt("ANSWER", "simple")
+        'You are FaultMaven, an expert SRE...'  # 30 tokens
+    """
 ```
 
 ## Layer Responsibilities
@@ -1398,3 +1567,97 @@ This section documents how each architectural component maps to specific Python 
 - `exceptions.py` - Custom exception definitions
 
 This mapping provides a comprehensive view of how FaultMaven's architectural components are implemented across the Python module structure, enabling developers to quickly locate and understand the codebase organization.
+
+---
+
+## Query Classification & Prompt Engineering (Phase 0)
+
+> **STATUS**: ✅ IMPLEMENTED (2025-10-03)
+> **Test Coverage**: 28/28 passing (100%)
+> **Detailed Specification**: [`QUERY_CLASSIFICATION_AND_PROMPT_ENGINEERING.md`](./QUERY_CLASSIFICATION_AND_PROMPT_ENGINEERING.md)
+
+### Overview
+
+FaultMaven implements a **v3.0 Response-Format-Driven Classification System** where the taxonomy is designed backward from response requirements rather than forward from semantic categories.
+
+**Key Features:**
+- **17 Intent Taxonomy (incl. UNKNOWN fallback)**: Consolidated from 20 intents (removed redundancy)
+- **9 ResponseType Formats**: Including VISUAL_DIAGRAM and COMPARISON_TABLE
+- **47+ Weighted Patterns**: With exclusion rules for high accuracy
+- **Multi-Dimensional Classification**: Intent, complexity, domain, urgency
+- **SRE Doctrine Prompts**: 5-phase troubleshooting methodology
+- **Token Optimization**: 81% reduction via tiered prompts
+
+### Response-Format-Driven Design (v3.0)
+
+```
+10 Simple Answer Intents    → ResponseType.ANSWER
+3  Structured Plan Intents   → ResponseType.PLAN_PROPOSAL
+2  Visual Response Intents   → VISUAL_DIAGRAM, COMPARISON_TABLE
+1  Diagnostic Intent         → Dynamic (workflow-driven)
+1  Fallback                  → CLARIFICATION_REQUEST
+─────────────────────────────────────────────────────────
+17 Total Intents             → 9 Response Formats (1.89:1 ratio)
+```
+
+### Implementation Status
+
+✅ **Classification Engine** (`classification_engine.py`)
+- Pattern-based classification with weighted scoring (0.5-2.0)
+- Multi-dimensional confidence framework (5 factors)
+- Conditional LLM classification (4 modes)
+- 28/28 tests passing (100% coverage)
+
+✅ **ResponseTypeSelector** (`response_type_selector.py`)
+- Intent-to-response mapping (16→9)
+- Confidence-based override logic
+- Visual format support
+
+✅ **Prompt Engineering** (from TECHNICAL_SPECIFICATIONS.md)
+- PromptManager with template system
+- Phase-specific prompts (5-phase SRE doctrine)
+- Few-shot examples and token budget management
+
+For complete technical specifications, design principles, pattern definitions, and implementation guidance, see [`QUERY_CLASSIFICATION_AND_PROMPT_ENGINEERING.md`](./QUERY_CLASSIFICATION_AND_PROMPT_ENGINEERING.md).
+
+---
+
+## Data Submission Handling (Task 3)
+
+> **STATUS**: ✅ IMPLEMENTED (2025-10-03)
+> **Detailed Specification**: [`DATA_SUBMISSION_DESIGN.md`](./DATA_SUBMISSION_DESIGN.md)
+
+### Overview
+
+FaultMaven implements intelligent **data submission detection** to handle cases where users paste logs, stack traces, or metrics directly into the query box without questions. The system automatically routes large data dumps to the data upload endpoint while maintaining full case association.
+
+**Key Features:**
+- **10K Character Hard Limit**: Messages >10K auto-route to data upload (too large for LLM context)
+- **6 Pattern Categories**: Timestamps, log levels, stack traces, structured data, server logs, metrics
+- **Dual Processing Strategy**: Async (>10K chars with 202 response) vs Sync (<10K chars with 201 response)
+- **Case Association**: All data linked to case_id and user_id (same ownership model as queries)
+- **Zero New Intents**: Leverages existing architecture via metadata-based routing
+
+### Implementation
+
+**Detection Logic** (`classification_engine.py`):
+- Hard limit: `len(query) > 10000` → immediate routing to data upload
+- Pattern matching: 6 categories with weighted scores (1.5-2.5)
+- Metadata-based routing: `suggested_route: "data_upload"` in classification result
+
+**API Contract** (`openapi.locked.yaml`):
+- `/api/v1/data/upload` now requires `case_id` parameter (BREAKING CHANGE)
+- Ensures data ownership and case association
+- Frontend implementation guide provided in `FRONTEND_DATA_UPLOAD_IMPLEMENTATION_REQUEST.md`
+
+**Background Processing** (`case.py`):
+- Large submissions (>10K): Async analysis with `_process_data_analysis()`
+- Small submissions (<10K): Sync analysis with immediate insights
+- Full context propagation: case_id, user_id, source, timestamp
+
+**Context Propagation** (`data_service.py`):
+- Context stored in uploaded_data response
+- Merged into session metadata for tracking
+- Enables case-based data retrieval and user ownership
+
+For complete implementation details, pattern definitions, API contract changes, testing scenarios, and frontend integration guide, see [`DATA_SUBMISSION_DESIGN.md`](./DATA_SUBMISSION_DESIGN.md).

@@ -40,17 +40,18 @@ MAX_FILE_SIZE = 10 * 1024 * 1024
 async def upload_data_compat(
     file: UploadFile = File(...),
     session_id: str = Form(...),
+    case_id: str = Form(...),
     description: Optional[str] = Form(None),
     data_service: DataService = Depends(get_data_service),
     response: Response = Response()
 ):
     """
     Compatibility endpoint for legacy tests - delegates to main upload function
-    
+
     This endpoint maintains backward compatibility for existing tests that
     expect POST to /data instead of /data/upload.
     """
-    return await upload_data(file, session_id, description, data_service, response)
+    return await upload_data(file, session_id, case_id, description, data_service, response)
 
 
 @router.post("/upload", status_code=201)
@@ -58,32 +59,34 @@ async def upload_data_compat(
 async def upload_data(
     file: UploadFile = File(...),
     session_id: str = Form(...),
+    case_id: str = Form(...),
     description: Optional[str] = Form(None),
     data_service: DataService = Depends(get_data_service),
     response: Response = Response()
 ):
     """
     Upload and process data with clean delegation pattern
-    
+
     This endpoint follows the thin controller pattern:
     1. Basic input validation (file size, type)
     2. Pure delegation to service layer for all business logic
     3. Clean error boundary handling
-    
+
     Args:
         file: File to upload
-        session_id: Session identifier 
+        session_id: Session identifier
+        case_id: Case identifier for associating data with a troubleshooting case
         description: Optional description of the data
         data_service: Injected DataService from DI container
-        
+
     Returns:
         UploadedData with processing results
-        
+
     Raises:
         HTTPException: On service layer errors (400, 404, 413, 500)
     """
-    logger.info(f"Received data upload for session {session_id}: {file.filename}")
-    
+    logger.info(f"Received data upload for session {session_id}, case {case_id}: {file.filename}")
+
     try:
         # Basic file validation at API boundary
         if file.size and file.size > MAX_FILE_SIZE:
@@ -91,17 +94,26 @@ async def upload_data(
                 status_code=413,
                 detail=f"File too large: {file.size} bytes (max: {MAX_FILE_SIZE})"
             )
-        
+
         # Read file content
         content = await file.read()
         content_str = content.decode("utf-8", errors="ignore")
-        
+
+        # Build context for case association
+        context = {
+            "case_id": case_id,
+            "source": "direct_file_upload"
+        }
+        if description:
+            context["description"] = description
+
         # Pure delegation - all business logic is in the service layer
         uploaded_data = await data_service.ingest_data(
             content=content_str,
             session_id=session_id,
             file_name=file.filename,
-            file_size=len(content)
+            file_size=len(content),
+            context=context
         )
         
         # Set Location header for REST compliance

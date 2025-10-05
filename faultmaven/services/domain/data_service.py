@@ -295,7 +295,8 @@ class DataService(BaseService):
             "file_name": file_name or "unknown",
             "file_size": file_size or len(content),
             "processing_status": "completed",
-            "insights": detailed_insights
+            "insights": detailed_insights,
+            "context": context or {}  # Include context for case/user association
         }
         
 
@@ -318,16 +319,22 @@ class DataService(BaseService):
         # Record operation in session if session service is available
         if self._session_service and session_id:
             try:
+                # Build metadata including context for case/user association
+                record_metadata = {
+                    "data_type": classified_data_type.value,
+                    "processing_status": "completed",
+                    "insights_count": len(detailed_insights)
+                }
+                # Merge context (case_id, user_id, etc.) into metadata
+                if context:
+                    record_metadata.update(context)
+
                 await self._session_service.record_data_upload_operation(
                     session_id=session_id,
                     data_id=data_id,
                     filename=file_name or "unknown",
                     file_size=file_size or len(content),
-                    metadata={
-                        "data_type": classified_data_type.value,
-                        "processing_status": "completed",  # Fixed status since new model doesn't have this field
-                        "insights_count": len(detailed_insights)
-                    }
+                    metadata=record_metadata
                 )
             except Exception as e:
                 self.logger.warning(f"Failed to record data upload operation in session: {e}")

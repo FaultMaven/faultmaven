@@ -382,6 +382,31 @@ class KnowledgeSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+class ConversationThresholds(BaseSettings):
+    """Conversation management thresholds and limits
+
+    Centralizes all conversation-related thresholds for consistent behavior
+    across prompt assembly, conversation state management, and classification.
+    """
+    # Conversation history limits
+    max_clarifications: int = Field(default=3, env="MAX_CLARIFICATIONS")
+    max_conversation_turns: int = Field(default=20, env="MAX_CONVERSATION_TURNS")
+    max_conversation_tokens: int = Field(default=4000, env="MAX_CONVERSATION_TOKENS")
+
+    # Token budgets for prompt assembly
+    context_token_budget: int = Field(default=4000, env="CONTEXT_TOKEN_BUDGET")
+    system_prompt_max_tokens: int = Field(default=500, env="SYSTEM_PROMPT_MAX_TOKENS")
+    pattern_template_max_tokens: int = Field(default=300, env="PATTERN_TEMPLATE_MAX_TOKENS")
+
+    # Classification confidence thresholds
+    pattern_confidence_threshold: float = Field(default=0.7, env="PATTERN_CONFIDENCE_THRESHOLD")
+    confidence_override_threshold: float = Field(default=0.4, env="CONFIDENCE_OVERRIDE_THRESHOLD")
+    self_correction_min_confidence: float = Field(default=0.4, env="SELF_CORRECTION_MIN_CONFIDENCE")
+    self_correction_max_confidence: float = Field(default=0.7, env="SELF_CORRECTION_MAX_CONFIDENCE")
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
 class FeatureSettings(BaseSettings):
     """Feature flags and toggles"""
     use_di_container: bool = Field(default=True, env="USE_DI_CONTAINER")
@@ -394,8 +419,34 @@ class FeatureSettings(BaseSettings):
 
     # Token-Aware Context Management (Phase 0 Task 3)
     enable_token_aware_context: bool = Field(default=True, env="ENABLE_TOKEN_AWARE_CONTEXT")
-    context_token_budget: int = Field(default=4000, env="CONTEXT_TOKEN_BUDGET")
     enable_conversation_summarization: bool = Field(default=True, env="ENABLE_CONVERSATION_SUMMARIZATION")
+    # Note: Token budgets and thresholds moved to ConversationThresholds class above
+
+    # Enhanced Classification System Configuration (Phase 0)
+    # LLM Classification Mode: disabled, fallback, enhancement (recommended), always
+    llm_classification_mode: str = Field(default="enhancement", env="LLM_CLASSIFICATION_MODE")
+    # Enable multi-dimensional confidence scoring
+    enable_multidimensional_confidence: bool = Field(default=True, env="ENABLE_MULTIDIMENSIONAL_CONFIDENCE")
+    # Note: Confidence thresholds moved to ConversationThresholds class above
+
+    # Pattern Matching Configuration (Phase 0 - Weighted Patterns & Exclusions)
+    pattern_weighted_scoring: bool = Field(default=True, env="PATTERN_WEIGHTED_SCORING")
+    pattern_exclusion_rules: bool = Field(default=True, env="PATTERN_EXCLUSION_RULES")
+
+    # Multi-Dimensional Confidence Analysis (Phase 0 - 5 Factors)
+    enable_structure_analysis: bool = Field(default=True, env="ENABLE_STRUCTURE_ANALYSIS")
+    enable_linguistic_analysis: bool = Field(default=True, env="ENABLE_LINGUISTIC_ANALYSIS")
+    enable_entity_analysis: bool = Field(default=True, env="ENABLE_ENTITY_ANALYSIS")
+    enable_context_analysis: bool = Field(default=True, env="ENABLE_CONTEXT_ANALYSIS")
+    enable_disambiguation_check: bool = Field(default=True, env="ENABLE_DISAMBIGUATION_CHECK")
+
+    # Prompt Optimization (Phase 0 - Token Reduction 81%)
+    enable_tiered_prompts: bool = Field(default=True, env="ENABLE_TIERED_PROMPTS")
+    enable_pattern_templates: bool = Field(default=True, env="ENABLE_PATTERN_TEMPLATES")
+
+    # Note: Self-correction thresholds moved to ConversationThresholds class above
+    # Deprecated: SELF_CORRECTION_THRESHOLD → use ConversationThresholds.self_correction_max_confidence
+    # Deprecated: FORCED_CLARIFICATION_THRESHOLD → use ConversationThresholds.confidence_override_threshold
 
     # Experimental features
     enable_advanced_reasoning: bool = Field(default=False, env="ENABLE_ADVANCED_REASONING")
@@ -477,6 +528,7 @@ class FaultMavenSettings(BaseSettings):
     protection: ProtectionSettings = Field(default_factory=ProtectionSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    thresholds: ConversationThresholds = Field(default_factory=ConversationThresholds)
     
     model_config = {
         "env_file": ".env",

@@ -8,17 +8,23 @@ import datetime
 # --- Enumerations for Explicit Contracts ---
 
 class ResponseType(str, Enum):
-    """Defines the agent's primary intent for this turn."""
-    ANSWER = "ANSWER"
-    PLAN_PROPOSAL = "PLAN_PROPOSAL"
-    CLARIFICATION_REQUEST = "CLARIFICATION_REQUEST"
-    CONFIRMATION_REQUEST = "CONFIRMATION_REQUEST"
-    SOLUTION_READY = "SOLUTION_READY"
-    NEEDS_MORE_DATA = "NEEDS_MORE_DATA"
-    ESCALATION_REQUIRED = "ESCALATION_REQUIRED"
-    # Compatibility types
-    DATA_REQUEST = "DATA_REQUEST"
-    ERROR = "ERROR"
+    """Defines the agent's primary intent for this turn - v3.0 Response-Format-Driven Design
+
+    9 response formats designed to serve 16 QueryIntent categories (1.8:1 ratio).
+    Each format has strict structural requirements for frontend parsing.
+    """
+    # Core response formats (7 existing)
+    ANSWER = "ANSWER"  # Natural prose response
+    PLAN_PROPOSAL = "PLAN_PROPOSAL"  # Numbered steps with commands/rationale
+    CLARIFICATION_REQUEST = "CLARIFICATION_REQUEST"  # 2-3 specific questions
+    CONFIRMATION_REQUEST = "CONFIRMATION_REQUEST"  # Risk warning + yes/no prompt
+    SOLUTION_READY = "SOLUTION_READY"  # Root cause + solution sections
+    NEEDS_MORE_DATA = "NEEDS_MORE_DATA"  # Diagnostic data request (what, why, how)
+    ESCALATION_REQUIRED = "ESCALATION_REQUIRED"  # Handoff with summary
+
+    # Visual response formats (2 new in v3.0)
+    VISUAL_DIAGRAM = "VISUAL_DIAGRAM"  # Mermaid diagram (architecture, flowcharts)
+    COMPARISON_TABLE = "COMPARISON_TABLE"  # Markdown table (feature comparisons, pros/cons)
 
 class SourceType(str, Enum):
     """Defines the origin of a piece of evidence."""

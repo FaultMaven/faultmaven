@@ -758,9 +758,15 @@ class DIContainer:
             try:
                 self.query_classification_engine: IQueryClassificationEngine = QueryClassificationEngine(
                     llm_provider=self.get_llm_provider(),
-                    tracer=self.get_tracer()
+                    tracer=self.get_tracer(),
+                    llm_classification_mode=self.settings.features.llm_classification_mode,
+                    pattern_confidence_threshold=self.settings.features.pattern_confidence_threshold
                 )
-                logger.debug("✅ Query Classification Engine initialized")
+                logger.debug(
+                    f"✅ Query Classification Engine initialized "
+                    f"(mode={self.settings.features.llm_classification_mode}, "
+                    f"threshold={self.settings.features.pattern_confidence_threshold})"
+                )
             except Exception as e:
                 logger.warning(f"Query Classification Engine initialization failed: {e}")
                 self.query_classification_engine = None

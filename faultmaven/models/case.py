@@ -133,26 +133,71 @@ class CaseParticipant(BaseModel):
         json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
 
 
+class CaseDiagnosticState(BaseModel):
+    """Server-side diagnostic state tracking for doctor/patient model.
+
+    This model tracks the progression through the SRE 5-phase methodology
+    as the LLM diagnoses the user's problem. It is NOT exposed via API -
+    it's used internally to provide context to the LLM.
+
+    The LLM acts as a diagnostic doctor, maintaining this state across
+    all interactions while naturally answering user questions.
+    """
+
+    # Problem tracking
+    has_active_problem: bool = Field(default=False, description="Whether user has an active technical problem")
+    problem_statement: str = Field(default="", description="Concise statement of the current problem")
+    problem_started_at: Optional[datetime] = Field(None, description="When problem tracking began")
+
+    # SRE 5-phase methodology progression (0-5)
+    # Phase 0: Intake (problem identification and scoping)
+    # Phase 1: Define Blast Radius (impact assessment)
+    # Phase 2: Establish Timeline (change analysis)
+    # Phase 3: Formulate Hypotheses (root cause theories)
+    # Phase 4: Validate Hypotheses (testing and verification)
+    # Phase 5: Propose Solution (resolution and prevention)
+    current_phase: int = Field(default=0, description="Current SRE methodology phase (0-5)")
+
+    # Phase-specific data collected
+    symptoms: List[str] = Field(default_factory=list, description="Observed symptoms and error messages")
+    timeline_info: Dict[str, Any] = Field(default_factory=dict, description="Timeline of changes and events")
+    hypotheses: List[Dict[str, Any]] = Field(default_factory=list, description="Working hypotheses with evidence")
+    tests_performed: List[str] = Field(default_factory=list, description="Diagnostic tests and validations performed")
+
+    # Solution tracking
+    root_cause: str = Field(default="", description="Identified root cause")
+    solution_proposed: bool = Field(default=False, description="Whether solution has been proposed")
+    solution_text: str = Field(default="", description="Proposed solution details")
+    solution_implemented: bool = Field(default=False, description="Whether user confirmed implementation")
+
+    # Case closure tracking
+    case_resolved: bool = Field(default=False, description="Whether case is considered resolved")
+    resolution_summary: str = Field(default="", description="Summary of how problem was resolved")
+
+    class Config:
+        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
+
+
 class CaseContext(BaseModel):
     """Contextual information and artifacts for a case"""
-    
+
     # Troubleshooting context
     problem_description: Optional[str] = Field(None, description="Initial problem description")
     system_info: Dict[str, Any] = Field(default_factory=dict, description="System information")
     environment_details: Dict[str, Any] = Field(default_factory=dict, description="Environment context")
-    
+
     # Data and artifacts
     uploaded_files: List[str] = Field(default_factory=list, description="Uploaded file IDs")
     log_snippets: List[Dict[str, Any]] = Field(default_factory=list, description="Relevant log excerpts")
     error_patterns: List[str] = Field(default_factory=list, description="Identified error patterns")
-    
-    # SRE doctrine progress
+
+    # SRE doctrine progress (deprecated - use CaseDiagnosticState instead)
     blast_radius_defined: bool = Field(default=False, description="Blast radius analysis completed")
     timeline_established: bool = Field(default=False, description="Timeline analysis completed")
     hypothesis_formulated: List[str] = Field(default_factory=list, description="Working hypotheses")
     hypothesis_validated: List[Dict[str, Any]] = Field(default_factory=list, description="Validation results")
     solutions_proposed: List[Dict[str, Any]] = Field(default_factory=list, description="Proposed solutions")
-    
+
     # Analysis results
     root_causes: List[str] = Field(default_factory=list, description="Identified root causes")
     recommendations: List[str] = Field(default_factory=list, description="Recommended actions")

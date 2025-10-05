@@ -26,6 +26,7 @@ class LoggingConfig:
     LOG_DEDUPE = os.getenv('LOG_DEDUPE', 'true').lower() == 'true'
     LOG_BUFFER_SIZE = int(os.getenv('LOG_BUFFER_SIZE', '100'))
     LOG_FLUSH_INTERVAL = float(os.getenv('LOG_FLUSH_INTERVAL', '5'))
+    LOG_HUMAN_READABLE = os.getenv('LOG_HUMAN_READABLE', 'false').lower() == 'true'
     
     @classmethod
     def get_log_level(cls) -> int:
@@ -104,8 +105,14 @@ class FaultMavenLogger:
         # Add appropriate renderer based on format
         if self.config.LOG_FORMAT == 'json':
             processors.append(structlog.processors.JSONRenderer())
-        else:
+        elif self.config.LOG_FORMAT == 'console':
             processors.append(structlog.dev.ConsoleRenderer())
+        else:
+            # Default to JSON for production, but allow human-readable for development
+            if self.config.LOG_HUMAN_READABLE:
+                processors.append(structlog.dev.ConsoleRenderer())
+            else:
+                processors.append(structlog.processors.JSONRenderer())
         
         # Configure structlog with dynamic processor list
         structlog.configure(

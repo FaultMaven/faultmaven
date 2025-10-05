@@ -16,7 +16,7 @@ from typing import Dict, Any, Optional, Tuple
 from dataclasses import asdict
 from collections import defaultdict
 
-from faultmaven.models.agentic import QueryIntent, QueryClassification
+from faultmaven.models.agentic import QueryIntent, QueryClassification, QueryContext
 from faultmaven.models.api import ResponseType
 from faultmaven.services.agentic.engines.classification_engine import QueryClassificationEngine
 from faultmaven.services.agentic.orchestration.response_type_selector import ResponseTypeSelector
@@ -140,10 +140,35 @@ class IntelligentQueryProcessor:
         settings = get_settings()
         self.enabled = settings.features.enable_intelligent_prompts
 
+        # Check if classification and response use same provider (for optimization)
+        self.same_provider = self._check_same_provider()
+
         logger.info(
             f"IntelligentQueryProcessor initialized (enabled={self.enabled}, "
-            f"token_tracking=enabled)"
+            f"token_tracking=enabled, same_provider_optimization={self.same_provider})"
         )
+
+    def _check_same_provider(self) -> bool:
+        """Check if classification engine and response generation use the same LLM provider
+
+        Returns True when both use the same provider, enabling skip of redundant LLM classification call
+        """
+        try:
+            # Get classification provider name
+            classifier_provider = getattr(self.classification_engine, 'llm_provider_name', None)
+
+            # Currently, response generation uses the same provider as classification
+            # (both initialized from container.get_llm_provider())
+            # This will return True, enabling the optimization
+
+            # If CLASSIFIER_PROVIDER is implemented separately in the future,
+            # we would compare: classifier_provider != response_provider
+            # For now, they're always the same, so return True
+
+            return True  # Same provider - optimization enabled
+        except Exception as e:
+            logger.warning(f"Failed to check provider equality: {e}")
+            return False  # Safe default - no optimization
 
     async def process_query(
         self,
@@ -169,9 +194,9 @@ class IntelligentQueryProcessor:
             return await self._legacy_processing(sanitized_query, conversation_context)
 
         try:
-            # Step 1: Classify query with error fallback
+            # Step 1: Classify query with error fallback (include conversation context)
             classification = await self._classify_with_fallback(
-                sanitized_query, session_id, case_id
+                sanitized_query, session_id, case_id, conversation_context
             )
 
             # Step 2: Get conversation state with error fallback
@@ -225,13 +250,38 @@ class IntelligentQueryProcessor:
             return await self._legacy_processing(sanitized_query, conversation_context)
 
     async def _classify_with_fallback(
-        self, query: str, session_id: str, case_id: str
+        self, query: str, session_id: str, case_id: str, conversation_context: str = ""
     ) -> QueryClassification:
-        """Classify query with fallback on error"""
+        """Classify query with fallback on error
+
+        Args:
+            query: User query to classify
+            session_id: Session identifier
+            case_id: Case identifier
+            conversation_context: Conversation history
+
+        Returns:
+            QueryClassification with sentiment and other enhancements
+        """
         try:
-            # Step 1: Basic classification
+            # Step 1: Build typed QueryContext for classification
+            # Optimization: If classification uses same LLM provider as response generation,
+            # skip LLM classification to avoid redundant call with same context
+            same_provider_for_response = self._check_same_provider()
+
+            query_context = QueryContext(
+                session_id=session_id,
+                case_id=case_id,
+                conversation_history=conversation_context,
+                same_provider_for_response=same_provider_for_response
+            )
+
+            # Validate context before classification
+            if not query_context.validate_for_classification():
+                logger.warning(f"Invalid query context for classification: {session_id}")
+
             classification = await self.classification_engine.classify_query(
-                query, context={"session_id": session_id, "case_id": case_id}
+                query, context=query_context
             )
 
             # Step 2: Enhance with sentiment
@@ -317,10 +367,12 @@ class IntelligentQueryProcessor:
     ) -> str:
         """Assemble prompt with fallback on error"""
         try:
-            # Phase 2: Get optimized tiered system prompt (30/90/210 tokens vs 2,000)
+            # Phase 2: Get optimized tiered system prompt (10/30/90/210 tokens vs 2,000)
+            # Pass intent to use NEUTRAL_IDENTITY for greetings/gratitude/off-topic
             base_prompt = get_tiered_prompt(
                 response_type=response_type.value,
-                complexity=classification.complexity
+                complexity=classification.complexity,
+                intent=classification.intent.value if hasattr(classification.intent, 'value') else str(classification.intent)
             )
 
             # Log token optimization
@@ -330,32 +382,21 @@ class IntelligentQueryProcessor:
                 f"(response_type={response_type.value}, complexity={classification.complexity})"
             )
 
-            # Determine boundary type if applicable
-            boundary_type = None
-            if classification.intent in [
-                QueryIntent.OFF_TOPIC,
-                QueryIntent.META_FAULTMAVEN,
-                QueryIntent.GREETING,
-                QueryIntent.GRATITUDE,
-                QueryIntent.CONVERSATION_CONTROL,
-            ]:
-                boundary_type = classification.intent.value
-
             # Convert to dict if needed
             conv_state_dict = asdict(conv_state) if hasattr(conv_state, '__dataclass_fields__') else conv_state
             classification_dict = classification.dict() if hasattr(classification, 'dict') else asdict(classification)
 
             # Assemble intelligent prompt with optimized base
+            # Note: Removed boundary_type - ResponseType.ANSWER is now context-aware based on intent
             prompt = assemble_intelligent_prompt(
                 base_system_prompt=base_prompt,
                 response_type=response_type,
                 conversation_state=conv_state_dict,
                 query_classification=classification_dict,
-                boundary_type=boundary_type,
             )
 
             # Phase 3: Add optimized pattern templates as SYSTEM INSTRUCTIONS (100-200 tokens vs 1,500)
-            # Wrapped to prevent LLM from echoing them to user
+            # Patterns already wrapped in [SYSTEM DIRECTIVE - DO NOT ECHO THIS TO USER] tags
             pattern_section = format_pattern_prompt(
                 response_type=response_type,
                 domain=classification.domain
@@ -364,8 +405,23 @@ class IntelligentQueryProcessor:
             if pattern_section:
                 pattern_tokens = len(pattern_section) // 4
                 logger.debug(f"Pattern template added: {pattern_tokens} tokens (domain={classification.domain})")
-                # CRITICAL: Wrap patterns in clear instruction boundary to prevent echo
-                prompt += f"\n\n===== SYSTEM INSTRUCTIONS (DO NOT DISPLAY TO USER) =====\n{pattern_section}\n===== END SYSTEM INSTRUCTIONS =====\n"
+                # Patterns already have [SYSTEM DIRECTIVE] wrapper - no additional boundary markers needed
+                prompt += f"\n\n{pattern_section}\n"
+
+            # Phase 4: Add confidence-gated self-correction for MEDIUM confidence queries (0.4-0.7)
+            # This allows LLM to override classification if it seems wrong
+            confidence = classification.confidence
+            if 0.4 <= confidence < 0.7:
+                self_correction_note = f"""
+[CLASSIFICATION CONFIDENCE NOTE]
+This query was classified with moderate confidence ({confidence:.2f} on 0.0-1.0 scale).
+If the classification seems incorrect or the suggested response format doesn't fit the query,
+trust your understanding and answer the query naturally rather than forcing the format.
+The user's actual need is more important than following the classification.
+[END NOTE]
+"""
+                prompt += "\n" + self_correction_note
+                logger.debug(f"Self-correction note added for moderate confidence ({confidence:.2f})")
 
             # Add conversation context AFTER instructions (user-facing content)
             context_tokens = 0
