@@ -1,9 +1,13 @@
 # File: faultmaven/models/api.py
 
 from pydantic import BaseModel, Field, model_validator, field_validator
-from typing import List, Optional, Dict, Any, Literal
+from typing import List, Optional, Dict, Any, Literal, TYPE_CHECKING
 from enum import Enum
 import datetime
+
+# Import for type annotations (avoid circular imports)
+if TYPE_CHECKING:
+    from faultmaven.models.doctor_patient import SuggestedAction
 
 # --- Enumerations for Explicit Contracts ---
 
@@ -127,7 +131,7 @@ class QueryRequest(BaseModel):
 class AgentResponse(BaseModel):
     """The single, unified JSON payload returned from the backend."""
     model_config = {"extra": "allow"}  # Allow additional properties for forward compatibility
-    
+
     schema_version: str = Field(default="3.1.0")
     content: str
     response_type: ResponseType
@@ -138,6 +142,7 @@ class AgentResponse(BaseModel):
     next_action_hint: Optional[str] = None
     view_state: Optional[ViewState] = None
     plan: Optional[List[PlanStep]] = None
+    suggested_actions: Optional[List[Dict[str, Any]]] = Field(default=None, description="Interactive action buttons for user guidance (List of SuggestedAction)")
 
     @model_validator(mode='before')
     @classmethod

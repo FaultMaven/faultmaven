@@ -272,7 +272,12 @@ class AgentService(BaseService):
             elif llm_response.clarifying_questions:
                 response_type = ResponseType.CLARIFICATION_REQUEST
 
-            # Create response
+            # Create response with suggested_actions mapped from LLM response
+            # Convert SuggestedAction objects to dicts for API contract
+            suggested_actions_dicts = None
+            if llm_response.suggested_actions:
+                suggested_actions_dicts = [action.model_dump() for action in llm_response.suggested_actions]
+
             response = AgentResponse(
                 content=llm_response.answer,
                 response_type=response_type,
@@ -285,7 +290,8 @@ class AgentService(BaseService):
                         metadata=processing_metadata
                     )
                 ],
-                plan=None
+                plan=None,
+                suggested_actions=suggested_actions_dicts
             )
 
             # Enhanced logging with circuit breaker status
