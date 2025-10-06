@@ -172,12 +172,20 @@ FaultMaven follows a **Clean Architecture** pattern with interface-based design 
 - **Health Monitoring**: Built-in health checking for all dependencies
 - **Graceful Fallback**: Mock implementations when dependencies unavailable
 
-**Five-Phase SRE Doctrine**: The AI agent follows a structured troubleshooting methodology defined in `core/agent/doctrine.py`:
-1. **Define Blast Radius** - Scope the impact
-2. **Establish Timeline** - Understand when issues started
-3. **Formulate Hypothesis** - Generate potential causes
-4. **Validate Hypothesis** - Test theories with evidence
-5. **Propose Solution** - Recommend fixes
+**Sub-Agent Architecture (Anthropic Context Engineering)**: The system uses specialized phase agents with focused context instead of a monolithic approach:
+- **DiagnosticOrchestrator** routes queries to appropriate phase agent based on `current_phase`
+- **6 Specialized Agents** (Intake, BlastRadius, Timeline, Hypothesis, Validation, Solution)
+- **49% Token Reduction** - Each agent uses 300-700 tokens vs 1300 monolithic
+- **Goal-Oriented Advancement** - Phases advance when objectives met, not turn-based
+- **Comprehensive Test Coverage** - 78 unit tests across all agents
+
+**Five-Phase SRE Diagnostic Flow**:
+1. **Phase 0: Intake** - Problem detection & urgency assessment
+2. **Phase 1: Blast Radius** - Scope the impact and affected services
+3. **Phase 2: Timeline** - Establish when issues started and correlate changes
+4. **Phase 3: Hypothesis** - Generate potential root causes
+5. **Phase 4: Validation** - Test theories with evidence
+6. **Phase 5: Solution** - Propose resolution and remediation
 
 ### Directory Structure
 

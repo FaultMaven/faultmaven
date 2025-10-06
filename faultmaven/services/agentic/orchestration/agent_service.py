@@ -228,16 +228,18 @@ class AgentService(BaseService):
         if not case:
             raise ValueError(f"Case {case_id} not found")
 
-        # Use doctor/patient turn processor
-        from faultmaven.services.agentic.doctor_patient.turn_processor import process_turn
+        # Use sub-agent orchestrator (Anthropic's context engineering pattern)
+        from faultmaven.services.agentic.doctor_patient.orchestrator_integration import (
+            process_turn_with_orchestrator
+        )
 
         try:
-            # Process turn with doctor/patient system
-            llm_response, updated_state = await process_turn(
+            # Process turn with sub-agent orchestrator
+            # Uses specialized phase agents with 49% token reduction vs monolithic
+            llm_response, updated_state = await process_turn_with_orchestrator(
                 user_query=sanitized_query,
                 case=case,
                 llm_client=self._llm,
-                prompt_version=self.prompt_version,
                 session_id=request.session_id
             )
 

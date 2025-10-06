@@ -753,21 +753,9 @@ class DIContainer:
                 logger.warning(f"Agent State Manager initialization failed: {e}")
                 self.agent_state_manager = None
             
-            # 3. Query Classification Engine - Intelligent query processing and routing
-            try:
-                    llm_provider=self.get_llm_provider(),
-                    tracer=self.get_tracer(),
-                    llm_classification_mode=self.settings.features.llm_classification_mode,
-                    pattern_confidence_threshold=self.settings.features.pattern_confidence_threshold
-                )
-                logger.debug(
-                    f"✅ Query Classification Engine initialized "
-                    f"(mode={self.settings.features.llm_classification_mode}, "
-                    f"threshold={self.settings.features.pattern_confidence_threshold})"
-                )
-            except Exception as e:
-                logger.warning(f"Query Classification Engine initialization failed: {e}")
-                self.query_classification_engine = None
+            # 3. Query Classification Engine - REMOVED (superseded by doctor/patient architecture)
+            # Archived to: archive/superseded_by_doctor_patient_v1.0/
+            self.query_classification_engine = None
             
             # 4. Tool & Skill Broker - Dynamic orchestration of tools and skills
             try:

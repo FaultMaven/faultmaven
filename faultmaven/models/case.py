@@ -168,6 +168,7 @@ class CaseDiagnosticState(BaseModel):
 
     # Phase-specific data collected
     symptoms: List[str] = Field(default_factory=list, description="Observed symptoms and error messages")
+    blast_radius: Dict[str, Any] = Field(default_factory=dict, description="Impact and scope assessment (Phase 1)")
     timeline_info: Dict[str, Any] = Field(default_factory=dict, description="Timeline of changes and events")
     hypotheses: List[Dict[str, Any]] = Field(default_factory=list, description="Working hypotheses with evidence")
     tests_performed: List[str] = Field(default_factory=list, description="Diagnostic tests and validations performed")
