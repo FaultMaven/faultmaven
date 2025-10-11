@@ -448,15 +448,39 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         return None
     
     def _create_duplicate_response(self, request: Request) -> JSONResponse:
-        """Create response for duplicate request"""
-        
-        # Create a polite response that doesn't reveal duplicate detection
+        """Create response for duplicate request - MUST conform to AgentResponse schema"""
+
+        # Extract session_id from request to maintain API contract
+        session_id = self._extract_session_id(request)
+        if not session_id:
+            session_id = "session_unknown"
+
+        # Return AgentResponse-compliant structure
         return JSONResponse(
             status_code=200,
             content={
-                "message": "Request processed successfully",
-                "note": "This appears to be a recent request. If you need a fresh response, please wait a moment and try again.",
-                "timestamp": datetime.utcnow().isoformat() + 'Z'
+                "schema_version": "3.1.0",
+                "content": "I'm processing your request. This appears to be a recent request - if you need a fresh response, please wait a moment and try again.",
+                "response_type": "ANSWER",
+                "session_id": session_id,
+                "view_state": {
+                    "session_id": session_id,
+                    "user": {
+                        "user_id": "anonymous",
+                        "email": "user@example.com",
+                        "name": "User",
+                        "created_at": datetime.utcnow().isoformat() + 'Z'
+                    },
+                    "active_case": None,
+                    "cases": [],
+                    "messages": [],
+                    "uploaded_data": [],
+                    "show_case_selector": False,
+                    "show_data_upload": True,
+                    "loading_state": None
+                },
+                "sources": [{"type": "SYSTEM", "content": "Duplicate request detected", "metadata": {"type": "deduplication"}}],
+                "plan": None
             }
         )
     

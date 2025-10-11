@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from faultmaven.models import CaseDiagnosticState, LLMResponse as DoctorPatientLLMResponse
+from faultmaven.models.doctor_patient import SuggestedAction, CommandSuggestion
 
 
 @dataclass
@@ -45,6 +46,9 @@ class PhaseAgentResponse:
     """Response from a phase-specific agent.
 
     Contains the agent's answer plus any state updates relevant to this phase.
+
+    Type-safe: Uses Pydantic models for suggested_actions and suggested_commands
+    instead of raw dicts to ensure schema compliance.
     """
     # Natural language response to user
     answer: str
@@ -52,11 +56,11 @@ class PhaseAgentResponse:
     # Phase-specific state updates (delta, not full state)
     state_updates: Dict[str, Any]
 
-    # Suggested actions (if any)
-    suggested_actions: List[Dict[str, Any]]
+    # Suggested actions (if any) - Properly typed Pydantic models
+    suggested_actions: List[SuggestedAction]
 
-    # Suggested commands (if any)
-    suggested_commands: List[Dict[str, Any]]
+    # Suggested commands (if any) - Properly typed Pydantic models
+    suggested_commands: List[CommandSuggestion]
 
     # Whether phase is complete and ready to advance
     phase_complete: bool
@@ -66,6 +70,122 @@ class PhaseAgentResponse:
 
     # Next recommended phase (usually current_phase or current_phase+1)
     recommended_next_phase: int
+
+
+def generate_fallback_actions(
+    phase: int,
+    phase_state: Dict[str, Any],
+    user_query: str,
+    phase_complete: bool
+) -> List[SuggestedAction]:
+    """Generate contextual suggested_actions when LLM doesn't provide them.
+
+    This is a defensive fallback - only generates actions when we can infer
+    meaningful next steps from the phase state. Returns empty list if unsure.
+
+    Args:
+        phase: Current phase number (0-5)
+        phase_state: Phase-specific state dict
+        user_query: User's query
+        phase_complete: Whether phase is marked complete
+
+    Returns:
+        List of contextually relevant SuggestedAction objects, or empty list
+    """
+    from faultmaven.models.doctor_patient import ActionType
+    actions = []
+
+    # Don't generate actions if phase is complete - let natural advancement happen
+    if phase_complete:
+        return []
+
+    # Phase 0: Intake - only if we don't have problem statement
+    if phase == 0:
+        has_problem = phase_state.get("has_active_problem")
+        if has_problem is None:  # Unclear if there's a problem
+            actions.append(SuggestedAction(
+                label="🔴 Yes, I have a problem",
+                type=ActionType.QUESTION_TEMPLATE,
+                payload="Yes, I'm experiencing a technical issue that needs troubleshooting"
+            ))
+            actions.append(SuggestedAction(
+                label="📚 Just have a question",
+                type=ActionType.QUESTION_TEMPLATE,
+                payload="I just have a question about best practices"
+            ))
+
+    # Phase 1: Blast Radius - only if missing scope/severity
+    elif phase == 1:
+        blast_radius = phase_state.get("blast_radius", {})
+        if not blast_radius or not blast_radius.get("severity"):
+            actions.append(SuggestedAction(
+                label="🔴 All users affected",
+                type=ActionType.QUESTION_TEMPLATE,
+                payload="This is affecting all users"
+            ))
+            actions.append(SuggestedAction(
+                label="🟡 Some users affected",
+                type=ActionType.QUESTION_TEMPLATE,
+                payload="Only some users are experiencing this issue"
+            ))
+
+    # Phase 2: Timeline - only if missing when/what-changed
+    elif phase == 2:
+        timeline = phase_state.get("timeline_info", {})
+        if not timeline or not timeline.get("problem_started_at"):
+            actions.append(SuggestedAction(
+                label="📅 I know when it started",
+                type=ActionType.QUESTION_TEMPLATE,
+                payload="The problem started at [time] on [date]"
+            ))
+            actions.append(SuggestedAction(
+                label="🔄 Recent deployment",
+                type=ActionType.QUESTION_TEMPLATE,
+                payload="We deployed a change at [time]"
+            ))
+
+    # Phase 3: Hypothesis - only if we have < 2 hypotheses
+    elif phase == 3:
+        num_hypotheses = phase_state.get("num_hypotheses", 0)
+        if num_hypotheses < 2:
+            actions.append(SuggestedAction(
+                label="✅ Theory makes sense",
+                type=ActionType.QUESTION_TEMPLATE,
+                payload="That hypothesis fits what I'm seeing"
+            ))
+            actions.append(SuggestedAction(
+                label="🤔 I have another idea",
+                type=ActionType.QUESTION_TEMPLATE,
+                payload="I think the root cause might be something else: "
+            ))
+
+    # Phase 4: Validation - only if missing validation results
+    elif phase == 4:
+        # Only suggest if we haven't validated yet
+        tests_performed = phase_state.get("tests_performed")
+        if not tests_performed or tests_performed == "None yet":
+            actions.append(SuggestedAction(
+                label="📊 I've checked",
+                type=ActionType.QUESTION_TEMPLATE,
+                payload="Here's what I found when I checked: "
+            ))
+
+    # Phase 5: Solution - only if solution not confirmed
+    elif phase == 5:
+        solution_proposed = phase_state.get("solution_proposed")
+        if not solution_proposed:
+            actions.append(SuggestedAction(
+                label="✅ I'll proceed",
+                type=ActionType.QUESTION_TEMPLATE,
+                payload="I'm implementing the recommended solution"
+            ))
+            actions.append(SuggestedAction(
+                label="⚠️ I have constraints",
+                type=ActionType.QUESTION_TEMPLATE,
+                payload="Before I proceed, here are environment constraints: "
+            ))
+
+    return actions[:3]  # Maximum 3 actions
 
 
 class PhaseAgent(ABC):

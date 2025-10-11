@@ -35,9 +35,9 @@ curl -X POST "http://localhost:8000/api/v1/cases/{case_id}/queries" \
 
 ## 🟡 **MEDIUM PRIORITY**
 
-### #002 - Overly Simplistic Greeting Detection  
-**Status**: 🔄 Design Issue  
-**Date Identified**: 2025-09-02  
+### #002 - Overly Simplistic Greeting Detection
+**Status**: 🔄 Design Issue
+**Date Identified**: 2025-09-02
 **Impact**: Any query starting with common greetings returns hardcoded response instead of LLM processing
 
 **Problem**: Greeting pattern `^(hi|hello|hey|yo|howdy|sup|good\s*(morning|afternoon|evening))\b` is too broad and catches legitimate troubleshooting queries that happen to start with greetings.
@@ -52,6 +52,63 @@ curl -X POST "http://localhost:8000/api/v1/cases/{case_id}/queries" \
 3. **Remove Greeting Logic** - Process all queries through LLM for consistent behavior
 
 **Files**: `/home/swhouse/projects/FaultMaven/faultmaven/core/gateway/gateway.py`, `/home/swhouse/projects/FaultMaven/faultmaven/services/agent.py:345-375`
+
+---
+
+### #004 - Over-Aggressive PII Redaction
+**Status**: ❌ Active Issue
+**Date Identified**: 2025-10-06
+**Impact**: Agent responses contain over-redacted content, making troubleshooting guidance incomprehensible
+
+**Problem**: The PII redaction service (Presidio) is incorrectly flagging and redacting non-sensitive technical content including:
+- API paths: `/api/v1/submit` → `/REDACTED: Driver License/submit`
+- Timestamps: `October 6th, 2025` → `REDACTED: Date/Time`
+- Version numbers: `v1.2.1` → `REDACTED: Driver License.1`
+- Technical identifiers appearing in logs and error messages
+
+**Root Cause**: Presidio configuration issues:
+1. Confidence thresholds too low (catching false positives)
+2. Entity types too broad ("Driver License" matching alphanumeric patterns like "v1")
+3. Context-unaware redaction (treating technical content same as user input)
+4. No whitelisting for common technical patterns
+
+**Current Behavior**: Users see responses like:
+```
+"The issue started after deployment REDACTED: Driver License when POST requests
+to /REDACTED: Driver License/submit began failing around REDACTED: Date/Time"
+```
+
+Should be:
+```
+"The issue started after deployment v1.2.1 when POST requests to /api/v1/submit
+began failing around 3:29 PM"
+```
+
+**Solution Options**:
+1. **Increase Confidence Thresholds** - Raise from ~0.5 to 0.85 to reduce false positives
+2. **Whitelist Technical Patterns** - Don't redact API paths, version numbers, ISO dates in technical context
+3. **Context-Aware Redaction** - Disable redaction inside code blocks, URLs, and technical commands
+4. **Restrict Entity Types** - Only use high-value PII types: EMAIL, PHONE_NUMBER, CREDIT_CARD, SSN, IP_ADDRESS
+5. **Bypass for Log Analysis** - Lighter redaction when processing user-submitted logs/errors
+
+**Required Changes**:
+- Update Presidio configuration in `faultmaven/infrastructure/security/`
+- Add whitelist patterns for technical content (API paths, version numbers, HTTP methods)
+- Implement context detection (code blocks, paths, technical terms)
+- Add bypass logic for log/error analysis contexts
+- Tune entity-specific confidence thresholds
+
+**Testing Requirements**:
+- Verify technical patterns preserved: `/api/v1/cases`, `v1.2.3`, `October 6, 2025`, `POST/GET`
+- Verify real PII still redacted: emails, phone numbers, SSNs
+- Test with actual troubleshooting conversations containing logs and stack traces
+
+**Files**:
+- `faultmaven/infrastructure/security/pii_redaction.py` (or similar)
+- Presidio configuration files
+- Agent response processing pipeline
+
+**Priority Justification**: HIGH impact on user experience - responses become unusable when technical context is redacted
 
 ---
 
@@ -130,6 +187,6 @@ curl -X POST "http://localhost:8000/api/v1/cases/{case_id}/queries" \
 
 ---
 
-**Last Updated**: 2025-10-03
-**Total Active Items**: 3
+**Last Updated**: 2025-10-06
+**Total Active Items**: 4
 **Next Review**: [Date for next technical debt review]

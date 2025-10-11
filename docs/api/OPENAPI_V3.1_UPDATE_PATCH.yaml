@@ -1,0 +1,640 @@
+# OpenAPI v3.1.0 Evidence-Centric Update Patch
+# Apply these changes to openapi.locked.yaml
+
+# Status: ✅ APPROVED - Ready for implementation
+# Date: 2025-10-08
+
+---
+## 1. UPDATE AgentResponse Schema (line ~3136)
+
+# REPLACE the existing AgentResponse schema with:
+
+AgentResponse:
+  type: object
+  properties:
+    schema_version:
+      type: string
+      title: Schema Version
+      default: "3.1.0"  # Updated from 3.0.0
+    content:
+      type: string
+      title: Content
+      description: Agent's conversational response
+    response_type:
+      $ref: '#/components/schemas/ResponseType'
+    session_id:
+      type: string
+      title: Session Id
+    case_id:
+      anyOf:
+      - type: string
+      - type: 'null'
+      title: Case Id
+    confidence_score:
+      anyOf:
+      - type: number
+      - type: 'null'
+      title: Confidence Score
+    sources:
+      type: array
+      items:
+        $ref: '#/components/schemas/Source'
+      default: []
+      title: Sources
+    next_action_hint:
+      anyOf:
+      - type: string
+      - type: 'null'
+      title: Next Action Hint
+    view_state:
+      anyOf:
+      - $ref: '#/components/schemas/ViewState'
+      - type: 'null'
+    plan:
+      anyOf:
+      - type: array
+        items:
+          $ref: '#/components/schemas/PlanStep'
+      - type: 'null'
+      title: Plan
+
+    # NEW FIELDS FOR v3.1.0
+    evidence_requests:
+      type: array
+      items:
+        $ref: '#/components/schemas/EvidenceRequest'
+      default: []
+      title: Evidence Requests
+      description: Active evidence requests for this turn
+    investigation_mode:
+      $ref: '#/components/schemas/InvestigationMode'
+      title: Investigation Mode
+      description: Current investigation approach (speed vs depth)
+    case_status:
+      $ref: '#/components/schemas/CaseStatus'
+      title: Case Status
+      description: Current case investigation state
+
+    # DEPRECATED FIELD (kept for backward compatibility)
+    suggested_actions:
+      anyOf:
+      - type: array
+      - type: 'null'
+      deprecated: true
+      title: Suggested Actions
+      description: "DEPRECATED in v3.1.0 - Use evidence_requests instead. Always null in new responses."
+
+  required:
+  - schema_version
+  - content
+  - response_type
+  - session_id
+  - evidence_requests      # NEW REQUIRED
+  - investigation_mode     # NEW REQUIRED
+  - case_status            # NEW REQUIRED
+
+  additionalProperties: true
+  title: AgentResponse
+  description: The single, unified JSON payload returned from the backend (v3.1.0)
+
+---
+## 2. ADD New Enum Schemas (insert alphabetically in schemas section)
+
+CaseStatus:
+  type: string
+  enum:
+  - intake
+  - in_progress
+  - resolved
+  - mitigated
+  - stalled
+  - abandoned
+  - closed
+  title: CaseStatus
+  description: Current case investigation state
+
+CompletenessLevel:
+  type: string
+  enum:
+  - partial
+  - complete
+  - over_complete
+  title: CompletenessLevel
+  description: "How well evidence answers specific request(s). over_complete means satisfies >1 request."
+
+EvidenceCategory:
+  type: string
+  enum:
+  - symptoms
+  - timeline
+  - changes
+  - configuration
+  - scope
+  - metrics
+  - environment
+  title: EvidenceCategory
+  description: Categories of diagnostic evidence
+
+EvidenceForm:
+  type: string
+  enum:
+  - user_input
+  - document
+  title: EvidenceForm
+  description: How evidence was submitted
+
+EvidenceStatus:
+  type: string
+  enum:
+  - pending
+  - partial
+  - complete
+  - blocked
+  - obsolete
+  title: EvidenceStatus
+  description: Status of evidence request fulfillment
+
+EvidenceType:
+  type: string
+  enum:
+  - supportive
+  - refuting
+  - neutral
+  - absence
+  title: EvidenceType
+  description: How evidence relates to current hypotheses
+
+InvestigationMode:
+  type: string
+  enum:
+  - active_incident
+  - post_mortem
+  title: InvestigationMode
+  description: Investigation approach - speed vs depth
+
+UserIntent:
+  type: string
+  enum:
+  - providing_evidence
+  - asking_question
+  - reporting_unavailable
+  - reporting_status
+  - clarifying
+  - off_topic
+  title: UserIntent
+  description: User's intent when submitting input
+
+---
+## 3. ADD New Object Schemas (insert alphabetically in schemas section)
+
+AcquisitionGuidance:
+  type: object
+  properties:
+    commands:
+      type: array
+      items:
+        type: string
+      maxItems: 3
+      default: []
+      title: Commands
+      description: Shell commands to run
+    file_locations:
+      type: array
+      items:
+        type: string
+      maxItems: 3
+      default: []
+      title: File Locations
+      description: File paths to check
+    ui_locations:
+      type: array
+      items:
+        type: string
+      maxItems: 3
+      default: []
+      title: UI Locations
+      description: UI navigation paths
+    alternatives:
+      type: array
+      items:
+        type: string
+      maxItems: 3
+      default: []
+      title: Alternatives
+      description: Alternative methods to obtain evidence
+    prerequisites:
+      type: array
+      items:
+        type: string
+      maxItems: 2
+      default: []
+      title: Prerequisites
+      description: Requirements to obtain evidence
+    expected_output:
+      anyOf:
+      - type: string
+        maxLength: 200
+      - type: 'null'
+      title: Expected Output
+      description: What the user should expect to see
+  required:
+  - commands
+  - file_locations
+  - ui_locations
+  - alternatives
+  - prerequisites
+  title: AcquisitionGuidance
+  description: Instructions for obtaining diagnostic evidence
+
+ConflictDetection:
+  type: object
+  properties:
+    contradicted_hypothesis:
+      type: string
+      title: Contradicted Hypothesis
+      description: Which hypothesis is contradicted
+    reason:
+      type: string
+      title: Reason
+      description: Why this is a conflict
+    confirmation_required:
+      type: boolean
+      const: true
+      title: Confirmation Required
+      description: User must confirm refutation
+  required:
+  - contradicted_hypothesis
+  - reason
+  - confirmation_required
+  title: ConflictDetection
+  description: Detection of refuting evidence
+
+DataUploadResponse:
+  type: object
+  properties:
+    data_id:
+      type: string
+      title: Data ID
+      description: Unique identifier for uploaded data
+    filename:
+      type: string
+      title: Filename
+      description: Original filename
+    file_metadata:
+      $ref: '#/components/schemas/FileMetadata'
+    immediate_analysis:
+      $ref: '#/components/schemas/ImmediateAnalysis'
+    conflict_detected:
+      anyOf:
+      - $ref: '#/components/schemas/ConflictDetection'
+      - type: 'null'
+      title: Conflict Detected
+      description: Present only if refuting evidence detected
+  required:
+  - data_id
+  - filename
+  - file_metadata
+  - immediate_analysis
+  title: DataUploadResponse
+  description: Response from data upload with immediate analysis
+
+EvidenceProvided:
+  type: object
+  properties:
+    evidence_id:
+      type: string
+      format: uuid
+      title: Evidence ID
+    turn_number:
+      type: integer
+      minimum: 1
+      title: Turn Number
+    timestamp:
+      type: string
+      format: date-time
+      title: Timestamp
+    form:
+      $ref: '#/components/schemas/EvidenceForm'
+    content:
+      type: string
+      title: Content
+      description: Text or file reference/path
+    file_metadata:
+      anyOf:
+      - $ref: '#/components/schemas/FileMetadata'
+      - type: 'null'
+      title: File Metadata
+      description: Populated when form == document
+    addresses_requests:
+      type: array
+      items:
+        type: string
+      default: []
+      title: Addresses Requests
+      description: Evidence request IDs this satisfies
+    completeness:
+      $ref: '#/components/schemas/CompletenessLevel'
+    evidence_type:
+      $ref: '#/components/schemas/EvidenceType'
+    user_intent:
+      $ref: '#/components/schemas/UserIntent'
+    key_findings:
+      type: array
+      items:
+        type: string
+      default: []
+      title: Key Findings
+    confidence_impact:
+      anyOf:
+      - type: number
+        format: float
+        minimum: -1.0
+        maximum: 1.0
+      - type: 'null'
+      title: Confidence Impact
+  required:
+  - evidence_id
+  - turn_number
+  - timestamp
+  - form
+  - content
+  - addresses_requests
+  - completeness
+  - evidence_type
+  - user_intent
+  - key_findings
+  title: EvidenceProvided
+  description: Record of evidence user provided
+
+EvidenceRequest:
+  type: object
+  properties:
+    request_id:
+      type: string
+      format: uuid
+      title: Request ID
+      description: Unique identifier for this evidence request
+    label:
+      type: string
+      maxLength: 100
+      title: Label
+      description: Brief title for the request
+    description:
+      type: string
+      maxLength: 500
+      title: Description
+      description: What evidence is needed and why
+    category:
+      $ref: '#/components/schemas/EvidenceCategory'
+    guidance:
+      $ref: '#/components/schemas/AcquisitionGuidance'
+    status:
+      $ref: '#/components/schemas/EvidenceStatus'
+    created_at_turn:
+      type: integer
+      minimum: 1
+      title: Created At Turn
+      description: Turn number when request was created
+    updated_at_turn:
+      anyOf:
+      - type: integer
+        minimum: 1
+      - type: 'null'
+      title: Updated At Turn
+      description: Turn number when last updated
+    completeness:
+      type: number
+      format: float
+      minimum: 0.0
+      maximum: 1.0
+      title: Completeness
+      description: Fulfillment completeness score
+    metadata:
+      type: object
+      additionalProperties: true
+      default: {}
+      title: Metadata
+      description: Additional context
+  required:
+  - request_id
+  - label
+  - description
+  - category
+  - guidance
+  - status
+  - created_at_turn
+  - completeness
+  - metadata
+  title: EvidenceRequest
+  description: Structured request for diagnostic evidence with acquisition guidance
+
+FileMetadata:
+  type: object
+  properties:
+    filename:
+      type: string
+      title: Filename
+      description: Original filename
+    content_type:
+      type: string
+      title: Content Type
+      description: MIME type (e.g., text/plain, application/json)
+    size_bytes:
+      type: integer
+      minimum: 0
+      title: Size Bytes
+      description: File size in bytes
+    upload_timestamp:
+      type: string
+      format: date-time
+      title: Upload Timestamp
+      description: When file was uploaded (ISO 8601)
+    file_id:
+      type: string
+      title: File ID
+      description: Storage reference ID
+  required:
+  - filename
+  - content_type
+  - size_bytes
+  - upload_timestamp
+  - file_id
+  title: FileMetadata
+  description: Metadata for uploaded files (documents, log excerpts)
+
+ImmediateAnalysis:
+  type: object
+  properties:
+    matched_requests:
+      type: array
+      items:
+        type: string
+      default: []
+      title: Matched Requests
+      description: Evidence request IDs this data satisfies
+    completeness_scores:
+      type: object
+      additionalProperties:
+        type: number
+        format: float
+        minimum: 0.0
+        maximum: 1.0
+      default: {}
+      title: Completeness Scores
+      description: Map of request_id to completeness score
+    key_findings:
+      type: array
+      items:
+        type: string
+      maxItems: 5
+      default: []
+      title: Key Findings
+      description: Top findings from the uploaded data
+    evidence_type:
+      $ref: '#/components/schemas/EvidenceType'
+    next_steps:
+      type: string
+      title: Next Steps
+      description: What the agent will do next
+  required:
+  - matched_requests
+  - completeness_scores
+  - key_findings
+  - evidence_type
+  - next_steps
+  title: ImmediateAnalysis
+  description: Immediate feedback after file upload
+
+---
+## 4. UPDATE Case Schema
+
+# ADD these fields to the existing Case schema properties:
+
+evidence_requests:
+  type: array
+  items:
+    $ref: '#/components/schemas/EvidenceRequest'
+  default: []
+  title: Evidence Requests
+  description: Current active evidence requests
+
+evidence_provided:
+  type: array
+  items:
+    $ref: '#/components/schemas/EvidenceProvided'
+  default: []
+  title: Evidence Provided
+  description: Evidence user has submitted
+
+investigation_mode:
+  $ref: '#/components/schemas/InvestigationMode'
+  title: Investigation Mode
+  description: Investigation approach for this case
+
+case_status:
+  $ref: '#/components/schemas/CaseStatus'
+  title: Case Status
+  description: Current case state
+
+confidence_score:
+  anyOf:
+  - type: number
+    format: float
+    minimum: 0.0
+    maximum: 1.0
+  - type: 'null'
+  title: Confidence Score
+  description: Overall confidence in findings (required for post_mortem mode)
+
+deliverables:
+  anyOf:
+  - type: object
+    properties:
+      case_report_url:
+        anyOf:
+        - type: string
+        - type: 'null'
+      runbook_url:
+        anyOf:
+        - type: string
+        - type: 'null'
+  - type: 'null'
+  title: Deliverables
+  description: URLs to generated deliverables (case reports, runbooks)
+
+# UPDATE Case required fields - ADD:
+# - investigation_mode
+# - case_status
+
+---
+## 5. UPDATE Data Upload Endpoint Response
+
+# File: Line ~127-131
+# Path: /api/v1/data/upload
+# Response: 201
+
+# REPLACE:
+responses:
+  '201':
+    description: Successful Response
+    content:
+      application/json:
+        schema: {}
+
+# WITH:
+responses:
+  '201':
+    description: Data uploaded and analyzed successfully
+    content:
+      application/json:
+        schema:
+          $ref: '#/components/schemas/DataUploadResponse'
+    headers:
+      X-Correlation-ID:
+        description: Request correlation ID
+        schema:
+          type: string
+
+---
+## 6. VERSION UPDATE
+
+# Update API version in info section (line ~3):
+info:
+  version: 3.1.0  # Updated from 3.0.0
+
+---
+## Summary of Changes
+
+**Schemas Added (11)**:
+1. AcquisitionGuidance
+2. CaseStatus (enum)
+3. CompletenessLevel (enum)
+4. ConflictDetection
+5. DataUploadResponse
+6. EvidenceCategory (enum)
+7. EvidenceForm (enum)
+8. EvidenceProvided
+9. EvidenceRequest
+10. EvidenceStatus (enum)
+11. EvidenceType (enum)
+12. FileMetadata
+13. ImmediateAnalysis
+14. InvestigationMode (enum)
+15. UserIntent (enum)
+
+**Schemas Modified (2)**:
+1. AgentResponse - Added evidence_requests, investigation_mode, case_status
+2. Case - Added evidence_requests, evidence_provided, investigation_mode, case_status, confidence_score, deliverables
+
+**Endpoints Modified (1)**:
+1. POST /api/v1/data/upload - Response now returns DataUploadResponse schema
+
+**Backward Compatibility**:
+- suggested_actions marked as deprecated but still present (nullable)
+- New required fields in AgentResponse
+- Case schema additions are backward compatible (arrays default to [])
+
+**Migration Path**:
+- Phase 1 (Weeks 1-2): Backend sends both suggested_actions (null) and evidence_requests
+- Phase 2 (Week 3): Frontend migrated, deprecation warnings logged
+- Phase 3 (Week 4+): Remove suggested_actions field entirely

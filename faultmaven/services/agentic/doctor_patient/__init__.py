@@ -1,16 +1,21 @@
-"""Doctor/Patient architecture services.
+"""Doctor/Patient architecture services - Sub-Agent Orchestrator.
 
-This module contains the revolutionary doctor/patient prompting architecture
-implementation with adaptive guidance and single powerful LLM approach.
+This module contains the sub-agent orchestrator implementation following
+Anthropic's context engineering best practices with 49% token reduction.
+
+Architecture: 6 specialized phase agents + orchestrator
+- IntakeAgent (Phase 0): Problem detection
+- BlastRadiusAgent (Phase 1): Impact assessment
+- TimelineAgent (Phase 2): Change correlation
+- HypothesisAgent (Phase 3): Root cause theories
+- ValidationAgent (Phase 4): Hypothesis testing
+- SolutionAgent (Phase 5): Resolution recommendations
 """
 
-from .prompt_builder import build_diagnostic_prompt, format_diagnostic_state
-from .turn_processor import process_turn
-from .state_extractor import extract_diagnostic_state_updates
+from .orchestrator_integration import process_turn_with_orchestrator
+from .sub_agents.orchestrator import DiagnosticOrchestrator
 
 __all__ = [
-    "build_diagnostic_prompt",
-    "format_diagnostic_state",
-    "process_turn",
-    "extract_diagnostic_state_updates",
+    "process_turn_with_orchestrator",
+    "DiagnosticOrchestrator",
 ]

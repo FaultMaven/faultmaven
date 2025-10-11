@@ -1418,6 +1418,7 @@ async def submit_case_query(
                     "schema_version": "3.1.0",
                     "content": agent_response.content,
                     "response_type": _safe_enum_value(agent_response.response_type),
+                    "session_id": agent_response.session_id,
                     "view_state": {
                         "session_id": agent_response.view_state.session_id,
                         "user": {
@@ -1454,7 +1455,11 @@ async def submit_case_query(
                         {
                             "description": step.description
                         } for step in (agent_response.plan or [])
-                    ] if agent_response.plan else None
+                    ] if agent_response.plan else None,
+                    "suggested_actions": [
+                        action.dict() if hasattr(action, 'dict') else action
+                        for action in (agent_response.suggested_actions or [])
+                    ] if hasattr(agent_response, 'suggested_actions') and agent_response.suggested_actions else []
                 }
                 
             except asyncio.TimeoutError:
@@ -1464,8 +1469,9 @@ async def submit_case_query(
                     "schema_version": "3.1.0",
                     "content": "Based on the available information: Discovered 2 available capabilities. Intent: information. Complexity: simple. I'm processing your request but it's taking longer than expected. Let me provide a quick response: I can help you troubleshoot this issue. Could you provide more specific details about what you're experiencing?",
                     "response_type": "ANSWER",
+                    "session_id": query_request.session_id,
                     "view_state": {
-                        "session_id": f"session_{case_id}",
+                        "session_id": query_request.session_id,
                         "user": {
                             "user_id": current_user.user_id,
                             "email": "user@example.com",
@@ -1500,8 +1506,9 @@ async def submit_case_query(
                     "schema_version": "3.1.0",
                     "content": "⏳ **Request Processing Timeout**\n\nYour request took longer than expected to process (>35 seconds). This might be due to:\n\n• High system load or complex query processing\n• Temporary connectivity issues with AI services\n• Large data processing requirements\n\n**Please try:**\n• Submitting your request again\n• Breaking complex queries into smaller parts\n• Waiting a few moments before retrying",
                     "response_type": "ANSWER",
+                    "session_id": query_request.session_id,
                     "view_state": {
-                        "session_id": f"session_{case_id}",
+                        "session_id": query_request.session_id,
                         "user": {
                             "user_id": current_user.user_id,
                             "email": "user@example.com",
@@ -1536,8 +1543,9 @@ async def submit_case_query(
                     "schema_version": "3.1.0",
                     "content": "I'm having trouble processing your request right now. Please try again in a few moments.",
                     "response_type": "ANSWER",
+                    "session_id": query_request.session_id,
                     "view_state": {
-                        "session_id": f"session_{case_id}",
+                        "session_id": query_request.session_id,
                         "user": {
                             "user_id": current_user.user_id,
                             "email": "user@example.com",
@@ -1685,6 +1693,7 @@ async def get_case_query(
                     "schema_version": "3.1.0",
                     "content": agent_response.content,
                     "response_type": _safe_enum_value(agent_response.response_type),
+                    "session_id": agent_response.session_id,
                     "view_state": {
                         "session_id": agent_response.view_state.session_id,
                         "user": {
@@ -1796,12 +1805,14 @@ async def get_case_query_result(
         if not agent_response:
             # Synthesized minimal AgentResponse
             now = datetime.utcnow().isoformat() + 'Z'
+            session_id_value = case.metadata.get("last_session_id") if hasattr(case, 'metadata') else None
             agent_response = {
                 "schema_version": "3.1.0",
                 "content": f"Historical result for query {query_id} in case {case_id}",
                 "response_type": "ANSWER",
+                "session_id": session_id_value,
                 "view_state": {
-                    "session_id": case.metadata.get("last_session_id") if hasattr(case, 'metadata') else None,
+                    "session_id": session_id_value,
                     "user": {
                         "user_id": current_user.user_id if current_user else None or "anonymous",
                         "email": "user@example.com",

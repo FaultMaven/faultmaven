@@ -9,6 +9,13 @@ import datetime
 if TYPE_CHECKING:
     from faultmaven.models.doctor_patient import SuggestedAction
 
+# Import evidence-centric models
+from faultmaven.models.evidence import (
+    EvidenceRequest,
+    InvestigationMode,
+    CaseStatus as EvidenceCaseStatus,
+)
+
 # --- Enumerations for Explicit Contracts ---
 
 class ResponseType(str, Enum):
@@ -129,7 +136,7 @@ class QueryRequest(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.datetime.utcnow().isoformat() + 'Z')
 
 class AgentResponse(BaseModel):
-    """The single, unified JSON payload returned from the backend."""
+    """The single, unified JSON payload returned from the backend (v3.1.0 - Evidence-Centric)."""
     model_config = {"extra": "allow"}  # Allow additional properties for forward compatibility
 
     schema_version: str = Field(default="3.1.0")
@@ -142,7 +149,27 @@ class AgentResponse(BaseModel):
     next_action_hint: Optional[str] = None
     view_state: Optional[ViewState] = None
     plan: Optional[List[PlanStep]] = None
-    suggested_actions: Optional[List[Dict[str, Any]]] = Field(default=None, description="Interactive action buttons for user guidance (List of SuggestedAction)")
+
+    # EVIDENCE-CENTRIC FIELDS (v3.1.0)
+    evidence_requests: List[EvidenceRequest] = Field(
+        default_factory=list,
+        description="Active evidence requests for this turn"
+    )
+    investigation_mode: InvestigationMode = Field(
+        default=InvestigationMode.ACTIVE_INCIDENT,
+        description="Current investigation approach (speed vs depth)"
+    )
+    case_status: EvidenceCaseStatus = Field(
+        default=EvidenceCaseStatus.INTAKE,
+        description="Current case investigation state"
+    )
+
+    # DEPRECATED (backward compatibility)
+    suggested_actions: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        deprecated=True,
+        description="DEPRECATED in v3.1.0 - Use evidence_requests instead. Always null in new responses."
+    )
 
     @model_validator(mode='before')
     @classmethod

@@ -444,45 +444,66 @@ Join our [Discord Community](https://discord.com/faultmaven) for real-time discu
 
 FaultMaven documentation is organized into strategic and tactical levels:
 
-#### **Strategic Level (System Vision & Requirements)**
-- **[System Requirements & Design](../docs/FAULTMAVEN_SYSTEM_REQUIREMENTS.md)** - Complete system vision, requirements, and frontend design specifications
+📚 **Complete documentation is in [`docs/`](./docs/)**
 
-#### **Tactical Level (Implementation & Technical Details)**
-- **[Architecture Documentation](../docs/architecture/)** - Technical implementation guidance
-- **[Protection System Guide](../docs/security/comprehensive-protection-implementation-guide.md)** - Complete client protection implementation (Phase 1 + Phase 2)
-- **[Website Frontend Documentation](../docs/frontend/)** - Website frontend implementation details (this repository)
-- **[Copilot Extension Repository](https://github.com/FaultMaven/faultmaven-copilot)** - Complete browser extension codebase and documentation
+### Quick Links
 
-### **Quick Navigation by Role**
+- 🚀 **[Getting Started](./docs/getting-started/)** - User guide and quickstart
+- 🏗️ **[Architecture Overview](./docs/architecture/architecture-overview.md)** - 🎯 Master architecture document
+- 📋 **[System Requirements](./docs/specifications/system-requirements-specification.md)** - 🎯 Requirements (v2.0)
+- 🔌 **[API Documentation](./docs/api/)** - OpenAPI spec and integration guides
+- 💻 **[Development](./docs/development/)** - Setup, guides, best practices
+- 🧪 **[Testing](./docs/testing/)** - Testing strategies and patterns
+- 🔒 **[Security](./docs/security/)** - Security and protection systems
+- 🏗️ **[Infrastructure](./docs/infrastructure/)** - Infrastructure setup and configuration
 
-#### **For Product Managers & Stakeholders**
-- **[System Requirements](../docs/FAULTMAVEN_SYSTEM_REQUIREMENTS.md)** - System vision, features, and business requirements
+### Documentation Structure
 
-#### **For Website Frontend Developers** (This Repository)
-- **[Website Frontend Guide](../docs/frontend/website-guide.md)** - Landing pages, authentication, and user management
-- **[Website Component Library](../docs/frontend/website-components.md)** - Marketing, auth, and dashboard components
+See **[docs/README.md](./docs/README.md)** for complete documentation index.
 
-#### **For Copilot Extension Developers** (Separate Repository)
-- **[System Requirements - Frontend Section](../docs/FAULTMAVEN_SYSTEM_REQUIREMENTS.md#frontend-design--user-experience)** - UI/UX requirements and design specifications for the browser extension
-- **[Copilot Repository](https://github.com/FaultMaven/faultmaven-copilot)** - Complete extension codebase and documentation
-- **Note**: The 7 response types and troubleshooting UI are implemented in the separate repository
+**Master Documents** (Authoritative Sources):
+- 🎯 [Architecture Overview](./docs/architecture/architecture-overview.md) - System architecture (v2.0, code-aligned)
+- 🎯 [System Requirements](./docs/specifications/system-requirements-specification.md) - Requirements (v2.0, 62 requirements)
+- 🎯 [Investigation Phases Framework](./docs/architecture/investigation-phases-and-ooda-integration.md) - Process framework (v2.1, 7 phases)
+- 🎯 [Evidence Collection Design](./docs/architecture/evidence-collection-and-tracking-design.md) - Evidence models (v2.1)
 
-#### **For Backend Developers**
-- **[System Architecture](../docs/architecture/SYSTEM_ARCHITECTURE.md)** - High-level system architecture and design patterns
-- **[Component Interactions](../docs/architecture/COMPONENT_INTERACTIONS.md)** - Component interaction patterns and data flows
-- **[Implementation Gap Analysis](../docs/architecture/IMPLEMENTATION_GAP_ANALYSIS.md)** - Development roadmap and gap closure plan
-- **[Developer Guide](../docs/architecture/developer-guide.md)** - Development workflow and best practices
-- **[Service Patterns](../docs/architecture/service-patterns.md)** - Service layer implementation patterns
-- **[Dependency Injection System](../docs/architecture/dependency-injection-system.md)** - DI container architecture and patterns
-- **[Container Usage Guide](../docs/architecture/container-usage-guide.md)** - Practical DI container usage examples
+### Documentation by Role
 
-#### **For DevOps & Operations**
-- **[Deployment Guide](../docs/architecture/DEPLOYMENT_GUIDE.md)** - Production deployment instructions and configuration
-- **[Testing Guide](../docs/architecture/testing-guide.md)** - Testing strategies and quality assurance
+#### For Product Managers & Stakeholders
+- **[System Requirements Specification](./docs/specifications/system-requirements-specification.md)** - 62 requirements: what the system must do
+- **[Case and Session Concepts](./docs/specifications/CASE_SESSION_CONCEPTS.md)** - Core concepts and distinctions
 
-#### **For New Team Members**
-- **[Developer Guide](../docs/architecture/developer-guide.md)** - Onboarding and development workflow
-- **[Interface-Based Design](../docs/architecture/interface-based-design.md)** - Core architectural principles
+#### For Architects & Technical Leads
+- **[Architecture Overview](./docs/architecture/architecture-overview.md)** - Complete system design (code-aligned, 40+ docs)
+- **[Investigation Phases Framework](./docs/architecture/investigation-phases-and-ooda-integration.md)** - 7-phase process (v2.1)
+- **[Evidence Collection Design](./docs/architecture/evidence-collection-and-tracking-design.md)** - Evidence models (v2.1)
+- **[Agentic Framework](./docs/architecture/agentic-framework-design-specification.md)** - 7-component AI framework
+- **[Architecture Diagrams](./docs/architecture/diagrams/)** - Visual system representations
+
+#### For Backend Developers
+- **[Developer Guide](./docs/architecture/developer-guide.md)** - Development workflow and best practices
+- **[Dependency Injection System](./docs/architecture/dependency-injection-system.md)** - DI container and patterns
+- **[Service Patterns](./docs/architecture/service-patterns.md)** - Service layer implementation
+- **[Context Management](./docs/development/CONTEXT_MANAGEMENT.md)** - Typed QueryContext usage
+- **[Token Estimation](./docs/development/TOKEN_ESTIMATION.md)** - Provider-specific tokenizers
+- **[How to Add Providers](./docs/development/how-to-add-providers.md)** - LLM provider integration
+
+#### For Frontend Developers
+- **[Website Frontend Guide](./docs/frontend/website-guide.md)** - Landing pages, auth, user management
+- **[Website Components](./docs/frontend/website-components.md)** - Component library
+- **[API Integration](./docs/frontend/api-integration.md)** - Frontend-backend integration
+- **[Copilot Extension](https://github.com/FaultMaven/faultmaven-copilot)** - Browser extension (separate repo)
+
+#### For DevOps & Operations
+- **[Infrastructure Guides](./docs/infrastructure/)** - Redis, ChromaDB, Opik, local LLM
+- **[Logging](./docs/logging/)** - Architecture, configuration, operations
+- **[Runbooks](./docs/runbooks/)** - Kubernetes, PostgreSQL, Redis, networking
+- **[Deployment Guide](./docs/architecture/DEPLOYMENT_GUIDE.md)** - Production deployment
+
+#### For QA & Testers
+- **[Testing Guide](./docs/architecture/testing-guide.md)** - Testing strategies
+- **[Architecture Testing](./docs/testing/architecture-testing-guide.md)** - Architecture compliance testing
+- **[Test Patterns](./docs/testing/new-test-patterns.md)** - Modern testing patterns
 
 ### **Key Features Documentation**
 

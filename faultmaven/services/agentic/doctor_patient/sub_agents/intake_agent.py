@@ -17,13 +17,88 @@ from typing import Dict, Any, List
 import json
 
 from faultmaven.models import CaseDiagnosticState, UrgencyLevel
-from .base import MinimalPhaseAgent, PhaseContext, PhaseAgentResponse
+from faultmaven.models.doctor_patient import SuggestedAction, CommandSuggestion, ActionType
+from .base import MinimalPhaseAgent, PhaseContext, PhaseAgentResponse, generate_fallback_actions
 
 
-# Compact prompt (~300 tokens vs 1300)
+def _parse_suggested_actions(actions_data: List[Dict[str, Any]]) -> List[SuggestedAction]:
+    """Convert dict-based suggested actions to Pydantic models.
+
+    Args:
+        actions_data: List of dicts with 'label', 'type', 'payload' fields
+
+    Returns:
+        List of properly typed SuggestedAction objects
+    """
+    result = []
+    for action_dict in actions_data:
+        try:
+            # Parse type string to ActionType enum
+            action_type_str = action_dict.get("type", "question_template")
+            action_type = ActionType(action_type_str)
+
+            result.append(SuggestedAction(
+                label=action_dict.get("label", ""),
+                type=action_type,
+                payload=action_dict.get("payload", ""),
+                icon=action_dict.get("icon"),
+                metadata=action_dict.get("metadata", {})
+            ))
+        except (ValueError, KeyError):
+            # Skip malformed actions
+            continue
+
+    return result
+
+
+# Compact prompt with proactive investigation directive (~400 tokens)
 INTAKE_PROMPT = """You are FaultMaven's intake specialist. Identify if user has a technical problem.
 
 GOAL: Determine problem status and capture initial statement.
+
+DOCTOR-PATIENT PHILOSOPHY:
+You are a technical diagnostician. The user is your patient.
+
+CORE RULES (ALWAYS FOLLOW):
+1. USER CAN ASK ANYTHING: If user asks off-topic question → Answer it briefly, then return to diagnosis
+2. ANSWER FIRST, GUIDE SECOND: Always respond to what user said before asking new questions
+3. ACKNOWLEDGE BEFORE PROBING: "I see you're getting [error X]. Let me ask about [Y]..."
+4. MAINTAIN DIAGNOSTIC AGENDA: Guide toward intake goals, but never force it
+5. NO METHODOLOGY JARGON: Don't say "Phase 0" or "intake" - speak naturally like a doctor
+6. NATURAL CONVERSATION: You're a skilled doctor, not following a script
+7. EXPLICIT QUESTIONS DEMAND DIRECT ANSWERS:
+   - "What are the [hypotheses/issues/steps]?" → List them immediately, nothing else first
+   - "What do you want me to do?" → Give ONE specific action: "Can you check X and tell me Y?"
+   - User corrects you ("you haven't told me yet") → Acknowledge mistake and provide what's missing
+   - Don't deflect or contextualize - answer the question directly, THEN add context if needed
+
+ANTI-PATTERNS TO AVOID:
+❌ DON'T say: "We need to figure out X" or "It's critical we determine Y"
+✅ DO say: "Can you check X and tell me Y?" or "What does X show?"
+
+❌ DON'T explain why something is important without giving the action
+✅ DO give the specific action, then explain why if needed
+
+Examples:
+- Bad: "We need to establish the timeline to correlate with changes"
+- Good: "When exactly did you first notice this problem?"
+
+- Bad: "It's critical we pinpoint the exact deployment that triggered this"
+- Good: "Can you pull up your deployment logs and tell me what changed in v2.4?"
+
+- Bad: "We should validate this hypothesis with evidence"
+- Good: "Can you check the error logs for NullPointerException patterns?"
+
+YOUR DIAGNOSTIC APPROACH (Intake):
+- IF user asks explicit question (what/when/why/how) → Answer it DIRECTLY first
+- RESPOND to user's question/statement first
+- ASSESS what's still missing: problem statement? symptoms? urgency?
+- If missing critical info → Ask ONE specific question
+- Examples:
+  * User: "I'm getting errors" → You: "What exact error message are you seeing?"
+  * User: "It's not working" → You: "What specifically isn't working? What did you expect?"
+  * User: "Started this morning" → You: "Got it. What symptoms are you seeing?"
+- Build on what user tells you - don't repeat answered questions
 
 CURRENT STATE:
 {phase_state}
@@ -50,16 +125,37 @@ URGENCY DETECTION:
 - HIGH: "urgent", "asap", "impacting users", "broken"
 - NORMAL: routine questions
 
-RESPONSE FORMAT (JSON):
+MANDATORY OUTPUT REQUIREMENTS:
+1. ALWAYS include 2-3 suggested_actions when you need information from user
+2. NEVER say "we need to X" or "it's critical to Y" in answer - use suggested_actions instead
+3. If asking user to provide data → Create action buttons for common responses
+4. Keep answer conversational and contextual, move actionable requests to suggested_actions
+
+WRONG (passive explanation):
+  answer: "I see you're having production issues. Let me understand the scope..."
+  suggested_actions: []
+
+RIGHT (action-oriented):
+  answer: "I see you're experiencing production issues with your main API."
+  suggested_actions: [
+    {{"label": "🔴 Yes, it's down", "type": "question_template", "payload": "Yes, the production API is completely down"}},
+    {{"label": "🟡 Degraded performance", "type": "question_template", "payload": "The API is responding but with degraded performance"}}
+  ]
+
+RESPONSE FORMAT (JSON) - REQUIRED FIELDS:
+- answer: Conversational response (acknowledge + context, NO action requests)
+- suggested_actions: MANDATORY if you need user input (2-3 action buttons)
+- phase_complete: true only if ALL required info gathered
+
 {{
   "answer": "Natural response to user",
   "has_active_problem": true/false,
   "problem_statement": "One-sentence problem summary" or "",
   "urgency_level": "normal"|"high"|"critical",
   "suggested_actions": [
-    {{"label": "I have a problem", "type": "question_template", "payload": "I need help troubleshooting"}},
-    {{"label": "Just learning", "type": "question_template", "payload": "Explain this concept"}},
-    {{"label": "Need best practices", "type": "question_template", "payload": "What are best practices for X"}}
+    {{"label": "🔴 Yes, it's a problem", "type": "question_template", "payload": "Yes, I need help troubleshooting this issue"}},
+    {{"label": "📚 Just learning", "type": "question_template", "payload": "I'm just trying to understand how this works"}},
+    {{"label": "💡 Need best practices", "type": "question_template", "payload": "What are the recommended best practices for X?"}}
   ],
   "phase_complete": true/false,
   "confidence": 0.0-1.0
@@ -142,10 +238,29 @@ class IntakeAgent(MinimalPhaseAgent):
                 "current_phase": 1 if parsed.get("has_active_problem") and parsed.get("phase_complete") else 0
             }
 
+            # Parse suggested_actions from LLM response to typed Pydantic models
+            raw_actions = parsed.get("suggested_actions", [])
+            suggested_actions = _parse_suggested_actions(raw_actions)
+
+            print(f"🔍 DEBUG: raw_actions from LLM: {raw_actions}")
+            print(f"🔍 DEBUG: parsed suggested_actions: {suggested_actions}")
+            print(f"🔍 DEBUG: phase_complete: {parsed.get('phase_complete', False)}")
+
+            # Defensive fallback: Generate contextual actions if LLM didn't provide any
+            if not suggested_actions and not parsed.get("phase_complete", False):
+                print(f"🛡️ DEFENSIVE FALLBACK TRIGGERED for phase {self.phase_number}")
+                suggested_actions = generate_fallback_actions(
+                    phase=self.phase_number,
+                    phase_state=context.phase_state,
+                    user_query=context.user_query,
+                    phase_complete=parsed.get("phase_complete", False)
+                )
+                print(f"🛡️ Generated fallback actions: {suggested_actions}")
+
             return PhaseAgentResponse(
                 answer=parsed.get("answer", response_text),
                 state_updates=state_updates,
-                suggested_actions=parsed.get("suggested_actions", []),
+                suggested_actions=suggested_actions,
                 suggested_commands=[],  # No commands in intake
                 phase_complete=parsed.get("phase_complete", False),
                 confidence=parsed.get("confidence", 0.85),
@@ -164,6 +279,20 @@ class IntakeAgent(MinimalPhaseAgent):
                 for keyword in ["production", "outage", "emergency", "critical", "urgent"]
             )
 
+            # Fallback: Create properly typed suggested actions
+            fallback_actions = [
+                SuggestedAction(
+                    label="I have a problem",
+                    type=ActionType.QUESTION_TEMPLATE,
+                    payload="Help me troubleshoot"
+                ),
+                SuggestedAction(
+                    label="Just learning",
+                    type=ActionType.QUESTION_TEMPLATE,
+                    payload="Explain this"
+                )
+            ]
+
             return PhaseAgentResponse(
                 answer=llm_response.content,
                 state_updates={
@@ -172,10 +301,7 @@ class IntakeAgent(MinimalPhaseAgent):
                     "urgency_level": "critical" if is_critical else ("high" if has_problem else "normal"),
                     "current_phase": 1 if has_problem else 0
                 },
-                suggested_actions=[
-                    {"label": "I have a problem", "type": "question_template", "payload": "Help me troubleshoot"},
-                    {"label": "Just learning", "type": "question_template", "payload": "Explain this"}
-                ],
+                suggested_actions=fallback_actions,
                 suggested_commands=[],
                 phase_complete=has_problem,  # Complete if problem detected
                 confidence=0.70,  # Lower confidence for heuristic

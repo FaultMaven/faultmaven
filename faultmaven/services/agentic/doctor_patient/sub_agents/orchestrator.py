@@ -151,6 +151,19 @@ class DiagnosticOrchestrator:
                 if "current_phase" not in response.state_updates:
                     response.state_updates["current_phase"] = response.recommended_next_phase
 
+            # CRITICAL: Prevent backward phase movement from Phase 5 (Solution)
+            # Once in solution phase with root cause identified, don't regress
+            if current_phase == 5 and diagnostic_state.root_cause:
+                if response.recommended_next_phase < 5:
+                    logger.warning(
+                        f"Blocking backward phase movement from Phase 5 to Phase {response.recommended_next_phase}. "
+                        f"Root cause already identified: {diagnostic_state.root_cause[:100]}"
+                    )
+                    # Override: stay in Phase 5
+                    response.recommended_next_phase = 5
+                    if "current_phase" in response.state_updates:
+                        response.state_updates["current_phase"] = 5
+
             return response
 
         except Exception as e:
