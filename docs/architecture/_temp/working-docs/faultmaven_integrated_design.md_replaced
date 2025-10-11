@@ -1,0 +1,1281 @@
+# FaultMaven Integrated Framework Design v2.0
+
+**Document Type:** System Design Specification  
+**Version:** 2.0  
+**Last Updated:** 2025-10-08  
+**Status:** Design Specification  
+
+---
+
+## Table of Contents
+
+1. [Executive Summary](#executive-summary)
+2. [System Overview](#system-overview)
+3. [Dual-Framework Architecture](#dual-framework-architecture)
+4. [Mode System Design](#mode-system-design)
+5. [Lifecycle-to-OODA Integration](#lifecycle-to-ooda-integration)
+6. [User Journey Scenarios](#user-journey-scenarios)
+7. [State Management Architecture](#state-management-architecture)
+8. [Data Structure Design](#data-structure-design)
+9. [Performance & Optimization](#performance--optimization)
+10. [Implementation Roadmap](#implementation-roadmap)
+
+---
+
+## Executive Summary
+
+FaultMaven implements a **dual-framework architecture** that combines:
+
+1. **Outer Framework**: Incident Resolution Lifecycle (6 phases) - provides strategic structure
+2. **Inner Engine**: OODA Troubleshooting Framework (5 steps) - provides tactical execution
+
+This design enables:
+- Natural investigation flow matching human reasoning
+- Flexible entry points based on incident context
+- Mode-based interaction (Consultant vs Lead Investigator)
+- Adaptive OODA usage per lifecycle phase
+- Hierarchical state management preventing token explosion
+
+**Key Innovation**: The frameworks **complement rather than conflict** - lifecycle determines **what** to focus on (mitigation vs RCA), OODA determines **how** to investigate (fast vs thorough).
+
+---
+
+## System Overview
+
+### Purpose
+
+FaultMaven guides users through systematic incident resolution by:
+- **Detecting problem signals** and offering mode transitions
+- **Adapting investigation strategy** based on urgency and context
+- **Executing OODA cycles** with phase-appropriate intensity
+- **Managing evidence lifecycle** with actionable acquisition guidance
+- **Preventing common failure modes** (hypothesis anchoring, state explosion, mode confusion)
+
+### Architecture Principles
+
+1. **User Agency with Agent Guidance** - User controls investigation, agent provides structure
+2. **Mode-Based Behavior** - Consultant mode (reactive) vs Lead Investigator mode (proactive)
+3. **Evidence-Centric Investigation** - Request specific data with commands, not questions
+4. **Adaptive OODA Execution** - Full cycles for RCA, abbreviated for mitigation
+5. **Hierarchical State Management** - Hot/warm/cold memory prevents token explosion
+6. **Explicit State Transitions** - Problem confirmation, phase advancement require signals
+
+---
+
+## Dual-Framework Architecture
+
+### Framework Relationship
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                 INCIDENT RESOLUTION LIFECYCLE                   │
+│                     (Strategic Framework)                        │
+│                                                                  │
+│  Phase 0: Inquiry & Exploration (Steps 0-9)                    │
+│  Phase 1: Problem Definition & Impact (Steps 10-19)            │
+│  Phase 2: Triage & Correlation (Steps 20-29)                   │
+│  Phase 3: Mitigation & Service Recovery (Steps 30-39)          │
+│  Phase 4: Root Cause Analysis (Steps 40-49)                    │
+│  Phase 5: Long-Term Solution (Steps 50-59)                     │
+│  Phase 6: Documentation & Post-Mortem (Steps 60+)              │
+│                                                                  │
+│         ┌───────────────────────────────────────┐              │
+│         │    OODA TROUBLESHOOTING ENGINE        │              │
+│         │      (Tactical Framework)             │              │
+│         │                                        │              │
+│         │  1. Frame Anomaly ⚓                   │              │
+│         │  2. Observe & Orient 📡               │              │
+│         │  3. Branch Hypotheses 🌳              │              │
+│         │  4. Test & Iterate 🔄                 │              │
+│         │  5. Conclude & Learn 📖               │              │
+│         └───────────────────────────────────────┘              │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+Lifecycle = "WHAT to focus on"  (mitigation vs RCA vs documentation)
+OODA = "HOW to investigate"     (fast vs thorough, which steps active)
+```
+
+### Integration Points
+
+| Lifecycle Phase | OODA Steps Active | Intensity | Goal |
+|----------------|-------------------|-----------|------|
+| **Phase 0: Inquiry** | None | N/A | Q&A only, no investigation |
+| **Phase 1: Problem** | Frame, Scan | Light | Define scope and impact |
+| **Phase 2: Triage** | Scan, Branch, Test | Medium | Validate problem, initial theories |
+| **Phase 3: Mitigation** | Test, Conclude | Fast | Restore service quickly |
+| **Phase 4: RCA** | All 5 steps | Full | Deep investigation, multiple cycles |
+| **Phase 5: Solution** | Test, Conclude | Medium | Validate permanent fix |
+| **Phase 6: Documentation** | Conclude only | Light | Generate artifacts |
+
+**Key Insight**: Same OODA engine, different execution strategies per phase.
+
+---
+
+## Mode System Design
+
+### Two Conversational Modes
+
+#### 1. Consultant Mode (Default)
+
+**Persona**: Expert colleague 👔  
+**Goal**: Answer questions, explain concepts  
+**Interaction**: Reactive, follows user lead  
+**Structure**: Free-form conversation  
+**Active in**: Phase 0 (Inquiry & Exploration)
+
+**Behavior**:
+- Responds to technical questions
+- Provides explanations with suggested actions
+- Listens for problem signals
+- Never assumes user has an incident
+
+#### 2. Lead Investigator Mode (Focused)
+
+**Persona**: War room lead 🕵️  
+**Goal**: Methodically drive incident to resolution  
+**Interaction**: Proactive, guides process  
+**Structure**: Follows OODA framework  
+**Active in**: Phases 1-6 (Investigation active)
+
+**Behavior**:
+- Generates evidence requests with acquisition guidance
+- Tracks hypothesis lifecycle
+- Detects anchoring and triggers alternatives
+- Manages case status and phase transitions
+
+### Mode Transition Flow
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    USER STARTS CONVERSATION                   │
+└────────────────────────┬─────────────────────────────────────┘
+                         │
+                         ▼
+                ┌─────────────────┐
+                │ CONSULTANT MODE │
+                │   (Default)     │
+                └────────┬────────┘
+                         │
+                    Listen for
+                  Problem Signals
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+   Weak Signal      Strong Signal    No Signal
+   (ambiguous)      (clear problem)  (just Q&A)
+        │                │                │
+        ▼                ▼                ▼
+  Ask: "Are you    Offer: "Start    Continue
+  troubleshooting?"  investigation?"  answering
+        │                │                │
+        └────────────────┴────────────────┘
+                         │
+                 User Consents?
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+             Yes                   No
+              │                     │
+              ▼                     ▼
+    ┌──────────────────┐    Stay in Consultant
+    │ LEAD INVESTIGATOR│         Mode
+    │      MODE        │
+    └──────────────────┘
+              │
+              ▼
+     Create Case Object
+     Activate OODA Engine
+     Determine Entry Phase
+```
+
+### Problem Signal Detection
+
+**Weak Signals** (Ask for confirmation):
+- Keywords: "issue", "problem", "weird", "slow"
+- User seems uncertain: "not sure if this is a problem"
+- Passive voice: "something is happening"
+
+**Strong Signals** (Offer mode switch immediately):
+- Keywords: "down", "crash", "alert", "error", "failing", "broken"
+- Urgency indicators: "production", "users affected", "emergency"
+- File upload with logs/metrics
+- Specific incident description
+
+**Example Transitions**:
+
+```
+User: "What is Redis persistence?"
+→ No signal, stay in Consultant mode
+
+User: "Our Redis seems slower than usual"
+→ Weak signal, ask: "Are you troubleshooting an issue?"
+
+User: "Production Redis is down! Getting connection timeouts"
+→ Strong signal, offer: "Start troubleshooting session?"
+```
+
+---
+
+## Lifecycle-to-OODA Integration
+
+### Phase 0: Inquiry & Exploration
+
+**Lifecycle Goal**: Answer questions, explore concepts  
+**OODA Status**: Inactive  
+**Agent Behavior**: Pure Q&A mode
+
+```
+User: "How does Kubernetes autoscaling work?"
+Agent: [Explains concept] + Suggested Actions:
+  - "Learn about HPA configuration"
+  - "See example deployment"
+  - "Ask about troubleshooting autoscaling"
+```
+
+**No investigation state created.**
+
+---
+
+### Phase 1: Problem Definition & Impact Analysis
+
+**Lifecycle Goal**: Identify issue and understand blast radius  
+**OODA Steps**: Frame Anomaly ⚓, Observe & Orient 📡  
+**Intensity**: Light (2 steps only)
+
+**OODA Execution**:
+
+1. **Frame Anomaly ⚓**
+   - Agent asks: What's broken? Who's affected? When started?
+   - User provides initial description
+   - Agent creates `AnomalyFrame` object:
+     ```python
+     AnomalyFrame(
+         statement="API returning 500 errors",
+         affected_components=["api-service"],
+         affected_scope="EU region users",
+         severity="high",
+         confidence=0.7  # Provisional
+     )
+     ```
+
+2. **Observe & Orient 📡**
+   - Agent generates 2-3 evidence requests:
+     - Error rate metrics (how bad?)
+     - Affected endpoints (which routes?)
+     - User impact (how many affected?)
+   
+**Phase Completion**: Problem confirmed by user, advance to Phase 2
+
+---
+
+### Phase 2: Triage & Correlation
+
+**Lifecycle Goal**: Gather evidence, validate problem, find patterns  
+**OODA Steps**: Observe & Orient 📡, Branch Hypotheses 🌳, Test & Iterate 🔄 (quick)  
+**Intensity**: Medium (3-4 steps)
+
+**OODA Execution**:
+
+1. **Observe & Orient 📡** (Deep)
+   - Request comprehensive evidence:
+     - Recent logs (errors, exceptions)
+     - Recent changes (deployments, configs)
+     - System metrics (CPU, memory, connections)
+     - Timeline (when exactly did it start?)
+
+2. **Branch Hypotheses 🌳**
+   - Agent generates 2-3 ranked hypotheses:
+     ```
+     Hypothesis #1 (85% likelihood): Database connection pool exhaustion
+     Hypothesis #2 (60% likelihood): Recent deployment introduced memory leak
+     Hypothesis #3 (30% likelihood): Traffic spike overwhelmed capacity
+     ```
+
+3. **Test & Iterate 🔄** (Quick validation only)
+   - Agent: "Check connection pool metrics to validate Hypothesis #1"
+   - User provides data
+   - Agent: Hypothesis supported or refuted
+
+**Urgency Check**:
+- If HIGH/CRITICAL urgency → Skip to Phase 3 (Mitigation)
+- If NORMAL urgency → Continue to Phase 4 (RCA)
+
+---
+
+### Phase 3: Mitigation & Service Recovery
+
+**Lifecycle Goal**: Stop the bleeding, restore service ASAP  
+**OODA Steps**: Test & Iterate 🔄, Conclude & Learn 📖  
+**Intensity**: Fast (abbreviated cycles)  
+**Special**: Speed over depth
+
+**OODA Execution** (Fast-track):
+
+1. **Test & Iterate 🔄** (Mitigation focus)
+   - Agent proposes quick fixes:
+     ```
+     Option 1: Restart service (clears memory leak) - 2 min
+     Option 2: Increase connection pool size - 5 min
+     Option 3: Rollback last deployment - 10 min
+     ```
+   - User chooses and applies
+   - Agent: "Monitor for 2 minutes, confirm errors stopped"
+
+2. **Conclude & Learn 📖** (Service restored?)
+   - If YES → Service restored ✅
+     - Mark `incident_mitigated = True`
+     - Transition to POST_MORTEM mode
+     - Advance to Phase 4 (RCA) or Phase 6 (Documentation)
+   
+   - If NO → Mitigation failed ❌
+     - Try next mitigation option
+     - After 3 failures → Recommend escalation
+
+**Escalation Criteria**:
+- 3 mitigation attempts failed
+- Critical evidence blocked (no logs, no metrics)
+- Symptoms worsening despite actions
+
+---
+
+### Phase 4: Root Cause Analysis (RCA)
+
+**Lifecycle Goal**: Find underlying cause now that service is stable  
+**OODA Steps**: ALL 5 steps (full cycles)  
+**Intensity**: Full depth  
+**Special**: Multiple iterations expected
+
+**OODA Execution** (Deep investigation):
+
+**Iteration 1**:
+1. **Frame Anomaly ⚓** - Re-examine problem with new info
+2. **Observe & Orient 📡** - Gather comprehensive evidence
+3. **Branch Hypotheses 🌳** - Generate 3+ theories
+4. **Test & Iterate 🔄** - Validate top hypothesis
+5. **Conclude & Learn 📖** - Root cause found? If no → Iteration 2
+
+**Iteration 2** (if needed):
+- Re-frame based on new findings
+- Generate alternative hypotheses (forced if anchoring detected)
+- Test next theory
+- Conclude or continue
+
+**Confidence Requirement**: Must reach ≥70% confidence before concluding
+
+**Anchoring Prevention**:
+- If testing same hypothesis category 4+ times → Force alternatives
+- If no progress in 3 iterations → Trigger escape hatch (re-frame)
+- Confidence decay: Hypotheses lose confidence over time without validation
+
+**Example Conclusion**:
+```
+Root Cause: Memory leak in user caching feature deployed at 13:55
+Confidence: 75% (Medium-High)
+
+Supporting Evidence:
+✓ OutOfMemoryError at 14:03 (8 min after deployment)
+✓ Memory 60% → 98% spike correlates with deployment
+✓ Service restart cleared issue (supports memory leak theory)
+
+Missing Evidence:
+✗ Memory profiling during incident
+✗ Code review of caching implementation
+
+Alternative Explanations:
+- Traffic spike (15% likely) - Refuted by traffic logs showing normal load
+
+Caveats:
+- Would be 90% confidence with memory profiling data
+- Assuming heap size wasn't changed in deployment
+```
+
+---
+
+### Phase 5: Long-Term Solution Design
+
+**Lifecycle Goal**: Design permanent fix to prevent recurrence  
+**OODA Steps**: Test & Iterate 🔄, Conclude & Learn 📖  
+**Intensity**: Medium
+
+**OODA Execution**:
+
+1. **Test & Iterate 🔄** (Solution validation)
+   - Agent proposes permanent fixes:
+     - Code change (fix memory leak in caching)
+     - Configuration change (add memory limits)
+     - Infrastructure change (increase heap size)
+   - User implements in staging/testing
+   - Agent: "Validate fix doesn't introduce regressions"
+
+2. **Conclude & Learn 📖** (Fix effectiveness)
+   - Confirm fix prevents issue
+   - Document prevention measures
+   - Recommend monitoring improvements
+
+---
+
+### Phase 6: Documentation & Post-Mortem
+
+**Lifecycle Goal**: Capture learnings, generate artifacts  
+**OODA Steps**: Conclude & Learn 📖 (modified)  
+**Intensity**: Light (no investigation, just synthesis)
+
+**OODA Execution**:
+
+1. **Conclude & Learn 📖** (Generate deliverables)
+   - Agent offers:
+     - **Case Report**: Full investigation summary
+       - Timeline of events
+       - Evidence collected
+       - Hypotheses tested
+       - Root cause conclusion with confidence
+       - Solution applied
+     
+     - **Runbook** (if doesn't exist):
+       - Issue identification (symptoms)
+       - Quick diagnosis steps
+       - Resolution procedure
+       - Prevention measures
+
+**User Choice**:
+- Generate both → Create and save to knowledge base
+- Skip → Close case without artifacts
+- Report only → For quick incidents
+
+**Status Update**: RESOLVED → CLOSED
+
+---
+
+## User Journey Scenarios
+
+### Scenario 1: Technical Q&A (Phase 0 only)
+
+**Context**: User learning, no incident
+
+```
+User: "What causes database connection timeouts?"
+
+Agent (Consultant Mode):
+"Database connection timeouts typically occur when:
+1. Connection pool exhaustion (all connections in use)
+2. Network latency between app and database
+3. Long-running queries blocking new connections
+4. Database server overloaded
+
+Suggested Actions:
+[Tell me how to diagnose timeouts]
+[Explain connection pooling]
+[I'm actually seeing timeouts now] ← Problem signal
+```
+
+**Flow**: Stays in Phase 0, no investigation created
+
+---
+
+### Scenario 2: "Something's Weird" Investigation
+
+**Context**: SRE notices anomaly, unsure if real issue
+
+**Flow**:
+```
+Phase 0 (Consultant):
+User: "CPU usage looks higher than normal, not sure why"
+
+Agent: 🩺 "It sounds like you might be investigating an issue. 
+Would you like me to start a formal troubleshooting session?"
+
+User: "Yes, let's investigate"
+
+Phase 1 (Problem Definition):
+Agent (Lead Investigator): "🕵️ Investigation started.
+Let's frame the problem:
+- What CPU percentage are you seeing vs normal?
+- When did you first notice this?
+- Which services/servers affected?"
+
+User: "Seeing 70-80% vs normal 40%, started ~1 hour ago, 
+only production API servers"
+
+Agent: "Got it. Let me confirm:
+🎯 Problem: CPU usage elevated on production API servers
+📊 Impact: 70-80% vs baseline 40%
+⏰ Timeline: Started 1 hour ago
+⚠️ Severity: Medium (not critical, but investigating)
+
+To investigate, I'll need:
+- Process-level CPU usage (top/htop output)
+- Recent deployments or config changes
+- Application logs for errors
+
+Does this match what you're seeing?"
+
+User: "Yes, confirmed"
+
+Phase 2 (Triage):
+[Agent generates evidence requests with commands]
+[User provides evidence]
+[Agent generates hypotheses]
+
+Outcome Decision:
+- If real issue → Phase 3 (Mitigation) or Phase 4 (RCA)
+- If false alarm → Phase 6 (Document findings, no action needed)
+```
+
+---
+
+### Scenario 3: "House is on Fire" Incident
+
+**Context**: Production outage, urgent
+
+**Flow**:
+```
+Phase 0 → Phase 1 (Fast):
+User: "API is down! Getting 500 errors, alerts firing!"
+
+Agent: 🚨 "CRITICAL INCIDENT DETECTED
+Starting emergency troubleshooting session.
+
+Phase 1 - Quick Problem Frame:
+🎯 Problem: API service down, returning 500 errors
+🔴 Impact: Appears to affect all API requests
+⚠️ Severity: CRITICAL
+
+Phase 3 (Skip Phase 2, go straight to mitigation):
+Let's stabilize first, diagnose later.
+
+Quick mitigation options:
+1. 🔄 Restart API service (fastest - 2 min)
+2. ↩️ Rollback last deployment (safer - 5 min)
+3. 📈 Scale up replicas (if capacity issue - 3 min)
+
+Which would you like to try first?
+
+Meanwhile, evidence needed:
+📋 Error logs: tail -100 /var/log/api.log
+📊 Recent changes: Check last deployment time
+"
+
+User: "Restarting service now..."
+[2 minutes pass]
+User: "Service is back up, errors stopped!"
+
+Phase 6 (Document):
+Agent: "🎉 Service restored!
+
+Incident Summary:
+- Duration: 8 minutes
+- Fix: Service restart
+- Root cause: Unknown (service stabilized, analysis needed)
+
+Would you like to:
+[Schedule RCA session] - Find root cause later
+[Close case] - Skip RCA for now
+"
+```
+
+---
+
+### Scenario 4: Post-Incident RCA
+
+**Context**: Service already restored, need root cause
+
+**Flow**:
+```
+Phase 0:
+User: "We had to rollback deployment yesterday. Need to find out why it broke"
+
+Agent: "That's a post-incident investigation (root cause analysis).
+Would you like me to start an RCA session?"
+
+User: "Yes"
+
+Phase 4 (Entry directly at RCA):
+Agent: "🕵️ Starting Root Cause Analysis.
+
+Since service is stable, we can investigate thoroughly.
+
+Background context:
+- What was the symptom/incident?
+- When did it occur?
+- What was the rollback trigger?
+
+Let me know and I'll guide the investigation."
+
+[Full OODA cycles in Phase 4]
+[Multiple iterations if needed]
+[Confidence scoring required]
+
+Phase 5 (Long-term Solution):
+[Design permanent fix]
+
+Phase 6 (Documentation):
+[Generate full post-mortem with lessons learned]
+```
+
+---
+
+## State Management Architecture
+
+### Hierarchical State Structure
+
+```
+InvestigationState (Root)
+├── Metadata Layer
+│   ├── investigation_id, session_id, user_id
+│   ├── created_at, last_updated, current_turn
+│   └── agent_mode (consultant | investigator)
+│
+├── Lifecycle Layer
+│   ├── current_phase (0-6)
+│   ├── entry_phase (where investigation started)
+│   ├── case_status (intake | in_progress | resolved | ...)
+│   ├── urgency_level (low | medium | high | critical)
+│   ├── investigation_mode (active_incident | post_mortem)
+│   └── phase_history [list of phase transitions]
+│
+├── OODA Engine Layer
+│   ├── ooda_active (bool)
+│   ├── current_step (frame | scan | branch | test | conclude)
+│   ├── current_iteration (int)
+│   ├── anomaly_frame (AnomalyFrame object)
+│   ├── hypotheses [List of Hypothesis objects]
+│   ├── tests_performed [List of HypothesisTest objects]
+│   ├── iterations [List of OODAIteration objects]
+│   ├── anchoring_detected (bool)
+│   └── forced_alternatives_at_turn [list]
+│
+├── Evidence Layer
+│   ├── evidence_requests [List of EvidenceRequest]
+│   ├── evidence_provided [List of EvidenceProvided]
+│   ├── evidence_coverage_score (0.0-1.0)
+│   └── critical_evidence_blocked_count (int)
+│
+└── Memory Layer
+    ├── hot_memory (last 2 OODA iterations, ~500 tokens)
+    ├── warm_memory (iterations 3-5, summarized, ~300 tokens)
+    ├── cold_memory (older, key facts only, ~100 tokens)
+    └── persistent_insights (always accessible, ~100 tokens)
+    
+    Total: ~1000 tokens (vs 4500+ without compression)
+```
+
+### Evidence Overload Handling
+
+**Problem**: Users upload large log files (10MB+) that:
+- Exceed token limits if loaded entirely
+- Contain mostly irrelevant data (99% noise, 1% signal)
+- Slow processing and increase costs
+
+**Solution**: Intelligent Extraction Pipeline (3-stage)
+
+```
+Stage 1: Streaming Scan (Heuristic Filtering)
+┌─────────────────────────────────────────┐
+│ Read file line-by-line                  │
+│ Apply fast filters:                     │
+│ • Timestamp in anomaly window?          │
+│ • Contains error keywords?              │
+│ • Mentions affected service/region?     │
+│ Stop at 1000 relevant lines (~100KB)    │
+└─────────────────────────────────────────┘
+                  ↓
+Stage 2: Semantic Filtering (Embedding-based)
+┌─────────────────────────────────────────┐
+│ Embed anomaly description               │
+│ Embed each filtered chunk               │
+│ Cosine similarity > 0.6 threshold       │
+│ Keep top 50 most relevant entries       │
+└─────────────────────────────────────────┘
+                  ↓
+Stage 3: LLM Summarization (Pattern Extraction)
+┌─────────────────────────────────────────┐
+│ Extract:                                │
+│ • Error patterns (grouped by type)      │
+│ • Timeline of critical events           │
+│ • Anomalies and unusual patterns        │
+│ Output: ~50KB structured summary        │
+└─────────────────────────────────────────┘
+```
+
+**Result**: 10MB file → ~50KB relevant evidence in <5 seconds
+
+**Integration**:
+```python
+class EvidenceProvided:
+    # File metadata
+    file_metadata: Optional[FileMetadata] = None
+    
+    # If large file, store extraction summary
+    extraction_summary: Optional[ExtractionSummary] = None
+
+class ExtractionSummary:
+    original_size_mb: float
+    extracted_size_kb: float
+    extraction_method: str = "intelligent_pipeline"
+    lines_scanned: int
+    lines_relevant: int
+    error_patterns: List[Dict[str, Any]]
+    timeline: List[Dict[str, Any]]
+```
+
+---
+
+### Key State Objects
+
+#### AnomalyFrame
+```python
+{
+  "statement": "API returning 500 errors",
+  "affected_components": ["api-service", "database"],
+  "affected_scope": "EU region users only",
+  "started_at": "2025-10-08T14:03:00Z",
+  "severity": "high",
+  "confidence": 0.7,  # Can be revised
+  "revision_count": 1,
+  "framed_at_turn": 10
+}
+```
+
+#### Hypothesis
+```python
+{
+  "hypothesis_id": "hyp-a1b2c3",
+  "statement": "Database connection pool exhausted",
+  "category": "infrastructure",
+  "likelihood": 0.85,  # Initial: 0.85
+  "initial_likelihood": 0.85,
+  "status": "testing",  # pending | testing | validated | refuted | retired
+  "created_at_turn": 12,
+  "supporting_evidence": ["ev-xyz123"],
+  "refuting_evidence": [],
+  "iterations_without_progress": 0,
+  "last_progress_at_turn": 14
+}
+```
+
+#### EvidenceRequest
+```python
+{
+  "request_id": "req-001",
+  "label": "Database connection pool metrics",
+  "description": "Need current and max connection counts to validate pool exhaustion theory",
+  "category": "metrics",
+  "guidance": {
+    "commands": [
+      "SHOW STATUS LIKE 'Threads_connected'",
+      "SHOW VARIABLES LIKE 'max_connections'"
+    ],
+    "file_locations": ["/etc/mysql/my.cnf"],
+    "ui_locations": ["Database Dashboard > Connections"],
+    "alternatives": ["Check monitoring tool (DataDog, New Relic)"],
+    "expected_output": "Threads_connected should be < max_connections"
+  },
+  "status": "pending",
+  "created_at_turn": 12,
+  "completeness": 0.0,
+  "requested_by_ooda_step": "test",
+  "for_hypothesis_id": "hyp-a1b2c3",
+  "priority": 1  # 1=critical
+}
+```
+
+#### OODAIteration
+```python
+{
+  "iteration_id": "iter-001",
+  "iteration_number": 1,
+  "started_at_turn": 10,
+  "completed_at_turn": 18,
+  "duration_turns": 8,
+  "steps_completed": ["frame", "scan", "branch", "test"],
+  "anomaly_refined": false,
+  "new_evidence_collected": 5,
+  "hypotheses_generated": 3,
+  "hypotheses_tested": 1,
+  "hypotheses_retired": 0,
+  "confidence_delta": 0.15,  # +15% confidence gained
+  "new_insights": [
+    "Connection pool at max capacity",
+    "Traffic volume normal (not a spike)"
+  ],
+  "made_progress": true,
+  "stall_reason": null
+}
+```
+
+---
+
+## Data Structure Design
+
+### Token Budget Management
+
+**Problem**: Unmanaged state can grow to 4,500+ tokens, causing:
+- LLM context window overflow
+- Slow processing
+- High costs
+
+**Solution**: Hierarchical memory with 3 tiers
+
+```python
+class HierarchicalMemory:
+    # Hot Memory: Full fidelity, last 2 OODA iterations (~500 tokens)
+    hot_iterations: List[OODAIteration] = [
+        # Iteration 2: Full details
+        # Iteration 1: Full details
+    ]
+    
+    # Warm Memory: Summarized, iterations 3-5 (~300 tokens)
+    warm_snapshots: List[MemorySnapshot] = [
+        {
+          "iteration": 5,
+          "summary": "Tested deployment hypothesis, refuted by logs",
+          "key_decisions": ["Ruled out deployment", "Generated traffic theory"],
+          "confidence_delta": -0.1
+        },
+        # ... 2 more summaries
+    ]
+    
+    # Cold Memory: Key facts only, older iterations (~100 tokens)
+    cold_snapshots: List[MemorySnapshot] = [
+        {
+          "iterations": "1-3",
+          "summary": "Initial framing and evidence gathering phase",
+          "key_facts": ["Problem: 500 errors", "Scope: EU only", "Started: 14:03"]
+        }
+    ]
+    
+    # Persistent Insights: Always accessible (~100 tokens)
+    persistent_insights: List[str] = [
+        "Connection pool at max capacity confirmed",
+        "Traffic volume normal (not a spike)",
+        "Recent deployment timing doesn't correlate"
+    ]
+    
+    # Total: ~1000 tokens (70% reduction)
+```
+
+### Compression Strategy
+
+**Trigger**: Every 3 turns, check token estimates
+
+**Algorithm**:
+```python
+if current_turn % 3 == 0:
+    # Move iterations 1-2 to hot (keep full)
+    hot_memory = iterations[-2:]
+    
+    # Move iterations 3-5 to warm (summarize with LLM)
+    for iter in iterations[-5:-2]:
+        warm_snapshot = await llm.summarize(
+            iter, 
+            max_tokens=100,
+            focus="key_decisions_and_evidence_changes"
+        )
+        warm_memory.append(warm_snapshot)
+    
+    # Move older iterations to cold (extract key facts only)
+    for iter in iterations[:-5]:
+        cold_snapshot = extract_key_facts(iter)
+        cold_memory.append(cold_snapshot)
+    
+    # Prune: Keep only 2 hot, 3 warm, 5 cold
+    hot_memory = hot_memory[-2:]
+    warm_memory = warm_memory[-3:]
+    cold_memory = cold_memory[-5:]
+```
+
+### Hypothesis Confidence Decay
+
+**Problem**: Agent gets stuck on wrong hypothesis (anchoring)
+
+**Solution**: Time-based confidence decay
+
+```python
+def apply_confidence_decay(hypothesis: Hypothesis, current_turn: int):
+    """Decay confidence if no progress"""
+    
+    turns_since_progress = current_turn - hypothesis.last_progress_at_turn
+    
+    if turns_since_progress >= 2:  # No progress in 2+ iterations
+        iterations_stalled = hypothesis.iterations_without_progress
+        decay_factor = 0.85 ** iterations_stalled
+        
+        hypothesis.likelihood = hypothesis.initial_likelihood * decay_factor
+        
+        if hypothesis.likelihood < 0.3:
+            hypothesis.status = "retired"
+            hypothesis.retirement_reason = "Confidence decayed below 30% threshold"
+            
+            # Trigger forced alternatives
+            trigger_alternative_hypothesis_generation()
+```
+
+**Example**:
+```
+Turn 10: Hypothesis "deployment issue" created, likelihood=0.85
+Turn 12: Test #1 fails, no progress, iterations_without_progress=1
+Turn 14: Test #2 fails, no progress, iterations_without_progress=2
+  → Decay: 0.85 * (0.85^2) = 0.61 likelihood
+Turn 16: Test #3 fails, no progress, iterations_without_progress=3
+  → Decay: 0.85 * (0.85^3) = 0.52 likelihood
+Turn 18: Still no progress, iterations_without_progress=4
+  → Decay: 0.85 * (0.85^4) = 0.44 likelihood
+Turn 20: Still no progress, iterations_without_progress=5
+  → Decay: 0.85 * (0.85^5) = 0.37 likelihood
+Turn 22: Still no progress, iterations_without_progress=6
+  → Decay: 0.85 * (0.85^6) = 0.28 likelihood < 0.3
+  → Status: RETIRED
+  → Action: Force alternative hypothesis generation
+```
+
+### Anchoring Detection
+
+**Problem**: Agent tests same hypothesis category repeatedly
+
+**Solution**: Pattern detection with forced alternatives
+
+```python
+class OODAEngineState:
+    same_category_test_count: Dict[str, int] = {
+        "deployment": 4,  # Tested 4 times!
+        "infrastructure": 1,
+        "code": 0
+    }
+    
+    def detect_anchoring(self) -> Optional[str]:
+        max_category = max(self.same_category_test_count.values())
+        
+        if max_category >= 4:
+            dominant_category = get_dominant_category()
+            return f"Tested '{dominant_category}' hypotheses 4 times without resolution"
+        
+        # Also check for stalled iterations
+        recent_iters = self.iterations[-3:]
+        if all(not iter.made_progress for iter in recent_iters):
+            return "No progress in last 3 OODA iterations"
+        
+        return None
+    
+    def force_alternatives(self):
+        """Generate hypotheses from DIFFERENT categories"""
+        tested_categories = [cat for cat, count in self.same_category_test_count.items() if count >= 2]
+        
+        return generate_hypotheses(
+            exclude_categories=tested_categories,
+            require_categories=["external_dependency", "client_side"]
+        )
+```
+
+### Evidence-Hypothesis Linkage
+
+**Problem**: Hard to track which evidence impacts which hypothesis
+
+**Solution**: Direct linkage with confidence delta
+
+```python
+class EvidenceProvided:
+    evidence_id: str = "ev-abc123"
+    content: str = "Connection pool at 45% utilization"
+    
+    # Direct hypothesis impact
+    affects_hypotheses: List[str] = ["hyp-pool-exhaustion"]
+    confidence_impact: Dict[str, float] = {
+        "hyp-pool-exhaustion": -0.6  # Strong REFUTING evidence
+    }
+    
+    # Refutation workflow
+    contradicts_hypothesis: str = "hyp-pool-exhaustion"
+    contradiction_confirmed: bool = None  # Wait for user confirmation
+
+# When evidence classified as REFUTING:
+if evidence.evidence_type == "refuting":
+    # Don't immediately update hypothesis
+    # Ask user first:
+    agent_response = f"""
+    ⚠️ Evidence Conflict Detected
+    
+    The evidence contradicts our current hypothesis:
+    
+    Hypothesis: Connection pool exhausted
+    Expected: Pool utilization >90%
+    Your Evidence: Pool at 45% (well within limits)
+    
+    Can you confirm this finding is accurate?
+    """
+    
+    # Wait for user confirmation before marking hypothesis as refuted
+    state.metadata["awaiting_refutation_confirmation"] = True
+```
+
+---
+
+## Performance & Optimization
+
+### Token Budget Allocation
+
+| Component | Token Budget | Strategy |
+|-----------|-------------|----------|
+| Hot Memory | 500 tokens | Full fidelity, last 2 iterations |
+| Warm Memory | 300 tokens | LLM-summarized, iterations 3-5 |
+| Cold Memory | 100 tokens | Key facts only, older iterations |
+| Persistent Insights | 100 tokens | Always accessible learnings |
+| Evidence Requests | 300 tokens | Active requests only |
+| Active Hypotheses | 200 tokens | Testing + pending only |
+| Metadata | 100 tokens | IDs, timestamps, flags |
+| **Total** | **~1600 tokens** | vs 4500+ unmanaged |
+
+### Redis Storage Strategy
+
+```python
+# Hot state in Redis for fast access
+redis_key = f"investigation:{investigation_id}:hot"
+redis.setex(
+    redis_key,
+    ttl=3600,  # 1 hour
+    value={
+        "current_phase": 4,
+        "ooda_current_step": "test",
+        "active_hypotheses": [...],  # Testing status only
+        "pending_evidence": [...]    # Pending status only
+    }
+)
+
+# Full state in PostgreSQL for durability
+db.execute(
+    "UPDATE investigations SET state = %s WHERE id = %s",
+    (full_state.json(), investigation_id)
+)
+
+# Memory tiers in Redis with TTL
+redis.set(f"investigation:{inv_id}:hot", hot_memory, ex=3600)
+redis.set(f"investigation:{inv_id}:warm", warm_memory, ex=7200)
+redis.set(f"investigation:{inv_id}:cold", cold_memory, ex=86400)
+```
+
+### Compression Performance
+
+**Benchmark** (20-iteration investigation):
+
+| Metric | Unmanaged | Hierarchical | Improvement |
+|--------|-----------|--------------|-------------|
+| Total Tokens | 4,500 | 1,600 | 64% reduction |
+| Redis Memory | 2.8 MB | 1.0 MB | 64% reduction |
+| LLM Cost/Turn | $0.045 | $0.016 | 64% savings |
+| Processing Time | 3.2s | 1.8s | 44% faster |
+
+---
+
+## Implementation Roadmap
+
+### Phase 1: Core Structures (Weeks 1-2)
+
+**Deliverables**:
+- [ ] `InvestigationState` unified model
+- [ ] `OODAEngineState` with iteration tracking
+- [ ] `Hypothesis` with confidence decay algorithm
+- [ ] `PhaseOODAMapping` configuration system
+- [ ] Mode transition logic (Consultant ↔ Lead Investigator)
+
+**Validation**: Can track investigation from Phase 0 → Phase 6
+
+---
+
+### Phase 2: Memory System (Week 3)
+
+**Deliverables**:
+- [ ] `HierarchicalMemory` implementation
+- [ ] Token budget manager with auto-compression
+- [ ] LLM-powered summarization for warm tier
+- [ ] Key fact extraction for cold tier
+- [ ] Compression trigger (every 3 turns)
+
+**Validation**: 20-iteration investigation stays under 1,600 tokens
+
+---
+
+### Phase 3: Intelligence Features (Week 4)
+
+**Deliverables**:
+- [ ] Anchoring detection system
+- [ ] Confidence decay algorithm
+- [ ] Forced alternative generation
+- [ ] Evidence-hypothesis linkage
+- [ ] Refutation confirmation workflow
+
+**Validation**: Agent escapes wrong hypothesis within 4 iterations
+
+---
+
+### Phase 4: Evidence Integration (Week 5)
+
+**Deliverables**:
+- [ ] Evidence request generation with OODA context
+- [ ] Evidence classification against hypotheses
+- [ ] Completeness tracking per request
+- [ ] Safety validation for commands
+- [ ] Blocked evidence alternative paths
+
+**Validation**: Evidence requests properly link to OODA steps and hypotheses
+
+---
+
+### Phase 5: API & UI Integration (Week 6)
+
+**Deliverables**:
+- [ ] Enhanced `ViewState` with OODA progress
+- [ ] Navigation breadcrumb system
+- [ ] Phase-OODA progress indicators
+- [ ] Real-time investigation status
+- [ ] Mode transition UI feedback
+
+**Validation**: Frontend displays investigation progress clearly
+
+---
+
+### Phase 6: Testing & Refinement (Week 7-8)
+
+**Deliverables**:
+- [ ] End-to-end scenario testing (all 4 scenarios)
+- [ ] Performance benchmarking
+- [ ] Memory leak detection
+- [ ] Error recovery testing
+- [ ] User acceptance testing
+
+**Validation**: System handles all scenarios smoothly, no state explosion
+
+---
+
+## Appendices
+
+### A. OODA Phase Activation Matrix
+
+```
+┌────────────────────┬──────┬──────┬──────┬──────┬──────┐
+│ Lifecycle Phase    │  ⚓  │  📡  │  🌳  │  🔄  │  📖  │
+├────────────────────┼──────┼──────┼──────┼──────┼──────┤
+│ Phase 0: Inquiry   │  ❌  │  ❌  │  ❌  │  ❌  │  ❌  │
+│ Phase 1: Problem   │  ✅  │  ✅  │  ❌  │  ❌  │  ❌  │
+│ Phase 2: Triage    │  ✅  │  ✅  │  ✅  │  ⚠️  │  ❌  │
+│ Phase 3: Mitigation│  ❌  │  ⚠️  │  ⚠️  │  ✅  │  ✅  │
+│ Phase 4: RCA       │  ✅  │  ✅  │  ✅  │  ✅  │  ✅  │
+│ Phase 5: Solution  │  ❌  │  ❌  │  ⚠️  │  ✅  │  ✅  │
+│ Phase 6: Docs      │  ❌  │  ❌  │  ❌  │  ❌  │  ✅* │
+└────────────────────┴──────┴──────┴──────┴──────┴──────┘
+
+Legend:
+✅ = Primary use (full execution)
+⚠️ = Light use (abbreviated)
+❌ = Not used
+✅* = Modified (documentation generation, not investigation)
+```
+
+### B. State Transition Diagram
+
+```
+START → CONSULTANT MODE
+           │
+           │ [Problem Signal Detected]
+           │ [User Consents]
+           ▼
+       LEAD INVESTIGATOR MODE
+           │
+           ├─→ Phase 1: Problem Definition
+           │       │
+           │       ▼ [Problem Confirmed]
+           │   Phase 2: Triage
+           │       │
+           │       ├─→ [HIGH URGENCY] → Phase 3: Mitigation
+           │       │                        │
+           │       │                        ▼ [Service Restored]
+           │       │                    Phase 4: RCA (Optional)
+           │       │
+           │       └─→ [NORMAL] → Phase 4: RCA
+           │                         │
+           │                         ▼ [Root Cause Found]
+           │                     Phase 5: Solution
+           │                         │
+           │                         ▼
+           └─────────────────────→ Phase 6: Documentation
+                                      │
+                                      ▼ [Case Closed]
+                                 CONSULTANT MODE
+```
+
+### C. Agent Response Format (v3.2.0)
+
+```json
+{
+  "schema_version": "3.2.0",
+  "content": "I've tested the connection pool hypothesis...",
+  "response_type": "ANSWER",
+  "session_id": "sess-abc123",
+  
+  "view_state": {
+    "case_id": "case-xyz789",
+    "investigation_mode": "post_mortem",
+    
+    "lifecycle_progress": {
+      "current_phase": 4,
+      "phase_name": "Root Cause Analysis",
+      "entry_phase": 1,
+      "phase_complete": false
+    },
+    
+    "ooda_progress": {
+      "is_active": true,
+      "current_step": "test",
+      "current_iteration": 2,
+      "steps_completed_this_iteration": ["frame", "scan", "branch", "test"],
+      "hypotheses_active": 2,
+      "hypotheses_retired": 1,
+      "tests_performed": 3,
+      "confidence_current": 0.65,
+      "made_progress_last_iteration": true
+    },
+    
+    "evidence_status": {
+      "requests_pending": 2,
+      "requests_complete": 5,
+      "requests_blocked": 1,
+      "coverage_score": 0.72
+    },
+    
+    "navigation": {
+      "breadcrumb_trail": [
+        {"action": "Framed anomaly", "turn": 10},
+        {"action": "Scanned evidence", "turn": 12},
+        {"action": "Generated 3 hypotheses", "turn": 14},
+        {"action": "Testing hypothesis #2", "turn": 16}
+      ],
+      "next_action_hint": "If hypothesis #2 fails, test hypothesis #3 or generate alternatives"
+    }
+  },
+  
+  "evidence_requests": [
+    {
+      "request_id": "req-003",
+      "label": "Memory profiling data",
+      "description": "Need heap dump or memory profiler output to confirm memory leak",
+      "category": "metrics",
+      "guidance": {
+        "commands": ["jmap -dump:live,format=b,file=heap.bin <pid>"],
+        "alternatives": ["Check APM tool memory profiling"]
+      },
+      "status": "pending",
+      "priority": 1
+    }
+  ],
+  
+  "sources": [...]
+}
+```
+
+---
+
+**END OF DOCUMENT**
+
+**Document Status**: Design Specification  
+**Next Steps**: Begin Phase 1 implementation (Core Structures)  
+**Review Cycle**: Weekly during implementation  
+**Stakeholders**: Engineering team, Product, SRE users
