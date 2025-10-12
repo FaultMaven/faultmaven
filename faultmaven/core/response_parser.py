@@ -53,6 +53,7 @@ class ResponseParser:
             "tier2_success": 0,
             "tier3_success": 0,
             "total_failures": 0,
+            "total_attempts": 0,
         }
 
     def parse(
@@ -77,6 +78,9 @@ class ResponseParser:
         Raises:
             Never raises - always returns valid response (minimal fallback)
         """
+        # Increment total attempts
+        self.stats["total_attempts"] += 1
+
         # Tier 1: Function Calling (if dict provided)
         if isinstance(raw_response, dict):
             result = self._tier1_function_calling(raw_response, expected_schema)
@@ -322,21 +326,13 @@ class ResponseParser:
         Returns:
             Dictionary with success rates per tier
         """
-        total_attempts = sum([
-            self.stats["tier1_success"],
-            self.stats["tier2_success"],
-            self.stats["tier3_success"],
-            self.stats["total_failures"],
-        ])
-
-        if total_attempts == 0:
+        if self.stats["total_attempts"] == 0:
             return {**self.stats, "overall_success_rate": 0.0}
 
-        overall_success = total_attempts - self.stats["total_failures"]
+        overall_success = self.stats["total_attempts"] - self.stats["total_failures"]
         return {
             **self.stats,
-            "total_attempts": total_attempts,
-            "overall_success_rate": overall_success / total_attempts,
+            "overall_success_rate": overall_success / self.stats["total_attempts"],
         }
 
 

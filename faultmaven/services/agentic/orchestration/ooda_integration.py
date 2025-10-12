@@ -308,9 +308,6 @@ def _update_diagnostic_state_from_investigation(
         investigation_state.metadata.engagement_mode == EngagementMode.LEAD_INVESTIGATOR
     )
 
-    # Update timestamps
-    case_diagnostic_state.last_assistant_message_at = datetime.utcnow()
-
     return case_diagnostic_state
 
 

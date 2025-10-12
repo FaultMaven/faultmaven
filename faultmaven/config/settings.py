@@ -382,65 +382,155 @@ class KnowledgeSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
-class ConversationThresholds(BaseSettings):
-    """Conversation management thresholds and limits
+class OODASettings(BaseSettings):
+    """OODA Investigation Framework configuration (v3.2.0)
 
-    Centralizes all conversation-related thresholds for consistent behavior
-    across prompt assembly, conversation state management, and classification.
+    Controls the behavior of the OODA (Observe-Orient-Decide-Act) investigation
+    framework including engagement modes, phase management, and memory hierarchy.
+
+    Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
     """
-    # Conversation history limits
-    max_clarifications: int = Field(default=3, env="MAX_CLARIFICATIONS")
+
+    # Investigation Strategy
+    default_strategy: str = Field(
+        default="active_incident",
+        env="DEFAULT_INVESTIGATION_STRATEGY",
+        description="active_incident (fast, 70% confidence) or post_mortem (thorough, 85% confidence)"
+    )
+
+    default_intensity: str = Field(
+        default="medium",
+        env="DEFAULT_OODA_INTENSITY",
+        description="OODA cycle intensity: light (1-2 iterations), medium (2-4), full (3-6)"
+    )
+
+    # Memory Management (4-Tier Hierarchical System)
+    hot_memory_tokens: int = Field(
+        default=500,
+        env="HOT_MEMORY_TOKENS",
+        description="Hot tier: last 2 iterations, full fidelity"
+    )
+
+    warm_memory_tokens: int = Field(
+        default=300,
+        env="WARM_MEMORY_TOKENS",
+        description="Warm tier: iterations 3-5, LLM-summarized"
+    )
+
+    cold_memory_tokens: int = Field(
+        default=100,
+        env="COLD_MEMORY_TOKENS",
+        description="Cold tier: older iterations, key facts only"
+    )
+
+    persistent_memory_tokens: int = Field(
+        default=100,
+        env="PERSISTENT_MEMORY_TOKENS",
+        description="Persistent tier: always accessible insights"
+    )
+
+    # Phase Control
+    enable_phase_skip: bool = Field(
+        default=True,
+        env="ENABLE_PHASE_SKIP",
+        description="Allow skipping phases in active incident strategy"
+    )
+
+    min_confidence_to_advance: float = Field(
+        default=0.70,
+        env="MIN_CONFIDENCE_TO_ADVANCE",
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence required to advance to next phase"
+    )
+
+    stall_detection_iterations: int = Field(
+        default=3,
+        env="STALL_DETECTION_ITERATIONS",
+        ge=2,
+        description="Number of iterations without progress before marking as stalled"
+    )
+
+    # Consultant Mode Settings
+    problem_signal_threshold: str = Field(
+        default="moderate",
+        env="PROBLEM_SIGNAL_THRESHOLD",
+        description="Threshold to offer investigation: weak|moderate|strong"
+    )
+
+    max_consultant_turns: int = Field(
+        default=5,
+        env="MAX_CONSULTANT_TURNS",
+        ge=1,
+        description="Max turns in Consultant mode before suggesting Lead Investigator"
+    )
+
+    # Context Management (merged from ConversationThresholds)
     max_conversation_turns: int = Field(default=20, env="MAX_CONVERSATION_TURNS")
     max_conversation_tokens: int = Field(default=4000, env="MAX_CONVERSATION_TOKENS")
 
-    # Token budgets for prompt assembly
-    context_token_budget: int = Field(default=4000, env="CONTEXT_TOKEN_BUDGET")
+    model_config = {"env_prefix": "", "extra": "ignore"}
 
-    # Classification confidence thresholds
-    pattern_confidence_threshold: float = Field(default=0.7, env="PATTERN_CONFIDENCE_THRESHOLD")
-    confidence_override_threshold: float = Field(default=0.4, env="CONFIDENCE_OVERRIDE_THRESHOLD")
-    self_correction_min_confidence: float = Field(default=0.4, env="SELF_CORRECTION_MIN_CONFIDENCE")
-    self_correction_max_confidence: float = Field(default=0.7, env="SELF_CORRECTION_MAX_CONFIDENCE")
+
+class ConversationThresholds(BaseSettings):
+    """DEPRECATED: Conversation management thresholds
+
+    This class is deprecated in v3.2.0 and replaced by OODASettings.
+    Kept for backward compatibility during migration.
+    Will be removed in v4.0.0.
+    """
+    # Conversation history limits
+    max_clarifications: int = Field(default=3, env="MAX_CLARIFICATIONS", deprecated=True)
+    max_conversation_turns: int = Field(default=20, env="MAX_CONVERSATION_TURNS", deprecated=True)
+    max_conversation_tokens: int = Field(default=4000, env="MAX_CONVERSATION_TOKENS", deprecated=True)
+
+    # Token budgets for prompt assembly
+    context_token_budget: int = Field(default=4000, env="CONTEXT_TOKEN_BUDGET", deprecated=True)
+
+    # Classification confidence thresholds (no longer used)
+    pattern_confidence_threshold: float = Field(default=0.7, env="PATTERN_CONFIDENCE_THRESHOLD", deprecated=True)
+    confidence_override_threshold: float = Field(default=0.4, env="CONFIDENCE_OVERRIDE_THRESHOLD", deprecated=True)
+    self_correction_min_confidence: float = Field(default=0.4, env="SELF_CORRECTION_MIN_CONFIDENCE", deprecated=True)
+    self_correction_max_confidence: float = Field(default=0.7, env="SELF_CORRECTION_MAX_CONFIDENCE", deprecated=True)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
 class PromptSettings(BaseSettings):
-    """Doctor/Patient prompt system configuration
+    """DEPRECATED: Doctor/Patient prompt system configuration
 
-    Controls which prompt version is used for the revolutionary doctor/patient
-    architecture. Different versions offer different trade-offs between token
-    usage, latency, and guidance quality.
-
-    Versions:
-    - minimal: ~800 tokens - Fast, cost-efficient, simple queries
-    - standard: ~1,300 tokens - Balanced, recommended default
-    - detailed: ~1,800 tokens - Maximum guidance, complex cases
+    This class is deprecated in v3.2.0 and replaced by OODA Consultant/Lead Investigator modes.
+    Kept for backward compatibility during migration.
+    Will be removed in v4.0.0.
     """
     # Prompt version selection
     doctor_patient_version: str = Field(
         default="standard",
         env="DOCTOR_PATIENT_PROMPT_VERSION",
-        description="Prompt version: minimal/standard/detailed"
+        deprecated=True,
+        description="DEPRECATED: Prompt version (replaced by OODA modes)"
     )
 
     # Dynamic version selection (future enhancement)
     enable_dynamic_version_selection: bool = Field(
         default=False,
         env="ENABLE_DYNAMIC_PROMPT_VERSION",
-        description="Automatically select prompt version based on query complexity"
+        deprecated=True,
+        description="DEPRECATED: Dynamic selection (not applicable to OODA)"
     )
 
     # Version selection rules (when dynamic enabled)
     minimal_threshold_tokens: int = Field(
         default=50,
         env="MINIMAL_PROMPT_THRESHOLD",
-        description="Query tokens below this use minimal prompt"
+        deprecated=True,
+        description="DEPRECATED: Threshold (not applicable to OODA)"
     )
     detailed_threshold_complexity: float = Field(
         default=0.7,
         env="DETAILED_PROMPT_THRESHOLD",
-        description="Query complexity above this uses detailed prompt"
+        deprecated=True,
+        description="DEPRECATED: Complexity threshold (not applicable to OODA)"
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
@@ -458,23 +548,54 @@ class FeatureSettings(BaseSettings):
     enable_conversation_summarization: bool = Field(default=True, env="ENABLE_CONVERSATION_SUMMARIZATION")
     # Note: Token budgets and thresholds moved to ConversationThresholds class above
 
-    # Enhanced Classification System Configuration (Phase 0)
-    # LLM Classification Mode: disabled, fallback, enhancement (recommended), always
-    llm_classification_mode: str = Field(default="enhancement", env="LLM_CLASSIFICATION_MODE")
-    # Enable multi-dimensional confidence scoring
-    enable_multidimensional_confidence: bool = Field(default=True, env="ENABLE_MULTIDIMENSIONAL_CONFIDENCE")
-    # Note: Confidence thresholds moved to ConversationThresholds class above
-
-    # Pattern Matching Configuration (Phase 0 - Weighted Patterns & Exclusions)
-    pattern_weighted_scoring: bool = Field(default=True, env="PATTERN_WEIGHTED_SCORING")
-    pattern_exclusion_rules: bool = Field(default=True, env="PATTERN_EXCLUSION_RULES")
-
-    # Multi-Dimensional Confidence Analysis (Phase 0 - 5 Factors)
-    enable_structure_analysis: bool = Field(default=True, env="ENABLE_STRUCTURE_ANALYSIS")
-    enable_linguistic_analysis: bool = Field(default=True, env="ENABLE_LINGUISTIC_ANALYSIS")
-    enable_entity_analysis: bool = Field(default=True, env="ENABLE_ENTITY_ANALYSIS")
-    enable_context_analysis: bool = Field(default=True, env="ENABLE_CONTEXT_ANALYSIS")
-    enable_disambiguation_check: bool = Field(default=True, env="ENABLE_DISAMBIGUATION_CHECK")
+    # DEPRECATED: Query Classification System (Replaced by OODA v3.2.0)
+    # These settings are no longer used - OODA uses structured responses instead of classification
+    # Will be removed in v4.0.0
+    llm_classification_mode: str = Field(
+        default="enhancement",
+        env="LLM_CLASSIFICATION_MODE",
+        deprecated=True
+    )
+    enable_multidimensional_confidence: bool = Field(
+        default=True,
+        env="ENABLE_MULTIDIMENSIONAL_CONFIDENCE",
+        deprecated=True
+    )
+    pattern_weighted_scoring: bool = Field(
+        default=True,
+        env="PATTERN_WEIGHTED_SCORING",
+        deprecated=True
+    )
+    pattern_exclusion_rules: bool = Field(
+        default=True,
+        env="PATTERN_EXCLUSION_RULES",
+        deprecated=True
+    )
+    enable_structure_analysis: bool = Field(
+        default=True,
+        env="ENABLE_STRUCTURE_ANALYSIS",
+        deprecated=True
+    )
+    enable_linguistic_analysis: bool = Field(
+        default=True,
+        env="ENABLE_LINGUISTIC_ANALYSIS",
+        deprecated=True
+    )
+    enable_entity_analysis: bool = Field(
+        default=True,
+        env="ENABLE_ENTITY_ANALYSIS",
+        deprecated=True
+    )
+    enable_context_analysis: bool = Field(
+        default=True,
+        env="ENABLE_CONTEXT_ANALYSIS",
+        deprecated=True
+    )
+    enable_disambiguation_check: bool = Field(
+        default=True,
+        env="ENABLE_DISAMBIGUATION_CHECK",
+        deprecated=True
+    )
 
     # Note: Self-correction thresholds moved to ConversationThresholds class above
     # Deprecated: SELF_CORRECTION_THRESHOLD → use ConversationThresholds.self_correction_max_confidence
@@ -560,6 +681,11 @@ class FaultMavenSettings(BaseSettings):
     protection: ProtectionSettings = Field(default_factory=ProtectionSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
+
+    # OODA Framework v3.2.0
+    ooda: OODASettings = Field(default_factory=OODASettings)
+
+    # DEPRECATED: Kept for backward compatibility
     thresholds: ConversationThresholds = Field(default_factory=ConversationThresholds)
     prompts: PromptSettings = Field(default_factory=PromptSettings)
 

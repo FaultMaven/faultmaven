@@ -417,4 +417,8 @@ def create_minimal_response(answer: str) -> OODAResponse:
     Returns:
         Minimal OODAResponse with only answer field
     """
+    # Provide default answer if empty
+    if not answer or not answer.strip():
+        answer = "I'm here to assist you. How can I help with your troubleshooting needs?"
+
     return OODAResponse(answer=answer)
