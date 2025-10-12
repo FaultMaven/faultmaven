@@ -1,9 +1,64 @@
 # Doctor/Patient Prompting Architecture
 
 **Version:** 1.0
-**Status:** ✅ IMPLEMENTED (2025-10-05)
-**Replaces:** Query Classification v3.0 System
 **Date:** 2025-10-05
+**Status:** 🔀 **PROMPTING PHILOSOPHY STILL CURRENT** | Implementation Superseded
+**Current Framework:** Investigation Phases and OODA Integration v2.1 (v3.2.0)
+
+---
+
+## ⚠️ IMPORTANT: Prompting Philosophy vs Implementation
+
+**This document contains TWO types of content:**
+
+### ✅ STILL CURRENT: Prompting Philosophy
+
+The **prompting principles** from this document are **foundational to the current OODA framework (v3.2.0)**:
+
+- ✅ **No classification needed** - Single powerful LLM handles everything (still true)
+- ✅ **"Never mention phases"** - Users shouldn't know about methodology (actively used)
+- ✅ **"Answer first, guide second"** - Address user's question before guiding (core principle)
+- ✅ **"Don't assume illness"** - Respect non-diagnostic intent (Consultant mode uses this)
+- ✅ **Natural conversation** - Sound like colleague, not chatbot (embedded in all prompts)
+- ✅ **Suggested actions** - Active guidance with clickable options (current UI pattern)
+- ✅ **Function calling** - Reliable state extraction (still used)
+- ✅ **Context summarization** - Prevent token explosion (still used)
+
+**Where these principles are used today:**
+- `faultmaven/prompts/investigation/consultant_mode.py` - "Never mention phases"
+- `faultmaven/prompts/investigation/lead_investigator.py` - "Proactive guidance", "Evidence-driven"
+- `faultmaven/prompts/doctor_patient/standard.py` - Original prompts still in codebase
+- `agent_service.py` line 265: `"processing_mode": "doctor_patient"`
+
+### ⚠️ SUPERSEDED: 6-Phase Implementation
+
+The **specific implementation details** were superseded by the OODA framework:
+
+- ❌ **6 phases (0-5)** → Now 7 phases (0-6) with Document phase
+- ❌ **CaseDiagnosticState** → Now InvestigationState
+- ❌ **Implicit methodology** → Now explicit OODA steps (Observe/Orient/Decide/Act)
+- ❌ **No engagement modes** → Now Consultant vs Lead Investigator modes
+
+**Current authoritative docs:**
+- [Investigation Phases and OODA Integration Framework v2.1](../investigation-phases-and-ooda-integration.md)
+- [Evidence Collection and Tracking Design v2.1](../evidence-collection-and-tracking-design.md)
+
+---
+
+**Use this document for:**
+- Understanding WHY classification was eliminated (still valid reasoning)
+- Learning prompting principles that make FaultMaven natural (still applied)
+- Understanding evolution from classification → no classification → OODA
+
+**Do NOT use this document for:**
+- Current implementation details (use investigation-phases-and-ooda-integration.md)
+- Current phase definitions (now 7 phases, not 6)
+- Current state models (use InvestigationState, not CaseDiagnosticState)
+
+---
+
+**Original Status:** ✅ IMPLEMENTED (2025-10-05)
+**Superseded By:** Investigation Phases and OODA Integration Framework v2.1 (2025-10-11)
 
 ## Implementation Status
 

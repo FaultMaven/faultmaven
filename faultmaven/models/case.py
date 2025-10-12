@@ -149,15 +149,32 @@ class UrgencyLevel(str, Enum):
 
 
 class CaseDiagnosticState(BaseModel):
-    """Server-side diagnostic state tracking for doctor/patient model.
+    """Server-side diagnostic state tracking (TRANSITIONING TO OODA FRAMEWORK)
 
-    This model tracks the progression through the SRE 5-phase methodology
-    as the LLM diagnoses the user's problem. It is NOT exposed via API -
-    it's used internally to provide context to the LLM.
+    v3.2.0: Transitioning from rigid 5-phase to flexible OODA framework
+    with 7 investigation phases (0-6) and dual engagement modes.
 
-    The LLM acts as a diagnostic doctor, maintaining this state across
-    all interactions while naturally answering user questions.
+    MIGRATION STRATEGY:
+    - New investigations use investigation_state_id reference
+    - Legacy fields maintained for backward compatibility
+    - Gradual migration to new InvestigationState model
+
+    Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
     """
+
+    # =========================================================================
+    # NEW: OODA FRAMEWORK (v3.2.0)
+    # =========================================================================
+
+    # Reference to new InvestigationState (from investigation.py)
+    investigation_state_id: Optional[str] = Field(
+        None,
+        description="ID of InvestigationState object (v3.2.0 OODA framework)"
+    )
+
+    # =========================================================================
+    # LEGACY FIELDS (Backward Compatibility)
+    # =========================================================================
 
     # Problem tracking
     has_active_problem: bool = Field(default=False, description="Whether user has an active technical problem")
@@ -165,14 +182,9 @@ class CaseDiagnosticState(BaseModel):
     problem_started_at: Optional[datetime] = Field(None, description="When problem tracking began")
     urgency_level: UrgencyLevel = Field(default=UrgencyLevel.NORMAL, description="Problem urgency level")
 
-    # SRE 5-phase methodology progression (0-5)
-    # Phase 0: Intake (problem identification and scoping)
-    # Phase 1: Define Blast Radius (impact assessment)
-    # Phase 2: Establish Timeline (change analysis)
-    # Phase 3: Formulate Hypotheses (root cause theories)
-    # Phase 4: Validate Hypotheses (testing and verification)
-    # Phase 5: Propose Solution (resolution and prevention)
-    current_phase: int = Field(default=0, description="Current SRE methodology phase (0-5)")
+    # Phase progression (LEGACY: 0-5 phases)
+    # NOTE: v3.2.0 uses 0-6 phases in InvestigationState
+    current_phase: int = Field(default=0, description="LEGACY: Current phase (0-5). Use InvestigationState for v3.2.0")
 
     # Phase-specific data collected
     symptoms: List[str] = Field(default_factory=list, description="Observed symptoms and error messages")

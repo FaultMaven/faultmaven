@@ -73,9 +73,17 @@ class UserIntent(str, Enum):
 
 
 class InvestigationMode(str, Enum):
-    """Investigation approach - speed vs depth"""
+    """Investigation approach - speed vs depth
+
+    DEPRECATED: Use InvestigationStrategy from investigation.py instead
+    Kept for backwards compatibility
+    """
     ACTIVE_INCIDENT = "active_incident"  # Speed over certainty, mitigation first
     POST_MORTEM = "post_mortem"          # Depth over speed, high confidence required
+
+
+# Alias for new terminology (v3.2.0)
+InvestigationStrategy = InvestigationMode
 
 
 class CaseStatus(str, Enum):
@@ -146,7 +154,10 @@ class AcquisitionGuidance(BaseModel):
 
 
 class EvidenceRequest(BaseModel):
-    """Structured request for diagnostic evidence with acquisition guidance"""
+    """Structured request for diagnostic evidence with acquisition guidance
+
+    OODA Integration: Generated during OODA Observe step, linked to hypothesis testing
+    """
 
     request_id: str = Field(
         default_factory=lambda: str(uuid4()),
@@ -190,6 +201,23 @@ class EvidenceRequest(BaseModel):
         le=1.0,
         description="Fulfillment completeness score"
     )
+
+    # OODA Integration (v3.2.0)
+    requested_by_ooda_step: Optional[str] = Field(
+        None,
+        description="Which OODA step generated this (observe, orient, decide, act)"
+    )
+    for_hypothesis_id: Optional[str] = Field(
+        None,
+        description="Hypothesis ID this evidence tests (Phase 4 validation)"
+    )
+    priority: int = Field(
+        default=2,
+        ge=1,
+        le=3,
+        description="1=critical, 2=important, 3=nice-to-have"
+    )
+
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
         description="Additional context"

@@ -704,15 +704,181 @@ class AgentStateManager(IAgentStateManager):
         """Deserialize execution state from JSON string"""
         try:
             state_data = json.loads(serialized_data)
-            
+
             # Convert datetime strings back to datetime objects
             for field in ['created_at', 'updated_at', 'last_updated']:
                 if field in state_data and isinstance(state_data[field], str):
                     state_data[field] = datetime.fromisoformat(state_data[field].replace('Z', '+00:00'))
-            
+
             return AgentExecutionState(**state_data)
-            
+
         except Exception as e:
             logger.error(f"Failed to deserialize state: {e}")
             # Return a minimal fallback state
             return AgentExecutionState(session_id="unknown")
+
+    # =========================================================================
+    # Investigation State Management (v3.2.0 OODA Framework)
+    # =========================================================================
+
+    @trace("state_manager_get_investigation_state")
+    async def get_investigation_state(self, session_id: str):
+        """Retrieve investigation state for a session (v3.2.0)
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            InvestigationState object or None
+        """
+        try:
+            key = f"investigation_state:{session_id}"
+
+            # Use appropriate storage client
+            if self.redis_client:
+                state_data = await self.redis_client.get(key)
+            else:
+                state_data = await self.session_store.get(key)
+
+            if not state_data:
+                logger.debug(f"No investigation state found for session {session_id}")
+                return None
+
+            # Parse state data
+            if isinstance(state_data, str):
+                state_data = json.loads(state_data)
+            elif isinstance(state_data, bytes):
+                state_data = json.loads(state_data.decode('utf-8'))
+
+            # Import here to avoid circular dependency
+            from faultmaven.models.investigation import InvestigationState
+
+            # Convert datetime strings
+            self._convert_datetime_fields_in_dict(state_data)
+
+            state = InvestigationState(**state_data)
+            logger.debug(f"Retrieved investigation state for session {session_id}")
+
+            return state
+
+        except Exception as e:
+            logger.error(f"Failed to retrieve investigation state for session {session_id}: {e}")
+            return None
+
+    @trace("state_manager_update_investigation_state")
+    async def update_investigation_state(self, session_id: str, state, ttl: int = None) -> bool:
+        """Update investigation state for a session (v3.2.0)
+
+        Args:
+            session_id: Session identifier
+            state: InvestigationState object
+            ttl: Optional TTL override
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"investigation_state:{session_id}"
+            ttl = ttl or self.state_ttl
+
+            # Convert to dict
+            if hasattr(state, 'dict'):
+                state_data = state.dict()
+            else:
+                state_data = state.__dict__
+
+            # Handle datetime serialization
+            self._serialize_datetime_fields_in_dict(state_data)
+
+            # Convert to JSON string
+            serialized_data = json.dumps(state_data)
+
+            # Store with appropriate client
+            if self.redis_client:
+                success = await self.redis_client.set(key, serialized_data)
+                if success and ttl:
+                    await self.redis_client.expire(key, ttl)
+            else:
+                success = await self.session_store.set(key, state_data, ttl=ttl)
+
+            if success:
+                logger.debug(f"Updated investigation state for session {session_id}")
+            else:
+                logger.error(f"Failed to store investigation state for session {session_id}")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"Failed to update investigation state for session {session_id}: {e}")
+            return False
+
+    async def initialize_investigation_session(
+        self,
+        session_id: str,
+        user_id: str = None,
+        llm_provider=None
+    ) -> bool:
+        """Initialize a new investigation session with OODA framework (v3.2.0)
+
+        Args:
+            session_id: Session identifier
+            user_id: Optional user identifier
+            llm_provider: Optional LLM provider for memory compression
+
+        Returns:
+            True if successful
+        """
+        try:
+            from faultmaven.models.investigation import InvestigationState, InvestigationMetadata
+            from faultmaven.core.investigation.memory_manager import initialize_memory
+
+            # Create initial investigation state
+            metadata = InvestigationMetadata(session_id=session_id, user_id=user_id)
+
+            initial_state = InvestigationState(metadata=metadata)
+
+            # Initialize hierarchical memory
+            initial_state.memory.hierarchical_memory = initialize_memory()
+
+            # Store investigation state
+            success = await self.update_investigation_state(session_id, initial_state)
+
+            if success:
+                logger.info(f"Initialized investigation session {session_id}")
+            else:
+                logger.error(f"Failed to initialize investigation session {session_id}")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"Failed to initialize investigation session {session_id}: {e}")
+            return False
+
+    # Helper methods for datetime handling
+
+    def _convert_datetime_fields_in_dict(self, data: dict):
+        """Recursively convert datetime strings to datetime objects in dict"""
+        for key, value in data.items():
+            if isinstance(value, str) and ('at' in key.lower() or 'time' in key.lower()):
+                try:
+                    data[key] = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                except:
+                    pass  # Keep as string if conversion fails
+            elif isinstance(value, dict):
+                self._convert_datetime_fields_in_dict(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        self._convert_datetime_fields_in_dict(item)
+
+    def _serialize_datetime_fields_in_dict(self, data: dict):
+        """Recursively serialize datetime objects to strings in dict"""
+        for key, value in data.items():
+            if isinstance(value, datetime):
+                data[key] = value.isoformat() + 'Z'
+            elif isinstance(value, dict):
+                self._serialize_datetime_fields_in_dict(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        self._serialize_datetime_fields_in_dict(item)

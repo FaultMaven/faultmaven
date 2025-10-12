@@ -33,7 +33,11 @@ import uuid
 # Core Agentic Data Models
 
 class AgentExecutionPhase(str, Enum):
-    """Phases in the agentic execution loop"""
+    """Phases in the agentic execution loop (LEGACY)
+
+    NOTE: v3.2.0 uses InvestigationPhase (0-6) from investigation.py
+    This enum maintained for backward compatibility
+    """
     INTAKE = "intake"
     CLASSIFICATION = "classification"
     PLANNING = "planning"
@@ -42,6 +46,19 @@ class AgentExecutionPhase(str, Enum):
     ADAPTATION = "adaptation"
     SYNTHESIS = "synthesis"
     COMPLETION = "completion"
+
+
+# v3.2.0: Import investigation phase enums
+try:
+    from faultmaven.models.investigation import (
+        InvestigationPhase,
+        OODAStep,
+        EngagementMode,
+        InvestigationStrategy
+    )
+except ImportError:
+    # Fallback if investigation.py not yet available
+    pass
 
 
 class AgentRole(str, Enum):

@@ -53,7 +53,7 @@ This map shows all FaultMaven design documents organized by functional area, wit
 
 | Document | Status | Description | Priority |
 |----------|--------|-------------|----------|
-| Agentic Framework Design Specification | ✅ | 7-component framework, workflow engine, tool broker | HIGH |
+| Investigation Phases and OODA Integration Framework v2.1 | ✅ 🎯 | **IMPLEMENTED**: 7-phase investigation, OODA engine, phase handlers | CRITICAL |
 | Query Classification and Prompt Engineering | ✅ | 17 intent taxonomy, 9 ResponseTypes, pattern classification | HIGH |
 | Prompt Engineering Architecture | 📝 | Multi-layer prompting, optimization, version management | MEDIUM |
 | Agent Orchestration Design | ✅ | Agent workflow coordination, reasoning engine | MEDIUM |
@@ -523,7 +523,7 @@ When updating related documents:
 **Status by Category**:
 - Foundation: 2/2 (100% ✅)
 - Investigation Components: 3/4 (75%)
-- AI Agent: 3/5 (60%)
+- AI Agent: 4/5 (80%) - OODA Framework implemented, legacy spec deprecated
 - API/Schema: 1/4 (25%)
 - Session/Auth: 2/3 (67%)
 - Infrastructure: 1/5 (20%)
@@ -539,5 +539,7 @@ When updating related documents:
 **Maintained By**: Architecture Team  
 **Review Cycle**: Monthly  
 **Next Review**: 2025-11-10
+
+
 
 

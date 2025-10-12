@@ -5,17 +5,17 @@
 FaultMaven implements a sophisticated clean architecture pattern with dependency injection, interface-based design, and comprehensive observability. The system features a modern v3.1.0 schema-driven API that provides intent-driven responses, evidence-based troubleshooting, and structured state management. Designed as a privacy-first, AI-powered troubleshooting assistant that scales horizontally and integrates seamlessly with existing DevOps toolchains.
 
 **Key Architectural Principles:**
-- **7-Component Agentic Framework**: Modern AI agent architecture with Plan→Execute→Observe→Re-plan cycles
-- **Investigation Phases with OODA Integration**: 7-phase investigation lifecycle (0-6) with tactical OODA execution (see [Investigation Phases Framework](./investigation-phases-and-ooda-integration.md))
-- **Evidence-Centric Troubleshooting**: Structured evidence collection and tracking with 5-dimensional classification
+- **OODA Investigation Framework (v3.2.0)**: 7-phase investigation lifecycle with flexible Observe-Orient-Decide-Act cycles (see [Investigation Phases and OODA Integration](./investigation-phases-and-ooda-integration.md))
+- **Dual Engagement Modes**: Consultant (Phase 0) and Lead Investigator (Phases 1-6) for natural user interaction
+- **Adaptive OODA Intensity**: Light, Medium, Full iteration cycles matched to phase complexity
+- **Hierarchical Memory System**: 64% token reduction with Hot/Warm/Cold/Persistent tiers
+- **Hypothesis Confidence Management**: Automatic decay (0.85^n) prevents anchoring bias
+- **Evidence-Centric Troubleshooting**: Structured evidence collection with 5-dimensional classification
 - **Interface-Based Dependencies**: Clean architecture with dependency injection and interface compliance
-- **Multi-Dimensional Query Processing**: Intent, complexity, domain, and urgency classification
-- **Persistent State Management**: Redis-backed conversation memory with hierarchical compression
+- **Persistent State Management**: Redis-backed investigation state with automatic compression
 - **Comprehensive Security**: PII protection, guardrails, and policy enforcement
 - **Enterprise-Grade Reliability**: Circuit breakers, error handling, and fallback strategies
-- **Typed Context System**: Strongly-typed QueryContext for type safety and validation
-- **Accurate Token Estimation**: Provider-specific tokenizers for cost optimization
-- **Centralized Configuration**: Unified settings management with environment-based overrides
+- **Multi-LLM Support**: OpenAI, Anthropic, Fireworks AI with automatic failover
 
 ## Architecture Diagram
 
@@ -1525,31 +1525,6 @@ This section provides a high-level mapping of architectural components to Python
 - `config/feature_flags.py` - Runtime toggles
 - `container.py` - DI container
 
-## Query Classification & Prompt Engineering
-
-> **STATUS**: ✅ IMPLEMENTED (2025-10-03)
-> **Test Coverage**: 28/28 passing (100%)
-> **Detailed Specification**: [`query-classification-and-prompt-engineering.md`](./query-classification-and-prompt-engineering.md)
-
-### Overview
-
-FaultMaven implements a **v3.0 Response-Format-Driven Classification System**:
-
-**Key Features:**
-- **17 Intent Taxonomy** (consolidated from 20)
-- **9 ResponseType Formats** (including VISUAL_DIAGRAM, COMPARISON_TABLE)
-- **47+ Weighted Patterns** with exclusion rules
-- **Multi-Dimensional Classification**: Intent, complexity, domain, urgency
-- **Token Optimization**: 81% reduction via tiered prompts
-
-**Implementation Status**:
-- ✅ Classification Engine with pattern-based scoring
-- ✅ ResponseTypeSelector with confidence-based override
-- ✅ PromptManager with phase-specific templates
-- ✅ 28/28 tests passing (100% coverage)
-
-For complete specifications, see [Query Classification & Prompt Engineering](./query-classification-and-prompt-engineering.md).
-
 ## Data Submission Handling
 
 > **STATUS**: ✅ IMPLEMENTED (2025-10-03)
@@ -1601,7 +1576,7 @@ Core business services implementing case, data, knowledge, planning, and session
 - [`Investigation Phases and OODA Integration Framework v2.1`](./investigation-phases-and-ooda-integration.md) - 🎯 Investigation process (used by case_service, planning_service): 7-phase lifecycle (0-6), OODA steps, engagement modes, state management
 - [`Evidence Collection and Tracking Design v2.1`](./evidence-collection-and-tracking-design.md) - 🎯 Evidence data models (used by case_service): Schemas, 5D classification, strategies, agent behaviors  
 - [`Case Lifecycle Management v1.0`](./case-lifecycle-management.md) - Case status state machine (case_service.py): 7 states, transition rules, stall detection
-- [`Session Management Specification`](../specifications/SESSION_MANAGEMENT_SPEC.md) - Multi-session architecture (session_service.py): Client-based resumption, Redis multi-index
+- [`Session Management Specification v1.0`](../specifications/session-management-spec.md) - Multi-session architecture (session_service.py): Client-based resumption, OODA state persistence, Redis storage
 - [`Data Processing Pipeline Design`](./data-processing-pipeline.md) - 📝 *To create* - File processing (data_service.py): Classification, insight extraction, async workflows
 - [`Knowledge Base Architecture`](./knowledge-base-architecture.md) - 📝 *To create* - Document management (knowledge_service.py): RAG, ingestion, semantic search
 - [`Planning System Architecture`](./planning-system-architecture.md) - 📝 *To create* - Strategic planning (planning_service.py): Problem decomposition, risk assessment
@@ -1610,11 +1585,9 @@ Core business services implementing case, data, knowledge, planning, and session
 
 AI agent framework with orchestration, engines, management, and safety:
 
-- [`Agentic Framework Design Specification`](./agentic-framework-design-specification.md) - 7-component framework architecture: Workflow engine, state manager, tool broker, guardrails, response synthesizer, error manager
+- [`Investigation Phases and OODA Integration Framework`](./investigation-phases-and-ooda-integration.md) - ✅ **IMPLEMENTED** (v3.2.0) - 7-phase investigation with OODA engine, phase handlers, and adaptive reasoning
 - [`Phase-Specific Agent Implementation`](./phase-specific-agent-implementation.md) - 📝 *To create* - Sub-agent architecture (doctor_patient/sub_agents/): intake, blast_radius, timeline, hypothesis, validation, solution agents
-- [`Agent Orchestration Design`](./agent-orchestration-design.md) - Agent coordination (orchestration/agent_service.py): Workflow management, reasoning engine
-- [`Query Classification and Prompt Engineering`](./query-classification-and-prompt-engineering.md) - Classification engine: 17 intent taxonomy, 9 ResponseType formats, pattern-based scoring
-- [`Prompt Engineering Architecture`](./prompt-engineering-architecture.md) - 📝 *To create* - Prompting system: Multi-layer assembly, optimization, phase-aware selection
+- [`Prompt Engineering Architecture`](./prompt-engineering-architecture.md) - 📝 Prompting system: Multi-layer assembly, optimization, phase-aware selection
 
 #### Evidence Services (`services/evidence/`)
 
@@ -1624,6 +1597,7 @@ Evidence collection implementation:
 
 #### Supporting Services
 
+- [`Error Handling and Recovery`](./error-handling-and-recovery.md) - Error patterns: LLM errors, state corruption, infinite loops, recovery strategies
 - [`Analytics and Confidence Services`](./analytics-and-confidence-services.md) - 📝 *To create* - Analytics (analytics/): Confidence scoring, dashboard aggregation
 - [`Conversation Intelligence Design`](./conversation-intelligence-design.md) - 📝 *To create* - Dialogue management: Circular detection, progress measurement, dead-end prevention
 
@@ -1745,10 +1719,11 @@ Evidence collection implementation:
 **Update Frequency**: 🔷 LOW (stable guides)
 
 - [`Developer Guide`](./developer-guide.md) - Getting started, development setup, workflow
-- [`Context Management Guide`](../development/context-management.md) - QueryContext usage, typed context best practices
 - [`Token Estimation Guide`](../development/token-estimation.md) - Token counting, cost optimization, provider-specific tokenizers
 - [`Container Usage Guide`](./container-usage-guide.md) - DI container usage, service registration, dependency resolution
 - [`Testing Guide`](./testing-guide.md) - Test strategy, fixtures, mocking, integration tests
+- [`Testing Investigation Framework`](../guides/testing-investigation-framework.md) - Testing strategies for investigation phases, OODA, hypotheses, evidence tracking
+- [`Operational Configuration`](../guides/operational-configuration.md) - System requirements, configuration, monitoring, deployment
 
 ---
 
@@ -1758,8 +1733,6 @@ Evidence collection implementation:
 **Update Frequency**: 🔷 LOW (historical record)
 
 **Architecture Evolution**:
-- [`Architecture Evolution`](./architecture-evolution.md) - Design history, migration milestones, decision records
-- [`Agentic Framework Migration Guide`](./agentic-framework-migration-guide.md) - Migration from legacy to agentic architecture  
 - [`Configuration System Refactor`](./configuration-system-refactor-design.md) - Configuration centralization evolution
 
 **Legacy Architecture** (Reference Only):

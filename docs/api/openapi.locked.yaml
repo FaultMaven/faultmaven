@@ -1,63 +1,8 @@
 openapi: 3.1.0
 info:
   title: FaultMaven API
-  description: "\n# FaultMaven API Documentation\n\nAI-powered troubleshooting assistant\
-    \ for Engineers, SREs, and DevOps professionals.\n\n## Architecture Overview\n\
-    \nThe FaultMaven API follows clean architecture principles with:\n\n- **API Layer**:\
-    \ FastAPI routers handling HTTP requests with comprehensive middleware\n- **Service\
-    \ Layer**: Business logic orchestration using dependency injection\n- **Core Layer**:\
-    \ Domain logic including AI reasoning engine and data processing\n- **Infrastructure\
-    \ Layer**: External service integrations (LLM providers, databases, security)\n\
-    \n## Key Features\n\n- **AI-Powered Troubleshooting**: Advanced reasoning engine\
-    \ using multiple LLM providers\n- **Privacy-First Design**: Comprehensive PII\
-    \ redaction before external processing\n- **Session Management**: Redis-backed\
-    \ session persistence for multi-turn conversations\n- **Knowledge Base**: RAG-enabled\
-    \ document ingestion and retrieval using ChromaDB\n- **Data Processing**: Intelligent\
-    \ log analysis and classification\n- **Performance Monitoring**: Real-time metrics\
-    \ and health monitoring\n- **Error Recovery**: Automatic error detection and recovery\
-    \ mechanisms\n\n## Authentication\n\nThe API now includes a complete authentication\
-    \ system with development endpoints.\nThese endpoints provide token-based authentication\
-    \ for secure access to protected resources.\n\n**Available Authentication Endpoints:**\n\
-    \n- `POST /api/v1/auth/dev-register` - Create new user accounts (development)\n\
-    - `POST /api/v1/auth/dev-login` - Authenticate existing users (development)\n\
-    - `POST /api/v1/auth/logout` - Revoke current authentication token\n- `GET /api/v1/auth/me`\
-    \ - Get current user profile information\n- `GET /api/v1/auth/health` - Check\
-    \ authentication system health\n- `POST /api/v1/auth/dev/revoke-all-tokens` -\
-    \ Development utility for token management\n\n**Token Management:**\n\n- Tokens\
-    \ are Bearer tokens included in the `Authorization` header\n- Default expiration:\
-    \ 24 hours\n- Tokens can be revoked individually or all at once\n\n**Security\
-    \ Features:**\n\n- Input validation and sanitization\n- Duplicate account prevention\n\
-    - Proper OAuth2-compatible error responses\n- Token-based session management\n\
-    \n**Development vs Production:**\n\nCurrent endpoints are designed for development\
-    \ environments. Production authentication will use OAuth2/OIDC integration with\
-    \ enterprise identity providers.\n\n## Rate Limiting\n\nAPI requests are subject\
-    \ to rate limiting to ensure fair usage and system stability.\nCurrent limits\
-    \ are applied at the infrastructure level.\n\n## Error Handling\n\nAll endpoints\
-    \ return structured error responses with appropriate HTTP status codes.\n\n###\
-    \ Standard Error Response Format\n\n```json\n{\n    \"detail\": \"Human-readable\
-    \ error description\",\n    \"error_type\": \"ErrorType\",\n    \"correlation_id\"\
-    : \"uuid-here\",\n    \"timestamp\": \"2025-01-15T10:30:00Z\"\n}\n```\n\n### Common\
-    \ HTTP Status Codes\n\n- `200`: Success\n- `400`: Bad Request - Invalid input\
-    \ data\n- `401`: Unauthorized - Authentication required (future)\n- `404`: Not\
-    \ Found - Resource not found\n- `422`: Validation Error - Request data validation\
-    \ failed\n- `429`: Too Many Requests - Rate limit exceeded\n- `500`: Internal\
-    \ Server Error - Unexpected server error\n- `503`: Service Unavailable - External\
-    \ service unavailable\n\n## Data Privacy\n\nAll data submitted to the API is processed\
-    \ through privacy-first pipelines with:\n\n- Comprehensive PII redaction using\
-    \ Microsoft Presidio\n- Data sanitization before external LLM processing\n- Session-based\
-    \ data isolation\n- Configurable data retention policies\n\n## Performance Characteristics\n\
-    \n- **Response Time**: < 200ms for typical queries (excluding LLM processing)\n\
-    - **Throughput**: Supports 100+ concurrent requests\n- **Availability**: 99.9%\
-    \ uptime target with health monitoring\n- **Scalability**: Horizontal scaling\
-    \ support via stateless design\n        "
+  description: AI-powered troubleshooting assistant for Engineers, SREs, and DevOps professionals
   version: 1.0.0
-  contact:
-    name: FaultMaven Team
-    email: support@faultmaven.ai
-    url: https://faultmaven.ai
-  license:
-    name: Proprietary
-    url: https://faultmaven.ai/license
 paths:
   /api/v1/data:
     post:
@@ -65,29 +10,18 @@ paths:
       - data_ingestion
       - data_processing
       summary: Upload Data Compat
-      description: Upload and process log files, configuration files, or other diagnostic
-        data
+      description: 'Compatibility endpoint for legacy tests - delegates to main upload function
+
+
+        This endpoint maintains backward compatibility for existing tests that
+
+        expect POST to /data instead of /data/upload.'
       operationId: upload_data_compat_api_v1_data_post
       requestBody:
         content:
           multipart/form-data:
             schema:
               $ref: '#/components/schemas/Body_upload_data_compat_api_v1_data_post'
-            examples:
-              log_file_upload:
-                summary: Application Log File
-                description: Upload application logs for analysis
-                value:
-                  file: '[Binary log file content]'
-                  file_type: application_logs
-                  description: Production API server logs from the last 24 hours
-              kubernetes_yaml:
-                summary: Kubernetes Configuration
-                description: Upload Kubernetes YAML for configuration analysis
-                value:
-                  file: '[YAML configuration content]'
-                  file_type: kubernetes_config
-                  description: Deployment configuration showing resource issues
         required: true
       responses:
         '201':
@@ -107,15 +41,12 @@ paths:
       - data_ingestion
       - data_processing
       summary: Upload Data
-      description: "Upload and process data with clean delegation pattern\n\nThis\
-        \ endpoint follows the thin controller pattern:\n1. Basic input validation\
-        \ (file size, type)\n2. Pure delegation to service layer for all business\
-        \ logic\n3. Clean error boundary handling\n\nArgs:\n    file: File to upload\n\
-        \    session_id: Session identifier\n    case_id: Case identifier for associating\
-        \ data with a troubleshooting case\n    description: Optional description\
-        \ of the data\n    data_service: Injected DataService from DI container\n\
-        \    \nReturns:\n    UploadedData with processing results\n    \nRaises:\n\
-        \    HTTPException: On service layer errors (400, 404, 413, 500)"
+      description: "Upload and process data with clean delegation pattern\n\nThis endpoint follows the thin controller pattern:\n\
+        1. Basic input validation (file size, type)\n2. Pure delegation to service layer for all business logic\n3. Clean\
+        \ error boundary handling\n\nArgs:\n    file: File to upload\n    session_id: Session identifier\n    case_id: Case\
+        \ identifier for associating data with a troubleshooting case\n    description: Optional description of the data\n\
+        \    data_service: Injected DataService from DI container\n\nReturns:\n    UploadedData with processing results\n\n\
+        Raises:\n    HTTPException: On service layer errors (400, 404, 413, 500)"
       operationId: upload_data_api_v1_data_upload_post
       requestBody:
         content:
@@ -141,10 +72,8 @@ paths:
       - data_ingestion
       - data_processing
       summary: Batch Upload Data
-      description: "Batch upload multiple files with clean delegation\n\nArgs:\n \
-        \   files: List of files to upload\n    session_id: Session identifier\n \
-        \   data_service: Injected DataService\n    \nReturns:\n    List of UploadedData\
-        \ results"
+      description: "Batch upload multiple files with clean delegation\n\nArgs:\n    files: List of files to upload\n    session_id:\
+        \ Session identifier\n    data_service: Injected DataService\n    \nReturns:\n    List of UploadedData results"
       operationId: batch_upload_data_api_v1_data_batch_upload_post
       requestBody:
         content:
@@ -174,10 +103,9 @@ paths:
       - data_ingestion
       - data_processing
       summary: Analyze Data
-      description: "Analyze uploaded data with clean delegation\n\nArgs:\n    data_id:\
-        \ Data identifier to analyze\n    analysis_request: Request containing session_id\
-        \ and analysis parameters\n    data_service: Injected DataService\n    \n\
-        Returns:\n    DataInsightsResponse with analysis results"
+      description: "Analyze uploaded data with clean delegation\n\nArgs:\n    data_id: Data identifier to analyze\n    analysis_request:\
+        \ Request containing session_id and analysis parameters\n    data_service: Injected DataService\n    \nReturns:\n\
+        \    DataInsightsResponse with analysis results"
       operationId: analyze_data_api_v1_data__data_id__analyze_post
       parameters:
       - name: data_id
@@ -213,10 +141,9 @@ paths:
       - data_ingestion
       - data_processing
       summary: Get Session Data
-      description: "Get all data for a session with clean delegation\n\nArgs:\n  \
-        \  session_id: Session identifier\n    limit: Maximum number of results\n\
-        \    offset: Pagination offset\n    data_service: Injected DataService\n \
-        \   \nReturns:\n    List of UploadedData for the session"
+      description: "Get all data for a session with clean delegation\n\nArgs:\n    session_id: Session identifier\n    limit:\
+        \ Maximum number of results\n    offset: Pagination offset\n    data_service: Injected DataService\n    \nReturns:\n\
+        \    List of UploadedData for the session"
       operationId: get_session_data_api_v1_data_sessions__session_id__get
       parameters:
       - name: session_id
@@ -263,9 +190,8 @@ paths:
       - data_ingestion
       - data_processing
       summary: Batch Process Session Data
-      description: "Batch process data for a session\n\nArgs:\n    session_id: Session\
-        \ identifier\n    batch_request: Request with data_ids to process\n    data_service:\
-        \ Injected DataService\n    \nReturns:\n    Batch processing job information"
+      description: "Batch process data for a session\n\nArgs:\n    session_id: Session identifier\n    batch_request: Request\
+        \ with data_ids to process\n    data_service: Injected DataService\n    \nReturns:\n    Batch processing job information"
       operationId: batch_process_session_data_api_v1_data_sessions__session_id__batch_process_post
       parameters:
       - name: session_id
@@ -288,8 +214,7 @@ paths:
             application/json:
               schema:
                 type: object
-                title: Response Batch Process Session Data Api V1 Data Sessions  Session
-                  Id  Batch Process Post
+                title: Response Batch Process Session Data Api V1 Data Sessions  Session Id  Batch Process Post
         '422':
           description: Validation Error
           content:
@@ -302,8 +227,7 @@ paths:
       - data_ingestion
       - data_processing
       summary: Health Check
-      description: "Health check endpoint with service delegation\n\nReturns:\n  \
-        \  Service health status"
+      description: "Health check endpoint with service delegation\n\nReturns:\n    Service health status"
       operationId: health_check_api_v1_data_health_get
       responses:
         '200':
@@ -317,8 +241,8 @@ paths:
       - data_ingestion
       - data_processing
       summary: Get Data
-      description: "Get data by ID\n\nArgs:\n    data_id: Data identifier\n    data_service:\
-        \ Injected DataService\n    \nReturns:\n    Data information"
+      description: "Get data by ID\n\nArgs:\n    data_id: Data identifier\n    data_service: Injected DataService\n    \n\
+        Returns:\n    Data information"
       operationId: get_data_api_v1_data__data_id__get
       parameters:
       - name: data_id
@@ -345,10 +269,9 @@ paths:
       - data_ingestion
       - data_processing
       summary: Delete Data
-      description: "Delete uploaded data with clean delegation\n\nArgs:\n    data_id:\
-        \ Data identifier to delete\n    session_id: Session identifier for access\
-        \ control (query parameter)\n    data_service: Injected DataService\n    \n\
-        Returns:\n    Success confirmation"
+      description: "Delete uploaded data with clean delegation\n\nArgs:\n    data_id: Data identifier to delete\n    session_id:\
+        \ Session identifier for access control (query parameter)\n    data_service: Injected DataService\n    \nReturns:\n\
+        \    Success confirmation"
       operationId: delete_data_api_v1_data__data_id__delete
       parameters:
       - name: data_id
@@ -381,9 +304,8 @@ paths:
       - knowledge_base
       - knowledge_base
       summary: Upload Document
-      description: "Upload a document to the knowledge base\n\nArgs:\n    file: Document\
-        \ file to upload\n    title: Document title\n    document_type: Type of document\n\
-        \    tags: Comma-separated tags\n    source_url: Source URL if applicable\n\
+      description: "Upload a document to the knowledge base\n\nArgs:\n    file: Document file to upload\n    title: Document\
+        \ title\n    document_type: Type of document\n    tags: Comma-separated tags\n    source_url: Source URL if applicable\n\
         \nReturns:\n    Upload job information"
       operationId: upload_document_api_v1_knowledge_documents_post
       requestBody:
@@ -392,29 +314,6 @@ paths:
           multipart/form-data:
             schema:
               $ref: '#/components/schemas/Body_upload_document_api_v1_knowledge_documents_post'
-            examples:
-              runbook_upload:
-                summary: Troubleshooting Runbook
-                description: Upload team runbook for knowledge base
-                value:
-                  file: '[PDF or Markdown runbook content]'
-                  document_type: runbook
-                  tags:
-                  - database
-                  - troubleshooting
-                  - postgresql
-                  description: Database troubleshooting procedures and common fixes
-              documentation_upload:
-                summary: System Documentation
-                description: Upload system architecture documentation
-                value:
-                  file: '[Documentation content]'
-                  document_type: architecture_doc
-                  tags:
-                  - architecture
-                  - microservices
-                  - system_design
-                  description: Microservices architecture overview and dependencies
       responses:
         '201':
           description: Successful Response
@@ -434,10 +333,9 @@ paths:
       - knowledge_base
       - knowledge_base
       summary: List Documents
-      description: "List knowledge base documents with optional filtering\n\nArgs:\n\
-        \    document_type: Filter by document type\n    tags: Filter by tags (comma-separated)\n\
-        \    limit: Maximum number of documents to return\n    offset: Number of documents\
-        \ to skip\n\nReturns:\n    List of documents"
+      description: "List knowledge base documents with optional filtering\n\nArgs:\n    document_type: Filter by document\
+        \ type\n    tags: Filter by tags (comma-separated)\n    limit: Maximum number of documents to return\n    offset:\
+        \ Number of documents to skip\n\nReturns:\n    List of documents"
       operationId: list_documents_api_v1_knowledge_documents_get
       parameters:
       - name: document_type
@@ -490,8 +388,8 @@ paths:
       - knowledge_base
       - knowledge_base
       summary: Get Document
-      description: "Get a specific knowledge base document\n\nArgs:\n    document_id:\
-        \ Document identifier\n\nReturns:\n    Document details"
+      description: "Get a specific knowledge base document\n\nArgs:\n    document_id: Document identifier\n\nReturns:\n  \
+        \  Document details"
       operationId: get_document_api_v1_knowledge_documents__document_id__get
       parameters:
       - name: document_id
@@ -518,8 +416,8 @@ paths:
       - knowledge_base
       - knowledge_base
       summary: Delete Document
-      description: "Delete a knowledge base document\n\nArgs:\n    document_id: Document\
-        \ identifier\n\nReturns:\n    Deletion confirmation"
+      description: "Delete a knowledge base document\n\nArgs:\n    document_id: Document identifier\n\nReturns:\n    Deletion\
+        \ confirmation"
       operationId: delete_document_api_v1_knowledge_documents__document_id__delete
       parameters:
       - name: document_id
@@ -565,8 +463,7 @@ paths:
             application/json:
               schema:
                 type: object
-                title: Response Update Document Api V1 Knowledge Documents  Document
-                  Id  Put
+                title: Response Update Document Api V1 Knowledge Documents  Document Id  Put
         '422':
           description: Validation Error
           content:
@@ -579,8 +476,8 @@ paths:
       - knowledge_base
       - knowledge_base
       summary: Get Job Status
-      description: "Get the status of a knowledge base ingestion job\n\nArgs:\n  \
-        \  job_id: Job identifier\n\nReturns:\n    Job status information"
+      description: "Get the status of a knowledge base ingestion job\n\nArgs:\n    job_id: Job identifier\n\nReturns:\n  \
+        \  Job status information"
       operationId: get_job_status_api_v1_knowledge_jobs__job_id__get
       parameters:
       - name: job_id
@@ -609,8 +506,8 @@ paths:
       - knowledge_base
       - knowledge_base
       summary: Search Documents
-      description: "Search knowledge base documents\n\nArgs:\n    request: Search\
-        \ request with query and filters\n\nReturns:\n    Search results"
+      description: "Search knowledge base documents\n\nArgs:\n    request: Search request with query and filters\n\nReturns:\n\
+        \    Search results"
       operationId: search_documents_api_v1_knowledge_search_post
       requestBody:
         content:
@@ -654,8 +551,7 @@ paths:
             application/json:
               schema:
                 type: object
-                title: Response Bulk Update Documents Api V1 Knowledge Documents Bulk
-                  Update Post
+                title: Response Bulk Update Documents Api V1 Knowledge Documents Bulk Update Post
         '422':
           description: Validation Error
           content:
@@ -688,8 +584,7 @@ paths:
             application/json:
               schema:
                 type: object
-                title: Response Bulk Delete Documents Api V1 Knowledge Documents Bulk
-                  Delete Post
+                title: Response Bulk Delete Documents Api V1 Knowledge Documents Bulk Delete Post
         '422':
           description: Validation Error
           content:
@@ -727,8 +622,7 @@ paths:
             application/json:
               schema:
                 type: object
-                title: Response Get Search Analytics Api V1 Knowledge Analytics Search
-                  Get
+                title: Response Get Search Analytics Api V1 Knowledge Analytics Search Get
   /api/v1/kb/documents:
     post:
       tags:
@@ -974,8 +868,7 @@ paths:
             application/json:
               schema:
                 type: object
-                title: Response Bulk Update Documents Kb Api V1 Kb Documents Bulk
-                  Update Post
+                title: Response Bulk Update Documents Kb Api V1 Kb Documents Bulk Update Post
         '422':
           description: Validation Error
           content:
@@ -1008,8 +901,7 @@ paths:
             application/json:
               schema:
                 type: object
-                title: Response Bulk Delete Documents Kb Api V1 Kb Documents Bulk
-                  Delete Post
+                title: Response Bulk Delete Documents Kb Api V1 Kb Documents Bulk Delete Post
         '422':
           description: Validation Error
           content:
@@ -1047,17 +939,22 @@ paths:
             application/json:
               schema:
                 type: object
-                title: Response Get Search Analytics Kb Api V1 Kb Analytics Search
-                  Get
+                title: Response Get Search Analytics Kb Api V1 Kb Analytics Search Get
   /api/v1/sessions:
     post:
       tags:
       - session_management
       - session_management
       summary: Create Session
-      description: "Create a new troubleshooting session.\n\nArgs:\n    request: Session\
-        \ creation parameters\n    user_id: Optional user identifier (query param)\n\
-        \nReturns:\n    Session creation response"
+      description: "Create or resume a troubleshooting session.\n\n**Session Creation & Resumption:**\n- If `client_id` is\
+        \ provided and matches an active session, that session is resumed\n- If `client_id` matches an expired session, returns\
+        \ 404/410 error (frontend creates new session)\n- If `client_id` is new or not provided, creates fresh session\n\n\
+        **Session Timeout:**\n- Sessions automatically expire after `timeout_minutes` of inactivity\n- Default timeout: 180\
+        \ minutes (3 hours)\n- Min timeout: 60 minutes, Max timeout: 480 minutes\n- Expired sessions cannot be resumed and\
+        \ return 404/410 errors\n\n**Frontend Crash Recovery:**\n- Browser crashes: Session resumes if within timeout window\n\
+        - Extended downtime: Session expires, new session created automatically\n\nArgs:\n    request: Session creation parameters\
+        \ including optional client_id and timeout\n    user_id: Optional user identifier (query param)\n\nReturns:\n    Session\
+        \ creation/resumption response with expiration information"
       operationId: create_session_api_v1_sessions_post
       parameters:
       - name: user_id
@@ -1076,50 +973,74 @@ paths:
               - $ref: '#/components/schemas/SessionCreateRequest'
               - type: 'null'
               title: Request
-            examples:
-              new_session:
-                summary: Create New Session
-                description: Start a new troubleshooting session
-                value:
-                  timeout_minutes: 60
-                  session_type: troubleshooting
-                  metadata:
-                    environment: production
-                    team: platform-team
-                    incident_priority: high
-              resume_session_with_client_id:
-                summary: Resume Session with Client ID
-                description: Resume existing session using client identifier for session
-                  continuity
-                value:
-                  timeout_minutes: 60
-                  session_type: troubleshooting
-                  client_id: browser-client-abc123
-                  metadata:
-                    environment: production
-                    team: platform-team
       responses:
         '201':
-          description: Successful Response
+          description: Session created or resumed successfully
           content:
             application/json:
               schema: {}
-        '422':
-          description: Validation Error
+              examples:
+                new_session:
+                  summary: New session created
+                  value:
+                    session_id: 550e8400-e29b-41d4-a716-446655440000
+                    user_id: user_123
+                    client_id: browser-client-abc123
+                    created_at: '2025-01-15T10:00:00Z'
+                    expires_at: '2025-01-15T13:00:00Z'
+                    status: active
+                    session_type: troubleshooting
+                    session_resumed: false
+                    timeout_minutes: 180
+                    message: Session created successfully
+                resumed_session:
+                  summary: Existing session resumed
+                  value:
+                    session_id: 550e8400-e29b-41d4-a716-446655440000
+                    user_id: user_123
+                    client_id: browser-client-abc123
+                    created_at: '2025-01-15T09:30:00Z'
+                    expires_at: '2025-01-15T14:30:00Z'
+                    status: active
+                    session_type: troubleshooting
+                    session_resumed: true
+                    timeout_minutes: 300
+                    message: Session resumed successfully
+        '404':
+          description: Session expired or not found (when resuming with client_id)
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+              examples:
+                session_expired:
+                  summary: Session expired
+                  value:
+                    detail: Session expired after 180 minutes of inactivity
+        '410':
+          description: Session gone (alternative to 404 for expired sessions)
+          content:
+            application/json:
+              examples:
+                session_gone:
+                  summary: Session no longer available
+                  value:
+                    detail: Session not found
+        '422':
+          description: Validation error (invalid timeout_minutes)
+          content:
+            application/json:
+              examples:
+                invalid_timeout:
+                  summary: Invalid timeout value
+                  value:
+                    detail: timeout_minutes must be between 60 and 480 minutes
     get:
       tags:
       - session_management
       - session_management
       summary: List Sessions
-      description: "List all sessions with optional filtering.\n\nArgs:\n    user_id:\
-        \ Optional user ID filter\n    session_type: Optional session type filter\n\
-        \    usage_type: Optional usage type filter (alias for session_type)\n   \
-        \ limit: Maximum number of sessions to return\n    offset: Number of sessions\
-        \ to skip\n\nReturns:\n    List of sessions"
+      description: "List all sessions with optional filtering.\n\nArgs:\n    user_id: Optional user ID filter\n    session_type:\
+        \ Optional session type filter\n    usage_type: Optional usage type filter (alias for session_type)\n    limit: Maximum\
+        \ number of sessions to return\n    offset: Number of sessions to skip\n\nReturns:\n    List of sessions"
       operationId: list_sessions_api_v1_sessions_get
       parameters:
       - name: user_id
@@ -1181,8 +1102,8 @@ paths:
       - session_management
       - session_management
       summary: Get Session
-      description: "Retrieve a specific session by ID.\n\nArgs:\n    session_id: Session\
-        \ identifier\n\nReturns:\n    Session details"
+      description: "Retrieve a specific session by ID.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Session\
+        \ details"
       operationId: get_session_api_v1_sessions__session_id__get
       parameters:
       - name: session_id
@@ -1209,8 +1130,7 @@ paths:
       - session_management
       - session_management
       summary: Delete Session
-      description: "Delete a specific session.\n\nArgs:\n    session_id: Session identifier\n\
-        \nReturns:\n    Deletion confirmation"
+      description: "Delete a specific session.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n    Deletion confirmation"
       operationId: delete_session_api_v1_sessions__session_id__delete
       parameters:
       - name: session_id
@@ -1234,14 +1154,10 @@ paths:
       - session_management
       - session_management
       summary: List Session Cases
-      description: "List all cases associated with a session.\n\nCRITICAL: Must return\
-        \ 200 [] for empty results, NOT 404\n\nArgs:\n    session_id: Session identifier\n\
-        \    limit: Maximum number of cases to return (1-100)\n    offset: Number\
-        \ of cases to skip for pagination\n\nReturns:\n    List of cases (empty list\
-        \ if no cases found)"
+      description: "List all cases associated with a session.\n\nCRITICAL: Must return 200 [] for empty results, NOT 404\n\
+        \nArgs:\n    session_id: Session identifier\n    limit: Maximum number of cases to return (1-100)\n    offset: Number\
+        \ of cases to skip for pagination\n\nReturns:\n    List of cases (empty list if no cases found)"
       operationId: list_session_cases_api_v1_sessions__session_id__cases_get
-      security:
-      - BearerAuth: []
       parameters:
       - name: session_id
         in: path
@@ -1293,6 +1209,14 @@ paths:
           default: false
           title: Include Deleted
         description: Include deleted cases (admin only)
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
@@ -1305,14 +1229,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/sessions/cleanup:
+    post:
+      tags:
+      - session_management
+      - session_management
+      summary: Cleanup Expired Sessions
+      description: "Clean up expired sessions (admin/testing endpoint).\n\nThis endpoint triggers immediate cleanup of expired\
+        \ sessions.\nIn production, this runs automatically every 30 minutes.\n\nReturns:\n    Number of sessions cleaned\
+        \ up"
+      operationId: cleanup_expired_sessions_api_v1_sessions_cleanup_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
   /api/v1/sessions/{session_id}/heartbeat:
     post:
       tags:
       - session_management
       - session_management
       summary: Session Heartbeat
-      description: "Update session activity timestamp (heartbeat).\n\nArgs:\n    session_id:\
-        \ Session identifier\n\nReturns:\n    Heartbeat confirmation"
+      description: "Update session activity timestamp (heartbeat).\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n\
+        \    Heartbeat confirmation"
       operationId: session_heartbeat_api_v1_sessions__session_id__heartbeat_post
       parameters:
       - name: session_id
@@ -1339,8 +1279,8 @@ paths:
       - session_management
       - session_management
       summary: Get Session Stats
-      description: "Get session statistics and activity summary.\n\nArgs:\n    session_id:\
-        \ Session identifier\n\nReturns:\n    Session statistics"
+      description: "Get session statistics and activity summary.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n\
+        \    Session statistics"
       operationId: get_session_stats_api_v1_sessions__session_id__stats_get
       parameters:
       - name: session_id
@@ -1367,8 +1307,8 @@ paths:
       - session_management
       - session_management
       summary: Cleanup Session
-      description: "Clean up session data and temporary files.\n\nArgs:\n    session_id:\
-        \ Session identifier\n\nReturns:\n    Cleanup confirmation"
+      description: "Clean up session data and temporary files.\n\nArgs:\n    session_id: Session identifier\n\nReturns:\n\
+        \    Cleanup confirmation"
       operationId: cleanup_session_api_v1_sessions__session_id__cleanup_post
       parameters:
       - name: session_id
@@ -1395,8 +1335,8 @@ paths:
       - session_management
       - session_management
       summary: Get Session Recovery Info
-      description: "Get session recovery information for restoring lost sessions.\n\
-        \nArgs:\n    session_id: Session identifier\n\nReturns:\n    Recovery information"
+      description: "Get session recovery information for restoring lost sessions.\n\nArgs:\n    session_id: Session identifier\n\
+        \nReturns:\n    Recovery information"
       operationId: get_session_recovery_info_api_v1_sessions__session_id__recovery_info_get
       parameters:
       - name: session_id
@@ -1423,9 +1363,8 @@ paths:
       - session_management
       - session_management
       summary: Restore Session
-      description: "Restore a session from backup or recovery state.\n\nArgs:\n  \
-        \  session_id: Session identifier\n    restore_request: Restoration parameters\n\
-        \nReturns:\n    Restoration confirmation"
+      description: "Restore a session from backup or recovery state.\n\nArgs:\n    session_id: Session identifier\n    restore_request:\
+        \ Restoration parameters\n\nReturns:\n    Restoration confirmation"
       operationId: restore_session_api_v1_sessions__session_id__restore_post
       parameters:
       - name: session_id
@@ -1452,1438 +1391,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}:
-    delete:
-      tags:
-      - case_persistence
-      - cases
-      summary: Delete Case
-      description: "Permanently delete a case and all associated data.\n\nThis endpoint\
-        \ provides hard delete functionality. Once deleted, \nthe case and all associated\
-        \ data are permanently removed.\n\nThe operation is idempotent - subsequent\
-        \ requests will return \n204 No Content even if the case has already been\
-        \ deleted.\n\nReturns 204 No Content on success."
-      operationId: delete_case_api_v1_cases__case_id__delete
-      security:
-      - BearerAuth: []
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      responses:
-        '204':
-          description: Case deleted successfully
-          headers:
-            X-Correlation-ID:
-              description: Request correlation ID
-              schema:
-                type: string
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    get:
-      tags:
-      - case_persistence
-      - cases
-      summary: Get Case
-      description: 'Get a specific case by ID
-
-
-        Returns the full case details including conversation history,
-
-        participants, and context information.'
-      operationId: get_case_api_v1_cases__case_id__get
-      security:
-      - BearerAuth: []
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Case'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    put:
-      tags:
-      - case_persistence
-      - cases
-      summary: Update Case
-      description: 'Update case details
-
-
-        Updates case metadata such as title, description, status, priority, and tags.
-
-        Requires edit permissions on the case.'
-      operationId: update_case_api_v1_cases__case_id__put
-      security:
-      - BearerAuth: []
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CaseUpdateRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases:
-    post:
-      tags:
-      - case_persistence
-      - cases
-      summary: Create Case
-      description: 'Create a new troubleshooting case
-
-
-        Creates a new case for tracking troubleshooting sessions and conversations.
-
-        The case will persist beyond individual session lifetimes.'
-      operationId: create_case_api_v1_cases_post
-      security:
-      - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CaseCreateRequest'
-      responses:
-        '201':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CaseResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    get:
-      tags:
-      - case_persistence
-      - cases
-      summary: List Cases
-      description: "List cases with pagination\n\nReturns a list of cases accessible\
-        \ to the authenticated user.\nAlways returns 200 with raw array (Case[]);\
-        \ returns [] when no results.\nSupports pagination via page/limit parameters\
-        \ with X-Total-Count and Link headers.\n\nDefault Filtering Behavior:\n- Excludes\
-        \ empty cases (message_count == 0) unless include_empty=true\n- Excludes archived\
-        \ cases unless include_archived=true  \n- Excludes deleted cases unless include_deleted=true\
-        \ (admin only)\n- Only returns active cases with messages by default"
-      operationId: list_cases_api_v1_cases_get
-      security:
-      - BearerAuth: []
-      parameters:
-      - name: page
-        in: query
-        required: false
-        schema:
-          type: integer
-          minimum: 1
-          description: Page number
-          default: 1
-          title: Page
-        description: Page number
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          maximum: 100
-          minimum: 1
-          description: Items per page
-          default: 20
-          title: Limit
-        description: Items per page
-      - name: include_empty
-        in: query
-        required: false
-        schema:
-          type: boolean
-          description: Include cases with message_count == 0
-          default: false
-          title: Include Empty
-        description: Include cases with message_count == 0
-      - name: include_archived
-        in: query
-        required: false
-        schema:
-          type: boolean
-          description: Include archived cases
-          default: false
-          title: Include Archived
-        description: Include archived cases
-      - name: include_deleted
-        in: query
-        required: false
-        schema:
-          type: boolean
-          description: Include deleted cases (admin only)
-          default: false
-          title: Include Deleted
-        description: Include deleted cases (admin only)
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Case'
-                title: Response List Cases Api V1 Cases Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/share:
-    post:
-      tags:
-      - case_persistence
-      - cases
-      summary: Share Case
-      description: 'Share a case with another user
-
-
-        Grants access to the case for the specified user with the given role.
-
-        Requires share permissions on the case.'
-      operationId: share_case_api_v1_cases__case_id__share_post
-      security:
-      - BearerAuth: []
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CaseShareRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                title: Response Share Case Api V1 Cases  Case Id  Share Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/title:
-    post:
-      tags:
-      - case_persistence
-      - cases
-      summary: Generate Case Title
-      description: "Generate a concise, case-specific title from case messages and\
-        \ metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3–12,\
-        \ default 8) - Maximum words in generated title\n- `hint`: string - Optional\
-        \ hint to guide title generation\n- `force`: boolean (default false) - Only\
-        \ overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse\
-        \ with X-Correlation-ID header\n- 422: ErrorResponse with code INSUFFICIENT_CONTEXT\
-        \ and X-Correlation-ID header\n\n**Description:** Returns 422 when insufficient\
-        \ meaningful context; clients SHOULD keep \nexisting title unchanged and may\
-        \ retry later."
-      operationId: generate_case_title_api_v1_cases__case_id__title_post
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: force
-        in: query
-        required: false
-        schema:
-          type: boolean
-          description: Only overwrite non-default titles when true
-          default: false
-          title: Force
-        description: Only overwrite non-default titles when true
-      requestBody:
-        content:
-          application/json:
-            schema:
-              anyOf:
-              - type: object
-              - type: 'null'
-              description: Optional request parameters
-              title: Request Body
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TitleResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/archive:
-    post:
-      tags:
-      - case_persistence
-      - cases
-      summary: Archive Case
-      description: 'Archive a case
-
-
-        Archives the case, marking it as completed and removing it from active lists.
-
-        Requires owner or collaborator permissions.'
-      operationId: archive_case_api_v1_cases__case_id__archive_post
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: reason
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Reason for archiving
-          title: Reason
-        description: Reason for archiving
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                title: Response Archive Case Api V1 Cases  Case Id  Archive Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/search:
-    post:
-      tags:
-      - case_persistence
-      - cases
-      summary: Search Cases
-      description: 'Search cases by content
-
-
-        Searches case titles, descriptions, and optionally message content
-
-        for the specified query terms.'
-      operationId: search_cases_api_v1_cases_search_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CaseSearchRequest'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                items:
-                  $ref: '#/components/schemas/CaseSummary'
-                type: array
-                title: Response Search Cases Api V1 Cases Search Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/analytics:
-    get:
-      tags:
-      - case_persistence
-      - cases
-      summary: Get Case Analytics
-      description: 'Get case analytics and metrics
-
-
-        Returns analytics data including message counts, participant activity,
-
-        resolution time, and other case metrics.'
-      operationId: get_case_analytics_api_v1_cases__case_id__analytics_get
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                title: Response Get Case Analytics Api V1 Cases  Case Id  Analytics
-                  Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/messages:
-    get:
-      tags:
-      - case_persistence
-      - cases
-      summary: Get Case Messages Enhanced
-      description: 'Enhanced message retrieval with debugging support and comprehensive metadata.
-
-        Returns conversation messages for a case with pagination, metadata, and optional debugging information.
-
-        Features:
-        - Paginated message retrieval with offset/limit
-        - Total count and retrieved count for UI pagination
-        - Optional debug information for troubleshooting
-        - Response headers with storage metadata
-        - Error differentiation between empty case vs retrieval failure'
-      operationId: get_case_messages_enhanced_api_v1_cases__case_id__messages_get
-      security:
-      - BearerAuth: []
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          maximum: 100
-          minimum: 1
-          default: 50
-          title: Limit
-        description: Maximum number of messages to return
-      - name: offset
-        in: query
-        required: false
-        schema:
-          type: integer
-          minimum: 0
-          default: 0
-          title: Offset
-        description: Offset for pagination
-      - name: include_debug
-        in: query
-        required: false
-        schema:
-          type: boolean
-          default: false
-          title: Include Debug
-        description: Include debug information for troubleshooting
-      responses:
-        '200':
-          description: Successful Response
-          headers:
-            X-Message-Count:
-              description: Total number of messages in the case
-              schema:
-                type: integer
-            X-Retrieved-Count:
-              description: Number of messages successfully retrieved
-              schema:
-                type: integer
-            X-Storage-Status:
-              description: Storage operation status
-              schema:
-                type: string
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CaseMessagesResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/sessions/{session_id}/case:
-    post:
-      tags:
-      - case_persistence
-      - cases
-      summary: Create Case For Session
-      description: 'Create or get case for a session
-
-
-        Associates a case with the given session. If no case exists, creates a new
-        one.
-
-        If force_new is true, always creates a new case.'
-      operationId: create_case_for_session_api_v1_cases_sessions__session_id__case_post
-      parameters:
-      - name: session_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Session Id
-      - name: title
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Case title
-          title: Title
-        description: Case title
-      - name: force_new
-        in: query
-        required: false
-        schema:
-          type: boolean
-          description: Force creation of new case
-          default: false
-          title: Force New
-        description: Force creation of new case
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                title: Response Create Case For Session Api V1 Cases Sessions  Session
-                  Id  Case Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/sessions/{session_id}/resume/{case_id}:
-    post:
-      tags:
-      - case_persistence
-      - cases
-      summary: Resume Case In Session
-      description: 'Resume an existing case in a session
-
-
-        Links the session to an existing case, allowing the user to continue
-
-        a previous troubleshooting conversation.'
-      operationId: resume_case_in_session_api_v1_cases_sessions__session_id__resume__case_id__post
-      parameters:
-      - name: session_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Session Id
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                title: Response Resume Case In Session Api V1 Cases Sessions  Session
-                  Id  Resume  Case Id  Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/queries:
-    post:
-      tags:
-      - case_persistence
-      - cases
-      summary: Submit Case Query
-      description: "Submit a query to a case.\n\nCRITICAL: Must return 201 (sync)\
-        \ or 202 (async) per OpenAPI spec, NOT 404\n\nArgs:\n    case_id: Case identifier\
-        \  \n    request: FastAPI request containing query data\n\nReturns:\n    201\
-        \ with immediate result OR 202 with job Location for async processing"
-      operationId: submit_case_query_api_v1_cases__case_id__queries_post
-      security:
-      - BearerAuth: []
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/QueryRequest'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '201':
-          description: Query processed synchronously
-          headers:
-            Location:
-              description: URL of the query resource
-              schema:
-                type: string
-            X-Correlation-ID:
-              description: Request correlation ID
-              schema:
-                type: string
-        '202':
-          description: Query processing asynchronously
-          headers:
-            Location:
-              description: URL of the query resource
-              schema:
-                type: string
-            Retry-After:
-              description: Seconds to wait before next poll
-              schema:
-                type: integer
-            X-Correlation-ID:
-              description: Request correlation ID
-              schema:
-                type: string
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    get:
-      tags:
-      - case_persistence
-      - cases
-      summary: List Case Queries
-      description: 'List queries for a specific case with pagination.
-
-
-        CRITICAL: Must return 200 [] for empty results, NOT 404'
-      operationId: list_case_queries_api_v1_cases__case_id__queries_get
-      security:
-      - BearerAuth: []
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          maximum: 100
-          minimum: 1
-          default: 50
-          title: Limit
-      - name: offset
-        in: query
-        required: false
-        schema:
-          type: integer
-          minimum: 0
-          default: 0
-          title: Offset
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/queries/{query_id}:
-    get:
-      tags:
-      - case_persistence
-      - cases
-      summary: Get Case Query
-      description: 'Get query status and result (for async polling).
-
-
-        Returns 200 with AgentResponse when completed, or 202 with QueryJobStatus
-        while processing.
-
-        Supports Retry-After header for polling guidance.'
-      operationId: get_case_query_api_v1_cases__case_id__queries__query_id__get
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: query_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Query Id
-      responses:
-        '200':
-          description: Query completed - returns AgentResponse
-          content:
-            application/json:
-              schema:
-                anyOf:
-                - $ref: '#/components/schemas/AgentResponse'
-                - $ref: '#/components/schemas/QueryJobStatus'
-                title: Response Get Case Query Api V1 Cases  Case Id  Queries  Query
-                  Id  Get
-                $ref: '#/components/schemas/AgentResponse'
-          headers:
-            X-Correlation-ID:
-              description: Request correlation ID
-              schema:
-                type: string
-        '202':
-          description: Query still processing - returns job status
-          headers:
-            Retry-After:
-              description: Seconds to wait before next poll
-              schema:
-                type: integer
-            X-Correlation-ID:
-              description: Request correlation ID
-              schema:
-                type: string
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/QueryJobStatus'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/queries/{query_id}/result:
-    get:
-      tags:
-      - case_persistence
-      - cases
-      summary: Get Case Query Result
-      description: Return the final AgentResponse for a completed query.
-      operationId: get_case_query_result_api_v1_cases__case_id__queries__query_id__result_get
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: query_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Query Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/health:
-    get:
-      tags:
-      - case_persistence
-      - cases
-      summary: Get Case Service Health
-      description: 'Get case service health status
-
-
-        Returns health information about the case persistence system,
-
-        including connectivity and performance metrics.'
-      operationId: get_case_service_health_api_v1_cases_health_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                title: Response Get Case Service Health Api V1 Cases Health Get
-  /api/v1/cases/{case_id}/data:
-    post:
-      tags:
-      - case_persistence
-      - cases
-      summary: Upload Case Data
-      description: 'Upload data file to a specific case.
-
-
-        Associates uploaded data with the case for context-aware troubleshooting.
-
-        Returns 201 with Location header pointing to the created data resource.'
-      operationId: upload_case_data_api_v1_cases__case_id__data_post
-      security:
-      - BearerAuth: []
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: description
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Description of uploaded data
-          title: Description
-        description: Description of uploaded data
-      - name: expected_type
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Expected data type
-          title: Expected Type
-        description: Expected data type
-      responses:
-        '201':
-          description: Data uploaded successfully
-          content:
-            application/json:
-              schema: {}
-          headers:
-            Location:
-              description: URL of the created resource
-              schema:
-                type: string
-            X-Correlation-ID:
-              description: Request correlation ID
-              schema:
-                type: string
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    get:
-      tags:
-      - case_persistence
-      - cases
-      summary: List Case Data
-      description: 'List data files associated with a case.
-
-
-        Returns array of data records with pagination headers.
-
-        Always returns 200 with empty array if no data exists.'
-      operationId: list_case_data_api_v1_cases__case_id__data_get
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          maximum: 200
-          minimum: 1
-          description: Maximum number of items to return
-          default: 50
-          title: Limit
-        description: Maximum number of items to return
-      - name: offset
-        in: query
-        required: false
-        schema:
-          type: integer
-          minimum: 0
-          description: Number of items to skip
-          default: 0
-          title: Offset
-        description: Number of items to skip
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/cases/{case_id}/data/{data_id}:
-    get:
-      tags:
-      - case_persistence
-      - cases
-      summary: Get Case Data
-      description: Get specific data file details for a case.
-      operationId: get_case_data_api_v1_cases__case_id__data__data_id__get
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: data_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Data Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                title: Response Get Case Data Api V1 Cases  Case Id  Data  Data Id  Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    delete:
-      tags:
-      - case_persistence
-      - cases
-      summary: Delete Case Data
-      description: Remove data file from a case. Returns 204 No Content on success.
-      operationId: delete_case_data_api_v1_cases__case_id__data__data_id__delete
-      parameters:
-      - name: case_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Case Id
-      - name: data_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Data Id
-      responses:
-        '204':
-          description: Data deleted successfully
-          headers:
-            X-Correlation-ID:
-              description: Request correlation ID
-              schema:
-                type: string
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/jobs/{job_id}:
-    get:
-      tags:
-      - job_management
-      - job_management
-      summary: Get Job Status
-      description: 'Get job status with proper polling semantics
-
-
-        Implements consistent job polling with appropriate headers:
-
-        - 200 OK for running/pending jobs with Retry-After header
-
-        - 303 See Other redirect for completed jobs with results
-
-        - 200 OK for failed/cancelled jobs (terminal states)'
-      operationId: get_job_status_api_v1_jobs__job_id__get
-      parameters:
-      - name: job_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Job Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/JobStatus'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    delete:
-      tags:
-      - job_management
-      - job_management
-      summary: Cancel Job
-      description: 'Cancel a running job
-
-
-        Attempts to cancel a job if it''s still in a cancellable state.
-
-        Returns 204 No Content on success.'
-      operationId: cancel_job_api_v1_jobs__job_id__delete
-      parameters:
-      - name: job_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Job Id
-      responses:
-        '204':
-          description: Successful Response
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/jobs:
-    get:
-      tags:
-      - job_management
-      - job_management
-      summary: List Jobs
-      description: 'List jobs with optional filtering and pagination
-
-
-        Returns a paginated list of jobs with proper pagination headers.
-
-        Supports filtering by job status.'
-      operationId: list_jobs_api_v1_jobs_get
-      parameters:
-      - name: status_filter
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by job status
-          title: Status Filter
-        description: Filter by job status
-      - name: limit
-        in: query
-        required: false
-        schema:
-          type: integer
-          maximum: 100
-          minimum: 1
-          description: Maximum number of results
-          default: 50
-          title: Limit
-        description: Maximum number of results
-      - name: offset
-        in: query
-        required: false
-        schema:
-          type: integer
-          minimum: 0
-          description: Result offset for pagination
-          default: 0
-          title: Offset
-        description: Result offset for pagination
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/JobStatus'
-                title: Response List Jobs Api V1 Jobs Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/jobs/health:
-    get:
-      tags:
-      - job_management
-      - job_management
-      summary: Get Job Service Health
-      description: 'Get job service health status
-
-
-        Returns health information about the job management system,
-
-        including connectivity and performance metrics.'
-      operationId: get_job_service_health_api_v1_jobs_health_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                title: Response Get Job Service Health Api V1 Jobs Health Get
-  /debug/routes:
-    get:
-      summary: Debug Routes
-      description: List all registered routes (path + methods).
-      operationId: debug_routes_debug_routes_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /debug/health:
-    get:
-      summary: Debug Health
-      description: Minimal debug health endpoint.
-      operationId: debug_health_debug_health_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /api/v1/protection/health:
-    get:
-      tags:
-      - protection
-      - protection
-      summary: Get Protection Health
-      description: "Get protection system health status\n\nReturns comprehensive health\
-        \ information for both basic and intelligent\nprotection components including\
-        \ middleware status and configuration validation.\n\nReturns:\n    Dict with\
-        \ protection system health status, active components, and validation results\n\
-        \    \nRaises:\n    HTTPException: On service layer errors (503, 500)"
-      operationId: get_protection_health_api_v1_protection_health_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                anyOf:
-                - type: object
-                - type: 'null'
-                title: Response Get Protection Health Api V1 Protection Health Get
-  /api/v1/protection/metrics:
-    get:
-      tags:
-      - protection
-      - protection
-      summary: Get Protection Metrics
-      description: "Get protection system metrics for monitoring\n\nReturns detailed\
-        \ metrics for rate limiting, request deduplication, \nbehavioral analysis,\
-        \ ML anomaly detection, and reputation system.\n\nReturns:\n    Dict with\
-        \ protection system metrics including request counts, \n    protection rates,\
-        \ and component-specific statistics\n    \nRaises:\n    HTTPException: On\
-        \ service layer errors (503, 500)"
-      operationId: get_protection_metrics_api_v1_protection_metrics_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                anyOf:
-                - type: object
-                - type: 'null'
-                title: Response Get Protection Metrics Api V1 Protection Metrics Get
-  /api/v1/protection/config:
-    get:
-      tags:
-      - protection
-      - protection
-      summary: Get Protection Config
-      description: "Get current protection system configuration\n\nReturns sanitized\
-        \ configuration information (no sensitive data)\nfor both basic and intelligent\
-        \ protection components.\n\nReturns:\n    Dict with protection configuration\
-        \ including enabled features,\n    rate limits, timeouts, and security settings\
-        \ (sanitized)\n    \nRaises:\n    HTTPException: On service layer errors (503,\
-        \ 500)"
-      operationId: get_protection_config_api_v1_protection_config_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                anyOf:
-                - type: object
-                - type: 'null'
-                title: Response Get Protection Config Api V1 Protection Config Get
-  /:
-    get:
-      summary: Root
-      description: Root endpoint with API information.
-      operationId: root__get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /health:
-    get:
-      summary: Health Check
-      description: Enhanced health check endpoint with component-specific metrics
-        and SLA monitoring.
-      operationId: health_check_health_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /health/dependencies:
-    get:
-      summary: Health Check Dependencies
-      description: Enhanced detailed health check for all dependencies with SLA metrics
-      operationId: health_check_dependencies_health_dependencies_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /readiness:
-    get:
-      summary: Readiness
-      description: 'Readiness probe: return unready if Redis or ChromaDB are unavailable.'
-      operationId: readiness_readiness_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /health/logging:
-    get:
-      summary: Logging Health Check
-      description: Get logging system health status.
-      operationId: logging_health_check_health_logging_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /health/sla:
-    get:
-      summary: Health Check Sla
-      description: Get SLA status and metrics for all components.
-      operationId: health_check_sla_health_sla_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /health/components/{component_name}:
-    get:
-      summary: Health Check Component
-      description: Get detailed health information for a specific component.
-      operationId: health_check_component_health_components__component_name__get
-      parameters:
-      - name: component_name
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Component Name
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /health/patterns:
-    get:
-      summary: Health Check Error Patterns
-      description: Get error patterns and recovery information from enhanced error
-        context.
-      operationId: health_check_error_patterns_health_patterns_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /metrics/performance:
-    get:
-      summary: Get Performance Metrics
-      description: Get comprehensive performance metrics.
-      operationId: get_performance_metrics_metrics_performance_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /metrics/realtime:
-    get:
-      summary: Get Realtime Metrics
-      description: Get real-time performance metrics.
-      operationId: get_realtime_metrics_metrics_realtime_get
-      parameters:
-      - name: time_window_minutes
-        in: query
-        required: false
-        schema:
-          type: integer
-          default: 5
-          title: Time Window Minutes
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /metrics/alerts:
-    get:
-      summary: Get Alert Status
-      description: Get current alert status and statistics.
-      operationId: get_alert_status_metrics_alerts_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /metrics/optimization:
-    get:
-      summary: Get System Optimization Metrics
-      description: Get comprehensive system optimization metrics.
-      operationId: get_system_optimization_metrics_metrics_optimization_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /admin/optimization/trigger-cleanup:
-    get:
-      summary: Trigger System Cleanup
-      description: Trigger comprehensive system cleanup and optimization.
-      operationId: trigger_system_cleanup_admin_optimization_trigger_cleanup_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
   /api/v1/auth/dev-login:
     post:
       tags:
@@ -3131,8 +1638,1610 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}:
+    delete:
+      tags:
+      - case_persistence
+      - cases
+      summary: Delete Case
+      description: "Permanently delete a case and all associated data.\n\nThis endpoint provides hard delete functionality.\
+        \ Once deleted, \nthe case and all associated data are permanently removed.\n\nThe operation is idempotent - subsequent\
+        \ requests will return \n204 No Content even if the case has already been deleted.\n\nReturns 204 No Content on success."
+      operationId: delete_case_api_v1_cases__case_id__delete
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '204':
+          description: Case deleted successfully
+          headers:
+            X-Correlation-ID:
+              description: Request correlation ID
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - case_persistence
+      - cases
+      summary: Get Case
+      description: 'Get a specific case by ID
+
+
+        Returns the full case details including conversation history,
+
+        participants, and context information.'
+      operationId: get_case_api_v1_cases__case_id__get
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Case'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - case_persistence
+      - cases
+      summary: Update Case
+      description: 'Update case details
+
+
+        Updates case metadata such as title, description, status, priority, and tags.
+
+        Requires edit permissions on the case.'
+      operationId: update_case_api_v1_cases__case_id__put
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases:
+    post:
+      tags:
+      - case_persistence
+      - cases
+      summary: Create Case
+      description: 'Create a new troubleshooting case
+
+
+        Creates a new case for tracking troubleshooting sessions and conversations.
+
+        The case will persist beyond individual session lifetimes.'
+      operationId: create_case_api_v1_cases_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseCreateRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - case_persistence
+      - cases
+      summary: List Cases
+      description: "List cases with pagination\n\nReturns a list of cases accessible to the authenticated user.\nAlways returns\
+        \ 200 with raw array (Case[]); returns [] when no results.\nSupports pagination via page/limit parameters with X-Total-Count\
+        \ and Link headers.\n\nDefault Filtering Behavior:\n- Excludes empty cases (message_count == 0) unless include_empty=true\n\
+        - Excludes archived cases unless include_archived=true  \n- Excludes deleted cases unless include_deleted=true (admin\
+        \ only)\n- Only returns active cases with messages by default"
+      operationId: list_cases_api_v1_cases_get
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          description: Page number
+          default: 1
+          title: Page
+        description: Page number
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Items per page
+          default: 20
+          title: Limit
+        description: Items per page
+      - name: include_empty
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include cases with message_count == 0
+          default: false
+          title: Include Empty
+        description: Include cases with message_count == 0
+      - name: include_archived
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include archived cases
+          default: false
+          title: Include Archived
+        description: Include archived cases
+      - name: include_deleted
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include deleted cases (admin only)
+          default: false
+          title: Include Deleted
+        description: Include deleted cases (admin only)
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Case'
+                title: Response List Cases Api V1 Cases Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/share:
+    post:
+      tags:
+      - case_persistence
+      - cases
+      summary: Share Case
+      description: 'Share a case with another user
+
+
+        Grants access to the case for the specified user with the given role.
+
+        Requires share permissions on the case.'
+      operationId: share_case_api_v1_cases__case_id__share_post
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseShareRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Share Case Api V1 Cases  Case Id  Share Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/title:
+    post:
+      tags:
+      - case_persistence
+      - cases
+      summary: Generate Case Title
+      description: "Generate a concise, case-specific title from case messages and metadata.\n\n**Request body (optional):**\n\
+        - `max_words`: integer (3–12, default 8) - Maximum words in generated title\n- `hint`: string - Optional hint to guide\
+        \ title generation\n- `force`: boolean (default false) - Only overwrite non-default titles when true\n\n**Returns:**\n\
+        - 200: TitleResponse with X-Correlation-ID header\n- 422: ErrorResponse with code INSUFFICIENT_CONTEXT and X-Correlation-ID\
+        \ header\n\n**Description:** Returns 422 when insufficient meaningful context; clients SHOULD keep \nexisting title\
+        \ unchanged and may retry later."
+      operationId: generate_case_title_api_v1_cases__case_id__title_post
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: force
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Only overwrite non-default titles when true
+          default: false
+          title: Force
+        description: Only overwrite non-default titles when true
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - type: object
+              - type: 'null'
+              description: Optional request parameters
+              title: Request Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TitleResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/archive:
+    post:
+      tags:
+      - case_persistence
+      - cases
+      summary: Archive Case
+      description: 'Archive a case
+
+
+        Archives the case, marking it as completed and removing it from active lists.
+
+        Requires owner or collaborator permissions.'
+      operationId: archive_case_api_v1_cases__case_id__archive_post
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: reason
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Reason for archiving
+          title: Reason
+        description: Reason for archiving
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Archive Case Api V1 Cases  Case Id  Archive Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/search:
+    post:
+      tags:
+      - case_persistence
+      - cases
+      summary: Search Cases
+      description: 'Search cases by content
+
+
+        Searches case titles, descriptions, and optionally message content
+
+        for the specified query terms.'
+      operationId: search_cases_api_v1_cases_search_post
+      parameters:
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseSearchRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CaseSummary'
+                title: Response Search Cases Api V1 Cases Search Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/analytics:
+    get:
+      tags:
+      - case_persistence
+      - cases
+      summary: Get Case Analytics
+      description: 'Get case analytics and metrics
+
+
+        Returns analytics data including message counts, participant activity,
+
+        resolution time, and other case metrics.'
+      operationId: get_case_analytics_api_v1_cases__case_id__analytics_get
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Get Case Analytics Api V1 Cases  Case Id  Analytics Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/messages:
+    get:
+      tags:
+      - case_persistence
+      - cases
+      summary: Get Case Messages Enhanced
+      description: 'Retrieve conversation messages for a case with enhanced debugging info.
+
+        Supports pagination and includes metadata about message retrieval status.'
+      operationId: get_case_messages_enhanced_api_v1_cases__case_id__messages_get
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Maximum number of messages to return
+          default: 50
+          title: Limit
+        description: Maximum number of messages to return
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Offset for pagination
+          default: 0
+          title: Offset
+        description: Offset for pagination
+      - name: include_debug
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include debug information for troubleshooting
+          default: false
+          title: Include Debug
+        description: Include debug information for troubleshooting
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseMessagesResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/sessions/{session_id}/case:
+    post:
+      tags:
+      - case_persistence
+      - cases
+      summary: Create Case For Session
+      description: 'Create or get case for a session
+
+
+        Associates a case with the given session. If no case exists, creates a new one.
+
+        If force_new is true, always creates a new case.'
+      operationId: create_case_for_session_api_v1_cases_sessions__session_id__case_post
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: title
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Case title
+          title: Title
+        description: Case title
+      - name: force_new
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Force creation of new case
+          default: false
+          title: Force New
+        description: Force creation of new case
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Create Case For Session Api V1 Cases Sessions  Session Id  Case Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/sessions/{session_id}/resume/{case_id}:
+    post:
+      tags:
+      - case_persistence
+      - cases
+      summary: Resume Case In Session
+      description: 'Resume an existing case in a session
+
+
+        Links the session to an existing case, allowing the user to continue
+
+        a previous troubleshooting conversation.'
+      operationId: resume_case_in_session_api_v1_cases_sessions__session_id__resume__case_id__post
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Resume Case In Session Api V1 Cases Sessions  Session Id  Resume  Case Id  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/queries:
+    post:
+      tags:
+      - case_persistence
+      - cases
+      summary: Submit Case Query
+      description: "Submit a query to a case.\n\nCRITICAL: Must return 201 (sync) or 202 (async) per OpenAPI spec, NOT 404\n\
+        \nArgs:\n    case_id: Case identifier  \n    request: FastAPI request containing query data\n\nReturns:\n    201 with\
+        \ immediate result OR 202 with job Location for async processing"
+      operationId: submit_case_query_api_v1_cases__case_id__queries_post
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '201':
+          description: Query processed synchronously
+          headers:
+            Location:
+              description: URL of the query resource
+              schema:
+                type: string
+            X-Correlation-ID:
+              description: Request correlation ID
+              schema:
+                type: string
+        '202':
+          description: Query processing asynchronously
+          headers:
+            Location:
+              description: URL of the query resource
+              schema:
+                type: string
+            Retry-After:
+              description: Seconds to wait before next poll
+              schema:
+                type: integer
+            X-Correlation-ID:
+              description: Request correlation ID
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - case_persistence
+      - cases
+      summary: List Case Queries
+      description: 'List queries for a specific case with pagination.
+
+
+        CRITICAL: Must return 200 [] for empty results, NOT 404'
+      operationId: list_case_queries_api_v1_cases__case_id__queries_get
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/queries/{query_id}:
+    get:
+      tags:
+      - case_persistence
+      - cases
+      summary: Get Case Query
+      description: 'Get query status and result (for async polling).
+
+
+        Returns 200 with AgentResponse when completed, or 202 with QueryJobStatus while processing.
+
+        Supports Retry-After header for polling guidance.'
+      operationId: get_case_query_api_v1_cases__case_id__queries__query_id__get
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: query_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Query Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Query completed - returns AgentResponse
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/AgentResponse'
+                - $ref: '#/components/schemas/QueryJobStatus'
+                title: Response Get Case Query Api V1 Cases  Case Id  Queries  Query Id  Get
+                $ref: '#/components/schemas/AgentResponse'
+          headers:
+            X-Correlation-ID:
+              description: Request correlation ID
+              schema:
+                type: string
+        '202':
+          description: Query still processing - returns job status
+          headers:
+            Retry-After:
+              description: Seconds to wait before next poll
+              schema:
+                type: integer
+            X-Correlation-ID:
+              description: Request correlation ID
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryJobStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/queries/{query_id}/result:
+    get:
+      tags:
+      - case_persistence
+      - cases
+      summary: Get Case Query Result
+      description: Return the final AgentResponse for a completed query.
+      operationId: get_case_query_result_api_v1_cases__case_id__queries__query_id__result_get
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: query_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Query Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/health:
+    get:
+      tags:
+      - case_persistence
+      - cases
+      summary: Get Case Service Health
+      description: 'Get case service health status
+
+
+        Returns health information about the case persistence system,
+
+        including connectivity and performance metrics.'
+      operationId: get_case_service_health_api_v1_cases_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Get Case Service Health Api V1 Cases Health Get
+  /api/v1/cases/{case_id}/data:
+    post:
+      tags:
+      - case_persistence
+      - cases
+      summary: Upload Case Data
+      description: 'Upload data file to a specific case.
+
+
+        Associates uploaded data with the case for context-aware troubleshooting.
+
+        Returns 201 with Location header pointing to the created data resource.'
+      operationId: upload_case_data_api_v1_cases__case_id__data_post
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: description
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Description of uploaded data
+          title: Description
+        description: Description of uploaded data
+      - name: expected_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Expected data type
+          title: Expected Type
+        description: Expected data type
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '201':
+          description: Data uploaded successfully
+          content:
+            application/json:
+              schema: {}
+          headers:
+            Location:
+              description: URL of the created resource
+              schema:
+                type: string
+            X-Correlation-ID:
+              description: Request correlation ID
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - case_persistence
+      - cases
+      summary: List Case Data
+      description: 'List data files associated with a case.
+
+
+        Returns array of data records with pagination headers.
+
+        Always returns 200 with empty array if no data exists.'
+      operationId: list_case_data_api_v1_cases__case_id__data_get
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          description: Maximum number of items to return
+          default: 50
+          title: Limit
+        description: Maximum number of items to return
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Number of items to skip
+          default: 0
+          title: Offset
+        description: Number of items to skip
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cases/{case_id}/data/{data_id}:
+    get:
+      tags:
+      - case_persistence
+      - cases
+      summary: Get Case Data
+      description: Get specific data file details for a case.
+      operationId: get_case_data_api_v1_cases__case_id__data__data_id__get
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: data_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Data Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Get Case Data Api V1 Cases  Case Id  Data  Data Id  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - case_persistence
+      - cases
+      summary: Delete Case Data
+      description: Remove data file from a case. Returns 204 No Content on success.
+      operationId: delete_case_data_api_v1_cases__case_id__data__data_id__delete
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Case Id
+      - name: data_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Data Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '204':
+          description: Data deleted successfully
+          headers:
+            X-Correlation-ID:
+              description: Request correlation ID
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/jobs/{job_id}:
+    get:
+      tags:
+      - job_management
+      - job_management
+      summary: Get Job Status
+      description: 'Get job status with proper polling semantics
+
+
+        Implements consistent job polling with appropriate headers:
+
+        - 200 OK for running/pending jobs with Retry-After header
+
+        - 303 See Other redirect for completed jobs with results
+
+        - 200 OK for failed/cancelled jobs (terminal states)'
+      operationId: get_job_status_api_v1_jobs__job_id__get
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - job_management
+      - job_management
+      summary: Cancel Job
+      description: 'Cancel a running job
+
+
+        Attempts to cancel a job if it''s still in a cancellable state.
+
+        Returns 204 No Content on success.'
+      operationId: cancel_job_api_v1_jobs__job_id__delete
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Job Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/jobs:
+    get:
+      tags:
+      - job_management
+      - job_management
+      summary: List Jobs
+      description: 'List jobs with optional filtering and pagination
+
+
+        Returns a paginated list of jobs with proper pagination headers.
+
+        Supports filtering by job status.'
+      operationId: list_jobs_api_v1_jobs_get
+      parameters:
+      - name: status_filter
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by job status
+          title: Status Filter
+        description: Filter by job status
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Maximum number of results
+          default: 50
+          title: Limit
+        description: Maximum number of results
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Result offset for pagination
+          default: 0
+          title: Offset
+        description: Result offset for pagination
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/JobStatus'
+                title: Response List Jobs Api V1 Jobs Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/jobs/health:
+    get:
+      tags:
+      - job_management
+      - job_management
+      summary: Get Job Service Health
+      description: 'Get job service health status
+
+
+        Returns health information about the job management system,
+
+        including connectivity and performance metrics.'
+      operationId: get_job_service_health_api_v1_jobs_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                title: Response Get Job Service Health Api V1 Jobs Health Get
+  /debug/routes:
+    get:
+      summary: Debug Routes
+      description: List all registered routes (path + methods).
+      operationId: debug_routes_debug_routes_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /debug/health:
+    get:
+      summary: Debug Health
+      description: Minimal debug health endpoint.
+      operationId: debug_health_debug_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /debug/llm-providers:
+    get:
+      summary: Debug Llm Providers
+      description: Get current LLM provider status and fallback chain.
+      operationId: debug_llm_providers_debug_llm_providers_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /api/v1/protection/health:
+    get:
+      tags:
+      - protection
+      - protection
+      summary: Get Protection Health
+      description: "Get protection system health status\n\nReturns comprehensive health information for both basic and intelligent\n\
+        protection components including middleware status and configuration validation.\n\nReturns:\n    Dict with protection\
+        \ system health status, active components, and validation results\n    \nRaises:\n    HTTPException: On service layer\
+        \ errors (503, 500)"
+      operationId: get_protection_health_api_v1_protection_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - type: object
+                - type: 'null'
+                title: Response Get Protection Health Api V1 Protection Health Get
+  /api/v1/protection/metrics:
+    get:
+      tags:
+      - protection
+      - protection
+      summary: Get Protection Metrics
+      description: "Get protection system metrics for monitoring\n\nReturns detailed metrics for rate limiting, request deduplication,\
+        \ \nbehavioral analysis, ML anomaly detection, and reputation system.\n\nReturns:\n    Dict with protection system\
+        \ metrics including request counts, \n    protection rates, and component-specific statistics\n    \nRaises:\n   \
+        \ HTTPException: On service layer errors (503, 500)"
+      operationId: get_protection_metrics_api_v1_protection_metrics_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - type: object
+                - type: 'null'
+                title: Response Get Protection Metrics Api V1 Protection Metrics Get
+  /api/v1/protection/config:
+    get:
+      tags:
+      - protection
+      - protection
+      summary: Get Protection Config
+      description: "Get current protection system configuration\n\nReturns sanitized configuration information (no sensitive\
+        \ data)\nfor both basic and intelligent protection components.\n\nReturns:\n    Dict with protection configuration\
+        \ including enabled features,\n    rate limits, timeouts, and security settings (sanitized)\n    \nRaises:\n    HTTPException:\
+        \ On service layer errors (503, 500)"
+      operationId: get_protection_config_api_v1_protection_config_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - type: object
+                - type: 'null'
+                title: Response Get Protection Config Api V1 Protection Config Get
+  /:
+    get:
+      summary: Root
+      description: Root endpoint with API information.
+      operationId: root__get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /health:
+    get:
+      summary: Health Check
+      description: Enhanced health check endpoint with component-specific metrics and SLA monitoring.
+      operationId: health_check_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /health/dependencies:
+    get:
+      summary: Health Check Dependencies
+      description: Enhanced detailed health check for all dependencies with SLA metrics
+      operationId: health_check_dependencies_health_dependencies_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /readiness:
+    get:
+      summary: Readiness
+      description: 'Readiness probe: return unready if Redis or ChromaDB are unavailable.'
+      operationId: readiness_readiness_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /health/logging:
+    get:
+      summary: Logging Health Check
+      description: Get logging system health status.
+      operationId: logging_health_check_health_logging_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /health/sla:
+    get:
+      summary: Health Check Sla
+      description: Get SLA status and metrics for all components.
+      operationId: health_check_sla_health_sla_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /health/components/{component_name}:
+    get:
+      summary: Health Check Component
+      description: Get detailed health information for a specific component.
+      operationId: health_check_component_health_components__component_name__get
+      parameters:
+      - name: component_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Component Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /health/patterns:
+    get:
+      summary: Health Check Error Patterns
+      description: Get error patterns and recovery information from enhanced error context.
+      operationId: health_check_error_patterns_health_patterns_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /metrics/performance:
+    get:
+      summary: Get Performance Metrics
+      description: Get comprehensive performance metrics.
+      operationId: get_performance_metrics_metrics_performance_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /metrics/realtime:
+    get:
+      summary: Get Realtime Metrics
+      description: Get real-time performance metrics.
+      operationId: get_realtime_metrics_metrics_realtime_get
+      parameters:
+      - name: time_window_minutes
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 5
+          title: Time Window Minutes
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /metrics/alerts:
+    get:
+      summary: Get Alert Status
+      description: Get current alert status and statistics.
+      operationId: get_alert_status_metrics_alerts_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /metrics/optimization:
+    get:
+      summary: Get System Optimization Metrics
+      description: Get comprehensive system optimization metrics.
+      operationId: get_system_optimization_metrics_metrics_optimization_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /admin/optimization/trigger-cleanup:
+    get:
+      summary: Trigger System Cleanup
+      description: Trigger comprehensive system cleanup and optimization.
+      operationId: trigger_system_cleanup_admin_optimization_trigger_cleanup_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
 components:
   schemas:
+    AcquisitionGuidance:
+      properties:
+        commands:
+          items:
+            type: string
+          type: array
+          maxItems: 3
+          title: Commands
+          description: Shell commands to run (max 3)
+        file_locations:
+          items:
+            type: string
+          type: array
+          maxItems: 3
+          title: File Locations
+          description: File paths to check (max 3)
+        ui_locations:
+          items:
+            type: string
+          type: array
+          maxItems: 3
+          title: Ui Locations
+          description: UI navigation paths (max 3)
+        alternatives:
+          items:
+            type: string
+          type: array
+          maxItems: 3
+          title: Alternatives
+          description: Alternative methods (max 3)
+        prerequisites:
+          items:
+            type: string
+          type: array
+          maxItems: 2
+          title: Prerequisites
+          description: Requirements to obtain evidence (max 2)
+        expected_output:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Expected Output
+          description: What user should expect to see
+      type: object
+      title: AcquisitionGuidance
+      description: Instructions for obtaining diagnostic evidence
     AgentResponse:
       properties:
         schema_version:
@@ -3178,6 +3287,28 @@ components:
             type: array
           - type: 'null'
           title: Plan
+        evidence_requests:
+          items:
+            $ref: '#/components/schemas/EvidenceRequest'
+          type: array
+          title: Evidence Requests
+          description: Active evidence requests for this turn
+        investigation_mode:
+          $ref: '#/components/schemas/InvestigationMode'
+          description: Current investigation approach (speed vs depth)
+          default: active_incident
+        case_status:
+          $ref: '#/components/schemas/faultmaven__models__evidence__CaseStatus'
+          default: intake
+        suggested_actions:
+          anyOf:
+          - items:
+              type: object
+            type: array
+          - type: 'null'
+          title: Suggested Actions
+          description: DEPRECATED in v3.1.0 - Use evidence_requests instead. Always null in new responses.
+          deprecated: true
       additionalProperties: true
       type: object
       required:
@@ -3185,7 +3316,45 @@ components:
       - response_type
       - session_id
       title: AgentResponse
-      description: The single, unified JSON payload returned from the backend.
+      description: The single, unified JSON payload returned from the backend (v3.1.0 - Evidence-Centric).
+    AuthTokenResponse:
+      properties:
+        access_token:
+          type: string
+          title: Access Token
+          description: Bearer access token
+          example: 550e8400-e29b-41d4-a716-446655440000
+        token_type:
+          type: string
+          title: Token Type
+          description: Token type (always 'bearer')
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+          description: Token expiration time in seconds
+          example: 86400
+        session_id:
+          type: string
+          title: Session Id
+          description: Session identifier for multi-turn conversations
+          example: session-550e8400-e29b-41d4-a716-446655440000
+        user:
+          $ref: '#/components/schemas/UserProfile'
+          description: Authenticated user profile
+      type: object
+      required:
+      - access_token
+      - expires_in
+      - session_id
+      - user
+      title: AuthTokenResponse
+      description: 'Authentication token response
+
+
+        Standard OAuth2-compatible token response format.
+
+        Includes token, expiration, user information, and session ID.'
     Body_batch_upload_data_api_v1_data_batch_upload_post:
       properties:
         files:
@@ -3214,7 +3383,6 @@ components:
         case_id:
           type: string
           title: Case Id
-          description: Case identifier for associating uploaded data with a troubleshooting case
         description:
           anyOf:
           - type: string
@@ -3235,6 +3403,9 @@ components:
         session_id:
           type: string
           title: Session Id
+        case_id:
+          type: string
+          title: Case Id
         description:
           anyOf:
           - type: string
@@ -3244,6 +3415,7 @@ components:
       required:
       - file
       - session_id
+      - case_id
       title: Body_upload_data_compat_api_v1_data_post
     Body_upload_document_api_v1_knowledge_documents_post:
       properties:
@@ -3428,7 +3600,7 @@ components:
           description: Filter by participant user ID
         status:
           anyOf:
-          - $ref: '#/components/schemas/CaseStatus'
+          - $ref: '#/components/schemas/CaseStatus-Input'
           - type: 'null'
           description: Filter by case status
         priority:
@@ -3494,10 +3666,50 @@ components:
       type: object
       title: CaseListFilter
       description: Filter criteria for listing cases
+    CaseMessagesResponse:
+      properties:
+        messages:
+          items:
+            $ref: '#/components/schemas/Message'
+          type: array
+          title: Messages
+          description: Array of conversation messages
+        total_count:
+          type: integer
+          title: Total Count
+          description: Total number of messages in the case
+        retrieved_count:
+          type: integer
+          title: Retrieved Count
+          description: Number of messages successfully retrieved
+        has_more:
+          type: boolean
+          title: Has More
+          description: Whether more messages are available for pagination
+        next_offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Next Offset
+          description: Offset for next page (null if no more pages)
+        debug_info:
+          anyOf:
+          - $ref: '#/components/schemas/MessageRetrievalDebugInfo'
+          - type: 'null'
+          description: Debug information (only when include_debug=true)
+      type: object
+      required:
+      - messages
+      - total_count
+      - retrieved_count
+      - has_more
+      title: CaseMessagesResponse
+      description: Enhanced response model for case message retrieval with debugging support.
     CasePriority:
       type: string
       enum:
       - low
+      - normal
       - medium
       - high
       - critical
@@ -3567,12 +3779,13 @@ components:
       - user_id
       title: CaseShareRequest
       description: Request model for sharing a case with other users
-    CaseStatus:
+    CaseStatus-Input:
       type: string
       enum:
       - active
       - investigating
       - solved
+      - resolved
       - stalled
       - archived
       - shared
@@ -3587,7 +3800,7 @@ components:
           type: string
           title: Title
         status:
-          $ref: '#/components/schemas/CaseStatus'
+          $ref: '#/components/schemas/faultmaven__models__case__CaseStatus'
         priority:
           $ref: '#/components/schemas/CasePriority'
         owner_id:
@@ -3649,7 +3862,7 @@ components:
           description: Updated case description
         status:
           anyOf:
-          - $ref: '#/components/schemas/CaseStatus'
+          - $ref: '#/components/schemas/CaseStatus-Input'
           - type: 'null'
           description: Updated case status
         priority:
@@ -3713,6 +3926,127 @@ components:
         Validates user input for the dev-login endpoint.
 
         Supports username-based login with optional user details.'
+    EvidenceCategory:
+      type: string
+      enum:
+      - symptoms
+      - timeline
+      - changes
+      - configuration
+      - scope
+      - metrics
+      - environment
+      title: EvidenceCategory
+      description: Categories of diagnostic evidence
+    EvidenceRequest:
+      properties:
+        request_id:
+          type: string
+          title: Request Id
+          description: Unique identifier for this evidence request
+        label:
+          type: string
+          maxLength: 100
+          title: Label
+          description: Brief title for the request
+        description:
+          type: string
+          maxLength: 500
+          title: Description
+          description: What evidence is needed and why
+        category:
+          $ref: '#/components/schemas/EvidenceCategory'
+          description: Category of diagnostic evidence
+        guidance:
+          $ref: '#/components/schemas/AcquisitionGuidance'
+          description: Instructions for obtaining evidence
+        status:
+          $ref: '#/components/schemas/EvidenceStatus'
+          description: Fulfillment status
+          default: pending
+        created_at_turn:
+          type: integer
+          minimum: 0.0
+          title: Created At Turn
+          description: Turn number when request was created
+        updated_at_turn:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Updated At Turn
+          description: Turn number when last updated
+        completeness:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Completeness
+          description: Fulfillment completeness score
+          default: 0.0
+        requested_by_ooda_step:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Requested By Ooda Step
+          description: Which OODA step generated this (observe, orient, decide, act)
+        for_hypothesis_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: For Hypothesis Id
+          description: Hypothesis ID this evidence tests (Phase 4 validation)
+        priority:
+          type: integer
+          maximum: 3.0
+          minimum: 1.0
+          title: Priority
+          description: 1=critical, 2=important, 3=nice-to-have
+          default: 2
+        metadata:
+          type: object
+          title: Metadata
+          description: Additional context
+      type: object
+      required:
+      - label
+      - description
+      - category
+      - guidance
+      - created_at_turn
+      title: EvidenceRequest
+      description: 'Structured request for diagnostic evidence with acquisition guidance
+
+
+        OODA Integration: Generated during OODA Observe step, linked to hypothesis testing'
+      example:
+        category: metrics
+        completeness: 0.0
+        created_at_turn: 1
+        description: Current error rate vs baseline to quantify severity
+        guidance:
+          alternatives:
+          - Check New Relic error rate graph
+          commands:
+          - kubectl logs -l app=api --since=2h | grep '500' | wc -l
+          expected_output: 'Error count (baseline: 2-3/hour)'
+          file_locations: []
+          prerequisites:
+          - kubectl access
+          ui_locations:
+          - Datadog > API Errors Dashboard
+        label: Error rate metrics
+        request_id: er-001
+        status: pending
+    EvidenceStatus:
+      type: string
+      enum:
+      - pending
+      - partial
+      - complete
+      - blocked
+      - obsolete
+      title: EvidenceStatus
+      description: Status of evidence request fulfillment
     HTTPValidationError:
       properties:
         detail:
@@ -3722,6 +4056,18 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    InvestigationMode:
+      type: string
+      enum:
+      - active_incident
+      - post_mortem
+      title: InvestigationMode
+      description: 'Investigation approach - speed vs depth
+
+
+        DEPRECATED: Use InvestigationStrategy from investigation.py instead
+
+        Kept for backwards compatibility'
     JobStatus:
       properties:
         job_id:
@@ -3818,6 +4164,23 @@ components:
       - updated_at
       title: KnowledgeBaseDocument
       description: Response model for knowledge base document operations.
+    LogoutResponse:
+      properties:
+        message:
+          type: string
+          title: Message
+          description: Logout confirmation message
+          default: Logged out successfully
+        revoked_tokens:
+          type: integer
+          title: Revoked Tokens
+          description: Number of tokens that were revoked
+          example: 1
+      type: object
+      required:
+      - revoked_tokens
+      title: LogoutResponse
+      description: Logout response model
     Message:
       properties:
         message_id:
@@ -3828,6 +4191,8 @@ components:
           enum:
           - user
           - agent
+          - assistant
+          - system
           title: Role
         content:
           type: string
@@ -3860,7 +4225,6 @@ components:
           type: array
           title: Storage Errors
           description: Any storage-related errors encountered
-          default: []
         message_parsing_errors:
           type: integer
           title: Message Parsing Errors
@@ -3872,46 +4236,6 @@ components:
       - redis_operation_time_ms
       title: MessageRetrievalDebugInfo
       description: Debug information for message retrieval operations.
-    CaseMessagesResponse:
-      properties:
-        messages:
-          items:
-            $ref: '#/components/schemas/Message'
-          type: array
-          title: Messages
-          description: Array of conversation messages
-        total_count:
-          type: integer
-          title: Total Count
-          description: Total number of messages in the case
-        retrieved_count:
-          type: integer
-          title: Retrieved Count
-          description: Number of messages successfully retrieved
-        has_more:
-          type: boolean
-          title: Has More
-          description: Whether more messages are available for pagination
-        next_offset:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Next Offset
-          description: Offset for next page (null if no more pages)
-        debug_info:
-          anyOf:
-          - $ref: '#/components/schemas/MessageRetrievalDebugInfo'
-          - type: 'null'
-          title: Debug Info
-          description: Debug information (only when include_debug=true)
-      type: object
-      required:
-      - messages
-      - total_count
-      - retrieved_count
-      - has_more
-      title: CaseMessagesResponse
-      description: Enhanced response model for case message retrieval with debugging support.
     ParticipantRole:
       type: string
       enum:
@@ -4037,10 +4361,15 @@ components:
       - SOLUTION_READY
       - NEEDS_MORE_DATA
       - ESCALATION_REQUIRED
-      - DATA_REQUEST
-      - ERROR
+      - VISUAL_DIAGRAM
+      - COMPARISON_TABLE
       title: ResponseType
-      description: Defines the agent's primary intent for this turn.
+      description: 'Defines the agent''s primary intent for this turn - v3.0 Response-Format-Driven Design
+
+
+        9 response formats designed to serve 16 QueryIntent categories (1.8:1 ratio).
+
+        Each format has strict structural requirements for frontend parsing.'
     SearchRequest:
       properties:
         query:
@@ -4103,11 +4432,16 @@ components:
         timeout_minutes:
           anyOf:
           - type: integer
-            maximum: 1440.0
-            minimum: 1.0
+            maximum: 480.0
+            minimum: 60.0
           - type: 'null'
           title: Timeout Minutes
-          default: 30
+          description: 'Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8 hours), Default: 180 (3 hours)'
+          default: 180
+          examples:
+          - 180
+          - 240
+          - 360
         session_type:
           anyOf:
           - type: string
@@ -4127,82 +4461,62 @@ components:
             minLength: 1
           - type: 'null'
           title: Client Id
-          description: Client/device identifier for session resumption. If provided,
-            existing session for this client will be resumed.
+          description: Client/device identifier for session resumption. If provided, existing session for this client will
+            be resumed.
+          examples:
+          - 550e8400-e29b-41d4-a716-446655440000
       type: object
       title: SessionCreateRequest
       description: Request model for session creation.
     SessionResponse:
+      properties:
+        schema_version:
+          type: string
+          enum:
+          - 3.1.0
+          const: 3.1.0
+          title: Schema Version
+          default: 3.1.0
+        session_id:
+          type: string
+          title: Session Id
+        user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Id
+        client_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Client Id
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+          default: active
+        created_at:
+          type: string
+          title: Created At
+        expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expires At
+        metadata:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Metadata
+        session_resumed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Session Resumed
       type: object
       required:
       - session_id
-      - status
-      properties:
-        session_id:
-          type: string
-          description: Unique session identifier
-        user_id:
-          type: string
-          description: Associated user identifier
-          nullable: true
-        client_id:
-          type: string
-          description: Client/device identifier for session resumption
-          nullable: true
-        status:
-          type: string
-          enum:
-          - active
-          - idle
-          - expired
-          description: Current session status
-        created_at:
-          type: string
-          format: date-time
-          description: Session creation timestamp
-        session_resumed:
-          type: boolean
-          description: Indicates if this was an existing session resumed
-          nullable: true
-        session_type:
-          type: string
-          description: Type of session (e.g., troubleshooting)
-        message:
-          type: string
-          description: Status message about session creation/resumption
-        metadata:
-          type: object
-          description: Session metadata and context
-      examples:
-        new_session:
-          summary: New Session Created
-          value:
-            session_id: session_abc123
-            user_id: user_123
-            client_id: browser-client-abc123
-            status: active
-            created_at: '2025-01-15T10:00:00Z'
-            session_resumed: false
-            session_type: troubleshooting
-            message: Session created successfully
-            metadata:
-              environment: production
-              team: platform-team
-        resumed_session:
-          summary: Existing Session Resumed
-          value:
-            session_id: session_existing_456
-            user_id: user_123
-            client_id: browser-client-abc123
-            status: active
-            created_at: '2025-01-15T09:30:00Z'
-            session_resumed: true
-            session_type: troubleshooting
-            message: Session resumed successfully
-            metadata:
-              environment: production
-              team: platform-team
-              investigations_count: 2
+      - created_at
+      title: SessionResponse
+      description: Response payload for session operations - API spec compliance.
     SessionRestoreRequest:
       properties:
         restore_point:
@@ -4224,6 +4538,14 @@ components:
       - restore_point
       title: SessionRestoreRequest
       description: Request model for session restoration.
+    SessionStatus:
+      type: string
+      enum:
+      - active
+      - expired
+      - terminated
+      title: SessionStatus
+      description: Defines the status of user sessions.
     Source:
       properties:
         type:
@@ -4336,6 +4658,109 @@ components:
       - name
       title: User
       description: Represents a user in the system.
+    UserInfoResponse:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+          description: Unique user identifier
+          example: 550e8400-e29b-41d4-a716-446655440000
+        username:
+          type: string
+          title: Username
+          description: Username
+          example: john.doe
+        email:
+          type: string
+          title: Email
+          description: Email address
+          example: john.doe@faultmaven.local
+        display_name:
+          type: string
+          title: Display Name
+          description: Display name
+          example: John Doe
+        created_at:
+          type: string
+          title: Created At
+          description: Account creation timestamp (ISO format)
+          example: '2025-01-15T10:00:00Z'
+        is_dev_user:
+          type: boolean
+          title: Is Dev User
+          description: Development user flag
+          default: true
+        last_login:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Login
+          description: Last login timestamp (ISO format)
+          example: '2025-01-15T14:30:00Z'
+        token_count:
+          type: integer
+          title: Token Count
+          description: Number of active tokens for this user
+          default: 0
+          example: 2
+      type: object
+      required:
+      - user_id
+      - username
+      - email
+      - display_name
+      - created_at
+      title: UserInfoResponse
+      description: 'Extended user information response
+
+
+        Includes additional metadata for the current user.'
+    UserProfile:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+          description: Unique user identifier
+          example: 550e8400-e29b-41d4-a716-446655440000
+        username:
+          type: string
+          title: Username
+          description: Username
+          example: john.doe
+        email:
+          type: string
+          title: Email
+          description: Email address
+          example: john.doe@faultmaven.local
+        display_name:
+          type: string
+          title: Display Name
+          description: Display name
+          example: John Doe
+        created_at:
+          type: string
+          title: Created At
+          description: Account creation timestamp (ISO format)
+          example: '2025-01-15T10:00:00Z'
+        is_dev_user:
+          type: boolean
+          title: Is Dev User
+          description: Development user flag
+          default: true
+      type: object
+      required:
+      - user_id
+      - username
+      - email
+      - display_name
+      - created_at
+      title: UserProfile
+      description: 'Public user profile information
+
+
+        Represents user information safe for API responses.
+
+        Excludes sensitive information like hashed passwords.'
     ValidationError:
       properties:
         loc:
@@ -4406,432 +4831,41 @@ components:
           - type: object
           - type: 'null'
           title: Planning State
+        investigation_progress:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Investigation Progress
+          description: OODA investigation progress (phase, iteration, hypotheses)
       type: object
       required:
       - session_id
       - user
       title: ViewState
-      description: 'Comprehensive view state representing the complete frontend rendering
-        state.
+      description: 'Comprehensive view state representing the complete frontend rendering state.
 
         This is the single source of truth for what the frontend should display.'
-    ErrorResponse:
-      type: object
-      required:
-      - detail
-      properties:
-        detail:
-          type: string
-          description: Human-readable error description
-        error_type:
-          type: string
-          description: Machine-readable error classification
-          enum:
-          - ValidationError
-          - AuthenticationError
-          - AuthorizationError
-          - NotFoundError
-          - RateLimitError
-          - ServiceUnavailableError
-          - InternalServerError
-        correlation_id:
-          type: string
-          format: uuid
-          description: Unique identifier for request tracing and support
-        timestamp:
-          type: string
-          format: date-time
-          description: Error occurrence timestamp in ISO format
-        context:
-          type: object
-          description: Additional error context for debugging
-      example:
-        detail: Invalid session ID provided
-        error_type: ValidationError
-        correlation_id: 123e4567-e89b-12d3-a456-426614174000
-        timestamp: '2025-01-15T10:30:00Z'
-        context:
-          session_id: invalid_session_123
-          validation_errors:
-          - Session ID format invalid
-    TroubleshootingResponse:
-      type: object
-      required:
-      - investigation_id
-      - status
-      - session_id
-      properties:
-        investigation_id:
-          type: string
-          description: Unique identifier for this troubleshooting investigation
-        status:
-          type: string
-          enum:
-          - in_progress
-          - completed
-          - failed
-          - requires_input
-          description: Current status of the investigation
-        findings:
-          type: array
-          items:
-            type: object
-            properties:
-              type:
-                type: string
-                description: Finding category
-                enum:
-                - root_cause
-                - contributing_factor
-                - symptom
-                - recommendation
-              message:
-                type: string
-                description: Finding description
-              severity:
-                type: string
-                enum:
-                - critical
-                - high
-                - medium
-                - low
-                - info
-                description: Finding severity level
-              confidence:
-                type: number
-                minimum: 0
-                maximum: 1
-                description: AI confidence in this finding (0.0 to 1.0)
-              evidence:
-                type: array
-                items:
-                  type: string
-                description: Supporting evidence for this finding
-          description: List of findings from the investigation
-        recommendations:
-          type: array
-          items:
-            type: object
-            properties:
-              action:
-                type: string
-                description: Recommended action to take
-              priority:
-                type: string
-                enum:
-                - immediate
-                - high
-                - medium
-                - low
-                description: Action priority
-              impact:
-                type: string
-                description: Expected impact of this action
-              effort:
-                type: string
-                enum:
-                - low
-                - medium
-                - high
-                description: Estimated effort required
-          description: Recommended actions based on findings
-        session_id:
-          type: string
-          description: Session ID for this troubleshooting session
-        reasoning_trace:
-          type: array
-          items:
-            type: object
-            properties:
-              step:
-                type: string
-              reasoning:
-                type: string
-              data_sources:
-                type: array
-                items:
-                  type: string
-          description: AI reasoning process trace for transparency
-      example:
-        investigation_id: inv_789
-        status: completed
-        findings:
-        - type: root_cause
-          message: Database connection pool exhausted due to connection leak
-          severity: high
-          confidence: 0.9
-          evidence:
-          - 'Connection pool size: 20, Active connections: 20'
-          - No idle connections available
-          - Long-running transactions detected
-        recommendations:
-        - action: Increase database connection pool size to 50
-          priority: immediate
-          impact: Should restore service within 5 minutes
-          effort: low
-        - action: Review application code for connection leaks
-          priority: high
-          impact: Prevents future occurrences
-          effort: medium
-        session_id: session_db_123
-        reasoning_trace:
-        - step: symptom_analysis
-          reasoning: HTTP 500 errors correlate with database timeout errors
-          data_sources:
-          - application_logs
-          - database_metrics
-        - step: hypothesis_formation
-          reasoning: Connection pool exhaustion is most likely cause given metrics
-          data_sources:
-          - connection_pool_metrics
-          - transaction_logs
-    DataIngestionResponse:
-      type: object
-      required:
-      - ingestion_id
-      - status
-      properties:
-        ingestion_id:
-          type: string
-          description: Unique identifier for this data ingestion
-        status:
-          type: string
-          enum:
-          - processing
-          - completed
-          - failed
-          description: Current processing status
-        file_info:
-          type: object
-          properties:
-            filename:
-              type: string
-            size_bytes:
-              type: integer
-            file_type:
-              type: string
-            detected_format:
-              type: string
-          description: Information about the uploaded file
-        processing_results:
-          type: object
-          properties:
-            lines_processed:
-              type: integer
-            errors_found:
-              type: integer
-            insights_extracted:
-              type: integer
-            processing_time_ms:
-              type: integer
-          description: Results of data processing
-      example:
-        ingestion_id: ingest_456
-        status: completed
-        file_info:
-          filename: app.log
-          size_bytes: 1048576
-          file_type: application/log
-          detected_format: json_logs
-        processing_results:
-          lines_processed: 15420
-          errors_found: 23
-          insights_extracted: 8
-          processing_time_ms: 2340
-    AuthTokenResponse:
-      properties:
-        access_token:
-          type: string
-          title: Access Token
-          description: Bearer access token
-          example: 550e8400-e29b-41d4-a716-446655440000
-        token_type:
-          type: string
-          title: Token Type
-          description: Token type (always 'bearer')
-          default: bearer
-        expires_in:
-          type: integer
-          title: Expires In
-          description: Token expiration time in seconds
-          example: 86400
-        session_id:
-          type: string
-          title: Session Id
-          description: Session identifier for multi-turn conversations
-          example: session-550e8400-e29b-41d4-a716-446655440000
-        user:
-          $ref: '#/components/schemas/UserProfile'
-          description: Authenticated user profile
-      type: object
-      required:
-      - access_token
-      - expires_in
-      - session_id
-      - user
-      title: AuthTokenResponse
-      description: 'Authentication token response
-
-
-        Standard OAuth2-compatible token response format.
-
-        Includes token, expiration, and user information.'
-    UserProfile:
-      properties:
-        user_id:
-          type: string
-          title: User Id
-          description: Unique user identifier
-          example: 550e8400-e29b-41d4-a716-446655440000
-        username:
-          type: string
-          title: Username
-          description: Username
-          example: john.doe
-        email:
-          type: string
-          title: Email
-          description: Email address
-          example: john.doe@faultmaven.local
-        display_name:
-          type: string
-          title: Display Name
-          description: Display name
-          example: John Doe
-        created_at:
-          type: string
-          title: Created At
-          description: Account creation timestamp (ISO format)
-          example: '2025-01-15T10:00:00Z'
-        is_dev_user:
-          type: boolean
-          title: Is Dev User
-          description: Development user flag
-          default: true
-      type: object
-      required:
-      - user_id
-      - username
-      - email
-      - display_name
-      - created_at
-      title: UserProfile
-      description: 'Public user profile information
-
-
-        Represents user information safe for API responses.
-
-        Excludes sensitive information like hashed passwords.'
-    UserInfoResponse:
-      properties:
-        user_id:
-          type: string
-          title: User Id
-          description: Unique user identifier
-          example: 550e8400-e29b-41d4-a716-446655440000
-        username:
-          type: string
-          title: Username
-          description: Username
-          example: john.doe
-        email:
-          type: string
-          title: Email
-          description: Email address
-          example: john.doe@faultmaven.local
-        display_name:
-          type: string
-          title: Display Name
-          description: Display name
-          example: John Doe
-        created_at:
-          type: string
-          title: Created At
-          description: Account creation timestamp (ISO format)
-          example: '2025-01-15T10:00:00Z'
-        is_dev_user:
-          type: boolean
-          title: Is Dev User
-          description: Development user flag
-          default: true
-        last_login:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Last Login
-          description: Last login timestamp (ISO format)
-          example: '2025-01-15T14:30:00Z'
-        token_count:
-          type: integer
-          title: Token Count
-          description: Number of active tokens for this user
-          default: 0
-          example: 2
-      type: object
-      required:
-      - user_id
-      - username
-      - email
-      - display_name
-      - created_at
-      title: UserInfoResponse
-      description: 'Extended user information response
-
-
-        Includes additional metadata for the current user.'
-    LogoutResponse:
-      properties:
-        message:
-          type: string
-          title: Message
-          description: Logout confirmation message
-          default: Logged out successfully
-        revoked_tokens:
-          type: integer
-          title: Revoked Tokens
-          description: Number of tokens that were revoked
-          example: 1
-      type: object
-      required:
-      - revoked_tokens
-      title: LogoutResponse
-      description: Logout response model
-  securitySchemes:
-    ApiKeyAuth:
-      type: apiKey
-      in: header
-      name: X-API-Key
-      description: API key authentication (planned for future implementation)
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: UUID
-      description: Bearer token authentication using UUID tokens from /auth/dev-login
-  headers:
-    X-Correlation-ID:
-      description: Unique identifier for request tracing and debugging
-      schema:
-        type: string
-        format: uuid
-      example: 550e8400-e29b-41d4-a716-446655440000
-externalDocs:
-  description: FaultMaven Documentation
-  url: https://docs.faultmaven.ai
-tags:
-- name: troubleshooting
-  description: AI-powered troubleshooting operations
-  externalDocs:
-    description: Troubleshooting Guide
-    url: https://docs.faultmaven.ai/troubleshooting
-- name: data_ingestion
-  description: File upload and data processing operations
-  externalDocs:
-    description: Data Ingestion Guide
-    url: https://docs.faultmaven.ai/data-ingestion
-- name: knowledge_base
-  description: Knowledge base and document management operations
-  externalDocs:
-    description: Knowledge Base Guide
-    url: https://docs.faultmaven.ai/knowledge-base
-- name: session_management
-  description: Session lifecycle and management operations
+    faultmaven__models__case__CaseStatus:
+      type: string
+      enum:
+      - active
+      - investigating
+      - solved
+      - resolved
+      - stalled
+      - archived
+      - shared
+      title: CaseStatus
+      description: Case lifecycle status enumeration
+    faultmaven__models__evidence__CaseStatus:
+      type: string
+      enum:
+      - intake
+      - in_progress
+      - resolved
+      - mitigated
+      - stalled
+      - abandoned
+      - closed
+      title: CaseStatus
+      description: Current case investigation state

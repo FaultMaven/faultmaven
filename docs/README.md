@@ -68,9 +68,8 @@ Start here:
 
 ### Architecture Deep-Dive
 - [Architecture Overview](./architecture/architecture-overview.md) - Complete system design
-- [Agentic Framework](./architecture/agentic-framework-design-specification.md) - 7-component AI framework
+- [Investigation Framework](./architecture/investigation-phases-and-ooda-integration.md) - ✅ **IMPLEMENTED** - 7-phase OODA investigation framework
 - [Dependency Injection](./architecture/dependency-injection-system.md) - DI container and interfaces
-- [Query Classification](./architecture/query-classification-and-prompt-engineering.md) - Intent taxonomy and prompts
 
 ---
 

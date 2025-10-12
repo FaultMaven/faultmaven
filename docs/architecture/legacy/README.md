@@ -63,9 +63,8 @@ Historical architecture documents that have been superseded by newer designs. Th
 
 ## Related Documentation
 
-- [Architecture Evolution](../architecture-evolution.md) - Complete evolution history
-- [Agentic Framework Migration Guide](../agentic-framework-migration-guide.md) - Migration from legacy to current framework
 - [Architecture Overview v2.0](../architecture-overview.md) - Current architecture
+- [Investigation Phases and OODA Integration](../investigation-phases-and-ooda-integration.md) - Current investigation framework (v3.2.0)
 
 ---
 

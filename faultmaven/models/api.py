@@ -123,6 +123,12 @@ class ViewState(BaseModel):
     memory_context: Optional[Dict[str, Any]] = None  # Agent memory context
     planning_state: Optional[Dict[str, Any]] = None  # Agent planning state
 
+    # OODA Framework Progress (v3.2.0)
+    investigation_progress: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="OODA investigation progress (phase, iteration, hypotheses)"
+    )
+
 # --- Main Payloads ---
 
 class QueryRequest(BaseModel):

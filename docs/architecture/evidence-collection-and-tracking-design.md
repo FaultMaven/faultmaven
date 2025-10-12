@@ -1,11 +1,34 @@
 # Evidence Collection and Tracking Design
 ## Data Models and Behavioral Specification v2.1
 
-**Document Type:** Component Specification (Evidence Layer)  
-**Version:** 2.1  
-**Last Updated:** 2025-10-10  
-**Status:** Authoritative Specification  
+**Document Type:** Component Specification (Evidence Layer)
+**Version:** 2.1
+**Last Updated:** 2025-10-11
+**Status:** ✅ **IMPLEMENTED** (v3.2.0)
 **Parent Framework:** [Investigation Phases and OODA Integration Framework](./investigation-phases-and-ooda-integration.md)
+
+## Implementation Status
+
+**Implementation Date:** 2025-10-11
+**Implementation Version:** v3.2.0
+**Status:** Integrated with OODA framework
+
+**Implementation Summary:**
+- ✅ EvidenceRequest model with AcquisitionGuidance implemented
+- ✅ Evidence Layer integrated into InvestigationState hierarchy
+- ✅ 5-dimensional classification schemas defined (models/evidence.py)
+- ✅ Phase-specific evidence request generation in all phase handlers
+- ✅ Evidence tracking across OODA iterations
+- ✅ ProblemConfirmation used in Phase 0 (Intake)
+- ✅ Investigation strategies (Active Incident, Post-Mortem) implemented
+
+**Implementation Files:**
+- Evidence Models: `faultmaven/models/evidence.py`
+- Evidence Layer: `faultmaven/models/investigation.py` (EvidenceLayer)
+- Phase Handlers: `faultmaven/services/agentic/phase_handlers/*.py` (evidence requests)
+- Strategy Selector: `faultmaven/core/investigation/strategy_selector.py`
+
+**Note:** Evidence collection schemas from this design are now used by phase handlers during OODA Observe steps to generate structured evidence requests.
 
 ---
 

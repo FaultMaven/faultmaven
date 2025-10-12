@@ -228,19 +228,21 @@ class AgentService(BaseService):
         if not case:
             raise ValueError(f"Case {case_id} not found")
 
-        # Use sub-agent orchestrator (Anthropic's context engineering pattern)
-        from faultmaven.services.agentic.doctor_patient.orchestrator_integration import (
-            process_turn_with_orchestrator
+        # Use OODA framework orchestrator (v3.2.0)
+        from faultmaven.services.agentic.orchestration.ooda_integration import (
+            process_turn_with_framework_selection
         )
 
         try:
-            # Process turn with sub-agent orchestrator
-            # Uses specialized phase agents with 49% token reduction vs monolithic
-            llm_response, updated_state = await process_turn_with_orchestrator(
+            # Process turn with OODA framework
+            # Uses phase-based investigation with flexible OODA cycles
+            # Feature flag OODA_FRAMEWORK_ENABLED controls rollout
+            llm_response, updated_state = await process_turn_with_framework_selection(
                 user_query=sanitized_query,
                 case=case,
                 llm_client=self._llm,
-                session_id=request.session_id
+                session_id=request.session_id,
+                state_manager=self._session_service  # StateManager for persistence
             )
 
             # Update case diagnostic state
@@ -251,8 +253,12 @@ class AgentService(BaseService):
                 user_id=None  # Auth handled at API layer
             )
 
-            # Create view state
-            view_state = await self._create_view_state(case_id, request.session_id)
+            # Create view state with investigation progress
+            view_state = await self._create_view_state(
+                case_id=case_id,
+                session_id=request.session_id,
+                diagnostic_state=updated_state
+            )
 
             # Build metadata
             processing_metadata = {
@@ -580,9 +586,25 @@ We encountered a technical problem while processing your troubleshooting request
             plan=None
         )
 
-    async def _create_view_state(self, case_id: str, session_id: str) -> ViewState:
-        """Create view state for response"""
+    async def _create_view_state(
+        self,
+        case_id: str,
+        session_id: str,
+        diagnostic_state: Optional[Any] = None
+    ) -> ViewState:
+        """Create view state for response with optional investigation progress"""
         try:
+            # Get investigation progress if available
+            investigation_progress = None
+            if diagnostic_state and diagnostic_state.investigation_state_id:
+                # Get investigation state from state manager
+                investigation_state = await self._session_service.get_investigation_state(session_id)
+                if investigation_state:
+                    from faultmaven.services.agentic.orchestration.ooda_integration import (
+                        get_investigation_progress_summary
+                    )
+                    investigation_progress = get_investigation_progress_summary(investigation_state)
+
             return ViewState(
                 session_id=session_id,
                 user={
@@ -605,7 +627,8 @@ We encountered a technical problem while processing your troubleshooting request
                 uploaded_data=[],
                 show_case_selector=False,
                 show_data_upload=True,
-                loading_state=None
+                loading_state=None,
+                investigation_progress=investigation_progress
             )
         except Exception:
             # Fallback view state

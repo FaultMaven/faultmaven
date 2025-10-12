@@ -1,10 +1,30 @@
 # Case Lifecycle Management
 ## Case Status State Machine and Transition Rules
 
-**Document Type:** Component Specification  
-**Version:** 1.0  
-**Last Updated:** 2025-10-10  
-**Status:** Design Specification
+**Document Type:** Component Specification
+**Version:** 1.0
+**Last Updated:** 2025-10-11
+**Status:** ✅ **IMPLEMENTED** (v3.2.0)
+
+## Implementation Status
+
+**Implementation Date:** 2025-10-11
+**Implementation Version:** v3.2.0
+**Status:** Integrated with OODA framework
+
+**Implementation Summary:**
+- ✅ Case status state machine implemented in investigation lifecycle
+- ✅ Status transitions handled by phase handlers
+- ✅ InvestigationLifecycle.case_status field tracks current state
+- ✅ Stall detection logic ready for implementation
+- ✅ Status updates integrated with phase completion
+
+**Implementation Files:**
+- Lifecycle Model: `faultmaven/models/investigation.py` (InvestigationLifecycle)
+- Phase Handlers: All handlers update case_status on phase transitions
+- Solution Handler: Sets status to "resolved" on fix verification
+
+**Note:** Case status (intake, in_progress, resolved, etc.) is orthogonal to investigation phases (0-6) and tracks overall case lifecycle state.
 
 ---
 
@@ -418,12 +438,201 @@ else:
 
 ---
 
+## Escalation Management
+
+### Escalation Triggers
+
+Escalation is recommended when investigation reaches impasse or requires specialized expertise.
+
+**5 Escalation Conditions**:
+
+1. **Too Many Iterations Without Progress**
+   - ≥10 OODA iterations without root cause identification
+   - Trigger: Exhausted reasonable investigation paths
+   - Action: Escalate to senior SRE or specialist
+
+2. **Critical Evidence Blocked**
+   - Cannot access required logs, configs, or metrics
+   - Trigger: User reports "cannot access", "permission denied", "no access"
+   - Action: Escalate to team with proper access
+
+3. **Multiple Mitigation Failures** (Active Incident only)
+   - ≥3 mitigation attempts failed in Phase 5
+   - Trigger: Service still down after multiple fix attempts
+   - Action: Escalate to on-call lead or incident commander
+
+4. **User Explicit Request**
+   - User explicitly asks to escalate
+   - Trigger: "escalate" keyword in user input
+   - Action: Immediately offer escalation guidance
+
+5. **Investigation Stalled** (No Progress)
+   - No confidence increase in last 3 OODA iterations
+   - No new meaningful evidence in 5 turns
+   - Trigger: Stall detection algorithm
+   - Action: Offer alternatives or escalate
+
+### Escalation Decision Algorithm
+
+```python
+def should_escalate(state: InvestigationState) -> tuple[bool, Optional[str]]:
+    """
+    Determine if investigation should be escalated
+    
+    Returns:
+        (should_escalate, reason)
+    """
+    
+    # Condition 1: Too many iterations
+    if state.current_ooda_iteration >= 10:
+        return True, "Unable to identify root cause after 10 OODA iterations"
+    
+    # Condition 2: Critical evidence blocked
+    if _is_critical_evidence_blocked(state):
+        return True, "Critical evidence required but inaccessible"
+    
+    # Condition 3: Multiple mitigation failures
+    if state.current_phase == 5 and state.investigation_strategy == "active_incident":
+        mitigation_attempts = _count_mitigation_attempts(state)
+        if mitigation_attempts >= 3:
+            return True, f"{mitigation_attempts} mitigation attempts failed"
+    
+    # Condition 4: User requested
+    last_input = state.conversation_history[-1] if state.conversation_history else None
+    if last_input and "escalate" in last_input.get("content", "").lower():
+        return True, "User requested escalation"
+    
+    # Condition 5: Investigation stalled
+    if _is_investigation_stalled(state):
+        return True, "No progress in last 3 iterations"
+    
+    return False, None
+```
+
+### Escalation Context Generation
+
+When escalation is triggered, provide comprehensive handoff context:
+
+```python
+def generate_escalation_context(state: InvestigationState) -> Dict:
+    """Generate escalation handoff context"""
+    
+    return {
+        # Problem summary
+        "problem_summary": state.anomaly_frame.statement if state.anomaly_frame else state.problem_statement,
+        "severity": state.anomaly_frame.severity if state.anomaly_frame else "unknown",
+        
+        # Investigation progress
+        "investigation_duration": calculate_duration(state),
+        "evidence_collected": len(state.evidence_items),
+        "hypotheses_tested": sum(1 for h in state.hypotheses if h.tested),
+        "current_phase": state.current_phase,
+        "ooda_iterations": state.current_ooda_iteration,
+        
+        # Current status
+        "mitigation_attempted": state.mitigation_applied is not None,
+        "case_status": state.case_status,
+        
+        # Escalation routing
+        "recommended_escalation_target": determine_escalation_target(state),
+        "summary_for_escalation": generate_escalation_summary(state)
+    }
+```
+
+### Intelligent Escalation Routing
+
+Route escalation to appropriate team based on affected components:
+
+```python
+def determine_escalation_target(state: InvestigationState) -> str:
+    """Determine who/what to escalate to based on context"""
+    
+    if state.anomaly_frame:
+        components = state.anomaly_frame.affected_components
+        
+        # Database-related issues
+        if any("database" in c.lower() or "db" in c.lower() for c in components):
+            return "Database Team / DBA"
+        
+        # Network-related issues
+        if any("network" in c.lower() for c in components):
+            return "Network Operations / Infrastructure Team"
+        
+        # Kubernetes/container issues
+        if any("kubernetes" in c.lower() or "k8s" in c.lower() or "docker" in c.lower() for c in components):
+            return "Platform Team / SRE"
+        
+        # Cloud provider issues
+        if any("aws" in c.lower() or "azure" in c.lower() or "gcp" in c.lower() for c in components):
+            return "Cloud Infrastructure Team"
+    
+    # Default escalation
+    return "Senior SRE / On-Call Lead"
+```
+
+### Escalation Summary Format
+
+```
+⚠️ ESCALATION RECOMMENDED
+
+Problem: API returning 500 errors in EU region
+Severity: High
+Duration: 1h 23m
+
+Investigation Progress:
+• Evidence collected: 8 items
+• Hypotheses tested: 4
+• Current phase: 4 (Validation)
+• OODA iterations: 7
+
+What we've tried:
+  ✗ Hypothesis #1: Database pool exhaustion (refuted by metrics)
+  ✗ Hypothesis #2: Memory leak (inconclusive, need heap dump)
+  ✗ Hypothesis #3: Network issue (refuted by connectivity tests)
+  ? Hypothesis #4: Rate limiting bug (testing blocked - need production access)
+
+Blocking Issue:
+Cannot access production logs and metrics. Need elevated permissions.
+
+Recommended Contact:
+Platform Team / SRE with production access
+
+Next Steps:
+Share this conversation history for full context.
+```
+
+### Escalation State Transition
+
+When escalation occurs, case status should reflect it:
+
+```python
+# Mark case as requiring escalation
+state.escalation_recommended = True
+state.escalation_reason = "Critical evidence blocked"
+state.escalation_target = "Database Team"
+
+# Case status remains IN_PROGRESS or transitions to STALLED
+if critical_blocking:
+    state.case_status = CaseStatus.STALLED
+```
+
+**Note**: Escalation doesn't automatically close the case. User may choose to:
+- Continue investigation with new information
+- Hand off to escalation target (transition to ABANDONED or CLOSED)
+- Wait for access and resume (STALLED → IN_PROGRESS)
+
+---
+
 ## Document Metadata
 
 **Document Type**: Component Specification  
 **Extracted From**: Evidence-Centric Troubleshooting Design v2.0  
 **Related To**: Investigation Phases Framework, Evidence Collection Design  
 **Purpose**: Centralize case status management separate from investigation phase progression
+
+**Version History**:
+- v1.0 (2025-10-10): Initial extraction with status state machine
+- v1.1 (2025-10-11): Added escalation management section
 
 ---
 

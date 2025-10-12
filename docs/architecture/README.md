@@ -32,9 +32,8 @@ This is the authoritative architecture document that provides:
 
 | Document | Purpose |
 |----------|---------|
-| **[Agentic Framework Design](./agentic-framework-design-specification.md)** | 7-component AI agent architecture |
+| **[Investigation Phases and OODA Integration](./investigation-phases-and-ooda-integration.md)** | ✅ **IMPLEMENTED** - 7-phase investigation framework |
 | **[Agent Orchestration](./agent_orchestration_design.md)** | Agent workflow coordination |
-| **[Query Classification & Prompts](./query-classification-and-prompt-engineering.md)** | Intent taxonomy, ResponseType formats |
 | **[Data Submission Design](./data-submission-design.md)** | Data upload handling (10K limit) |
 
 ### Infrastructure
@@ -58,9 +57,8 @@ This is the authoritative architecture document that provides:
 
 | Document | Purpose |
 |----------|---------|
-| **[Architecture Evolution](./architecture-evolution.md)** | Design history and milestones |
-| **[Agentic Framework Migration](./agentic-framework-migration-guide.md)** | Framework migration guide |
 | **[Configuration Refactor](./configuration-system-refactor-design.md)** | Config system evolution |
+| **[Prompt Engineering Architecture](./prompt-engineering-architecture.md)** | Multi-layer prompts, context management, token optimization |
 
 ---
 

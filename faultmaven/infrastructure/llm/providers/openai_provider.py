@@ -5,9 +5,10 @@ This module implements the OpenAI LLM provider for GPT models.
 """
 
 import aiohttp
-from typing import List, Optional
+import json
+from typing import List, Optional, Dict, Any
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -35,28 +36,50 @@ class OpenAIProvider(BaseLLMProvider):
         model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
         **kwargs
     ) -> LLMResponse:
-        """Generate response using OpenAI API"""
-        
+        """Generate response using OpenAI API
+
+        Args:
+            prompt: Input prompt
+            model: Specific model to use
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            tools: List of function/tool definitions for function calling
+            tool_choice: Control tool usage ("auto", "none", or specific tool)
+            **kwargs: Additional OpenAI-specific parameters
+        """
+
         self._start_timing()
-        
+
         # Get effective model
         effective_model = self.get_effective_model(model)
-        
+
         # Prepare request
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
-        
+
         payload = {
             "model": effective_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        
+
+        # Add function calling support
+        if tools:
+            payload["tools"] = tools
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
+
+        # Add response format if specified in kwargs
+        if "response_format" in kwargs:
+            payload["response_format"] = kwargs.pop("response_format")
+
         # Add any additional kwargs
         payload.update(kwargs)
         
@@ -76,20 +99,44 @@ class OpenAIProvider(BaseLLMProvider):
                     )
                 
                 data = await response.json()
-                
+
                 # Extract response content
                 if not data.get("choices") or len(data["choices"]) == 0:
                     raise Exception("OpenAI API returned no choices")
-                
-                content = data["choices"][0]["message"]["content"]
-                content = self._validate_response_content(content)
-                
+
+                message = data["choices"][0]["message"]
+
+                # Extract content (may be None if tool_calls present)
+                content = message.get("content", "")
+                if content:
+                    content = self._validate_response_content(content)
+
+                # Extract tool calls if present
+                tool_calls = None
+                if "tool_calls" in message and message["tool_calls"]:
+                    tool_calls = [
+                        ToolCall(
+                            id=tc["id"],
+                            type=tc["type"],
+                            function=tc["function"]
+                        )
+                        for tc in message["tool_calls"]
+                    ]
+
+                    # If tool_calls present but no content, parse function arguments as content
+                    if not content and tool_calls:
+                        # Use the first tool call's arguments as JSON content
+                        try:
+                            content = tool_calls[0].function.get("arguments", "{}")
+                        except Exception:
+                            content = "{}"
+
                 # Extract token usage
                 usage = data.get("usage", {})
                 tokens_used = usage.get("total_tokens", 0)
-                
+
                 response_time = self._get_response_time_ms()
-                
+
                 return LLMResponse(
                     content=content,
                     confidence=self.config.confidence_score,
@@ -97,4 +144,5 @@ class OpenAIProvider(BaseLLMProvider):
                     model=effective_model,
                     tokens_used=tokens_used,
                     response_time_ms=response_time,
+                    tool_calls=tool_calls,
                 )

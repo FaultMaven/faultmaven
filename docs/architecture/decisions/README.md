@@ -21,9 +21,8 @@ Each ADR should follow the standard format:
 
 ## Related Documentation
 
-- [Architecture Evolution](../architecture-evolution.md) - Historical architecture changes
-- [Agentic Framework Migration](../agentic-framework-migration-guide.md) - Major framework migration decision
 - [Configuration System Refactor](../configuration-system-refactor-design.md) - Configuration centralization decision
+- [Investigation Phases and OODA Integration](../investigation-phases-and-ooda-integration.md) - Current investigation framework design
 
 ---
 
