@@ -1465,6 +1465,7 @@ async def submit_case_query(
             except asyncio.TimeoutError:
                 logger.error(f"AgentService processing timed out for case {case_id} after 45 seconds")
                 # Timeout fallback response
+                # IMPORTANT: Must include ALL required v3.1.0+ fields
                 agent_response_dict = {
                     "schema_version": "3.1.0",
                     "content": "Based on the available information: Discovered 2 available capabilities. Intent: information. Complexity: simple. I'm processing your request but it's taking longer than expected. Let me provide a quick response: I can help you troubleshoot this issue. Could you provide more specific details about what you're experiencing?",
@@ -1495,13 +1496,18 @@ async def submit_case_query(
                         "loading_state": None
                     },
                     "sources": [],
-                    "plan": None
+                    "plan": None,
+                    # v3.1.0+ REQUIRED fields (added to fix frontend error)
+                    "evidence_requests": [],
+                    "investigation_mode": "active_incident",
+                    "case_status": "intake"
                 }
 
             except asyncio.TimeoutError:
                 processing_time = time.time() - start_time
                 logger.error(f"⏰ API Route TIMEOUT: Query processing exceeded 35s timeout ({processing_time:.2f}s) for case {case_id}")
                 # Return timeout fallback response
+                # IMPORTANT: Must include ALL required v3.1.0+ fields
                 agent_response_dict = {
                     "schema_version": "3.1.0",
                     "content": "⏳ **Request Processing Timeout**\n\nYour request took longer than expected to process (>35 seconds). This might be due to:\n\n• High system load or complex query processing\n• Temporary connectivity issues with AI services\n• Large data processing requirements\n\n**Please try:**\n• Submitting your request again\n• Breaking complex queries into smaller parts\n• Waiting a few moments before retrying",
@@ -1533,12 +1539,17 @@ async def submit_case_query(
                         }
                     },
                     "sources": [{"type": "TIMEOUT", "content": f"API route timeout after {processing_time:.2f}s", "metadata": {"timeout_type": "api_route", "timeout_seconds": 35}}],
-                    "plan": None
+                    "plan": None,
+                    # v3.1.0+ REQUIRED fields (added to fix frontend error)
+                    "evidence_requests": [],
+                    "investigation_mode": "active_incident",
+                    "case_status": "intake"
                 }
 
             except Exception as e:
                 logger.error(f"AgentService processing failed for case {case_id}: {e}")
                 # Fallback to graceful error response instead of complete failure
+                # IMPORTANT: Must include ALL required v3.1.0+ fields
                 agent_response_dict = {
                     "schema_version": "3.1.0",
                     "content": "I'm having trouble processing your request right now. Please try again in a few moments.",
@@ -1569,7 +1580,11 @@ async def submit_case_query(
                         "loading_state": None
                     },
                     "sources": [],
-                    "plan": None
+                    "plan": None,
+                    # v3.1.0+ REQUIRED fields (added to fix frontend error)
+                    "evidence_requests": [],
+                    "investigation_mode": "active_incident",
+                    "case_status": "intake"
                 }
             
             # Store idempotency result if key provided
