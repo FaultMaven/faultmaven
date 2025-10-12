@@ -228,17 +228,19 @@ class AgentService(BaseService):
         if not case:
             raise ValueError(f"Case {case_id} not found")
 
-        # TODO: OODA framework orchestrator (v3.2.0) - DISABLED due to incomplete implementation
-        # The ooda_integration module has broken imports (StructuredLLMResponse not defined)
-        # Temporarily using legacy doctor/patient system until OODA is fully implemented
+        # OODA framework orchestrator (v3.2.0) - PRIMARY SYSTEM
+        from faultmaven.services.agentic.orchestration.ooda_integration import (
+            process_turn_with_framework_selection
+        )
 
-        # FALLBACK: Use legacy process_turn_with_orchestrator
         try:
-            llm_response, updated_state = await self._process_turn_with_orchestrator(
+            llm_response, updated_state = await process_turn_with_framework_selection(
                 user_query=sanitized_query,
                 case=case,
                 llm_client=self._llm,
-                session_id=request.session_id
+                session_id=request.session_id,
+                state_manager=self._state_manager,
+                use_legacy=False  # Set to True to test legacy doctor/patient system
             )
 
             # Update case diagnostic state
@@ -595,12 +597,11 @@ We encountered a technical problem while processing your troubleshooting request
             if diagnostic_state and diagnostic_state.investigation_state_id:
                 # Get investigation state from state manager
                 investigation_state = await self._session_service.get_investigation_state(session_id)
-                # TODO: OODA investigation progress - DISABLED until implementation complete
-                # if investigation_state:
-                #     from faultmaven.services.agentic.orchestration.ooda_integration import (
-                #         get_investigation_progress_summary
-                #     )
-                #     investigation_progress = get_investigation_progress_summary(investigation_state)
+                if investigation_state:
+                    from faultmaven.services.agentic.orchestration.ooda_integration import (
+                        get_investigation_progress_summary
+                    )
+                    investigation_progress = get_investigation_progress_summary(investigation_state)
 
             return ViewState(
                 session_id=session_id,
