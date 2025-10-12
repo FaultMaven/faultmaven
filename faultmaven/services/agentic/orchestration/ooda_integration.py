@@ -16,7 +16,7 @@ from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.models.agentic import StructuredLLMResponse
 
 from faultmaven.services.agentic.orchestration.phase_orchestrator import PhaseOrchestrator
-from faultmaven.services.agentic.management.state_manager import StateManager
+from faultmaven.services.agentic.management.state_manager import AgentAgentStateManager
 
 
 async def process_turn_with_ooda(
@@ -24,7 +24,7 @@ async def process_turn_with_ooda(
     case: Case,
     llm_client: ILLMProvider,
     session_id: str,
-    state_manager: Optional[StateManager] = None,
+    state_manager: Optional[AgentStateManager] = None,
 ) -> Tuple[StructuredLLMResponse, CaseDiagnosticState]:
     """Process conversation turn using OODA framework
 
@@ -107,7 +107,7 @@ async def _get_or_initialize_investigation_state(
     session_id: str,
     user_query: str,
     llm_client: ILLMProvider,
-    state_manager: StateManager,
+    state_manager: AgentStateManager,
 ) -> InvestigationState:
     """Get existing or initialize new investigation state
 
@@ -156,7 +156,7 @@ async def _get_or_initialize_investigation_state(
 async def _build_conversation_history(
     case: Case,
     session_id: str,
-    state_manager: StateManager,
+    state_manager: AgentStateManager,
     max_messages: int = 5,
 ) -> str:
     """Build conversation history for context
@@ -366,7 +366,7 @@ async def process_turn_with_framework_selection(
     case: Case,
     llm_client: ILLMProvider,
     session_id: str,
-    state_manager: Optional[StateManager] = None,
+    state_manager: Optional[AgentStateManager] = None,
     use_legacy: bool = False,
 ) -> Tuple[StructuredLLMResponse, CaseDiagnosticState]:
     """Process turn with OODA framework (default) or legacy fallback
