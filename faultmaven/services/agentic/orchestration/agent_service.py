@@ -149,6 +149,7 @@ class AgentService(BaseService):
         self._session_service = session_service
         self._case_service = case_service
         self._settings = settings
+        self._state_manager = kwargs.get('agent_state_manager')
 
         # Initialize circuit breaker for LLM calls
         self.circuit_breaker = LLMCircuitBreaker(
