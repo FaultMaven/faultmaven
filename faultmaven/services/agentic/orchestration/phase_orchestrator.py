@@ -328,10 +328,7 @@ class PhaseOrchestrator:
                 anomaly_frame=None,
                 anchoring_detected=False,
             ),
-            evidence=EvidenceLayer(
-                evidence_requests=[],
-                evidence_items=[],
-            ),
+            evidence=EvidenceLayer(),  # Uses default_factory
             memory=MemoryLayer(),  # Uses default_factory for hierarchical_memory
         )
 

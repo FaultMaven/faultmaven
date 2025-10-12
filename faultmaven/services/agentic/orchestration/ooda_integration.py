@@ -343,7 +343,7 @@ def get_investigation_progress_summary(
             "validated": validated.statement if validated else None,
             "validated_confidence": validated.likelihood if validated else None,
         },
-        "evidence_collected": len(investigation_state.evidence.evidence_items),
+        "evidence_collected": len(investigation_state.evidence.evidence_provided),
         "evidence_requested": len(investigation_state.evidence.evidence_requests),
     }
 

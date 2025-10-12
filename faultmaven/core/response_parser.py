@@ -226,7 +226,13 @@ class ResponseParser:
         """
         try:
             # Start with answer as the entire text
-            extracted = {"answer": response_text.strip()}
+            answer_text = response_text.strip()
+
+            # If empty, return None to trigger fallback
+            if not answer_text:
+                return None
+
+            extracted = {"answer": answer_text}
 
             # Extract clarifying questions (look for numbered lists or bullet points)
             questions = self._extract_questions(response_text)

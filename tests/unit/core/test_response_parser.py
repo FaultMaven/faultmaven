@@ -34,9 +34,9 @@ class TestTier1FunctionCalling:
             "clarifying_questions": ["What error message do you see?"],
             "suggested_actions": [
                 {
-                    "description": "Check system logs",
-                    "reasoning": "Logs may contain error details",
-                    "priority": "high",
+                    "action_type": "command",
+                    "label": "Check logs",
+                    "description": "Check system logs for error details",
                 }
             ],
             "suggested_commands": [],
@@ -82,6 +82,7 @@ class TestTier1FunctionCalling:
                     "statement": "Network connectivity issue",
                     "likelihood": 0.75,
                     "rationale": "Timeout patterns suggest network problems",
+                    "testing_approach": "Check network logs and run traceroute",
                 }
             ],
             "phase_complete": False,
