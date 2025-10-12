@@ -16,7 +16,7 @@ from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.models.agentic import StructuredLLMResponse
 
 from faultmaven.services.agentic.orchestration.phase_orchestrator import PhaseOrchestrator
-from faultmaven.services.agentic.management.state_manager import AgentAgentStateManager
+from faultmaven.services.agentic.management.state_manager import AgentStateManager
 
 
 async def process_turn_with_ooda(
@@ -259,9 +259,9 @@ def _extract_reasoning_from_state(investigation_state: InvestigationState) -> Op
         )
 
     # Memory insights
-    if investigation_state.memory.persistent_insights:
+    if investigation_state.memory.hierarchical_memory.persistent_insights:
         reasoning_parts.append(
-            f"Key insights: {len(investigation_state.memory.persistent_insights)}"
+            f"Key insights: {len(investigation_state.memory.hierarchical_memory.persistent_insights)}"
         )
 
     return " | ".join(reasoning_parts) if reasoning_parts else None

@@ -332,12 +332,7 @@ class PhaseOrchestrator:
                 evidence_requests=[],
                 evidence_items=[],
             ),
-            memory=MemoryLayer(
-                hot_memory=[],
-                warm_memory=[],
-                cold_memory=[],
-                persistent_insights=[],
-            ),
+            memory=MemoryLayer(),  # Uses default_factory for hierarchical_memory
         )
 
         # Store problem confirmation if detected
