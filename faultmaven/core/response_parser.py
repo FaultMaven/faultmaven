@@ -47,13 +47,15 @@ class ResponseParser:
     """
 
     def __init__(self):
-        """Initialize response parser"""
+        """Initialize response parser with detailed statistics tracking"""
         self.stats = {
-            "tier1_success": 0,
-            "tier2_success": 0,
-            "tier3_success": 0,
-            "total_failures": 0,
-            "total_attempts": 0,
+            "tier1_success": 0,                    # Function calling succeeded
+            "tier2_direct_json": 0,                # Pure JSON parsed successfully
+            "tier2_markdown_extraction": 0,        # Had to extract from markdown blocks
+            "tier2_brace_extraction": 0,           # Had to extract from {...} pattern
+            "tier3_success": 0,                    # Heuristic extraction succeeded
+            "total_failures": 0,                   # All tiers failed
+            "total_attempts": 0,                   # Total parse attempts
         }
 
     def parse(
@@ -93,7 +95,7 @@ class ResponseParser:
         if isinstance(raw_response, str):
             result = self._tier2_json_parsing(raw_response, expected_schema)
             if result:
-                self.stats["tier2_success"] += 1
+                # Stats already tracked by _tier2_json_parsing method
                 logger.debug("Tier 2 (JSON parsing) succeeded")
                 return result
 
@@ -149,7 +151,7 @@ class ResponseParser:
     def _tier2_json_parsing(
         self, response_text: str, expected_schema: Type[T]
     ) -> Optional[T]:
-        """Tier 2: Extract and parse JSON from text
+        """Tier 2: Extract and parse JSON from text (with detailed tracking)
 
         LLMs often wrap JSON in markdown code blocks:
         ```json
@@ -157,9 +159,9 @@ class ResponseParser:
         ```
 
         This tier handles:
-        - Pure JSON strings
-        - JSON in markdown code blocks
-        - JSON with surrounding text
+        - Pure JSON strings (tracks as tier2_direct_json)
+        - JSON in markdown code blocks (tracks as tier2_markdown_extraction)
+        - JSON with surrounding text (tracks as tier2_brace_extraction)
 
         Args:
             response_text: Raw text response
@@ -169,14 +171,17 @@ class ResponseParser:
             Validated response object or None if parsing fails
         """
         try:
-            # Try direct JSON parsing first
+            # Try direct JSON parsing first (IDEAL - LLM followed instructions)
             try:
                 data = json.loads(response_text)
-                return expected_schema(**data)
+                validated = expected_schema(**data)
+                self.stats["tier2_direct_json"] += 1
+                logger.debug("Tier 2: Direct JSON parse succeeded (LLM returned clean JSON)")
+                return validated
             except json.JSONDecodeError:
                 pass
 
-            # Extract JSON from markdown code blocks
+            # Extract JSON from markdown code blocks (DEFENSIVE - LLM wrapped in markdown)
             json_pattern = r"```(?:json)?\s*\n(.*?)\n```"
             matches = re.findall(json_pattern, response_text, re.DOTALL)
 
@@ -184,11 +189,16 @@ class ResponseParser:
                 try:
                     data = json.loads(match)
                     validated = expected_schema(**data)
+                    self.stats["tier2_markdown_extraction"] += 1
+                    logger.warning(
+                        "Tier 2: Markdown extraction used - LLM wrapped JSON in code blocks despite instructions",
+                        extra={"preview": response_text[:100]}
+                    )
                     return validated
                 except (json.JSONDecodeError, ValidationError):
                     continue
 
-            # Try finding JSON object in text (starts with { ends with })
+            # Try finding JSON object in text (DEFENSIVE - JSON buried in text)
             brace_pattern = r"\{.*\}"
             matches = re.findall(brace_pattern, response_text, re.DOTALL)
 
@@ -196,6 +206,11 @@ class ResponseParser:
                 try:
                     data = json.loads(match)
                     validated = expected_schema(**data)
+                    self.stats["tier2_brace_extraction"] += 1
+                    logger.warning(
+                        "Tier 2: Brace extraction used - LLM buried JSON in surrounding text",
+                        extra={"preview": response_text[:100]}
+                    )
                     return validated
                 except (json.JSONDecodeError, ValidationError):
                     continue

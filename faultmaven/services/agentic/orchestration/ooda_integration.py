@@ -291,16 +291,19 @@ def _update_diagnostic_state_from_investigation(
 
     # Update urgency level if available
     if investigation_state.problem_confirmation:
-        urgency_map = {
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "critical": "critical",
+        # Map ProblemConfirmation.severity to CaseDiagnosticState.urgency_level
+        # ProblemConfirmation.severity: "low", "medium", "high", "critical"
+        # UrgencyLevel enum values: "normal", "high", "critical"
+        severity_to_urgency_map = {
+            "low": "normal",        # low severity -> normal urgency
+            "medium": "normal",     # medium severity -> normal urgency
+            "high": "high",         # high severity -> high urgency
+            "critical": "critical", # critical severity -> critical urgency
         }
-        urgency = investigation_state.problem_confirmation.urgency_level
-        if urgency in urgency_map:
+        severity = investigation_state.problem_confirmation.severity.lower()
+        if severity in severity_to_urgency_map:
             from faultmaven.models.case import UrgencyLevel
-            case_diagnostic_state.urgency_level = UrgencyLevel(urgency_map[urgency])
+            case_diagnostic_state.urgency_level = UrgencyLevel(severity_to_urgency_map[severity])
 
     # Update has_active_problem based on engagement mode
     from faultmaven.models.investigation import EngagementMode

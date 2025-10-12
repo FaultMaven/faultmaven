@@ -307,7 +307,6 @@ class PhaseOrchestrator:
             case_status="open",
             phase_history=[],
             investigation_strategy=None,  # Set after user consent
-            artifacts_offered=False,
         )
 
         # Create investigation state

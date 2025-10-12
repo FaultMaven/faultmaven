@@ -87,8 +87,9 @@ When a case is marked as resolved or solution is confirmed working:
 - Only offer runbook creation ONCE per resolved case
 
 **RESPONSE FORMAT:**
-You MUST respond with valid JSON in this exact structure:
-```json
+You MUST respond with valid JSON in this exact structure.
+Return ONLY the JSON object with no markdown formatting or code fences.
+
 {{
   "answer": "Your natural language response here",
   "suggested_actions": [
@@ -106,7 +107,6 @@ You MUST respond with valid JSON in this exact structure:
     "hypotheses": [{{"hypothesis": "...", "likelihood": "low|medium|high"}}]
   }}
 }}
-```
 
 Only include fields in diagnostic_state_updates that have CHANGED. If nothing changed, use {{}}.
 

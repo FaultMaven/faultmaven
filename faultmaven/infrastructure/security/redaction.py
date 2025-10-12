@@ -316,11 +316,27 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         try:
             # Step 1: Analyze text for PII entities using K8s analyzer service
             def analyze_text():
+                # Only detect truly sensitive PII - exclude dates, times, locations, etc.
                 analyze_payload = {
                     "text": text,
-                    "language": "en"
+                    "language": "en",
+                    "entities": [
+                        "CREDIT_CARD",
+                        "CRYPTO",
+                        "EMAIL_ADDRESS",
+                        "IBAN_CODE",
+                        "IP_ADDRESS",
+                        "MEDICAL_LICENSE",
+                        "PERSON",
+                        "PHONE_NUMBER",
+                        "US_SSN",
+                        "US_PASSPORT",
+                        "US_DRIVER_LICENSE",
+                        "US_BANK_NUMBER",
+                    ],
+                    "score_threshold": 0.6  # Require 60% confidence to reduce false positives
                 }
-                
+
                 analyze_response = self.session.post(
                     f"{self.analyzer_url}/analyze",
                     json=analyze_payload,
@@ -428,11 +444,27 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         if self.analyzer_available:
             try:
                 def check_sensitivity():
+                    # Use same entity list as _apply_presidio
                     analyze_payload = {
                         "text": text,
-                        "language": "en"
+                        "language": "en",
+                        "entities": [
+                            "CREDIT_CARD",
+                            "CRYPTO",
+                            "EMAIL_ADDRESS",
+                            "IBAN_CODE",
+                            "IP_ADDRESS",
+                            "MEDICAL_LICENSE",
+                            "PERSON",
+                            "PHONE_NUMBER",
+                            "US_SSN",
+                            "US_PASSPORT",
+                            "US_DRIVER_LICENSE",
+                            "US_BANK_NUMBER",
+                        ],
+                        "score_threshold": 0.6  # Require 60% confidence to reduce false positives
                     }
-                    
+
                     analyze_response = self.session.post(
                         f"{self.analyzer_url}/analyze",
                         json=analyze_payload,

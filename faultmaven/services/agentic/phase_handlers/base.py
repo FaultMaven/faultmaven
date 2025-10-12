@@ -299,6 +299,22 @@ class BasePhaseHandler(ABC):
             except Exception as e:
                 self.logger.warning(f"Could not create function schema: {e}")
 
+            # Add fallback JSON formatting instruction (for when function calling fails)
+            # This ensures consistent response format across all LLM providers
+            full_prompt += f"""
+
+# Response Format
+
+If function calling is not available, respond with a JSON object following this structure (no markdown formatting):
+
+{{
+  "answer": "Your natural language response here",
+  "suggested_commands": [],
+  "clarifying_questions": []
+}}
+
+Return ONLY the JSON object. Do not wrap it in markdown code blocks or any other formatting."""
+
             # Generate response
             llm_response = await self.llm_provider.generate(
                 prompt=full_prompt,
@@ -308,13 +324,25 @@ class BasePhaseHandler(ABC):
                 tool_choice=tool_choice,
             )
 
-            # Parse response using three-tier fallback
-            # If tool_calls present, raw_response will be the function arguments JSON
-            # Otherwise, it's the text content
-            raw_response = llm_response.content
+            # Handle case where provider returns string instead of LLMResponse object
+            if isinstance(llm_response, str):
+                self.logger.warning("LLM provider returned string instead of LLMResponse object")
+                raw_response = llm_response
+                llm_response = None  # Mark as None for tool_calls check below
+            else:
+                # Parse response using three-tier fallback
+                # If tool_calls present, raw_response will be the function arguments JSON
+                # Otherwise, it's the text content
+                try:
+                    raw_response = llm_response.content
+                except AttributeError:
+                    # Provider returned unexpected type - convert to string
+                    self.logger.error(f"LLM provider returned unexpected type: {type(llm_response)}")
+                    raw_response = str(llm_response)
+                    llm_response = None
 
             # If tool_calls present, extract arguments as dict (Tier 1 success)
-            if llm_response.tool_calls:
+            if llm_response and llm_response.tool_calls:
                 try:
                     import json
                     tool_call = llm_response.tool_calls[0]

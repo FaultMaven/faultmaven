@@ -781,13 +781,17 @@ class AgentStateManager(IAgentStateManager):
             key = f"investigation_state:{session_id}"
             ttl = ttl or self.state_ttl
 
-            # Convert to dict
+            # Convert to dict (use mode='python' to get datetime objects, not strings)
             if hasattr(state, 'dict'):
+                # Pydantic v1
                 state_data = state.dict()
+            elif hasattr(state, 'model_dump'):
+                # Pydantic v2 - use mode='python' to avoid json_encoders
+                state_data = state.model_dump(mode='python')
             else:
                 state_data = state.__dict__
 
-            # Handle datetime serialization
+            # Handle datetime serialization manually (only if not already strings)
             self._serialize_datetime_fields_in_dict(state_data)
 
             # Convert to JSON string
@@ -872,10 +876,16 @@ class AgentStateManager(IAgentStateManager):
                         self._convert_datetime_fields_in_dict(item)
 
     def _serialize_datetime_fields_in_dict(self, data: dict):
-        """Recursively serialize datetime objects to strings in dict"""
+        """Recursively serialize datetime objects to strings in dict
+
+        Skips values that are already strings (already serialized by Pydantic json_encoders)
+        """
         for key, value in data.items():
             if isinstance(value, datetime):
                 data[key] = value.isoformat() + 'Z'
+            elif isinstance(value, str) and ('T' in value and ('Z' in value or '+' in value)):
+                # Already an ISO format string - skip (avoid double encoding)
+                continue
             elif isinstance(value, dict):
                 self._serialize_datetime_fields_in_dict(value)
             elif isinstance(value, list):

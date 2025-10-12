@@ -121,13 +121,13 @@ When a case is successfully resolved (solution confirmed working):
 4. Only offer runbook creation ONCE per resolved case (track in diagnostic_state.solution_proposed)
 
 **RESPONSE FORMAT (REQUIRED):**
-```json
+Return ONLY the JSON object with no markdown formatting or code fences.
+
 {{
   "answer": "Your natural, conversational response",
   "suggested_actions": [{{"label": "...", "type": "...", "payload": "..."}}],
   "suggested_commands": [{{"command": "...", "description": "...", "why": "...", "safety": "safe|caution"}}]
 }}
-```
 
 DIAGNOSTIC STATE CONTEXT (Internal Only):
 {diagnostic_state_context}

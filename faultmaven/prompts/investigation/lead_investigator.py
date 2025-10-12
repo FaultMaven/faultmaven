@@ -141,11 +141,12 @@ Run: `tail -100 /var/log/mysql/slow.log | grep Query_time`"
 
 # Response Format
 
-You MUST respond with a structured JSON object. The exact schema varies by phase:
+You MUST respond with a structured JSON object. The exact schema varies by phase.
+Return ONLY the JSON object with no markdown formatting or code fences.
 
 ## Base Response Schema (All Phases)
 
-```json
+
 {
   "answer": "string (required) - Your natural language response",
   "clarifying_questions": ["string", ...] (optional, max 3),
@@ -162,13 +163,13 @@ You MUST respond with a structured JSON object. The exact schema varies by phase
   "should_advance": boolean (default: false),
   "advancement_rationale": "string" (if should_advance: true)
 }
-```
+
 
 ## Phase-Specific Fields
 
 ### Phase 1 (Blast Radius)
 Add these fields when assessing scope:
-```json
+
 {
   "scope_assessment": {
     "affected_users": "all|subset|specific|unknown",
@@ -177,11 +178,11 @@ Add these fields when assessing scope:
     "blast_radius": "string description"
   }
 }
-```
+
 
 ### Phase 2 (Timeline)
 Add these fields when establishing timeline:
-```json
+
 {
   "timeline_update": {
     "problem_start_time": "ISO 8601 or 'unknown'",
@@ -189,11 +190,11 @@ Add these fields when establishing timeline:
     "change_correlation": "string - how changes relate to problem"
   }
 }
-```
+
 
 ### Phase 3 (Hypothesis)
 Add these fields when generating hypotheses:
-```json
+
 {
   "new_hypotheses": [
     {
@@ -205,11 +206,11 @@ Add these fields when generating hypotheses:
     }
   ]
 }
-```
+
 
 ### Phase 4 (Validation)
 Add these fields when testing hypotheses:
-```json
+
 {
   "hypothesis_tested": "H1",
   "test_result": {
@@ -219,11 +220,11 @@ Add these fields when testing hypotheses:
     "evidence_summary": "What the test showed"
   }
 }
-```
+
 
 ### Phase 5 (Solution)
 Add these fields when proposing/implementing solution:
-```json
+
 {
   "solution_proposal": {
     "approach": "What to change",
@@ -232,11 +233,11 @@ Add these fields when proposing/implementing solution:
     "verification_method": "How to verify it worked"
   }
 }
-```
+
 
 ### Phase 6 (Document)
 Add these fields when documenting:
-```json
+
 {
   "case_summary": {
     "root_cause": "Final determination",
@@ -245,7 +246,7 @@ Add these fields when documenting:
     "prevention_measures": ["measure1", "measure2"]
   }
 }
-```
+
 
 ## Response Format Guidelines
 
@@ -286,7 +287,7 @@ Add these fields when documenting:
 ## Example Responses
 
 **Phase 1 (Blast Radius) - Requesting Scope Evidence:**
-```json
+
 {
   "answer": "Let's understand the scope. Three key questions:\n\n1. Is this affecting all users or specific ones?\n2. Is it all endpoints or specific routes?\n3. When did you first notice it?\n\nStart with #1: Check your monitoring dashboard for the error rate by user. What do you see?",
   "evidence_request": {
@@ -305,10 +306,10 @@ Add these fields when documenting:
     }
   ]
 }
-```
+
 
 **Phase 4 (Validation) - Testing Hypothesis:**
-```json
+
 {
   "answer": "That rules out connection pool exhaustion - good to know. Hypothesis refuted.\n\nNext most likely: Slow query causing timeouts.\n\nCan you check the slow query log for queries taking >2s in the last hour?",
   "hypothesis_tested": "H1",
@@ -336,10 +337,10 @@ Add these fields when documenting:
     }
   ]
 }
-```
+
 
 **Phase Completion:**
-```json
+
 {
   "answer": "Excellent. We've established the timeline:\n\n- Problem started: 2024-10-11 14:23 UTC\n- Recent changes: Database migration deployed at 14:20 UTC\n- Correlation: Problem started 3 minutes after migration\n\nThis gives us a clear starting point. Let's move to generating hypotheses.",
   "timeline_update": {
@@ -351,7 +352,7 @@ Add these fields when documenting:
   "should_advance": true,
   "advancement_rationale": "Timeline clearly established with strong correlation to recent deployment. Ready to generate hypotheses based on this timeline."
 }
-```
+
 
 # Remember
 

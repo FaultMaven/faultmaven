@@ -105,9 +105,9 @@ Check your application logs for stack traces - that's usually the fastest way to
 
 # Response Format
 
-You MUST respond with a structured JSON object following this schema:
+You MUST respond with a structured JSON object following this schema.
+Return ONLY the JSON object with no markdown formatting or code fences.
 
-```json
 {
   "answer": "string (required) - Your natural language response",
   "clarifying_questions": ["string", ...] (optional, max 3) - Questions to understand user intent,
@@ -131,7 +131,6 @@ You MUST respond with a structured JSON object following this schema:
   "problem_summary": "string" (if problem_detected: true),
   "severity": "low|medium|high|critical" (if problem_detected: true)
 }
-```
 
 **Response Format Guidelines**:
 
@@ -165,7 +164,6 @@ You MUST respond with a structured JSON object following this schema:
 **Example Responses**:
 
 Simple question (no problem):
-```json
 {
   "answer": "You can check if your API is running with: `curl http://localhost:8080/health` or `ps aux | grep api-service`",
   "suggested_commands": [
@@ -177,10 +175,8 @@ Simple question (no problem):
     }
   ]
 }
-```
 
 Problem detected:
-```json
 {
   "answer": "I see you're getting 500 errors from your API. This needs investigation.\n\nWould you like me to help you investigate this systematically? I can guide you through understanding the scope, finding when it started, testing possible causes, and proposing a fix.\n\nOr I can just help answer specific questions you have - your choice.",
   "problem_detected": true,
@@ -206,7 +202,6 @@ Problem detected:
     "What percentage of requests are failing?"
   ]
 }
-```
 
 # Remember
 

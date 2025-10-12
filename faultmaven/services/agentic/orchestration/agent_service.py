@@ -595,9 +595,9 @@ We encountered a technical problem while processing your troubleshooting request
         try:
             # Get investigation progress if available
             investigation_progress = None
-            if diagnostic_state and diagnostic_state.investigation_state_id:
-                # Get investigation state from state manager
-                investigation_state = await self._session_service.get_investigation_state(session_id)
+            if diagnostic_state and diagnostic_state.investigation_state_id and self._state_manager:
+                # Get investigation state from state manager (AgentStateManager, not SessionService)
+                investigation_state = await self._state_manager.get_investigation_state(session_id)
                 if investigation_state:
                     from faultmaven.services.agentic.orchestration.ooda_integration import (
                         get_investigation_progress_summary
@@ -629,9 +629,30 @@ We encountered a technical problem while processing your troubleshooting request
                 loading_state=None,
                 investigation_progress=investigation_progress
             )
-        except Exception:
-            # Fallback view state
-            return ViewState(active_case={"case_id": case_id, "session_id": session_id})
+        except Exception as e:
+            self.logger.error(f"Failed to create view state: {e}", exc_info=True)
+            # Fallback view state with all required fields
+            return ViewState(
+                session_id=session_id,
+                user={
+                    "user_id": "anonymous",
+                    "email": "user@example.com",
+                    "name": "User",
+                    "created_at": datetime.utcnow().isoformat() + 'Z'
+                },
+                active_case={
+                    "case_id": case_id,
+                    "title": f"Case {case_id}",
+                    "status": "active",
+                    "priority": "medium",
+                    "created_at": datetime.utcnow().isoformat() + 'Z',
+                    "updated_at": datetime.utcnow().isoformat() + 'Z',
+                    "message_count": 0
+                },
+                cases=[],
+                messages=[],
+                uploaded_data=[]
+            )
 
     # Circuit breaker monitoring
     def get_circuit_breaker_status(self) -> Dict[str, Any]:
