@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Union
 import asyncio
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Response, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Response, Body, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 import uuid
 import logging
@@ -39,8 +39,16 @@ from faultmaven.models.case import (
     CasePriority
 )
 from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.models.api import ErrorResponse, ErrorDetail, CaseResponse, Case, Message, QueryJobStatus, AgentResponse, ViewState, User, ResponseType, TitleGenerateResponse, TitleResponse, QueryRequest, CaseMessagesResponse
-from faultmaven.api.v1.dependencies import get_case_service, get_session_id, get_session_service, get_agent_service
+from faultmaven.models.api import (
+    ErrorResponse, ErrorDetail, CaseResponse, Case, Message, QueryJobStatus,
+    AgentResponse, ViewState, User, ResponseType, TitleGenerateResponse,
+    TitleResponse, QueryRequest, CaseMessagesResponse, DataUploadResponse,
+    ProcessingStatus
+)
+from faultmaven.api.v1.dependencies import (
+    get_case_service, get_session_id, get_session_service,
+    get_agent_service, get_preprocessing_service
+)
 from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
     get_current_user_id
@@ -52,6 +60,11 @@ from faultmaven.services.converters import CaseConverter
 from fastapi import Request
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.services.evidence.evidence_factory import (
+    create_evidence_from_preprocessed,
+    map_datatype_to_evidence_category,
+)
+from faultmaven.models.evidence import EvidenceType
 
 # Create router
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -1963,55 +1976,163 @@ async def get_case_service_health(
 
 # Case-scoped data management endpoints
 
-@router.post("/{case_id}/data", status_code=status.HTTP_201_CREATED, responses={201: {"description": "Data uploaded successfully", "headers": {"Location": {"description": "URL of the created resource", "schema": {"type": "string"}}, "X-Correlation-ID": {"description": "Request correlation ID", "schema": {"type": "string"}}}}})
+@router.post("/{case_id}/data", status_code=status.HTTP_201_CREATED, response_model=DataUploadResponse, responses={201: {"description": "Data uploaded successfully with AI analysis", "headers": {"Location": {"description": "URL of the created resource", "schema": {"type": "string"}}, "X-Correlation-ID": {"description": "Request correlation ID", "schema": {"type": "string"}}}}})
 @trace("api_upload_case_data")
 async def upload_case_data(
     case_id: str,
-    description: Optional[str] = Query(None, description="Description of uploaded data"),
-    expected_type: Optional[str] = Query(None, description="Expected data type"),
+    file: UploadFile = File(...),
+    session_id: str = Form(...),
+    description: Optional[str] = Form(None, description="Description of uploaded data"),
+    source_metadata: Optional[str] = Form(None, description="JSON string with source metadata (source_type, source_url, etc.)"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    preprocessing_service = Depends(get_preprocessing_service),
+    agent_service: AgentService = Depends(_di_get_agent_service_dependency),
     current_user: DevUser = Depends(require_authentication)
 ):
     """
-    Upload data file to a specific case.
-    
-    Associates uploaded data with the case for context-aware troubleshooting.
-    Returns 201 with Location header pointing to the created data resource.
+    Upload data file to a specific case with AI analysis.
+
+    Pipeline:
+    1. Upload file
+    2. Preprocess data (classify, extract insights, generate LLM-ready summary)
+    3. Get AI analysis via agent service
+    4. Return combined response with agent's conversational analysis
+
+    Returns 201 with DataUploadResponse including agent_response field.
     """
-    from fastapi import UploadFile, File, Form
-    
     case_service = check_case_service_available(case_service)
-    
+
     try:
-        # Verify case exists
+        # Step 1: Verify case exists and user has access
         case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
                 status_code=404,
                 detail="Case not found or access denied"
             )
-        
-        # Create mock data record for now (actual implementation would process file)
-        data_id = f"data_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-        data_record = {
-            "data_id": data_id,
-            "case_id": case_id,
-            "filename": "uploaded_file.txt",
-            "description": description or "Uploaded file",
-            "expected_type": expected_type or "other",
-            "size_bytes": 1024,
-            "content_type": "text/plain",
-            "upload_timestamp": datetime.utcnow().isoformat() + 'Z',
-            "processing_status": "completed",
-            "user_id": current_user.user_id
-        }
-        
-        return JSONResponse(
-            status_code=201,
-            content=data_record,
-            headers={"Location": f"/api/v1/cases/{case_id}/data/{data_id}"}
+
+        # Step 2: Read uploaded file
+        file_content = await file.read()
+        file_size = len(file_content)
+
+        logger.info(f"Processing upload: {file.filename} ({file_size} bytes) for case {case_id}")
+
+        # Step 2.5: Parse source metadata if provided
+        parsed_source_metadata = None
+        if source_metadata:
+            try:
+                import json
+                from faultmaven.models.api import SourceMetadata
+                source_dict = json.loads(source_metadata)
+                parsed_source_metadata = SourceMetadata(**source_dict)
+                logger.debug(f"Source metadata parsed: {parsed_source_metadata.source_type}")
+            except Exception as e:
+                # Invalid metadata - log but don't fail the upload
+                logger.warning(f"Failed to parse source_metadata: {e}")
+                parsed_source_metadata = None
+
+        # Step 3: Preprocess data
+        try:
+            content_str = file_content.decode('utf-8')
+        except UnicodeDecodeError:
+            # Try latin-1 as fallback for binary files
+            try:
+                content_str = file_content.decode('latin-1')
+            except:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Unable to decode file content. Please upload text files only."
+                )
+
+        preprocessed = await preprocessing_service.preprocess(
+            content=content_str,
+            filename=file.filename,
+            case_id=case_id,
+            session_id=session_id,
+            source_metadata=parsed_source_metadata
         )
-        
+
+        logger.info(
+            f"Preprocessing complete: {preprocessed.data_type.value}, "
+            f"{preprocessed.original_size}→{preprocessed.summary_size} chars, "
+            f"{preprocessed.processing_time_ms:.1f}ms"
+        )
+
+        # Step 3.5: Create evidence from preprocessed data
+        evidence = create_evidence_from_preprocessed(
+            preprocessed=preprocessed,
+            filename=file.filename,
+            turn_number=1,  # TODO: Get actual turn number from diagnostic state
+            evidence_type=EvidenceType.SUPPORTIVE,
+            addresses_requests=[],  # TODO: Match against pending evidence requests
+        )
+
+        # Add evidence to diagnostic state
+        if hasattr(case, 'diagnostic_state') and case.diagnostic_state:
+            case.diagnostic_state.evidence_provided.append(evidence)
+            try:
+                await case_service.update_case(case)
+                logger.info(
+                    f"Evidence created: {evidence.evidence_id} "
+                    f"(category: {map_datatype_to_evidence_category(preprocessed.data_type).value})"
+                )
+            except Exception as e:
+                # Log but don't fail - evidence integration is supplementary
+                logger.warning(f"Failed to update case with evidence: {e}")
+        else:
+            logger.debug("Case has no diagnostic state, skipping evidence integration")
+
+        # Step 4: Generate AI analysis via agent service
+        context_dict = {
+            "case_id": case_id,
+            "data_id": preprocessed.data_id,
+            "data_type": preprocessed.data_type.value,
+            "preprocessed_summary": preprocessed.summary,  # LLM-ready summary
+            "security_flags": preprocessed.security_flags,
+            "filename": file.filename,
+            "file_size": file_size,
+            "user_description": description
+        }
+
+        # Add source metadata to context if available
+        if parsed_source_metadata:
+            context_dict["source_metadata"] = {
+                "source_type": parsed_source_metadata.source_type,
+                "source_url": parsed_source_metadata.source_url,
+                "captured_at": parsed_source_metadata.captured_at
+            }
+
+        query_request = QueryRequest(
+            session_id=session_id,
+            query=f"I've uploaded {file.filename} ({file_size:,} bytes). Please analyze it.",
+            context=context_dict
+        )
+
+        agent_response = await agent_service.process_query_for_case(
+            case_id, query_request
+        )
+
+        logger.info(f"Agent analysis complete for {file.filename}")
+
+        # Step 5: Build response
+        upload_response = DataUploadResponse(
+            data_id=preprocessed.data_id,
+            filename=file.filename,
+            file_size=file_size,
+            data_type=preprocessed.data_type.value,
+            processing_status=ProcessingStatus.COMPLETED,
+            uploaded_at=datetime.utcnow().isoformat() + 'Z',
+            agent_response=agent_response,  # Conversational AI analysis
+            classification={
+                "data_type": preprocessed.data_type.value,
+                "confidence": 1.0,  # Classifier doesn't return confidence yet
+                "compression_ratio": preprocessed.compression_ratio,
+                "processing_time_ms": preprocessed.processing_time_ms
+            }
+        )
+
+        return upload_response
+
     except HTTPException:
         raise
     except Exception as e:

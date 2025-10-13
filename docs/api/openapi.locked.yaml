@@ -2572,12 +2572,21 @@ paths:
       - case_persistence
       - cases
       summary: Upload Case Data
-      description: 'Upload data file to a specific case.
+      description: 'Upload data file to a specific case with AI analysis.
 
 
-        Associates uploaded data with the case for context-aware troubleshooting.
+        Pipeline:
 
-        Returns 201 with Location header pointing to the created data resource.'
+        1. Upload file
+
+        2. Preprocess data (classify, extract insights, generate LLM-ready summary)
+
+        3. Get AI analysis via agent service
+
+        4. Return combined response with agent''s conversational analysis
+
+
+        Returns 201 with DataUploadResponse including agent_response field.'
       operationId: upload_case_data_api_v1_cases__case_id__data_post
       parameters:
       - name: case_id
@@ -2586,26 +2595,6 @@ paths:
         schema:
           type: string
           title: Case Id
-      - name: description
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Description of uploaded data
-          title: Description
-        description: Description of uploaded data
-      - name: expected_type
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Expected data type
-          title: Expected Type
-        description: Expected data type
       - name: Authorization
         in: header
         required: false
@@ -2614,12 +2603,36 @@ paths:
           - type: string
           - type: 'null'
           title: Authorization
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+                - session_id
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: File to upload
+                session_id:
+                  type: string
+                  description: Session identifier
+                description:
+                  type: string
+                  description: Optional description of uploaded data
+                source_metadata:
+                  type: string
+                  description: 'Optional JSON string with source metadata (source_type: file_upload|text_paste|page_capture, source_url, captured_at)'
       responses:
         '201':
-          description: Data uploaded successfully
+          description: Data uploaded successfully with AI analysis
           content:
             application/json:
-              schema: {}
+              schema:
+                $ref: '#/components/schemas/DataUploadResponse'
           headers:
             Location:
               description: URL of the created resource
