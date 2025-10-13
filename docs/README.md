@@ -5,20 +5,18 @@ Master index for all FaultMaven documentation.
 ## Quick Navigation
 
 - 🚀 **[Getting Started](./getting-started/)** - Installation, quickstart, user guide
-- 🏗️ **[Architecture](./architecture/architecture-overview.md)** - System architecture and design (master document)
-- 📋 **[Specifications](./specifications/)** - Requirements and technical specifications
+- 🏗️ **[Architecture](./architecture/architecture-overview.md)** - System architecture, design, and specifications
 - 🔌 **[API Documentation](./api/)** - API contracts, OpenAPI spec, integration guides
-- 💻 **[Development](./development/)** - Developer guides, environment setup, best practices
-- 🏗️ **[Infrastructure](./infrastructure/)** - Infrastructure setup, Redis, ChromaDB, LLM providers
+- 🛠️ **[Tools](./tools/)** - Session-level tools for troubleshooting (KB search, web search, log analysis, MCP)
+- 💻 **[Development](./development/)** - Developer environment setup and configuration
+- 🏗️ **[Infrastructure](./infrastructure/)** - Infrastructure setup (Redis, ChromaDB, LLM providers, Opik)
 - 🧪 **[Testing](./testing/)** - Testing strategies, patterns, and guides
-- 📚 **[Guides](./guides/)** - How-to guides and tutorials
+- 📚 **[How-To Guides](./how-to/)** - Integration guides and operational procedures
 - 🔒 **[Security](./security/)** - Security implementation and policies
 - 📝 **[Logging](./logging/)** - Logging architecture and configuration
-- 🎯 **[Features](./features/)** - Feature documentation and specifications
+- 🎨 **[Frontend](./frontend/)** - Frontend documentation (website + copilot browser extension)
 - 📖 **[Runbooks](./runbooks/)** - Operational runbooks for common issues
-- 🔧 **[Troubleshooting](./troubleshooting/)** - Troubleshooting guides
-- 🚀 **[Releases](./releases/)** - Release notes and changelog
-- 🔄 **[Migration](./migration/)** - Migration guides and procedures
+- 📦 **[Archive](./archive/)** - Historical documentation (migrations, obsolete designs, release notes)
 
 ---
 
@@ -106,24 +104,21 @@ Start here:
 
 | Directory | Purpose | Update Frequency |
 |-----------|---------|------------------|
-| `getting-started/` | User onboarding | 🔷 LOW |
-| `architecture/` | System architecture (40+ docs) | 🔥 HIGH |
-| `specifications/` | Requirements and specs | 🔷 LOW |
-| `api/` | API documentation | 🔥 HIGH |
-| `development/` | Developer guides | 🔶 MEDIUM |
-| `infrastructure/` | Infrastructure setup | 🔶 MEDIUM |
-| `testing/` | Testing documentation | 🔶 MEDIUM |
-| `security/` | Security guides | 🔶 MEDIUM |
-| `logging/` | Logging documentation | 🔷 LOW |
-| `frontend/` | Frontend documentation | 🔶 MEDIUM |
-| `features/` | Feature specs | 🔶 MEDIUM |
-| `guides/` | How-to guides | 🔷 LOW |
-| `runbooks/` | Operational runbooks | 🔷 LOW |
-| `troubleshooting/` | Troubleshooting guides | 🔷 LOW |
-| `releases/` | Release notes | 🔷 LOW |
-| `migration/` | Migration guides | 🔷 LOW |
+| `getting-started/` | User onboarding and quickstart | 🔷 LOW |
+| `architecture/` | System architecture, design patterns, specifications | 🔥 HIGH |
+| `api/` | API contracts and integration guides | 🔥 HIGH |
+| `tools/` | Session-level tools (KB, web, logs, MCP) | 🔶 MEDIUM |
+| `development/` | Developer environment and configuration | 🔶 MEDIUM |
+| `infrastructure/` | Infrastructure setup and services | 🔶 MEDIUM |
+| `testing/` | Testing strategies and patterns | 🔶 MEDIUM |
+| `how-to/` | Integration guides and procedures | 🔶 MEDIUM |
+| `security/` | Security implementation and policies | 🔶 MEDIUM |
+| `logging/` | Logging architecture and configuration | 🔷 LOW |
+| `frontend/` | Frontend documentation (website + copilot extension) | 🔶 MEDIUM |
+| `runbooks/` | Operational troubleshooting runbooks | 🔷 LOW |
+| `archive/` | Historical documentation (migrations, obsolete, releases) | 🔷 LOW |
 
 ---
 
-**Last Updated**: 2025-10-11  
-**Documentation Version**: 2.0
+**Last Updated**: 2025-10-12  
+**Documentation Version**: 2.1

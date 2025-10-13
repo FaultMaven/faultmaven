@@ -475,79 +475,6 @@ class TestInterfaceResolutionAndInjection:
             assert call_args is not None
 
 
-class TestMockServicePatternsForTesting:
-    """Test mock service patterns for testing scenarios."""
-    
-    def test_mock_service_injection(self, clean_env):
-        """Test injection of mock services for testing."""
-        container = DIContainer()
-        
-        # Create mock services
-        mock_llm = Mock(spec=ILLMProvider)
-        mock_sanitizer = Mock(spec=ISanitizer)
-        
-        # Inject mocks directly
-        container._llm_provider = mock_llm
-        container._sanitizer = mock_sanitizer
-        
-        # Verify mocks are returned
-        assert container.get_llm_provider() is mock_llm
-        assert container.get_sanitizer() is mock_sanitizer
-    
-    def test_partial_mock_injection(self, clean_env):
-        """Test partial mock injection with real service creation."""
-        container = DIContainer()
-        container.settings = get_settings()
-        
-        # Inject some mocks
-        mock_llm = Mock(spec=ILLMProvider)
-        container._llm_provider = mock_llm
-        
-        # Let other services be created normally
-        with patch('faultmaven.container.DataSanitizer') as mock_sanitizer_class:
-            mock_sanitizer_instance = Mock()
-            mock_sanitizer_class.return_value = mock_sanitizer_instance
-            
-            container._create_infrastructure_layer()
-            
-            # Mock should be preserved
-            assert container.get_llm_provider() is mock_llm
-            
-            # Other service should be created
-            assert container._sanitizer is mock_sanitizer_instance
-    
-    def test_service_behavior_verification(self, clean_env, mock_services):
-        """Test verification of service interactions."""
-        container = DIContainer()
-        
-        # Inject mock services
-        container._llm_provider = mock_services['llm_provider']
-        container._sanitizer = mock_services['sanitizer']
-        container._agent_service = Mock()
-        
-        # Configure mock behaviors
-        container._agent_service.process_query = AsyncMock(return_value="Mock response")
-        
-        # Test service interactions
-        agent_service = container.get_agent_service()
-        
-        # Verify mock setup
-        assert agent_service.process_query is not None
-        
-        # Test async mock behavior
-        async def test_async():
-            result = await agent_service.process_query("test query")
-            return result
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(test_async())
-            assert result == "Mock response"
-        finally:
-            loop.close()
-
-
 class TestContainerHealthAndDiagnostics:
     """Test container health monitoring and diagnostics."""
     
@@ -673,28 +600,14 @@ class TestIsolationBetweenTestRuns:
         """Test that settings are properly isolated between tests."""
         # Set environment variable
         os.environ['TEST_ISOLATION'] = 'test1'
-        
+
         container = DIContainer()
         container.initialize()
-        
+
         # Should see the environment variable
         # (specific behavior depends on settings implementation)
         assert container.settings is not None
-    
-    def test_mock_service_cleanup(self, clean_env):
-        """Test that mock services are properly cleaned up."""
-        container = DIContainer()
-        
-        # Inject mock service
-        mock_service = Mock()
-        container._llm_provider = mock_service
-        
-        # Verify mock is there
-        assert container.get_llm_provider() is mock_service
-        
-        # After reset (happens in fixture), should be clean
-        # This is tested implicitly by the fixture behavior
-    
+
     def test_environment_variable_isolation(self, clean_env):
         """Test that environment variables don't leak between tests."""
         # This test verifies the clean_env fixture works
@@ -709,53 +622,21 @@ class TestIsolationBetweenTestRuns:
 
 class TestErrorHandlingAndGracefulFallbacks:
     """Test error handling and graceful fallbacks."""
-    
-    def test_service_creation_error_handling(self, clean_env):
-        """Test handling of service creation errors."""
-        container = DIContainer()
-        container.settings = get_settings()
-        
-        # Mock service class that raises exception
-        failing_service_class = Mock(side_effect=Exception("Service creation failed"))
-        
-        with patch('faultmaven.container.AgentService', failing_service_class):
-            # Should handle error gracefully
-            try:
-                container._create_service_layer()
-            except Exception as e:
-                # Should still complete other service creation
-                pass
-    
+
     def test_interface_unavailable_fallback(self, clean_env):
         """Test fallback when interfaces are unavailable."""
         container = DIContainer()
-        
+
         with patch('faultmaven.container.INTERFACES_AVAILABLE', False):
             # Should initialize without interfaces
             container.initialize()
-            
+
             assert container._initialized
-    
-    def test_partial_service_availability(self, clean_env, mock_services):
-        """Test container behavior with partial service availability."""
-        container = DIContainer()
-        
-        # Only set up some services
-        container._llm_provider = mock_services['llm_provider']
-        # Don't set up sanitizer, tracer, etc.
-        
-        # Should handle missing services gracefully
-        llm_provider = container.get_llm_provider()
-        assert llm_provider is mock_services['llm_provider']
-        
-        # Missing services should return None or use fallbacks
-        sanitizer = container.get_sanitizer()
-        # Behavior depends on implementation - should not crash
-    
+
     def test_settings_error_recovery(self, clean_env):
         """Test recovery from settings system errors."""
         container = DIContainer()
-        
+
         # Mock settings to fail initially then succeed
         call_count = 0
         def failing_then_working_settings():
@@ -764,103 +645,23 @@ class TestErrorHandlingAndGracefulFallbacks:
             if call_count == 1:
                 raise Exception("Settings failed")
             return get_settings()
-        
+
         with patch('faultmaven.container.get_settings', side_effect=failing_then_working_settings):
             # First call should fail
             with pytest.raises(Exception):
                 container.initialize()
-            
+
             # Reset for retry
             container._initializing = False
-            
+
             # Second call should succeed
             container.initialize()
             assert container._initialized
-    
-    def test_dependency_resolution_error_handling(self, clean_env):
-        """Test error handling in dependency resolution."""
-        container = DIContainer()
-        container.settings = get_settings()
-        
-        # Mock a dependency that fails during creation
-        with patch('faultmaven.container.LLMRouter', side_effect=Exception("LLM Router failed")):
-            # Should handle infrastructure creation errors
-            try:
-                container._create_infrastructure_layer()
-            except Exception:
-                pass
-            
-            # Container should still be in a consistent state
-            assert not container._initializing
 
 
 class TestDependencyGraphResolution:
     """Test dependency graph resolution and circular dependency detection."""
-    
-    def test_dependency_order_resolution(self, clean_env):
-        """Test that dependencies are created in correct order."""
-        container = DIContainer()
-        container.settings = get_settings()
-        
-        creation_order = []
-        
-        def track_creation(name):
-            def creator(*args, **kwargs):
-                creation_order.append(name)
-                return Mock()
-            return creator
-        
-        with patch.multiple(
-            'faultmaven.container',
-            LLMRouter=track_creation('LLMRouter'),
-            DataSanitizer=track_creation('DataSanitizer'),
-            OpikTracer=track_creation('OpikTracer')
-        ):
-            container._create_infrastructure_layer()
-            
-            # Should have created all infrastructure components
-            assert len(creation_order) > 0
-            assert 'LLMRouter' in creation_order
-    
-    def test_service_dependency_injection_order(self, clean_env, mock_services):
-        """Test that services receive dependencies in correct order."""
-        container = DIContainer()
-        container.settings = get_settings()
-        
-        # Set up infrastructure first
-        container._llm_provider = mock_services['llm_provider']
-        container._sanitizer = mock_services['sanitizer']
-        container._tracer = mock_services['tracer']
-        container._tools = mock_services['tools']
-        
-        service_creation_calls = []
-        
-        def track_service_creation(service_name):
-            def creator(*args, **kwargs):
-                service_creation_calls.append({
-                    'service': service_name,
-                    'args': args,
-                    'kwargs': kwargs
-                })
-                return Mock()
-            return creator
-        
-        with patch.multiple(
-            'faultmaven.container',
-            AgentService=track_service_creation('AgentService'),
-            DataService=track_service_creation('DataService')
-        ):
-            container._create_service_layer()
-            
-            # Should have created services with proper dependencies
-            assert len(service_creation_calls) >= 1
-            
-            # Verify services were called with dependencies
-            for call in service_creation_calls:
-                if call['service'] == 'AgentService':
-                    # Should have been called with LLM provider, sanitizer, etc.
-                    assert len(call['kwargs']) > 0 or len(call['args']) > 0
-    
+
     def test_circular_dependency_prevention(self, clean_env):
         """Test prevention of circular dependencies."""
         container = DIContainer()

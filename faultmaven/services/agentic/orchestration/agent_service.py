@@ -159,22 +159,7 @@ class AgentService(BaseService):
         )
 
         self.logger = logging.getLogger(__name__)
-
-        # Initialize doctor/patient prompt system
-        from faultmaven.prompts.doctor_patient import PromptVersion
-
-        # Get prompt version from settings
-        if self._settings and hasattr(self._settings, 'prompts'):
-            prompt_version_str = self._settings.prompts.doctor_patient_version
-            try:
-                self.prompt_version = PromptVersion(prompt_version_str)
-            except ValueError:
-                self.logger.warning(f"Invalid prompt version '{prompt_version_str}', using STANDARD")
-                self.prompt_version = PromptVersion.STANDARD
-        else:
-            self.prompt_version = PromptVersion.STANDARD
-
-        self.logger.info(f"Doctor/Patient system initialized with prompt version: {self.prompt_version.value}")
+        self.logger.info("AgentService initialized with OODA framework (v3.2.0)")
 
     async def process_query_for_case(
         self,
@@ -229,7 +214,7 @@ class AgentService(BaseService):
         if not case:
             raise ValueError(f"Case {case_id} not found")
 
-        # OODA framework orchestrator (v3.2.0) - PRIMARY SYSTEM
+        # OODA framework orchestrator (v3.2.0) - PRODUCTION SYSTEM
         from faultmaven.services.agentic.orchestration.ooda_integration import (
             process_turn_with_framework_selection
         )
@@ -241,7 +226,6 @@ class AgentService(BaseService):
                 llm_client=self._llm,
                 session_id=request.session_id,
                 state_manager=self._state_manager,
-                use_legacy=False  # Set to True to test legacy doctor/patient system
             )
 
             # Update case diagnostic state
@@ -261,8 +245,8 @@ class AgentService(BaseService):
 
             # Build metadata
             processing_metadata = {
-                "processing_mode": "doctor_patient",
-                "prompt_version": self.prompt_version.value,
+                "processing_mode": "ooda",
+                "framework_version": "3.2.0",
                 "has_active_problem": updated_state.has_active_problem,
                 "current_phase": updated_state.current_phase,
                 "urgency_level": updated_state.urgency_level.value
@@ -291,7 +275,7 @@ class AgentService(BaseService):
                 sources=[
                     Source(
                         type=SourceType.KNOWLEDGE_BASE,
-                        content="Doctor/Patient LLM Response",
+                        content="OODA Framework LLM Response",
                         metadata=processing_metadata
                     )
                 ],
@@ -309,13 +293,13 @@ class AgentService(BaseService):
                 "circuit_failure_count": circuit_status["failure_count"],
                 "circuit_success_count": circuit_status["success_count"],
                 "total_llm_calls": circuit_status["total_calls"],
-                "doctor_patient_phase": updated_state.current_phase
+                "ooda_phase": updated_state.current_phase
             })
 
             return response
 
         except Exception as e:
-            logger.error(f"Doctor/Patient processing failed: {e}", exc_info=True)
+            logger.error(f"OODA framework processing failed: {e}", exc_info=True)
             raise
 
     def _preprocess_query(self, sanitized_query: str, conversation_context: str) -> str:

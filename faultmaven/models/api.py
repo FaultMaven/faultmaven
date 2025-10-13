@@ -7,7 +7,8 @@ import datetime
 
 # Import for type annotations (avoid circular imports)
 if TYPE_CHECKING:
-    from faultmaven.models.doctor_patient import SuggestedAction
+    # SuggestedAction moved to agentic.py (used by OODA framework)
+    from faultmaven.models.agentic import SuggestedAction
 
 # Import evidence-centric models
 from faultmaven.models.evidence import (

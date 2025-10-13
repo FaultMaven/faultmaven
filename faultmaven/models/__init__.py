@@ -93,21 +93,29 @@ try:
 except ImportError:
     CASE_MODELS_AVAILABLE = False
 
-# Import doctor/patient models (adaptive guidance architecture)
+# Import doctor/patient models (DEPRECATED - moved to agentic.py)
+# Legacy imports for backward compatibility
 try:
-    from .doctor_patient import (
+    from .legacy_doctor_patient import (
         ActionType,
         CommandSafety,
-        SuggestedAction,
         CommandSuggestion,
         CommandValidationResponse,
         LLMResponse,
         DiagnosticMode
     )
+    # SuggestedAction now comes from agentic.py (used by OODA framework)
+    from .agentic import SuggestedAction
     from .case import UrgencyLevel
     DOCTOR_PATIENT_MODELS_AVAILABLE = True
 except ImportError:
-    DOCTOR_PATIENT_MODELS_AVAILABLE = False
+    # Fallback: Try to import from agentic.py only
+    try:
+        from .agentic import SuggestedAction
+        from .case import UrgencyLevel
+        DOCTOR_PATIENT_MODELS_AVAILABLE = False  # Legacy models not available
+    except ImportError:
+        DOCTOR_PATIENT_MODELS_AVAILABLE = False
 
 # Utility functions are now imported from legacy.py
 

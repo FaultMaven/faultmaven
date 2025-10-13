@@ -963,9 +963,9 @@ const useActionHandlers = () => {
 This component library provides a comprehensive foundation for building the FaultMaven frontend. All components are designed to work together seamlessly while maintaining individual flexibility and reusability.
 
 For additional guidance, refer to:
-- [State Management Patterns](../frontend/state-management.md)
-- [API Integration Guide](../frontend/api-integration.md)
-- [Frontend Testing Strategies](../frontend/testing-strategies.md)
+- [Copilot State Management](./copilot-state.md) - Browser extension state patterns
+- [API Integration Guide](./api-integration.md) - Website-backend integration
+- [Extension Testing](./extension-testing.md) - Testing strategies
 - [System Requirements](../FAULTMAVEN_SYSTEM_REQUIREMENTS.md) - Frontend Design section
 
 ---

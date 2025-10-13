@@ -42,11 +42,20 @@ Would you like me to help diagnose the connection timeout issue first?
 
 ## Architecture: Dual Submission Paths
 
-### Path 1: Explicit Data Upload (Recommended for Files)
+### Path 1: Explicit Data Upload (Designed for Files)
 
 **Endpoint**: `POST /api/v1/cases/{case_id}/data`
 
 **Use Case**: User uses dedicated "Upload" UI in browser extension
+
+**Why Designed for Files:**
+This path is architecturally designed for potentially large data submissions because it includes:
+1. **Classification First**: Data type is identified before LLM involvement
+2. **Intelligent Preprocessing**: Large files are condensed into LLM-digestible summaries
+3. **Structured Analysis**: Domain-specific processors extract key information
+4. **LLM-Ready Context**: Only preprocessed summaries (not raw data) sent to LLM
+
+**Pipeline**: `Upload → Classify → Preprocess → Generate Summary → LLM Analysis → Response`
 
 **API Spec** ([openapi.locked.yaml:2294-2350](../api/openapi.locked.yaml#L2294)):
 ```yaml
@@ -78,12 +87,16 @@ POST /api/v1/cases/{case_id}/data
       }
 ```
 
-**Flow**:
+**Processing Flow**:
 1. User selects file/pastes text/captures page content
 2. Frontend converts to File object, uploads via FormData
-3. Backend ingests file, analyzes content, generates AI response
-4. Frontend displays user message + AI response in conversation
-5. No separate "Session Data" UI needed
+3. **Backend classifies data type** (log_file, metrics_data, error_report, etc.)
+4. **Backend preprocesses** - Extracts key information, reduces size for LLM
+5. **Backend analyzes** - LLM processes preprocessed summary (not raw data)
+6. Backend generates conversational AI response with insights
+7. Frontend displays user message + AI response in conversation
+
+**Key Advantage**: Large files (50K+ lines) are preprocessed into ~8K char summaries before LLM analysis, preventing context overflow while preserving critical information.
 
 **Current Implementation Status**:
 - ✅ Endpoint exists ([case.py:2094-2149](../../faultmaven/api/v1/routes/case.py#L2094))
@@ -97,6 +110,13 @@ POST /api/v1/cases/{case_id}/data
 **Endpoint**: `POST /api/v1/cases/{case_id}/queries`
 
 **Use Case**: User pastes large log/data into the regular query box
+
+**Why Different from Path 1:**
+This path is designed for **query-like submissions** that may contain data. It uses pattern detection to decide whether to:
+- Route to Path 1's preprocessing pipeline (if detected as data submission)
+- Process as a normal query with code/context (if below threshold)
+
+**Detection → Route**: If patterns indicate data submission, internally routes to same preprocessing pipeline as Path 1.
 
 **API Spec** ([openapi.locked.yaml:2062-2125](../api/openapi.locked.yaml#L2062)):
 ```yaml
@@ -404,6 +424,335 @@ AI: The issue in your code is on line 12...
 ✅ **Dual Path Support**: Works for both explicit uploads and paste detection
 ✅ **Backend-Driven**: AI generates insights, frontend just displays
 ✅ **Consistent UX**: File, text, and page capture all work the same way
+✅ **Scalable Processing**: Preprocessing handles large files without overwhelming LLM context
+✅ **Intelligent Analysis**: Domain-specific processors extract relevant information per data type
+
+---
+
+## Source Metadata Enhancement (PROPOSED)
+
+### Motivation
+
+**Current Design**: Backend receives data without knowing its source (paste/page/file).
+
+**Proposed Enhancement**: Include optional source metadata to provide richer context for AI analysis and better user experience.
+
+### API Extension
+
+#### Request Schema (Backend)
+
+**Add optional `source_metadata` field to data upload**:
+
+```python
+# In faultmaven/api/v1/routes/case.py
+
+from pydantic import BaseModel, Field
+from typing import Optional, Literal
+
+class SourceMetadata(BaseModel):
+    """Metadata about where the data originated"""
+    source_type: Literal["file_upload", "text_paste", "page_capture"]
+    source_url: Optional[str] = Field(None, description="URL if from page capture")
+    captured_at: Optional[str] = Field(None, description="Timestamp if from page capture")
+    user_description: Optional[str] = Field(None, description="User's description of the data")
+
+@router.post("/{case_id}/data", status_code=status.HTTP_201_CREATED)
+async def upload_case_data(
+    case_id: str,
+    file: UploadFile = File(...),
+    session_id: str = Form(...),
+    source_metadata: Optional[str] = Form(None),  # JSON string
+    description: Optional[str] = Form(None),
+    # ... other params
+):
+    """Upload data with optional source context."""
+    
+    # Parse source metadata if provided
+    metadata = None
+    if source_metadata:
+        try:
+            metadata = SourceMetadata.parse_raw(source_metadata)
+        except Exception:
+            # Invalid metadata - ignore gracefully
+            pass
+    
+    # Pass to data service
+    uploaded_data = await data_service.upload_data(
+        session_id=session_id,
+        case_id=case_id,
+        file_content=file_content,
+        file_name=file.filename,
+        source_metadata=metadata  # NEW
+    )
+```
+
+#### Frontend Implementation
+
+**Update data upload to include source metadata**:
+
+```typescript
+// In faultmaven-copilot/src/lib/api.ts
+
+interface SourceMetadata {
+  source_type: "file_upload" | "text_paste" | "page_capture";
+  source_url?: string;
+  captured_at?: string;
+  user_description?: string;
+}
+
+export async function uploadDataToCase(
+  caseId: string,
+  sessionId: string,
+  file: File,
+  sourceMetadata?: SourceMetadata  // NEW parameter
+): Promise<DataUploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("session_id", sessionId);
+  
+  // NEW: Include source metadata if provided
+  if (sourceMetadata) {
+    formData.append("source_metadata", JSON.stringify(sourceMetadata));
+  }
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/v1/cases/${caseId}/data`,
+    {
+      method: "POST",
+      body: formData,
+      headers: {
+        "Authorization": `Bearer ${token}`,
+      },
+    }
+  );
+
+  return response.json();
+}
+```
+
+**Update data source handlers**:
+
+```typescript
+// In SidePanelApp.tsx
+
+// 1. File Upload
+const handleFileUpload = async (file: File) => {
+  await uploadDataToCase(caseId, sessionId, file, {
+    source_type: "file_upload",
+    user_description: "User selected local file"
+  });
+};
+
+// 2. Text Paste
+const handleTextPaste = async (text: string) => {
+  const file = new File([new Blob([text])], "pasted-text.txt");
+  await uploadDataToCase(caseId, sessionId, file, {
+    source_type: "text_paste",
+    user_description: "User pasted text content"
+  });
+};
+
+// 3. Page Capture
+const handlePageCapture = async (pageContent: string, url: string) => {
+  const file = new File([new Blob([pageContent])], "captured-page.html");
+  await uploadDataToCase(caseId, sessionId, file, {
+    source_type: "page_capture",
+    source_url: url,
+    captured_at: new Date().toISOString(),
+    user_description: `Captured from ${url}`
+  });
+};
+```
+
+### Backend Processing
+
+**How source metadata enhances analysis**:
+
+```python
+# In data_service.py
+
+async def upload_data(
+    self,
+    session_id: str,
+    case_id: str,
+    file_content: bytes,
+    file_name: str,
+    source_metadata: Optional[SourceMetadata] = None  # NEW
+) -> UploadedData:
+    """Upload data with optional source context."""
+    
+    # 1. Classify data type (content-based)
+    data_type = await self.classifier.classify(content, file_name)
+    
+    # 2. Enhance context with source metadata
+    context = {
+        "case_id": case_id,
+        "data_type": data_type,
+    }
+    
+    if source_metadata:
+        context["source_type"] = source_metadata.source_type
+        
+        # Page capture gets URL context
+        if source_metadata.source_type == "page_capture":
+            context["source_url"] = source_metadata.source_url
+            context["is_live_page"] = True
+            # Could extract domain/service name from URL
+            context["service_hint"] = self._extract_service_from_url(
+                source_metadata.source_url
+            )
+    
+    # 3. Preprocess with enhanced context
+    preprocessed = await self.prepare_data_for_llm_analysis(
+        data_id=data_id,
+        data_type=data_type,
+        raw_content=content,
+        context=context  # Enhanced with source info
+    )
+    
+    return uploaded_data
+```
+
+**Agent prompt enhancement**:
+
+```python
+# In agent prompts
+
+# When source_metadata is available:
+"""
+The user has captured the status page from https://api.myapp.com/status.
+This appears to be a live API status page showing current system health.
+
+[Preprocessed page content here...]
+
+Based on the status information shown on the page, what issues do you see?
+"""
+
+# vs without source metadata:
+"""
+Here is some HTML content the user provided:
+
+[Preprocessed content here...]
+
+What issues do you see in this data?
+"""
+```
+
+### Benefits of Source Metadata
+
+| Benefit | Example |
+|---------|---------|
+| **Better Context** | "Looking at the status page from api.myapp.com..." vs "Looking at this HTML..." |
+| **Service Discovery** | URL reveals service name for better knowledge base search |
+| **Temporal Context** | Page captures include timestamp for timeline analysis |
+| **Intent Understanding** | Paste vs file vs page indicates user's mental model |
+| **Richer Responses** | Agent can reference the source: "The page you captured shows..." |
+| **Audit Trail** | Track where data originated for compliance/debugging |
+
+### Implementation Scope
+
+#### Frontend Changes (Low Effort)
+- ✅ Already creates File objects from all sources
+- ➕ Add `SourceMetadata` interface
+- ➕ Update 3 handler functions to include metadata
+- ➕ Pass metadata to `uploadDataToCase()`
+
+#### Backend Changes (Medium Effort)
+- ➕ Add `SourceMetadata` model to `models/api.py`
+- ➕ Update `upload_case_data()` to accept `source_metadata` form field
+- ➕ Update `DataService.upload_data()` signature
+- ➕ Enhance preprocessing context with source info
+- ➕ Update agent prompts to mention source when available
+- ➕ Optional: Extract service hints from URLs
+
+### Rollout Strategy
+
+**Phase 1: Optional Field** (Recommended)
+- Add as optional field - backward compatible
+- Frontend sends when available
+- Backend gracefully handles absence
+- No breaking changes
+
+**Phase 2: Enhanced Processing**
+- Use source metadata in preprocessing decisions
+- Enhance agent prompts with source context
+- Add service discovery from URLs
+
+**Phase 3: Full Integration**
+- Use source in analytics and insights
+- Track which sources produce best data
+- Optimize UX based on source patterns
+
+### Testing Requirements
+
+```python
+# Backend tests
+async def test_upload_with_page_capture_metadata():
+    metadata = {
+        "source_type": "page_capture",
+        "source_url": "https://status.myapp.com",
+        "captured_at": "2025-10-12T10:30:00Z"
+    }
+    
+    response = await upload_case_data(
+        case_id="case_123",
+        file=mock_file,
+        session_id="sess_456",
+        source_metadata=json.dumps(metadata)
+    )
+    
+    # Verify source context used in agent response
+    assert "status page" in response.agent_response.content.lower()
+    assert "myapp.com" in response.agent_response.content.lower()
+
+async def test_upload_without_metadata():
+    # Should work without source_metadata (backward compatible)
+    response = await upload_case_data(
+        case_id="case_123",
+        file=mock_file,
+        session_id="sess_456"
+    )
+    assert response.data_id is not None
+```
+
+```typescript
+// Frontend tests
+test("handlePageCapture includes source metadata", async () => {
+  const url = "https://dashboard.myapp.com/metrics";
+  const content = "<html>...</html>";
+  
+  await handlePageCapture(content, url);
+  
+  // Verify uploadDataToCase called with metadata
+  expect(mockUpload).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.anything(),
+    expect.anything(),
+    expect.objectContaining({
+      source_type: "page_capture",
+      source_url: url
+    })
+  );
+});
+```
+
+### Decision
+
+**Recommendation**: ✅ **Implement as optional enhancement**
+
+**Pros**:
+- ✅ Richer context for AI analysis
+- ✅ Better user experience ("the page you captured...")
+- ✅ Service discovery from URLs
+- ✅ Enhanced audit trail
+- ✅ No breaking changes (optional field)
+
+**Cons**:
+- ⚠️ Slightly more complex frontend code
+- ⚠️ Backend needs to handle optional field gracefully
+- ⚠️ Minimal benefit if not used in prompts/preprocessing
+
+**Status**: 🔲 **Proposed Enhancement** - Not yet implemented, but architecturally sound and backward compatible.
 
 ---
 
@@ -413,11 +762,14 @@ AI: The issue in your code is on line 12...
 
 **Current State**: Data is ingested and basic insights are extracted, but **large data files cannot be sent directly to LLM** due to context limits.
 
-**Required**: Intelligent preprocessing layer that:
+**Why Path 1 is Designed for Files**: The explicit data upload endpoint includes a **preprocessing pipeline** that is essential for handling large files. This is why it's not just "recommended" but architecturally designed for file submissions.
+
+**Required Preprocessing Layer**:
 1. Extracts key information from uploaded data
-2. Summarizes large datasets into LLM-digestible format
+2. Summarizes large datasets into LLM-digestible format (~8K chars max)
 3. Preserves critical details (errors, anomalies, patterns)
-4. Enables AI to provide meaningful analysis
+4. Enables AI to provide meaningful analysis without context overflow
+5. Domain-specific processing per data type (logs, metrics, traces, configs)
 
 ### Preprocessing Requirements by Data Type
 
@@ -653,6 +1005,7 @@ Focus on DIAGNOSIS and SOLUTIONS.
 
 ### Backend (Priority: HIGH)
 
+#### Core Data Processing (CRITICAL)
 - [ ] **CRITICAL**: Implement data preprocessing layer in `data_service.py`
   - [ ] Add `prepare_data_for_llm_analysis()` method
   - [ ] Implement log file preprocessor
@@ -667,7 +1020,18 @@ Focus on DIAGNOSIS and SOLUTIONS.
 - [ ] Update agent prompts to handle preprocessed data context
 - [ ] Test file upload with various file types (.log, .txt, .json)
 
+#### Source Metadata Enhancement (OPTIONAL - Proposed)
+- [ ] Add `SourceMetadata` model to `models/api.py`
+- [ ] Update `upload_case_data()` to accept optional `source_metadata` form field
+- [ ] Update `DataService.upload_data()` to accept and store source metadata
+- [ ] Enhance preprocessing context with source information
+- [ ] Update agent prompts to mention source when available (e.g., "the page you captured from...")
+- [ ] Optional: Implement URL-based service discovery
+- [ ] Test with and without source metadata (backward compatibility)
+
 ### Frontend (Priority: HIGH)
+
+#### Core Conversation Integration (CRITICAL)
 
 - [x] Convert text/page to File objects in `handleDataUpload()`
 - [ ] Add user message to conversation on upload
@@ -676,13 +1040,31 @@ Focus on DIAGNOSIS and SOLUTIONS.
 - [ ] Update `DataUploadResponse` interface with `agent_response` field
 - [ ] Test all three data sources (file, text, page)
 
+#### Source Metadata Enhancement (OPTIONAL - Proposed)
+- [ ] Add `SourceMetadata` interface to types
+- [ ] Update `uploadDataToCase()` to accept optional `sourceMetadata` parameter
+- [ ] Update `handleFileUpload()` to pass `{source_type: "file_upload"}`
+- [ ] Update `handleTextPaste()` to pass `{source_type: "text_paste"}`
+- [ ] Update `handlePageCapture()` to pass `{source_type: "page_capture", source_url, captured_at}`
+- [ ] Ensure backward compatibility (metadata is optional)
+- [ ] Test with and without metadata
+
 ### Testing
+
+#### Core Functionality (CRITICAL)
 
 - [ ] File upload → conversational response
 - [ ] Text paste (via upload UI) → conversational response
 - [ ] Page capture → conversational response
 - [ ] Large paste (>10K) in query box → auto-detection + analysis
 - [ ] Normal query with code snippet → processes normally
+
+#### Source Metadata Testing (OPTIONAL)
+- [ ] File upload with source metadata → metadata stored and used
+- [ ] Page capture with URL → AI mentions source URL in response
+- [ ] Text paste without metadata → works normally (backward compatible)
+- [ ] Invalid metadata JSON → gracefully ignored
+- [ ] Verify service discovery from URLs (e.g., "api.myapp.com" → "MyApp API")
 
 ---
 
@@ -737,9 +1119,18 @@ The v3.0 design provides a seamless conversational experience where data uploads
 **Status**:
 - ✅ Backend classification & routing implemented
 - ⚠️ Backend file upload endpoint needs real implementation
+- ⚠️ Backend preprocessing layer needs implementation (CRITICAL)
 - ⚠️ Frontend needs conversation integration
+- 🔲 Source metadata enhancement proposed (OPTIONAL)
 
-**Next Steps**: Implement backend file processing and frontend conversation updates per checklist above.
+**Next Steps**: 
+1. **High Priority**: Implement backend preprocessing layer and frontend conversation updates
+2. **Optional Enhancement**: Add source metadata support for richer context
+
+**Implementation Order**:
+1. Core preprocessing pipeline (enables basic file analysis)
+2. Conversational integration (improves UX)
+3. Source metadata (enhances context - can be added later)
 
 ---
 

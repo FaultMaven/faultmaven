@@ -15,7 +15,7 @@ Objectives:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from typing import List
+from typing import List, Optional
 
 from faultmaven.models.investigation import (
     InvestigationPhase,
@@ -23,9 +23,14 @@ from faultmaven.models.investigation import (
     OODAStep,
     HypothesisStatus,
 )
+from faultmaven.models.evidence import EvidenceProvided, EvidenceRequest
 from faultmaven.services.agentic.phase_handlers.base import BasePhaseHandler, PhaseHandlerResult
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.prompts.investigation.lead_investigator import get_lead_investigator_prompt
+from faultmaven.services.evidence.consumption import (
+    get_new_evidence_since_turn_from_diagnostic,
+    summarize_evidence_findings,
+)
 
 
 class HypothesisHandler(BasePhaseHandler):
@@ -52,24 +57,54 @@ class HypothesisHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str = "",
+        evidence_provided: Optional[List[EvidenceProvided]] = None,
+        evidence_requests: Optional[List[EvidenceRequest]] = None,
     ) -> PhaseHandlerResult:
         """Handle Phase 3: Hypothesis
 
         Flow:
-        1. Check for urgency skip to Solution
-        2. Determine OODA step (Observe, Orient, or Decide)
-        3. Execute step logic
-        4. Check if phase complete
-        5. Return result
+        1. Consume new evidence if available
+        2. Check for urgency skip to Solution
+        3. Determine OODA step (Observe, Orient, or Decide)
+        4. Execute step logic
+        5. Check if phase complete
+        6. Return result
 
         Args:
             investigation_state: Current investigation state
             user_query: User's query
             conversation_history: Recent conversation
+            evidence_provided: List of evidence provided (from diagnostic state)
+            evidence_requests: List of evidence requests (from diagnostic state)
 
         Returns:
             PhaseHandlerResult with response and state updates
         """
+        # Enrich conversation context with new evidence if available
+        additional_context = ""
+        if evidence_provided:
+            last_turn = (
+                investigation_state.ooda_engine.iterations[-1].turn_number
+                if investigation_state.ooda_engine.iterations
+                else 0
+            )
+            new_evidence = get_new_evidence_since_turn_from_diagnostic(evidence_provided, last_turn)
+
+            if new_evidence:
+                evidence_summary = summarize_evidence_findings(new_evidence)
+                additional_context = (
+                    f"\n\n## New Evidence Provided:\n{evidence_summary}\n\n"
+                    f"Consider this evidence when formulating hypotheses."
+                )
+                self.log_phase_action(
+                    "Enriching context with new evidence",
+                    {"evidence_count": len(new_evidence)}
+                )
+
+        # Append additional context to conversation history
+        if additional_context:
+            conversation_history = conversation_history + additional_context
+
         # Check for urgency skip
         if investigation_state.lifecycle.urgency_level in ["high", "critical"]:
             should_skip = await self._check_urgency_skip(investigation_state)

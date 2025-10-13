@@ -546,7 +546,7 @@ def _format_investigation_state(state: Dict[str, Any]) -> str:
     parts = []
 
     # Anomaly frame
-    if "anomaly_frame" in state:
+    if "anomaly_frame" in state and state["anomaly_frame"] is not None:
         frame = state["anomaly_frame"]
         parts.append(f"**Problem**: {frame.get('statement', 'Unknown')}")
         parts.append(f"**Scope**: {frame.get('affected_scope', 'Unknown')}")

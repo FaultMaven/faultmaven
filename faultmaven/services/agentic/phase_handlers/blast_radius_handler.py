@@ -15,7 +15,7 @@ Objectives:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 
 from faultmaven.models.investigation import (
@@ -24,9 +24,13 @@ from faultmaven.models.investigation import (
     OODAStep,
     AnomalyFrame,
 )
-from faultmaven.models.evidence import EvidenceCategory
+from faultmaven.models.evidence import EvidenceCategory, EvidenceProvided, EvidenceRequest
 from faultmaven.services.agentic.phase_handlers.base import BasePhaseHandler, PhaseHandlerResult
 from faultmaven.prompts.investigation.lead_investigator import get_lead_investigator_prompt
+from faultmaven.services.evidence.consumption import (
+    get_new_evidence_since_turn_from_diagnostic,
+    summarize_evidence_findings,
+)
 
 
 class BlastRadiusHandler(BasePhaseHandler):
@@ -48,23 +52,32 @@ class BlastRadiusHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str = "",
+        evidence_provided: Optional[List[EvidenceProvided]] = None,
+        evidence_requests: Optional[List[EvidenceRequest]] = None,
     ) -> PhaseHandlerResult:
         """Handle Phase 1: Blast Radius
 
         Flow:
-        1. Determine OODA step (Observe or Orient)
-        2. Execute step logic
-        3. Check if phase complete
-        4. Return result
+        1. Consume scope evidence if available
+        2. Determine OODA step (Observe or Orient)
+        3. Execute step logic
+        4. Check if phase complete
+        5. Return result
 
         Args:
             investigation_state: Current investigation state
             user_query: User's query
             conversation_history: Recent conversation
+            evidence_provided: List of evidence provided (from diagnostic state)
+            evidence_requests: List of evidence requests (from diagnostic state)
 
         Returns:
             PhaseHandlerResult with response and state updates
         """
+        # Consume scope/impact evidence and adjust anomaly frame if available
+        if evidence_provided:
+            await self._consume_scope_evidence(investigation_state, evidence_provided)
+
         # Determine current OODA step
         current_step = self.determine_ooda_step(investigation_state)
 
@@ -75,6 +88,73 @@ class BlastRadiusHandler(BasePhaseHandler):
         else:
             # Shouldn't happen in Phase 1
             return await self._execute_observe(investigation_state, user_query, conversation_history)
+
+    async def _consume_scope_evidence(
+        self,
+        investigation_state: InvestigationState,
+        evidence_provided: List[EvidenceProvided],
+    ) -> None:
+        """Consume scope/impact evidence and update anomaly frame confidence.
+
+        Args:
+            investigation_state: Current investigation state (modified in-place)
+            evidence_provided: All evidence provided
+        """
+        # Get new evidence since last iteration
+        last_turn = (
+            investigation_state.ooda_engine.iterations[-1].turn_number
+            if investigation_state.ooda_engine.iterations
+            else 0
+        )
+        new_evidence = get_new_evidence_since_turn_from_diagnostic(evidence_provided, last_turn)
+
+        if not new_evidence:
+            return
+
+        self.log_phase_action(
+            "Consuming scope evidence",
+            {"new_evidence_count": len(new_evidence)}
+        )
+
+        # Adjust anomaly frame confidence based on evidence
+        if investigation_state.ooda_engine.anomaly_frame:
+            anomaly_frame = investigation_state.ooda_engine.anomaly_frame
+
+            for evidence in new_evidence:
+                # Supportive evidence increases confidence in scope assessment
+                if evidence.evidence_type.value == "supportive":
+                    # Boost confidence by up to 10% per supportive evidence
+                    anomaly_frame.confidence = min(1.0, anomaly_frame.confidence * 1.1)
+                    self.log_phase_action(
+                        "Increased anomaly frame confidence",
+                        {
+                            "evidence_id": evidence.evidence_id,
+                            "new_confidence": anomaly_frame.confidence
+                        }
+                    )
+
+                elif evidence.evidence_type.value == "refuting":
+                    # Refuting evidence decreases confidence - scope may be misunderstood
+                    anomaly_frame.confidence = max(0.0, anomaly_frame.confidence * 0.9)
+                    self.log_phase_action(
+                        "Decreased anomaly frame confidence",
+                        {
+                            "evidence_id": evidence.evidence_id,
+                            "new_confidence": anomaly_frame.confidence
+                        }
+                    )
+
+                # Extract scope insights from key findings
+                if evidence.key_findings:
+                    for finding in evidence.key_findings:
+                        # Look for scope-related keywords
+                        scope_keywords = ["users", "affected", "scope", "impact", "components"]
+                        if any(keyword in finding.lower() for keyword in scope_keywords):
+                            # This finding relates to scope - could update affected_components
+                            self.log_phase_action(
+                                "Scope insight identified",
+                                {"finding": finding[:100]}
+                            )
 
     async def _execute_observe(
         self,
@@ -203,7 +283,7 @@ class BlastRadiusHandler(BasePhaseHandler):
         )
 
         investigation_state.ooda_engine.anomaly_frame = anomaly_frame
-        investigation_state.ooda_engine.anomaly_refined = True
+        # Note: anomaly_refined field removed from OODAEngineState
 
         # Generate response
         from faultmaven.models.responses import LeadInvestigatorResponse
@@ -231,7 +311,7 @@ class BlastRadiusHandler(BasePhaseHandler):
         # Mark step complete and iteration complete
         current_iteration = investigation_state.ooda_engine.iterations[-1]
         current_iteration.steps_completed.append(OODAStep.ORIENT)
-        current_iteration.anomaly_refined = True
+        # Note: anomaly_refined field removed from OODAIteration
         current_iteration.completed_at_turn = investigation_state.metadata.current_turn
 
         # Check phase completion

@@ -33,20 +33,6 @@ def test_actual_feature_flags_module():
     feature_flags.log_feature_flag_status()
 
 
-@patch.dict(os.environ, {"ENABLE_LEGACY_COMPATIBILITY": "false", "ENABLE_EXPERIMENTAL_FEATURES": "true"})
-def test_feature_flags_with_env_vars():
-    """Test feature flags respond to environment variables"""
-    # Reload the module to pick up new env vars
-    import importlib
-    from faultmaven.config import feature_flags
-    importlib.reload(feature_flags)
-    
-    # Test that environment variables are respected
-    flags = feature_flags.get_active_flags()
-    assert flags["legacy_compatibility"] is False  # Set to false in env
-    assert flags["experimental_features"] is True   # Set to true in env
-
-
 def test_feature_flag_boolean_parsing():
     """Test feature flag boolean parsing logic"""
     

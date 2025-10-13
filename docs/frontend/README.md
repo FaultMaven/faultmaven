@@ -78,6 +78,7 @@ This directory contains documentation for the **FaultMaven website frontend**, w
 
 - **[System Requirements - Frontend Section](../FAULTMAVEN_SYSTEM_REQUIREMENTS.md#frontend-design--user-experience)** - UI/UX requirements and design specifications for the browser extension
 - **[Copilot Repository](https://github.com/FaultMaven/faultmaven-copilot)** - Complete extension codebase and documentation
+- **[Browser Extension Troubleshooting](./troubleshooting-browser-extension.md)** - Session management issues and common problems
 - **Note**: The 7 response types and troubleshooting UI are implemented in the separate repository
 
 ## 🚀 **Quick Start for Website Development**
@@ -93,8 +94,8 @@ This directory contains documentation for the **FaultMaven website frontend**, w
 git clone https://github.com/FaultMaven/faultmaven.git
 cd faultmaven
 
-# Install dependencies
-cd frontend
+# Install website dependencies
+cd website
 npm install
 
 # Start development server

@@ -212,14 +212,14 @@ class TimelineHandler(BasePhaseHandler):
             expected_schema=LeadInvestigatorResponse,
         )
 
+        # Mark step complete
+        current_iteration = investigation_state.ooda_engine.iterations[-1]
+
         # Extract timeline update if provided
         if structured_response.timeline_update:
             current_iteration.new_insights.append(
                 f"Timeline: {structured_response.timeline_update.change_correlation}"
             )
-
-        # Mark step complete
-        current_iteration = investigation_state.ooda_engine.iterations[-1]
         current_iteration.steps_completed.append(OODAStep.ORIENT)
         current_iteration.completed_at_turn = investigation_state.metadata.current_turn
         if not structured_response.timeline_update:  # Only add if not already added above

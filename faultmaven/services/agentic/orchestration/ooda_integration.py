@@ -367,11 +367,11 @@ async def process_turn_with_framework_selection(
     llm_client: ILLMProvider,
     session_id: str,
     state_manager: Optional[AgentStateManager] = None,
-    use_legacy: bool = False,
 ) -> Tuple[StructuredLLMResponse, CaseDiagnosticState]:
-    """Process turn with OODA framework (default) or legacy fallback
+    """Process turn with OODA framework
 
-    OODA is the primary framework. Legacy doctor/patient available for testing only.
+    OODA is the production framework (v3.2.0+).
+    Legacy doctor/patient system has been archived.
 
     Args:
         user_query: User's query
@@ -379,27 +379,13 @@ async def process_turn_with_framework_selection(
         llm_client: LLM provider
         session_id: Session ID
         state_manager: Optional state manager
-        use_legacy: Use legacy doctor/patient (testing only)
 
     Returns:
         Tuple of (StructuredLLMResponse, updated CaseDiagnosticState)
     """
     logger = logging.getLogger(__name__)
-
-    if use_legacy:
-        logger.warning("Using legacy doctor/patient framework (testing only)")
-        from faultmaven.services.agentic.doctor_patient.orchestrator_integration import (
-            process_turn_with_orchestrator,
-        )
-        return await process_turn_with_orchestrator(
-            user_query=user_query,
-            case=case,
-            llm_client=llm_client,
-            session_id=session_id,
-        )
-
-    # Default: Use OODA framework
     logger.info("Using OODA framework for turn processing")
+
     return await process_turn_with_ooda(
         user_query=user_query,
         case=case,

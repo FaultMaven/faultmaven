@@ -173,7 +173,7 @@ class CaseDiagnosticState(BaseModel):
     )
 
     # =========================================================================
-    # LEGACY FIELDS (Backward Compatibility)
+    # LEGACY FIELDS (Backward Compatibility - DEPRECATED)
     # =========================================================================
 
     # Problem tracking
@@ -182,16 +182,42 @@ class CaseDiagnosticState(BaseModel):
     problem_started_at: Optional[datetime] = Field(None, description="When problem tracking began")
     urgency_level: UrgencyLevel = Field(default=UrgencyLevel.NORMAL, description="Problem urgency level")
 
-    # Phase progression (LEGACY: 0-5 phases)
+    # Phase progression (DEPRECATED: Legacy 0-5 phases)
     # NOTE: v3.2.0 uses 0-6 phases in InvestigationState
-    current_phase: int = Field(default=0, description="LEGACY: Current phase (0-5). Use InvestigationState for v3.2.0")
+    # MIGRATION: Use investigation_state_id to access InvestigationState.lifecycle.current_phase
+    current_phase: int = Field(
+        default=0,
+        description="DEPRECATED: Legacy phase (0-5). Use InvestigationState.lifecycle.current_phase for v3.2.0 (0-6)",
+        deprecated=True
+    )
 
-    # Phase-specific data collected
-    symptoms: List[str] = Field(default_factory=list, description="Observed symptoms and error messages")
-    blast_radius: Dict[str, Any] = Field(default_factory=dict, description="Impact and scope assessment (Phase 1)")
-    timeline_info: Dict[str, Any] = Field(default_factory=dict, description="Timeline of changes and events")
-    hypotheses: List[Dict[str, Any]] = Field(default_factory=list, description="Working hypotheses with evidence")
-    tests_performed: List[str] = Field(default_factory=list, description="Diagnostic tests and validations performed")
+    # Phase-specific data collected (DEPRECATED: Use InvestigationState)
+    # MIGRATION: Use InvestigationState.evidence, .ooda_engine, .problem_confirmation
+    symptoms: List[str] = Field(
+        default_factory=list,
+        description="DEPRECATED: Use InvestigationState.evidence.evidence_provided",
+        deprecated=True
+    )
+    blast_radius: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="DEPRECATED: Use InvestigationState.problem_confirmation.scope",
+        deprecated=True
+    )
+    timeline_info: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="DEPRECATED: Use InvestigationState.problem_confirmation.timeline",
+        deprecated=True
+    )
+    hypotheses: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="DEPRECATED: Use InvestigationState.ooda_engine.hypotheses",
+        deprecated=True
+    )
+    tests_performed: List[str] = Field(
+        default_factory=list,
+        description="DEPRECATED: Use InvestigationState.evidence.evidence_provided",
+        deprecated=True
+    )
 
     # Solution tracking
     root_cause: str = Field(default="", description="Identified root cause")

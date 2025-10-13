@@ -163,7 +163,7 @@ flowchart TB
 
 ### 1. Investigation Phases and OODA Integration Framework
 
-**Status**: ✅ DESIGNED (Implementation roadmap defined)
+**Status**: 🟡 **PARTIALLY IMPLEMENTED** (~65% complete)
 
 FaultMaven implements a sophisticated **investigation process framework** for systematic incident resolution:
 
@@ -192,6 +192,11 @@ FaultMaven implements a sophisticated **investigation process framework** for sy
 
 **Evidence Collection**: See [Evidence Collection and Tracking Design v2.1](./evidence-collection-and-tracking-design.md) for complete evidence schemas, classification system, and agent behaviors
 
+**Known Issues:**
+- 🚨 Prompt system uses legacy 5-phase prompts (needs update to 7-phase OODA)
+- 🚨 Test coverage limited (~3 tests vs documented 32+)
+- 🟡 Legacy doctor/patient system coexists with OODA (migration in progress)
+
 ### 2. Typed Context System
 
 **Status**: ✅ IMPLEMENTED
@@ -218,7 +223,7 @@ context = QueryContext(
 classification = await engine.classify_query(query, context)
 ```
 
-**Developer Documentation**: [Context Management Guide](../development/context-management.md)
+**Developer Documentation**: Context Management Guide (to be created in `../development/`)
 
 ### 3. Accurate Token Estimation
 
@@ -254,7 +259,7 @@ breakdown = estimate_prompt_tokens(
 - **Context Management**: Stay within model context limits
 - **Performance Monitoring**: Track token usage patterns by response type and complexity
 
-**Developer Documentation**: [Token Estimation Guide](../development/token-estimation.md)
+**Developer Documentation**: [Token Estimation Guide](../development/TOKEN_ESTIMATION.md)
 
 ### 4. Centralized Configuration
 
@@ -1576,18 +1581,17 @@ Core business services implementing case, data, knowledge, planning, and session
 - [`Investigation Phases and OODA Integration Framework v2.1`](./investigation-phases-and-ooda-integration.md) - 🎯 Investigation process (used by case_service, planning_service): 7-phase lifecycle (0-6), OODA steps, engagement modes, state management
 - [`Evidence Collection and Tracking Design v2.1`](./evidence-collection-and-tracking-design.md) - 🎯 Evidence data models (used by case_service): Schemas, 5D classification, strategies, agent behaviors  
 - [`Case Lifecycle Management v1.0`](./case-lifecycle-management.md) - Case status state machine (case_service.py): 7 states, transition rules, stall detection
-- [`Session Management Specification v1.0`](../specifications/session-management-spec.md) - Multi-session architecture (session_service.py): Client-based resumption, OODA state persistence, Redis storage
-- [`Data Processing Pipeline Design`](./data-processing-pipeline.md) - 📝 *To create* - File processing (data_service.py): Classification, insight extraction, async workflows
-- [`Knowledge Base Architecture`](./knowledge-base-architecture.md) - 📝 *To create* - Document management (knowledge_service.py): RAG, ingestion, semantic search
-- [`Planning System Architecture`](./planning-system-architecture.md) - 📝 *To create* - Strategic planning (planning_service.py): Problem decomposition, risk assessment
+- [`Session Management Specification v1.0`](./specifications/session-management-spec.md) - Multi-session architecture (session_service.py): Client-based resumption, OODA state persistence, Redis storage
+- [`Data Processing Pipeline Design`](./data-processing-pipeline-design.md) - 📝 Design document (implementation pending) - File processing (data_service.py): Classification, insight extraction, async workflows
+- [`Knowledge Base Architecture`](./knowledge-base-architecture.md) - 📝 Design document (implementation pending) - Document management (knowledge_service.py): RAG, ingestion, semantic search
+- [`Planning System Architecture`](./planning-system-architecture.md) - 📝 Design document (implementation pending) - Strategic planning (planning_service.py): Problem decomposition, risk assessment
 
 #### Agentic Framework (`services/agentic/`)
 
 AI agent framework with orchestration, engines, management, and safety:
 
 - [`Investigation Phases and OODA Integration Framework`](./investigation-phases-and-ooda-integration.md) - ✅ **IMPLEMENTED** (v3.2.0) - 7-phase investigation with OODA engine, phase handlers, and adaptive reasoning
-- [`Phase-Specific Agent Implementation`](./phase-specific-agent-implementation.md) - 📝 *To create* - Sub-agent architecture (doctor_patient/sub_agents/): intake, blast_radius, timeline, hypothesis, validation, solution agents
-- [`Prompt Engineering Architecture`](./prompt-engineering-architecture.md) - 📝 Prompting system: Multi-layer assembly, optimization, phase-aware selection
+- [`Prompt Engineering Architecture`](./prompt-engineering-architecture.md) - ✅ **ACTIVE** (v3.2.0) - Prompting system: Multi-layer assembly, optimization, phase-aware selection, doctor-patient philosophy
 
 #### Evidence Services (`services/evidence/`)
 
@@ -1629,7 +1633,7 @@ Evidence collection implementation:
 #### Agent and Reasoning
 
 - Investigation Phases Framework (Section 2) covers core agent reasoning
-- [`Agent Doctrine and Reasoning`](./agent-doctrine-and-reasoning.md) - 📝 *To create* - SRE methodology (core/agent/): 5-phase doctrine, reasoning workflows
+- [`Agent Doctrine and Reasoning`](./agent-doctrine-and-reasoning.md) - 📝 *To create* - SRE methodology (core/agent/): 7-phase investigation doctrine (Phases 0-6), OODA reasoning workflows
 
 #### Data Processing and Analysis
 
@@ -1684,7 +1688,7 @@ Evidence collection implementation:
 
 - [`Data Models Reference`](./data-models-reference.md) - 📝 *To create* - Core models: api.py (API schema), agentic.py (framework), case.py, evidence.py, interfaces.py
 - [`Interface Definitions`](./interface-definitions.md) - 📝 *To create* - Service interfaces: IAgentService, IDataService, IKnowledgeService, infrastructure interfaces
-- [`Dependency Injection Design`](./dependency-injection-design.md) - 📝 *To create* - DI container (container.py): Service registration, interface bindings, lifecycle
+- [`Dependency Injection System`](./dependency-injection-system.md) - ✅ Design document - DI container (container.py): Service registration, interface bindings, lifecycle
 
 ---
 
@@ -1693,7 +1697,7 @@ Evidence collection implementation:
 **Code Location**: `faultmaven/config/`, deployment  
 **Update Frequency**: 🔷 LOW (stable operational configs)
 
-- [`Configuration Management`](../specifications/CONFIGURATION_MANAGEMENT_SPEC.md) - Settings system (config/settings.py): Environment-based, centralized thresholds
+- [`Configuration Management`](./specifications/CONFIGURATION_MANAGEMENT_SPEC.md) - Settings system (config/settings.py): Environment-based, centralized thresholds
 - [`Feature Flags System`](./feature-flags-system.md) - 📝 *To create* - Runtime toggles (config/feature_flags.py): Safe deployments, A/B testing
 - [`Performance and Scalability Design`](./performance-and-scalability.md) - 📝 *To create* - Performance architecture: Response times, throughput, horizontal scaling, caching
 - [`Deployment Architecture`](./deployment-architecture.md) - 📝 *To create* - Deployment strategy: Container, dependencies, HA, graceful shutdown
@@ -1719,11 +1723,11 @@ Evidence collection implementation:
 **Update Frequency**: 🔷 LOW (stable guides)
 
 - [`Developer Guide`](./developer-guide.md) - Getting started, development setup, workflow
-- [`Token Estimation Guide`](../development/token-estimation.md) - Token counting, cost optimization, provider-specific tokenizers
+- [`Token Estimation Guide`](../development/TOKEN_ESTIMATION.md) - Token counting, cost optimization, provider-specific tokenizers
 - [`Container Usage Guide`](./container-usage-guide.md) - DI container usage, service registration, dependency resolution
 - [`Testing Guide`](./testing-guide.md) - Test strategy, fixtures, mocking, integration tests
-- [`Testing Investigation Framework`](../guides/testing-investigation-framework.md) - Testing strategies for investigation phases, OODA, hypotheses, evidence tracking
-- [`Operational Configuration`](../guides/operational-configuration.md) - System requirements, configuration, monitoring, deployment
+- [`Testing Investigation Framework`](../how-to/testing-investigation-framework.md) - Testing strategies for investigation phases, OODA, hypotheses, evidence tracking
+- [`Operational Configuration`](../how-to/operational-configuration.md) - System requirements, configuration, monitoring, deployment
 
 ---
 
@@ -1735,10 +1739,10 @@ Evidence collection implementation:
 **Architecture Evolution**:
 - [`Configuration System Refactor`](./configuration-system-refactor-design.md) - Configuration centralization evolution
 
-**Legacy Architecture** (Reference Only):
-- [`Doctor-Patient Prompting v1.0`](./DOCTOR_PATIENT_PROMPTING_ARCHITECTURE.md) - 🔄 Original prompting (Phase 0-5 sub-agents in services/agentic/doctor_patient/)
-- [`Sub-Agent Architecture v1.0`](./SUB_AGENT_ARCHITECTURE.md) - 🔄 Multi-agent coordination patterns
-- [`System Architecture v1.0`](./SYSTEM_ARCHITECTURE.md) - 🔄 Original architecture (superseded by Architecture Overview v2.0)
+**Archived Architecture** (Historical Reference):
+- [`Doctor-Patient Prompting v1.0`](./archive/DOCTOR_PATIENT_PROMPTING_ARCHITECTURE.md) - 🗄️ Original prompting (superseded by OODA framework v3.2.0)
+- [`Sub-Agent Architecture v1.0`](./archive/SUB_AGENT_ARCHITECTURE.md) - 🗄️ Multi-agent coordination patterns (superseded by phase handlers)
+- [`System Architecture v1.0`](./archive/SYSTEM_ARCHITECTURE.md) - 🗄️ Original architecture (superseded by Architecture Overview v2.0)
 
 
 ---
@@ -1774,7 +1778,8 @@ faultmaven/config/              → Section 7 (Configuration)
 
 ---
 
-**Document Version**: 2.0  
-**Last Updated**: 2025-10-11  
+**Document Version**: 2.0
+**Last Updated**: 2025-10-12  
+**Documentation Version**: 2.1 (Updated for folder reorganization)  
 **Status**: Master Architecture Document - Organized by actual code structure for easy implementation navigation
 

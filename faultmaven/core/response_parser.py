@@ -347,12 +347,24 @@ class ResponseParser:
         Returns:
             Dictionary with success rates per tier
         """
+        # Compute tier2_success as sum of all tier2 variants for backward compatibility
+        tier2_success = (
+            self.stats["tier2_direct_json"]
+            + self.stats["tier2_markdown_extraction"]
+            + self.stats["tier2_brace_extraction"]
+        )
+
         if self.stats["total_attempts"] == 0:
-            return {**self.stats, "overall_success_rate": 0.0}
+            return {
+                **self.stats,
+                "tier2_success": tier2_success,
+                "overall_success_rate": 0.0,
+            }
 
         overall_success = self.stats["total_attempts"] - self.stats["total_failures"]
         return {
             **self.stats,
+            "tier2_success": tier2_success,
             "overall_success_rate": overall_success / self.stats["total_attempts"],
         }
 

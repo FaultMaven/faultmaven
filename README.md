@@ -38,13 +38,13 @@ graph LR
 - **Privacy-First Security**: Comprehensive PII redaction with Presidio microservice integration
 - **User Management**: Authentication, account management, billing, and usage tracking
 
-### 2. [FaultMaven Website](https://faultmaven.com) (This Repository)
+### 2. [FaultMaven Website](https://faultmaven.com) (`website/` folder in this repository)
 - **User Authentication**: Registration, login, password management
 - **Account Dashboard**: Profile management, subscription, billing
 - **Marketing Pages**: Landing pages, features, pricing, company information
 - **Extension Download**: Browser extension distribution and setup guides
 
-### 3. [FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot) (Separate Repository)
+### 3. [FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot) (Separate Repository - NOT in this repo)
 - **Browser Extension UI**: Troubleshooting interface with 7 response types
 - **Real-time Communication**: Interactive chat with AI agent
 - **Evidence Submission**: File uploads and data input
@@ -104,10 +104,10 @@ graph LR
    redis               Up 5 minutes        6379/tcp
    ```
 
-4. Start the website frontend:
+4. Start the website:
    ```bash
-   # In faultmaven directory (website frontend)
-   cd frontend
+   # In faultmaven directory (faultmaven.ai website)
+   cd website
    npm install
    npm run dev
    # Website will be available at http://localhost:3000
@@ -306,17 +306,17 @@ For detailed architecture documentation, see:
 ```
 faultmaven/
 ├── api/v1/              # API Layer - HTTP endpoints and routing
-│   ├── routes/          # Domain-specific routers (agent, data, knowledge, session)
+│   ├── routes/          # Domain-specific routers (case, data, knowledge, session)
 │   └── dependencies.py  # FastAPI dependency injection integration
 ├── services/            # Service Layer - Business logic orchestration 
-│   ├── agent.py    # Troubleshooting workflow orchestration
-│   ├── data.py     # Data processing pipeline management
-│   ├── knowledge.py # Knowledge base operations
-│   └── session.py   # Session lifecycle management
+│   ├── domain/          # Domain services (agent, data, knowledge, session, case)
+│   ├── agentic/         # Agentic framework (7-component autonomous AI system)
+│   └── evidence/        # Evidence collection and lifecycle management
 ├── core/                # Core Domain - Business logic and entities
-│   ├── agent/           # AI reasoning engine (LangGraph + 5-phase doctrine)
+│   ├── agent/           # AI reasoning engine (LangGraph + 7-phase investigation)
 │   ├── knowledge/       # RAG document processing
-│   └── processing/      # Data classification and log analysis
+│   ├── processing/      # Data classification and log analysis
+│   └── investigation/   # Investigation phases, OODA engine, hypothesis manager
 ├── infrastructure/      # Infrastructure - External service integrations
 │   ├── llm/            # Multi-provider LLM routing (7 providers)
 │   ├── security/       # PII redaction with Presidio integration
@@ -331,6 +331,13 @@ faultmaven/
 ├── container.py        # Dependency Injection Container (DIContainer)
 ├── config/             # Configuration and Feature Flags
 └── main.py             # FastAPI application with DI integration
+
+website/                # FaultMaven.ai website (Next.js)
+├── src/                # Website source code
+│   ├── components/     # React components (marketing, auth, dashboard)
+│   ├── pages/          # Next.js pages
+│   └── styles/         # Tailwind CSS styling
+└── public/             # Static assets
 ```
 
 ## ⚙️ Configuration
@@ -450,12 +457,16 @@ FaultMaven documentation is organized into strategic and tactical levels:
 
 - 🚀 **[Getting Started](./docs/getting-started/)** - User guide and quickstart
 - 🏗️ **[Architecture Overview](./docs/architecture/architecture-overview.md)** - 🎯 Master architecture document
-- 📋 **[System Requirements](./docs/specifications/system-requirements-specification.md)** - 🎯 Requirements (v2.0)
-- 🔌 **[API Documentation](./docs/api/)** - OpenAPI spec and integration guides
-- 💻 **[Development](./docs/development/)** - Setup, guides, best practices
+- 📋 **[System Requirements](./docs/system-requirements-specification.md)** - 🎯 Requirements (v2.0)
+- 🔌 **[API Documentation](./docs/api/)** - API contracts, OpenAPI spec, integration guides
+- 🛠️ **[Tools](./docs/tools/)** - Session-level troubleshooting tools (KB, web search, log analysis, MCP)
+- 💻 **[Development](./docs/development/)** - Developer environment setup and configuration
 - 🧪 **[Testing](./docs/testing/)** - Testing strategies and patterns
-- 🔒 **[Security](./docs/security/)** - Security and protection systems
-- 🏗️ **[Infrastructure](./docs/infrastructure/)** - Infrastructure setup and configuration
+- 📚 **[How-To Guides](./docs/how-to/)** - Integration and operational procedures
+- 🔒 **[Security](./docs/security/)** - Security implementation and policies
+- 🏗️ **[Infrastructure](./docs/infrastructure/)** - Infrastructure setup (Redis, ChromaDB, LLM, Opik)
+- 📖 **[Runbooks](./docs/runbooks/)** - Operational troubleshooting runbooks
+- 📝 **[Changelog](./CHANGELOG.md)** - Release notes and version history
 
 ### Documentation Structure
 
@@ -463,15 +474,15 @@ See **[docs/README.md](./docs/README.md)** for complete documentation index.
 
 **Master Documents** (Authoritative Sources):
 - 🎯 [Architecture Overview](./docs/architecture/architecture-overview.md) - System architecture (v2.0, code-aligned)
-- 🎯 [System Requirements](./docs/specifications/system-requirements-specification.md) - Requirements (v2.0, 62 requirements)
+- 🎯 [System Requirements](./docs/system-requirements-specification.md) - Requirements (v2.0, 62 requirements)
 - 🎯 [Investigation Phases Framework](./docs/architecture/investigation-phases-and-ooda-integration.md) - Process framework (v2.1, 7 phases)
 - 🎯 [Evidence Collection Design](./docs/architecture/evidence-collection-and-tracking-design.md) - Evidence models (v2.1)
 
 ### Documentation by Role
 
 #### For Product Managers & Stakeholders
-- **[System Requirements Specification](./docs/specifications/system-requirements-specification.md)** - 62 requirements: what the system must do
-- **[Case and Session Concepts](./docs/specifications/CASE_SESSION_CONCEPTS.md)** - Core concepts and distinctions
+- **[System Requirements Specification](./docs/system-requirements-specification.md)** - 62 requirements: what the system must do
+- **[Case and Session Concepts](./docs/architecture/case-and-session-concepts.md)** - Core concepts and distinctions
 
 #### For Architects & Technical Leads
 - **[Architecture Overview](./docs/architecture/architecture-overview.md)** - Complete system design (code-aligned, 40+ docs)
@@ -489,10 +500,12 @@ See **[docs/README.md](./docs/README.md)** for complete documentation index.
 - **[How to Add Providers](./docs/development/how-to-add-providers.md)** - LLM provider integration
 
 #### For Frontend Developers
-- **[Website Frontend Guide](./docs/frontend/website-guide.md)** - Landing pages, auth, user management
-- **[Website Components](./docs/frontend/website-components.md)** - Component library
+- **[Website Guide](./docs/frontend/website-guide.md)** - FaultMaven.ai website (landing pages, auth, user management)
+- **[Website Components](./docs/frontend/website-components.md)** - Website component library
+- **[Copilot Components](./docs/frontend/copilot-components.md)** - Browser extension component library
 - **[API Integration](./docs/frontend/api-integration.md)** - Frontend-backend integration
-- **[Copilot Extension](https://github.com/FaultMaven/faultmaven-copilot)** - Browser extension (separate repo)
+- **[Copilot Extension Repository](https://github.com/FaultMaven/faultmaven-copilot)** - Browser extension (separate repo)
+- **[Extension Troubleshooting](./docs/frontend/troubleshooting-browser-extension.md)** - Common issues
 
 #### For DevOps & Operations
 - **[Infrastructure Guides](./docs/infrastructure/)** - Redis, ChromaDB, Opik, local LLM
@@ -512,8 +525,8 @@ See **[docs/README.md](./docs/README.md)** for complete documentation index.
 - **Copilot Extension Components**: Each response type has dedicated React components with specific behaviors in the browser extension
 - **Website Frontend**: Landing pages, authentication, and user management (separate from the 7 response types)
 - **Implementation**: 
+  - **Website**: See [Website Component Library](./docs/frontend/website-components.md)
   - **Copilot Extension**: See [Copilot Repository](https://github.com/FaultMaven/faultmaven-copilot) for complete implementation
-  - **Website**: See [Website Component Library](../docs/frontend/website-components.md)
 
 #### **Intelligent Communication**
 - **Memory Management**: Hierarchical memory system with context awareness
@@ -535,4 +548,4 @@ See **[docs/README.md](./docs/README.md)** for complete documentation index.
 - [LLM Provider Setup](docs/how-to-add-providers.md)
 - [Testing Guide](tests/README.md)
 - [Testing Architecture Guide](docs/architecture/testing-guide.md)
-- [Migration Guide](docs/migration/import-migration-guide.md)
+- [Migration Guides](docs/archive/migrations/) (archived)

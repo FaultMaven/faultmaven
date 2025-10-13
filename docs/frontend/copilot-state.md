@@ -886,9 +886,9 @@ describe('Case Queries', () => {
 This state management system provides a robust foundation for the FaultMaven frontend, ensuring predictable state updates, optimal performance, and excellent developer experience.
 
 For additional guidance, refer to:
-- [Component Library](../frontend/component-library.md)
-- [API Integration Guide](../frontend/api-integration.md)
-- [Frontend Testing Strategies](../frontend/testing-strategies.md)
+- [Copilot Extension Repository](https://github.com/FaultMaven/faultmaven-copilot) - Complete extension implementation
+- [API Integration Guide](./api-integration.md) - Website API integration
+- [Extension Testing](./extension-testing.md) - Testing strategies
 - [System Requirements](../FAULTMAVEN_SYSTEM_REQUIREMENTS.md) - Frontend Design section
 
 ---

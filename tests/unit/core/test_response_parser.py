@@ -128,7 +128,7 @@ class TestTier2JSONParsing:
 
         assert isinstance(result, OODAResponse)
         assert result.answer == "Clean JSON response"
-        assert parser.stats["tier2_success"] == 1
+        assert parser.stats["tier2_direct_json"] == 1
 
     def test_parse_json_with_markdown_wrapper(self):
         """Test parsing JSON wrapped in markdown code block"""
@@ -146,7 +146,7 @@ class TestTier2JSONParsing:
 
         assert isinstance(result, OODAResponse)
         assert result.answer == "JSON in markdown wrapper"
-        assert parser.stats["tier2_success"] == 1
+        assert parser.stats["tier2_markdown_extraction"] == 1
 
     def test_parse_json_with_surrounding_text(self):
         """Test parsing JSON embedded in text"""
@@ -166,7 +166,7 @@ Hope this helps!"""
 
         assert isinstance(result, OODAResponse)
         assert result.answer == "JSON with surrounding text"
-        assert parser.stats["tier2_success"] == 1
+        assert parser.stats["tier2_brace_extraction"] == 1
 
     def test_parse_json_with_llm_prefix(self):
         """Test parsing JSON with LLM prefixes"""
@@ -186,7 +186,7 @@ Hope this helps!"""
 
         assert isinstance(result, OODAResponse)
         assert result.answer == "JSON with LLM prefix"
-        assert parser.stats["tier2_success"] == 1
+        assert parser.stats["tier2_markdown_extraction"] == 1
 
     def test_parse_malformed_json_falls_back_to_tier3(self):
         """Test that malformed JSON falls back to Tier 3"""
@@ -335,9 +335,9 @@ class TestParserStatistics:
         parser.parse({"answer": "Test 1"}, OODAResponse)
         assert parser.stats["tier1_success"] == 1
 
-        # Tier 2 success
+        # Tier 2 success (clean JSON)
         parser.parse(json.dumps({"answer": "Test 2"}), OODAResponse)
-        assert parser.stats["tier2_success"] == 1
+        assert parser.stats["tier2_direct_json"] == 1
 
         # Tier 3 success
         parser.parse("Natural language test", OODAResponse)

@@ -429,6 +429,12 @@ class InvestigationLifecycle(BaseModel):
     turns_in_current_phase: int = Field(default=0)
     phase_complete: bool = Field(default=False)
 
+    # Document phase tracking
+    artifacts_offered: bool = Field(
+        default=False,
+        description="Whether documentation artifacts have been offered to user"
+    )
+
 
 class OODAEngineState(BaseModel):
     """OODA Engine Layer - Tactical execution state"""

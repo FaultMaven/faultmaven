@@ -35,13 +35,13 @@ class TestEnums:
         assert ResponseType.SOLUTION_READY == "SOLUTION_READY"
         assert ResponseType.NEEDS_MORE_DATA == "NEEDS_MORE_DATA"
         assert ResponseType.ESCALATION_REQUIRED == "ESCALATION_REQUIRED"
-        assert ResponseType.DATA_REQUEST == "DATA_REQUEST"
-        assert ResponseType.ERROR == "ERROR"
-        
-        # Test all values are present - updated to include all current enum values
+        assert ResponseType.VISUAL_DIAGRAM == "VISUAL_DIAGRAM"
+        assert ResponseType.COMPARISON_TABLE == "COMPARISON_TABLE"
+
+        # Test all values are present - updated to include all current enum values (9 total)
         expected_values = {
             "ANSWER", "PLAN_PROPOSAL", "CLARIFICATION_REQUEST", "CONFIRMATION_REQUEST",
-            "SOLUTION_READY", "NEEDS_MORE_DATA", "ESCALATION_REQUIRED", "DATA_REQUEST", "ERROR"
+            "SOLUTION_READY", "NEEDS_MORE_DATA", "ESCALATION_REQUIRED", "VISUAL_DIAGRAM", "COMPARISON_TABLE"
         }
         actual_values = {rt.value for rt in ResponseType}
         assert actual_values == expected_values
@@ -552,8 +552,8 @@ class TestAgentResponseModel:
         (ResponseType.SOLUTION_READY, None, True),
         (ResponseType.NEEDS_MORE_DATA, None, True),
         (ResponseType.ESCALATION_REQUIRED, None, True),
-        (ResponseType.DATA_REQUEST, None, True),
-        (ResponseType.ERROR, None, True),
+        (ResponseType.VISUAL_DIAGRAM, None, True),
+        (ResponseType.COMPARISON_TABLE, None, True),
         (ResponseType.PLAN_PROPOSAL, [PlanStep(description="test")], True),
         (ResponseType.PLAN_PROPOSAL, None, False),  # Should fail
         (ResponseType.ANSWER, [PlanStep(description="test")], False),  # Should fail
@@ -562,8 +562,8 @@ class TestAgentResponseModel:
         (ResponseType.SOLUTION_READY, [PlanStep(description="test")], False),  # Should fail
         (ResponseType.NEEDS_MORE_DATA, [PlanStep(description="test")], False),  # Should fail
         (ResponseType.ESCALATION_REQUIRED, [PlanStep(description="test")], False),  # Should fail
-        (ResponseType.DATA_REQUEST, [PlanStep(description="test")], False),  # Should fail
-        (ResponseType.ERROR, [PlanStep(description="test")], False)  # Should fail
+        (ResponseType.VISUAL_DIAGRAM, [PlanStep(description="test")], False),  # Should fail
+        (ResponseType.COMPARISON_TABLE, [PlanStep(description="test")], False)  # Should fail
     ])
     def test_agent_response_plan_consistency_validator(self, response_type, plan, should_pass):
         """Test AgentResponse plan consistency validation."""

@@ -15,7 +15,7 @@ Objectives:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from typing import List
+from typing import List, Optional
 
 from faultmaven.models.investigation import (
     InvestigationPhase,
@@ -23,10 +23,17 @@ from faultmaven.models.investigation import (
     OODAStep,
     HypothesisStatus,
 )
+from faultmaven.models.evidence import EvidenceProvided, EvidenceRequest
 from faultmaven.services.agentic.phase_handlers.base import BasePhaseHandler, PhaseHandlerResult
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.ooda_engine import AdaptiveIntensityController
 from faultmaven.prompts.investigation.lead_investigator import get_lead_investigator_prompt
+from faultmaven.services.evidence.consumption import (
+    get_new_evidence_since_turn_from_diagnostic,
+    get_evidence_for_requests,
+    check_requests_complete,
+    summarize_evidence_findings,
+)
 
 
 class ValidationHandler(BasePhaseHandler):
@@ -55,24 +62,37 @@ class ValidationHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str = "",
+        evidence_provided: Optional[List[EvidenceProvided]] = None,
+        evidence_requests: Optional[List[EvidenceRequest]] = None,
     ) -> PhaseHandlerResult:
         """Handle Phase 4: Validation - Full OODA cycle
 
         Flow:
-        1. Check for anchoring
-        2. Determine OODA step
-        3. Execute step logic
-        4. Check phase completion
-        5. Return result
+        1. Consume new evidence if provided
+        2. Check for anchoring
+        3. Determine OODA step
+        4. Execute step logic
+        5. Check phase completion
+        6. Return result
 
         Args:
             investigation_state: Current investigation state
             user_query: User's query
             conversation_history: Recent conversation
+            evidence_provided: List of evidence provided (from diagnostic state)
+            evidence_requests: List of evidence requests (from diagnostic state)
 
         Returns:
             PhaseHandlerResult with response and state updates
         """
+        # Consume new evidence if available
+        if evidence_provided:
+            await self._consume_validation_evidence(
+                investigation_state,
+                evidence_provided,
+                evidence_requests or []
+            )
+
         # Check for anchoring
         anchoring_detected, reason = await self._check_anchoring(investigation_state)
         if anchoring_detected:
@@ -91,6 +111,131 @@ class ValidationHandler(BasePhaseHandler):
             return await self._execute_act(investigation_state, user_query, conversation_history)
         else:
             return await self._execute_observe(investigation_state, user_query, conversation_history)
+
+    async def _consume_validation_evidence(
+        self,
+        investigation_state: InvestigationState,
+        evidence_provided: List[EvidenceProvided],
+        evidence_requests: List[EvidenceRequest],
+    ) -> None:
+        """Consume evidence provided by users and update hypothesis validation status.
+
+        Args:
+            investigation_state: Current investigation state (modified in-place)
+            evidence_provided: All evidence provided
+            evidence_requests: All evidence requests
+        """
+        # Get new evidence since last OODA iteration
+        last_turn = (
+            investigation_state.ooda_engine.iterations[-1].turn_number
+            if investigation_state.ooda_engine.iterations
+            else 0
+        )
+        new_evidence = get_new_evidence_since_turn_from_diagnostic(evidence_provided, last_turn)
+
+        if not new_evidence:
+            self.log_phase_action("No new evidence to consume")
+            return
+
+        self.log_phase_action(
+            "Consuming validation evidence",
+            {"new_evidence_count": len(new_evidence)}
+        )
+
+        # Update hypothesis validation status based on evidence
+        for hypothesis in investigation_state.ooda_engine.hypotheses:
+            if hypothesis.status not in [HypothesisStatus.TESTING, HypothesisStatus.PENDING]:
+                continue
+
+            # Get validation request IDs for this hypothesis
+            # Note: This requires hypothesis to have validation_request_ids attribute
+            # If not available, we check evidence that addresses hypothesis-related requests
+            validation_request_ids = getattr(hypothesis, 'validation_request_ids', [])
+
+            if not validation_request_ids:
+                # Fall back to checking if evidence mentions this hypothesis
+                hypothesis_evidence = [
+                    e for e in new_evidence
+                    if hypothesis.hypothesis_id in e.metadata.get('for_hypothesis_id', '')
+                    or hypothesis.statement[:50] in e.content
+                ]
+            else:
+                # Get evidence for this hypothesis's validation requests
+                hypothesis_evidence = get_evidence_for_requests(
+                    new_evidence,
+                    validation_request_ids
+                )
+
+            if not hypothesis_evidence:
+                continue
+
+            # Analyze evidence types
+            supportive = [
+                e for e in hypothesis_evidence
+                if e.evidence_type.value == "supportive"
+            ]
+            refuting = [
+                e for e in hypothesis_evidence
+                if e.evidence_type.value == "refuting"
+            ]
+            neutral = [
+                e for e in hypothesis_evidence
+                if e.evidence_type.value == "neutral"
+            ]
+
+            # Update hypothesis status and confidence
+            if len(supportive) > len(refuting):
+                # More supportive evidence
+                confidence_boost = min(0.2, len(supportive) * 0.1)
+                hypothesis.likelihood = min(1.0, hypothesis.likelihood + confidence_boost)
+                hypothesis.supporting_evidence.extend([e.evidence_id for e in supportive])
+
+                if hypothesis.likelihood >= 0.7:
+                    hypothesis.status = HypothesisStatus.VALIDATED
+                    self.log_phase_action(
+                        "Hypothesis validated",
+                        {
+                            "hypothesis_id": hypothesis.hypothesis_id,
+                            "confidence": hypothesis.likelihood
+                        }
+                    )
+                else:
+                    hypothesis.status = HypothesisStatus.TESTING
+
+            elif len(refuting) > len(supportive):
+                # More refuting evidence
+                confidence_drop = min(0.3, len(refuting) * 0.15)
+                hypothesis.likelihood = max(0.0, hypothesis.likelihood - confidence_drop)
+                hypothesis.refuting_evidence.extend([e.evidence_id for e in refuting])
+
+                if hypothesis.likelihood < 0.3:
+                    hypothesis.status = HypothesisStatus.REFUTED
+                    self.log_phase_action(
+                        "Hypothesis refuted",
+                        {
+                            "hypothesis_id": hypothesis.hypothesis_id,
+                            "confidence": hypothesis.likelihood
+                        }
+                    )
+                else:
+                    hypothesis.status = HypothesisStatus.TESTING
+
+            # Update last progress tracking
+            if supportive or refuting:
+                hypothesis.last_progress_at_turn = investigation_state.metadata.current_turn
+                hypothesis.iterations_without_progress = 0
+
+            self.log_phase_action(
+                "Updated hypothesis based on evidence",
+                {
+                    "hypothesis_id": hypothesis.hypothesis_id,
+                    "supportive": len(supportive),
+                    "refuting": len(refuting),
+                    "neutral": len(neutral),
+                    "new_confidence": hypothesis.likelihood,
+                    "status": hypothesis.status.value,
+                }
+            )
 
     async def _execute_observe(self, investigation_state, user_query, conversation_history) -> PhaseHandlerResult:
         """Execute OODA Observe: Request testing evidence"""

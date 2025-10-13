@@ -170,8 +170,8 @@ class DocumentHandler(BasePhaseHandler):
             self.log_phase_action("Artifacts generated", {"artifact_count": len(artifacts)})
 
             return PhaseHandlerResult(
-                response_text=structured_response.answer,
-            structured_response=structured_response,
+                response_text=response,
+                structured_response=None,
                 updated_state=investigation_state,
                 phase_complete=True,
                 should_advance=False,  # No next phase - investigation done
@@ -187,8 +187,8 @@ class DocumentHandler(BasePhaseHandler):
             self.log_phase_action("Artifacts declined", {"user_declined": True})
 
             return PhaseHandlerResult(
-                response_text=structured_response.answer,
-            structured_response=structured_response,
+                response_text=response,
+                structured_response=None,
                 updated_state=investigation_state,
                 phase_complete=True,
                 should_advance=False,
@@ -279,7 +279,7 @@ class DocumentHandler(BasePhaseHandler):
 
 ## Root Cause
 **Validated Hypothesis:** {validated.statement if validated else 'No hypothesis validated'}
-**Confidence:** {validated.likelihood:.0%} if validated else 'N/A'
+**Confidence:** {f"{validated.likelihood:.0%}" if validated else 'N/A'}
 **Category:** {validated.category if validated else 'N/A'}
 
 ## Solution Applied
@@ -294,9 +294,9 @@ class DocumentHandler(BasePhaseHandler):
 """
 
         # Add insights from memory
-        if investigation_state.memory.persistent_insights:
+        if investigation_state.memory.hierarchical_memory.persistent_insights:
             report += "\n### Persistent Insights\n"
-            for insight in investigation_state.memory.persistent_insights:
+            for insight in investigation_state.memory.hierarchical_memory.persistent_insights:
                 report += f"- {insight}\n"
 
         return report
@@ -347,7 +347,7 @@ class DocumentHandler(BasePhaseHandler):
 
 ## Root Cause
 **Most Likely Cause:** {validated.statement if validated else 'Refer to investigation'}
-**Confidence Level:** {validated.likelihood:.0%} if validated else 'N/A'
+**Confidence Level:** {f"{validated.likelihood:.0%}" if validated else 'N/A'}
 
 ## Remediation Steps
 1. Verify symptoms match this runbook
@@ -407,9 +407,9 @@ class DocumentHandler(BasePhaseHandler):
             insights += f"**Confidence:** {validated.likelihood:.0%}\n\n"
 
         # Add persistent insights from memory
-        if investigation_state.memory.persistent_insights:
+        if investigation_state.memory.hierarchical_memory.persistent_insights:
             insights += "## Persistent Investigation Insights\n"
-            for insight in investigation_state.memory.persistent_insights:
+            for insight in investigation_state.memory.hierarchical_memory.persistent_insights:
                 insights += f"- {insight}\n"
 
         # Add anchoring events if any

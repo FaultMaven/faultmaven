@@ -15,15 +15,20 @@ Objectives:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from typing import List
+from typing import List, Optional
 
 from faultmaven.models.investigation import (
     InvestigationPhase,
     InvestigationState,
     OODAStep,
 )
+from faultmaven.models.evidence import EvidenceProvided, EvidenceRequest
 from faultmaven.services.agentic.phase_handlers.base import BasePhaseHandler, PhaseHandlerResult
 from faultmaven.prompts.investigation.lead_investigator import get_lead_investigator_prompt
+from faultmaven.services.evidence.consumption import (
+    get_new_evidence_since_turn_from_diagnostic,
+    summarize_evidence_findings,
+)
 
 
 class SolutionHandler(BasePhaseHandler):
@@ -45,23 +50,53 @@ class SolutionHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str = "",
+        evidence_provided: Optional[List[EvidenceProvided]] = None,
+        evidence_requests: Optional[List[EvidenceRequest]] = None,
     ) -> PhaseHandlerResult:
         """Handle Phase 5: Solution
 
         Flow:
-        1. Determine OODA step (Decide, Act, or Orient)
-        2. Execute step logic
-        3. Check phase completion
-        4. Return result
+        1. Check for solution verification evidence
+        2. Determine OODA step (Decide, Act, or Orient)
+        3. Execute step logic
+        4. Check phase completion
+        5. Return result
 
         Args:
             investigation_state: Current investigation state
             user_query: User's query
             conversation_history: Recent conversation
+            evidence_provided: List of evidence provided (from diagnostic state)
+            evidence_requests: List of evidence requests (from diagnostic state)
 
         Returns:
             PhaseHandlerResult with response and state updates
         """
+        # Enrich context with solution feedback if available
+        additional_context = ""
+        if evidence_provided:
+            last_turn = (
+                investigation_state.ooda_engine.iterations[-1].turn_number
+                if investigation_state.ooda_engine.iterations
+                else 0
+            )
+            new_evidence = get_new_evidence_since_turn_from_diagnostic(evidence_provided, last_turn)
+
+            if new_evidence:
+                evidence_summary = summarize_evidence_findings(new_evidence)
+                additional_context = (
+                    f"\n\n## Solution Feedback:\n{evidence_summary}\n\n"
+                    f"Adjust solution based on this feedback."
+                )
+                self.log_phase_action(
+                    "Enriching context with solution feedback",
+                    {"evidence_count": len(new_evidence)}
+                )
+
+        # Append additional context to conversation history
+        if additional_context:
+            conversation_history = conversation_history + additional_context
+
         # Determine current OODA step
         current_step = self.determine_ooda_step(investigation_state)
 
