@@ -3897,14 +3897,70 @@ components:
     DataType:
       type: string
       enum:
-      - log_file
-      - config_file
-      - error_report
-      - documentation
-      - screenshot
-      - other
+      - logs_and_errors
+      - unstructured_text
+      - structured_config
+      - metrics_and_performance
+      - source_code
+      - visual_evidence
+      - unanalyzable
       title: DataType
-      description: Defines the type of data uploaded by users.
+      description: 7 purpose-driven data classifications for preprocessing pipeline.
+    DataUploadResponse:
+      type: object
+      required:
+      - data_id
+      - filename
+      - file_size
+      - data_type
+      - processing_status
+      - uploaded_at
+      properties:
+        schema_version:
+          type: string
+          enum:
+          - '3.1.0'
+          const: '3.1.0'
+          title: Schema Version
+          default: '3.1.0'
+        data_id:
+          type: string
+          title: Data Id
+        filename:
+          type: string
+          title: Filename
+          description: Uploaded filename
+        file_size:
+          type: integer
+          title: File Size
+          description: File size in bytes
+        data_type:
+          type: string
+          title: Data Type
+          description: Classified data type
+        processing_status:
+          $ref: '#/components/schemas/ProcessingStatus'
+        uploaded_at:
+          type: string
+          title: Uploaded At
+          description: Upload timestamp (ISO 8601)
+        agent_response:
+          anyOf:
+          - $ref: '#/components/schemas/AgentResponse'
+          - type: 'null'
+          description: Conversational AI analysis of the uploaded data
+        classification:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Classification
+          description: Classification confidence and metadata
+        view_state:
+          anyOf:
+          - $ref: '#/components/schemas/ViewState'
+          - type: 'null'
+      title: DataUploadResponse
+      description: Response payload for data upload with AI analysis.
     DevLoginRequest:
       properties:
         username:
