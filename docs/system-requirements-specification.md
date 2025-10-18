@@ -1,8 +1,8 @@
 # FaultMaven System Requirements Specification (SRS)
 
-**Version:** 2.0  
+**Version:** 2.1  
 **Status:** Draft  
-**Date:** October 2025  
+**Date:** October 13, 2025  
 **Document Classification:** Requirements Specification  
 **Audience:** Product Managers, Architects, Engineers, QA, Stakeholders
 
@@ -14,6 +14,7 @@
 |---------|------|--------|---------|
 | 1.0 | August 2025 | FaultMaven Team | Initial requirements document |
 | 2.0 | October 2025 | FaultMaven Team | Refactored to pure requirements specification |
+| 2.1 | October 2025 | FaultMaven Team | Added FR-CM-006 (Case Documentation and Closure), updated lifecycle states |
 
 ---
 
@@ -132,7 +133,15 @@ The system SHALL be considered successful when:
 
 **Dead End**: A conversation state where no productive forward progress is possible due to information gaps, user frustration, or exhausted solution approaches.
 
+**DOCUMENTING State**: A restricted case state entered after resolution where only report generation and case closure requests are accepted. This state enforces case boundary by preventing new incident investigations.
+
 **Escalation**: The process of transferring a case from automated agent handling to human expert intervention.
+
+**Incident Report**: A structured document generated from case history containing timeline, root cause, resolution actions, and recommendations.
+
+**Post-Mortem**: A comprehensive analysis document covering incident details, investigation process, root cause analysis, resolution, and lessons learned.
+
+**Runbook**: A step-by-step procedural document for reproducing an issue and applying the resolution, designed for operational teams.
 
 **PII (Personally Identifiable Information)**: Any data that could be used to identify a specific individual (names, email addresses, phone numbers, SSN, etc.).
 
@@ -480,13 +489,16 @@ The system SHALL manage cases through the following lifecycle states:
 - resolved_with_workaround - Temporary fix applied
 - resolved_by_user - User manually marked as resolved
 
+**Documentation States:**
+- documenting - Case in document generation mode (restricted input)
+
 **Termination States:**
 - escalated - Transferred to human expert
 - abandoned - User abandoned without resolution
 - timeout - Closed due to inactivity (configurable threshold)
 - duplicate - Merged with existing case
 - on_hold - Temporarily paused by user
-- closed - Administratively closed
+- closed - Final state, case archived with optional reports
 
 **State Transition Rules:**
 
@@ -497,8 +509,10 @@ The system SHALL enforce these state transition rules:
 - waiting_for_data → {in_progress, timeout, abandoned}
 - waiting_for_confirmation → {in_progress, resolved, abandoned}
 - on_hold → {in_progress, abandoned, closed}
-- All resolution states → {closed}
-- All termination states → final (no further transitions)
+- All resolution states → {documenting, closed}
+- documenting → {documenting, closed}
+- closed → final (no further transitions)
+- All other termination states → final (no further transitions)
 
 **Acceptance Criteria:**
 1. Every case has exactly one current state at any time
@@ -641,6 +655,114 @@ Multiple termination decision-makers balance:
 - System efficiency and resource management
 - Agent capability boundaries
 - Emergency situation handling
+
+---
+
+#### FR-CM-006: Case Documentation and Closure
+
+**Priority:** High  
+**Category:** Functional - Core  
+**Stakeholder:** End Users, Compliance Team, Operations Team
+
+**Requirement Statement:**
+
+The system SHALL provide documentation generation and structured case closure capabilities. When a case enters a resolution state (resolved, resolved_with_workaround, resolved_by_user), the system SHALL:
+
+**Document Generation Options:**
+- Present users with available report types:
+  - Incident Report: Timeline, root cause, resolution actions
+  - Runbook: Step-by-step reproduction and resolution procedure
+  - Post-Mortem: Comprehensive analysis with lessons learned
+- Allow users to select one or more report types
+- Allow users to close case without generating reports
+
+**DOCUMENTING State Behavior:**
+- Transition to "documenting" state upon first report generation request
+- Restrict input to ONLY:
+  - Additional report generation requests
+  - Case closure requests
+- Reject all other queries with explanation:
+  - New incident reports
+  - Data uploads
+  - General questions
+  - Follow-up troubleshooting
+
+**Report Generation:**
+- Generate reports using LLM based on complete case history
+- Include:
+  - Problem description
+  - Investigation timeline
+  - Evidence collected
+  - Root cause analysis
+  - Resolution actions
+  - Recommendations
+- Store generated reports linked to case
+- Enable report download in multiple formats (Markdown, PDF)
+
+**Case Closure:**
+- Link only the last generated reports to closed case
+- Archive case data including:
+  - Complete conversation history
+  - All uploaded data
+  - Investigation state
+  - Generated reports
+- Make archived reports available for download post-closure
+- Prevent any further modifications after closure
+
+**Context Boundary Enforcement:**
+- Ensure case investigation context is preserved for accurate reporting
+- Prevent context pollution from new unrelated incidents
+- Maintain report accuracy through restricted input mode
+
+**Acceptance Criteria:**
+1. User presented with report options when case enters resolution state
+2. User can select multiple report types in single request
+3. System transitions to "documenting" state on first report request
+4. Non-report/closure requests rejected with clear explanation
+5. Reports generated within 30 seconds for standard cases
+6. Generated reports linked to case and downloadable
+7. Case closure archives all data including reports
+8. Closed case reports remain accessible for minimum 90 days
+9. New incident attempts trigger "create new case" suggestion
+10. Report generation uses complete case context without pollution
+
+**Dependencies:**
+- FR-CM-003 (Case Lifecycle States)
+- FR-CM-005 (Case Termination)
+- FR-RT-001 (Response Types) - for structured responses
+- DR-002 (Case Data Model)
+
+**Constraints:**
+- Report generation requires complete case history
+- DOCUMENTING state is one-way (no return to active investigation)
+- Only last report generation counts for case closure
+- Reports must maintain data privacy (PII redacted)
+- Maximum 5 report regeneration requests per case
+
+**Rationale:**
+
+Structured document generation and case closure provides:
+- **Context Hygiene**: Prevents mixing unrelated incidents in single case
+- **Accurate Documentation**: Reports reflect complete investigation without pollution
+- **Professional Artifacts**: Incident reports, runbooks, post-mortems for operations
+- **Compliance**: Audit trail and documentation for regulatory requirements
+- **Knowledge Capture**: Structured learnings for future reference
+- **Clear Boundaries**: Explicit case conclusion prevents endless investigations
+
+**Notes:**
+
+This requirement implements a critical workflow pattern:
+1. User resolves issue → system offers report generation
+2. User selects reports → system enters restricted mode
+3. User may regenerate reports → previous reports replaced
+4. User closes case → final reports archived with case
+5. New issues → user must create new case
+
+This pattern ensures:
+- Each case represents ONE incident/investigation
+- Reports accurately document THAT incident
+- No context pollution from subsequent unrelated issues
+- Clean case management with clear boundaries
 
 ---
 
@@ -3102,9 +3224,106 @@ Structured data management enables:
 
 ---
 
+#### DR-005: Case Report Data Model
+
+**Priority:** High  
+**Category:** Data Model  
+**Stakeholder:** Engineers, Operations Team, Compliance Team
+
+**Requirement Statement:**
+
+The system SHALL persist case reports with the following data model:
+
+**CaseReport Entity:**
+
+| Field | Type | Constraints | Required |
+|-------|------|-------------|----------|
+| report_id | string | UUID v4, immutable | Yes |
+| case_id | string | Foreign key to Case, immutable | Yes |
+| report_type | enum | incident_report, runbook, post_mortem | Yes |
+| title | string | 1-200 chars | Yes |
+| content | string | LLM-generated report content | Yes |
+| format | enum | markdown, pdf, html | Yes |
+| generation_status | enum | generating, completed, failed | Yes |
+| generated_at | timestamp | UTC ISO 8601 | Yes |
+| generation_time_ms | integer | Milliseconds taken to generate | Yes |
+| is_current | boolean | True if latest version for this type | Yes |
+| version | integer | Incremental version number | Yes |
+| linked_to_closure | boolean | True if linked when case closed | Yes |
+| metadata | object | Generation params, LLM model used | No |
+
+**Report Sections (for structured content):**
+
+| Field | Type | Constraints | Required |
+|-------|------|-------------|----------|
+| section_id | string | UUID v4 | Yes |
+| report_id | string | Foreign key to CaseReport | Yes |
+| section_type | enum | timeline, root_cause, resolution, recommendations, etc. | Yes |
+| section_order | integer | Display order | Yes |
+| section_content | string | Markdown formatted content | Yes |
+
+**Acceptance Criteria:**
+1. Each report generation creates new CaseReport record
+2. Multiple reports of same type supported (version tracking)
+3. Only latest version per type marked as is_current=true
+4. Reports linked to case closure preserve linked_to_closure=true
+5. Report content stored with proper escaping and formatting
+6. Reports support multiple output formats (Markdown, PDF)
+7. Failed generations recorded with error details
+8. Reports accessible to case owner for 90+ days post-closure
+9. Report generation time tracked for performance monitoring
+10. Maximum 5 versions per report type per case
+
+**Relationships:**
+
+- Report belongs to exactly one Case
+- Report may have many ReportSections
+- Case may have many Reports (multiple types, multiple versions)
+- Only reports with linked_to_closure=true preserved with archived case
+
+**Indexes Required:**
+
+- Primary: report_id
+- case_id (for case reports query)
+- (case_id, report_type, is_current) composite (for latest version query)
+- (case_id, linked_to_closure) composite (for closure reports query)
+- generated_at (for chronological queries)
+
+**Dependencies:**
+- FR-CM-006 (Case Documentation and Closure)
+- DR-002 (Case Data Model)
+
+**Constraints:**
+- Maximum 15 reports total per case (3 types × 5 versions)
+- Report content size limit: 100KB per report
+- Report generation must complete within 60 seconds
+- PII must be redacted from reports before storage
+
+**Rationale:**
+
+Structured report data model provides:
+- **Version Control**: Track report regeneration history
+- **Closure Linking**: Preserve final reports with archived cases
+- **Multi-Format**: Support different output formats for different consumers
+- **Compliance**: Maintain audit trail of generated documentation
+- **Performance Tracking**: Monitor report generation efficiency
+- **Storage Optimization**: Clean up old versions, retain closure-linked reports
+
+**Notes:**
+
+Report versioning enables users to:
+1. Generate initial report
+2. Review and request refinements
+3. Regenerate improved version
+4. Close case with final version linked
+
+Only the latest version (is_current=true) shown in UI by default, but history retained for audit.
+
+---
+
 ### 6.2 View State Data Model
 
-#### DR-005: View State Object
+#### DR-006: View State Object
 
 **Priority:** Critical  
 **Category:** Data Model  
@@ -3241,7 +3460,7 @@ On validation failure, system SHALL:
 7. Security validations cannot be bypassed
 
 **Dependencies:**
-- All data model requirements (DR-001 through DR-005)
+- All data model requirements (DR-001 through DR-006)
 - NFR-SEC-006 (Transport Security)
 
 **Rationale:**
@@ -3416,7 +3635,7 @@ The system SHALL provide distinct UI behaviors for each response type:
 
 **Dependencies:**
 - FR-RT-003 (Response Type-Specific Behaviors)
-- DR-005 (View State Object)
+- DR-006 (View State Object)
 - NFR-USE-001 (UI Responsiveness)
 
 **Rationale:**
@@ -4618,7 +4837,7 @@ If assumptions invalid:
 | Non-Functional - Usability | 3 | NFR-USE-001, NFR-USE-002, NFR-USE-003 |
 | Non-Functional - Compliance | 3 | NFR-COMP-001, NFR-COMP-002, NFR-COMP-003 |
 | Non-Functional - Observability | 2 | NFR-OBS-001, NFR-OBS-002 |
-| Data Requirements | 9 | DR-001 through DR-005, DR-QUAL-001, DR-QUAL-002 |
+| Data Requirements | 10 | DR-001 through DR-006, DR-QUAL-001, DR-QUAL-002 |
 | Interface Requirements | 9 | UIR-001 through UIR-003, APIR-001 through APIR-003, ESIR-001, ESIR-002 |
 | Quality Attributes | 4 | QA-MAINT-001, QA-TEST-001, QA-PORT-001, QA-INTER-001 |
 

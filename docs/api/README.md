@@ -26,19 +26,8 @@ The FaultMaven API follows clean architecture principles with:
 
 ## Authentication
 
-The API uses **Bearer token authentication** for all protected endpoints. Obtain tokens via the `/api/v1/auth/dev-login` endpoint.
-
-### Authentication Headers
-
-```http
-Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000
-```
-
-### Token Lifecycle
-- **Format**: UUID v4 tokens
-- **Expiration**: 24 hours from creation
-- **Endpoints**: All case operations require authentication
-- **Development**: Use `/api/v1/auth/dev-login` with username to obtain tokens
+Currently, the API does not require authentication. This may change in future versions.
+When implemented, authentication will use API key-based authentication.
 
 ## Rate Limiting
 
@@ -64,7 +53,7 @@ All endpoints return structured error responses with appropriate HTTP status cod
 
 - `200`: Success
 - `400`: Bad Request - Invalid input data
-- `401`: Unauthorized - Missing or invalid Bearer token
+- `401`: Unauthorized - Authentication required (future)
 - `404`: Not Found - Resource not found
 - `422`: Validation Error - Request data validation failed
 - `429`: Too Many Requests - Rate limit exceeded
@@ -90,11 +79,11 @@ All data submitted to the API is processed through privacy-first pipelines with:
 
 **Version:** 1.0.0  
 **Base URL:** `/`  
-**Generated:** 2025-09-14T10:48:35.595364Z
+**Generated:** 2025-10-16T21:22:21.148640Z
 
 ## Authentication
 
-The API requires Bearer token authentication for protected endpoints. See the Authentication section above for details on obtaining and using tokens.
+Currently, the API does not require authentication. Future versions will implement API key or JWT-based authentication.
 
 ## Endpoints
 
@@ -132,17 +121,23 @@ Trigger comprehensive system cleanup and optimization.
 
 **Dev Login**
 
-Developer login mock endpoint.
+Development login endpoint
 
-Creates or authenticates a user with minimal validation (username/email only).
-Returns complete ViewState for immediate UI rendering.
+Authenticates existing users and generates authentication tokens.
+This endpoint is designed for development environments and will be replaced
+with production OAuth2/OIDC integration later.
 
-Args:
-    request: DevLoginRequest with username (email)
-    session_service: Injected session service
-    
-Returns:
-    AuthResponse with ViewState containing user context and initial data
+**Flow:**
+1. Validate username format
+2. Find existing user (returns 401 if user doesn't exist)
+3. Generate authentication token
+4. Return token with user profile
+
+**Security:**
+- Only authenticates existing users (no account creation)
+- Tokens expire after 24 hours
+- Input validation and sanitization
+- Proper OAuth2 error responses
 
 **Tags:** `authentication`, `authentication`
 
@@ -152,9 +147,133 @@ Content-Type: `application/json`
 
 **Responses:**
 
-**200** - Successful Response
+**201** - Successful Response
+
+```json
+{
+  "access_token": "550e8400-e29b-41d4-a716-446655440000",
+  "expires_in": 86400,
+  "session_id": "session-550e8400-e29b-41d4-a716-446655440000",
+  "token_type": "bearer",
+  "user": {
+    "created_at": "2025-01-15T10:00:00Z",
+    "display_name": "John Doe",
+    "email": "john.doe@faultmaven.local",
+    "is_dev_user": true,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "username": "john.doe"
+  }
+}
+```
 
 **422** - Validation Error
+
+---
+
+### `/api/v1/auth/dev-register`
+
+#### POST
+
+**Dev Register**
+
+Development registration endpoint
+
+Creates a new user account and generates an authentication token.
+This endpoint is designed for development environments and will be replaced
+with production registration flows later.
+
+**Flow:**
+1. Validate username format
+2. Check if user already exists (returns 409 if exists)
+3. Create new user account
+4. Generate authentication token
+5. Return token with user profile
+
+**Security:**
+- Prevents duplicate account creation
+- Tokens expire after 24 hours
+- Input validation and sanitization
+- Auto-generates email and display name if not provided
+
+**Tags:** `authentication`, `authentication`
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**201** - Successful Response
+
+```json
+{
+  "access_token": "550e8400-e29b-41d4-a716-446655440000",
+  "expires_in": 86400,
+  "session_id": "session-550e8400-e29b-41d4-a716-446655440000",
+  "token_type": "bearer",
+  "user": {
+    "created_at": "2025-01-15T10:00:00Z",
+    "display_name": "John Doe",
+    "email": "john.doe@faultmaven.local",
+    "is_dev_user": true,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "username": "john.doe"
+  }
+}
+```
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/auth/dev/revoke-all-tokens`
+
+#### POST
+
+**Dev Revoke All User Tokens**
+
+Development endpoint: Revoke all tokens for current user
+
+**WARNING:** This endpoint is for development use only.
+It will be removed in production builds.
+
+**Tags:** `authentication`, `authentication`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+```json
+{
+  "message": "Logged out successfully",
+  "revoked_tokens": 1
+}
+```
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/auth/health`
+
+#### GET
+
+**Auth Health Check**
+
+Authentication system health check
+
+Returns the status of authentication services including token management
+and user storage systems.
+
+**Tags:** `authentication`, `authentication`
+
+**Responses:**
+
+**200** - Successful Response
 
 ---
 
@@ -164,45 +283,70 @@ Content-Type: `application/json`
 
 **Logout**
 
-Logout endpoint to clean up session.
+Logout current user
 
-Returns:
-    Success confirmation
+Revokes the current authentication token. The user will need to login
+again to access protected resources.
 
-**Tags:** `authentication`, `authentication`
-
-**Responses:**
-
-**200** - Successful Response
-
----
-
-### `/api/v1/auth/session/{session_id}`
-
-#### GET
-
-**Verify Session**
-
-Verify existing session and return current ViewState.
-
-Used by frontend to restore session on app startup.
-
-Args:
-    session_id: Session ID to verify
-    session_service: Injected session service
-    
-Returns:
-    AuthResponse with current ViewState if session is valid
+**Flow:**
+1. Validate current authentication
+2. Revoke the current token
+3. Return confirmation
 
 **Tags:** `authentication`, `authentication`
 
 **Parameters:**
 
-- `session_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
 **200** - Successful Response
+
+```json
+{
+  "message": "Logged out successfully",
+  "revoked_tokens": 1
+}
+```
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/auth/me`
+
+#### GET
+
+**Get Current User Profile**
+
+Get current user profile
+
+Returns detailed information about the currently authenticated user,
+including profile data and token statistics.
+
+**Tags:** `authentication`, `authentication`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+```json
+{
+  "created_at": "2025-01-15T10:00:00Z",
+  "display_name": "John Doe",
+  "email": "john.doe@faultmaven.local",
+  "is_dev_user": true,
+  "last_login": "2025-01-15T14:30:00Z",
+  "token_count": 2,
+  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+  "username": "john.doe"
+}
+```
 
 **422** - Validation Error
 
@@ -235,6 +379,7 @@ Default Filtering Behavior:
 - `include_empty` (query) ❌ - Include cases with message_count == 0
 - `include_archived` (query) ❌ - Include archived cases
 - `include_deleted` (query) ❌ - Include deleted cases (admin only)
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -254,6 +399,10 @@ Creates a new case for tracking troubleshooting sessions and conversations.
 The case will persist beyond individual session lifetimes.
 
 **Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
 
 **Request Body:**
 
@@ -299,6 +448,10 @@ for the specified query terms.
 
 **Tags:** `case_persistence`, `cases`
 
+**Parameters:**
+
+- `Authorization` (header) ❌ - No description
+
 **Request Body:**
 
 Content-Type: `application/json`
@@ -329,6 +482,7 @@ If force_new is true, always creates a new case.
 - `session_id` (path) ✅ - No description
 - `title` (query) ❌ - Case title
 - `force_new` (query) ❌ - Force creation of new case
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -355,6 +509,7 @@ a previous troubleshooting conversation.
 
 - `session_id` (path) ✅ - No description
 - `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -380,6 +535,7 @@ participants, and context information.
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -403,6 +559,7 @@ Requires edit permissions on the case.
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
 
 **Request Body:**
 
@@ -435,6 +592,7 @@ Returns 204 No Content on success.
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -460,6 +618,7 @@ resolution time, and other case metrics.
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -486,6 +645,7 @@ Requires owner or collaborator permissions.
 
 - `case_id` (path) ✅ - No description
 - `reason` (query) ❌ - Reason for archiving
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -495,23 +655,30 @@ Requires owner or collaborator permissions.
 
 ---
 
-### `/api/v1/cases/{case_id}/conversation`
+### `/api/v1/cases/{case_id}/close`
 
-#### GET
+#### POST
 
-**Get Case Conversation Context**
+**Close Case**
 
-Get conversation messages for a case
+Close case and archive with reports.
 
-Returns conversation history as JSON array of messages.
-Each message: { message_id, role: user|agent, content, created_at }
+Marks all latest reports as linked to case closure and transitions
+case to CLOSED state.
+
+Returns:
+    CaseClosureResponse with list of archived reports
 
 **Tags:** `case_persistence`, `cases`
 
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
-- `limit` (query) ❌ - Maximum number of messages to include
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
 
 **Responses:**
 
@@ -539,6 +706,7 @@ Always returns 200 with empty array if no data exists.
 - `case_id` (path) ✅ - No description
 - `limit` (query) ❌ - Maximum number of items to return
 - `offset` (query) ❌ - Number of items to skip
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -552,22 +720,30 @@ Always returns 200 with empty array if no data exists.
 
 **Upload Case Data**
 
-Upload data file to a specific case.
+Upload data file to a specific case with AI analysis.
 
-Associates uploaded data with the case for context-aware troubleshooting.
-Returns 201 with Location header pointing to the created data resource.
+Pipeline:
+1. Upload file
+2. Preprocess data (classify, extract insights, generate LLM-ready summary)
+3. Get AI analysis via agent service
+4. Return combined response with agent's conversational analysis
+
+Returns 201 with DataUploadResponse including agent_response field.
 
 **Tags:** `case_persistence`, `cases`
 
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
-- `description` (query) ❌ - Description of uploaded data
-- `expected_type` (query) ❌ - Expected data type
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `multipart/form-data`
 
 **Responses:**
 
-**201** - Data uploaded successfully
+**201** - Data uploaded successfully with AI analysis
 
 **422** - Validation Error
 
@@ -587,6 +763,7 @@ Get specific data file details for a case.
 
 - `case_id` (path) ✅ - No description
 - `data_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -608,6 +785,7 @@ Remove data file from a case. Returns 204 No Content on success.
 
 - `case_id` (path) ✅ - No description
 - `data_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -621,18 +799,20 @@ Remove data file from a case. Returns 204 No Content on success.
 
 #### GET
 
-**List Case Messages**
+**Get Case Messages Enhanced**
 
-Return conversation messages for a case in a UI-friendly format.
-Each item: { message_id, role: user|agent, content, created_at }
+Retrieve conversation messages for a case with enhanced debugging info.
+Supports pagination and includes metadata about message retrieval status.
 
 **Tags:** `case_persistence`, `cases`
 
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
-- `limit` (query) ❌ - No description
-- `offset` (query) ❌ - No description
+- `limit` (query) ❌ - Maximum number of messages to return
+- `offset` (query) ❌ - Offset for pagination
+- `include_debug` (query) ❌ - Include debug information for troubleshooting
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -659,6 +839,7 @@ CRITICAL: Must return 200 [] for empty results, NOT 404
 - `case_id` (path) ✅ - No description
 - `limit` (query) ❌ - No description
 - `offset` (query) ❌ - No description
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -688,6 +869,7 @@ Returns:
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
 
 **Request Body:**
 
@@ -722,6 +904,7 @@ Supports Retry-After header for polling guidance.
 
 - `case_id` (path) ✅ - No description
 - `query_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -747,6 +930,143 @@ Return the final AgentResponse for a completed query.
 
 - `case_id` (path) ✅ - No description
 - `query_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/report-recommendations`
+
+#### GET
+
+**Get Report Recommendations**
+
+Get intelligent report recommendations for a resolved case.
+
+Returns recommendations for which reports to generate, including
+intelligent runbook suggestions based on similarity search of existing
+runbooks (both incident-driven and document-driven sources).
+
+Recommendation Logic:
+- Always available: Incident Report, Post-Mortem (unique per incident)
+- Conditional: Runbook (based on similarity search)
+    - ≥85% similarity: Recommend reuse existing runbook
+    - 70-84% similarity: Offer both review OR generate options
+    - <70% similarity: Recommend generate new runbook
+
+Args:
+    case_id: Case identifier
+    case_service: Injected case service
+    current_user: Authenticated user
+
+Returns:
+    ReportRecommendation with available types and runbook suggestion
+
+Raises:
+    400: Case not in resolved state
+    404: Case not found or access denied
+    500: Internal server error
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/reports`
+
+#### GET
+
+**Get Case Reports**
+
+Retrieve generated reports for a case.
+
+Args:
+    case_id: Case identifier
+    include_history: If True, return all report versions; if False, only current
+
+Returns:
+    List of CaseReport objects
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `include_history` (query) ❌ - No description
+- `Authorization` (header) ❌ - No description
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+#### POST
+
+**Generate Case Reports**
+
+Generate case documentation reports.
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
+
+**Request Body:**
+
+Content-Type: `application/json`
+
+**Responses:**
+
+**200** - Successful Response
+
+**422** - Validation Error
+
+---
+
+### `/api/v1/cases/{case_id}/reports/{report_id}/download`
+
+#### GET
+
+**Download Case Report**
+
+Download case report in specified format.
+
+Args:
+    case_id: Case identifier
+    report_id: Report identifier
+    format: Output format (markdown or pdf) - currently only markdown supported
+
+Returns:
+    File response with report content
+
+**Tags:** `case_persistence`, `cases`
+
+**Parameters:**
+
+- `case_id` (path) ✅ - No description
+- `report_id` (path) ✅ - No description
+- `format` (query) ❌ - No description
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -772,6 +1092,7 @@ Requires share permissions on the case.
 **Parameters:**
 
 - `case_id` (path) ✅ - No description
+- `Authorization` (header) ❌ - No description
 
 **Request Body:**
 
@@ -811,6 +1132,7 @@ existing title unchanged and may retry later.
 
 - `case_id` (path) ✅ - No description
 - `force` (query) ❌ - Only overwrite non-default titles when true
+- `Authorization` (header) ❌ - No description
 
 **Request Body:**
 
@@ -1001,13 +1323,14 @@ This endpoint follows the thin controller pattern:
 
 Args:
     file: File to upload
-    session_id: Session identifier 
+    session_id: Session identifier
+    case_id: Case identifier for associating data with a troubleshooting case
     description: Optional description of the data
     data_service: Injected DataService from DI container
-    
+
 Returns:
     UploadedData with processing results
-    
+
 Raises:
     HTTPException: On service layer errors (400, 404, 413, 500)
 
@@ -2051,6 +2374,7 @@ Returns:
 - `include_empty` (query) ❌ - Include cases with message_count == 0
 - `include_archived` (query) ❌ - Include archived cases
 - `include_deleted` (query) ❌ - Include deleted cases (admin only)
+- `Authorization` (header) ❌ - No description
 
 **Responses:**
 
@@ -2212,6 +2536,20 @@ Returns:
 **Debug Health**
 
 Minimal debug health endpoint.
+
+**Responses:**
+
+**200** - Successful Response
+
+---
+
+### `/debug/llm-providers`
+
+#### GET
+
+**Debug Llm Providers**
+
+Get current LLM provider status and fallback chain.
 
 **Responses:**
 
@@ -2401,9 +2739,24 @@ Readiness probe: return unready if Redis or ChromaDB are unavailable.
 
 ## Data Models
 
+### AcquisitionGuidance
+
+Instructions for obtaining diagnostic evidence
+
+**Properties:**
+
+- `commands` (array) ❌ - Shell commands to run (max 3)
+- `file_locations` (array) ❌ - File paths to check (max 3)
+- `ui_locations` (array) ❌ - UI navigation paths (max 3)
+- `alternatives` (array) ❌ - Alternative methods (max 3)
+- `prerequisites` (array) ❌ - Requirements to obtain evidence (max 2)
+- `expected_output` (unknown) ❌ - What user should expect to see
+
+---
+
 ### AgentResponse
 
-The single, unified JSON payload returned from the backend.
+The single, unified JSON payload returned from the backend (v3.1.0 - Evidence-Centric).
 
 **Properties:**
 
@@ -2417,18 +2770,46 @@ The single, unified JSON payload returned from the backend.
 - `next_action_hint` (unknown) ❌ - No description
 - `view_state` (unknown) ❌ - No description
 - `plan` (unknown) ❌ - No description
+- `evidence_requests` (array) ❌ - Active evidence requests for this turn
+- `investigation_mode` (unknown) ❌ - Current investigation approach (speed vs depth)
+- `case_status` (unknown) ❌ - No description
+- `suggested_actions` (unknown) ❌ - DEPRECATED in v3.1.0 - Use evidence_requests instead. Always null in new responses.
 
 ---
 
-### AuthResponse
+### AuthTokenResponse
 
-Response payload for authentication operations with ViewState.
+Authentication token response
+
+Standard OAuth2-compatible token response format.
+Includes token, expiration, user information, and session ID.
 
 **Properties:**
 
-- `schema_version` (string) ❌ - No description
-- `success` (boolean) ❌ - No description
-- `view_state` (unknown) ✅ - No description
+- `access_token` (string) ✅ - Bearer access token
+- `token_type` (string) ❌ - Token type (always 'bearer')
+- `expires_in` (integer) ✅ - Token expiration time in seconds
+- `session_id` (string) ✅ - Session identifier for multi-turn conversations
+- `user` (unknown) ✅ - Authenticated user profile
+
+**Example:**
+
+```json
+{
+  "access_token": "550e8400-e29b-41d4-a716-446655440000",
+  "expires_in": 86400,
+  "session_id": "session-550e8400-e29b-41d4-a716-446655440000",
+  "token_type": "bearer",
+  "user": {
+    "created_at": "2025-01-15T10:00:00Z",
+    "display_name": "John Doe",
+    "email": "john.doe@faultmaven.local",
+    "is_dev_user": true,
+    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+    "username": "john.doe"
+  }
+}
+```
 
 ---
 
@@ -2441,12 +2822,24 @@ Response payload for authentication operations with ViewState.
 
 ---
 
+### Body_upload_case_data_api_v1_cases__case_id__data_post
+
+**Properties:**
+
+- `file` (string) ✅ - No description
+- `session_id` (string) ✅ - Session ID for authentication
+- `description` (unknown) ❌ - Description of uploaded data
+- `source_metadata` (unknown) ❌ - JSON string with source metadata (source_type, source_url, etc.)
+
+---
+
 ### Body_upload_data_api_v1_data_upload_post
 
 **Properties:**
 
 - `file` (string) ✅ - No description
 - `session_id` (string) ✅ - No description
+- `case_id` (string) ✅ - No description
 - `description` (unknown) ❌ - No description
 
 ---
@@ -2457,6 +2850,7 @@ Response payload for authentication operations with ViewState.
 
 - `file` (string) ✅ - No description
 - `session_id` (string) ✅ - No description
+- `case_id` (string) ✅ - No description
 - `description` (unknown) ❌ - No description
 
 ---
@@ -2518,7 +2912,7 @@ Request model for creating a new case
 - `description` (unknown) ❌ - Case description
 - `priority` (unknown) ❌ - Case priority
 - `tags` (array) ❌ - Case tags
-- `session_id` (unknown) ❌ - Associated session ID
+- `session_id` (unknown) ❌ - Session ID for authentication
 - `initial_message` (unknown) ❌ - Initial case message
 
 ---
@@ -2541,6 +2935,21 @@ Filter criteria for listing cases
 - `include_deleted` (boolean) ❌ - Include deleted cases (admin only)
 - `limit` (integer) ❌ - Maximum number of results
 - `offset` (integer) ❌ - Result offset for pagination
+
+---
+
+### CaseMessagesResponse
+
+Enhanced response model for case message retrieval with debugging support.
+
+**Properties:**
+
+- `messages` (array) ✅ - Array of conversation messages
+- `total_count` (integer) ✅ - Total number of messages in the case
+- `retrieved_count` (integer) ✅ - Number of messages successfully retrieved
+- `has_more` (boolean) ✅ - Whether more messages are available for pagination
+- `next_offset` (unknown) ❌ - Offset for next page (null if no more pages)
+- `debug_info` (unknown) ❌ - Debug information (only when include_debug=true)
 
 ---
 
@@ -2586,7 +2995,7 @@ Request model for sharing a case with other users
 
 ---
 
-### CaseStatus
+### CaseStatus-Input
 
 Case lifecycle status enumeration
 
@@ -2628,17 +3037,118 @@ Request model for updating case details
 
 ### DataType
 
-Defines the type of data uploaded by users.
+7 purpose-driven data classifications for preprocessing pipeline.
+
+---
+
+### DataUploadResponse
+
+Response payload for data upload with AI analysis.
+
+**Properties:**
+
+- `schema_version` (string) ❌ - No description
+- `data_id` (string) ✅ - No description
+- `case_id` (string) ✅ - Actual case ID (may differ from optimistic ID in request)
+- `filename` (string) ✅ - Uploaded filename
+- `file_size` (integer) ✅ - File size in bytes
+- `data_type` (string) ✅ - Classified data type
+- `processing_status` (unknown) ✅ - No description
+- `uploaded_at` (string) ✅ - Upload timestamp (ISO 8601)
+- `agent_response` (unknown) ❌ - Conversational AI analysis of the uploaded data
+- `classification` (unknown) ❌ - Classification confidence and metadata
+- `view_state` (unknown) ❌ - No description
 
 ---
 
 ### DevLoginRequest
 
-Request payload for developer login.
+Request model for development login
+
+Validates user input for the dev-login endpoint.
+Supports username-based login with optional user details.
 
 **Properties:**
 
-- `username` (string) ✅ - No description
+- `username` (string) ✅ - Username or email address (3-50 chars)
+- `email` (unknown) ❌ - Optional email address (will auto-generate if not provided)
+- `display_name` (unknown) ❌ - Optional display name (will auto-generate if not provided)
+
+**Example:**
+
+```json
+{
+  "display_name": "John Doe",
+  "email": "john.doe@faultmaven.local",
+  "username": "john.doe"
+}
+```
+
+---
+
+### EvidenceCategory
+
+Categories of diagnostic evidence
+
+---
+
+### EvidenceRequest
+
+Structured request for diagnostic evidence with acquisition guidance
+
+OODA Integration: Generated during OODA Observe step, linked to hypothesis testing
+
+**Properties:**
+
+- `request_id` (string) ❌ - Unique identifier for this evidence request
+- `label` (string) ✅ - Brief title for the request
+- `description` (string) ✅ - What evidence is needed and why
+- `category` (unknown) ✅ - Category of diagnostic evidence
+- `guidance` (unknown) ✅ - Instructions for obtaining evidence
+- `status` (unknown) ❌ - Fulfillment status
+- `created_at_turn` (integer) ✅ - Turn number when request was created
+- `updated_at_turn` (unknown) ❌ - Turn number when last updated
+- `completeness` (number) ❌ - Fulfillment completeness score
+- `requested_by_ooda_step` (unknown) ❌ - Which OODA step generated this (observe, orient, decide, act)
+- `for_hypothesis_id` (unknown) ❌ - Hypothesis ID this evidence tests (Phase 4 validation)
+- `priority` (integer) ❌ - 1=critical, 2=important, 3=nice-to-have
+- `metadata` (object) ❌ - Additional context
+
+**Example:**
+
+```json
+{
+  "category": "metrics",
+  "completeness": 0.0,
+  "created_at_turn": 1,
+  "description": "Current error rate vs baseline to quantify severity",
+  "guidance": {
+    "alternatives": [
+      "Check New Relic error rate graph"
+    ],
+    "commands": [
+      "kubectl logs -l app=api --since=2h | grep '500' | wc -l"
+    ],
+    "expected_output": "Error count (baseline: 2-3/hour)",
+    "file_locations": [],
+    "prerequisites": [
+      "kubectl access"
+    ],
+    "ui_locations": [
+      "Datadog > API Errors Dashboard"
+    ]
+  },
+  "label": "Error rate metrics",
+  "request_id": "er-001",
+  "status": "pending"
+}
+```
+
+---
+
+### EvidenceStatus
+
+Status of evidence request fulfillment
 
 ---
 
@@ -2647,6 +3157,15 @@ Request payload for developer login.
 **Properties:**
 
 - `detail` (array) ❌ - No description
+
+---
+
+### InvestigationMode
+
+Investigation approach - speed vs depth
+
+DEPRECATED: Use InvestigationStrategy from investigation.py instead
+Kept for backwards compatibility
 
 ---
 
@@ -2686,6 +3205,26 @@ Response model for knowledge base document operations.
 
 ---
 
+### LogoutResponse
+
+Logout response model
+
+**Properties:**
+
+- `message` (string) ❌ - Logout confirmation message
+- `revoked_tokens` (integer) ✅ - Number of tokens that were revoked
+
+**Example:**
+
+```json
+{
+  "message": "Logged out successfully",
+  "revoked_tokens": 1
+}
+```
+
+---
+
 ### Message
 
 Message model for conversation endpoints.
@@ -2696,6 +3235,19 @@ Message model for conversation endpoints.
 - `role` (string) ✅ - No description
 - `content` (string) ✅ - No description
 - `created_at` (string) ✅ - ISO 8601 datetime string
+
+---
+
+### MessageRetrievalDebugInfo
+
+Debug information for message retrieval operations.
+
+**Properties:**
+
+- `redis_key` (string) ✅ - Redis key used for message storage
+- `redis_operation_time_ms` (number) ✅ - Time taken for Redis operation
+- `storage_errors` (array) ❌ - Any storage-related errors encountered
+- `message_parsing_errors` (integer) ❌ - Number of messages that failed to parse
 
 ---
 
@@ -2755,7 +3307,10 @@ Note: case_id is provided in the URL path, not in the request body.
 
 ### ResponseType
 
-Defines the agent's primary intent for this turn.
+Defines the agent's primary intent for this turn - v3.0 Response-Format-Driven Design
+
+9 response formats designed to serve 16 QueryIntent categories (1.8:1 ratio).
+Each format has strict structural requirements for frontend parsing.
 
 ---
 
@@ -2884,6 +3439,71 @@ Represents a user in the system.
 
 ---
 
+### UserInfoResponse
+
+Extended user information response
+
+Includes additional metadata for the current user.
+
+**Properties:**
+
+- `user_id` (string) ✅ - Unique user identifier
+- `username` (string) ✅ - Username
+- `email` (string) ✅ - Email address
+- `display_name` (string) ✅ - Display name
+- `created_at` (string) ✅ - Account creation timestamp (ISO format)
+- `is_dev_user` (boolean) ❌ - Development user flag
+- `last_login` (unknown) ❌ - Last login timestamp (ISO format)
+- `token_count` (integer) ❌ - Number of active tokens for this user
+
+**Example:**
+
+```json
+{
+  "created_at": "2025-01-15T10:00:00Z",
+  "display_name": "John Doe",
+  "email": "john.doe@faultmaven.local",
+  "is_dev_user": true,
+  "last_login": "2025-01-15T14:30:00Z",
+  "token_count": 2,
+  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+  "username": "john.doe"
+}
+```
+
+---
+
+### UserProfile
+
+Public user profile information
+
+Represents user information safe for API responses.
+Excludes sensitive information like hashed passwords.
+
+**Properties:**
+
+- `user_id` (string) ✅ - Unique user identifier
+- `username` (string) ✅ - Username
+- `email` (string) ✅ - Email address
+- `display_name` (string) ✅ - Display name
+- `created_at` (string) ✅ - Account creation timestamp (ISO format)
+- `is_dev_user` (boolean) ❌ - Development user flag
+
+**Example:**
+
+```json
+{
+  "created_at": "2025-01-15T10:00:00Z",
+  "display_name": "John Doe",
+  "email": "john.doe@faultmaven.local",
+  "is_dev_user": true,
+  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+  "username": "john.doe"
+}
+```
+
+---
+
 ### ValidationError
 
 **Properties:**
@@ -2912,6 +3532,19 @@ This is the single source of truth for what the frontend should display.
 - `loading_state` (unknown) ❌ - No description
 - `memory_context` (unknown) ❌ - No description
 - `planning_state` (unknown) ❌ - No description
+- `investigation_progress` (unknown) ❌ - OODA investigation progress (phase, iteration, hypotheses)
+
+---
+
+### faultmaven__models__case__CaseStatus
+
+Case lifecycle status enumeration
+
+---
+
+### faultmaven__models__evidence__CaseStatus
+
+Current case investigation state
 
 ---
 

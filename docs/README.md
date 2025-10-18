@@ -67,6 +67,8 @@ Start here:
 ### Architecture Deep-Dive
 - [Architecture Overview](./architecture/architecture-overview.md) - Complete system design
 - [Investigation Framework](./architecture/investigation-phases-and-ooda-integration.md) - ✅ **IMPLEMENTED** - 7-phase OODA investigation framework
+- [Data Preprocessing Design](./architecture/data-preprocessing-design.md) - ⭐ **AUTHORITATIVE** - Data types, tools, formats, LLM integration
+- [Data Submission Design](./architecture/data-submission-design.md) - How file uploads and data ingestion work
 - [Dependency Injection](./architecture/dependency-injection-system.md) - DI container and interfaces
 
 ---

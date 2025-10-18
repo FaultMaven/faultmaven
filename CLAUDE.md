@@ -9,10 +9,11 @@ FaultMaven is an AI-powered troubleshooting copilot backend featuring:
 - **Interface-Based Architecture**: Clean dependency injection design with comprehensive container management
 - **Multi-LLM Support**: 7 providers (Fireworks, OpenAI, Anthropic, Gemini, HuggingFace, OpenRouter, Local) with intelligent routing
 - **Hierarchical Memory System**: Context consolidation and strategic planning with persistent state management
+- **Working Memory (Session-Specific RAG)**: ✅ **NEW** - Per-case document collections with QA sub-agent and TTL cleanup
 - **Centralized Provider Registry**: Unified LLM provider management with automatic health monitoring
 - **Autonomous Decision-Making**: Sophisticated reasoning with comprehensive error handling and recovery
 - **Privacy-First**: Advanced PII redaction with Presidio integration and multi-layer guardrails
-- **RAG Knowledge Base**: ChromaDB with BGE-M3 embeddings for intelligent document retrieval
+- **Dual-Tier RAG System**: Global knowledge base + session-specific working memory with separate synthesis LLM
 - **Service-Oriented**: Clean layer separation between API, Service, Agentic Framework, Core, and Infrastructure
 
 ## Development Commands

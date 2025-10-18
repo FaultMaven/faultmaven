@@ -35,6 +35,7 @@ This is the authoritative architecture document that provides:
 | **[Investigation Phases and OODA Integration](./investigation-phases-and-ooda-integration.md)** | ✅ **IMPLEMENTED** - 7-phase investigation framework |
 | **[Agent Orchestration](./agent_orchestration_design.md)** | Agent workflow coordination |
 | **[Data Submission Design](./data-submission-design.md)** | Data upload handling (10K limit) |
+| **[Data Preprocessing Design](./data-preprocessing-design.md)** | ✅ **AUTHORITATIVE** - Complete data preprocessing blueprint (v4.0) |
 
 ### Infrastructure
 
@@ -171,6 +172,43 @@ All documents referenced by architecture-overview.md remain at the root level fo
 
 ---
 
-**Last Updated**: 2025-10-11  
+**Last Updated**: 2025-10-13
 **Architecture Version**: v2.0
+
+---
+
+## 📌 Latest Addition (2025-10-13)
+
+### Data Preprocessing System v4.0
+
+**[data-preprocessing-design.md](./data-preprocessing-design.md)** - Complete design specification for data preprocessing system
+
+**What it covers**:
+- 3-step pipeline architecture (Classify → Preprocess → LLM Analysis)
+- 8 data types with detailed specifications (LOG_FILE, ERROR_REPORT, CONFIG_FILE, METRICS_DATA, etc.)
+- Complete preprocessor implementations for each type
+- LLM integration and prompt structure
+- Security & privacy (PII redaction, sanitization)
+- Phased implementation roadmap with effort estimates
+- Dependencies and testing strategy
+
+**Status**: ✅ Final design - Ready for implementation
+
+**Quick Summary**:
+```
+Step 1: Classify (✅ Implemented)
+  ↓
+Step 2: Preprocess (⚠️ To Implement - THIS DOCUMENT)
+  ├─ LogPreprocessor (P1 - 6 hours)
+  ├─ ErrorPreprocessor (P1 - 6 hours)
+  ├─ ConfigPreprocessor (P2 - 8 hours)
+  ├─ MetricsPreprocessor (P2 - 8 hours)
+  └─ Others (P3-P5)
+  ↓
+Step 3: LLM Analysis (✅ Ready)
+```
+
+**Related Documents**:
+- [data-submission-design.md](./data-submission-design.md) - Upload flow and dual submission paths
+- [simplified-3-step-pipeline.md](./simplified-3-step-pipeline.md) - Quick reference
 

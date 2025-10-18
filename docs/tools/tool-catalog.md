@@ -101,7 +101,11 @@ WEB_SEARCH_MAX_RESULTS=3
 **File**: `faultmaven/core/processing/log_analyzer.py`  
 **Type**: Direct Implementation
 
-**Purpose**: Parse, analyze, and extract insights from uploaded log files.
+**Purpose**: Parse, analyze, and extract insights from uploaded log files (Step 2 of data processing pipeline).
+
+**Note**: This tool extracts insights but does NOT create LLM-ready summaries. A preprocessing step (Step 3) is needed to format insights for LLM analysis.
+
+**See Also**: [Complete Data Processing Pipeline](../architecture/data-processing-complete-pipeline.md)
 
 **When Used**:
 - Phase 1 (Blast Radius) for impact assessment
@@ -147,10 +151,12 @@ Phase 4: "Check application logs for database connection patterns"
 
 ### Data Classifier Tool
 **Status**: ✅ Production  
-**File**: `faultmaven/core/processing/data_classifier.py`  
+**File**: `faultmaven/core/processing/classifier.py`  
 **Type**: Direct Implementation
 
-**Purpose**: Automatically identify uploaded data types for appropriate processing.
+**Purpose**: Automatically identify uploaded data types for appropriate processing (Step 1 of data processing pipeline).
+
+**See Also**: [Complete Data Processing Pipeline](../architecture/data-processing-complete-pipeline.md)
 
 **When Used**:
 - Automatically invoked when user uploads data via API

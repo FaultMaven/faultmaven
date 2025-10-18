@@ -1001,6 +1001,206 @@ Focus on DIAGNOSIS and SOLUTIONS.
 
 ---
 
+## Case Working Memory Integration
+
+### Overview
+
+All data uploaded through either submission path (explicit upload or implicit detection) is stored in the **Case Working Memory** vector store system. This is a critical architectural distinction that must be understood.
+
+### Three Distinct Vector Store Systems
+
+FaultMaven implements **three completely separate vector storage systems** (see [knowledge-base-architecture.md](./knowledge-base-architecture.md)):
+
+1. **User Knowledge Base** (`user_{user_id}_kb`) - NOT YET IMPLEMENTED
+   - Per-user permanent runbooks and procedures
+   - Accessed via Knowledge Management UI (separate from troubleshooting)
+   - Lives with user account indefinitely
+
+2. **Global Knowledge Base** (`faultmaven_kb`) - IMPLEMENTED
+   - System-wide documentation (admin-managed)
+   - Shared across all users
+   - Permanent system reference
+
+3. **Case Working Memory** (`case_{case_id}`) - IMPLEMENTED ✅
+   - **This is where uploaded data goes**
+   - Troubleshooting evidence uploaded during active case
+   - Ephemeral - tied to case lifecycle
+
+### Data Upload → Case Working Memory Flow
+
+When a user uploads data (file, text, or page capture) in the troubleshooting chat:
+
+```
+User Uploads Data
+    ↓
+POST /api/v1/cases/{case_id}/data
+    ↓
+CaseVectorStore.add_documents(case_id, documents)
+    ↓
+ChromaDB collection: case_{case_id}
+    ↓
+Documents available for Q&A via answer_from_document tool
+    ↓
+Case closes → Collection automatically deleted
+```
+
+### Key Characteristics
+
+| Aspect | Details |
+|--------|---------|
+| **Collection Name** | `case_{case_id}` (e.g., `case_abc123`) |
+| **Lifecycle** | Tied to case - deleted when case closes or archives |
+| **Scope** | Case-specific - isolated per case_id |
+| **Access Pattern** | QA sub-agent for detailed document questions |
+| **LLM Provider** | SYNTHESIS_PROVIDER (dedicated for document Q&A) |
+| **UI Context** | Active troubleshooting chat (document upload in chat) |
+
+### Use Cases
+
+**Case Working Memory is for:**
+- ✅ Log files uploaded during troubleshooting
+- ✅ Configuration files from affected system
+- ✅ Stack traces and error dumps
+- ✅ Performance metrics and traces
+- ✅ Screenshots and diagnostic output
+- ✅ Captured page content from error pages
+
+**Case Working Memory is NOT for:**
+- ❌ Permanent runbooks (use User KB when implemented)
+- ❌ General reference documentation (use Global KB)
+- ❌ Long-term knowledge storage
+- ❌ Cross-case information sharing
+
+### Example Workflow
+
+```
+1. User opens troubleshooting case for "Database timeout errors"
+
+2. User uploads server.log (50KB) via chat upload button
+   → Stored in case_abc123 collection
+   → Preprocessed summary created
+   → AI analyzes: "I found 127 timeout errors starting at 14:23 UTC..."
+
+3. User asks: "What error is on line 1045?"
+   → answer_from_document tool queries case_abc123 collection
+   → QA sub-agent synthesizes answer from uploaded log
+
+4. User resolves issue and closes case
+   → Case status changes to CLOSED
+   → case_abc123 collection automatically deleted via case lifecycle hook
+   → Storage reclaimed
+```
+
+### Lifecycle Management
+
+**Current Implementation** (as of 2025-10-16):
+
+The Case Working Memory lifecycle is **tied to case status**, not time-based TTL:
+
+```python
+# Case states
+ACTIVE → INVESTIGATING → RESOLVED → CLOSED
+  ↓                                    ↓
+Documents available            Documents deleted
+```
+
+**Deletion Triggers**:
+- Case status transition to `CLOSED`
+- Case status transition to `ARCHIVED`
+- Case deleted by user
+
+**NOT deleted when**:
+- Case is still `ACTIVE` (even if weeks/months old)
+- Case is in `INVESTIGATING` state
+- Case is in `RESOLVED` state (awaiting final closure)
+
+### Implementation Components
+
+**Backend**:
+- [case_vector_store.py](../../faultmaven/infrastructure/persistence/case_vector_store.py) - Case-specific document management
+- [answer_from_document.py](../../faultmaven/tools/answer_from_document.py) - QA sub-agent for document queries
+- [case_cleanup.py](../../faultmaven/infrastructure/tasks/case_cleanup.py) - Lifecycle-based cleanup
+
+**Configuration**:
+```bash
+SYNTHESIS_PROVIDER=openai  # Dedicated LLM for QA sub-agent
+CHROMADB_URL=http://chromadb.faultmaven.local:30080
+# Lifecycle: Tied to case status (deleted when case closes/archives)
+# Cleanup: Triggered by case state transitions, not time-based
+```
+
+### Relationship to Data Submission Paths
+
+Both data submission paths (explicit upload and implicit detection) ultimately store documents in Case Working Memory:
+
+```
+Path 1: Explicit Upload
+  POST /api/v1/cases/{case_id}/data
+    → Classify → Preprocess → Store in case_{case_id}
+    → Generate AI response with insights
+
+Path 2: Implicit Detection
+  POST /api/v1/cases/{case_id}/queries
+    → Detect large paste → Route to data ingestion
+    → Classify → Preprocess → Store in case_{case_id}
+    → Generate AI response with insights
+```
+
+**Key Point**: Both paths result in the same outcome:
+1. Data is preprocessed into LLM-ready summary
+2. Documents stored in `case_{case_id}` collection
+3. AI analyzes and responds with insights
+4. User can ask follow-up questions via answer_from_document tool
+5. Collection deleted when case closes
+
+### Storage Architecture
+
+```
+ChromaDB Instance (chromadb.faultmaven.local:30080)
+│
+├── faultmaven_kb                    # Global KB (permanent)
+│   └── [system-wide documentation]
+│
+├── case_abc123                      # Case Working Memory (active case)
+│   └── [server.log uploaded by user]
+│   └── [config.yaml uploaded by user]
+│   └── [Lifecycle: deleted when case closes]
+│
+└── case_xyz789                      # Case Working Memory (active case)
+    └── [stack_trace.txt uploaded by user]
+    └── [Lifecycle: deleted when case closes]
+```
+
+### Access Control
+
+| User Action | Case Working Memory |
+|-------------|---------------------|
+| **Upload document** | ✅ Own cases only |
+| **Query documents** | ✅ Own cases only (via answer_from_document tool) |
+| **Delete document** | ✅ Own cases only |
+| **Access other user's data** | ❌ Forbidden (case isolation) |
+| **Access after case closes** | ❌ Documents deleted with case |
+
+### Future Enhancement: User Knowledge Base
+
+When User Knowledge Base is implemented (Phase 2 - planned):
+
+**Users will have TWO upload destinations**:
+
+1. **Knowledge Management UI** (separate from troubleshooting)
+   - Upload to `user_{user_id}_kb` (permanent)
+   - For runbooks, procedures, best practices
+   - Accessible across all cases
+
+2. **Troubleshooting Chat UI** (current implementation)
+   - Upload to `case_{case_id}` (ephemeral)
+   - For incident-specific evidence
+   - Deleted when case closes
+
+**Critical Design Principle**: These must **never be confused** in implementation. They serve completely different purposes with different lifecycles.
+
+---
+
 ## Implementation Checklist
 
 ### Backend (Priority: HIGH)
@@ -1134,6 +1334,90 @@ The v3.0 design provides a seamless conversational experience where data uploads
 
 ---
 
-**Last Updated**: 2025-10-04
-**Version**: 3.0
+**Last Updated**: 2025-10-12  
+**Version**: 3.1 (Updated with source metadata proposal and preprocessing status clarification)  
 **Authors**: System Architecture Team
+
+## Appendix: Current Implementation Status
+
+### Implementation Status: 3-Step Pipeline
+
+**See**: [`data-preprocessing-design.md`](./data-preprocessing-design.md) for **authoritative design specification** (v4.0).
+
+This document consolidates all data submission and preprocessing design decisions into a single comprehensive blueprint ready for implementation.
+
+```
+Step 1: Classify → Step 2: Preprocess → Step 3: LLM Analysis
+    ✅ Done         ⚠️ Partial           ✅ Ready
+```
+
+#### Step 1: Classification ✅ DONE
+- **Tool**: DataClassifier (`core/processing/classifier.py`)
+- **Status**: Fully functional
+- Routes to one of 4 main preprocessors: LOG_FILE, METRICS_DATA, ERROR_REPORT, CONFIG_FILE
+
+#### Step 2: Preprocessing ⚠️ PARTIAL (CRITICAL GAP)
+
+Each preprocessor is self-contained and produces LLM-ready summary:
+
+| Preprocessor | Input | Output | Status |
+|--------------|-------|--------|--------|
+| `preprocess_logs()` | 50KB raw logs | 8K summary | ⚠️ Partial: has analysis, missing formatting |
+| `preprocess_metrics()` | Metrics data | 6K summary | ❌ Not implemented |
+| `preprocess_errors()` | Stack traces | 5K summary | ❌ Not implemented |
+| `preprocess_config()` | Config files | 6K summary | ❌ Not implemented |
+
+**Current Reality for LOG_FILE** (most common):
+- ✅ LogProcessor extracts insights (errors, anomalies, patterns)
+- ❌ Missing formatter to convert insights → LLM-ready summary
+- **Result**: Can't send data to LLM yet (either overflows context or loses critical data)
+
+**Libraries Needed**:
+- Logs: None (use existing LogProcessor + string formatting)
+- Metrics: pandas ✅, numpy ✅, scipy ✅ (all available)
+- Errors: traceback ✅ (built-in)
+- Config: pyyaml ➕, json ✅, configparser ✅
+
+#### Step 3: LLM Analysis ✅ READY
+- **Tool**: AgentService + AI Agent
+- **Status**: Ready, waiting for Step 2 preprocessed summaries
+- Receives LLM-ready summary (not raw data)
+- Generates AgentResponse with diagnosis and recommendations
+
+### What's Missing
+
+**CRITICAL GAP**: Step 2 preprocessing formatters
+
+**When you upload a 50KB log file today:**
+```
+1. Step 1: Classification ✅ → DataType.LOG_FILE
+2. Step 2: LogProcessor extracts insights ✅
+3. Step 2: Formatter missing ❌ → Can't create LLM summary
+4. Step 3: Agent service ready ⚠️ → But receives no preprocessed data
+5. Result: No conversational AI response ❌
+```
+
+**What needs to happen:**
+```
+1. Step 1: Classification ✅ → DataType.LOG_FILE
+2. Step 2: preprocess_logs() ❌ → Parse + Analyze + Format → 8K summary
+3. Step 3: Agent analyzes summary ✅ → Conversational AI response
+4. Result: User gets diagnosis and recommendations ✅
+```
+
+### Next Steps
+
+**Priority 1**: Implement log preprocessor (highest value)
+- Reuse existing LogProcessor for analysis
+- Add formatter to create LLM-ready summary
+- ~4-6 hours effort
+
+**Priority 2**: Implement error preprocessor
+- Parse stack traces, format for LLM
+- ~4-6 hours effort
+
+**Priority 3+**: Metrics and config preprocessors
+- More complex, lower priority
+- ~8-10 hours each
+
+**Critical Gap**: The preprocessing layer that formats insights into LLM-ready summaries is **documented but not implemented**.

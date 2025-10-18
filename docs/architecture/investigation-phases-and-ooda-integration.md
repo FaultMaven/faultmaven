@@ -1167,25 +1167,31 @@ Evidence requests are generated during OODA **Observe** steps and tracked across
 
 **Complete Schema**: See [Evidence Collection Design - EvidenceRequest](./evidence-collection-and-tracking-design.md#evidencerequest) for authoritative data model.
 
+**Important Note on Naming**: There are TWO evidence request models in the codebase:
+- **`EvidenceRequest`** (faultmaven/models/evidence.py) - **CANONICAL** API model for frontend/external use
+- **`OODAEvidenceRequest`** (faultmaven/models/responses.py) - **OODA-INTERNAL** format for parsing LLM responses
+
+The converter layer (faultmaven/core/ooda_response_converter.py) transforms `OODAEvidenceRequest` (LLM output) → `EvidenceRequest` (API contract).
+
 **Framework Usage (Key Fields)**:
 ```python
 @dataclass
 class EvidenceRequest:
     """Request for specific evidence - FULL SCHEMA in evidence-collection-and-tracking-design.md"""
-    
+
     request_id: str
     label: str
     description: str
     category: EvidenceCategory  # 7 categories: SYMPTOMS, TIMELINE, CHANGES, CONFIGURATION, SCOPE, METRICS, ENVIRONMENT
-    
+
     # Acquisition guidance (AcquisitionGuidance schema in Evidence Collection Design)
     guidance: AcquisitionGuidance
-    
+
     # Lifecycle tracking
     status: EvidenceStatus  # 5 states: PENDING, PARTIAL, COMPLETE, BLOCKED, OBSOLETE
     created_at_turn: int
     completeness: float  # 0.0-1.0
-    
+
     # OODA integration
     requested_by_ooda_step: OODAStep  # Which OODA step generated this
     for_hypothesis_id: Optional[str] = None  # Links evidence to hypothesis testing

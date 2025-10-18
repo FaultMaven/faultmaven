@@ -1530,28 +1530,39 @@ This section provides a high-level mapping of architectural components to Python
 - `config/feature_flags.py` - Runtime toggles
 - `container.py` - DI container
 
-## Data Submission Handling
+## Data Preprocessing System
 
-> **STATUS**: ✅ IMPLEMENTED (2025-10-03)
-> **Detailed Specification**: [`data-submission-design.md`](./data-submission-design.md)
+> **STATUS**: 🟡 DESIGNED - Implementation in Progress
+> **Detailed Specification**: [`data-preprocessing-design.md`](./data-preprocessing-design.md)
 
 ### Overview
 
-Intelligent **data submission detection** for handling large log dumps:
+Comprehensive **data preprocessing pipeline** transforms uploaded files into LLM-ready summaries:
+
+**3-Step Pipeline**:
+1. **Classify**: Identify data type (LOG_FILE, METRICS_DATA, ERROR_REPORT, CONFIG_FILE, etc.)
+2. **Preprocess**: Domain-specific processing → LLM-ready summary (~8K chars)
+3. **LLM Analysis**: AI agent analyzes preprocessed summary → Conversational response
 
 **Key Features:**
-- **10K Character Hard Limit**: Auto-route to data upload
-- **6 Pattern Categories**: Timestamps, log levels, stack traces, etc.
-- **Dual Processing**: Async (>10K) vs Sync (<10K)
-- **Case Association**: Full case_id and user_id tracking
+- **8 Data Types**: Logs, errors, configs, metrics, profiling, traces, docs, screenshots
+- **Custom Preprocessors**: Domain-specific knowledge extraction using Python libraries
+- **Plain Text Summaries**: 5-8K character summaries optimized for LLM context
+- **Direct Context Injection**: Preprocessed summaries injected into LLM system prompt
+- **Security Scanning**: Automatic PII/secret detection and redaction
 
-**Implementation**:
-- Detection logic in `classification_engine.py`
-- API contract changes in `openapi.locked.yaml`
-- Background processing in `case.py`
-- Context propagation in `data_service.py`
+**Data Submission Flow**:
+- **Path 1 (Explicit)**: `POST /api/v1/cases/{case_id}/data` - Dedicated file upload
+- **Path 2 (Implicit)**: `POST /api/v1/cases/{case_id}/queries` - Auto-detect large pastes (>10K chars)
 
-For complete specifications, see [Data Submission Design](./data-submission-design.md).
+**Implementation Status**:
+- ✅ Classification: DataClassifier with pattern matching
+- ⚠️ Preprocessing: Design complete, implementation pending
+- ✅ LLM Integration: AgentService ready for preprocessed input
+
+For complete specifications, see:
+- [Data Preprocessing Design v4.0](./data-preprocessing-design.md) - Complete system design
+- [Data Submission Design v3.1](./data-submission-design.md) - Upload flow and dual-path routing
 
 ---
 
@@ -1581,8 +1592,9 @@ Core business services implementing case, data, knowledge, planning, and session
 - [`Investigation Phases and OODA Integration Framework v2.1`](./investigation-phases-and-ooda-integration.md) - 🎯 Investigation process (used by case_service, planning_service): 7-phase lifecycle (0-6), OODA steps, engagement modes, state management
 - [`Evidence Collection and Tracking Design v2.1`](./evidence-collection-and-tracking-design.md) - 🎯 Evidence data models (used by case_service): Schemas, 5D classification, strategies, agent behaviors  
 - [`Case Lifecycle Management v1.0`](./case-lifecycle-management.md) - Case status state machine (case_service.py): 7 states, transition rules, stall detection
+- [`Document Generation and Closure Design v1.0`](./document-generation-and-closure-design.md) - 🎯 **NEW** - Case documentation system (case_service.py, report_service.py): DOCUMENTING state, report generation (Incident Report, Runbook, Post-Mortem), restricted input mode, case closure workflow
 - [`Session Management Specification v1.0`](./specifications/session-management-spec.md) - Multi-session architecture (session_service.py): Client-based resumption, OODA state persistence, Redis storage
-- [`Data Processing Pipeline Design`](./data-processing-pipeline-design.md) - 📝 Design document (implementation pending) - File processing (data_service.py): Classification, insight extraction, async workflows
+- [`Data Preprocessing Design v4.0`](./data-preprocessing-design.md) - Complete preprocessing system (data_service.py): 3-step pipeline, 8 data types, custom preprocessors, LLM integration
 - [`Knowledge Base Architecture`](./knowledge-base-architecture.md) - 📝 Design document (implementation pending) - Document management (knowledge_service.py): RAG, ingestion, semantic search
 - [`Planning System Architecture`](./planning-system-architecture.md) - 📝 Design document (implementation pending) - Strategic planning (planning_service.py): Problem decomposition, risk assessment
 
@@ -1621,7 +1633,7 @@ Evidence collection implementation:
 #### Middleware and Routes
 
 - [`Middleware Architecture`](./middleware-architecture.md) - 📝 *To create* - Middleware stack (api/middleware/): Logging, performance, protection, rate limiting, request ID
-- [`Data Submission Design`](./data-submission-design.md) - Data upload handling (routes/data.py): 10K limit, pattern detection, async processing
+- [`Data Submission Design v3.1`](./data-submission-design.md) - Data upload handling (routes/case.py): Dual-path routing, pattern detection, conversational responses
 
 ---
 

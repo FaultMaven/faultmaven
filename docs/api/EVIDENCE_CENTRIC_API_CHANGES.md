@@ -93,6 +93,8 @@ The evidence-centric troubleshooting system replaces `suggested_actions` (clicka
 
 ### EvidenceRequest
 
+**Note**: This is the **CANONICAL** API model for frontend/external use. The codebase also contains `OODAEvidenceRequest` (in `faultmaven/models/responses.py`) which is the OODA framework's internal format for parsing LLM responses. The converter layer (`faultmaven/core/ooda_response_converter.py`) transforms between these formats. Frontend code should only use this canonical `EvidenceRequest` model.
+
 ```typescript
 interface EvidenceRequest {
   request_id: string;              // UUID
