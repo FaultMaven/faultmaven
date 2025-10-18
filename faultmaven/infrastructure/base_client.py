@@ -10,7 +10,7 @@ import asyncio
 import time
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
 from abc import ABC
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 
 from faultmaven.infrastructure.logging.unified import get_unified_logger, UnifiedLogger
@@ -63,7 +63,7 @@ class CircuitBreaker:
         if self.state == "open":
             # Check if we should try half-open
             if (self.last_failure_time and
-                datetime.utcnow() - self.last_failure_time > timedelta(seconds=self.recovery_timeout)):
+                datetime.now(timezone.utc) - self.last_failure_time > timedelta(seconds=self.recovery_timeout)):
                 self.state = "half-open"
                 return True
             return False
@@ -80,7 +80,7 @@ class CircuitBreaker:
         """Record failed execution."""
         if isinstance(exception, self.expected_exception):
             self.failure_count += 1
-            self.last_failure_time = datetime.utcnow()
+            self.last_failure_time = datetime.now(timezone.utc)
             
             if self.failure_count >= self.failure_threshold:
                 self.state = "open"
@@ -340,7 +340,7 @@ class BaseExternalClient(ABC):
                     
                     # Success - record metrics and circuit breaker state
                     self.connection_metrics["successful_calls"] += 1
-                    self.connection_metrics["last_success_time"] = datetime.utcnow().isoformat()
+                    self.connection_metrics["last_success_time"] = datetime.now(timezone.utc).isoformat()
                     
                     if self.circuit_breaker:
                         self.circuit_breaker.record_success()
@@ -396,7 +396,7 @@ class BaseExternalClient(ABC):
                     
                     # Don't retry on timeout - fail fast
                     self.connection_metrics["failed_calls"] += 1
-                    self.connection_metrics["last_failure_time"] = datetime.utcnow().isoformat()
+                    self.connection_metrics["last_failure_time"] = datetime.now(timezone.utc).isoformat()
                     
                     if self.circuit_breaker:
                         self.circuit_breaker.record_failure(timeout_error)
@@ -435,7 +435,7 @@ class BaseExternalClient(ABC):
                     else:
                         # Final failure
                         self.connection_metrics["failed_calls"] += 1
-                        self.connection_metrics["last_failure_time"] = datetime.utcnow().isoformat()
+                        self.connection_metrics["last_failure_time"] = datetime.now(timezone.utc).isoformat()
                         
                         if self.circuit_breaker:
                             self.circuit_breaker.record_failure(call_error)
@@ -605,7 +605,7 @@ class BaseExternalClient(ABC):
                     
                     # Success - record metrics and circuit breaker state
                     self.connection_metrics["successful_calls"] += 1
-                    self.connection_metrics["last_success_time"] = datetime.utcnow().isoformat()
+                    self.connection_metrics["last_success_time"] = datetime.now(timezone.utc).isoformat()
                     
                     if self.circuit_breaker:
                         self.circuit_breaker.record_success()
@@ -679,7 +679,7 @@ class BaseExternalClient(ABC):
                     else:
                         # Final failure
                         self.connection_metrics["failed_calls"] += 1
-                        self.connection_metrics["last_failure_time"] = datetime.utcnow().isoformat()
+                        self.connection_metrics["last_failure_time"] = datetime.now(timezone.utc).isoformat()
                         
                         if self.circuit_breaker:
                             self.circuit_breaker.record_failure(call_error)
@@ -732,7 +732,7 @@ class BaseExternalClient(ABC):
             "client": self.client_name,
             "service": self.service_name,
             "status": "unknown",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "layer": "infrastructure",
             "metrics": self.connection_metrics.copy(),
             "circuit_breaker": {

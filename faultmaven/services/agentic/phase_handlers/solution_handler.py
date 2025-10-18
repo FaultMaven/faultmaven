@@ -50,6 +50,7 @@ class SolutionHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str = "",
+        context: Optional[dict] = None,
         evidence_provided: Optional[List[EvidenceProvided]] = None,
         evidence_requests: Optional[List[EvidenceRequest]] = None,
     ) -> PhaseHandlerResult:

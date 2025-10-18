@@ -26,7 +26,7 @@ import logging
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple, Set
 from contextlib import contextmanager
 import threading
@@ -211,7 +211,7 @@ class MetricsCollector(BaseExternalClient):
         """
         try:
             metric = MetricData(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 service=service,
                 operation=operation,
                 value=value,
@@ -479,7 +479,7 @@ class MetricsCollector(BaseExternalClient):
             Performance summary with metrics, trends, and recommendations
         """
         try:
-            cutoff_time = datetime.utcnow() - timedelta(minutes=time_window_minutes)
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=time_window_minutes)
             
             # Filter metrics for service and time window
             relevant_metrics = []
@@ -561,7 +561,7 @@ class MetricsCollector(BaseExternalClient):
                 "alerts": alerts,
                 "recommendations": recommendations,
                 "cache_performance": cache_stats,
-                "analysis_timestamp": datetime.utcnow().isoformat()
+                "analysis_timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             # Update service profile
@@ -585,7 +585,7 @@ class MetricsCollector(BaseExternalClient):
         """
         try:
             dashboard_data = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "system_status": "healthy",
                 "services": {},
                 "cross_service_metrics": {},
@@ -649,7 +649,7 @@ class MetricsCollector(BaseExternalClient):
         except Exception as e:
             self.logger.error(f"Failed to generate performance dashboard: {e}")
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "status": "error",
                 "error": str(e)
             }
@@ -670,7 +670,7 @@ class MetricsCollector(BaseExternalClient):
         """
         try:
             recommendations = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "priority": priority,
                 "service_filter": service,
                 "recommendations": []
@@ -705,7 +705,7 @@ class MetricsCollector(BaseExternalClient):
         except Exception as e:
             self.logger.error(f"Failed to get optimization recommendations: {e}")
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": str(e),
                 "recommendations": []
             }
@@ -875,7 +875,7 @@ class MetricsCollector(BaseExternalClient):
                     error_rates=error_rates,
                     resource_utilization={},  # Would be populated from system metrics
                     optimization_opportunities=performance_summary.get("recommendations", []),
-                    last_updated=datetime.utcnow()
+                    last_updated=datetime.now(timezone.utc)
                 )
                 
                 self._service_profiles[service] = profile

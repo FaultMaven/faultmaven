@@ -8,7 +8,7 @@ Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 
 import logging
 from typing import Dict, Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 
 from faultmaven.models.investigation import (
     InvestigationPhase,
@@ -28,6 +28,7 @@ from faultmaven.services.agentic.phase_handlers.solution_handler import Solution
 from faultmaven.services.agentic.phase_handlers.document_handler import DocumentHandler
 
 from faultmaven.core.investigation.phases import can_transition, get_phase_definition
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class PhaseOrchestrator:
@@ -79,6 +80,7 @@ class PhaseOrchestrator:
         user_query: str,
         investigation_state: InvestigationState,
         conversation_history: str = "",
+        context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, InvestigationState]:
         """Process a single conversation turn
 
@@ -89,6 +91,7 @@ class PhaseOrchestrator:
             user_query: User's query
             investigation_state: Current investigation state
             conversation_history: Recent conversation context
+            context: Optional context dict (e.g., file upload data, source metadata)
 
         Returns:
             Tuple of (response_text, updated_investigation_state)
@@ -100,7 +103,7 @@ class PhaseOrchestrator:
 
         # Increment turn counter
         investigation_state.metadata.current_turn += 1
-        investigation_state.metadata.last_updated = datetime.utcnow()
+        investigation_state.metadata.last_updated = datetime.now(timezone.utc)
 
         # Get current phase handler
         current_phase = investigation_state.lifecycle.current_phase
@@ -117,6 +120,7 @@ class PhaseOrchestrator:
                 investigation_state=investigation_state,
                 user_query=user_query,
                 conversation_history=conversation_history,
+                context=context,  # Pass file upload context to phase handler
             )
 
             # Handle phase transitions
@@ -180,7 +184,7 @@ class PhaseOrchestrator:
         investigation_state.lifecycle.phase_history.append({
             "from_phase": from_phase.value,
             "to_phase": to_phase.value,
-            "transitioned_at": datetime.utcnow().isoformat(),
+            "transitioned_at": to_json_compatible(datetime.now(timezone.utc)),
             "reason": reason,
         })
 
@@ -296,8 +300,8 @@ class PhaseOrchestrator:
             investigation_id=f"inv_{self.session_id}",
             session_id=self.session_id,
             engagement_mode=EngagementMode.CONSULTANT,  # Always start in Consultant mode
-            started_at=datetime.utcnow(),
-            last_updated=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
+            last_updated=datetime.now(timezone.utc),
             current_turn=0,
         )
 

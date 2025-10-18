@@ -17,7 +17,7 @@ import logging
 import time
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from faultmaven.models.interfaces import (
@@ -248,7 +248,7 @@ class TroubleshootingOrchestrator:
                 "findings": [],
                 "knowledge_base": [],
                 "execution_log": [],
-                "created_at": datetime.utcnow(),
+                "created_at": datetime.now(timezone.utc),
                 "estimated_completion": None,
                 "performance_metrics": {
                     "initialization_time": (time.time() - workflow_start) * 1000,
@@ -260,7 +260,7 @@ class TroubleshootingOrchestrator:
             
             # Calculate estimated completion time
             total_duration = sum(step.estimated_duration for step in workflow_steps)
-            workflow_state["estimated_completion"] = datetime.utcnow().timestamp() + total_duration
+            workflow_state["estimated_completion"] = datetime.now(timezone.utc).timestamp() + total_duration
             
             # Store workflow state
             self._active_workflows[workflow_id] = workflow_state
@@ -403,7 +403,7 @@ class TroubleshootingOrchestrator:
                 "step_index": current_step_index,
                 "step_id": current_step.step_id,
                 "result": step_result,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             })
             
             # Update performance metrics
@@ -515,7 +515,7 @@ class TroubleshootingOrchestrator:
             return {"error": "Cannot pause completed or failed workflow"}
         
         workflow_state["status"] = WorkflowStatus.SUSPENDED
-        workflow_state["suspended_at"] = datetime.utcnow()
+        workflow_state["suspended_at"] = datetime.now(timezone.utc)
         
         self._logger.info(f"Workflow {workflow_id} paused")
         
@@ -544,7 +544,7 @@ class TroubleshootingOrchestrator:
             return {"error": "Workflow is not suspended"}
         
         workflow_state["status"] = WorkflowStatus.IN_PROGRESS
-        workflow_state["resumed_at"] = datetime.utcnow()
+        workflow_state["resumed_at"] = datetime.now(timezone.utc)
         
         self._logger.info(f"Workflow {workflow_id} resumed")
         

@@ -33,9 +33,9 @@ from functools import lru_cache
 
 from faultmaven.services.base import BaseService
 from faultmaven.models.interfaces import (
-    IKnowledgeIngester, 
-    ISanitizer, 
-    ITracer, 
+    IKnowledgeIngester,
+    ISanitizer,
+    ITracer,
     IVectorStore,
     IMemoryService,
     ILLMProvider
@@ -43,6 +43,7 @@ from faultmaven.models.interfaces import (
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
 from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.utils.serialization import to_json_compatible
 
 # Import enhanced components if available
 try:
@@ -200,7 +201,7 @@ class KnowledgeService(BaseService):
                 "tags": tags or [],
                 "source_url": source_url,
                 "document_type": document_type,
-                "created_at": datetime.now(timezone.utc).isoformat()
+                "created_at": to_json_compatible(datetime.now(timezone.utc))
             }
             
             try:
@@ -744,7 +745,7 @@ class KnowledgeService(BaseService):
             if not update_data:
                 raise ValueError("At least one field must be provided for update")
             
-            metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
+            metadata["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
             
             try:
                 # Update via interface
@@ -882,7 +883,7 @@ class KnowledgeService(BaseService):
                     "total_documents": total_documents,
                     "documents_by_type": documents_by_type,
                     "most_used_tags": most_used_tags,
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                    "last_updated": to_json_compatible(datetime.now(timezone.utc)),
                     "vector_store_enabled": self._vector_store is not None
                 }
             except Exception as e:
@@ -900,7 +901,7 @@ class KnowledgeService(BaseService):
         Returns:
             Unique document identifier
         """
-        content = f"{title}:{document_type}:{datetime.now(timezone.utc).isoformat()}"
+        content = f"{title}:{document_type}:{to_json_compatible(datetime.now(timezone.utc))}"
         hash_object = hashlib.sha256(content.encode("utf-8"))
         return f"kb_{hash_object.hexdigest()[:16]}"
 
@@ -1030,8 +1031,8 @@ class KnowledgeService(BaseService):
                 "source_url": source_url,
                 "description": description,
                 "status": "completed",
-                "created_at": created_at.isoformat(),
-                "updated_at": created_at.isoformat(),
+                "created_at": to_json_compatible(created_at),
+                "updated_at": to_json_compatible(created_at),
                 "metadata": {
                     "author": "api-upload",
                     "version": "1.0",
@@ -1084,8 +1085,8 @@ class KnowledgeService(BaseService):
                 "document_id": document_id,
                 "status": "completed",
                 "progress": 100,
-                "created_at": created_at.isoformat(),
-                "completed_at": created_at.isoformat(),
+                "created_at": to_json_compatible(created_at),
+                "completed_at": to_json_compatible(created_at),
                 "processing_results": {
                     "chunks_created": 1,
                     "embeddings_generated": 1,
@@ -1126,7 +1127,7 @@ class KnowledgeService(BaseService):
                     "document_type": document_type,
                     "category": category or document_type,
                     "tags": tags or [],
-                    "created_at": created_at.isoformat()
+                    "created_at": to_json_compatible(created_at)
                 }
             }
             
@@ -1251,8 +1252,8 @@ class KnowledgeService(BaseService):
                     "status": "processed",
                     "tags": ["test", "sample"],
                     "source_url": None,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                    "updated_at": to_json_compatible(datetime.now(timezone.utc)),
                     "metadata": {
                         "author": "test-system",
                         "version": "1.0"
@@ -1286,8 +1287,8 @@ class KnowledgeService(BaseService):
                     "document_id": document_id,
                     "status": "completed",
                     "progress": 100,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                    "completed_at": to_json_compatible(datetime.now(timezone.utc)),
                     "processing_results": {
                         "chunks_created": 1,
                         "embeddings_generated": 1,
@@ -1501,7 +1502,7 @@ class KnowledgeService(BaseService):
                 document["metadata"]["version"] = kwargs["version"]
             
             # Update timestamp
-            document["updated_at"] = datetime.now(timezone.utc).isoformat()
+            document["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
             
             # Persist updated document and maintain indexes
             if self._redis:

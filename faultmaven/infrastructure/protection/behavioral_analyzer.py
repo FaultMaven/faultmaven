@@ -5,7 +5,7 @@ import json
 import logging
 import statistics
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 import hashlib
 import numpy as np
@@ -83,7 +83,7 @@ class BehavioralAnalyzer:
             behavior_score = await self._calculate_behavior_score(profile)
             
             # Update profile with latest analysis
-            profile.last_updated = datetime.utcnow()
+            profile.last_updated = datetime.now(timezone.utc)
             profile.current_risk_level = behavior_score.risk_level
             profile.confidence_score = behavior_score.confidence
             
@@ -99,7 +99,7 @@ class BehavioralAnalyzer:
                 overall_behavior_score=0.5,
                 risk_level=RiskLevel.MEDIUM,
                 confidence=0.0,
-                analysis_timestamp=datetime.utcnow(),
+                analysis_timestamp=datetime.now(timezone.utc),
                 analysis_window=self.analysis_window
             )
 
@@ -177,7 +177,7 @@ class BehavioralAnalyzer:
                     }
             
             profile.total_requests += 1
-            profile.last_updated = datetime.utcnow()
+            profile.last_updated = datetime.now(timezone.utc)
             
             self._behavior_profiles[session_id] = profile
             
@@ -241,7 +241,7 @@ class BehavioralAnalyzer:
 
     async def _record_request(self, session_id: str, request_data: dict):
         """Record request for historical analysis"""
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc)
         
         # Add timestamp to request data
         request_record = {
@@ -267,7 +267,7 @@ class BehavioralAnalyzer:
         if session_id in self._behavior_profiles:
             return self._behavior_profiles[session_id]
         
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         profile = BehaviorProfile(
             session_id=session_id,
             first_seen=now,
@@ -312,7 +312,7 @@ class BehavioralAnalyzer:
                 alpha * (1.0 if is_error else 0.0)
             )
             
-            existing_pattern.timestamp = datetime.utcnow()
+            existing_pattern.timestamp = datetime.now(timezone.utc)
         else:
             # Create new pattern
             new_pattern = RequestPattern(
@@ -322,7 +322,7 @@ class BehavioralAnalyzer:
                 avg_response_time=response_time,
                 error_rate=1.0 if status_code >= 400 else 0.0,
                 payload_size_avg=payload_size,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             profile.request_patterns.append(new_pattern)
 
@@ -381,7 +381,7 @@ class BehavioralAnalyzer:
             
             if existing_error:
                 existing_error.frequency += 1
-                existing_error.last_occurrence = datetime.utcnow()
+                existing_error.last_occurrence = datetime.now(timezone.utc)
                 if endpoint not in existing_error.endpoints_affected:
                     existing_error.endpoints_affected.append(endpoint)
             else:
@@ -389,8 +389,8 @@ class BehavioralAnalyzer:
                     error_type=error_type,
                     frequency=1,
                     endpoints_affected=[endpoint],
-                    first_occurrence=datetime.utcnow(),
-                    last_occurrence=datetime.utcnow(),
+                    first_occurrence=datetime.now(timezone.utc),
+                    last_occurrence=datetime.now(timezone.utc),
                     error_rate_trend=Trend.STABLE,
                     resolution_attempts=0
                 )
@@ -450,7 +450,7 @@ class BehavioralAnalyzer:
             confidence=min(profile.total_requests / 20.0, 1.0),  # Confidence builds with data
             risk_factors=risk_factors,
             positive_indicators=positive_indicators,
-            analysis_timestamp=datetime.utcnow(),
+            analysis_timestamp=datetime.now(timezone.utc),
             analysis_window=self.analysis_window
         )
 
@@ -553,7 +553,7 @@ class BehavioralAnalyzer:
         
         # Calculate request frequencies over time windows
         recent_requests = list(request_history)[-50:]  # Last 50 requests
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         # Check for sudden spikes in the last 5 minutes
         recent_5min = [r for r in recent_requests 
@@ -597,7 +597,7 @@ class BehavioralAnalyzer:
                 if std_dev < 0.1 and mean_interval < 10:  # Very regular, fast requests
                     anomalies.append(TemporalAnomaly(
                         anomaly_type=AnomalyType.TIMING_ANOMALY,
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         severity=0.8,
                         duration=timedelta(minutes=1),
                         affected_patterns=["request_timing"],
@@ -635,7 +635,7 @@ class BehavioralAnalyzer:
                 if abs(recent_pref - historical_pref) > 0.3:  # 30% change
                     anomalies.append(TemporalAnomaly(
                         anomaly_type=AnomalyType.PATTERN_ANOMALY,
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         severity=abs(recent_pref - historical_pref),
                         duration=timedelta(minutes=10),
                         affected_patterns=[f"endpoint_usage_{endpoint}"],
@@ -659,7 +659,7 @@ class BehavioralAnalyzer:
             if recent_error_rate > 0.2:  # More than 20% error rate
                 anomalies.append(TemporalAnomaly(
                     anomaly_type=AnomalyType.PATTERN_ANOMALY,
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     severity=recent_error_rate,
                     duration=timedelta(minutes=5),
                     affected_patterns=["error_rate"],
@@ -700,7 +700,7 @@ class BehavioralAnalyzer:
         return BehaviorVector(
             features=features,
             feature_names=list(features.keys()),
-            extraction_timestamp=datetime.utcnow(),
+            extraction_timestamp=datetime.now(timezone.utc),
             window_size=10,  # Based on last 10 requests
             confidence=min(len(recent_requests) / 10.0, 1.0)
         )
@@ -752,7 +752,7 @@ class BehavioralAnalyzer:
     async def cleanup_old_data(self):
         """Clean up old behavioral data to manage memory"""
         try:
-            cutoff_time = datetime.utcnow() - self.pattern_memory
+            cutoff_time = datetime.now(timezone.utc) - self.pattern_memory
             
             # Clean up old profiles
             to_remove = []

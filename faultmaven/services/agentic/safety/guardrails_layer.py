@@ -17,7 +17,8 @@ import asyncio
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+from faultmaven.models import parse_utc_timestamp
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from faultmaven.models.agentic import (
@@ -180,7 +181,7 @@ class GuardrailsPolicyLayer(IGuardrailsPolicyLayer):
             
             # Add to audit trail
             await self._add_to_audit_trail({
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "user_id": user_id,
                 "session_id": session_id,
                 "source": source,
@@ -392,7 +393,7 @@ class GuardrailsPolicyLayer(IGuardrailsPolicyLayer):
             classification.metadata = {
                 "total_dimensions": len(classification.safety_dimensions),
                 "risk_factor_count": len(classification.risk_factors),
-                "assessment_timestamp": datetime.utcnow().isoformat()
+                "assessment_timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             logger.info(f"Safety classification: {classification.overall_safety}, risk_factors={len(classification.risk_factors)}, confidence={classification.confidence_score:.3f}")
@@ -430,12 +431,12 @@ class GuardrailsPolicyLayer(IGuardrailsPolicyLayer):
         try:
             # Parse timeframe
             hours_back = self._parse_timeframe(timeframe)
-            cutoff_time = datetime.utcnow().timestamp() - (hours_back * 3600)
+            cutoff_time = datetime.now(timezone.utc).timestamp() - (hours_back * 3600)
             
-            # Filter audit trail by timeframe
+            # Filter audit trail by timeframe (convert to timezone-naive for consistency)
             recent_entries = [
                 entry for entry in self.audit_trail[-1000:]  # Last 1000 entries
-                if datetime.fromisoformat(entry["timestamp"].replace('Z', '+00:00')).timestamp() > cutoff_time
+                if parse_utc_timestamp(entry["timestamp"]).replace(tzinfo=None).timestamp() > cutoff_time
             ]
             
             # Generate report
@@ -448,7 +449,7 @@ class GuardrailsPolicyLayer(IGuardrailsPolicyLayer):
                 compliance_status="compliant",
                 recommendations=[],
                 audit_trail_completeness=1.0,
-                generated_at=datetime.utcnow().isoformat(),
+                generated_at=datetime.now(timezone.utc).isoformat(),
                 metadata={}
             )
             
@@ -522,7 +523,7 @@ class GuardrailsPolicyLayer(IGuardrailsPolicyLayer):
                 compliance_status="error",
                 recommendations=[f"Unable to generate report: {str(e)}"],
                 audit_trail_completeness=0.0,
-                generated_at=datetime.utcnow().isoformat(),
+                generated_at=datetime.now(timezone.utc).isoformat(),
                 metadata={"error": str(e)}
             )
 
@@ -956,7 +957,7 @@ class GuardrailsPolicyLayer(IGuardrailsPolicyLayer):
     async def audit_operation(self, operation: str, user_id: str, parameters: Dict[str, Any]) -> bool:
         """Record operation for audit purposes"""
         await self._add_to_audit_trail({
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "user_id": user_id,
             "operation": operation,
             "parameters": parameters,

@@ -26,7 +26,8 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
+from faultmaven.utils.serialization import to_json_compatible
 
 try:
     import yaml
@@ -244,11 +245,11 @@ class RunbookIngestionPipeline:
                 # Convert date string like "2025-01-15" to ISO timestamp
                 try:
                     dt = datetime.fromisoformat(last_updated)
-                    updated_at = dt.isoformat() + "Z"
+                    updated_at = to_json_compatible(dt)
                 except ValueError:
-                    updated_at = datetime.utcnow().isoformat() + "Z"
+                    updated_at = to_json_compatible(to_json_compatible(datetime.now(timezone.utc))
             else:
-                updated_at = datetime.utcnow().isoformat() + "Z"
+                updated_at = to_json_compatible(to_json_compatible(datetime.now(timezone.utc))
 
             created_at = updated_at  # Use same timestamp for both
 
@@ -267,7 +268,7 @@ class RunbookIngestionPipeline:
             file_key = str(file_path.relative_to(self.runbook_dir))
             self.ingestion_log[file_key] = {
                 "hash": self._calculate_file_hash(file_path),
-                "ingested_at": datetime.utcnow().isoformat(),
+                "ingested_at": to_json_compatible(datetime.now(timezone.utc).isoformat(),
                 "document_id": document_id,
                 "title": title,
                 "technology": technology,

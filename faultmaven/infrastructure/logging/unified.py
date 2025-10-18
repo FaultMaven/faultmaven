@@ -10,7 +10,7 @@ import asyncio
 import time
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, AsyncIterator, Dict, Iterator, Optional, Union
-from datetime import datetime
+from datetime import datetime, timezone
 import structlog
 import uuid
 
@@ -153,7 +153,7 @@ class UnifiedLogger:
         operation_context = {
             "operation": operation_name,
             "layer": self.layer,
-            "start_time": datetime.utcnow().isoformat(),
+            "start_time": datetime.now(timezone.utc).isoformat(),
             **context_fields
         }
         
@@ -233,7 +233,7 @@ class UnifiedLogger:
             
             # Update context with final timing
             operation_context.update({
-                "end_time": datetime.utcnow().isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
                 "duration_seconds": duration,
                 "performance_violation": performance_violation,
                 "threshold_seconds": threshold
@@ -287,7 +287,7 @@ class UnifiedLogger:
         operation_context = {
             "operation": operation_name,
             "layer": self.layer,
-            "start_time": datetime.utcnow().isoformat(),
+            "start_time": datetime.now(timezone.utc).isoformat(),
             **context_fields
         }
         
@@ -367,7 +367,7 @@ class UnifiedLogger:
             
             # Update context with final timing
             operation_context.update({
-                "end_time": datetime.utcnow().isoformat(),
+                "end_time": datetime.now(timezone.utc).isoformat(),
                 "duration_seconds": duration,
                 "performance_violation": performance_violation,
                 "threshold_seconds": threshold

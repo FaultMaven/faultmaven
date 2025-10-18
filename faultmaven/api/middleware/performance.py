@@ -10,7 +10,7 @@ import logging
 from typing import Dict, Any, Optional
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ...infrastructure.monitoring.metrics_collector import metrics_collector
 from ...infrastructure.monitoring.apm_integration import apm_integration
@@ -59,7 +59,7 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
         """
         # Start timing
         start_time = time.time()
-        start_timestamp = datetime.utcnow()
+        start_timestamp = datetime.now(timezone.utc)
         
         # Generate unique request ID for correlation
         request_id = f"req_{int(start_time * 1000000)}"
@@ -390,7 +390,7 @@ class PerformanceMetricsEndpoint:
             alert_stats = alert_manager.get_alert_statistics()
             
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "middleware": middleware_stats,
                 "metrics_collector": metrics_summary,
                 "dashboard": dashboard_data,
@@ -402,7 +402,7 @@ class PerformanceMetricsEndpoint:
             self.logger.error(f"Failed to get performance metrics: {e}")
             return {
                 "error": f"Failed to get performance metrics: {e}",
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
     
     async def get_real_time_metrics(self, time_window_minutes: int = 5) -> Dict[str, Any]:
@@ -419,7 +419,7 @@ class PerformanceMetricsEndpoint:
             active_alerts = alert_manager.get_active_alerts()
             
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "time_window_minutes": time_window_minutes,
                 "dashboard": dashboard_data,
                 "active_alerts": [
@@ -440,5 +440,5 @@ class PerformanceMetricsEndpoint:
             self.logger.error(f"Failed to get real-time metrics: {e}")
             return {
                 "error": f"Failed to get real-time metrics: {e}",
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }

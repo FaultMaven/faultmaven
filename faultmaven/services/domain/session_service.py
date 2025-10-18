@@ -13,7 +13,7 @@ Core Responsibilities:
 - Cross-service session operations
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Union, Tuple
 
 from faultmaven.services.base import BaseService
@@ -24,6 +24,7 @@ from faultmaven.models.case import CaseMessage, MessageType
 from faultmaven.infrastructure.observability.tracing import trace
 # from faultmaven.session_management import SessionManager  # Temporarily disabled
 from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class SessionService(BaseService):
@@ -399,7 +400,7 @@ class SessionService(BaseService):
             # Session duration analytics
             durations = []
             for session in all_sessions:
-                duration = datetime.utcnow() - session.created_at
+                duration = datetime.now(timezone.utc) - session.created_at
                 durations.append(duration.total_seconds() / 3600)
 
             # Case analytics
@@ -564,7 +565,7 @@ class SessionService(BaseService):
                 return None
 
             # Calculate session metrics
-            duration = datetime.utcnow() - session.created_at
+            duration = datetime.now(timezone.utc) - session.created_at
             is_active = await self._is_active(session)
 
             # Extract case summary
@@ -581,8 +582,8 @@ class SessionService(BaseService):
                 "session_id": session.session_id,
                 "user_id": session.user_id,
                 "status": "active" if is_active else "inactive",
-                "created_at": session.created_at.isoformat(),
-                "last_activity": session.last_activity.isoformat(),
+                "created_at": to_json_compatible(session.created_at),
+                "last_activity": to_json_compatible(session.last_activity),
                 "duration_hours": round(duration.total_seconds() / 3600, 2),
                 "data_uploads_count": len(session.data_uploads),
                 "case_summary": case_summary,
@@ -597,7 +598,7 @@ class SessionService(BaseService):
 
     async def _is_active(self, session: SessionContext) -> bool:
         """Check if a session is considered active"""
-        time_since_activity = datetime.utcnow() - session.last_activity
+        time_since_activity = datetime.now(timezone.utc) - session.last_activity
         return time_since_activity < self.inactive_threshold
 
     async def _cleanup_oldest_session(self, sessions: List[SessionContext]) -> bool:
@@ -706,7 +707,7 @@ class SessionService(BaseService):
                 "query": query,
                 "context": context or {},
                 "confidence_score": confidence_score,
-                "timestamp": datetime.utcnow().isoformat() + 'Z'
+                "timestamp": to_json_compatible(datetime.now(timezone.utc))
             }
             
             await self.session_manager.add_case_history(session_id, case_record)
@@ -758,7 +759,7 @@ class SessionService(BaseService):
                 "filename": filename,
                 "file_size": file_size,
                 "metadata": metadata or {},
-                "timestamp": datetime.utcnow().isoformat() + 'Z'
+                "timestamp": to_json_compatible(datetime.now(timezone.utc))
             }
             
             await self.session_manager.add_case_history(session_id, upload_record)
@@ -861,7 +862,7 @@ class SessionService(BaseService):
                         state_distribution["other"] += 1
             
             # Calculate average session age
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             session_ages = [(now - s.created_at).total_seconds() / 3600 for s in all_sessions]
             avg_age = sum(session_ages) / len(session_ages) if session_ages else 0
             
@@ -917,7 +918,7 @@ class SessionService(BaseService):
                 }
             
             # Calculate duration metrics
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             durations = [(now - s.created_at).total_seconds() / 3600 for s in user_sessions]
             total_duration = sum(durations)
             avg_duration = total_duration / len(durations)
@@ -1024,7 +1025,7 @@ class SessionService(BaseService):
             case_start_record = {
                 "action": "new_case_started",
                 "case_id": new_case_id,
-                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "details": "New conversation thread initiated"
             }
             
@@ -1085,7 +1086,7 @@ class SessionService(BaseService):
             activity_record = {
                 "action": "case_activity",
                 "case_id": case_id,
-                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 **activity_details
             }
             
@@ -1376,7 +1377,8 @@ class SessionService(BaseService):
             case_id = await self.case_service.get_or_create_case_for_session(
                 session_id=session_id,
                 user_id=user_id,
-                force_new=force_new_case
+                force_new=force_new_case,
+                title=case_title
             )
             
             # Update session with case association

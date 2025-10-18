@@ -24,7 +24,7 @@ Implementation Notes:
 import asyncio
 import logging
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from threading import RLock
 import pickle
@@ -220,19 +220,19 @@ class GlobalConfidenceService(IGlobalConfidenceService):
                     'brier_score': brier_score_loss(y, y_pred_proba),
                     'log_loss': log_loss(y, y_pred_proba),
                     'training_samples': n_samples,
-                    'training_date': datetime.utcnow().isoformat()
+                    'training_date': datetime.now(timezone.utc).isoformat()
                 }
                 
                 self._model_metadata = {
                     'version': self._model_version,
                     'calibration_method': self._calibration_method,
                     'feature_count': n_features,
-                    'training_date': datetime.utcnow().isoformat(),
+                    'training_date': datetime.now(timezone.utc).isoformat(),
                     'model_type': 'logistic_regression',
                     'synthetic_training': True
                 }
                 
-                self._last_calibration = datetime.utcnow()
+                self._last_calibration = datetime.now(timezone.utc)
                 self._logger.info(f"✅ Initialized default confidence model v{self._model_version}")
                 
         except Exception as e:
@@ -252,7 +252,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
             ConfidenceResponse with calibrated score, confidence band,
             recommended actions, and model metadata
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             # Validate request
@@ -284,7 +284,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
                 feature_contributions = self._calculate_feature_importance(features)
             
             # Update metrics
-            processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+            processing_time = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
             self._update_prediction_metrics(processing_time)
             
             # Build response
@@ -390,7 +390,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
                 'previous_score': current_score,
                 'previous_band': self._classify_confidence_band(current_score),
                 'band_consistency_count': 1,
-                'last_update': datetime.utcnow()
+                'last_update': datetime.now(timezone.utc)
             }
             return current_score
         
@@ -427,7 +427,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
             state['previous_score'] = current_score
             adjusted_score = current_score
         
-        state['last_update'] = datetime.utcnow()
+        state['last_update'] = datetime.now(timezone.utc)
         return adjusted_score
 
     def _classify_confidence_band(self, score: float) -> ConfidenceBand:
@@ -575,7 +575,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
                     self._model_metadata = model_dict['metadata']
                     self._calibration_metrics = model_dict['metrics']
                     self._model_version = version
-                    self._last_calibration = datetime.utcnow()
+                    self._last_calibration = datetime.now(timezone.utc)
                     
                     # Update metrics
                     self._metrics['model_updates'] += 1
@@ -616,7 +616,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
             
             # Check calibration age
             if self._last_calibration:
-                age = datetime.utcnow() - self._last_calibration
+                age = datetime.now(timezone.utc) - self._last_calibration
                 if age > timedelta(days=30):  # Recalibration recommended monthly
                     status = "degraded"
                     errors.append(f"Model calibration age: {age.days} days")
@@ -630,7 +630,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
             health_info = {
                 "service": "confidence_service",
                 "status": status,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "version": "1.0.0",
                 "model_version": self._model_version,
                 "ml_available": ML_AVAILABLE,
@@ -649,7 +649,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
             return {
                 "service": "confidence_service",
                 "status": "unhealthy",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": str(e)
             }
 
@@ -667,7 +667,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
     async def get_calibration_metrics(self) -> Dict[str, Any]:
         """Get detailed calibration metrics"""
         return {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "metrics": self._calibration_metrics.copy(),
             "performance": self._metrics.copy(),
             "hysteresis_sessions": len(self._hysteresis_state),
@@ -686,7 +686,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
     async def get_prediction_statistics(self) -> Dict[str, Any]:
         """Get prediction statistics for monitoring"""
         return {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "total_predictions": self._metrics['predictions_made'],
             "avg_processing_time_ms": self._metrics['avg_prediction_time_ms'],
             "hysteresis_adjustments": self._metrics['hysteresis_adjustments'],
@@ -694,5 +694,5 @@ class GlobalConfidenceService(IGlobalConfidenceService):
             "active_sessions": len(self._hysteresis_state),
             "calibration_error": self._calibration_metrics.get('ece_score', 0.0),
             "model_version": self._model_version,
-            "uptime": datetime.utcnow().isoformat()
+            "uptime": datetime.now(timezone.utc).isoformat()
         }

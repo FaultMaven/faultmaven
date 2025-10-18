@@ -55,7 +55,7 @@ import pytest
 
 from faultmaven.tools.knowledge_base import KnowledgeBaseTool
 from faultmaven.tools.web_search import WebSearchTool
-from faultmaven.core.processing.classifier import DataClassifier
+from faultmaven.services.preprocessing.classifier import DataClassifier  # Updated to new classifier
 from faultmaven.core.processing.log_analyzer import LogProcessor
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models import AgentState, DataType, SessionContext

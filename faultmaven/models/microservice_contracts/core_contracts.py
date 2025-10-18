@@ -12,7 +12,7 @@ Design Principles:
 - Standardized error handling patterns
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 from enum import Enum
 from pydantic import BaseModel, Field, validator
@@ -137,7 +137,7 @@ class Evidence(BaseModel):
         description="Optional URL for full content"
     )
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Evidence retrieval timestamp"
     )
     provenance: Dict[str, Any] = Field(
@@ -252,7 +252,7 @@ class DecisionRecord(BaseModel):
     
     # Timestamps
     started_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Turn start timestamp"
     )
     completed_at: Optional[datetime] = Field(
@@ -409,6 +409,9 @@ class ConfidenceRequest(BaseModel):
 
 class ConfidenceResponse(BaseModel):
     """Response from global confidence service."""
+    
+    model_config = {"protected_namespaces": ()}  # Allow 'model_' prefix
+    
     raw_score: float = Field(
         ge=0.0,
         le=1.0,

@@ -29,7 +29,7 @@ import smtplib
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Dict, Any, List, Optional, Tuple, Callable, Set
@@ -443,7 +443,7 @@ class SLAMonitor(BaseExternalClient):
             
             # Calculate current compliance
             sla_status = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "service_filter": service_filter,
                 "overall_compliance": await self._calculate_overall_compliance(slas_to_check),
                 "sla_details": {},
@@ -563,7 +563,7 @@ class SLAMonitor(BaseExternalClient):
         """
         try:
             reporting_period = timedelta(hours=reporting_period_hours)
-            cutoff_time = datetime.utcnow() - reporting_period
+            cutoff_time = datetime.now(timezone.utc) - reporting_period
             
             # Get service SLAs
             service_slas = {
@@ -707,7 +707,7 @@ class SLAMonitor(BaseExternalClient):
                 # Update existing violation
                 violation = self._active_violations[violation_key]
                 violation.actual_value = current_value
-                violation.duration_seconds = (datetime.utcnow() - violation.detection_time).total_seconds()
+                violation.duration_seconds = (datetime.now(timezone.utc) - violation.detection_time).total_seconds()
                 violation.violation_percentage = self._calculate_violation_percentage(
                     sla, current_value
                 )
@@ -722,7 +722,7 @@ class SLAMonitor(BaseExternalClient):
                     target_value=sla.target_value,
                     actual_value=current_value,
                     violation_percentage=self._calculate_violation_percentage(sla, current_value),
-                    detection_time=datetime.utcnow(),
+                    detection_time=datetime.now(timezone.utc),
                     duration_seconds=0,
                     affected_operations=await self._get_affected_operations(sla),
                     impact_assessment=await self._assess_violation_impact(sla, current_value)
@@ -772,7 +772,7 @@ class SLAMonitor(BaseExternalClient):
             # Track alert
             with self._alert_lock:
                 self._alert_history.append({
-                    "timestamp": datetime.utcnow(),
+                    "timestamp": datetime.now(timezone.utc),
                     "violation_id": violation.violation_id,
                     "sla_id": sla.sla_id,
                     "channels": sla.alert_channels
@@ -972,7 +972,7 @@ Please investigate and resolve this issue promptly.
     
     def _check_alert_rate_limit(self, channels: List[str]) -> bool:
         """Check if alert rate limit allows sending"""
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         hour_ago = current_time - timedelta(hours=1)
         
         for channel_id in channels:

@@ -18,7 +18,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
-from faultmaven.infrastructure.observability.tracing import get_logger
+from faultmaven.infrastructure.logging.config import get_logger
 
 logger = get_logger(__name__)
 

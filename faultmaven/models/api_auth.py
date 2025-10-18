@@ -66,7 +66,7 @@ class DevLoginRequest(BaseModel):
 
     class Config:
         """Pydantic configuration"""
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "username": "john.doe",
                 "email": "john.doe@faultmaven.local",
@@ -113,7 +113,7 @@ class UserProfile(BaseModel):
 
     class Config:
         """Pydantic configuration"""
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "user_id": "550e8400-e29b-41d4-a716-446655440000",
                 "username": "john.doe",
@@ -157,7 +157,7 @@ class AuthTokenResponse(BaseModel):
 
     class Config:
         """Pydantic configuration"""
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "access_token": "550e8400-e29b-41d4-a716-446655440000",
                 "token_type": "bearer",
@@ -189,7 +189,7 @@ class LogoutResponse(BaseModel):
 
     class Config:
         """Pydantic configuration"""
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "message": "Logged out successfully",
                 "revoked_tokens": 1
@@ -220,7 +220,7 @@ class AuthError(BaseModel):
 
     class Config:
         """Pydantic configuration"""
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "error": "invalid_request",
                 "error_description": "Username is required and must be between 3-50 characters",
@@ -268,7 +268,7 @@ class UserInfoResponse(UserProfile):
 
     class Config:
         """Pydantic configuration"""
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "user_id": "550e8400-e29b-41d4-a716-446655440000",
                 "username": "john.doe",

@@ -28,7 +28,7 @@ import logging
 import statistics
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple, Set, Union
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -267,7 +267,7 @@ class AnalyticsDashboardService(BaseService):
         
         # Build dashboard data
         dashboard = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "time_range_hours": time_range_hours,
             "system_health": {
                 "overall_score": overall_health_score,
@@ -369,7 +369,7 @@ class AnalyticsDashboardService(BaseService):
         
         # Build service dashboard
         dashboard = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "service_name": service_name,
             "time_range_hours": time_range_hours,
             "health_summary": {
@@ -441,7 +441,7 @@ class AnalyticsDashboardService(BaseService):
         user_engagement = await self._get_user_engagement_metrics(time_range_hours)
         
         dashboard = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "time_range_hours": time_range_hours,
             "user_overview": {
                 "total_users": user_sessions.get("total_unique_users", 0),
@@ -514,7 +514,7 @@ class AnalyticsDashboardService(BaseService):
         workflow_metrics = await self._get_workflow_metrics(time_range_hours)
         
         dashboard = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "time_range_hours": time_range_hours,
             "workflow_overview": {
                 "total_workflows": workflow_metrics.get("total_workflows", 0),
@@ -573,7 +573,7 @@ class AnalyticsDashboardService(BaseService):
             # Check cache first if enabled
             if cache_results and query_hash in self._query_cache:
                 cache_entry = self._query_cache[query_hash]
-                if (datetime.utcnow() - cache_entry["timestamp"]).total_seconds() < self._query_cache_ttl:
+                if (datetime.now(timezone.utc) - cache_entry["timestamp"]).total_seconds() < self._query_cache_ttl:
                     return cache_entry["results"]
             
             # Execute custom query
@@ -586,7 +586,7 @@ class AnalyticsDashboardService(BaseService):
             # Cache results if enabled
             if cache_results:
                 self._query_cache[query_hash] = {
-                    "timestamp": datetime.utcnow(),
+                    "timestamp": datetime.now(timezone.utc),
                     "results": results
                 }
             
@@ -609,7 +609,7 @@ class AnalyticsDashboardService(BaseService):
         
         # Build query results
         results = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "query_config": query_config,
             "data": {},
             "summary": {},

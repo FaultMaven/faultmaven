@@ -4,7 +4,8 @@ import asyncio
 import logging
 import time
 from typing import Any, Callable, Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone
+from faultmaven.utils.serialization import to_json_compatible
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -183,7 +184,7 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
         request_data = {
             "endpoint": request.url.path,
             "method": request.method,
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "client_ip": request.client.host if request.client else "unknown",
             "user_agent": request.headers.get("user-agent", ""),
             "content_type": request.headers.get("content-type", ""),
@@ -212,13 +213,13 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
             if not self.coordinator or not self.initialized:
                 # Fallback decision if coordinator not available
                 return ProtectionDecision(
-                    decision_id=f"fallback_{session_id}_{int(datetime.utcnow().timestamp())}",
+                    decision_id=f"fallback_{session_id}_{int(datetime.now(timezone.utc).timestamp())}",
                     session_id=session_id,
                     allow_request=True,
                     risk_assessment=RiskLevel.LOW,
                     confidence=0.0,
                     explanation="Phase 2 coordinator not available, allowing request",
-                    decision_timestamp=datetime.utcnow()
+                    decision_timestamp=datetime.now(timezone.utc)
                 )
             
             # Use Phase 2 coordinator for analysis
@@ -231,13 +232,13 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
             self.logger.error(f"Error in Phase 2 request analysis: {e}")
             # Safe fallback
             return ProtectionDecision(
-                decision_id=f"error_{session_id}_{int(datetime.utcnow().timestamp())}",
+                decision_id=f"error_{session_id}_{int(datetime.now(timezone.utc).timestamp())}",
                 session_id=session_id,
                 allow_request=True,
                 risk_assessment=RiskLevel.MEDIUM,
                 confidence=0.0,
                 explanation=f"Analysis error, allowing request: {str(e)}",
-                decision_timestamp=datetime.utcnow()
+                decision_timestamp=datetime.now(timezone.utc)
             )
 
     async def _create_protection_response(self, decision: ProtectionDecision) -> Response:
@@ -270,7 +271,7 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
             "message": error_message,
             "detail": decision.explanation,
             "correlation_id": decision.decision_id,
-            "timestamp": decision.decision_timestamp.isoformat() + 'Z',
+            "timestamp": to_json_compatible(decision.decision_timestamp),
             "risk_level": decision.risk_assessment.value,
             "confidence": decision.confidence
         }
@@ -308,7 +309,7 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
             response_data = {
                 "status_code": response.status_code,
                 "response_time": 0.0,  # Will be calculated by the caller
-                "timestamp": datetime.utcnow()
+                "timestamp": datetime.now(timezone.utc)
             }
             
             # Add error type for failed responses

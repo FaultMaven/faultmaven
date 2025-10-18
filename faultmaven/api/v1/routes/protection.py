@@ -146,7 +146,7 @@ async def get_protection_config(
         last_update = protection_system.protection_status["last_update"]
         # Handle both datetime objects and string timestamps
         if hasattr(last_update, 'isoformat'):
-            timestamp = last_update.isoformat() + 'Z'
+            timestamp = to_json_compatible(last_update)
         else:
             # Already a string timestamp
             timestamp = str(last_update)

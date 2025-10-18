@@ -23,7 +23,7 @@ import logging
 import time
 from contextlib import contextmanager, asynccontextmanager
 from typing import Dict, Any, Optional, Callable, List, Union, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 import inspect
 
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
@@ -828,7 +828,7 @@ def _track_user_interaction_pattern(
             "service": service,
             "operation": operation,
             "execution_time_ms": execution_time,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
         # Extract operation-specific patterns
@@ -893,7 +893,7 @@ def _track_error_pattern(
             "execution_time_ms": execution_time,
             "error_type": type(error).__name__,
             "error_message": str(error)[:100],  # Truncated for privacy
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
         monitor._metrics_collector.record_user_pattern(

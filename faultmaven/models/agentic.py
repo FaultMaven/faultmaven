@@ -24,7 +24,7 @@ Key Features:
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Union, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 from enum import Enum
 import uuid
@@ -109,14 +109,14 @@ class AgentExecutionState(BaseModel):
     confidence_metrics: Dict[str, float] = Field(default_factory=dict)
     active_tools: List[str] = Field(default_factory=list)
     safety_constraints: List[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     # Additional fields for test compatibility
     current_step: int = 1
     workflow_status: str = "planning"
     context: Dict[str, Any] = Field(default_factory=dict)
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ConversationMemory(BaseModel):
@@ -134,8 +134,8 @@ class ConversationMemory(BaseModel):
     session_id: str = ""
     messages: List[Dict[str, Any]] = Field(default_factory=list)
     context: Dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AgentCapability(BaseModel):
@@ -177,7 +177,7 @@ class ExecutionPlan(BaseModel):
     parallel_groups: List[List[str]] = Field(default_factory=list)
     estimated_total_duration: Optional[float] = None
     risk_assessment: Dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_by: str = "system"
     
     # Additional fields for test compatibility
@@ -196,7 +196,7 @@ class ObservationData(BaseModel):
     data: Dict[str, Any] = Field(default_factory=dict)
     confidence: float = 1.0
     quality_score: Optional[float] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -209,7 +209,7 @@ class AdaptationEvent(BaseModel):
     changes: Dict[str, Any] = Field(default_factory=dict)
     impact_assessment: Dict[str, Any] = Field(default_factory=dict)
     confidence: float
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AgentMetrics(BaseModel):
@@ -237,7 +237,7 @@ class PolicyViolation(BaseModel):
     severity: str
     description: str
     context: Dict[str, Any] = Field(default_factory=dict)
-    detected_at: datetime = Field(default_factory=datetime.utcnow)
+    detected_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     resolution_status: str = "pending"
 
 
@@ -250,7 +250,7 @@ class ComponentMessage(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
     priority: ExecutionPriority = ExecutionPriority.NORMAL
     correlation_id: Optional[str] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # Core Agentic Interfaces
@@ -527,8 +527,8 @@ class AgenticLangGraphState(BaseModel):
     fallback_strategies_used: List[str] = Field(default_factory=list)
     
     # Metadata
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -585,7 +585,7 @@ class QueryInput(BaseModel):
     content: str
     context: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class QueryContext(BaseModel):
@@ -680,7 +680,7 @@ class QueryClassification(BaseModel):
     urgency: str = "medium"  # low, medium, high, critical
     entities: List[Dict[str, Any]] = Field(default_factory=list)
     context: Dict[str, Any] = Field(default_factory=dict)
-    classification_timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    classification_timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     classification_method: str = "pattern_based"
     processing_recommendations: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -800,7 +800,7 @@ class ProcessingResult(BaseModel):
     success: bool
     data: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class QualityMetrics(BaseModel):
@@ -860,7 +860,7 @@ class QualityAssessment(BaseModel):
     content_id: str
     metrics: QualityMetrics
     feedback: List[str] = Field(default_factory=list)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AgentCapabilities(BaseModel):
@@ -959,7 +959,7 @@ class AgentResponse(BaseModel):
     confidence: float = 1.0
     sources: List[ResponseSource] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ErrorContext(BaseModel):
@@ -969,7 +969,7 @@ class ErrorContext(BaseModel):
     operation: str
     parameters: Dict[str, Any] = Field(default_factory=dict)
     system_state: Dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ErrorType(str, Enum):
@@ -1059,7 +1059,7 @@ class ComplianceReport(BaseModel):
     risk_level: str = "low"
     recommendations: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class SafetyClassification(BaseModel):
@@ -1129,7 +1129,7 @@ class WorkflowExecution(BaseModel):
     status: str
     current_step: Optional[str] = None
     execution_context: Dict[str, Any] = Field(default_factory=dict)
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = None
     steps_completed: List[str] = Field(default_factory=list)
     steps_failed: List[str] = Field(default_factory=list)
@@ -1200,7 +1200,7 @@ class SystemHealthStatus(BaseModel):
     component_health: Dict[str, HealthStatus] = Field(default_factory=dict)
     performance_metrics: Dict[str, float] = Field(default_factory=dict)
     alerts: List[Dict[str, Any]] = Field(default_factory=list)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ErrorMetrics(BaseModel):

@@ -28,7 +28,8 @@ Core Design Principles:
 """
 
 from typing import Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
+from faultmaven.utils.serialization import to_json_compatible
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Response
@@ -109,10 +110,10 @@ def _safe_datetime_to_utc_string(dt: datetime) -> str:
         # Timezone-aware - convert to UTC and make naive
         dt_utc = dt.utctimetuple()
         dt_naive = datetime(*dt_utc[:6], microsecond=dt.microsecond)
-        return dt_naive.isoformat() + 'Z'
+        return to_json_compatible(dt_naive)
     else:
         # Timezone-naive - assume it's already UTC
-        return dt.isoformat() + 'Z'
+        return to_json_compatible(dt)
 
 
 def _log_session_not_found_rate_limited(session_id: str) -> None:
@@ -690,7 +691,7 @@ async def cleanup_expired_sessions(
         return {
             "message": f"Successfully cleaned up {cleaned_count} expired sessions",
             "cleaned_sessions": cleaned_count,
-            "timestamp": datetime.utcnow().isoformat() + 'Z'
+            "timestamp": to_json_compatible(datetime.now(timezone.utc))
         }
     except Exception as e:
         logger.error(f"Failed to cleanup expired sessions: {e}")
@@ -759,7 +760,7 @@ async def session_heartbeat(
         # Record heartbeat operation in session history (best effort)
         heartbeat_record = {
             "action": "heartbeat",
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "endpoint": "heartbeat"
         }
         
@@ -773,7 +774,7 @@ async def session_heartbeat(
             logger.warning(f"Failed to record heartbeat operation for {session_id}: {e}")
 
         # Get updated session to return current last_activity (best effort)
-        last_activity = datetime.utcnow().isoformat() + 'Z'  # fallback
+        last_activity = to_json_compatible(datetime.now(timezone.utc))  # fallback
         try:
             session = await session_service.get_session(session_id, validate=False)
             if session and session.last_activity:
@@ -822,7 +823,7 @@ async def get_session_stats(
         # Record stats request operation in session history
         stats_record = {
             "action": "stats_request",
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "endpoint": "stats"
         }
         
@@ -1059,7 +1060,7 @@ async def restore_session(
             "message": f"Session restored successfully ({restore_type} restoration)",
             "restoration_details": {
                 "type": restore_type,
-                "restored_at": datetime.utcnow().isoformat() + 'Z',
+                "restored_at": to_json_compatible(datetime.now(timezone.utc)),
                 "items_restored": {
                     "data_uploads": len(session.data_uploads),
                     "case_history": len(session.case_history)

@@ -16,7 +16,7 @@ Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from faultmaven.models.investigation import (
     InvestigationPhase,
@@ -52,6 +52,7 @@ class BlastRadiusHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str = "",
+        context: Optional[dict] = None,
         evidence_provided: Optional[List[EvidenceProvided]] = None,
         evidence_requests: Optional[List[EvidenceRequest]] = None,
     ) -> PhaseHandlerResult:
@@ -276,7 +277,7 @@ class BlastRadiusHandler(BasePhaseHandler):
             statement=problem_confirmation.problem_statement if problem_confirmation else "Problem under investigation",
             affected_components=problem_confirmation.affected_components if problem_confirmation else [],
             affected_scope="TBD - analyzing evidence",  # Will be updated from evidence
-            started_at=datetime.utcnow(),  # Will be refined in Phase 2
+            started_at=datetime.now(timezone.utc),  # Will be refined in Phase 2
             severity=problem_confirmation.severity if problem_confirmation else "medium",
             confidence=0.7,  # Initial confidence
             framed_at_turn=investigation_state.metadata.current_turn,

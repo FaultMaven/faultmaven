@@ -45,6 +45,9 @@ redis[hiredis]>=5.0.0 # For distributed session storage
 # --- NEW: Retry Logic ---
 tenacity>=8.3.0 # For robust retry mechanisms
 
+# --- NEW: Background Task Scheduling ---
+apscheduler>=3.10.4 # For case cleanup scheduler
+
 # HTTP requests and utilities
 requests>=2.31.0
 httpx>=0.28.1

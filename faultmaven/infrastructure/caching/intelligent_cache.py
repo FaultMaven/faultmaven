@@ -30,7 +30,7 @@ import pickle
 import time
 from collections import defaultdict, Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List, Tuple, Union, Callable, Set
 import threading
 import weakref
@@ -66,7 +66,7 @@ class CacheStats:
     entry_count: int = 0
     hit_rate: float = 0.0
     avg_access_time: float = 0.0
-    last_updated: datetime = field(default_factory=datetime.utcnow)
+    last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -125,7 +125,7 @@ class CacheAnalytics:
                 )
             
             pattern = self.access_patterns[key_pattern]
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             pattern.access_times.append(now)
             
             # Update user distribution
@@ -527,7 +527,7 @@ class IntelligentCache(BaseExternalClient):
         """Get comprehensive cache statistics and analytics"""
         try:
             stats = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "l1_cache": {
                     "hits": self._l1_stats.hits,
                     "misses": self._l1_stats.misses,
@@ -673,7 +673,7 @@ class IntelligentCache(BaseExternalClient):
                 
                 # Check TTL
                 if entry.ttl_seconds:
-                    age = (datetime.utcnow() - entry.created_at).total_seconds()
+                    age = (datetime.now(timezone.utc) - entry.created_at).total_seconds()
                     if age > entry.ttl_seconds:
                         del self._l1_cache[cache_key]
                         self._l1_stats.misses += 1
@@ -681,7 +681,7 @@ class IntelligentCache(BaseExternalClient):
                         return None, False
                 
                 # Update access metadata
-                entry.last_accessed = datetime.utcnow()
+                entry.last_accessed = datetime.now(timezone.utc)
                 entry.access_count += 1
                 
                 self._l1_stats.hits += 1
@@ -717,8 +717,8 @@ class IntelligentCache(BaseExternalClient):
                 entry = CacheEntry(
                     key=cache_key,
                     value=value,
-                    created_at=datetime.utcnow(),
-                    last_accessed=datetime.utcnow(),
+                    created_at=datetime.now(timezone.utc),
+                    last_accessed=datetime.now(timezone.utc),
                     size_bytes=size_bytes,
                     ttl_seconds=ttl_seconds,
                     tags=tags or set()
@@ -857,7 +857,7 @@ class IntelligentCache(BaseExternalClient):
     
     def _calculate_eviction_score(self, entry: CacheEntry) -> float:
         """Calculate eviction score for cache entry (lower = more likely to evict)"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         # Time-based factors
         age_seconds = (now - entry.created_at).total_seconds()
@@ -908,7 +908,7 @@ class IntelligentCache(BaseExternalClient):
         total = stats.hits + stats.misses
         if total > 0:
             stats.hit_rate = stats.hits / total
-        stats.last_updated = datetime.utcnow()
+        stats.last_updated = datetime.now(timezone.utc)
     
     def _setup_optimization_rules(self) -> None:
         """Setup cache optimization rules"""
@@ -944,7 +944,7 @@ class IntelligentCache(BaseExternalClient):
         """Rule: Pre-warm cache based on seasonal patterns"""
         if self._analytics._has_strong_seasonal_pattern(pattern):
             peak_hours = self._analytics._get_peak_hours(pattern)
-            current_hour = datetime.utcnow().hour
+            current_hour = datetime.now(timezone.utc).hour
             
             if current_hour in peak_hours:
                 return {
@@ -1026,7 +1026,7 @@ class IntelligentCache(BaseExternalClient):
                 
                 if self._analytics:
                     # Clean up old access patterns
-                    cutoff = datetime.utcnow() - timedelta(hours=24)
+                    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
                     
                     for pattern in self._analytics.access_patterns.values():
                         pattern.access_times = [

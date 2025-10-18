@@ -61,20 +61,166 @@ class ClassificationResult:
     processing_time_ms: float
 
 
+@dataclass
+class SimpleClassificationResult:
+    """Simple classification result with confidence scoring for user confirmation"""
+    data_type: DataType
+    confidence: float  # 0.0 - 1.0
+    requires_user_confirmation: bool  # True if confidence < threshold
+    suggested_types: List[DataType]  # Top 3 alternative candidates
+    matched_patterns: List[str]  # Patterns that matched (for debugging/learning)
+    detection_method: str  # "command_detection", "heuristic", "llm", "fallback"
+
+
 class EnhancedDataClassifier(IDataClassifier):
     """Memory-aware data classifier with pattern learning and context understanding"""
+
+    # Linux command output signatures (Tier 1 - Definitive indicators)
+    # Each command requires at least 2 pattern matches for high confidence detection
+    COMMAND_OUTPUTS = {
+        "top": {
+            "patterns": [
+                r"top\s+-\s+\d{2}:\d{2}:\d{2}",  # Header: "top - HH:MM:SS"
+                r"Tasks:\s+\d+\s+total,\s+\d+\s+running",  # Task summary
+                r"%Cpu\(s\):\s+[\d.]+\s+us,\s+[\d.]+\s+sy",  # CPU line
+                r"(KiB|MiB|GiB)\s+Mem\s*:\s+\d+\s+total",  # Memory line
+                r"\b(PID|USER|PR|NI|VIRT|RES|SHR)\b.*\b(%CPU|%MEM|TIME\+|COMMAND)\b",  # Header columns
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "ps": {
+            "patterns": [
+                r"\b(PID|TTY|TIME|CMD)\b",  # ps header columns
+                r"^\s*\d+\s+\S+\s+\d{2}:\d{2}:\d{2}",  # Process line with time format
+                r"\b(systemd|sshd|bash|cron|dbus)\b",  # Common system processes
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "vmstat": {
+            "patterns": [
+                r"procs\s+-+memory-+\s+-+swap-+\s+-+io-+",  # vmstat header
+                r"\b(r|b|swpd|free|buff|cache|si|so|bi|bo)\b",  # Column names
+                r"^\s*\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+",  # Data line
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "iostat": {
+            "patterns": [
+                r"avg-cpu:\s+%user\s+%nice\s+%system",  # iostat CPU header
+                r"Device.*tps.*kB_read/s.*kB_wrtn/s",  # iostat device header
+                r"Linux\s+\d+\.\d+\.\d+.*\(\S+\)",  # iostat system info
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "netstat": {
+            "patterns": [
+                r"Proto\s+Recv-Q\s+Send-Q\s+Local Address\s+Foreign Address\s+State",  # netstat header
+                r"^(tcp|udp|unix)\s+\d+\s+\d+\s+[\d\.:]+\s+[\d\.:]+",  # Connection line
+                r"Active Internet connections|Active UNIX domain sockets",  # Section headers
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "free": {
+            "patterns": [
+                r"^\s+total\s+used\s+free\s+shared\s+buff/cache\s+available",  # free header
+                r"^Mem:\s+\d+\s+\d+\s+\d+",  # Memory line
+                r"^Swap:\s+\d+\s+\d+\s+\d+",  # Swap line
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "df": {
+            "patterns": [
+                r"Filesystem\s+.*Size\s+Used\s+Avail\s+Use%\s+Mounted on",  # df header
+                r"^/dev/\w+\s+\d+[KMGT]?\s+\d+[KMGT]?\s+\d+[KMGT]?\s+\d+%",  # Filesystem line
+                r"tmpfs|devtmpfs",  # Common virtual filesystems
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "lscpu": {
+            "patterns": [
+                r"Architecture:\s+(x86_64|aarch64|i686)",
+                r"CPU\(s\):\s+\d+",
+                r"Thread\(s\) per core:\s+\d+",
+                r"Vendor ID:\s+\w+",
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "dmesg": {
+            "patterns": [
+                r"^\[\s*\d+\.\d+\]\s+",  # Kernel timestamp format
+                r"\bkernel:",  # Kernel messages
+                r"(usb|pci|acpi|cpu|memory|disk):\s+",  # Hardware subsystems
+            ],
+            "data_type": DataType.LOG_FILE,
+            "min_matches": 2
+        },
+        "journalctl": {
+            "patterns": [
+                r"^-- (Logs begin at|Boot \w+)",  # journalctl header
+                r"^\w{3}\s+\d{2}\s+\d{2}:\d{2}:\d{2}\s+\S+\s+\S+\[\d+\]:",  # Journal entry
+                r"systemd\[\d+\]:",  # systemd messages
+            ],
+            "data_type": DataType.LOG_FILE,
+            "min_matches": 2
+        },
+        "strace": {
+            "patterns": [
+                r"^\d+\s+(read|write|open|close|socket|connect|execve)\(",  # syscall format with PID
+                r"= \d+ <[\d.]+>$",  # Return value with timing
+                r"\b(ENOENT|EAGAIN|EINTR|EPERM)\b",  # Common errno values
+            ],
+            "data_type": DataType.TRACE_DATA,
+            "min_matches": 2
+        },
+        "ltrace": {
+            "patterns": [
+                r"^[a-z_]+\(",  # Function call
+                r"= 0x[0-9a-f]+$",  # Hex return value
+                r"\+\+\+ exited \(status \d+\) \+\+\+",  # Exit message
+            ],
+            "data_type": DataType.TRACE_DATA,
+            "min_matches": 2
+        },
+        "perf": {
+            "patterns": [
+                r"# Total Lost Samples:",
+                r"# Samples:\s+\d+[KM]?\s+of event",
+                r"# Children\s+Self\s+Command\s+Shared Object\s+Symbol",
+                r"\d+\.\d+%\s+\d+\.\d+%\s+\S+\s+\[\S+\]",  # perf stat line
+            ],
+            "data_type": DataType.PROFILING_DATA,
+            "min_matches": 2
+        },
+        "lsof": {
+            "patterns": [
+                r"^COMMAND\s+PID\s+USER\s+FD\s+TYPE\s+DEVICE\s+SIZE/OFF\s+NODE\s+NAME",  # lsof header
+                r"^\w+\s+\d+\s+\w+\s+\d+[rwu]\s+",  # File descriptor line
+                r"\b(REG|DIR|CHR|FIFO|unix|IPv4|IPv6)\b",  # File types
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        }
+    }
 
     def __init__(self, memory_service: Optional[IMemoryService] = None):
         self.logger = logging.getLogger(__name__)
         self.llm_router = LLMRouter()
         self._memory_service = memory_service
-        
+
         # Pattern learning components
         self._learned_patterns = defaultdict(list)
         self._pattern_feedback = defaultdict(dict)
         self._classification_history = deque(maxlen=1000)
         self._context_patterns = defaultdict(list)
-        
+
         # Performance metrics
         self._metrics = {
             "classifications": 0,
@@ -853,9 +999,149 @@ class EnhancedDataClassifier(IDataClassifier):
 class DataClassifier(IDataClassifier):
     """Classifies data content into appropriate DataType categories"""
 
+    # Linux command output signatures (Tier 1 - Definitive indicators)
+    # Each command requires at least 2 pattern matches for high confidence detection
+    COMMAND_OUTPUTS = {
+        "top": {
+            "patterns": [
+                r"top\s+-\s+\d{2}:\d{2}:\d{2}",  # Header: "top - HH:MM:SS"
+                r"Tasks:\s+\d+\s+total,\s+\d+\s+running",  # Task summary
+                r"%Cpu\(s\):\s+[\d.]+\s+us,\s+[\d.]+\s+sy",  # CPU line
+                r"(KiB|MiB|GiB)\s+Mem\s*:\s+\d+\s+total",  # Memory line
+                r"\b(PID|USER|PR|NI|VIRT|RES|SHR)\b.*\b(%CPU|%MEM|TIME\+|COMMAND)\b",  # Header columns
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "ps": {
+            "patterns": [
+                r"\b(PID|TTY|TIME|CMD)\b",  # ps header columns
+                r"^\s*\d+\s+\S+\s+\d{2}:\d{2}:\d{2}",  # Process line with time format
+                r"\b(systemd|sshd|bash|cron|dbus)\b",  # Common system processes
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "vmstat": {
+            "patterns": [
+                r"procs\s+-+memory-+\s+-+swap-+\s+-+io-+",  # vmstat header
+                r"\b(r|b|swpd|free|buff|cache|si|so|bi|bo)\b",  # Column names
+                r"^\s*\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+",  # Data line
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "iostat": {
+            "patterns": [
+                r"avg-cpu:\s+%user\s+%nice\s+%system",  # iostat CPU header
+                r"Device.*tps.*kB_read/s.*kB_wrtn/s",  # iostat device header
+                r"Linux\s+\d+\.\d+\.\d+.*\(\S+\)",  # iostat system info
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "netstat": {
+            "patterns": [
+                r"Proto\s+Recv-Q\s+Send-Q\s+Local Address\s+Foreign Address\s+State",  # netstat header
+                r"^(tcp|udp|unix)\s+\d+\s+\d+\s+[\d\.:]+\s+[\d\.:]+",  # Connection line
+                r"Active Internet connections|Active UNIX domain sockets",  # Section headers
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "free": {
+            "patterns": [
+                r"^\s+total\s+used\s+free\s+shared\s+buff/cache\s+available",  # free header
+                r"^Mem:\s+\d+\s+\d+\s+\d+",  # Memory line
+                r"^Swap:\s+\d+\s+\d+\s+\d+",  # Swap line
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "df": {
+            "patterns": [
+                r"Filesystem\s+.*Size\s+Used\s+Avail\s+Use%\s+Mounted on",  # df header
+                r"^/dev/\w+\s+\d+[KMGT]?\s+\d+[KMGT]?\s+\d+[KMGT]?\s+\d+%",  # Filesystem line
+                r"tmpfs|devtmpfs",  # Common virtual filesystems
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "lscpu": {
+            "patterns": [
+                r"Architecture:\s+(x86_64|aarch64|i686)",
+                r"CPU\(s\):\s+\d+",
+                r"Thread\(s\) per core:\s+\d+",
+                r"Vendor ID:\s+\w+",
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        },
+        "dmesg": {
+            "patterns": [
+                r"^\[\s*\d+\.\d+\]\s+",  # Kernel timestamp format
+                r"\bkernel:",  # Kernel messages
+                r"(usb|pci|acpi|cpu|memory|disk):\s+",  # Hardware subsystems
+            ],
+            "data_type": DataType.LOG_FILE,
+            "min_matches": 2
+        },
+        "journalctl": {
+            "patterns": [
+                r"^-- (Logs begin at|Boot \w+)",  # journalctl header
+                r"^\w{3}\s+\d{2}\s+\d{2}:\d{2}:\d{2}\s+\S+\s+\S+\[\d+\]:",  # Journal entry
+                r"systemd\[\d+\]:",  # systemd messages
+            ],
+            "data_type": DataType.LOG_FILE,
+            "min_matches": 2
+        },
+        "strace": {
+            "patterns": [
+                r"^\d+\s+(read|write|open|close|socket|connect|execve)\(",  # syscall format with PID
+                r"= \d+ <[\d.]+>$",  # Return value with timing
+                r"\b(ENOENT|EAGAIN|EINTR|EPERM)\b",  # Common errno values
+            ],
+            "data_type": DataType.TRACE_DATA,
+            "min_matches": 2
+        },
+        "ltrace": {
+            "patterns": [
+                r"^[a-z_]+\(",  # Function call
+                r"= 0x[0-9a-f]+$",  # Hex return value
+                r"\+\+\+ exited \(status \d+\) \+\+\+",  # Exit message
+            ],
+            "data_type": DataType.TRACE_DATA,
+            "min_matches": 2
+        },
+        "perf": {
+            "patterns": [
+                r"# Total Lost Samples:",
+                r"# Samples:\s+\d+[KM]?\s+of event",
+                r"# Children\s+Self\s+Command\s+Shared Object\s+Symbol",
+                r"\d+\.\d+%\s+\d+\.\d+%\s+\S+\s+\[\S+\]",  # perf stat line
+            ],
+            "data_type": DataType.PROFILING_DATA,
+            "min_matches": 2
+        },
+        "lsof": {
+            "patterns": [
+                r"^COMMAND\s+PID\s+USER\s+FD\s+TYPE\s+DEVICE\s+SIZE/OFF\s+NODE\s+NAME",  # lsof header
+                r"^\w+\s+\d+\s+\w+\s+\d+[rwu]\s+",  # File descriptor line
+                r"\b(REG|DIR|CHR|FIFO|unix|IPv4|IPv6)\b",  # File types
+            ],
+            "data_type": DataType.METRICS_DATA,
+            "min_matches": 2
+        }
+    }
+
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.llm_router = LLMRouter()
+
+        # Confidence thresholds for user confirmation
+        self.HIGH_CONFIDENCE_THRESHOLD = 0.70  # Auto-classify above this
+        self.LOW_CONFIDENCE_THRESHOLD = 0.40   # Ask user below this, try LLM first
+        self.MIN_CONFIDENCE_THRESHOLD = 0.30   # Always ask user below this
 
         # Heuristic patterns for classification
         self.patterns = {
@@ -920,6 +1206,50 @@ class DataClassifier(IDataClassifier):
                 # Image metadata patterns
                 r"\b(width|height|resolution|pixels)\b",
             ],
+            DataType.METRICS_DATA: [
+                # CSV headers with metrics columns
+                r"timestamp.*,.*value",
+                r"time.*,.*metric",
+                r"date.*,.*count",
+                # Prometheus format
+                r"^#\s+HELP\s+\w+",
+                r"^#\s+TYPE\s+\w+",
+                r"^\w+\{[^}]*\}\s+[\d\.]+",
+                # System metrics commands (top, ps, vmstat, iostat, etc.)
+                r"\b(PID|USER|PR|NI|VIRT|RES|SHR|S|%CPU|%MEM|TIME\+|COMMAND)\b",  # top headers
+                r"top\s+-\s+\d+:\d+:\d+",  # top timestamp line
+                r"Tasks:\s+\d+\s+total",  # top task summary
+                r"%Cpu\(s\):|KiB Mem\s*:|KiB Swap:",  # top CPU/memory lines
+                # Metrics keywords (high signal for system metrics)
+                r"\b(cpu|memory|disk|network|latency|throughput|requests_per_second)\b",
+                # Time series patterns
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*,\s*[\d\.]+",
+            ],
+            DataType.PROFILING_DATA: [
+                # Python cProfile
+                r"ncalls\s+tottime\s+percall",
+                r"function calls in \d+\.\d+ seconds",
+                # Flame graph indicators
+                r"(?:all;)?[\w\.]+(?:;[\w\.]+)+\s+\d+",
+                # py-spy format
+                r"Total samples:\s+\d+",
+                r"GIL:\s+\d+\.\d+%",
+                # Profiling keywords
+                r"\b(profiler|sampling|call_stack|function_time)\b",
+            ],
+            DataType.TRACE_DATA: [
+                # OpenTelemetry trace format
+                r'"traceId":\s*"[a-f0-9]{32}"',
+                r'"spanId":\s*"[a-f0-9]{16}"',
+                # Jaeger trace format
+                r'"operationName":\s*"[^"]+"',
+                r'"startTime":\s*\d{13,}',
+                # Zipkin format
+                r'"traceId":\s*"[a-f0-9]+"',
+                r'"parentId":\s*"[a-f0-9]+"',
+                # Distributed tracing keywords
+                r"\b(trace_id|span_id|parent_span|service_name)\b",
+            ],
             DataType.OTHER: [
                 # Catch-all patterns
                 r"^.{1,100}$",  # Short content
@@ -935,10 +1265,130 @@ class DataClassifier(IDataClassifier):
                 for pattern in pattern_list
             ]
 
+    def detect_linux_command_output(self, content: str) -> Optional[tuple[DataType, float, List[str]]]:
+        """
+        Detect Linux command output with high confidence (Tier 1 - Definitive)
+
+        Requires at least min_matches patterns to match for each command signature.
+        This provides >95% confidence classification for system command outputs.
+
+        Args:
+            content: Content to analyze
+
+        Returns:
+            Tuple of (DataType, confidence, matched_patterns) if detected, None otherwise
+        """
+        best_match = None
+        best_confidence = 0.0
+        best_patterns = []
+
+        for command_name, signature in self.COMMAND_OUTPUTS.items():
+            patterns = signature["patterns"]
+            min_matches = signature["min_matches"]
+            data_type = signature["data_type"]
+
+            # Count how many patterns match and collect them
+            match_count = 0
+            matched_pattern_names = []
+            for pattern in patterns:
+                if re.search(pattern, content, re.IGNORECASE | re.MULTILINE):
+                    match_count += 1
+                    matched_pattern_names.append(f"{command_name}:{pattern[:50]}")
+
+            # Calculate confidence based on match ratio
+            if match_count >= min_matches:
+                # Confidence: 0.85 + (0.10 * extra matches ratio)
+                # Min: 0.85 for exactly min_matches, Max: 0.95 for all patterns
+                extra_ratio = (match_count - min_matches) / max(len(patterns) - min_matches, 1)
+                confidence = 0.85 + (0.10 * extra_ratio)
+
+                # Keep best match
+                if confidence > best_confidence:
+                    best_match = data_type
+                    best_confidence = confidence
+                    best_patterns = matched_pattern_names
+                    self.logger.info(
+                        f"Detected {command_name} command output "
+                        f"({match_count}/{len(patterns)} patterns, confidence={confidence:.2f}) -> {data_type}"
+                    )
+
+        if best_match:
+            return (best_match, best_confidence, best_patterns)
+        return None
+
+    @trace("data_classifier_classify_with_confidence")
+    async def classify_with_confidence(
+        self, content: str, filename: Optional[str] = None
+    ) -> SimpleClassificationResult:
+        """
+        Classify data content with confidence scoring and user confirmation support
+
+        Args:
+            content: Raw content to classify
+            filename: Optional filename for additional classification hints
+
+        Returns:
+            SimpleClassificationResult with confidence and alternative suggestions
+        """
+        if not content or not isinstance(content, str):
+            return SimpleClassificationResult(
+                data_type=DataType.OTHER,
+                confidence=1.0,
+                requires_user_confirmation=False,
+                suggested_types=[],
+                matched_patterns=[],
+                detection_method="fallback"
+            )
+
+        # Tier 1: Definitive command output detection (0.85-0.95 confidence)
+        command_result = self.detect_linux_command_output(content)
+        if command_result:
+            data_type, confidence, patterns = command_result
+            self.logger.info(f"Command output classification: {data_type} (confidence={confidence:.2f})")
+            return SimpleClassificationResult(
+                data_type=data_type,
+                confidence=confidence,
+                requires_user_confirmation=False,  # Always trust command detection
+                suggested_types=[],
+                matched_patterns=patterns,
+                detection_method="command_detection"
+            )
+
+        # Tier 2-6: Heuristic classification with confidence scoring
+        heuristic_result = self._heuristic_classify_with_confidence(content, filename)
+        if heuristic_result.confidence >= self.LOW_CONFIDENCE_THRESHOLD:
+            # Medium-high confidence, use heuristic result
+            return heuristic_result
+
+        # Low confidence (<0.40): Try LLM classification
+        try:
+            llm_result = await self._llm_classify(content)
+            self.logger.info(f"LLM classification: {llm_result}")
+            # LLM gets 0.60 confidence (medium)
+            return SimpleClassificationResult(
+                data_type=llm_result,
+                confidence=0.60,
+                requires_user_confirmation=(0.60 < self.HIGH_CONFIDENCE_THRESHOLD),
+                suggested_types=[heuristic_result.data_type] if heuristic_result.data_type != DataType.OTHER else [],
+                matched_patterns=["llm_classification"],
+                detection_method="llm"
+            )
+        except Exception as e:
+            self.logger.warning(f"LLM classification failed: {e}")
+            # Return heuristic result with user confirmation flag
+            return SimpleClassificationResult(
+                data_type=heuristic_result.data_type,
+                confidence=heuristic_result.confidence,
+                requires_user_confirmation=True,  # Always ask when LLM fails
+                suggested_types=heuristic_result.suggested_types,
+                matched_patterns=heuristic_result.matched_patterns,
+                detection_method="fallback"
+            )
+
     @trace("data_classifier_classify")
     async def classify(self, content: str, filename: Optional[str] = None) -> DataType:
         """
-        Classify data content into appropriate DataType
+        Classify data content into appropriate DataType (backward compatibility)
 
         Args:
             content: Raw content to classify
@@ -947,27 +1397,160 @@ class DataClassifier(IDataClassifier):
         Returns:
             DataType enum value
         """
-        if not content or not isinstance(content, str):
-            return DataType.OTHER
+        result = await self.classify_with_confidence(content, filename)
+        return result.data_type
 
-        # Try heuristic classification first (including filename hints)
-        heuristic_result = self._heuristic_classify(content, filename)
-        if heuristic_result != DataType.OTHER:
-            self.logger.info(f"Heuristic classification: {heuristic_result}")
-            return heuristic_result
+    def _heuristic_classify_with_confidence(
+        self, content: str, filename: Optional[str] = None
+    ) -> SimpleClassificationResult:
+        """
+        Perform heuristic-based classification with confidence scoring
 
-        # Fallback to LLM-based classification
-        try:
-            llm_result = await self._llm_classify(content)
-            self.logger.info(f"LLM classification: {llm_result}")
-            return llm_result
-        except Exception as e:
-            self.logger.warning(f"LLM classification failed: {e}")
-            return DataType.OTHER
+        Args:
+            content: Content to classify
+            filename: Optional filename for additional hints
+
+        Returns:
+            SimpleClassificationResult with confidence and alternatives
+        """
+        matched_patterns = []
+
+        # Early classification based on filename extension if available (high confidence)
+        if filename:
+            filename_lower = filename.lower()
+            if filename_lower.endswith(('.json', '.yaml', '.yml', '.ini', '.conf', '.config')):
+                return SimpleClassificationResult(
+                    data_type=DataType.CONFIG_FILE,
+                    confidence=0.90,
+                    requires_user_confirmation=False,
+                    suggested_types=[],
+                    matched_patterns=[f"filename_extension:{filename_lower.split('.')[-1]}"],
+                    detection_method="heuristic"
+                )
+            elif filename_lower.endswith(('.md', '.rst', '.html', '.htm')):
+                if any(keyword in content.lower() for keyword in ['guide', 'manual', 'documentation', 'tutorial', 'help', 'readme']):
+                    return SimpleClassificationResult(
+                        data_type=DataType.DOCUMENTATION,
+                        confidence=0.85,
+                        requires_user_confirmation=False,
+                        suggested_types=[],
+                        matched_patterns=[f"filename_extension+keywords"],
+                        detection_method="heuristic"
+                    )
+            elif any(ext in filename_lower for ext in ['error', 'exception', 'crash']):
+                return SimpleClassificationResult(
+                    data_type=DataType.ERROR_REPORT,
+                    confidence=0.75,
+                    requires_user_confirmation=False,
+                    suggested_types=[],
+                    matched_patterns=[f"filename_contains_error_keywords"],
+                    detection_method="heuristic"
+                )
+
+        # Calculate confidence scores for each data type
+        scores = {}
+        for data_type, patterns in self.compiled_patterns.items():
+            score = 0
+            for pattern in patterns:
+                matches = pattern.findall(content)
+                if matches:
+                    score += len(matches)
+                    matched_patterns.append(f"{data_type.value}:{pattern.pattern[:40]}")
+
+            # Normalize score by content length
+            if len(content) > 0:
+                score = score / len(content) * 1000  # Scale up for readability
+            scores[data_type] = score
+
+        # Apply priority rules
+        log_score = scores.get(DataType.LOG_FILE, 0)
+        error_score = scores.get(DataType.ERROR_REPORT, 0)
+        metrics_score = scores.get(DataType.METRICS_DATA, 0)
+
+        # Priority 1: System metrics over logs
+        if metrics_score > 0.1 and self._has_system_metrics_indicators(content):
+            if not self._has_log_levels(content) or metrics_score > log_score * 0.7:
+                confidence = min(0.70, metrics_score / 2.0)  # Cap at 0.70
+                return SimpleClassificationResult(
+                    data_type=DataType.METRICS_DATA,
+                    confidence=confidence,
+                    requires_user_confirmation=(confidence < self.HIGH_CONFIDENCE_THRESHOLD),
+                    suggested_types=[DataType.LOG_FILE] if log_score > 0.1 else [],
+                    matched_patterns=matched_patterns[:10],
+                    detection_method="heuristic"
+                )
+
+        # Priority 2: Logs over errors
+        if (log_score > 0.1 and error_score > 0 and
+            self._has_timestamps(content) and self._has_log_levels(content)):
+            confidence = min(0.75, log_score / 2.0)
+            return SimpleClassificationResult(
+                data_type=DataType.LOG_FILE,
+                confidence=confidence,
+                requires_user_confirmation=(confidence < self.HIGH_CONFIDENCE_THRESHOLD),
+                suggested_types=[DataType.ERROR_REPORT],
+                matched_patterns=matched_patterns[:10],
+                detection_method="heuristic"
+            )
+
+        # Check for JSON/YAML formats (high confidence)
+        if self._is_json(content):
+            return SimpleClassificationResult(
+                data_type=DataType.CONFIG_FILE,
+                confidence=0.85,
+                requires_user_confirmation=False,
+                suggested_types=[],
+                matched_patterns=["valid_json_format"],
+                detection_method="heuristic"
+            )
+        if self._is_yaml(content):
+            return SimpleClassificationResult(
+                data_type=DataType.CONFIG_FILE,
+                confidence=0.82,
+                requires_user_confirmation=False,
+                suggested_types=[],
+                matched_patterns=["valid_yaml_format"],
+                detection_method="heuristic"
+            )
+
+        # Find top 3 candidates
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        top_candidates = [dt for dt, score in sorted_scores if score > 0.1][:3]
+
+        if top_candidates:
+            best_type = top_candidates[0]
+            best_score = scores[best_type]
+
+            # Convert score to confidence (0.0-1.0 range)
+            # Score typically ranges from 0 to ~5.0 for good matches
+            confidence = min(0.80, best_score / 5.0)
+
+            # Special handling for OTHER type - always low confidence
+            if best_type == DataType.OTHER:
+                confidence = min(0.35, confidence)  # Cap OTHER at 0.35
+
+            return SimpleClassificationResult(
+                data_type=best_type,
+                confidence=confidence,
+                requires_user_confirmation=(confidence < self.HIGH_CONFIDENCE_THRESHOLD),
+                suggested_types=top_candidates[1:3],
+                matched_patterns=matched_patterns[:10],
+                detection_method="heuristic"
+            )
+
+        # No good matches - return OTHER with low confidence
+        return SimpleClassificationResult(
+            data_type=DataType.OTHER,
+            confidence=0.20,
+            requires_user_confirmation=True,
+            suggested_types=[DataType.LOG_FILE, DataType.CONFIG_FILE, DataType.DOCUMENTATION],
+            matched_patterns=[],
+            detection_method="heuristic"
+        )
 
     def _heuristic_classify(self, content: str, filename: Optional[str] = None) -> DataType:
         """
-        Perform heuristic-based classification using regex patterns and filename hints
+        Perform heuristic-based classification using regex patterns and filename hints (backward compatibility)
 
         Args:
             content: Content to classify
@@ -1014,7 +1597,16 @@ class DataClassifier(IDataClassifier):
         # Apply priority rules for overlapping types
         log_score = scores.get(DataType.LOG_FILE, 0)
         error_score = scores.get(DataType.ERROR_REPORT, 0)
+        metrics_score = scores.get(DataType.METRICS_DATA, 0)
 
+        # Priority 1: System metrics over logs
+        # If we have strong system metrics indicators (top, ps, iostat output), prioritize METRICS_DATA
+        if metrics_score > 0.1 and self._has_system_metrics_indicators(content):
+            # Only override if log score is not significantly higher AND no log levels present
+            if not self._has_log_levels(content) or metrics_score > log_score * 0.7:
+                return DataType.METRICS_DATA
+
+        # Priority 2: Logs over errors when both present
         # If we have both log patterns and error reports, prioritize LOG_FILE
         # when timestamps and log levels are present
         if (
@@ -1037,8 +1629,7 @@ class DataClassifier(IDataClassifier):
         elif self._is_yaml(content):
             return DataType.CONFIG_FILE
         elif self._is_csv_with_metrics(content):
-            # For now, classify CSV metrics as OTHER since we don't have METRICS_DATA in our simplified enum
-            return DataType.OTHER
+            return DataType.METRICS_DATA
 
         return DataType.OTHER
 
@@ -1063,6 +1654,28 @@ class DataClassifier(IDataClassifier):
             )
         )
 
+    def _has_system_metrics_indicators(self, content: str) -> bool:
+        """Check if content has system metrics command indicators (top, ps, iostat, etc.)"""
+        # Check for top command indicators
+        top_indicators = [
+            r"\b(PID|USER|PR|NI|VIRT|RES|SHR)\b.*\b(S|%CPU|%MEM|TIME\+|COMMAND)\b",  # top header line
+            r"top\s+-\s+\d+:\d+:\d+",  # top timestamp
+            r"Tasks:\s+\d+\s+total",  # top task summary
+            r"%Cpu\(s\):",  # top CPU line
+            r"KiB Mem\s*:",  # top memory line
+        ]
+        # Check for other system command indicators
+        system_cmd_indicators = [
+            r"\b(vmstat|iostat|mpstat|sar|ps aux|ps -ef)\b",
+            r"procs\s+-+memory-+\s+-+swap-+",  # vmstat header
+            r"avg-cpu:",  # iostat header
+        ]
+        all_indicators = top_indicators + system_cmd_indicators
+        for pattern in all_indicators:
+            if re.search(pattern, content, re.IGNORECASE):
+                return True
+        return False
+
     def _has_stack_trace_format(self, content: str) -> bool:
         """Check if content has actual stack trace formatting"""
         stack_patterns = [
@@ -1084,10 +1697,12 @@ class DataClassifier(IDataClassifier):
             return False
 
     def _is_yaml(self, content: str) -> bool:
-        """Check if content is valid YAML"""
+        """Check if content is valid YAML with actual structure"""
         try:
-            yaml.safe_load(content)
-            return True
+            data = yaml.safe_load(content)
+            # YAML parser accepts plain strings, so check if it's actually structured
+            # Valid YAML configs are dicts or lists, not plain strings
+            return isinstance(data, (dict, list))
         except (yaml.YAMLError, ValueError):
             return False
 

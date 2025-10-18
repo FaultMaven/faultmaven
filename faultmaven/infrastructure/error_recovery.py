@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
 from ..exceptions import RecoveryResult
 
@@ -158,7 +158,7 @@ class CircuitBreakerRecoveryStrategy(RecoveryStrategy):
             }
         
         circuit = self.circuit_states[circuit_key]
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         # Increment failure count
         circuit["failure_count"] += 1
@@ -289,9 +289,9 @@ class FallbackRecoveryStrategy(RecoveryStrategy):
         if operation in ["create", "get"]:
             # Create temporary in-memory session
             context["fallback_session"] = {
-                "session_id": f"temp_{datetime.utcnow().timestamp()}",
+                "session_id": f"temp_{datetime.now(timezone.utc).timestamp()}",
                 "temporary": True,
-                "created_at": datetime.utcnow().isoformat()
+                "created_at": datetime.now(timezone.utc).isoformat()
             }
             return True
         
@@ -361,7 +361,7 @@ class RecoveryManager:
             self.logger.debug(f"Strategy '{strategy_name}' not applicable for {type(error).__name__} in {layer} layer")
             return RecoveryResult.NOT_ATTEMPTED
         
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             result = await strategy.execute(error, context)
@@ -373,7 +373,7 @@ class RecoveryManager:
                 "layer": layer,
                 "result": result.value,
                 "timestamp": start_time.isoformat(),
-                "duration_ms": int((datetime.utcnow() - start_time).total_seconds() * 1000),
+                "duration_ms": int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000),
                 "context": {k: v for k, v in context.items() if k not in ["fallback_response", "operation_func"]}
             }
             

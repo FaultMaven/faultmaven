@@ -7,7 +7,7 @@ with configurable alerting thresholds and dashboard data endpoints.
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple, Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 import logging
 import time
@@ -198,7 +198,7 @@ class MetricsCollector:
             tags: Tags for the metric
         """
         metric = PerformanceMetrics(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             component=component,
             operation=operation,
             duration_ms=duration_ms,
@@ -238,7 +238,7 @@ class MetricsCollector:
         """
         sample = MetricSample(
             value=value,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             tags=tags or {}
         )
         
@@ -260,7 +260,7 @@ class MetricsCollector:
         """
         sample = MetricSample(
             value=value,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             tags=tags or {}
         )
         
@@ -278,7 +278,7 @@ class MetricsCollector:
         duration_key = f"duration.{metric_key}"
         sample = MetricSample(
             value=duration_ms,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             tags=tags
         )
         self.metrics[duration_key].append(sample)
@@ -288,14 +288,14 @@ class MetricsCollector:
         success_key = f"success.{metric_key}"
         sample = MetricSample(
             value=1.0 if success else 0.0,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             tags=tags
         )
         self.metrics[success_key].append(sample)
     
     def _cleanup_old_metrics(self) -> None:
         """Remove metrics older than retention period."""
-        cutoff_time = datetime.utcnow() - timedelta(hours=self.retention_hours)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=self.retention_hours)
         
         for metric_name, samples in self.metrics.items():
             # Remove old samples
@@ -325,11 +325,11 @@ class MetricsCollector:
         cache_key = f"{metric_name}_{time_window_minutes}_{hash(frozenset(tags_filter.items()) if tags_filter else frozenset())}"
         cache_time = self.last_aggregation.get(cache_key)
         
-        if cache_time and (datetime.utcnow() - cache_time).total_seconds() < 60:  # 1-minute cache
+        if cache_time and (datetime.now(timezone.utc) - cache_time).total_seconds() < 60:  # 1-minute cache
             return self.aggregated_cache.get(cache_key)
         
         # Calculate aggregation
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(minutes=time_window_minutes)
         
         # Filter samples by time window and tags
@@ -376,7 +376,7 @@ class MetricsCollector:
         
         # Cache result
         self.aggregated_cache[cache_key] = aggregated
-        self.last_aggregation[cache_key] = datetime.utcnow()
+        self.last_aggregation[cache_key] = datetime.now(timezone.utc)
         
         return aggregated
     
@@ -493,7 +493,7 @@ class MetricsCollector:
             Dashboard data structure
         """
         dashboard_data = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "time_window_minutes": time_window_minutes,
             "metrics": {},
             "alerts": [],
@@ -580,7 +580,7 @@ class MetricsCollector:
                         "metric": metric_name,
                         "threshold_type": "p95_ms",
                         "severity": "medium",
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                         "message": f"{metric_name} P95 response time ({aggregated.p95_value:.1f}ms) exceeds threshold ({thresholds['p95_ms']}ms)"
                     })
         

@@ -10,7 +10,7 @@ import logging
 import time
 import json
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List, Tuple
 from dataclasses import asdict
 
@@ -235,7 +235,7 @@ class RedisRateLimiter:
                     current_count=current_count,
                     limit=limit,
                     retry_after=retry_after,
-                    reset_time=datetime.fromtimestamp(current_time + config.window)
+                    reset_time=datetime.fromtimestamp(current_time + config.window, tz=timezone.utc)
                 )
             
             return RateLimitResult(
@@ -243,7 +243,7 @@ class RedisRateLimiter:
                 limit_type=limit_type,
                 current_count=current_count,
                 limit=limit,
-                reset_time=datetime.fromtimestamp(current_time + config.window)
+                reset_time=datetime.fromtimestamp(current_time + config.window, tz=timezone.utc)
             )
             
         except RedisError as e:
@@ -276,7 +276,7 @@ class RedisRateLimiter:
                 current_count=0,
                 limit=config.requests,
                 window=config.window,
-                reset_time=datetime.fromtimestamp(current_time + config.window)
+                reset_time=datetime.fromtimestamp(current_time + config.window, tz=timezone.utc)
             )
         
         state = self._fallback_store[key]
@@ -284,7 +284,7 @@ class RedisRateLimiter:
         # Check if window has expired
         if current_time >= state.reset_time.timestamp():
             state.current_count = 0
-            state.reset_time = datetime.fromtimestamp(current_time + config.window)
+            state.reset_time = datetime.fromtimestamp(current_time + config.window, tz=timezone.utc)
         
         # Check limit
         if state.current_count >= state.limit:
@@ -392,7 +392,7 @@ class RedisRateLimiter:
                     current_count=current_count,
                     limit=config.requests,
                     window=config.window,
-                    reset_time=datetime.fromtimestamp(current_time + config.window)
+                    reset_time=datetime.fromtimestamp(current_time + config.window, tz=timezone.utc)
                 )
             else:
                 # Use fallback store

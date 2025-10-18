@@ -234,6 +234,9 @@ class TestSettingsContainerServicesFlow:
     
     def test_settings_to_container_initialization(self, integration_env):
         """Test settings properly initialize the container."""
+        # Reset settings cache to ensure we get fresh settings from integration_env
+        reset_settings()
+
         # Get settings (should initialize from environment)
         settings = get_settings()
         
@@ -248,23 +251,10 @@ class TestSettingsContainerServicesFlow:
         
         # Initialize container with these settings
         container = DIContainer()
-        
-        with patch.multiple(
-            'faultmaven.container',
-            LLMRouter=Mock(return_value=Mock()),
-            DataSanitizer=Mock(return_value=Mock()),
-            OpikTracer=Mock(return_value=Mock()),
-            ChromaDBStore=Mock(return_value=Mock()),
-            RedisSessionStore=Mock(return_value=Mock()),
-            RedisCaseStore=Mock(return_value=Mock()),
-            KnowledgeBaseTool=Mock(return_value=Mock()),
-            WebSearchTool=Mock(return_value=Mock()),
-            AgentService=Mock(return_value=Mock()),
-            DataService=Mock(return_value=Mock()),
-            KnowledgeService=Mock(return_value=Mock()),
-            SessionService=Mock(return_value=Mock()),
-            CaseService=Mock(return_value=Mock())
-        ):
+
+        with patch('faultmaven.infrastructure.llm.router.LLMRouter', Mock(return_value=Mock())), \
+             patch('faultmaven.infrastructure.security.redaction.DataSanitizer', Mock(return_value=Mock())), \
+             patch('faultmaven.infrastructure.observability.tracing.OpikTracer', Mock(return_value=Mock())):
             container.initialize()
         
         # Verify container initialized with correct settings
@@ -294,24 +284,11 @@ class TestSettingsContainerServicesFlow:
             data_service_calls.append({"args": args, "kwargs": kwargs})
             return Mock()
         
-        with patch.multiple(
-            'faultmaven.container',
-            # Infrastructure
-            LLMRouter=Mock(return_value=mock_infrastructure_components['llm_provider']),
-            DataSanitizer=Mock(return_value=mock_infrastructure_components['sanitizer']),
-            OpikTracer=Mock(return_value=mock_infrastructure_components['tracer']),
-            ChromaDBStore=Mock(return_value=mock_infrastructure_components['vector_store']),
-            RedisSessionStore=Mock(return_value=mock_infrastructure_components['session_store']),
-            RedisCaseStore=Mock(return_value=mock_infrastructure_components['case_store']),
-            KnowledgeBaseTool=Mock(return_value=mock_infrastructure_components['tools'][0]),
-            WebSearchTool=Mock(return_value=mock_infrastructure_components['tools'][1]),
-            # Services
-            AgentService=mock_agent_service,
-            DataService=mock_data_service,
-            KnowledgeService=Mock(return_value=Mock()),
-            SessionService=Mock(return_value=Mock()),
-            CaseService=Mock(return_value=Mock())
-        ):
+        with patch('faultmaven.infrastructure.llm.router.LLMRouter', Mock(return_value=mock_infrastructure_components['llm_provider'])), \
+             patch('faultmaven.infrastructure.security.redaction.DataSanitizer', Mock(return_value=mock_infrastructure_components['sanitizer'])), \
+             patch('faultmaven.infrastructure.observability.tracing.OpikTracer', Mock(return_value=mock_infrastructure_components['tracer'])), \
+             patch('faultmaven.services.agentic.orchestration.agent_service.AgentService', mock_agent_service), \
+             patch('faultmaven.services.data_service.DataService', mock_data_service):
             container.initialize()
         
         # Verify services were called with dependencies
@@ -330,9 +307,9 @@ class TestSettingsContainerServicesFlow:
         # Initialize with first settings
         container1 = DIContainer()
         
-        with patch('faultmaven.container.LLMRouter') as mock_llm_router:
+        with patch('faultmaven.infrastructure.llm.router.LLMRouter') as mock_llm_router:
             container1.initialize()
-            
+
             # Check settings were used
             assert container1.settings.llm.provider.value == 'fireworks'
         
@@ -347,9 +324,9 @@ class TestSettingsContainerServicesFlow:
         # Initialize new container
         container2 = DIContainer()
         
-        with patch('faultmaven.container.LLMRouter'):
+        with patch('faultmaven.infrastructure.llm.router.LLMRouter'):
             container2.initialize()
-            
+
             # Should reflect new settings
             assert container2.settings.llm.provider.value == 'openai'
             assert container1 is not container2

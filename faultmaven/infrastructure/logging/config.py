@@ -19,14 +19,18 @@ class LoggingConfig:
     This class reads logging configuration from environment variables
     and provides type-safe access to configuration values with sensible
     defaults.
+    
+    Note: Environment variables are read at module import time.
+    Ensure load_dotenv() is called before importing this module (see main.py).
     """
     
-    LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
-    LOG_FORMAT = os.getenv('LOG_FORMAT', 'json').lower()
-    LOG_DEDUPE = os.getenv('LOG_DEDUPE', 'true').lower() == 'true'
-    LOG_BUFFER_SIZE = int(os.getenv('LOG_BUFFER_SIZE', '100'))
-    LOG_FLUSH_INTERVAL = float(os.getenv('LOG_FLUSH_INTERVAL', '5'))
-    LOG_HUMAN_READABLE = os.getenv('LOG_HUMAN_READABLE', 'false').lower() == 'true'
+    # Read environment variables at import time (after load_dotenv() in main.py)
+    LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO').upper()
+    LOG_FORMAT: str = os.getenv('LOG_FORMAT', 'json').lower()
+    LOG_DEDUPE: bool = os.getenv('LOG_DEDUPE', 'true').lower() == 'true'
+    LOG_BUFFER_SIZE: int = int(os.getenv('LOG_BUFFER_SIZE', '100'))
+    LOG_FLUSH_INTERVAL: float = float(os.getenv('LOG_FLUSH_INTERVAL', '5'))
+    LOG_HUMAN_READABLE: bool = os.getenv('LOG_HUMAN_READABLE', 'false').lower() == 'true'
     
     @classmethod
     def get_log_level(cls) -> int:

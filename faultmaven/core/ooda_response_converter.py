@@ -10,7 +10,7 @@ from faultmaven.models.responses import (
     OODAResponse,
     ConsultantResponse,
     LeadInvestigatorResponse,
-    EvidenceRequest as OODAEvidenceRequest,
+    OODAEvidenceRequest,
 )
 from faultmaven.models.api import AgentResponse, ResponseType, Source, SourceType
 from faultmaven.models.evidence import (

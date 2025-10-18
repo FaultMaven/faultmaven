@@ -24,7 +24,7 @@ Key Improvements:
 
 import hashlib
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 
@@ -38,6 +38,7 @@ from faultmaven.models import (
     UploadedData,
 )
 from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.utils.serialization import to_json_compatible
 
 # Import enhanced components (if available)
 try:
@@ -271,7 +272,7 @@ class DataService(BaseService):
                 # Handle case where insights_response is not properly structured
                 detailed_insights = {
                     "processed": True, 
-                    "processing_timestamp": datetime.utcnow().isoformat() + 'Z',
+                    "processing_timestamp": to_json_compatible(datetime.now(timezone.utc)),
                     "anomalies_detected": [],
                     "recommendations": [],
                     "confidence_score": 0.5
@@ -280,7 +281,7 @@ class DataService(BaseService):
             self.logger.warning(f"Failed to extract detailed insights: {e}")
             detailed_insights = {
                 "processed": True, 
-                "processing_timestamp": datetime.utcnow().isoformat() + 'Z',
+                "processing_timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "anomalies_detected": [],
                 "recommendations": []
             }
@@ -447,7 +448,7 @@ class DataService(BaseService):
             
             # Enhanced processing based on data type
             processing_result = None
-            if classification_result.data_type in [DataType.LOG_FILE, DataType.ERROR_MESSAGE]:
+            if classification_result.data_type == DataType.LOGS_AND_ERRORS:
                 processing_result = await self._enhanced_processor.process_with_context(
                     content=sanitized_content,
                     session_id=session_id,
@@ -615,7 +616,7 @@ class DataService(BaseService):
         )
 
         # Process using interface with tracing
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         with self._tracer.trace("data_analysis_processing"):
             try:
                 data_content = self._get_data_attribute(data, 'content', '')
@@ -630,7 +631,7 @@ class DataService(BaseService):
                     f"Data analysis processing failed: {str(e)}", 
                     details={"operation": "analyze_data", "data_id": data_id, "error": str(e)}
                 ) from e
-        end_time = datetime.utcnow()
+        end_time = datetime.now(timezone.utc)
         
         # Handle insights response properly
         if hasattr(insights_response, 'insights'):
@@ -855,7 +856,7 @@ class DataService(BaseService):
 
         try:
             # Log-specific anomaly detection
-            if data.data_type == DataType.LOG_FILE:
+            if data.data_type == DataType.LOGS_AND_ERRORS:
                 error_count = insights.get("error_count", 0)
                 if isinstance(error_count, (int, float)) and error_count > 100:
                     anomalies.append({
@@ -877,7 +878,8 @@ class DataService(BaseService):
                     })
 
             # Stack trace anomaly detection
-            elif data_type == DataType.STACK_TRACE:
+            # Stack traces are now part of LOGS_AND_ERRORS, check insights for exception_type
+            elif data.data_type == DataType.LOGS_AND_ERRORS and insights.get("exception_type"):
                 frames = insights.get("stack_frames", [])
                 if isinstance(frames, list) and len(frames) > 50:
                     anomalies.append({
@@ -916,19 +918,15 @@ class DataService(BaseService):
                 data_type = DataType(data_type)
 
         # Base recommendations by data type
-        if data_type == DataType.ERROR_MESSAGE:
+        if data_type == DataType.LOGS_AND_ERRORS:
             recommendations.extend([
                 "Review error logs for patterns and frequency",
                 "Check system resources at error timestamp",
+                "Monitor log patterns for trends over time",
                 "Verify error handling and logging configuration",
             ])
-        elif data_type == DataType.LOG_FILE:
-            recommendations.extend([
-                "Monitor log patterns for trends over time",
-                "Consider implementing log rotation if not present",
-                "Review logging levels and verbosity settings",
-            ])
-        elif data_type == DataType.STACK_TRACE:
+        # Stack traces are included in LOGS_AND_ERRORS now
+        elif data_type == DataType.LOGS_AND_ERRORS and insights and insights.get("exception_type"):
             recommendations.extend([
                 "Analyze stack trace for root cause identification",
                 "Check for memory or resource exhaustion",
@@ -1517,6 +1515,115 @@ class DataService(BaseService):
             )
         
         return recommendations
+
+    async def prepare_data_for_llm_analysis(
+        self,
+        data_id: str,
+        raw_content: str,
+        insights: Dict[str, Any],
+        data_type: str
+    ) -> str:
+        """
+        Prepare data for LLM analysis by creating a concise summary.
+
+        This method takes the raw content and detailed insights, then creates
+        an LLM-friendly summary that fits within context limits while preserving
+        critical information.
+
+        Args:
+            data_id: Unique identifier for the data
+            raw_content: Original raw data content
+            insights: Detailed insights from processor (LogProcessor.process() output)
+            data_type: Data type string (e.g., "LOG_FILE", "METRICS_DATA")
+
+        Returns:
+            Formatted summary string suitable for LLM analysis (typically <8K chars)
+
+        Example:
+            >>> insights = await log_processor.process(raw_log_content)
+            >>> summary = await data_service.prepare_data_for_llm_analysis(
+            ...     data_id="data_abc123",
+            ...     raw_content=raw_log_content,
+            ...     insights=insights,
+            ...     data_type="LOG_FILE"
+            ... )
+            >>> # summary is now LLM-ready: "LOG FILE ANALYSIS SUMMARY\\n..."
+        """
+        try:
+            # Import preprocessing functions
+            from faultmaven.core.preprocessing import get_preprocessor_for_data_type
+
+            # Get the appropriate preprocessor
+            preprocessor = get_preprocessor_for_data_type(data_type)
+
+            if preprocessor:
+                # Run preprocessing to create LLM-friendly summary
+                llm_summary = preprocessor(insights, raw_content)
+
+                self.logger.info(
+                    f"Preprocessed data {data_id}: {len(raw_content)} → {len(llm_summary)} chars",
+                    extra={
+                        "data_id": data_id,
+                        "data_type": data_type,
+                        "raw_size": len(raw_content),
+                        "summary_size": len(llm_summary),
+                        "compression_ratio": f"{len(raw_content) / len(llm_summary):.1f}x"
+                    }
+                )
+
+                return llm_summary
+            else:
+                # No preprocessor available - return basic summary
+                self.logger.warning(
+                    f"No preprocessor for {data_type}, using basic summary",
+                    extra={"data_id": data_id, "data_type": data_type}
+                )
+
+                # Create basic summary
+                basic_summary = f"""DATA ANALYSIS SUMMARY
+Data Type: {data_type}
+Data Size: {len(raw_content):,} characters
+
+INSIGHTS:
+{self._format_insights_basic(insights)}
+
+⚠️  Full preprocessing not available for {data_type}
+Raw content has been analyzed, but detailed formatting is pending implementation.
+"""
+                return basic_summary
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to preprocess data {data_id}: {e}",
+                extra={"data_id": data_id, "data_type": data_type},
+                exc_info=True
+            )
+
+            # Fallback: return truncated raw content with error message
+            return f"""DATA PREPROCESSING ERROR
+
+Data Type: {data_type}
+Error: {str(e)}
+
+RAW CONTENT (first 2000 characters):
+{raw_content[:2000]}
+
+[Truncated - preprocessing failed, showing raw content]
+"""
+
+    def _format_insights_basic(self, insights: Dict[str, Any]) -> str:
+        """Format insights dict into basic readable string"""
+        lines = []
+        for key, value in insights.items():
+            if isinstance(value, dict):
+                lines.append(f"{key}:")
+                for sub_key, sub_value in value.items():
+                    lines.append(f"  {sub_key}: {sub_value}")
+            elif isinstance(value, list):
+                lines.append(f"{key}: {len(value)} items")
+            else:
+                lines.append(f"{key}: {value}")
+        return "\n".join(lines)
 
 
 class SimpleStorageBackend(IStorageBackend):

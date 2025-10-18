@@ -29,19 +29,21 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
+# Load environment variables FIRST - before any other imports
+from dotenv import load_dotenv
+load_dotenv()
+
+# Now import everything else
 import logging
 import os
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
+from faultmaven.utils.serialization import to_json_compatible
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-
-# Load environment variables from .env file
-load_dotenv()
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -130,9 +132,9 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing DI container...")
     try:
         from .container import container
-        container.initialize()
+        await container.initialize()
         logger.info("✅ DI container initialized successfully")
-        
+
         # Make container available to app for access by other components
         app.extra["di_container"] = container
     except Exception as e:
@@ -155,38 +157,6 @@ async def lifespan(app: FastAPI):
             logger.warning("⚠️ BGE-M3 model not available")
     except Exception as e:
         logger.warning(f"Failed to pre-load ML models: {e}")
-
-    # Initialize DI container
-    from .container import container
-    
-    # Initialize container and validate completion
-    logger.info("🚀 Starting DI container initialization...")
-    container.initialize()
-    app.extra["di_container"] = container
-    
-    # Validate initialization succeeded
-    if not getattr(container, '_initialized', False):
-        logger.error("❌ DI container initialization failed - _initialized flag is False")
-        raise RuntimeError("DI container initialization failed")
-    
-    # Health check the container
-    health = container.health_check()
-    logger.info(f"📊 DI container health: {health['status']}")
-    if health['status'] == 'healthy':
-        logger.info("✅ DI container ready - all components initialized successfully during startup") 
-    else:
-        logger.warning(f"⚠️ DI container degraded: {health['components']}")
-        
-    # Test critical services to ensure they're available
-    try:
-        agent_service = container.get_agent_service()
-        session_service = container.get_session_service()
-        logger.info("✅ Critical services validated - container ready for requests (no lazy initialization needed)")
-    except Exception as e:
-        logger.error(f"❌ Critical services validation failed: {e}")
-        raise RuntimeError(f"Critical services not available: {e}")
-    
-    logger.info("🎯 Container initialization COMPLETE during startup - requests will be fast!")
 
     # Setup tracing
     init_opik_tracing()
@@ -228,19 +198,40 @@ async def lifespan(app: FastAPI):
     try:
         from .infrastructure.monitoring.apm_integration import apm_integration
         from .infrastructure.monitoring.alerting import alert_manager, setup_default_alert_rules
-        
+
         # Start APM integration background export
         apm_integration.start_background_export()
         logger.info("✅ APM integration started")
-        
+
         # Set up default alert rules
         setup_default_alert_rules()
         logger.info("✅ Default alert rules configured")
-        
+
         logger.info("✅ Phase 2 monitoring components initialized")
-        
+
     except Exception as e:
         logger.warning(f"Phase 2 monitoring initialization failed (non-critical): {e}")
+
+    # Start case collection cleanup scheduler for Working Memory feature
+    case_cleanup_scheduler = None
+    try:
+        from .infrastructure.tasks import start_case_cleanup_scheduler
+
+        # Only start if both case_vector_store and case_store are available
+        case_vector_store = getattr(container, 'case_vector_store', None)
+        case_store = getattr(container, 'case_store', None)
+        if case_vector_store and case_store:
+            case_cleanup_scheduler = start_case_cleanup_scheduler(
+                case_vector_store=case_vector_store,
+                case_store=case_store,
+                interval_hours=6  # Run cleanup every 6 hours
+            )
+            logger.info("✅ Case collection cleanup scheduler started (Working Memory lifecycle-based)")
+            app.extra["case_cleanup_scheduler"] = case_cleanup_scheduler
+        else:
+            logger.debug("Case collection cleanup scheduler skipped (missing case_vector_store or case_store)")
+    except Exception as e:
+        logger.warning(f"Case cleanup scheduler initialization failed (non-critical): {e}")
 
     logger.info("🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!")
 
@@ -248,6 +239,14 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down FaultMaven API server...")
+
+    # Stop case cleanup scheduler
+    if case_cleanup_scheduler:
+        try:
+            from .infrastructure.tasks import stop_case_cleanup_scheduler
+            stop_case_cleanup_scheduler(case_cleanup_scheduler)
+        except Exception as e:
+            logger.warning(f"Error stopping case cleanup scheduler: {e}")
 
     # Cleanup resources
     if "session_manager" in app.extra:
@@ -537,13 +536,13 @@ async def debug_routes():
         methods = list(getattr(route, "methods", []) or [])
         if path:
             routes_info.append({"path": path, "methods": methods})
-    return {"routes": routes_info, "count": len(routes_info), "timestamp": datetime.utcnow().isoformat() + 'Z'}
+    return {"routes": routes_info, "count": len(routes_info), "timestamp": to_json_compatible(datetime.now(timezone.utc))}
 
 
 @app.get("/debug/health")
 async def debug_health():
     """Minimal debug health endpoint."""
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat() + 'Z'}
+    return {"status": "ok", "timestamp": to_json_compatible(datetime.now(timezone.utc))}
 
 
 @app.get("/debug/llm-providers")
@@ -568,7 +567,7 @@ async def debug_llm_providers():
         strict_mode = os.getenv("STRICT_PROVIDER_MODE", "false").lower() == "true"
 
         return {
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "primary_provider": fallback_chain[0] if fallback_chain else "none",
             "strict_mode": strict_mode,
             "fallback_chain": fallback_chain,
@@ -580,7 +579,7 @@ async def debug_llm_providers():
         logger.error(f"Failed to get LLM provider status: {e}")
         return {
             "error": f"Failed to get LLM provider status: {e}",
-            "timestamp": datetime.utcnow().isoformat() + 'Z'
+            "timestamp": to_json_compatible(datetime.now(timezone.utc))
         }
 
 # Modular monolith pivot: keep only core endpoints; advanced routes disabled
@@ -598,11 +597,26 @@ except Exception as e:
 
 
 # Custom exception handlers
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Custom handler for request/response validation errors (422)"""
+    logger.error(f"Validation error on {request.method} {request.url}: {exc.errors()}", extra={
+        "validation_errors": exc.errors(),
+        "body": exc.body if hasattr(exc, 'body') else None,
+    })
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Validation error",
+            "errors": exc.errors()
+        }
+    )
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Custom HTTPException handler to ensure consistent error response format"""
     detail = exc.detail
-    
+
     # If detail is a structured error response dict, extract the message
     if isinstance(detail, dict) and 'error' in detail and 'message' in detail['error']:
         error_message = detail['error']['message']
@@ -615,8 +629,8 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     elif isinstance(detail, dict):
         # Try to find message in various places
         message = (
-            detail.get('message') or 
-            detail.get('detail') or 
+            detail.get('message') or
+            detail.get('detail') or
             str(detail)
         )
         return JSONResponse(
@@ -669,7 +683,7 @@ async def health_check():
         # Enhanced health status with component details
         health_status = {
             "status": overall_status.value,
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "overall_sla": sla_summary["overall_sla"],
             "components": {},
             "services": {"session_manager": "active", "api": "running"},
@@ -701,7 +715,7 @@ async def health_check():
         # Fallback to basic health status
         health_status = {
             "status": "degraded",
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "error": "Enhanced health monitoring unavailable",
             "services": {"session_manager": "unknown", "api": "running"}
         }
@@ -797,7 +811,7 @@ async def health_check_dependencies():
                 sla_details[component_name] = {"error": str(e)}
         
         return {
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "container_health": health,
             "service_tests": service_tests,
             "component_health": {
@@ -828,7 +842,7 @@ async def health_check_dependencies():
         return {
             "error": f"Enhanced dependency health check failed: {e}",
             "container_available": False,
-            "timestamp": datetime.utcnow().isoformat() + 'Z'
+            "timestamp": to_json_compatible(datetime.now(timezone.utc))
         }
 
 
@@ -837,7 +851,7 @@ async def readiness():
     """Readiness probe: return unready if Redis or ChromaDB are unavailable."""
     try:
         from .container import container
-        container.initialize()
+        await container.initialize()
         if getattr(container, 'session_store', None) is None:
             return {"status": "unready", "reason": "redis_unavailable"}
         if getattr(container, 'vector_store', None) is None:
@@ -856,7 +870,7 @@ async def logging_health_check():
         health_status = coordinator.get_health_status()
         
         # Add timestamp and additional metadata
-        health_status["timestamp"] = datetime.utcnow().isoformat() + 'Z'
+        health_status["timestamp"] = to_json_compatible(datetime.now(timezone.utc))
         health_status["service"] = "logging"
         
         return health_status
@@ -865,7 +879,7 @@ async def logging_health_check():
         return {
             "status": "error",
             "error": f"Logging health check failed: {e}",
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "service": "logging"
         }
 
@@ -888,7 +902,7 @@ async def health_check_sla():
                 detailed_sla[component_name] = {"error": str(e)}
         
         return {
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "summary": sla_summary,
             "components": detailed_sla
         }
@@ -897,7 +911,7 @@ async def health_check_sla():
         logger.error(f"SLA health check failed: {e}")
         return {
             "error": f"SLA health check failed: {e}",
-            "timestamp": datetime.utcnow().isoformat() + 'Z'
+            "timestamp": to_json_compatible(datetime.now(timezone.utc))
         }
 
 
@@ -922,7 +936,7 @@ async def health_check_component(component_name: str):
             sla_details = {"error": str(e)}
         
         return {
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "component_name": component_name,
             "health": {
                 "status": component_health.status.value,
@@ -942,7 +956,7 @@ async def health_check_component(component_name: str):
         return {
             "error": f"Component health check failed: {e}",
             "component_name": component_name,
-            "timestamp": datetime.utcnow().isoformat() + 'Z'
+            "timestamp": to_json_compatible(datetime.now(timezone.utc))
         }
 
 
@@ -959,7 +973,7 @@ async def health_check_error_patterns():
             error_context = context.error_context
             
             return {
-                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "escalation_level": error_context.escalation_level.value,
                 "detected_patterns": error_context.get_pattern_summary(),
                 "recovery_summary": error_context.get_recovery_summary(),
@@ -974,7 +988,7 @@ async def health_check_error_patterns():
             }
         else:
             return {
-                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "message": "No active error context",
                 "patterns": [],
                 "recovery_attempts": []
@@ -984,7 +998,7 @@ async def health_check_error_patterns():
         logger.error(f"Error patterns health check failed: {e}")
         return {
             "error": f"Error patterns health check failed: {e}",
-            "timestamp": datetime.utcnow().isoformat() + 'Z'
+            "timestamp": to_json_compatible(datetime.now(timezone.utc))
         }
 
 
@@ -1010,7 +1024,7 @@ async def get_performance_metrics():
         else:
             # Return basic metrics if middleware not found
             return {
-                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "error": "Performance middleware not found",
                 "metrics_collector": metrics_collector.get_metrics_summary(),
                 "apm_integration": apm_integration.get_export_statistics(),
@@ -1021,7 +1035,7 @@ async def get_performance_metrics():
         logger.error(f"Performance metrics endpoint failed: {e}")
         return {
             "error": f"Performance metrics failed: {e}",
-            "timestamp": datetime.utcnow().isoformat() + 'Z'
+            "timestamp": to_json_compatible(datetime.now(timezone.utc))
         }
 
 
@@ -1040,7 +1054,7 @@ async def get_realtime_metrics(time_window_minutes: int = 5):
         active_alerts = alert_manager.get_active_alerts()
         
         return {
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "time_window_minutes": time_window_minutes,
             "dashboard": dashboard_data,
             "active_alerts": [
@@ -1061,7 +1075,7 @@ async def get_realtime_metrics(time_window_minutes: int = 5):
         logger.error(f"Real-time metrics endpoint failed: {e}")
         return {
             "error": f"Real-time metrics failed: {e}",
-            "timestamp": datetime.utcnow().isoformat() + 'Z'
+            "timestamp": to_json_compatible(datetime.now(timezone.utc))
         }
 
 
@@ -1075,7 +1089,7 @@ async def get_alert_status():
         alert_stats = alert_manager.get_alert_statistics()
         
         return {
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "statistics": alert_stats,
             "active_alerts": [
                 {
@@ -1099,7 +1113,7 @@ async def get_alert_status():
         logger.error(f"Alert status endpoint failed: {e}")
         return {
             "error": f"Alert status failed: {e}",
-            "timestamp": datetime.utcnow().isoformat() + 'Z'
+            "timestamp": to_json_compatible(datetime.now(timezone.utc))
         }
 
 
@@ -1140,7 +1154,7 @@ async def get_system_optimization_metrics():
             logger.warning(f"Failed to get LLM optimization metrics: {e}")
         
         return {
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "system_optimization": optimization_metrics,
             "resource_optimization": resource_metrics,
             "llm_optimization": llm_optimization_metrics,
@@ -1163,7 +1177,7 @@ async def get_system_optimization_metrics():
         logger.error(f"System optimization metrics endpoint failed: {e}")
         return {
             "error": f"System optimization metrics failed: {e}",
-            "timestamp": datetime.utcnow().isoformat() + 'Z'
+            "timestamp": to_json_compatible(datetime.now(timezone.utc))
         }
 
 
@@ -1208,7 +1222,7 @@ async def trigger_system_cleanup():
                     cleanup_results["cache_cleanup"] = {"error": str(e)}
                 break
         
-        cleanup_results["timestamp"] = datetime.utcnow().isoformat() + 'Z'
+        cleanup_results["timestamp"] = to_json_compatible(datetime.now(timezone.utc))
         cleanup_results["cleanup_triggered"] = True
         
         return cleanup_results
@@ -1217,7 +1231,7 @@ async def trigger_system_cleanup():
         logger.error(f"System cleanup trigger failed: {e}")
         return {
             "error": f"System cleanup failed: {e}",
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "cleanup_triggered": False
         }
 

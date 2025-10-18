@@ -15,8 +15,8 @@ Objectives:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from typing import List, Dict, Any
-from datetime import datetime
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
 
 from faultmaven.models.investigation import (
     InvestigationPhase,
@@ -25,6 +25,7 @@ from faultmaven.models.investigation import (
 )
 from faultmaven.services.agentic.phase_handlers.base import BasePhaseHandler, PhaseHandlerResult
 from faultmaven.prompts.investigation.lead_investigator import get_lead_investigator_prompt
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class DocumentHandler(BasePhaseHandler):
@@ -47,6 +48,7 @@ class DocumentHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str = "",
+        context: Optional[dict] = None,
     ) -> PhaseHandlerResult:
         """Handle Phase 6: Document
 
@@ -216,7 +218,7 @@ class DocumentHandler(BasePhaseHandler):
             "type": "case_report",
             "title": "Investigation Case Report",
             "content": case_report,
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": to_json_compatible(datetime.now(timezone.utc)),
         })
 
         # Artifact 2: Runbook
@@ -225,7 +227,7 @@ class DocumentHandler(BasePhaseHandler):
             "type": "runbook",
             "title": "Incident Response Runbook",
             "content": runbook,
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": to_json_compatible(datetime.now(timezone.utc)),
         })
 
         # Artifact 3: Knowledge Base Insights (optional)
@@ -236,7 +238,7 @@ class DocumentHandler(BasePhaseHandler):
                     "type": "knowledge_insights",
                     "title": "Key Insights for Knowledge Base",
                     "content": kb_insights,
-                    "generated_at": datetime.utcnow().isoformat(),
+                    "generated_at": to_json_compatible(datetime.now(timezone.utc)),
                 })
 
         return artifacts
@@ -269,7 +271,7 @@ class DocumentHandler(BasePhaseHandler):
 **Statement:** {anomaly_frame.statement if anomaly_frame else 'N/A'}
 **Severity:** {anomaly_frame.severity if anomaly_frame else 'N/A'}
 **Affected Components:** {', '.join(anomaly_frame.affected_components) if anomaly_frame else 'N/A'}
-**Started At:** {anomaly_frame.started_at.isoformat() if anomaly_frame and anomaly_frame.started_at else 'N/A'}
+**Started At:** {to_json_compatible(anomaly_frame.started_at) if anomaly_frame and anomaly_frame.started_at else 'N/A'}
 
 ## Investigation Timeline
 **Strategy:** {investigation_state.lifecycle.investigation_strategy.value}
@@ -374,7 +376,7 @@ class DocumentHandler(BasePhaseHandler):
 - If impact scope increases: Notify incident commander
 
 ---
-*Generated from investigation on {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}*
+*Generated from investigation on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}*
 """
 
         return runbook

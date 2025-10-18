@@ -14,12 +14,13 @@ Key Endpoints:
 - Conversation history retrieval
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
+from faultmaven.utils.serialization import to_json_compatible
 from typing import Any, Dict, List, Optional, Union
 import asyncio
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Response, Body, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Response, Body, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse
 import uuid
 import logging
@@ -39,6 +40,7 @@ from faultmaven.models.case import (
     CasePriority
 )
 from faultmaven.models.interfaces_case import ICaseService
+from faultmaven.models.interfaces_report import IReportStore
 from faultmaven.models.api import (
     ErrorResponse, ErrorDetail, CaseResponse, Case, Message, QueryJobStatus,
     AgentResponse, ViewState, User, ResponseType, TitleGenerateResponse,
@@ -47,10 +49,11 @@ from faultmaven.models.api import (
 )
 from faultmaven.api.v1.dependencies import (
     get_case_service, get_session_id, get_session_service,
-    get_agent_service, get_preprocessing_service
+    get_agent_service, get_preprocessing_service, get_report_store
 )
 from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
+    get_current_user_optional,
     get_current_user_id
 )
 from faultmaven.models.auth import DevUser
@@ -63,6 +66,12 @@ from faultmaven.exceptions import ValidationException, ServiceException
 from faultmaven.services.evidence.evidence_factory import (
     create_evidence_from_preprocessed,
     map_datatype_to_evidence_category,
+)
+from faultmaven.services.evidence.evidence_enhancements import (
+    extract_timeline_events,
+    should_populate_timeline,
+    generate_hypotheses_from_anomalies,
+    should_generate_hypotheses,
 )
 from faultmaven.models.evidence import EvidenceType
 
@@ -87,16 +96,13 @@ async def _process_async_query(job_id: str, case_id: str, query_request, agent_s
     """Process query asynchronously and store result."""
     try:
         logger.info(f"Starting async processing for job {job_id}")
-        _async_query_results[job_id] = {"status": "processing", "started_at": datetime.utcnow().isoformat() + 'Z'}
+        _async_query_results[job_id] = {"status": "processing", "started_at": to_json_compatible(datetime.now(timezone.utc))}
         
         # Create a copy of the query_request to avoid modifying the original
         from copy import deepcopy
         query_copy = deepcopy(query_request)
-        
-        # Use the same logic as sync processing
-        if not query_copy.session_id:
-            query_copy.session_id = f"session_{case_id}"
-        
+
+        # Add case context
         if not query_copy.context:
             query_copy.context = {}
         query_copy.context.update({"case_id": case_id, "user_id": user_id})
@@ -109,7 +115,7 @@ async def _process_async_query(job_id: str, case_id: str, query_request, agent_s
         _async_query_results[job_id] = {
             "status": "completed",
             "result": agent_response,
-            "completed_at": datetime.utcnow().isoformat() + 'Z'
+            "completed_at": to_json_compatible(datetime.now(timezone.utc))
         }
         logger.info(f"Async processing completed successfully for job {job_id}")
         
@@ -121,7 +127,7 @@ async def _process_async_query(job_id: str, case_id: str, query_request, agent_s
             "status": "failed", 
             "error": str(e),
             "error_details": error_details,
-            "failed_at": datetime.utcnow().isoformat() + 'Z'
+            "failed_at": to_json_compatible(datetime.now(timezone.utc))
         }
 
 
@@ -236,21 +242,24 @@ async def create_case(
     correlation_id = str(uuid.uuid4())
     case_service = check_case_service_available(case_service)
     try:
-        # Validate session exists if session_id is provided (proper separation of concerns)
+        # Validate session if provided
         if request.session_id:
-            existing_session = await session_service.get_session(request.session_id, validate=False)
-            if not existing_session:
-                logger.error(f"Session not found in create_case: {request.session_id}", extra={"correlation_id": correlation_id})
+            session = await session_service.get_session(request.session_id, validate=True)
+            if not session:
+                logger.warning(f"Invalid or expired session: {request.session_id}", extra={"correlation_id": correlation_id})
                 error_response = ErrorResponse(
                     schema_version="3.1.0",
-                    error=ErrorDetail(code="SESSION_NOT_FOUND", message=f"Session '{request.session_id}' not found. Please create the session first or omit session_id to create a standalone case.")
+                    error=ErrorDetail(
+                        code="SESSION_EXPIRED",
+                        message="Your session has expired. Please refresh the page to continue."
+                    )
                 )
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_401_UNAUTHORIZED,
                     detail=error_response.dict(),
                     headers={"x-correlation-id": correlation_id}
                 )
-        
+
         case_entity = await case_service.create_case(
             title=request.title,
             description=request.description,
@@ -1196,36 +1205,74 @@ async def get_case_messages_enhanced(
 @trace("api_create_case_for_session")
 async def create_case_for_session(
     session_id: str,
+    request: Request,
     title: Optional[str] = Query(None, description="Case title"),
     force_new: bool = Query(False, description="Force creation of new case"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    session_service: SessionService = Depends(_di_get_session_service_dependency),
+    current_user: Optional[DevUser] = Depends(get_current_user_optional)
 ) -> Dict[str, Any]:
     """
     Create or get case for a session
-    
+
     Associates a case with the given session. If no case exists, creates a new one.
     If force_new is true, always creates a new case.
+
+    Supports idempotency via 'idempotency-key' header to prevent duplicate case
+    creation on retry when using force_new=true.
     """
     try:
+        # Validate session and derive user if not authenticated
+        session = await session_service.get_session(session_id, validate=True)
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired session"
+            )
+
+        # Get user_id from auth or session
+        user_id = current_user.user_id if current_user else session.user_id
+
+        # Check for idempotency key (prevents duplicate case creation on retry)
+        idempotency_key = request.headers.get("idempotency-key")
+
+        if idempotency_key and force_new:
+            # Check if we already processed this request
+            existing_result = await case_service.check_idempotency_key(idempotency_key)
+            if existing_result:
+                logger.info(f"Returning cached result for idempotency key: {idempotency_key}")
+                return existing_result.get("content", existing_result)
+
+        # Create or get case for session
         case_id = await case_service.get_or_create_case_for_session(
             session_id=session_id,
-            user_id=current_user.user_id if current_user else None,
-            force_new=force_new
+            user_id=user_id,
+            force_new=force_new,
+            title=title
         )
-        
+
         if not case_id:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create case for session"
             )
-        
-        return {
-            "session_id": session_id,
+
+        result = {
             "case_id": case_id,
             "created_new": force_new,
             "success": True
         }
+
+        # Store idempotency result if key provided (only for force_new to prevent duplicates)
+        if idempotency_key and force_new:
+            await case_service.store_idempotency_result(
+                idempotency_key,
+                200,
+                result,
+                {}
+            )
+
+        return result
         
     except ValidationException as e:
         raise HTTPException(
@@ -1263,8 +1310,7 @@ async def resume_case_in_session(
             )
         
         return {
-            "session_id": session_id,
-            "case_id": case_id,
+                        "case_id": case_id,
             "success": True,
             "message": "Case resumed in session"
         }
@@ -1293,6 +1339,7 @@ async def submit_case_query(
     request: Request,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     agent_service: AgentService = Depends(_di_get_agent_service_dependency),
+    session_service: SessionService = Depends(_di_get_session_service_dependency),
     current_user: DevUser = Depends(require_authentication)
 ):
     """
@@ -1308,8 +1355,27 @@ async def submit_case_query(
         201 with immediate result OR 202 with job Location for async processing
     """
     case_service = check_case_service_available(case_service)
-    
+    correlation_id = str(uuid.uuid4())
+
     try:
+        # Validate session if provided
+        if query_request.session_id:
+            session = await session_service.get_session(query_request.session_id, validate=True)
+            if not session:
+                logger.warning(f"Invalid or expired session during query: {query_request.session_id}", extra={"correlation_id": correlation_id})
+                error_response = ErrorResponse(
+                    schema_version="3.1.0",
+                    error=ErrorDetail(
+                        code="SESSION_EXPIRED",
+                        message="Your session has expired. Please refresh the page to continue."
+                    )
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=error_response.dict(),
+                    headers={"x-correlation-id": correlation_id}
+                )
+
         # Validate case_id parameter first
         if not case_id or case_id.strip() in ("", "undefined", "null"):
             raise HTTPException(
@@ -1362,7 +1428,7 @@ async def submit_case_query(
         
         if is_complex_query:
             # Async processing path - return 202 with job
-            job_id = f"job_{case_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+            job_id = f"job_{case_id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
             
             # Store initial job status
             job_data = {
@@ -1370,7 +1436,7 @@ async def submit_case_query(
                 "case_id": case_id,
                 "query": query_text,
                 "status": "processing",
-                "created_at": datetime.utcnow().isoformat() + 'Z',
+                "created_at": to_json_compatible(datetime.now(timezone.utc)),
                 "user_id": current_user.user_id
             }
             
@@ -1398,12 +1464,8 @@ async def submit_case_query(
             )
         else:
             # Sync processing path - use AgentService for real AI processing
-            query_id = f"query_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-            
-            # Use the validated QueryRequest directly, but ensure session_id for case
-            if not query_request.session_id:
-                query_request.session_id = f"session_{case_id}"
-            
+            query_id = f"query_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+
             # Add case context if not already present
             if not query_request.context:
                 query_request.context = {}
@@ -1425,6 +1487,31 @@ async def submit_case_query(
                 # Validate AgentResponse has required content
                 if not hasattr(agent_response, 'content') or not isinstance(agent_response.content, str):
                     raise ValueError(f"AgentResponse contract violation: content must be str, got {type(agent_response.content) if hasattr(agent_response, 'content') else 'missing'}")
+
+                # Additional validation: Check if content is a JSON string (should never happen)
+                if agent_response.content.strip().startswith('{'):
+                    try:
+                        import json as json_check
+                        parsed_check = json_check.loads(agent_response.content)
+                        if isinstance(parsed_check, dict):
+                            logger.error(
+                                f"🐛 CRITICAL: Response parser bug - content contains JSON object!",
+                                extra={
+                                    "content_preview": agent_response.content[:200],
+                                    "parsed_keys": list(parsed_check.keys()) if isinstance(parsed_check, dict) else None,
+                                    "case_id": case_id,
+                                    "query": query_request.query[:100]
+                                }
+                            )
+                            # FAIL LOUDLY - force fix of the parser bug
+                            raise ValueError(
+                                f"Response parser bug: agent_response.content contains JSON object instead of plain text. "
+                                f"Keys found: {list(parsed_check.keys())}. "
+                                f"This indicates the double-encoding fix in response_parser.py failed. "
+                                f"Check logs for '🐛 CRITICAL BUG' to find where the JSON was left in answer field."
+                            )
+                    except json_check.JSONDecodeError:
+                        pass  # Not JSON, safe to proceed
 
                 # Convert AgentResponse to dict format for JSON serialization - MUST match OpenAPI spec
                 agent_response_dict = {
@@ -1483,22 +1570,22 @@ async def submit_case_query(
                     "schema_version": "3.1.0",
                     "content": "Based on the available information: Discovered 2 available capabilities. Intent: information. Complexity: simple. I'm processing your request but it's taking longer than expected. Let me provide a quick response: I can help you troubleshoot this issue. Could you provide more specific details about what you're experiencing?",
                     "response_type": "ANSWER",
-                    "session_id": query_request.session_id,
+                                        "session_id": query_request.session_id,
                     "view_state": {
-                        "session_id": query_request.session_id,
+                                                "session_id": agent_response.view_state.session_id,
                         "user": {
                             "user_id": current_user.user_id,
                             "email": "user@example.com",
                             "name": "User",
-                            "created_at": datetime.utcnow().isoformat() + 'Z'
+                            "created_at": to_json_compatible(datetime.now(timezone.utc))
                         },
                         "active_case": {
                             "case_id": case_id,
                             "title": f"Case {case_id}",
                             "status": "active",
                             "priority": "medium",
-                            "created_at": datetime.utcnow().isoformat() + 'Z',
-                            "updated_at": datetime.utcnow().isoformat() + 'Z',
+                            "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                            "updated_at": to_json_compatible(datetime.now(timezone.utc)),
                             "message_count": 1
                         },
                         "cases": [],
@@ -1525,22 +1612,22 @@ async def submit_case_query(
                     "schema_version": "3.1.0",
                     "content": "⏳ **Request Processing Timeout**\n\nYour request took longer than expected to process (>35 seconds). This might be due to:\n\n• High system load or complex query processing\n• Temporary connectivity issues with AI services\n• Large data processing requirements\n\n**Please try:**\n• Submitting your request again\n• Breaking complex queries into smaller parts\n• Waiting a few moments before retrying",
                     "response_type": "ANSWER",
-                    "session_id": query_request.session_id,
+                                        "session_id": query_request.session_id,
                     "view_state": {
-                        "session_id": query_request.session_id,
+                                                "session_id": agent_response.view_state.session_id,
                         "user": {
                             "user_id": current_user.user_id,
                             "email": "user@example.com",
                             "name": "User",
-                            "created_at": datetime.utcnow().isoformat() + 'Z'
+                            "created_at": to_json_compatible(datetime.now(timezone.utc))
                         },
                         "active_case": {
                             "case_id": case_id,
                             "title": f"Case {case_id}",
                             "status": "active",
                             "priority": "medium",
-                            "created_at": datetime.utcnow().isoformat() + 'Z',
-                            "updated_at": datetime.utcnow().isoformat() + 'Z',
+                            "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                            "updated_at": to_json_compatible(datetime.now(timezone.utc)),
                             "message_count": 1
                         },
                         "cases": [],
@@ -1548,7 +1635,7 @@ async def submit_case_query(
                             "cases_created": 1,
                             "messages_sent": 1,
                             "total_session_time": "0:00:35",
-                            "last_activity": datetime.utcnow().isoformat() + 'Z'
+                            "last_activity": to_json_compatible(datetime.now(timezone.utc))
                         }
                     },
                     "sources": [{"type": "TIMEOUT", "content": f"API route timeout after {processing_time:.2f}s", "metadata": {"timeout_type": "api_route", "timeout_seconds": 35}}],
@@ -1567,22 +1654,22 @@ async def submit_case_query(
                     "schema_version": "3.1.0",
                     "content": "I'm having trouble processing your request right now. Please try again in a few moments.",
                     "response_type": "ANSWER",
-                    "session_id": query_request.session_id,
+                                        "session_id": query_request.session_id,
                     "view_state": {
-                        "session_id": query_request.session_id,
+                                                "session_id": agent_response.view_state.session_id,
                         "user": {
                             "user_id": current_user.user_id,
                             "email": "user@example.com",
                             "name": "User",
-                            "created_at": datetime.utcnow().isoformat() + 'Z'
+                            "created_at": to_json_compatible(datetime.now(timezone.utc))
                         },
                         "active_case": {
                             "case_id": case_id,
                             "title": f"Case {case_id}",
                             "status": "active",
                             "priority": "medium",
-                            "created_at": datetime.utcnow().isoformat() + 'Z',
-                            "updated_at": datetime.utcnow().isoformat() + 'Z',
+                            "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                            "updated_at": to_json_compatible(datetime.now(timezone.utc)),
                             "message_count": 1
                         },
                         "cases": [],
@@ -1613,7 +1700,6 @@ async def submit_case_query(
             try:
                 assistant_message = CaseMessage(
                     case_id=case_id,
-                    session_id=query_request.session_id,
                     author_id=current_user.user_id if current_user else None,
                     message_type=MessageType.AGENT_RESPONSE,
                     content=agent_response_dict.get("content", ""),
@@ -1624,7 +1710,7 @@ async def submit_case_query(
                     }
                 )
 
-                await case_service.add_message_to_case(case_id, assistant_message, query_request.session_id)
+                await case_service.add_message_to_case(case_id, assistant_message)
                 logger.debug(f"Successfully persisted assistant response for case {case_id}")
             except Exception as persist_error:
                 logger.error(f"Failed to persist assistant response for case {case_id}: {persist_error}")
@@ -1633,7 +1719,10 @@ async def submit_case_query(
             return JSONResponse(
                 status_code=201,
                 content=agent_response_dict,
-                headers={"Location": f"/api/v1/cases/{case_id}/queries/{query_id}"}
+                headers={
+                    "Location": f"/api/v1/cases/{case_id}/queries/{query_id}",
+                    "X-Correlation-ID": correlation_id
+                }
             )
             
     except HTTPException:
@@ -1699,8 +1788,8 @@ async def get_case_query(
                 case_id=case_id,
                 status="processing",
                 progress_percentage=None,
-                started_at=datetime.utcnow().isoformat() + 'Z',
-                last_updated_at=datetime.utcnow().isoformat() + 'Z',
+                started_at=to_json_compatible(datetime.now(timezone.utc)),
+                last_updated_at=to_json_compatible(datetime.now(timezone.utc)),
                 error=None,
                 result=None
             )
@@ -1721,7 +1810,7 @@ async def get_case_query(
                     "schema_version": "3.1.0",
                     "content": agent_response.content,
                     "response_type": _safe_enum_value(agent_response.response_type),
-                    "session_id": agent_response.session_id,
+                                        "session_id": agent_response.session_id,
                     "view_state": {
                         "session_id": agent_response.view_state.session_id,
                         "user": {
@@ -1832,16 +1921,16 @@ async def get_case_query_result(
 
         if not agent_response:
             # Synthesized minimal AgentResponse
-            now = datetime.utcnow().isoformat() + 'Z'
+            now = to_json_compatible(datetime.now(timezone.utc))
             session_id_value = case.metadata.get("last_session_id") if hasattr(case, 'metadata') else None
             agent_response = {
                 "schema_version": "3.1.0",
                 "content": f"Historical result for query {query_id} in case {case_id}",
                 "response_type": "ANSWER",
-                "session_id": session_id_value,
-                "view_state": {
-                    "session_id": session_id_value,
-                    "user": {
+                                "session_id": query_request.session_id,
+                    "view_state": {
+                                        "session_id": agent_response.view_state.session_id,
+                        "user": {
                         "user_id": current_user.user_id if current_user else None or "anonymous",
                         "email": "user@example.com",
                         "name": "User",
@@ -1956,7 +2045,7 @@ async def get_case_service_health(
         return {
             "service": "case_management",
             "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "features": {
                 "case_persistence": True,
                 "case_sharing": True,
@@ -1969,7 +2058,7 @@ async def get_case_service_health(
         return {
             "service": "case_management",
             "status": "unhealthy",
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "error": str(e)
         }
 
@@ -1980,13 +2069,15 @@ async def get_case_service_health(
 @trace("api_upload_case_data")
 async def upload_case_data(
     case_id: str,
+    request: Request,
     file: UploadFile = File(...),
-    session_id: str = Form(...),
+    session_id: str = Form(..., description="Session ID for authentication"),
     description: Optional[str] = Form(None, description="Description of uploaded data"),
     source_metadata: Optional[str] = Form(None, description="JSON string with source metadata (source_type, source_url, etc.)"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     preprocessing_service = Depends(get_preprocessing_service),
     agent_service: AgentService = Depends(_di_get_agent_service_dependency),
+    session_service: SessionService = Depends(_di_get_session_service_dependency),
     current_user: DevUser = Depends(require_authentication)
 ):
     """
@@ -2001,21 +2092,60 @@ async def upload_case_data(
     Returns 201 with DataUploadResponse including agent_response field.
     """
     case_service = check_case_service_available(case_service)
+    correlation_id = str(uuid.uuid4())
 
     try:
-        # Step 1: Verify case exists and user has access
+        # Validate case_id parameter first (consistent with query endpoint)
+        if not case_id or case_id.strip() in ("", "undefined", "null"):
+            raise HTTPException(
+                status_code=400,
+                detail="Valid case_id is required. Received invalid case_id. Please create a case first or provide a valid case_id."
+            )
+
+        # Validate session if provided
+        if session_id:
+            session = await session_service.get_session(session_id, validate=True)
+            if not session:
+                logger.warning(f"Invalid or expired session during data upload: {session_id}", extra={"correlation_id": correlation_id})
+                error_response = ErrorResponse(
+                    schema_version="3.1.0",
+                    error=ErrorDetail(
+                        code="SESSION_EXPIRED",
+                        message="Your session has expired. Please refresh the page to continue."
+                    )
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=error_response.dict(),
+                    headers={"x-correlation-id": correlation_id}
+                )
+
+        # Check idempotency key if provided (consistent with query endpoint)
+        idempotency_key = request.headers.get("idempotency-key")
+        if idempotency_key:
+            existing_result = await case_service.check_idempotency_key(idempotency_key)
+            if existing_result:
+                logger.info(f"Returning cached result for idempotency key: {idempotency_key}")
+                return JSONResponse(
+                    status_code=existing_result.get("status_code", 201),
+                    content=existing_result.get("content", {}),
+                    headers=existing_result.get("headers", {})
+                )
+
+        # Step 1: Verify case exists (consistent with query endpoint)
+        # Case must be created first via POST /api/v1/cases/sessions/{session_id}/case
         case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
             raise HTTPException(
                 status_code=404,
-                detail="Case not found or access denied"
+                detail="Case not found. Please create a case first using POST /api/v1/cases/sessions/{session_id}/case"
             )
 
         # Step 2: Read uploaded file
         file_content = await file.read()
         file_size = len(file_content)
 
-        logger.info(f"Processing upload: {file.filename} ({file_size} bytes) for case {case_id}")
+        logger.info(f"Processing upload: {file.filename} ({file_size} bytes) for case {case.case_id}")
 
         # Step 2.5: Parse source metadata if provided
         parsed_source_metadata = None
@@ -2044,62 +2174,141 @@ async def upload_case_data(
                     detail="Unable to decode file content. Please upload text files only."
                 )
 
-        preprocessed = await preprocessing_service.preprocess(
-            content=content_str,
+        preprocessed = preprocessing_service.preprocess(
             filename=file.filename,
-            case_id=case_id,
-            session_id=session_id,
+            content=content_str,
             source_metadata=parsed_source_metadata
         )
 
+        # Generate unique data_id and calculate compression ratio
+        data_id = str(uuid.uuid4())
+        compression_ratio = preprocessed.original_size / preprocessed.processed_size if preprocessed.processed_size > 0 else 1.0
+
         logger.info(
-            f"Preprocessing complete: {preprocessed.data_type.value}, "
-            f"{preprocessed.original_size}→{preprocessed.summary_size} chars, "
-            f"{preprocessed.processing_time_ms:.1f}ms"
+            f"Preprocessing complete: {preprocessed.metadata.data_type.value}, "
+            f"{preprocessed.original_size}→{preprocessed.processed_size} chars, "
+            f"{preprocessed.metadata.processing_time_ms:.1f}ms, "
+            f"compression={compression_ratio:.1f}x"
         )
 
-        # Step 3.5: Create evidence from preprocessed data
+        # Step 3.5: Initialize diagnostic state if needed
+        if not hasattr(case, 'diagnostic_state') or case.diagnostic_state is None:
+            from faultmaven.models.case import CaseDiagnosticState
+            case.diagnostic_state = CaseDiagnosticState()
+            logger.info("Initialized diagnostic state for case")
+
+        # Step 3.6: Create evidence from preprocessed data
         evidence = create_evidence_from_preprocessed(
             preprocessed=preprocessed,
             filename=file.filename,
             turn_number=1,  # TODO: Get actual turn number from diagnostic state
             evidence_type=EvidenceType.SUPPORTIVE,
             addresses_requests=[],  # TODO: Match against pending evidence requests
+            data_id=data_id,
+            processed_at=to_json_compatible(datetime.now(timezone.utc)),
         )
 
-        # Add evidence to diagnostic state
-        if hasattr(case, 'diagnostic_state') and case.diagnostic_state:
-            case.diagnostic_state.evidence_provided.append(evidence)
-            try:
-                await case_service.update_case(case)
-                logger.info(
-                    f"Evidence created: {evidence.evidence_id} "
-                    f"(category: {map_datatype_to_evidence_category(preprocessed.data_type).value})"
+        # Step 3.7: Extract timeline events (Gap 1.2: Timeline Integration)
+        timeline_events = []
+        if should_populate_timeline(preprocessed):
+            timeline_events = extract_timeline_events(preprocessed)
+            if timeline_events:
+                # Store in legacy timeline_info field
+                if not case.diagnostic_state.timeline_info:
+                    case.diagnostic_state.timeline_info = {}
+                case.diagnostic_state.timeline_info['events'] = timeline_events
+                logger.info(f"Extracted {len(timeline_events)} timeline events from {file.filename}")
+
+        # Step 3.8: Generate hypotheses from anomalies (Gap 1.3: Anomaly → Hypothesis)
+        new_hypotheses = []
+        if should_generate_hypotheses(preprocessed):
+            new_hypotheses = generate_hypotheses_from_anomalies(preprocessed, current_turn=1, data_id=data_id)
+            if new_hypotheses:
+                # Add to legacy hypotheses field
+                for hyp in new_hypotheses:
+                    case.diagnostic_state.hypotheses.append({
+                        "id": hyp.hypothesis_id,
+                        "statement": hyp.statement,
+                        "category": hyp.category,
+                        "likelihood": hyp.likelihood,
+                        "status": hyp.status.value,
+                        "supporting_evidence": hyp.supporting_evidence,
+                    })
+                logger.info(f"Generated {len(new_hypotheses)} hypotheses from anomalies")
+
+        # Step 3.9: Add evidence to diagnostic state
+        case.diagnostic_state.evidence_provided.append(evidence)
+
+        # Step 3.10: Persist changes
+        try:
+            # Update case with modified diagnostic_state
+            # Redis store now handles datetime serialization automatically
+            updates = {
+                "diagnostic_state": case.diagnostic_state.dict() if hasattr(case.diagnostic_state, 'dict') else case.diagnostic_state
+            }
+            await case_service.update_case(case.case_id, updates, current_user.user_id)
+            logger.info(
+                f"Evidence integration complete: "
+                f"evidence={evidence.evidence_id}, "
+                f"category={map_datatype_to_evidence_category(preprocessed.metadata.data_type).value}, "
+                f"timeline_events={len(timeline_events)}, "
+                f"hypotheses={len(new_hypotheses)}"
+            )
+        except Exception as e:
+            # Log but don't fail - evidence integration is supplementary
+            logger.warning(f"Failed to update case with evidence: {e}")
+
+        # Step 3.11: Store preprocessed summary in Case Working Memory
+        try:
+            from faultmaven.container import container
+            case_vector_store = getattr(container, 'case_vector_store', None)
+
+            if case_vector_store:
+                await case_vector_store.add_documents(
+                    case_id=case.case_id,
+                    documents=[{
+                        'id': data_id,
+                        'content': preprocessed.content,  # LLM-ready preprocessed content
+                        'metadata': {
+                            'filename': file.filename,
+                            'data_type': preprocessed.metadata.data_type.value,
+                            'file_size': file_size,
+                            'uploaded_at': to_json_compatible(datetime.now(timezone.utc)),
+                            'user_id': current_user.user_id
+                        }
+                    }]
                 )
-            except Exception as e:
-                # Log but don't fail - evidence integration is supplementary
-                logger.warning(f"Failed to update case with evidence: {e}")
-        else:
-            logger.debug("Case has no diagnostic state, skipping evidence integration")
+                logger.info(
+                    f"Stored preprocessed content in Working Memory: "
+                    f"case_{case.case_id}/{data_id} "
+                    f"({len(preprocessed.content)} chars)"
+                )
+            else:
+                logger.warning("Case vector store not available, skipping Working Memory storage")
+        except Exception as e:
+            # Log but don't fail - Working Memory storage is supplementary
+            logger.warning(f"Failed to store in Working Memory: {e}")
 
         # Step 4: Generate AI analysis via agent service
         context_dict = {
-            "case_id": case_id,
-            "data_id": preprocessed.data_id,
-            "data_type": preprocessed.data_type.value,
-            "preprocessed_summary": preprocessed.summary,  # LLM-ready summary
+            "case_id": case.case_id,
+            "data_id": data_id,
+            "data_type": preprocessed.metadata.data_type.value,
+            "preprocessed_content": preprocessed.content,  # LLM-ready content
             "security_flags": preprocessed.security_flags,
-            "filename": file.filename,
+            "upload_filename": file.filename,  # Note: renamed from 'filename' to avoid LogRecord conflict
             "file_size": file_size,
             "user_description": description
         }
 
         # Add source metadata to context if available
-        if parsed_source_metadata:
+        # Note: preprocessed.source_metadata is a SourceMetadata object (type-enforced)
+        if preprocessed.source_metadata:
             context_dict["source_metadata"] = {
-                "source_type": parsed_source_metadata.source_type,
-                "source_url": parsed_source_metadata.source_url,
-                "captured_at": parsed_source_metadata.captured_at
+                "source_type": preprocessed.source_metadata.source_type,
+                "source_url": preprocessed.source_metadata.source_url,
+                "captured_at": preprocessed.source_metadata.captured_at,
+                "user_description": preprocessed.source_metadata.user_description
             }
 
         query_request = QueryRequest(
@@ -2108,34 +2317,84 @@ async def upload_case_data(
             context=context_dict
         )
 
-        agent_response = await agent_service.process_query_for_case(
-            case_id, query_request
-        )
+        # Process with timeout (consistent with query endpoint)
+        try:
+            logger.info(f"🕐 API Route: Starting agent analysis for upload {file.filename} with 35s timeout")
+            start_time = time.time()
 
-        logger.info(f"Agent analysis complete for {file.filename}")
+            agent_response = await asyncio.wait_for(
+                agent_service.process_query_for_case(case.case_id, query_request),
+                timeout=35.0
+            )
+
+            processing_time = time.time() - start_time
+            logger.info(f"✅ API Route: Agent analysis complete in {processing_time:.2f}s for {file.filename}")
+
+        except asyncio.TimeoutError:
+            processing_time = time.time() - start_time
+            logger.error(f"⏰ API Route TIMEOUT: Agent analysis exceeded 35s timeout ({processing_time:.2f}s) for upload {file.filename}")
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail=f"Agent analysis timed out after {processing_time:.1f}s. Please try uploading a smaller file or wait and try again."
+            )
 
         # Step 5: Build response
-        upload_response = DataUploadResponse(
-            data_id=preprocessed.data_id,
-            filename=file.filename,
-            file_size=file_size,
-            data_type=preprocessed.data_type.value,
-            processing_status=ProcessingStatus.COMPLETED,
-            uploaded_at=datetime.utcnow().isoformat() + 'Z',
-            agent_response=agent_response,  # Conversational AI analysis
-            classification={
-                "data_type": preprocessed.data_type.value,
-                "confidence": 1.0,  # Classifier doesn't return confidence yet
-                "compression_ratio": preprocessed.compression_ratio,
-                "processing_time_ms": preprocessed.processing_time_ms
-            }
-        )
+        try:
+            upload_response = DataUploadResponse(
+                data_id=data_id,
+                case_id=case.case_id,  # Return actual case_id (may differ from optimistic ID in URL)
+                filename=file.filename,
+                file_size=file_size,
+                data_type=preprocessed.metadata.data_type.value,
+                processing_status=ProcessingStatus.COMPLETED,
+                uploaded_at=to_json_compatible(datetime.now(timezone.utc)),
+                agent_response=agent_response,  # Conversational AI analysis
+                classification={
+                    "data_type": preprocessed.metadata.data_type.value,
+                    "confidence": preprocessed.metadata.confidence,
+                    "compression_ratio": compression_ratio,
+                    "processing_time_ms": preprocessed.metadata.processing_time_ms
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to create DataUploadResponse: {e}", exc_info=True, extra={
+                "agent_response_type": type(agent_response).__name__,
+                "has_evidence_requests": hasattr(agent_response, 'evidence_requests'),
+                "has_investigation_mode": hasattr(agent_response, 'investigation_mode'),
+                "has_case_status": hasattr(agent_response, 'case_status'),
+            })
+            raise
 
-        return upload_response
+        # Build response headers (required by OpenAPI spec)
+        response_headers = {
+            "Location": f"/api/v1/cases/{case.case_id}/data/{data_id}",
+            "X-Correlation-ID": correlation_id
+        }
+
+        # Store idempotency result if key provided (consistent with query endpoint)
+        if idempotency_key:
+            await case_service.store_idempotency_result(
+                idempotency_key,
+                201,
+                upload_response.dict(),
+                response_headers
+            )
+
+        # Return response with headers
+        return JSONResponse(
+            status_code=201,
+            content=upload_response.dict(),
+            headers=response_headers
+        )
 
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"File upload failed for case {case_id}: {e}", exc_info=True, extra={
+            "case_id": case_id,
+            "upload_filename": file.filename if file else "unknown",
+            "error_type": type(e).__name__,
+        })
         raise HTTPException(
             status_code=500,
             detail=f"Failed to upload case data: {str(e)}"
@@ -2221,7 +2480,7 @@ async def get_case_data(
             "description": "Sample case data",
             "expected_type": "log_file",
             "size_bytes": 1024,
-            "upload_timestamp": datetime.utcnow().isoformat() + 'Z',
+            "upload_timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "processing_status": "completed"
         }
         
@@ -2275,5 +2534,399 @@ async def delete_case_data(
         )
 
 
-# Note: Exception handlers should be added to the main FastAPI app, not the router
-# These would be added in main.py if needed
+# =============================================================================
+# Document Generation and Closure Endpoints
+# =============================================================================
+
+@router.get("/{case_id}/report-recommendations")
+@trace("api_get_report_recommendations")
+async def get_report_recommendations(
+    case_id: str,
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    current_user: DevUser = Depends(require_authentication)
+):
+    """
+    Get intelligent report recommendations for a resolved case.
+
+    Returns recommendations for which reports to generate, including
+    intelligent runbook suggestions based on similarity search of existing
+    runbooks (both incident-driven and document-driven sources).
+
+    Recommendation Logic:
+    - Always available: Incident Report, Post-Mortem (unique per incident)
+    - Conditional: Runbook (based on similarity search)
+        - ≥85% similarity: Recommend reuse existing runbook
+        - 70-84% similarity: Offer both review OR generate options
+        - <70% similarity: Recommend generate new runbook
+
+    Args:
+        case_id: Case identifier
+        case_service: Injected case service
+        current_user: Authenticated user
+
+    Returns:
+        ReportRecommendation with available types and runbook suggestion
+
+    Raises:
+        400: Case not in resolved state
+        404: Case not found or access denied
+        500: Internal server error
+    """
+    from faultmaven.models.report import ReportRecommendation
+    from faultmaven.services.domain.report_recommendation_service import ReportRecommendationService
+    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+    from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+
+    case_service = check_case_service_available(case_service)
+
+    try:
+        # Verify case exists and user has access
+        case = await case_service.get_case(case_id, current_user.user_id)
+        if not case:
+            raise HTTPException(
+                status_code=404,
+                detail="Case not found or access denied"
+            )
+
+        # Validate case is in resolved state
+        resolved_states = [
+            CaseStatus.RESOLVED,
+            CaseStatus.RESOLVED_WITH_WORKAROUND,
+            CaseStatus.RESOLVED_BY_USER
+        ]
+
+        if case.status not in resolved_states:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_case_state",
+                    "message": f"Cannot get report recommendations for case in {case.status.value} state",
+                    "current_state": case.status.value,
+                    "required_states": [s.value for s in resolved_states]
+                }
+            )
+
+        # Initialize services for recommendation
+        # Note: In production, these should be injected via DI container
+        vector_store = ChromaDBVectorStore()
+        runbook_kb = RunbookKnowledgeBase(vector_store=vector_store)
+        recommendation_service = ReportRecommendationService(runbook_kb=runbook_kb)
+
+        # Get intelligent recommendations
+        recommendations = await recommendation_service.get_available_report_types(case=case)
+
+        logger.info(
+            f"Report recommendations generated for case {case_id}",
+            extra={
+                "case_id": case_id,
+                "runbook_action": recommendations.runbook_recommendation.action,
+                "available_types": [t.value for t in recommendations.available_for_generation]
+            }
+        )
+
+        # Return recommendations
+        return recommendations.dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to get report recommendations for case {case_id}: {e}",
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get report recommendations: {str(e)}"
+        )
+
+
+@router.post("/{case_id}/reports")
+@trace("api_generate_case_reports")
+async def generate_case_reports(
+    case_id: str,
+    request_body: Dict[str, Any] = Body(...),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    current_user: DevUser = Depends(require_authentication)
+):
+    """Generate case documentation reports."""
+    from faultmaven.models.report import ReportGenerationRequest, ReportType
+    from faultmaven.services.domain.report_generation_service import ReportGenerationService
+    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+    from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+
+    case_service = check_case_service_available(case_service)
+
+    try:
+        case = await case_service.get_case(case_id, current_user.user_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        # Parse request
+        request = ReportGenerationRequest(report_types=[ReportType(t) for t in request_body["report_types"]])
+
+        # Initialize services
+        vector_store = ChromaDBVectorStore()
+        runbook_kb = RunbookKnowledgeBase(vector_store=vector_store)
+        report_service = ReportGenerationService(llm_router=None, runbook_kb=runbook_kb)
+
+        # Transition to DOCUMENTING if needed
+        if case.status != CaseStatus.DOCUMENTING:
+            case.status = CaseStatus.DOCUMENTING
+            case.documenting_started_at = datetime.now(timezone.utc)
+
+        # Generate reports
+        response = await report_service.generate_reports(case, request.report_types)
+        case.report_generation_count += 1
+
+        return response.dict()
+
+    except Exception as e:
+        logger.error(f"Report generation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{case_id}/reports")
+@trace("api_get_case_reports")
+async def get_case_reports(
+    case_id: str,
+    include_history: bool = Query(default=False),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    report_store: Optional[IReportStore] = Depends(get_report_store),
+    current_user: DevUser = Depends(require_authentication)
+):
+    """
+    Retrieve generated reports for a case.
+
+    Args:
+        case_id: Case identifier
+        include_history: If True, return all report versions; if False, only current
+
+    Returns:
+        List of CaseReport objects
+    """
+    case_service = check_case_service_available(case_service)
+
+    try:
+        # Verify case exists and user has access
+        case = await case_service.get_case(case_id, current_user.user_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        # Check if report_store is available
+        if not report_store:
+            logger.warning("Report store not available - returning empty list")
+            return []
+
+        # Retrieve reports from storage
+        reports = await report_store.get_case_reports(
+            case_id=case_id,
+            include_history=include_history
+        )
+
+        logger.info(
+            f"Retrieved {len(reports)} reports for case",
+            extra={
+                "case_id": case_id,
+                "include_history": include_history,
+                "report_count": len(reports)
+            }
+        )
+
+        return reports
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to retrieve reports for case {case_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{case_id}/reports/{report_id}/download")
+@trace("api_download_case_report")
+async def download_case_report(
+    case_id: str,
+    report_id: str,
+    format: str = Query(default="markdown"),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    report_store: Optional[IReportStore] = Depends(get_report_store),
+    current_user: DevUser = Depends(require_authentication)
+):
+    """
+    Download case report in specified format.
+
+    Args:
+        case_id: Case identifier
+        report_id: Report identifier
+        format: Output format (markdown or pdf) - currently only markdown supported
+
+    Returns:
+        File response with report content
+    """
+    from fastapi.responses import Response
+
+    case_service = check_case_service_available(case_service)
+
+    try:
+        # Verify case exists and user has access
+        case = await case_service.get_case(case_id, current_user.user_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        # Check if report_store is available
+        if not report_store:
+            raise HTTPException(
+                status_code=503,
+                detail="Report storage not available"
+            )
+
+        # Retrieve report from storage
+        report = await report_store.get_report(report_id)
+
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+
+        # Verify report belongs to this case
+        if report.case_id != case_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Report does not belong to this case"
+            )
+
+        # Determine content type and filename
+        if format == "pdf":
+            # TODO: PDF conversion not implemented yet
+            raise HTTPException(
+                status_code=501,
+                detail="PDF format not yet supported - use markdown format"
+            )
+        else:
+            # Return markdown format
+            content_type = "text/markdown"
+            filename = f"{report.report_type.value}_{case_id}_{report.version}.md"
+
+        logger.info(
+            f"Serving report download",
+            extra={
+                "case_id": case_id,
+                "report_id": report_id,
+                "format": format,
+                "filename": filename
+            }
+        )
+
+        return Response(
+            content=report.content,
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download report {report_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{case_id}/close")
+@trace("api_close_case")
+async def close_case(
+    case_id: str,
+    request_body: Optional[Dict[str, Any]] = Body(default=None),
+    case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
+    report_store: Optional[IReportStore] = Depends(get_report_store),
+    current_user: DevUser = Depends(require_authentication)
+):
+    """
+    Close case and archive with reports.
+
+    Marks all latest reports as linked to case closure and transitions
+    case to CLOSED state.
+
+    Returns:
+        CaseClosureResponse with list of archived reports
+    """
+    from faultmaven.models.report import CaseClosureResponse, ArchivedReport
+
+    case_service = check_case_service_available(case_service)
+
+    try:
+        case = await case_service.get_case(case_id, current_user.user_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        # Validate state
+        allowed_states = [CaseStatus.RESOLVED, CaseStatus.SOLVED, CaseStatus.DOCUMENTING]
+        if case.status not in allowed_states:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot close case in {case.status.value} state"
+            )
+
+        # Get latest reports for closure (if report_store available)
+        archived_reports = []
+        if report_store:
+            try:
+                latest_reports = await report_store.get_latest_reports_for_closure(case_id)
+
+                if latest_reports:
+                    # Mark reports as linked to closure
+                    report_ids = [r.report_id for r in latest_reports]
+                    await report_store.mark_reports_linked_to_closure(case_id, report_ids)
+
+                    # Build archived reports list
+                    for report in latest_reports:
+                        archived_reports.append(
+                            ArchivedReport(
+                                report_id=report.report_id,
+                                report_type=report.report_type,
+                                title=report.title,
+                                generated_at=report.generated_at
+                            )
+                        )
+
+                    logger.info(
+                        f"Linked {len(report_ids)} reports to case closure",
+                        extra={"case_id": case_id, "report_count": len(report_ids)}
+                    )
+                else:
+                    logger.info(
+                        f"No reports to link for case closure",
+                        extra={"case_id": case_id}
+                    )
+
+            except Exception as e:
+                logger.warning(
+                    f"Failed to link reports to closure, continuing with case close: {e}",
+                    extra={"case_id": case_id}
+                )
+                # Continue closing case even if report linking fails
+
+        # Close case
+        closed_at = datetime.now(timezone.utc)
+        case.status = CaseStatus.CLOSED
+        await case_service.update_case_status(case_id, CaseStatus.CLOSED, current_user.user_id)
+
+        logger.info(
+            f"Case closed successfully",
+            extra={
+                "case_id": case_id,
+                "archived_report_count": len(archived_reports)
+            }
+        )
+
+        response = CaseClosureResponse(
+            case_id=case_id,
+            closed_at=to_json_compatible(closed_at),
+            archived_reports=archived_reports,
+            download_available_until=(closed_at + timedelta(days=90)).isoformat() + 'Z'
+        )
+
+        return response.dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Case closure failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

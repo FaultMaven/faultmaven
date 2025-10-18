@@ -15,7 +15,7 @@ Objectives:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from typing import List
+from typing import List, Optional
 from datetime import datetime, timedelta
 
 from faultmaven.models.investigation import (
@@ -46,6 +46,7 @@ class TimelineHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str = "",
+        context: Optional[dict] = None,
     ) -> PhaseHandlerResult:
         """Handle Phase 2: Timeline
 

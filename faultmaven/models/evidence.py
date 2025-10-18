@@ -8,7 +8,7 @@ that include acquisition guidance.
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -263,7 +263,7 @@ class EvidenceProvided(BaseModel):
         description="Unique identifier"
     )
     turn_number: int = Field(..., ge=1, description="Turn when evidence was provided")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="When evidence was provided")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="When evidence was provided")
 
     # Content
     form: EvidenceForm = Field(..., description="How evidence was submitted")

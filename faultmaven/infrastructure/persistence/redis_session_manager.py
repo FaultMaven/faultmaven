@@ -7,11 +7,13 @@ and provides session lifecycle management operations expected by the SessionServ
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from faultmaven.utils.serialization import to_json_compatible
+from faultmaven.models import parse_utc_timestamp
 from typing import Dict, List, Optional, Any
 
 from faultmaven.models.interfaces import ISessionStore
-from faultmaven.models.legacy import SessionContext
+from faultmaven.models.common import SessionContext
 
 
 class RedisSessionManager:
@@ -25,13 +27,13 @@ class RedisSessionManager:
     async def create_session(self, user_id: Optional[str] = None) -> SessionContext:
         """Create a new session"""
         session_id = str(uuid.uuid4())
-        created_at = datetime.utcnow()
+        created_at = datetime.now(timezone.utc)
 
         session_data = {
             'session_id': session_id,
             'user_id': user_id,
-            'created_at': created_at.isoformat() + 'Z',
-            'last_activity': created_at.isoformat() + 'Z',
+            'created_at': to_json_compatible(created_at),
+            'last_activity': to_json_compatible(created_at),
             'data_uploads': [],
             'case_history': [],
             'metadata': {}
@@ -58,8 +60,8 @@ class RedisSessionManager:
             return None
 
         # Convert ISO strings back to datetime
-        created_at = datetime.fromisoformat(session_data['created_at'].rstrip('Z'))
-        last_activity = datetime.fromisoformat(session_data['last_activity'].rstrip('Z'))
+        created_at = parse_utc_timestamp(session_data['created_at'])
+        last_activity = parse_utc_timestamp(session_data['last_activity'])
 
         return SessionContext(
             session_id=session_data['session_id'],
@@ -79,7 +81,7 @@ class RedisSessionManager:
 
         # Update the session data
         session_data.update(updates)
-        session_data['last_activity'] = datetime.utcnow().isoformat() + 'Z'
+        session_data['last_activity'] = to_json_compatible(datetime.now(timezone.utc))
 
         # Save back to Redis
         await self.session_store.set(session_id, session_data)
@@ -118,7 +120,7 @@ class RedisSessionManager:
         return {
             'total_sessions': 0,  # Would need Redis counters or indexing
             'active_sessions': 0,
-            'timestamp': datetime.utcnow().isoformat() + 'Z'
+            'timestamp': to_json_compatible(datetime.now(timezone.utc))
         }
 
     async def add_data_upload(self, session_id: str, data_id: str) -> bool:
@@ -131,7 +133,7 @@ class RedisSessionManager:
             session_data['data_uploads'] = []
 
         session_data['data_uploads'].append(data_id)
-        session_data['last_activity'] = datetime.utcnow().isoformat() + 'Z'
+        session_data['last_activity'] = to_json_compatible(datetime.now(timezone.utc))
 
         await self.session_store.set(session_id, session_data)
         return True
@@ -146,7 +148,7 @@ class RedisSessionManager:
             session_data['case_history'] = []
 
         session_data['case_history'].append(case_record)
-        session_data['last_activity'] = datetime.utcnow().isoformat() + 'Z'
+        session_data['last_activity'] = to_json_compatible(datetime.now(timezone.utc))
 
         await self.session_store.set(session_id, session_data)
         return True

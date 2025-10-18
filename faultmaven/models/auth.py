@@ -13,9 +13,11 @@ Key Components:
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from enum import Enum
+from faultmaven.models import parse_utc_timestamp
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class TokenStatus(Enum):
@@ -57,7 +59,7 @@ class DevUser:
             "username": self.username,
             "email": self.email,
             "display_name": self.display_name,
-            "created_at": self.created_at.isoformat(),
+            "created_at": to_json_compatible(self.created_at),
             "is_dev_user": self.is_dev_user,
             "is_active": self.is_active
         }
@@ -70,7 +72,7 @@ class DevUser:
             username=data["username"],
             email=data["email"],
             display_name=data["display_name"],
-            created_at=datetime.fromisoformat(data["created_at"]),
+            created_at=parse_utc_timestamp(data["created_at"]),
             is_dev_user=data.get("is_dev_user", True),
             is_active=data.get("is_active", True)
         )
@@ -106,9 +108,9 @@ class AuthToken:
             "token_id": self.token_id,
             "user_id": self.user_id,
             "token_hash": self.token_hash,
-            "expires_at": self.expires_at.isoformat(),
-            "created_at": self.created_at.isoformat(),
-            "last_used_at": self.last_used_at.isoformat() if self.last_used_at else None,
+            "expires_at": to_json_compatible(self.expires_at),
+            "created_at": to_json_compatible(self.created_at),
+            "last_used_at": to_json_compatible(self.last_used_at) if self.last_used_at else None,
             "is_revoked": self.is_revoked
         }
 
@@ -119,16 +121,16 @@ class AuthToken:
             token_id=data["token_id"],
             user_id=data["user_id"],
             token_hash=data["token_hash"],
-            expires_at=datetime.fromisoformat(data["expires_at"]),
-            created_at=datetime.fromisoformat(data["created_at"]),
-            last_used_at=datetime.fromisoformat(data["last_used_at"]) if data.get("last_used_at") else None,
+            expires_at=parse_utc_timestamp(data["expires_at"]),
+            created_at=parse_utc_timestamp(data["created_at"]),
+            last_used_at=parse_utc_timestamp(data["last_used_at"]) if data.get("last_used_at") else None,
             is_revoked=data.get("is_revoked", False)
         )
 
     @property
     def is_expired(self) -> bool:
         """Check if token is expired"""
-        return datetime.utcnow() > self.expires_at
+        return datetime.now(timezone.utc) > self.expires_at
 
     @property
     def is_valid(self) -> bool:

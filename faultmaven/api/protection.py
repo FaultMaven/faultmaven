@@ -11,7 +11,7 @@ This module provides a comprehensive protection system that integrates:
 import logging
 import os
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import FastAPI, APIRouter
 from faultmaven.models.interfaces import ISessionStore
 
@@ -76,7 +76,7 @@ class ProtectionSystem:
             "intelligent_protection_active": False,
             "total_requests": 0,
             "protected_requests": 0,
-            "last_update": datetime.utcnow()
+            "last_update": datetime.now(timezone.utc)
         }
 
     def _load_basic_config(self) -> ProtectionSettings:
@@ -174,7 +174,7 @@ class ProtectionSystem:
                 "Other middlewares..."
             ]
             
-            self.protection_status["last_update"] = datetime.utcnow()
+            self.protection_status["last_update"] = datetime.now(timezone.utc)
             
             self.logger.info(f"Protection system setup complete: "
                            f"Basic: {setup_results['basic_protection']['enabled']}, "
@@ -318,7 +318,7 @@ class ProtectionSystem:
         """Get comprehensive protection system status"""
         status = {
             "system": "FaultMaven Unified Protection",
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "overall_status": "active" if (
                 self.protection_status["basic_protection_active"] or 
                 self.protection_status["intelligent_protection_active"]
@@ -363,7 +363,7 @@ class ProtectionSystem:
     async def get_protection_metrics(self) -> Dict[str, Any]:
         """Get protection system metrics for monitoring"""
         metrics = {
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "basic_metrics": {},
             "intelligent_metrics": {},
             "combined_metrics": {

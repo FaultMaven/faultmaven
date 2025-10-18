@@ -16,7 +16,7 @@ Key Components:
 - Engagement Modes: Consultant vs Lead Investigator
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -339,7 +339,7 @@ class MemorySnapshot(BaseModel):
     confidence_changes: Dict[str, float] = Field(default_factory=dict)
     evidence_collected: List[str] = Field(default_factory=list, description="Evidence IDs")
     decisions_made: List[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class HierarchicalMemory(BaseModel):
@@ -403,8 +403,8 @@ class InvestigationMetadata(BaseModel):
     investigation_id: str = Field(default_factory=lambda: str(uuid4()))
     session_id: str = Field(..., description="Session this investigation belongs to")
     user_id: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     current_turn: int = Field(default=1, description="Current conversation turn")
     engagement_mode: EngagementMode = Field(default=EngagementMode.CONSULTANT)
 
@@ -527,8 +527,3 @@ class InvestigationState(BaseModel):
 
     # Problem confirmation (Phase 0)
     problem_confirmation: Optional[ProblemConfirmation] = None
-
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat() + 'Z'
-        }

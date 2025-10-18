@@ -23,7 +23,7 @@ import uuid
 import json
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 from redis import Redis
 
@@ -176,7 +176,7 @@ class DevUserStore:
 
             # Generate user data
             user_id = str(uuid.uuid4())
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             # Auto-generate display name if not provided
             if not display_name:

@@ -19,9 +19,11 @@ from fastapi import Depends, HTTPException, Request
 from ...container import container
 from ...models import SessionContext
 from ...models.interfaces_case import ICaseService
+from ...models.interfaces_report import IReportStore
 from ...models.interfaces import IJobService
 from ...services import DataService, KnowledgeService, SessionService
 from ...services.agentic.orchestration.agent_service import AgentService
+from ...services.preprocessing import PreprocessingService
 
 
 # Service Dependencies
@@ -34,6 +36,17 @@ async def get_session_service() -> SessionService:
 async def get_agent_service() -> AgentService:
     """Get AgentService instance from container"""
     return container.get_agent_service()
+
+
+async def get_preprocessing_service() -> PreprocessingService:
+    """Get PreprocessingService instance from container"""
+    preprocessing_service = container.get_preprocessing_service()
+    if preprocessing_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Preprocessing service not available"
+        )
+    return preprocessing_service
 
 
 async def get_enhanced_agent_service():
@@ -57,6 +70,15 @@ async def get_case_service() -> Optional[ICaseService]:
         return container.get_case_service()
     except Exception:
         # Case service is optional - return None if not available
+        return None
+
+
+async def get_report_store() -> Optional[IReportStore]:
+    """Get ReportStore instance from container"""
+    try:
+        return container.get_report_store()
+    except Exception:
+        # Report store is optional - return None if not available
         return None
 
 

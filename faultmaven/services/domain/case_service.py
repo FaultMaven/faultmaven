@@ -17,7 +17,7 @@ Core Responsibilities:
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from faultmaven.services.base import BaseService
@@ -35,10 +35,12 @@ from faultmaven.models.case import (
     CaseParticipant
 )
 from faultmaven.models.interfaces_case import ICaseStore, ICaseService
+from faultmaven.models.interfaces_report import IReportStore
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import ValidationException, ServiceException
 from faultmaven.models import parse_utc_timestamp
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class CaseService(BaseService, ICaseService):
@@ -48,6 +50,8 @@ class CaseService(BaseService, ICaseService):
         self,
         case_store: ICaseStore,
         session_store: Optional[ISessionStore] = None,
+        report_store: Optional[IReportStore] = None,
+        case_vector_store: Optional[Any] = None,
         settings: Optional[Any] = None,
         default_case_expiry_days: int = 30,
         max_cases_per_user: int = 100
@@ -58,6 +62,8 @@ class CaseService(BaseService, ICaseService):
         Args:
             case_store: Case persistence store interface
             session_store: Optional session store for integration
+            report_store: Optional report store for cascade deletion
+            case_vector_store: Optional case vector store for Working Memory cleanup
             settings: Configuration settings for the service
             default_case_expiry_days: Default case expiration in days
             max_cases_per_user: Maximum cases per user
@@ -65,8 +71,10 @@ class CaseService(BaseService, ICaseService):
         super().__init__("case_service")
         self.case_store = case_store
         self.session_store = session_store
+        self.case_vector_store = case_vector_store
+        self.report_store = report_store
         self._settings = settings
-        
+
         # Use settings values if available, otherwise use parameter defaults
         if settings and hasattr(settings, 'case'):
             self.default_case_expiry_days = getattr(settings.case, 'expiry_days', default_case_expiry_days)
@@ -126,7 +134,7 @@ class CaseService(BaseService, ICaseService):
                 title=title.strip(),
                 description=description.strip() if description else None,
                 owner_id=owner_id.strip() if owner_id else None,
-                expires_at=datetime.utcnow() + timedelta(days=self.default_case_expiry_days)
+                expires_at=datetime.now(timezone.utc) + timedelta(days=self.default_case_expiry_days)
             )
 
             # Add owner as participant (only if owner_id is provided)
@@ -203,16 +211,16 @@ class CaseService(BaseService, ICaseService):
                 # Update participant last accessed time
                 for participant in case.participants:
                     if participant.user_id == user_id:
-                        participant.last_accessed = datetime.utcnow()
+                        participant.last_accessed = datetime.now(timezone.utc)
                         # Update in store - serialize datetime objects properly
                         participants_data = []
                         for p in case.participants:
                             p_dict = p.dict()
                             # Convert datetime fields to ISO strings
                             if p_dict.get('added_at'):
-                                p_dict['added_at'] = p_dict['added_at'].isoformat() + 'Z' if hasattr(p_dict['added_at'], 'isoformat') else str(p_dict['added_at'])
+                                p_dict['added_at'] = to_json_compatible(p_dict['added_at']) if hasattr(p_dict['added_at'], 'isoformat') else str(p_dict['added_at'])
                             if p_dict.get('last_accessed'):
-                                p_dict['last_accessed'] = p_dict['last_accessed'].isoformat() + 'Z' if hasattr(p_dict['last_accessed'], 'isoformat') else str(p_dict['last_accessed'])
+                                p_dict['last_accessed'] = to_json_compatible(p_dict['last_accessed']) if hasattr(p_dict['last_accessed'], 'isoformat') else str(p_dict['last_accessed'])
                             participants_data.append(p_dict)
 
                         await self.case_store.update_case(case_id, {
@@ -287,7 +295,8 @@ class CaseService(BaseService, ICaseService):
                 raise ValidationException("No valid update fields provided")
 
             # Add update metadata
-            filtered_updates['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            # Don't serialize - let RedisCaseStore handle it to avoid double-serialization
+            filtered_updates['updated_at'] = datetime.now(timezone.utc)
             if user_id:
                 filtered_updates['metadata'] = {
                     **case.metadata,
@@ -353,7 +362,7 @@ class CaseService(BaseService, ICaseService):
                             {**p.dict(), "role": role.value} if p.user_id == target_user_id else p.dict()
                             for p in case.participants
                         ],
-                        "updated_at": datetime.utcnow().isoformat() + 'Z'
+                        "updated_at": datetime.now(timezone.utc)
                     })
                     if success:
                         self.logger.info(f"Updated role for user {target_user_id} in case {case_id}")
@@ -371,12 +380,12 @@ class CaseService(BaseService, ICaseService):
                 # Update case metadata
                 await self.case_store.update_case(case_id, {
                     "share_count": case.share_count + 1,
-                    "updated_at": datetime.utcnow().isoformat() + 'Z',
+                    "updated_at": datetime.now(timezone.utc),
                     "metadata": {
                         **case.metadata,
                         f"shared_with_{target_user_id}": {
                             "shared_by": sharer_user_id,
-                            "shared_at": datetime.utcnow().isoformat() + 'Z',
+                            "shared_at": datetime.now(timezone.utc),
                             "role": role.value
                         }
                     }
@@ -443,7 +452,8 @@ class CaseService(BaseService, ICaseService):
         self,
         session_id: str,
         user_id: Optional[str] = None,
-        force_new: bool = False
+        force_new: bool = False,
+        title: Optional[str] = None
     ) -> str:
         """
         Get existing case for session or create new one
@@ -452,6 +462,7 @@ class CaseService(BaseService, ICaseService):
             session_id: Session identifier
             user_id: Optional user identifier
             force_new: Force creation of new case
+            title: Optional case title (default: auto-generated)
 
         Returns:
             Case ID
@@ -473,10 +484,10 @@ class CaseService(BaseService, ICaseService):
                 except Exception as e:
                     self.logger.warning(f"Failed to get existing case for session: {e}")
 
-            # Create new case
-            title = f"Troubleshooting Session {session_id[:8]}"
+            # Create new case with provided title or auto-generate
+            case_title = title if title else f"Troubleshooting Session {session_id[:8]}"
             case = await self.create_case(
-                title=title,
+                title=case_title,
                 description="Auto-created case for troubleshooting session",
                 owner_id=user_id,
                 session_id=session_id
@@ -515,7 +526,7 @@ class CaseService(BaseService, ICaseService):
             # Session tracking removed - cases are accessed via user authentication
             # Update last activity time
             success = await self.case_store.update_case(case_id, {
-                "last_activity_at": datetime.utcnow().isoformat() + 'Z'
+                "last_activity_at": datetime.now(timezone.utc)
             })
 
             if not success:
@@ -671,7 +682,7 @@ class CaseService(BaseService, ICaseService):
             # Archive the case
             updates = {
                 "status": CaseStatus.ARCHIVED.value,
-                "updated_at": datetime.utcnow().isoformat() + 'Z',
+                "updated_at": datetime.now(timezone.utc),
                 "metadata": {}
             }
 
@@ -681,9 +692,18 @@ class CaseService(BaseService, ICaseService):
                 updates["metadata"]["archived_by"] = user_id
 
             success = await self.case_store.update_case(case_id, updates)
-            
+
             if success:
                 self.logger.info(f"Archived case {case_id}")
+
+                # Clean up Case Working Memory (delete vector store collection)
+                if self.case_vector_store:
+                    try:
+                        await self.case_vector_store.delete_case_collection(case_id)
+                        self.logger.info(f"Deleted Working Memory collection for archived case {case_id}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to delete Working Memory for case {case_id}: {e}")
+                        # Don't fail the archive operation if cleanup fails
 
             return success
 
@@ -736,19 +756,43 @@ class CaseService(BaseService, ICaseService):
                     self.logger.warning(f"User {user_id} denied delete access to case {case_id}")
                     return False
             
+            # Cascade delete reports BEFORE deleting case
+            # This ensures report cleanup happens even if case delete fails
+            if self.report_store:
+                try:
+                    await self.report_store.delete_case_reports(case_id)
+                    self.logger.info(
+                        f"Cascade deleted incident_reports and post_mortems for case {case_id} "
+                        f"(runbooks preserved independently)"
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to cascade delete reports for case {case_id}: {e}"
+                    )
+                    # Continue with case deletion even if report cleanup fails
+
             # Perform hard delete through case store
             success = await self.case_store.delete_case(case_id)
-            
+
             if success:
                 self.logger.info(f"Hard deleted case {case_id}")
-                
-                # TODO: Cascade delete associated data:
+
+                # Clean up Case Working Memory (delete vector store collection)
+                if self.case_vector_store:
+                    try:
+                        await self.case_vector_store.delete_case_collection(case_id)
+                        self.logger.info(f"Deleted Working Memory collection for deleted case {case_id}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to delete Working Memory for case {case_id}: {e}")
+                        # Don't fail the delete operation if cleanup fails
+
+                # TODO: Cascade delete other associated data:
                 # - Delete uploaded data files
                 # - Remove from search indexes
                 # - Clear cached conversation context
                 # - Remove session associations
                 # This should be implemented when full data integration is available
-                
+
             # Always return True for idempotent behavior
             # Even if delete failed, we consider it "successful" for idempotency
             return True
@@ -1060,7 +1104,7 @@ class CaseService(BaseService, ICaseService):
                 query_dict = {
                     "query_id": msg.message_id,
                     "query_text": msg.content,
-                    "timestamp": msg.timestamp.isoformat() + 'Z',
+                    "timestamp": to_json_compatible(msg.timestamp),
                     "user_id": msg.author_id,
                     "metadata": msg.metadata or {}
                 }
@@ -1192,7 +1236,7 @@ class CaseService(BaseService, ICaseService):
                         "content": msg.content,
                         "response_type": msg.metadata.get("response_type", "ANSWER"),
                         "confidence_score": msg.metadata.get("confidence_score", 0.8),
-                        "timestamp": msg.timestamp.isoformat() + 'Z',
+                        "timestamp": to_json_compatible(msg.timestamp),
                         "query_id": query_id,
                         "response_id": msg.message_id
                     }
@@ -1277,7 +1321,7 @@ class CaseService(BaseService, ICaseService):
             #     "status_code": status_code,
             #     "content": content,
             #     "headers": headers,
-            #     "timestamp": datetime.utcnow().isoformat()
+            #     "timestamp": to_json_compatible(datetime.now(timezone.utc))
             # }))
 
             return True
@@ -1353,7 +1397,7 @@ class CaseService(BaseService, ICaseService):
                     if case_msg.timestamp:
                         try:
                             if hasattr(case_msg.timestamp, 'isoformat'):
-                                created_at = case_msg.timestamp.isoformat() + 'Z'
+                                created_at = to_json_compatible(case_msg.timestamp)
                             else:
                                 created_at = str(case_msg.timestamp)
                         except Exception as e:

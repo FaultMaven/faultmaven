@@ -6,7 +6,8 @@ for rate limiting, request deduplication, and timeout management.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+from faultmaven.utils.serialization import to_json_compatible
 from enum import Enum
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field
@@ -145,7 +146,7 @@ class ProtectionError(Exception):
         self.message = message
         self.error_code = error_code
         self.correlation_id = correlation_id
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now(timezone.utc)
 
 
 class RateLimitError(ProtectionError):
@@ -217,7 +218,7 @@ class ProtectionErrorResponse:
             retry_after=error.retry_after,
             error_code=error.error_code,
             correlation_id=error.correlation_id,
-            timestamp=error.timestamp.isoformat() + 'Z',
+            timestamp=error.to_json_compatible(timestamp),
             suggestions=[
                 "Wait for the specified retry period",
                 "Reduce request frequency",
@@ -234,7 +235,7 @@ class ProtectionErrorResponse:
             retry_after=error.ttl_remaining,
             error_code=error.error_code,
             correlation_id=error.correlation_id,
-            timestamp=error.timestamp.isoformat() + 'Z',
+            timestamp=error.to_json_compatible(timestamp),
             suggestions=[
                 "Avoid sending identical requests rapidly",
                 "Check for client-side loops or bugs",
@@ -250,7 +251,7 @@ class ProtectionErrorResponse:
             message=error.message,
             error_code=error.error_code,
             correlation_id=error.correlation_id,
-            timestamp=error.timestamp.isoformat() + 'Z',
+            timestamp=error.to_json_compatible(timestamp),
             suggestions=[
                 "Simplify your query to reduce processing time",
                 "Try breaking complex requests into smaller parts",
@@ -330,4 +331,4 @@ class SystemMetrics:
     
     def __post_init__(self):
         if self.timestamp is None:
-            self.timestamp = datetime.utcnow()
+            self.timestamp = datetime.now(timezone.utc)

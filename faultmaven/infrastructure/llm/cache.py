@@ -9,7 +9,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -125,7 +125,7 @@ class SemanticCache:
             "provider": response.provider,
             "model": response.model,
             "tokens_used": response.tokens_used,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         # Store embedding if available

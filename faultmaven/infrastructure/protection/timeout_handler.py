@@ -9,7 +9,7 @@ import asyncio
 import time
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Callable, TypeVar, Coroutine
 from dataclasses import dataclass, field
 
@@ -329,7 +329,7 @@ class TimeoutHandler:
                 "elapsed": context.elapsed(),
                 "remaining": context.remaining(),
                 "timeout_duration": context.timeout_duration,
-                "start_time": datetime.fromtimestamp(context.start_time).isoformat(),
+                "start_time": datetime.fromtimestamp(context.start_time, tz=timezone.utc).isoformat(),
                 "has_parent": context.parent_context is not None
             }
         

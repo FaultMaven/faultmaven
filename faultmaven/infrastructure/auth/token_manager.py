@@ -24,7 +24,7 @@ import hashlib
 import uuid
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from redis import Redis
 
@@ -79,13 +79,13 @@ class DevTokenManager:
             token_hash = self._hash_token(token)
 
             # Create token metadata
-            expires_at = datetime.utcnow() + timedelta(seconds=self.token_expiry_seconds)
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.token_expiry_seconds)
             auth_token = AuthToken(
                 token_id=token_id,
                 user_id=user.user_id,
                 token_hash=token_hash,
                 expires_at=expires_at,
-                created_at=datetime.utcnow()
+                created_at=datetime.now(timezone.utc)
             )
 
             # Store in Redis with expiration
@@ -338,7 +338,7 @@ class DevTokenManager:
             meta_data = await self._redis_get(meta_key)
             if meta_data:
                 meta_dict = json.loads(meta_data)
-                meta_dict["last_used_at"] = datetime.utcnow().isoformat()
+                meta_dict["last_used_at"] = datetime.now(timezone.utc).isoformat()
                 await self._redis_set(meta_key, json.dumps(meta_dict), self.token_expiry_seconds)
         except Exception as e:
             logger.warning(f"Failed to update token usage: {e}")

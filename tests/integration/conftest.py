@@ -32,8 +32,11 @@ pytest_asyncio.asyncio_default_fixture_loop_scope = "function"
 pytest_asyncio.asyncio_default_test_loop_scope = "function"
 
 # Test configuration
-BASE_URL = "http://localhost:8000"
-REDIS_URL = "redis://localhost:6379"
+BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost:8000")
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
+REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
+REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}" if REDIS_PASSWORD else f"redis://{REDIS_HOST}:{REDIS_PORT}"
 TIMEOUT = 30.0  # seconds
 
 
@@ -50,8 +53,9 @@ async def http_client() -> AsyncGenerator[httpx.AsyncClient, None]:
 async def redis_client() -> AsyncGenerator[redis.Redis, None]:
     """Create a Redis client for testing."""
     client = redis.Redis(
-        host="localhost",
-        port=6379,
+        host=REDIS_HOST,
+        port=REDIS_PORT,
+        password=REDIS_PASSWORD if REDIS_PASSWORD else None,
         db=0,
         decode_responses=True,
         socket_timeout=5.0,

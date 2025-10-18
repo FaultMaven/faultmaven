@@ -12,7 +12,7 @@ Design Principles:
 - Comprehensive error handling and status tracking
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 from enum import Enum
 from pydantic import BaseModel, Field, validator
@@ -172,7 +172,7 @@ class AgentRequest(BaseModel):
     
     # Timestamps
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Request creation timestamp"
     )
     
@@ -232,7 +232,7 @@ class AgentResponse(BaseModel):
     
     # Timestamps
     started_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Execution start timestamp"
     )
     completed_at: Optional[datetime] = Field(

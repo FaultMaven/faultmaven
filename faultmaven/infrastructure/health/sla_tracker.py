@@ -7,7 +7,7 @@ with configurable thresholds and alerting capabilities.
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 import logging
 import statistics
@@ -32,7 +32,7 @@ class SLAMetrics:
     error_rate_percentage: float
     throughput_per_minute: float
     status: SLAStatus
-    last_updated: datetime = field(default_factory=datetime.utcnow)
+    last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     breaches_24h: int = 0
     time_to_recovery_minutes: Optional[float] = None
 
@@ -149,7 +149,7 @@ class SLATracker:
             timestamp: When the request occurred (defaults to now)
         """
         if timestamp is None:
-            timestamp = datetime.utcnow()
+            timestamp = datetime.now(timezone.utc)
         
         # Initialize component metrics if not exists
         if component_name not in self.component_metrics:
@@ -383,10 +383,10 @@ class SLATracker:
             self.sla_history[component_name] = []
         
         # Add new record
-        self.sla_history[component_name].append((datetime.utcnow(), metrics))
+        self.sla_history[component_name].append((datetime.now(timezone.utc), metrics))
         
         # Keep only last 7 days of history
-        cutoff_time = datetime.utcnow() - timedelta(days=7)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(days=7)
         self.sla_history[component_name] = [
             record for record in self.sla_history[component_name]
             if record[0] >= cutoff_time
@@ -398,7 +398,7 @@ class SLATracker:
             return
         
         thresholds = self.component_thresholds[component_name]
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         # Initialize active breaches for component if not exists
         if component_name not in self.active_breaches:
@@ -572,7 +572,7 @@ class SLATracker:
             }
             for breach in self.breach_history
             if breach.component_name == component_name
-            and breach.breach_start >= datetime.utcnow() - timedelta(days=7)
+            and breach.breach_start >= datetime.now(timezone.utc) - timedelta(days=7)
         ]
         
         # Get active breaches
@@ -583,7 +583,7 @@ class SLATracker:
                 "start_time": breach.breach_start.isoformat(),
                 "threshold_value": breach.threshold_value,
                 "actual_value": breach.actual_value,
-                "duration_minutes": (datetime.utcnow() - breach.breach_start).total_seconds() / 60
+                "duration_minutes": (datetime.now(timezone.utc) - breach.breach_start).total_seconds() / 60
             }
             for breach in self.active_breaches.get(component_name, [])
         ]

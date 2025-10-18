@@ -12,7 +12,7 @@ Design Principles:
 - Standardized retry and recovery guidance
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Literal
 from enum import Enum
 from pydantic import BaseModel, Field
@@ -93,7 +93,7 @@ class ServiceError(BaseModel):
     
     # Timing information
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Error occurrence timestamp"
     )
     
@@ -375,7 +375,7 @@ class ErrorResponse(BaseModel):
     # Request context
     request_id: Optional[str] = Field(default=None, description="Request identifier")
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="Response timestamp"
     )
     

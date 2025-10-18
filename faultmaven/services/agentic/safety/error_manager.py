@@ -17,7 +17,7 @@ import asyncio
 import logging
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union, Callable
 from dataclasses import dataclass, field
@@ -80,7 +80,7 @@ class ErrorContext:
     session_id: Optional[str] = None
     request_id: Optional[str] = None
     component: str = "unknown"
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     stack_trace: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -179,7 +179,7 @@ class ErrorFallbackManager(IErrorFallbackManager):
                 session_id=context.get("session_id"),
                 request_id=context.get("request_id"),
                 component=context.get("component", "unknown"),
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 stack_trace=traceback.format_exc(),
                 metadata=context.get("metadata", {})
             )
@@ -303,7 +303,7 @@ class ErrorFallbackManager(IErrorFallbackManager):
                 self.fallback_performance[strategy].append({
                     "success": True,
                     "execution_time": execution_time,
-                    "timestamp": datetime.utcnow()
+                    "timestamp": datetime.now(timezone.utc)
                 })
                 
                 return {
@@ -320,7 +320,7 @@ class ErrorFallbackManager(IErrorFallbackManager):
                     "success": False,
                     "execution_time": execution_time,
                     "error": "timeout",
-                    "timestamp": datetime.utcnow()
+                    "timestamp": datetime.now(timezone.utc)
                 })
                 
                 return {
@@ -394,7 +394,7 @@ class ErrorFallbackManager(IErrorFallbackManager):
                 error_rates=error_rates,
                 recovery_metrics=recovery_metrics,
                 recommendations=recommendations,
-                last_updated=datetime.utcnow().isoformat(),
+                last_updated=datetime.now(timezone.utc).isoformat(),
                 metadata={
                     "total_errors": self.error_metrics.total_errors,
                     "fallback_success_rate": await self._calculate_fallback_success_rate(),
@@ -413,7 +413,7 @@ class ErrorFallbackManager(IErrorFallbackManager):
                 error_rates={},
                 recovery_metrics={},
                 recommendations=[f"Health check system error: {str(e)}"],
-                last_updated=datetime.utcnow().isoformat(),
+                last_updated=datetime.now(timezone.utc).isoformat(),
                 metadata={"health_check_error": str(e)}
             )
 
@@ -489,7 +489,7 @@ class ErrorFallbackManager(IErrorFallbackManager):
         try:
             # Parse timeframe
             hours_back = self._parse_timeframe(timeframe)
-            cutoff_time = datetime.utcnow() - timedelta(hours=hours_back)
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours_back)
             
             # Filter recent errors
             recent_errors = [
@@ -681,7 +681,7 @@ class ErrorFallbackManager(IErrorFallbackManager):
         cb_state = self.circuit_breakers[service]
         cb_config = self.circuit_breaker_configs.get(service, self.circuit_breaker_configs["default"])
         
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         # Check if circuit breaker should trip
         if cb_state.state == "closed":
@@ -918,7 +918,7 @@ class ErrorFallbackManager(IErrorFallbackManager):
         performance_entry = {
             "success": result.success,
             "execution_time": execution_time,
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(timezone.utc),
             "recovery_time": result.recovery_time
         }
         
@@ -1001,7 +1001,7 @@ class ErrorFallbackManager(IErrorFallbackManager):
         base_score = fallback_success_rate
         
         # Adjust for error frequency
-        recent_error_rate = len([e for e in self.error_history[-100:] if (datetime.utcnow() - e["timestamp"]).seconds < 3600])
+        recent_error_rate = len([e for e in self.error_history[-100:] if (datetime.now(timezone.utc) - e["timestamp"]).seconds < 3600])
         error_penalty = min(0.5, recent_error_rate / 100.0)
         base_score -= error_penalty
         
@@ -1102,7 +1102,7 @@ class ErrorFallbackManager(IErrorFallbackManager):
         if not self.error_history:
             return {}
         
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         last_hour = [e for e in self.error_history if (now - e["timestamp"]).seconds < 3600]
         last_day = [e for e in self.error_history if (now - e["timestamp"]).seconds < 86400]
         
@@ -1209,7 +1209,7 @@ class ErrorFallbackManager(IErrorFallbackManager):
         
         # Group errors by hour
         hourly_counts = {}
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         for error in errors:
             hour_key = error["timestamp"].strftime("%Y-%m-%d %H:00")

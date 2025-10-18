@@ -7,7 +7,7 @@ SLA tracking and dependency relationship mapping.
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 import logging
 import asyncio
@@ -33,7 +33,7 @@ class ComponentHealth:
     sla_current: float = 100.0
     metadata: Dict[str, Any] = field(default_factory=dict)
     dependencies: List[str] = field(default_factory=list)
-    last_check: datetime = field(default_factory=datetime.utcnow)
+    last_check: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     error_count_24h: int = 0
     success_count_24h: int = 0
 
@@ -176,7 +176,7 @@ class ComponentHealthMonitor:
             component_health.status = health_result["status"]
             component_health.response_time_ms = response_time
             component_health.last_error = health_result.get("error")
-            component_health.last_check = datetime.utcnow()
+            component_health.last_check = datetime.now(timezone.utc)
             component_health.metadata.update(health_result.get("metadata", {}))
             
             # Update success/error counts
@@ -203,7 +203,7 @@ class ComponentHealthMonitor:
             component_health.status = HealthStatus.UNHEALTHY
             component_health.response_time_ms = (time.time() - start_time) * 1000
             component_health.last_error = str(e)
-            component_health.last_check = datetime.utcnow()
+            component_health.last_check = datetime.now(timezone.utc)
             component_health.error_count_24h += 1
             
             return component_health
@@ -411,7 +411,7 @@ class ComponentHealthMonitor:
                 "status": HealthStatus.HEALTHY,
                 "metadata": {
                     "type": "generic",
-                    "last_check": datetime.utcnow().isoformat()
+                    "last_check": datetime.now(timezone.utc).isoformat()
                 }
             }
         except Exception as e:
@@ -426,7 +426,7 @@ class ComponentHealthMonitor:
             return 100.0
         
         # Calculate SLA based on last 24 hours
-        cutoff_time = datetime.utcnow() - timedelta(hours=24)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
         recent_history = [
             (timestamp, status, response_time)
             for timestamp, status, response_time in self.health_history[component_name]
@@ -461,10 +461,10 @@ class ComponentHealthMonitor:
             self.health_history[component_name] = []
         
         # Add new record
-        self.health_history[component_name].append((datetime.utcnow(), status, response_time))
+        self.health_history[component_name].append((datetime.now(timezone.utc), status, response_time))
         
         # Keep only last 24 hours of history
-        cutoff_time = datetime.utcnow() - timedelta(hours=24)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
         self.health_history[component_name] = [
             record for record in self.health_history[component_name]
             if record[0] >= cutoff_time

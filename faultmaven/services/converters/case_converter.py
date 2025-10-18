@@ -7,10 +7,11 @@ and maintaining clear separation between persistence and presentation layers.
 """
 
 from typing import List, Optional, Union
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 from faultmaven.models.case import Case as CaseEntity, CaseSummary
 from faultmaven.models.api import Case as CaseAPI
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class CaseConverter:
@@ -41,8 +42,8 @@ class CaseConverter:
             description=getattr(case_entity, 'description', None),
             status=case_entity.status.value if hasattr(case_entity.status, 'value') else str(getattr(case_entity, 'status', 'active')),
             priority=case_entity.priority.value if hasattr(case_entity.priority, 'value') else str(getattr(case_entity, 'priority', 'medium')),
-            created_at=case_entity.created_at.isoformat() + 'Z' if hasattr(case_entity.created_at, 'isoformat') else str(getattr(case_entity, 'created_at', datetime.utcnow().isoformat() + 'Z')),
-            updated_at=case_entity.updated_at.isoformat() + 'Z' if hasattr(case_entity.updated_at, 'isoformat') else str(getattr(case_entity, 'updated_at', datetime.utcnow().isoformat() + 'Z')),
+            created_at=to_json_compatible(case_entity.created_at) if hasattr(case_entity.created_at, 'isoformat') else str(getattr(case_entity, 'created_at', to_json_compatible(datetime.now(timezone.utc)))),
+            updated_at=to_json_compatible(case_entity.updated_at) if hasattr(case_entity.updated_at, 'isoformat') else str(getattr(case_entity, 'updated_at', to_json_compatible(datetime.now(timezone.utc)))),
             message_count=getattr(case_entity, 'message_count', 0),
             session_id=getattr(case_entity, 'metadata', {}).get('session_id', None),  # Extract from metadata if available
             owner_id=getattr(case_entity, 'owner_id', None)  # Case owner user ID
@@ -66,8 +67,8 @@ class CaseConverter:
             description=None,  # CaseSummary doesn't have description field
             status=case_summary.status.value if hasattr(case_summary.status, 'value') else str(case_summary.status),
             priority=case_summary.priority.value if hasattr(case_summary.priority, 'value') else str(case_summary.priority),
-            created_at=case_summary.created_at.isoformat() + 'Z' if hasattr(case_summary.created_at, 'isoformat') else str(case_summary.created_at),
-            updated_at=case_summary.updated_at.isoformat() + 'Z' if hasattr(case_summary.updated_at, 'isoformat') else str(case_summary.updated_at),
+            created_at=to_json_compatible(case_summary.created_at) if hasattr(case_summary.created_at, 'isoformat') else str(case_summary.created_at),
+            updated_at=to_json_compatible(case_summary.updated_at) if hasattr(case_summary.updated_at, 'isoformat') else str(case_summary.updated_at),
             message_count=case_summary.message_count,
             session_id=None,  # Cases are not bound to sessions
             owner_id=getattr(case_summary, 'owner_id', None)  # Case owner user ID

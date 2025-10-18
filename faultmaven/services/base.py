@@ -8,7 +8,7 @@ unified logging, error handling, and operation management patterns.
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
 import asyncio
 from abc import ABC
-from datetime import datetime
+from datetime import datetime, timezone
 
 from faultmaven.infrastructure.logging.unified import get_unified_logger, UnifiedLogger
 from faultmaven.exceptions import ValidationException, FaultMavenException
@@ -164,14 +164,14 @@ class BaseService(ABC):
                         raise ValueError(f"Validation failed: {str(validation_error)}") from validation_error
                 
                 # Execute the operation function
-                ctx["execution_started"] = datetime.utcnow().isoformat()
+                ctx["execution_started"] = datetime.now(timezone.utc).isoformat()
                 
                 if asyncio.iscoroutinefunction(operation_func):
                     result = await operation_func(*args, **kwargs)
                 else:
                     result = operation_func(*args, **kwargs)
                 
-                ctx["execution_completed"] = datetime.utcnow().isoformat()
+                ctx["execution_completed"] = datetime.now(timezone.utc).isoformat()
                 
                 # Transform result if transformer provided
                 if transform_result:
@@ -382,9 +382,9 @@ class BaseService(ABC):
                         raise ValueError(f"Validation failed: {str(validation_error)}") from validation_error
                 
                 # Execute the operation function
-                ctx["execution_started"] = datetime.utcnow().isoformat()
+                ctx["execution_started"] = datetime.now(timezone.utc).isoformat()
                 result = operation_func(*args, **kwargs)
-                ctx["execution_completed"] = datetime.utcnow().isoformat()
+                ctx["execution_completed"] = datetime.now(timezone.utc).isoformat()
                 
                 # Transform result if transformer provided
                 if transform_result:
@@ -598,6 +598,6 @@ class BaseService(ABC):
         return {
             "service": self.service_name,
             "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "layer": "service"
         }

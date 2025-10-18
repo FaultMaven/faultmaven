@@ -5,7 +5,7 @@ import logging
 import pickle
 import numpy as np
 from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from collections import deque
 import json
 import os
@@ -33,7 +33,7 @@ class ModelFeedback:
         self.prediction_id = prediction_id
         self.actual_outcome = actual_outcome  # "true_positive", "false_positive", etc.
         self.confidence = confidence
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now(timezone.utc)
 
 
 class AnomalyExplanation:
@@ -157,7 +157,7 @@ class AnomalyDetectionSystem:
                 anomaly_types=anomaly_types,
                 pattern_anomalies={"overall": overall_score},
                 feature_contributions=self._calculate_feature_contributions(features),
-                detection_timestamp=datetime.utcnow(),
+                detection_timestamp=datetime.now(timezone.utc),
                 model_version="2.0",
                 model_confidence=behavior_vector.confidence,
                 detection_method="ensemble",
@@ -182,7 +182,7 @@ class AnomalyDetectionSystem:
                 session_id="error",
                 overall_score=0.0,
                 anomaly_types=[],
-                detection_timestamp=datetime.utcnow(),
+                detection_timestamp=datetime.now(timezone.utc),
                 model_version="2.0",
                 model_confidence=0.0,
                 detection_method="error_fallback"
@@ -244,7 +244,7 @@ class AnomalyDetectionSystem:
             # Save models
             await self._save_models()
             
-            self.last_training = datetime.utcnow()
+            self.last_training = datetime.now(timezone.utc)
             self.logger.info("Model training completed successfully")
             
         except Exception as e:
@@ -466,14 +466,14 @@ class AnomalyDetectionSystem:
         sample = {
             'features': feature_array,
             'anomaly_score': anomaly_score,
-            'timestamp': datetime.utcnow()
+            'timestamp': datetime.now(timezone.utc)
         }
         self.training_buffer.append(sample)
 
     async def _should_retrain(self) -> bool:
         """Determine if models should be retrained"""
         # Retrain if enough time has passed
-        if self.last_training and datetime.utcnow() - self.last_training < self.retrain_interval:
+        if self.last_training and datetime.now(timezone.utc) - self.last_training < self.retrain_interval:
             return False
         
         # Retrain if accuracy has dropped significantly

@@ -19,7 +19,9 @@ Architecture Integration:
 import json
 import logging
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
+from faultmaven.utils.serialization import to_json_compatible
+from faultmaven.models import parse_utc_timestamp
 from typing import Optional, Dict, Any, List
 from uuid import uuid4
 from enum import Enum
@@ -66,8 +68,8 @@ class JobService(IJobService):
             "progress": 0,
             "result": None,
             "error": None,
-            "created_at": datetime.utcnow().isoformat() + "Z",
-            "updated_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": to_json_compatible(datetime.now(timezone.utc)),
+            "updated_at": to_json_compatible(datetime.now(timezone.utc)),
             "ttl_seconds": ttl_seconds or self.default_ttl
         }
         
@@ -139,7 +141,7 @@ class JobService(IJobService):
             
             # Update fields
             job_data["status"] = status.value
-            job_data["updated_at"] = datetime.utcnow().isoformat() + "Z"
+            job_data["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
             
             if progress is not None:
                 job_data["progress"] = progress
@@ -206,7 +208,7 @@ class JobService(IJobService):
             
             # Check for jobs that should be cleaned up manually (completed > 1 hour ago)
             cleaned_count = 0
-            cutoff_time = datetime.utcnow() - timedelta(hours=1)
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=1)
             
             for key in job_keys[:batch_size]:  # Process in batches
                 try:
@@ -214,8 +216,7 @@ class JobService(IJobService):
                     if job_data_str:
                         job_data = json.loads(job_data_str)
                         status = job_data.get("status")
-                        updated_at = datetime.fromisoformat(
-                            job_data.get("updated_at", "").replace("Z", "")
+                        updated_at = parse_utc_timestamp( job_data.get("updated_at", "").replace("Z", "")
                         )
                         
                         # Clean up completed/failed jobs older than 1 hour

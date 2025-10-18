@@ -17,7 +17,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union, Tuple
 from dataclasses import dataclass
 from enum import Enum
@@ -31,6 +31,7 @@ from faultmaven.models.agentic import (
     PresentationFormat,
     SynthesisMetadata
 )
+from faultmaven.utils.serialization import to_json_compatible
 
 
 logger = logging.getLogger(__name__)
@@ -145,7 +146,7 @@ class ResponseSynthesizer(IResponseSynthesizer):
         Returns:
             SynthesisResult with synthesized content and metadata
         """
-        synthesis_start = datetime.utcnow()
+        synthesis_start = datetime.now(timezone.utc)
         self.metrics["total_syntheses"] += 1
         
         try:
@@ -214,7 +215,7 @@ class ResponseSynthesizer(IResponseSynthesizer):
             )
             
             # Update metrics
-            synthesis_time = (datetime.utcnow() - synthesis_start).total_seconds()
+            synthesis_time = (datetime.now(timezone.utc) - synthesis_start).total_seconds()
             result.synthesis_time = synthesis_time
             
             self._update_metrics(result, synthesis_time, context)
@@ -227,7 +228,7 @@ class ResponseSynthesizer(IResponseSynthesizer):
             logger.error(f"Error in response synthesis: {str(e)}")
             
             # Return error response
-            error_time = (datetime.utcnow() - synthesis_start).total_seconds()
+            error_time = (datetime.now(timezone.utc) - synthesis_start).total_seconds()
             return SynthesisResult(
                 content=f"I apologize, but I encountered an error while preparing your response: {str(e)}",
                 format="text",
@@ -348,7 +349,7 @@ class ResponseSynthesizer(IResponseSynthesizer):
                 variables=variables,
                 content_blocks=content_blocks,
                 metadata=metadata,
-                created_at=datetime.utcnow().isoformat(),
+                created_at=to_json_compatible(datetime.now(timezone.utc)),
                 usage_count=0,
                 performance_metrics={}
             )
@@ -844,7 +845,7 @@ class ResponseSynthesizer(IResponseSynthesizer):
             return json.dumps({
                 "content": content,
                 "format": "text",
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": to_json_compatible(datetime.now(timezone.utc))
             }, indent=2)
 
     async def _format_as_html(self, content: str, context: Dict[str, Any]) -> str:
@@ -870,7 +871,7 @@ class ResponseSynthesizer(IResponseSynthesizer):
         return f"""content: |
   {content.replace(chr(10), chr(10) + '  ')}
 format: yaml
-timestamp: {datetime.utcnow().isoformat()}"""
+timestamp: {to_json_compatible(datetime.now(timezone.utc))}"""
 
     async def _format_as_csv(self, content: str, context: Dict[str, Any]) -> str:
         """Format content as CSV (basic implementation)."""

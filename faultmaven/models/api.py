@@ -3,7 +3,8 @@
 from pydantic import BaseModel, Field, model_validator, field_validator
 from typing import List, Optional, Dict, Any, Literal, TYPE_CHECKING
 from enum import Enum
-import datetime
+from datetime import datetime, timezone
+from faultmaven.utils.serialization import to_json_compatible
 
 # Import for type annotations (avoid circular imports)
 if TYPE_CHECKING:
@@ -48,13 +49,17 @@ class SourceType(str, Enum):
     USER_PROVIDED = "user_provided"
 
 class DataType(str, Enum):
-    """Defines the type of data uploaded by users."""
-    LOG_FILE = "log_file"
-    CONFIG_FILE = "config_file"
-    ERROR_REPORT = "error_report"
-    DOCUMENTATION = "documentation"
-    SCREENSHOT = "screenshot"
-    OTHER = "other"
+    """7 purpose-driven data classifications for preprocessing pipeline."""
+    # Processable types (6)
+    LOGS_AND_ERRORS = "logs_and_errors"
+    UNSTRUCTURED_TEXT = "unstructured_text"
+    STRUCTURED_CONFIG = "structured_config"
+    METRICS_AND_PERFORMANCE = "metrics_and_performance"
+    SOURCE_CODE = "source_code"
+    VISUAL_EVIDENCE = "visual_evidence"
+
+    # Reference-only type (1)
+    UNANALYZABLE = "unanalyzable"
 
 class ProcessingStatus(str, Enum):
     """Defines the status of data processing operations."""
@@ -112,7 +117,7 @@ class ViewState(BaseModel):
     Comprehensive view state representing the complete frontend rendering state.
     This is the single source of truth for what the frontend should display.
     """
-    session_id: str
+    session_id: str  # Current authentication session
     user: "User"  # User context for authentication
     active_case: Optional["Case"] = None  # Currently active case
     cases: List["Case"] = Field(default_factory=list)  # All user's cases
@@ -136,11 +141,11 @@ class QueryRequest(BaseModel):
     """The JSON payload sent from the frontend when the user asks a question.
     Note: case_id is provided in the URL path, not in the request body.
     """
-    session_id: str
+    session_id: str  # For authentication context
     query: str
     context: Optional[Dict[str, Any]] = None
     priority: Literal["low", "normal", "medium", "high", "critical"] = "normal"
-    timestamp: str = Field(default_factory=lambda: datetime.datetime.utcnow().isoformat() + 'Z')
+    timestamp: str = Field(default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)))
 
 class AgentResponse(BaseModel):
     """The single, unified JSON payload returned from the backend (v3.1.0 - Evidence-Centric)."""
@@ -149,7 +154,7 @@ class AgentResponse(BaseModel):
     schema_version: str = Field(default="3.1.0")
     content: str
     response_type: ResponseType
-    session_id: str
+    session_id: str  # Current authentication session
     case_id: Optional[str] = None
     confidence_score: Optional[float] = None
     sources: List[Source] = Field(default_factory=list)
@@ -253,8 +258,8 @@ class Case(BaseModel):
     description: Optional[str] = None
     status: Literal["active", "resolved", "archived"] = "active"  # Match frontend expectations
     priority: Literal["low", "medium", "high", "critical"] = "medium"
-    created_at: str = Field(default_factory=lambda: datetime.datetime.utcnow().isoformat() + 'Z')
-    updated_at: str = Field(default_factory=lambda: datetime.datetime.utcnow().isoformat() + 'Z')
+    created_at: str = Field(default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)))
+    updated_at: str = Field(default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)))
     message_count: int = 0
     session_id: Optional[str] = None  # Session linkage for frontend
     owner_id: Optional[str] = None  # Case owner user ID
@@ -289,7 +294,7 @@ class User(BaseModel):
     user_id: str
     email: str
     name: str
-    created_at: str = Field(default_factory=lambda: datetime.datetime.utcnow().isoformat() + 'Z')
+    created_at: str = Field(default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)))
     last_login: Optional[str] = None
 
 class DevLoginRequest(BaseModel):
@@ -309,12 +314,30 @@ class DataUploadRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None
 
 class DataUploadResponse(BaseModel):
-    """Response payload for data upload."""
+    """Response payload for data upload with AI analysis."""
     schema_version: Literal["3.1.0"] = "3.1.0"
     data_id: str
+    case_id: str = Field(..., description="Actual case ID (may differ from optimistic ID in request)")
+    filename: str = Field(..., description="Uploaded filename")
+    file_size: int = Field(..., description="File size in bytes")
+    data_type: str = Field(..., description="Classified data type")
     processing_status: ProcessingStatus
-    classification: Optional[Dict[str, Any]] = None
-    view_state: ViewState
+    uploaded_at: str = Field(..., description="Upload timestamp (ISO 8601)")
+
+    # NEW: AI analysis response
+    agent_response: Optional["AgentResponse"] = Field(
+        None,
+        description="Conversational AI analysis of the uploaded data"
+    )
+
+    # Classification metadata
+    classification: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Classification confidence and metadata"
+    )
+
+    # Legacy field for backward compatibility
+    view_state: Optional[ViewState] = None
 
 # --- API Compliance Response Models ---
 
@@ -356,7 +379,7 @@ class QueryJobStatus(BaseModel):
     status: Literal["pending", "processing", "running", "completed", "failed", "cancelled"]
     progress_percentage: Optional[int] = Field(None, ge=0, le=100, description="Processing progress percentage")
     started_at: Optional[str] = Field(None, description="Job start time (UTC ISO 8601)")
-    last_updated_at: str = Field(default_factory=lambda: datetime.datetime.utcnow().isoformat() + 'Z')
+    last_updated_at: str = Field(default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)))
     error: Optional[Dict[str, Any]] = Field(None, description="Error details if status is failed")
     result: Optional[AgentResponse] = Field(None, description="Final result if completed")
 
@@ -366,7 +389,7 @@ class CaseQuerySummary(BaseModel):
     case_id: str
     status: Literal["pending", "processing", "running", "completed", "failed", "cancelled"]
     created_at: str
-    last_updated_at: str = Field(default_factory=lambda: datetime.datetime.utcnow().isoformat() + 'Z')
+    last_updated_at: str = Field(default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)))
 
 class CaseSummary(BaseModel):
     """Summary information for cases (used in listings)."""
@@ -426,3 +449,156 @@ class SimpleAgentResponse(BaseModel):
     confidence_score: Optional[float] = None
     sources: List[Dict[str, Any]] = Field(default_factory=list)
     next_action_hint: Optional[str] = None
+
+
+# --- Data Preprocessing Models ---
+
+class SourceMetadata(BaseModel):
+    """
+    Metadata about where the data originated
+
+    Used to enhance preprocessing and LLM prompts with context
+    about the data source (e.g., "the status page you captured from...")
+    """
+    source_type: Literal["file_upload", "text_paste", "page_capture"]
+    source_url: Optional[str] = Field(
+        None,
+        description="URL if from page capture"
+    )
+    captured_at: Optional[str] = Field(
+        None,
+        description="ISO 8601 timestamp if from page capture"
+    )
+    user_description: Optional[str] = Field(
+        None,
+        description="User's description of the data"
+    )
+
+
+class ClassificationResult(BaseModel):
+    """
+    Result of data type classification
+
+    Used by the classification service to return classification decision
+    with confidence scoring and metadata about how the classification was made.
+    """
+    data_type: DataType = Field(..., description="Classified data type")
+    confidence: float = Field(
+        ...,
+        description="Classification confidence score (0.0-1.0)",
+        ge=0.0,
+        le=1.0
+    )
+    source: Literal["user_override", "agent_hint", "browser_context", "rule_based"] = Field(
+        ...,
+        description="How the classification was determined"
+    )
+    classification_failed: bool = Field(
+        default=False,
+        description="True if confidence below threshold, triggers user fallback modal"
+    )
+    suggested_types: Optional[List[DataType]] = Field(
+        None,
+        description="Suggested data types for ambiguous cases (user fallback)"
+    )
+
+
+class ExtractionMetadata(BaseModel):
+    """
+    Metadata about the extraction process
+
+    Tracks how data was extracted, which strategy was used,
+    and performance metrics for the extraction operation.
+    """
+    data_type: DataType = Field(..., description="Data type being extracted")
+    extraction_strategy: Literal["crime_scene", "map_reduce", "direct", "vision", "statistical", "ast_parse", "none", "classification_failed"] = Field(
+        ...,
+        description="Strategy used for extraction"
+    )
+    llm_calls_used: int = Field(
+        ...,
+        description="Number of LLM calls used during extraction",
+        ge=0
+    )
+    confidence: float = Field(
+        ...,
+        description="Classification confidence (from ClassificationResult)",
+        ge=0.0,
+        le=1.0
+    )
+    source: str = Field(
+        ...,
+        description="Classification source (from ClassificationResult)"
+    )
+    processing_time_ms: float = Field(
+        ...,
+        description="Time taken for extraction in milliseconds",
+        ge=0.0
+    )
+
+
+class PreprocessedData(BaseModel):
+    """
+    Output from preprocessing pipeline - LLM-ready format
+
+    This is the bridge between raw uploaded data and LLM analysis.
+    The 'content' field contains the extracted, formatted representation
+    of the original data, optimized for LLM context consumption.
+    """
+    # LLM-ready content (KEY OUTPUT)
+    content: str = Field(
+        ...,
+        description="Extracted/formatted content ready for LLM analysis",
+        max_length=200000  # Safety limit - supports up to ~50K tokens for Claude/GPT-4
+    )
+
+    # Extraction metadata
+    metadata: ExtractionMetadata = Field(
+        ...,
+        description="Metadata about extraction process"
+    )
+
+    # Size metrics
+    original_size: int = Field(..., description="Original content size in bytes")
+    processed_size: int = Field(..., description="Processed content size in characters")
+
+    # Security flags
+    security_flags: List[str] = Field(
+        default_factory=list,
+        description="Security issues detected (pii_detected, secrets_found, etc.)"
+    )
+
+    # Source information (optional)
+    source_metadata: Optional[SourceMetadata] = Field(
+        None,
+        description="Metadata about data source (file, text paste, page capture)"
+    )
+
+    # Structured insights (optional) - for advanced features like timeline extraction
+    insights: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Structured insights extracted during preprocessing (errors, anomalies, metrics, etc.)"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "content": "[ERROR] Connection timeout...\n[CRITICAL] Database failed...",
+                "metadata": {
+                    "data_type": "logs_and_errors",
+                    "extraction_strategy": "crime_scene",
+                    "llm_calls_used": 0,
+                    "confidence": 0.98,
+                    "source": "rule_based",
+                    "processing_time_ms": 45.2
+                },
+                "original_size": 45000,
+                "processed_size": 7800,
+                "security_flags": ["api_key_detected"],
+                "source_metadata": {"source_type": "file_upload"},
+                "insights": {
+                    "top_errors": [{"message": "Connection timeout", "count": 15}],
+                    "anomalies": ["Spike in error rate at 14:32"]
+                }
+            }
+        }

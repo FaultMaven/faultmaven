@@ -117,7 +117,7 @@ def auth_headers():
 
 class TestCaseCreation:
     """Test case creation API endpoint"""
-    
+
     @patch('faultmaven.api.v1.dependencies.get_case_service')
     @patch('faultmaven.api.v1.dependencies.get_user_id')
     def test_create_case_success(self, mock_get_user_id, mock_get_case_service, client, mock_case_service):

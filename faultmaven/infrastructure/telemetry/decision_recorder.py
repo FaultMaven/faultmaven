@@ -23,7 +23,7 @@ Implementation Notes:
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
 from threading import RLock
@@ -205,8 +205,8 @@ class DecisionRecorder:
                 final_response=final_response,
                 status=status,
                 errors=errors or [],
-                started_at=datetime.utcnow(),
-                completed_at=datetime.utcnow() if status == "completed" else None
+                started_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(timezone.utc) if status == "completed" else None
             )
             
             # Store record
@@ -222,7 +222,7 @@ class DecisionRecorder:
                 self._batch_queue.append({
                     'record': decision_record,
                     'correlation_id': correlation_id,
-                    'created_at': datetime.utcnow()
+                    'created_at': datetime.now(timezone.utc)
                 })
             
             # Track correlation ID
@@ -230,7 +230,7 @@ class DecisionRecorder:
                 'session_id': session_id,
                 'turn_id': turn_id,
                 'record_id': record_id,
-                'created_at': datetime.utcnow()
+                'created_at': datetime.now(timezone.utc)
             })
             
             # Emit structured log
@@ -476,7 +476,7 @@ class DecisionRecorder:
 
     async def _cleanup_expired_records(self):
         """Clean up expired decision records"""
-        cutoff_time = datetime.utcnow() - self._retention_period
+        cutoff_time = datetime.now(timezone.utc) - self._retention_period
         
         with self._storage_lock:
             # Find expired records
@@ -499,7 +499,7 @@ class DecisionRecorder:
             # Cleanup expired correlations
             expired_correlations = []
             for corr_id, metadata in self._active_correlations.items():
-                if metadata.get('created_at', datetime.utcnow()) < cutoff_time:
+                if metadata.get('created_at', datetime.now(timezone.utc)) < cutoff_time:
                     expired_correlations.append(corr_id)
             
             for corr_id in expired_correlations:
@@ -620,7 +620,7 @@ class DecisionRecorder:
                                        self._metrics['records_created']) * 100
             
             return {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "service": "decision_recorder",
                 "records": {
                     "created": self._metrics['records_created'],
@@ -689,7 +689,7 @@ class DecisionRecorder:
             return {
                 "service": "decision_recorder",
                 "status": status,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "version": "1.0.0",
                 "metrics": {
                     "records_created": self._metrics['records_created'],
@@ -710,7 +710,7 @@ class DecisionRecorder:
             return {
                 "service": "decision_recorder",
                 "status": "unhealthy", 
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": str(e)
             }
 

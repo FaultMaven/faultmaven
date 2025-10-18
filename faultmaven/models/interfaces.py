@@ -1132,8 +1132,8 @@ class IDataClassifier(ABC):
         Returns:
             DataType enum value representing the classified type.
             Common return values:
-            - DataType.LOG_FILE: Application or system logs
-            - DataType.CONFIG_FILE: Configuration files
+            - DataType.LOGS_AND_ERRORS: Application or system logs
+            - DataType.STRUCTURED_CONFIG: Configuration files
             - DataType.CODE_FILE: Source code files
             - DataType.DATA_FILE: Structured data files
             - DataType.UNKNOWN: Unrecognizable content
@@ -1148,14 +1148,14 @@ class IDataClassifier(ABC):
             >>> content = "2025-01-15 10:30:00 [ERROR] Database connection failed"
             >>> data_type = await classifier.classify(content, "app.log")
             >>> data_type
-            DataType.LOG_FILE
+            DataType.LOGS_AND_ERRORS
             
             Configuration file classification:
             
             >>> content = '{"database": {"host": "localhost", "port": 5432}}'
             >>> data_type = await classifier.classify(content, "config.json")
             >>> data_type
-            DataType.CONFIG_FILE
+            DataType.STRUCTURED_CONFIG
             
             Content-based classification without filename:
             
@@ -1207,7 +1207,7 @@ class ILogProcessor(ABC):
                      be converted to text representation before processing.
             data_type: Optional data type hint for processing optimization.
                        If provided, enables type-specific parsing rules.
-                       Examples: DataType.LOG_FILE, DataType.CONFIG_FILE
+                       Examples: DataType.LOGS_AND_ERRORS, DataType.STRUCTURED_CONFIG
                        
         Returns:
             Dictionary containing extracted insights and metadata:
@@ -1263,7 +1263,7 @@ class ILogProcessor(ABC):
             2025-01-15 10:30:16 [ERROR] Database connection failed: timeout
             2025-01-15 10:30:30 [WARN] Retrying database connection
             '''
-            >>> result = await processor.process(log_content, DataType.LOG_FILE)
+            >>> result = await processor.process(log_content, DataType.LOGS_AND_ERRORS)
             >>> result['summary']['error_count']
             2
             >>> result['errors'][0]['category']
@@ -2395,15 +2395,83 @@ class IJobService(ABC):
     async def update_job_status(self, job_id: str, status: str, progress: Optional[int] = None,
                                result: Optional[Dict[str, Any]] = None, error: Optional[str] = None) -> bool:
         """Update job status and metadata.
-        
+
         Args:
             job_id: Job identifier to update
             status: New status (pending, running, completed, failed, cancelled)
             progress: Completion percentage (0-100)
             result: Final result data for completed jobs
             error: Error message for failed jobs
-            
+
         Returns:
             True if update successful, False if job not found
+        """
+        pass
+
+
+# --- Data Preprocessing Interfaces ---
+
+class IPreprocessor(ABC):
+    """
+    Interface for data type-specific preprocessors
+
+    Preprocessors transform raw uploaded data into LLM-ready summaries.
+    Each data type (LOG_FILE, ERROR_REPORT, CONFIG_FILE, etc.) has its
+    own preprocessor that understands the structure and extracts key information.
+
+    Design Principles:
+        - Self-contained: Parse + Analyze + Format in one place
+        - LLM-optimized: Generate plain text summaries (5-8K chars)
+        - Domain-specific: Leverage knowledge of data type structure
+        - Security-aware: Detect PII and secrets during processing
+    """
+
+    @abstractmethod
+    async def process(
+        self,
+        content: str,
+        filename: str,
+        source_metadata: Optional["SourceMetadata"] = None
+    ) -> "PreprocessedData":
+        """
+        Process raw content into LLM-ready summary
+
+        This method performs the complete preprocessing pipeline:
+        1. Parse the raw content structure
+        2. Extract key information and insights
+        3. Detect security issues (PII, secrets)
+        4. Format into plain text summary (~8K chars max)
+        5. Return PreprocessedData with summary field
+
+        Args:
+            content: Raw file content as string
+            filename: Original filename for context
+            source_metadata: Optional metadata about data source
+
+        Returns:
+            PreprocessedData with LLM-ready summary and metadata
+
+        Raises:
+            ValidationException: When content format is invalid
+            ProcessingException: When preprocessing fails
+
+        Example:
+            >>> preprocessor = LogPreprocessor()
+            >>> result = await preprocessor.process(
+                    content=log_content,
+                    filename="application.log",
+                    source_metadata=None
+                )
+            >>> print(result.summary[:200])  # First 200 chars of summary
+            LOG FILE ANALYSIS SUMMARY
+
+            OVERVIEW:
+            Total entries: 45,234
+            Time range: 2025-10-12 14:20:15 to 2025-10-12 16:45:32
+            ...
+
+        Note:
+            Summary should be plain text, human-readable, structured
+            with clear section headers, and limited to ~8,000 characters.
         """
         pass

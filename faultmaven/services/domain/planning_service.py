@@ -5,12 +5,14 @@ creating execution plans, strategies, and coordinating multi-step workflows.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import json
 import uuid
+
+from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +101,8 @@ class PlanningService:
                 plan_type=plan_type,
                 status=PlanStatus.DRAFT,
                 steps=steps,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
                 metadata={
                     "session_id": session_id,
                     "original_query": query,
@@ -151,8 +153,8 @@ class PlanningService:
                         "status": plan.status.value,
                         "steps_count": len(plan.steps),
                         "estimated_duration": plan.estimated_total_duration,
-                        "created_at": plan.created_at.isoformat() + 'Z',
-                        "updated_at": plan.updated_at.isoformat() + 'Z'
+                        "created_at": to_json_compatible(plan.created_at),
+                        "updated_at": to_json_compatible(plan.updated_at)
                     })
             
             # Find the most recent active plan
@@ -168,7 +170,7 @@ class PlanningService:
                 "active_plan": active_plan,
                 "all_plans": plans[-5:],  # Last 5 plans
                 "planning_capability": "enabled",
-                "last_updated": datetime.utcnow().isoformat() + 'Z'
+                "last_updated": to_json_compatible(datetime.now(timezone.utc))
             }
             
             return planning_state
@@ -221,7 +223,7 @@ class PlanningService:
                         if "metadata" in step_updates[step.id]:
                             step.metadata.update(step_updates[step.id]["metadata"])
             
-            plan.updated_at = datetime.utcnow()
+            plan.updated_at = datetime.now(timezone.utc)
             
             logger.debug(f"Updated execution plan {plan_id}")
             return True
@@ -251,8 +253,8 @@ class PlanningService:
                 "description": plan.description,
                 "type": plan.plan_type.value,
                 "status": plan.status.value,
-                "created_at": plan.created_at.isoformat() + 'Z',
-                "updated_at": plan.updated_at.isoformat() + 'Z',
+                "created_at": to_json_compatible(plan.created_at),
+                "updated_at": to_json_compatible(plan.updated_at),
                 "estimated_total_duration": plan.estimated_total_duration,
                 "metadata": plan.metadata,
                 "steps": [

@@ -104,8 +104,14 @@ class CommandValidation(BaseModel):
     )
 
 
-class EvidenceRequest(BaseModel):
-    """Structured evidence request for Lead Investigator mode"""
+class OODAEvidenceRequest(BaseModel):
+    """OODA-internal evidence request structure (LLM output format)
+
+    NOTE: This is the OODA framework's internal representation.
+    For API/frontend use, see faultmaven.models.evidence.EvidenceRequest
+    This model exists solely for parsing LLM responses and is converted
+    to the canonical EvidenceRequest by ooda_response_converter.py
+    """
 
     evidence_type: Literal[
         "scope",
@@ -329,8 +335,8 @@ class LeadInvestigatorResponse(OODAResponse):
     """
 
     # EVIDENCE REQUEST
-    evidence_request: Optional[EvidenceRequest] = Field(
-        None, description="Structured evidence request"
+    evidence_request: Optional[OODAEvidenceRequest] = Field(
+        None, description="Structured evidence request (OODA internal format)"
     )
 
     # PHASE CONTROL

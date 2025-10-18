@@ -20,7 +20,7 @@ Architecture Integration:
 
 import logging
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -261,7 +261,7 @@ async def get_job_service_health(
             return {
                 "service": "job_management",
                 "status": "unavailable",
-                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "message": "Job service not configured"
             }
         
@@ -270,7 +270,7 @@ async def get_job_service_health(
         return {
             "service": "job_management", 
             "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "features": {
                 "job_creation": True,
                 "job_tracking": True,
@@ -284,6 +284,6 @@ async def get_job_service_health(
         return {
             "service": "job_management",
             "status": "unhealthy", 
-            "timestamp": datetime.utcnow().isoformat() + 'Z',
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "error": str(e)
         }

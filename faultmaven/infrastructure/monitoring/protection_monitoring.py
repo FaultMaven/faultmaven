@@ -3,7 +3,8 @@
 import asyncio
 import logging
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
+from faultmaven.utils.serialization import to_json_compatible
 from typing import Dict, List, Any, Optional
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -76,7 +77,7 @@ class MetricsCollector:
                      metadata: Optional[Dict[str, Any]] = None):
         """Record a metric value"""
         if timestamp is None:
-            timestamp = datetime.utcnow()
+            timestamp = datetime.now(timezone.utc)
         
         metric_point = {
             "value": value,
@@ -95,7 +96,7 @@ class MetricsCollector:
         if not window_duration:
             return None
         
-        cutoff_time = datetime.utcnow() - window_duration
+        cutoff_time = datetime.now(timezone.utc) - window_duration
         recent_points = [
             point for point in self.metrics_data[metric]
             if point["timestamp"] > cutoff_time
@@ -117,7 +118,7 @@ class MetricsCollector:
         if not window_duration:
             return None
         
-        cutoff_time = datetime.utcnow() - window_duration
+        cutoff_time = datetime.now(timezone.utc) - window_duration
         recent_points = [
             point["value"] for point in self.metrics_data[metric]
             if point["timestamp"] > cutoff_time
@@ -209,12 +210,12 @@ class AlertManager:
                     
                     # Create alert
                     alert = AlertEvent(
-                        alert_id=f"{threshold.metric}_{int(datetime.utcnow().timestamp())}",
+                        alert_id=f"{threshold.metric}_{int(datetime.now(timezone.utc).timestamp())}",
                         metric=threshold.metric,
                         current_value=current_value,
                         threshold=threshold.threshold,
                         severity=threshold.severity,
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(timezone.utc),
                         description=f"{threshold.metric} is {current_value} (threshold: {threshold.threshold})",
                         metadata={
                             "comparison": threshold.comparison,
@@ -227,7 +228,7 @@ class AlertManager:
                     self.alert_history.append(alert)
                     
                     # Set cooldown
-                    self.alert_cooldowns[threshold.metric] = datetime.utcnow()
+                    self.alert_cooldowns[threshold.metric] = datetime.now(timezone.utc)
                     
                     self.logger.warning(f"Alert triggered: {alert.description}")
                 
@@ -246,7 +247,7 @@ class AlertManager:
             return False
         
         cooldown_end = self.alert_cooldowns[metric] + self.cooldown_duration
-        return datetime.utcnow() < cooldown_end
+        return datetime.now(timezone.utc) < cooldown_end
     
     async def _resolve_alerts_for_metric(self, metric: str):
         """Resolve active alerts for a metric when conditions are normal"""
@@ -271,7 +272,7 @@ class AlertManager:
             "total_active": len(active_alerts),
             "severity_breakdown": dict(severity_counts),
             "recent_alerts": len([a for a in self.alert_history if 
-                                (datetime.utcnow() - a.timestamp) < timedelta(hours=1)]),
+                                (datetime.now(timezone.utc) - a.timestamp) < timedelta(hours=1)]),
             "oldest_active": min([a.timestamp for a in active_alerts]) if active_alerts else None
         }
 
@@ -320,7 +321,7 @@ class ProtectionMonitor:
         """Main monitoring loop"""
         while not self._shutdown_event.is_set():
             try:
-                start_time = datetime.utcnow()
+                start_time = datetime.now(timezone.utc)
                 
                 # Check alerts
                 new_alerts = await self.alert_manager.check_alerts()
@@ -331,7 +332,7 @@ class ProtectionMonitor:
                 
                 # Update monitoring metrics
                 self.last_monitoring_run = start_time
-                processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+                processing_time = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
                 self.metrics_collector.record_metric("monitoring.processing_time", processing_time)
                 
                 # Wait for next interval
@@ -366,7 +367,7 @@ class ProtectionMonitor:
     
     async def record_protection_event(self, event_type: str, metadata: Dict[str, Any]):
         """Record a protection-related event"""
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc)
         
         # Record basic metrics
         if event_type == "request_analyzed":
@@ -413,10 +414,10 @@ class ProtectionMonitor:
         """Get comprehensive monitoring dashboard data"""
         try:
             dashboard = {
-                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "monitoring_status": {
                     "active": self._monitoring_task and not self._monitoring_task.done(),
-                    "last_run": self.last_monitoring_run.isoformat() + 'Z' if self.last_monitoring_run else None,
+                    "last_run": self.to_json_compatible(last_monitoring_run) if self.last_monitoring_run else None,
                     "errors": self.monitoring_errors
                 },
                 "alerts": {
@@ -441,7 +442,7 @@ class ProtectionMonitor:
             
         except Exception as e:
             self.logger.error(f"Error generating monitoring dashboard: {e}")
-            return {"error": str(e), "timestamp": datetime.utcnow().isoformat() + 'Z'}
+            return {"error": str(e), "timestamp": to_json_compatible(datetime.now(timezone.utc))}
     
     async def _calculate_trends(self) -> Dict[str, str]:
         """Calculate trend directions for key metrics"""

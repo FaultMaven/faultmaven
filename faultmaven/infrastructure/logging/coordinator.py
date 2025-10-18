@@ -8,7 +8,7 @@ prevention, and performance tracking across application layers.
 from contextvars import ContextVar
 from typing import Dict, Any, Optional, Set, List, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 import uuid
 import logging
 import os
@@ -42,7 +42,7 @@ class RequestContext:
     user_id: Optional[str] = None
     case_id: Optional[str] = None
     agent_phase: Optional[str] = None
-    start_time: datetime = field(default_factory=datetime.utcnow)
+    start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     attributes: Dict[str, Any] = field(default_factory=dict)
     logged_operations: Set[str] = field(default_factory=set)
     error_context: Optional['ErrorContext'] = None
@@ -206,7 +206,7 @@ class ErrorContext:
             severity: Severity level of the error
             metadata: Additional context about the error
         """
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         # Store error in layer errors - format expected by tests
         if layer not in self.layer_errors:
@@ -299,7 +299,7 @@ class ErrorContext:
         if len(self.error_timeline) < 3:
             return
             
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         # Pattern 1: Recurring errors (same error type repeating)
         self._detect_recurring_pattern()
@@ -370,7 +370,7 @@ class ErrorContext:
             
             if is_cascade:
                 pattern = ErrorPattern(
-                    pattern_id=f"cascade_{datetime.utcnow().timestamp()}",
+                    pattern_id=f"cascade_{datetime.now(timezone.utc).timestamp()}",
                     pattern_type="cascade",
                     first_occurrence=cascade_sequence[0][1],
                     last_occurrence=cascade_sequence[-1][1],
@@ -417,7 +417,7 @@ class ErrorContext:
             return
             
         # Check if error rate is increasing over time
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         # Split recent errors into two time windows
         window_size = timedelta(minutes=5)
@@ -456,7 +456,7 @@ class ErrorContext:
         # Don't attempt if too many recent attempts
         recent_attempts = [
             action for action in self.recovery_actions
-            if (datetime.utcnow() - action.attempted_at).total_seconds() < 300  # 5 minutes
+            if (datetime.now(timezone.utc) - action.attempted_at).total_seconds() < 300  # 5 minutes
         ]
         
         return len(recent_attempts) < 3
@@ -469,11 +469,11 @@ class ErrorContext:
         config = self.layer_configs[layer]
         
         for strategy in config.recovery_strategies:
-            start_time = datetime.utcnow()
+            start_time = datetime.now(timezone.utc)
             
             try:
                 result = self._execute_recovery_strategy(layer, strategy, error)
-                duration = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                duration = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
                 
                 recovery_action = RecoveryAction(
                     action_name=strategy,
@@ -489,7 +489,7 @@ class ErrorContext:
                     break  # Stop trying other strategies
                     
             except Exception as recovery_error:
-                duration = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+                duration = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
                 recovery_action = RecoveryAction(
                     action_name=strategy,
                     attempted_at=start_time,
@@ -696,7 +696,7 @@ class LoggingCoordinator:
         if not self.context:
             return {}
             
-        duration = (datetime.utcnow() - self.context.start_time).total_seconds()
+        duration = (datetime.now(timezone.utc) - self.context.start_time).total_seconds()
         
         # Calculate performance violations
         performance_violations = 0

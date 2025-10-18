@@ -7,7 +7,7 @@ with multiple alert channels and intelligent alert management.
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable, Union
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 import logging
 import asyncio
@@ -216,7 +216,7 @@ class AlertManager:
             True if rule was suppressed, False if not found
         """
         if rule_id in self.alert_rules:
-            suppress_until = datetime.utcnow() + timedelta(minutes=duration_minutes)
+            suppress_until = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
             self.suppressed_rules[rule_id] = suppress_until
             self.logger.info(f"Suppressed alert rule {rule_id} until {suppress_until}")
             return True
@@ -234,7 +234,7 @@ class AlertManager:
             List of triggered alerts
         """
         triggered_alerts = []
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         for rule in self.alert_rules.values():
             if not rule.enabled or rule.metric_name != metric_name:
@@ -292,7 +292,7 @@ class AlertManager:
         Returns:
             Alert if one was triggered, None otherwise
         """
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         # Check if alert already exists for this rule
         existing_alert = None
@@ -360,7 +360,7 @@ class AlertManager:
             if alert.rule_id == rule.rule_id and alert.status == AlertStatus.ACTIVE:
                 alerts_to_resolve.append(alert)
         
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         for alert in alerts_to_resolve:
             alert.status = AlertStatus.RESOLVED
@@ -381,7 +381,7 @@ class AlertManager:
         Returns:
             True if notification should be sent
         """
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         
         # Check max occurrences per hour
         if alert.notification_count >= rule.max_occurrences_per_hour:
@@ -539,7 +539,7 @@ class AlertManager:
                     "condition": rule.condition,
                     "threshold": rule.threshold_value
                 },
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             timeout = aiohttp.ClientTimeout(total=webhook_config.get("timeout_seconds", 30))
@@ -595,7 +595,7 @@ class AlertManager:
             severity_counts[severity.value] = len([a for a in active_alerts if a.severity == severity])
         
         # Recent alerts (last 24 hours)
-        recent_threshold = datetime.utcnow() - timedelta(hours=24)
+        recent_threshold = datetime.now(timezone.utc) - timedelta(hours=24)
         recent_alerts = [a for a in self.alert_history if a.triggered_at >= recent_threshold]
         
         return {

@@ -21,7 +21,7 @@ Security Notes:
 
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends, Header, Response
@@ -380,7 +380,7 @@ async def auth_health_check():
         health_status = await check_auth_services_health()
 
         # Add timestamp
-        health_status["authentication"]["timestamp"] = datetime.utcnow().isoformat()
+        health_status["authentication"]["timestamp"] = datetime.now(timezone.utc).isoformat()
 
         return health_status["authentication"]
 
@@ -388,7 +388,7 @@ async def auth_health_check():
         logger.error(f"Auth health check failed: {e}")
         return {
             "status": "unhealthy",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "error": str(e)
         }
 

@@ -345,18 +345,20 @@ class ICaseService(ABC):
     
     @abstractmethod
     async def get_or_create_case_for_session(
-        self, 
+        self,
         session_id: str,
         user_id: Optional[str] = None,
-        force_new: bool = False
+        force_new: bool = False,
+        title: Optional[str] = None
     ) -> str:
         """Get existing case for session or create new one.
-        
+
         Args:
             session_id: Session identifier
             user_id: Optional user identifier
             force_new: Force creation of new case
-            
+            title: Optional case title (default: auto-generated)
+
         Returns:
             Case ID
         """

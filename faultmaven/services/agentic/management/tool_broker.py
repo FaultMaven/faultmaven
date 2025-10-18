@@ -16,20 +16,21 @@ intelligent tool selection and execution with built-in safety guardrails.
 
 import logging
 from typing import Dict, Any, List, Optional, Union
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 import asyncio
 import uuid
 
 from faultmaven.models.agentic import (
-    IToolSkillBroker, 
-    AgentCapability, 
+    IToolSkillBroker,
+    AgentCapability,
     AgentCapabilityType,
     SafetyLevel,
     ExecutionPriority
 )
 from faultmaven.models.interfaces import ITracer, BaseTool
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ class ToolExecutionResult:
         self.error_message = error_message
         self.approval_request = approval_request
         self.recommended_tools = recommended_tools or []
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now(timezone.utc)
 
 
 class ToolRegistration:
@@ -120,7 +121,7 @@ class ToolRegistration:
         self.category = category
         self.safety_level = safety_level
         self.performance_profile = performance_profile or {}
-        self.registered_at = datetime.utcnow()
+        self.registered_at = datetime.now(timezone.utc)
         self.last_used = None
         self.execution_count = 0
         self.success_rate = 1.0
@@ -200,7 +201,7 @@ class ToolSkillBroker(IToolSkillBroker):
                             "success_rate": registration.success_rate
                         }
                         if registration.last_used:
-                            perf_metrics["last_execution"] = registration.last_used.isoformat()
+                            perf_metrics["last_execution"] = to_json_compatible(registration.last_used)
 
                         capability_with_context = AgentCapability(
                             capability_id=capability.capability_id,
@@ -554,7 +555,7 @@ class ToolSkillBroker(IToolSkillBroker):
     
     async def _execute_with_monitoring(self, tool_id: str, request: ToolExecutionRequest) -> ToolExecutionResult:
         """Execute tool with monitoring and timeout"""
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             # Get tool registration
@@ -569,7 +570,7 @@ class ToolSkillBroker(IToolSkillBroker):
             # For now, return mock success result
             await asyncio.sleep(0.1)  # Simulate processing time
             
-            execution_time = (datetime.utcnow() - start_time).total_seconds()
+            execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
             
             # Mock result based on tool type
             if tool_id == "kb_tool":
@@ -626,7 +627,7 @@ class ToolSkillBroker(IToolSkillBroker):
             
             # Update execution count
             registration.execution_count += 1
-            registration.last_used = datetime.utcnow()
+            registration.last_used = datetime.now(timezone.utc)
             
             # Update success rate
             was_successful = result.status == ExecutionStatus.SUCCESS
@@ -639,7 +640,7 @@ class ToolSkillBroker(IToolSkillBroker):
                 self.performance_history[tool_id] = []
             
             self.performance_history[tool_id].append({
-                "timestamp": datetime.utcnow(),
+                "timestamp": datetime.now(timezone.utc),
                 "success": was_successful,
                 "execution_time": result.performance_metrics.get("execution_time", 0.0),
                 "request_id": request.request_id
@@ -651,7 +652,7 @@ class ToolSkillBroker(IToolSkillBroker):
             # Update health score
             health_factors = {
                 "success_rate": new_success_rate * 0.6,
-                "recent_usage": 0.3 if registration.last_used and (datetime.utcnow() - registration.last_used).days < 7 else 0.0,
+                "recent_usage": 0.3 if registration.last_used and (datetime.now(timezone.utc) - registration.last_used).days < 7 else 0.0,
                 "performance": 0.1 if result.performance_metrics.get("execution_time", 0) < 5.0 else 0.0
             }
             

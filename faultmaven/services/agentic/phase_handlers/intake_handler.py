@@ -17,8 +17,8 @@ Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
 import logging
-from typing import Any, Dict, List
-from datetime import datetime
+from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
 
 from faultmaven.models.investigation import (
     InvestigationPhase,
@@ -67,6 +67,7 @@ class IntakeHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str = "",
+        context: Optional[dict] = None,
     ) -> PhaseHandlerResult:
         """Handle Phase 0: Intake
 
@@ -80,11 +81,12 @@ class IntakeHandler(BasePhaseHandler):
             investigation_state: Current investigation state
             user_query: User's query
             conversation_history: Recent conversation
+            context: Optional context dict (e.g., file upload metadata)
 
         Returns:
             PhaseHandlerResult with response and state updates
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
 
         # Analyze query for problem signals
         analysis = self.engagement_manager.analyze_initial_query(user_query)

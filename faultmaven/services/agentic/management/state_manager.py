@@ -19,9 +19,11 @@ by providing persistent memory across multi-turn conversations and complex workf
 import json
 import logging
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 import uuid
 
+from faultmaven.utils.serialization import to_json_compatible
+from faultmaven.models import parse_utc_timestamp
 from faultmaven.models.agentic import (
     IAgentStateManager, 
     AgentExecutionState, 
@@ -106,13 +108,16 @@ class AgentStateManager(IAgentStateManager):
             elif isinstance(state_data, bytes):
                 state_data = json.loads(state_data.decode('utf-8'))
             
-            # Convert datetime strings back to datetime objects
+            # Convert datetime strings back to timezone-naive datetime objects
             if 'created_at' in state_data and isinstance(state_data['created_at'], str):
-                state_data['created_at'] = datetime.fromisoformat(state_data['created_at'].replace('Z', '+00:00'))
+                dt = parse_utc_timestamp(state_data['created_at'])
+                state_data['created_at'] = dt.replace(tzinfo=None)
             if 'updated_at' in state_data and isinstance(state_data['updated_at'], str):
-                state_data['updated_at'] = datetime.fromisoformat(state_data['updated_at'].replace('Z', '+00:00'))
+                dt = parse_utc_timestamp(state_data['updated_at'])
+                state_data['updated_at'] = dt.replace(tzinfo=None)
             if 'last_updated' in state_data and isinstance(state_data['last_updated'], str):
-                state_data['last_updated'] = datetime.fromisoformat(state_data['last_updated'].replace('Z', '+00:00'))
+                dt = parse_utc_timestamp(state_data['last_updated'])
+                state_data['last_updated'] = dt.replace(tzinfo=None)
             
             state = AgentExecutionState(**state_data)
             logger.debug(f"Retrieved execution state for session {session_id}")
@@ -129,9 +134,9 @@ class AgentStateManager(IAgentStateManager):
         try:
             # Update timestamp
             if hasattr(state, 'updated_at'):
-                state.updated_at = datetime.utcnow()
+                state.updated_at = datetime.now(timezone.utc)
             if hasattr(state, 'last_updated'):
-                state.last_updated = datetime.utcnow()
+                state.last_updated = datetime.now(timezone.utc)
             
             key = f"execution_state:{session_id}"
             ttl = ttl or self.default_ttl
@@ -141,12 +146,10 @@ class AgentStateManager(IAgentStateManager):
                 state_data = state.dict()
             else:
                 state_data = state.__dict__
-                
-            # Handle datetime serialization
-            for field in ['created_at', 'updated_at', 'last_updated']:
-                if field in state_data and isinstance(state_data[field], datetime):
-                    state_data[field] = state_data[field].isoformat() + 'Z'
-            
+
+            # Handle ALL datetime serialization recursively (not just top-level fields)
+            state_data = to_json_compatible(state_data)
+
             # Convert to JSON string
             serialized_data = json.dumps(state_data)
             
@@ -202,10 +205,11 @@ class AgentStateManager(IAgentStateManager):
                 if isinstance(memory_data, str):
                     memory_data = json.loads(memory_data)
             
-            # Convert datetime strings if needed
+            # Convert datetime strings to timezone-naive datetime objects
             for field in ['created_at', 'last_updated']:
                 if field in memory_data and isinstance(memory_data[field], str):
-                    memory_data[field] = datetime.fromisoformat(memory_data[field].replace('Z', '+00:00'))
+                    dt = parse_utc_timestamp(memory_data[field])
+                    memory_data[field] = dt.replace(tzinfo=None)
             
             memory = ConversationMemory(**memory_data)
             logger.debug(f"Retrieved conversation memory for session {session_id}")
@@ -240,7 +244,7 @@ class AgentStateManager(IAgentStateManager):
             # Handle datetime serialization
             for field in ['created_at', 'last_updated']:
                 if field in memory_data and isinstance(memory_data[field], datetime):
-                    memory_data[field] = memory_data[field].isoformat() + 'Z'
+                    memory_data[field] = to_json_compatible(memory_data[field])
             
             # Use appropriate client
             if self.redis_client:
@@ -330,7 +334,7 @@ class AgentStateManager(IAgentStateManager):
             
             # Handle datetime serialization
             if 'created_at' in plan_data:
-                plan_data['created_at'] = plan_data['created_at'].isoformat() + 'Z'
+                plan_data['created_at'] = to_json_compatible(plan_data['created_at'])
             
             await self.session_store.set(plan_key, plan_data, ttl=self.state_ttl)
             
@@ -361,11 +365,10 @@ class AgentStateManager(IAgentStateManager):
             # Store observation with session-based key
             key = f"{self.observation_prefix}{observation.session_id}:{observation.observation_id}"
             
-            # Convert to dict and handle datetime serialization
+            # Convert to dict and handle ALL datetime serialization recursively
             obs_data = observation.dict()
-            if 'timestamp' in obs_data:
-                obs_data['timestamp'] = obs_data['timestamp'].isoformat() + 'Z'
-            
+            obs_data = to_json_compatible(obs_data)
+
             # Store with TTL
             success = await self.session_store.set(key, obs_data, ttl=self.state_ttl)
             
@@ -389,11 +392,10 @@ class AgentStateManager(IAgentStateManager):
             # Store adaptation with session-based key
             key = f"{self.adaptation_prefix}{adaptation.session_id}:{adaptation.adaptation_id}"
             
-            # Convert to dict and handle datetime serialization
+            # Convert to dict and handle ALL datetime serialization recursively
             adapt_data = adaptation.dict()
-            if 'timestamp' in adapt_data:
-                adapt_data['timestamp'] = adapt_data['timestamp'].isoformat() + 'Z'
-            
+            adapt_data = to_json_compatible(adapt_data)
+
             # Store with TTL
             success = await self.session_store.set(key, adapt_data, ttl=self.state_ttl)
             
@@ -426,9 +428,10 @@ class AgentStateManager(IAgentStateManager):
                     if isinstance(obs_data, str):
                         obs_data = json.loads(obs_data)
                     
-                    # Convert datetime string back
+                    # Convert datetime string to timezone-naive datetime
                     if 'timestamp' in obs_data and isinstance(obs_data['timestamp'], str):
-                        obs_data['timestamp'] = datetime.fromisoformat(obs_data['timestamp'].replace('Z', '+00:00'))
+                        dt = parse_utc_timestamp(obs_data['timestamp'])
+                        obs_data['timestamp'] = dt.replace(tzinfo=None)
                     
                     observations.append(ObservationData(**obs_data))
             
@@ -452,9 +455,10 @@ class AgentStateManager(IAgentStateManager):
                     if isinstance(adapt_data, str):
                         adapt_data = json.loads(adapt_data)
                     
-                    # Convert datetime string back
+                    # Convert datetime string to timezone-naive datetime
                     if 'timestamp' in adapt_data and isinstance(adapt_data['timestamp'], str):
-                        adapt_data['timestamp'] = datetime.fromisoformat(adapt_data['timestamp'].replace('Z', '+00:00'))
+                        dt = parse_utc_timestamp(adapt_data['timestamp'])
+                        adapt_data['timestamp'] = dt.replace(tzinfo=None)
                     
                     adaptations.append(AdaptationEvent(**adapt_data))
             
@@ -630,7 +634,7 @@ class AgentStateManager(IAgentStateManager):
             return {
                 "total_sessions": len(active_sessions),
                 "active_sessions": len(active_sessions),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
         except Exception as e:
             logger.error(f"Failed to get session analytics: {e}")
@@ -651,7 +655,7 @@ class AgentStateManager(IAgentStateManager):
             if memory:
                 backup_data["conversation_memory"] = memory.dict() if hasattr(memory, 'dict') else memory.__dict__
             
-            backup_data["timestamp"] = datetime.utcnow().isoformat()
+            backup_data["timestamp"] = datetime.now(timezone.utc).isoformat()
             return backup_data
             
         except Exception as e:
@@ -688,12 +692,10 @@ class AgentStateManager(IAgentStateManager):
                 state_data = state.dict()
             else:
                 state_data = state.__dict__
-                
-            # Handle datetime serialization
-            for field in ['created_at', 'updated_at', 'last_updated']:
-                if field in state_data and isinstance(state_data[field], datetime):
-                    state_data[field] = state_data[field].isoformat() + 'Z'
-            
+
+            # Handle ALL datetime serialization recursively
+            state_data = to_json_compatible(state_data)
+
             return json.dumps(state_data)
             
         except Exception as e:
@@ -705,10 +707,11 @@ class AgentStateManager(IAgentStateManager):
         try:
             state_data = json.loads(serialized_data)
 
-            # Convert datetime strings back to datetime objects
+            # Convert datetime strings to timezone-naive datetime objects
             for field in ['created_at', 'updated_at', 'last_updated']:
                 if field in state_data and isinstance(state_data[field], str):
-                    state_data[field] = datetime.fromisoformat(state_data[field].replace('Z', '+00:00'))
+                    dt = parse_utc_timestamp(state_data[field])
+                    state_data[field] = dt.replace(tzinfo=None)
 
             return AgentExecutionState(**state_data)
 
@@ -792,7 +795,7 @@ class AgentStateManager(IAgentStateManager):
                 state_data = state.__dict__
 
             # Handle datetime serialization manually (only if not already strings)
-            self._serialize_datetime_fields_in_dict(state_data)
+            state_data = to_json_compatible(state_data)
 
             # Convert to JSON string
             serialized_data = json.dumps(state_data)
@@ -861,11 +864,19 @@ class AgentStateManager(IAgentStateManager):
     # Helper methods for datetime handling
 
     def _convert_datetime_fields_in_dict(self, data: dict):
-        """Recursively convert datetime strings to datetime objects in dict"""
+        """Recursively convert datetime strings to timezone-naive datetime objects in dict
+
+        Note: We strip timezone info to ensure consistency with datetime.now(timezone.utc)
+        which creates timezone-naive datetimes. This prevents double-encoding issues
+        when serializing back with 'Z' suffix.
+        """
         for key, value in data.items():
             if isinstance(value, str) and ('at' in key.lower() or 'time' in key.lower()):
                 try:
-                    data[key] = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                    # Parse the datetime string (handles both 'Z' and '+HH:MM' formats)
+                    dt = parse_utc_timestamp(value)
+                    # Convert to timezone-naive by removing tzinfo (all our times are UTC)
+                    data[key] = dt.replace(tzinfo=None)
                 except:
                     pass  # Keep as string if conversion fails
             elif isinstance(value, dict):
@@ -874,21 +885,3 @@ class AgentStateManager(IAgentStateManager):
                 for item in value:
                     if isinstance(item, dict):
                         self._convert_datetime_fields_in_dict(item)
-
-    def _serialize_datetime_fields_in_dict(self, data: dict):
-        """Recursively serialize datetime objects to strings in dict
-
-        Skips values that are already strings (already serialized by Pydantic json_encoders)
-        """
-        for key, value in data.items():
-            if isinstance(value, datetime):
-                data[key] = value.isoformat() + 'Z'
-            elif isinstance(value, str) and ('T' in value and ('Z' in value or '+' in value)):
-                # Already an ISO format string - skip (avoid double encoding)
-                continue
-            elif isinstance(value, dict):
-                self._serialize_datetime_fields_in_dict(value)
-            elif isinstance(value, list):
-                for item in value:
-                    if isinstance(item, dict):
-                        self._serialize_datetime_fields_in_dict(item)

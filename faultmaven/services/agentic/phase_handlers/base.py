@@ -132,6 +132,7 @@ class BasePhaseHandler(ABC):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str = "",
+        context: Optional[dict] = None,
     ) -> PhaseHandlerResult:
         """Handle user query within this phase
 
@@ -142,6 +143,7 @@ class BasePhaseHandler(ABC):
             investigation_state: Current investigation state
             user_query: User's input query
             conversation_history: Recent conversation context
+            context: Optional context dict (e.g., file upload metadata)
 
         Returns:
             PhaseHandlerResult with response and state updates
@@ -301,19 +303,52 @@ class BasePhaseHandler(ABC):
 
             # Add fallback JSON formatting instruction (for when function calling fails)
             # This ensures consistent response format across all LLM providers
-            full_prompt += f"""
+            # IMPORTANT: Use the actual schema fields, not a hardcoded example
+            try:
+                # Get the actual schema to show correct fields
+                schema = expected_schema.model_json_schema()
+                schema_example = {}
+                for field_name, field_info in schema.get("properties", {}).items():
+                    field_type = field_info.get("type", "string")
+                    if field_type == "string":
+                        if field_name == "answer":
+                            schema_example[field_name] = "Your natural language response here"
+                        else:
+                            schema_example[field_name] = "appropriate value"
+                    elif field_type == "boolean":
+                        schema_example[field_name] = False
+                    elif field_type == "array":
+                        schema_example[field_name] = []
+                    elif field_type == "object":
+                        schema_example[field_name] = {}
+                    else:
+                        schema_example[field_name] = None
+
+                import json
+                schema_json = json.dumps(schema_example, indent=2)
+
+                full_prompt += f"""
 
 # Response Format
 
-If function calling is not available, respond with a JSON object following this structure (no markdown formatting):
+CRITICAL: If function calling is not available, respond with a JSON object matching this EXACT structure:
 
-{{
-  "answer": "Your natural language response here",
-  "suggested_commands": [],
-  "clarifying_questions": []
-}}
+{schema_json}
 
-Return ONLY the JSON object. Do not wrap it in markdown code blocks or any other formatting."""
+IMPORTANT INSTRUCTIONS:
+- The "answer" field should contain your natural language response as a PLAIN STRING
+- Do NOT put JSON inside the "answer" field
+- Do NOT nest the entire response structure inside the "answer" field
+- Return ONLY the JSON object above
+- Do not wrap it in markdown code blocks or any other formatting"""
+            except Exception as e:
+                # Fallback to basic instruction if schema parsing fails
+                self.logger.warning(f"Could not generate schema example: {e}")
+                full_prompt += f"""
+
+# Response Format
+
+If function calling is not available, respond with a JSON object with at minimum an "answer" field containing your natural language response as a plain string. Do not put JSON inside the answer field."""
 
             # Generate response
             llm_response = await self.llm_provider.generate(
@@ -353,6 +388,7 @@ Return ONLY the JSON object. Do not wrap it in markdown code blocks or any other
                     self.logger.warning(f"Tool call parsing failed: {e}, falling back to text")
 
             # Parse into structured response using three-tier fallback
+            # The parser handles double-encoding detection and fixes it automatically
             structured_response = parse_ooda_response(
                 raw_response=raw_response,
                 expected_schema=expected_schema,

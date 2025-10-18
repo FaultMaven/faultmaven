@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any, Callable, Awaitable
 from enum import Enum
 from dataclasses import dataclass
@@ -53,7 +53,7 @@ class Response:
     
     def __post_init__(self):
         if self.timestamp is None:
-            self.timestamp = datetime.utcnow()
+            self.timestamp = datetime.now(timezone.utc)
     
     @property
     def is_success(self) -> bool:
@@ -94,7 +94,7 @@ class RiskPrediction:
         self.risk_score = risk_score  # 0.0 to 1.0
         self.predicted_failures = predicted_failures
         self.confidence = confidence  # 0.0 to 1.0
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now(timezone.utc)
 
 
 class Decision:
@@ -105,7 +105,7 @@ class Decision:
         self.reason = reason
         self.confidence = confidence
         self.metadata = metadata or {}
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now(timezone.utc)
 
 
 class SmartCircuitBreaker:
@@ -127,7 +127,7 @@ class SmartCircuitBreaker:
         
         # Circuit state
         self.state = CircuitState.CLOSED
-        self.state_changed_at = datetime.utcnow()
+        self.state_changed_at = datetime.now(timezone.utc)
         self.metrics = CircuitMetrics()
         
         # Adaptive thresholds
@@ -169,7 +169,7 @@ class SmartCircuitBreaker:
             # Check current state
             if self.state == CircuitState.OPEN:
                 # Check if timeout has elapsed for half-open transition
-                if datetime.utcnow() - self.state_changed_at >= self.config.timeout:
+                if datetime.now(timezone.utc) - self.state_changed_at >= self.config.timeout:
                     await self._transition_to_half_open()
                 else:
                     return Decision(
@@ -177,7 +177,7 @@ class SmartCircuitBreaker:
                         f"Circuit is open, {self.config.timeout.total_seconds():.0f}s timeout not elapsed",
                         metadata={
                             "state": self.state.value, 
-                            "time_remaining": (self.config.timeout - (datetime.utcnow() - self.state_changed_at)).total_seconds()
+                            "time_remaining": (self.config.timeout - (datetime.now(timezone.utc) - self.state_changed_at)).total_seconds()
                         }
                     )
             
@@ -378,7 +378,7 @@ class SmartCircuitBreaker:
             self.failure_predictions.append(prediction)
             
             # Keep only recent predictions
-            cutoff = datetime.utcnow() - timedelta(hours=1)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
             self.failure_predictions = [p for p in self.failure_predictions if p.timestamp > cutoff]
             
             return prediction
@@ -392,7 +392,7 @@ class SmartCircuitBreaker:
         return {
             "name": self.name,
             "state": self.state.value,
-            "state_duration": (datetime.utcnow() - self.state_changed_at).total_seconds(),
+            "state_duration": (datetime.now(timezone.utc) - self.state_changed_at).total_seconds(),
             "metrics": {
                 "total_requests": self.metrics.total_requests,
                 "success_rate": (self.metrics.successful_requests / max(self.metrics.total_requests, 1)) * 100,
@@ -413,7 +413,7 @@ class SmartCircuitBreaker:
         """Reset circuit breaker to initial state"""
         old_state = self.state
         self.state = CircuitState.CLOSED
-        self.state_changed_at = datetime.utcnow()
+        self.state_changed_at = datetime.now(timezone.utc)
         self.metrics = CircuitMetrics()
         self.response_times = []
         self.error_counts = {}
@@ -479,7 +479,7 @@ class SmartCircuitBreaker:
         """Transition circuit to open state"""
         old_state = self.state
         self.state = CircuitState.OPEN
-        self.state_changed_at = datetime.utcnow()
+        self.state_changed_at = datetime.now(timezone.utc)
         
         self.logger.warning(f"Circuit breaker '{self.name}' opened - failures: {self.metrics.consecutive_failures}, "
                           f"error rate: {self.metrics.error_rate:.2f}")
@@ -491,7 +491,7 @@ class SmartCircuitBreaker:
         """Transition circuit to half-open state"""
         old_state = self.state
         self.state = CircuitState.HALF_OPEN
-        self.state_changed_at = datetime.utcnow()
+        self.state_changed_at = datetime.now(timezone.utc)
         
         self.logger.info(f"Circuit breaker '{self.name}' half-opened for testing")
         
@@ -502,7 +502,7 @@ class SmartCircuitBreaker:
         """Transition circuit to closed state"""
         old_state = self.state
         self.state = CircuitState.CLOSED
-        self.state_changed_at = datetime.utcnow()
+        self.state_changed_at = datetime.now(timezone.utc)
         
         # Reset consecutive failures when closing
         self.metrics.consecutive_failures = 0
@@ -514,12 +514,14 @@ class SmartCircuitBreaker:
 
     def _get_recent_requests(self, window: timedelta) -> List[Dict[str, Any]]:
         """Get requests within the specified time window"""
-        cutoff = datetime.utcnow() - window
-        return [req for req in self.request_history if req.get('timestamp', datetime.min) > cutoff]
+        cutoff = datetime.now(timezone.utc) - window
+        # Use timezone-aware minimum datetime to avoid naive/aware comparison errors
+        min_datetime_aware = datetime.min.replace(tzinfo=timezone.utc)
+        return [req for req in self.request_history if req.get('timestamp', min_datetime_aware) > cutoff]
 
     def _get_recent_responses(self, window: timedelta) -> List[Response]:
         """Get responses within the specified time window"""
-        cutoff = datetime.utcnow() - window
+        cutoff = datetime.now(timezone.utc) - window
         return [resp for resp in self.response_history if resp.timestamp > cutoff]
 
     async def _calculate_recent_error_rate(self) -> float:

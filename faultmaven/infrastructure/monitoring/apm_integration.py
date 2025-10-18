@@ -7,7 +7,7 @@ and standardized metrics export capabilities.
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 import logging
 import json
@@ -79,7 +79,7 @@ class APMIntegration:
         self.configurations: Dict[APMProvider, APMConfiguration] = {}
         self.metrics_buffer: List[APMMetrics] = []
         self.export_callbacks: Dict[APMProvider, Callable] = {}
-        self.last_flush_time = datetime.utcnow()
+        self.last_flush_time = datetime.now(timezone.utc)
         self.is_running = False
         self.flush_task: Optional[asyncio.Task] = None
         
@@ -252,7 +252,7 @@ class APMIntegration:
             parent_span_id: Parent span ID
         """
         metric = APMMetrics(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             service_name=self.service_name,
             operation_name=operation_name,
             duration_ms=duration_ms,
@@ -291,7 +291,7 @@ class APMIntegration:
                 except Exception as e:
                     self.logger.error(f"Failed to export to {provider.value}: {e}")
         
-        self.last_flush_time = datetime.utcnow()
+        self.last_flush_time = datetime.now(timezone.utc)
     
     async def _export_to_opik(
         self,
@@ -420,7 +420,7 @@ class APMIntegration:
             # Convert metrics to JSON format
             json_data = {
                 "service": self.service_name,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "metrics": [
                     {
                         "timestamp": metric.timestamp.isoformat(),

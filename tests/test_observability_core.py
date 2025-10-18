@@ -175,7 +175,7 @@ class TestObservabilityIntegration:
 
     def test_data_processing_has_tracing(self):
         """Verify data processing methods have trace decorators."""
-        from faultmaven.core.processing.classifier import DataClassifier
+        from faultmaven.services.preprocessing.classifier import DataClassifier  # Updated
         from faultmaven.core.processing.log_analyzer import LogProcessor
 
         # Check that key methods have been wrapped with @trace

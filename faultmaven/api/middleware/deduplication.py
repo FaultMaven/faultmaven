@@ -9,7 +9,7 @@ import time
 import logging
 import json
 from typing import Callable, Dict, Any, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -311,7 +311,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         return {0, nil}  -- not duplicate
         """
         
-        current_time = datetime.utcnow().isoformat() + 'Z'
+        current_time = to_json_compatible(datetime.now(timezone.utc))
         
         try:
             result = await self._redis.eval(
@@ -469,7 +469,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                         "user_id": "anonymous",
                         "email": "user@example.com",
                         "name": "User",
-                        "created_at": datetime.utcnow().isoformat() + 'Z'
+                        "created_at": to_json_compatible(datetime.now(timezone.utc))
                     },
                     "active_case": None,
                     "cases": [],

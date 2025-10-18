@@ -15,7 +15,7 @@ Key Features:
 
 import json
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set
 import asyncio
 
@@ -35,6 +35,7 @@ from faultmaven.models.interfaces_case import ICaseStore
 from faultmaven.models import parse_utc_timestamp
 from faultmaven.infrastructure.redis_client import create_redis_client
 from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.utils.serialization import to_json_compatible, safe_json_dumps
 import logging
 
 
@@ -68,28 +69,14 @@ class RedisCaseStore(ICaseStore):
         try:
             # Convert case to dict with proper serialization
             case_dict = case.dict()
-            
-            # Handle datetime serialization
-            for field in ['created_at', 'updated_at', 'last_activity_at', 'expires_at']:
-                if case_dict.get(field):
-                    case_dict[field] = case_dict[field].isoformat() + 'Z'
-            
-            
-            # Serialize participants
-            if 'participants' in case_dict:
-                case_dict['participants'] = [
-                    {
-                        **p,
-                        'added_at': p['added_at'].isoformat() + 'Z' if p.get('added_at') else None,
-                        'last_accessed': p['last_accessed'].isoformat() + 'Z' if p.get('last_accessed') else None
-                    }
-                    for p in case_dict['participants']
-                ]
-            
+
             # Serialize messages separately for efficiency
             messages = case_dict.pop('messages', [])
             case_dict['message_count'] = len(messages)
-            
+
+            # Use recursive serializer to handle ALL datetime objects (including nested ones in diagnostic_state)
+            case_dict = to_json_compatible(case_dict)
+
             return case_dict, messages
             
         except Exception as e:
@@ -112,14 +99,26 @@ class RedisCaseStore(ICaseStore):
                         participant['added_at'] = parse_utc_timestamp(participant['added_at'])
                     if participant.get('last_accessed'):
                         participant['last_accessed'] = parse_utc_timestamp(participant['last_accessed'])
-            
+
+            # Parse evidence timestamps in diagnostic_state (fixes corrupted +00:00Z timestamps)
+            if 'diagnostic_state' in case_data and case_data['diagnostic_state']:
+                diag_state = case_data['diagnostic_state']
+                if 'evidence_provided' in diag_state and diag_state['evidence_provided']:
+                    for evidence in diag_state['evidence_provided']:
+                        if evidence.get('timestamp'):
+                            evidence['timestamp'] = parse_utc_timestamp(evidence['timestamp'])
+                        if evidence.get('file_metadata') and evidence['file_metadata'].get('upload_timestamp'):
+                            evidence['file_metadata']['upload_timestamp'] = parse_utc_timestamp(
+                                evidence['file_metadata']['upload_timestamp']
+                            )
+
             # Add messages if provided
             if messages:
                 case_data['messages'] = [
                     CaseMessage(
                         **{
                             **msg,
-                            'timestamp': parse_utc_timestamp(msg['timestamp']) if msg.get('timestamp') else datetime.utcnow()
+                            'timestamp': parse_utc_timestamp(msg['timestamp']) if msg.get('timestamp') else datetime.now(timezone.utc)
                         }
                     )
                     for msg in messages
@@ -145,10 +144,10 @@ class RedisCaseStore(ICaseStore):
             # Use pipeline for atomic operations
             pipe = self.redis_client.pipeline()
             
-            # Store case data
+            # Store case data (case_data already serialized by _serialize_case)
             pipe.hset(case_key, mapping={
                 "data": json.dumps(case_data),
-                "created_at": datetime.utcnow().isoformat() + 'Z',
+                "created_at": to_json_compatible(datetime.now(timezone.utc)),
                 "case_id": case.case_id,
                 "owner_id": case.owner_id or "",
                 "status": case.status.value,
@@ -156,16 +155,14 @@ class RedisCaseStore(ICaseStore):
             })
             
             # Set TTL
-            ttl = int((case.expires_at - datetime.utcnow()).total_seconds()) if case.expires_at else self.default_case_ttl
+            ttl = int((case.expires_at - datetime.now(timezone.utc)).total_seconds()) if case.expires_at else self.default_case_ttl
             pipe.expire(case_key, ttl)
             
             # Store messages if any
             if messages:
                 for message in messages:
-                    message_data = {
-                        **message,
-                        'timestamp': message['timestamp'].isoformat() + 'Z' if isinstance(message.get('timestamp'), datetime) else message.get('timestamp')
-                    }
+                    # Serialize any datetime objects in message
+                    message_data = to_json_compatible(message)
                     pipe.lpush(messages_key, json.dumps(message_data))
                 pipe.expire(messages_key, ttl)
             
@@ -246,20 +243,13 @@ class RedisCaseStore(ICaseStore):
             
             case_data = json.loads(case_data_raw)
             
-            # Apply updates
+            # Apply updates with recursive datetime serialization
             for key, value in updates.items():
-                if key == 'participants' and isinstance(value, list):
-                    # Handle participant updates specially
-                    case_data[key] = value
-                elif isinstance(value, datetime):
-                    case_data[key] = value.isoformat() + 'Z'
-                elif isinstance(value, set):
-                    case_data[key] = list(value)
-                else:
-                    case_data[key] = value
+                # Recursively serialize any datetime objects in the value
+                case_data[key] = to_json_compatible(value)
             
             # Update metadata fields
-            case_data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            case_data['updated_at'] = to_json_compatible(datetime.now(timezone.utc))
             
             # Use pipeline for atomic update
             pipe = self.redis_client.pipeline()
@@ -460,23 +450,22 @@ class RedisCaseStore(ICaseStore):
             messages_key = self.case_messages_key_pattern.format(case_id=case_id)
             case_key = self.case_key_pattern.format(case_id=case_id)
             
-            # Serialize message
-            message_data = {
-                **message.dict(),
-                'timestamp': message.timestamp.isoformat() + 'Z'
-            }
-            
+            # Serialize message with recursive datetime handling
+            message_data = to_json_compatible(message.dict())
+
             pipe = self.redis_client.pipeline()
-            
+
             # Add message to list
             pipe.lpush(messages_key, json.dumps(message_data))
-            
+
             # Update case message count
             case_data_raw = await self.redis_client.hget(case_key, "data")
             if case_data_raw:
                 case_data = json.loads(case_data_raw)
                 case_data['message_count'] = case_data.get('message_count', 0) + 1
-                case_data['last_activity_at'] = datetime.utcnow().isoformat() + 'Z'
+                case_data['last_activity_at'] = to_json_compatible(datetime.now(timezone.utc))
+                # case_data might contain datetime objects, serialize before json.dumps
+                case_data = to_json_compatible(case_data)
                 pipe.hset(case_key, "data", json.dumps(case_data))
             
             # Keep TTL on messages
@@ -578,7 +567,7 @@ class RedisCaseStore(ICaseStore):
                             if isinstance(timestamp, str):
                                 created_at = timestamp
                             else:
-                                created_at = timestamp.isoformat() + 'Z' if hasattr(timestamp, 'isoformat') else str(timestamp)
+                                created_at = to_json_compatible(timestamp) if hasattr(timestamp, 'isoformat') else str(timestamp)
                         except Exception as e:
                             self.logger.warning(f"Failed to format timestamp for message: {e}")
                             created_at = str(timestamp)
@@ -711,7 +700,7 @@ class RedisCaseStore(ICaseStore):
             new_participant = {
                 'user_id': user_id,
                 'role': role.value,
-                'added_at': datetime.utcnow().isoformat() + 'Z',
+                'added_at': to_json_compatible(datetime.now(timezone.utc)),
                 'added_by': added_by,
                 'last_accessed': None,
                 'can_edit': role in [ParticipantRole.OWNER, ParticipantRole.COLLABORATOR],
@@ -722,9 +711,10 @@ class RedisCaseStore(ICaseStore):
             participants.append(new_participant)
             case_data['participants'] = participants
             case_data['participant_count'] = len(participants)
-            case_data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-            
-            # Update case data
+            case_data['updated_at'] = to_json_compatible(datetime.now(timezone.utc))
+
+            # Update case data - serialize datetime objects
+            case_data = to_json_compatible(case_data)
             await self.redis_client.hset(case_key, "data", json.dumps(case_data))
             
             # Add to user's cases index
@@ -774,11 +764,12 @@ class RedisCaseStore(ICaseStore):
             
             case_data['participants'] = updated_participants
             case_data['participant_count'] = len(updated_participants)
-            case_data['updated_at'] = datetime.utcnow().isoformat() + 'Z'
-            
+            case_data['updated_at'] = to_json_compatible(datetime.now(timezone.utc))
+
             pipe = self.redis_client.pipeline()
-            
-            # Update case data
+
+            # Update case data - serialize datetime objects
+            case_data = to_json_compatible(case_data)
             pipe.hset(case_key, "data", json.dumps(case_data))
             
             # Remove from user's cases index
@@ -808,10 +799,10 @@ class RedisCaseStore(ICaseStore):
                 return False
             
             case_data = json.loads(case_data_raw)
-            case_data['last_activity_at'] = datetime.utcnow().isoformat() + 'Z'
-            
-            
-            # Update case data
+            case_data['last_activity_at'] = to_json_compatible(datetime.now(timezone.utc))
+
+            # Update case data - serialize datetime objects
+            case_data = to_json_compatible(case_data)
             await self.redis_client.hset(case_key, "data", json.dumps(case_data))
             
             return True
@@ -847,7 +838,7 @@ class RedisCaseStore(ICaseStore):
                             case_data = json.loads(case_data_raw)
                             if case_data.get('expires_at'):
                                 expires_at = parse_utc_timestamp(case_data['expires_at'])
-                                if expires_at < datetime.utcnow():
+                                if expires_at < datetime.now(timezone.utc):
                                     # Case expired, delete it
                                     await self.delete_case(case_id)
                                     cleaned_count += 1
@@ -881,7 +872,7 @@ class RedisCaseStore(ICaseStore):
             # Calculate metrics
             duration_hours = 0
             if case.created_at:
-                duration = datetime.utcnow() - case.created_at
+                duration = datetime.now(timezone.utc) - case.created_at
                 duration_hours = duration.total_seconds() / 3600
             
             return {
@@ -893,13 +884,48 @@ class RedisCaseStore(ICaseStore):
                 'status': case.status.value,
                 'priority': case.priority.value,
                 'is_expired': case.is_expired(),
-                'created_at': case.created_at.isoformat() + 'Z' if case.created_at else None,
-                'last_activity': case.last_activity_at.isoformat() + 'Z' if case.last_activity_at else None
+                'created_at': case.to_json_compatible(created_at) if case.created_at else None,
+                'last_activity': case.to_json_compatible(last_activity_at) if case.last_activity_at else None
             }
             
         except Exception as e:
             self.logger.error(f"Failed to get analytics for case {case_id}: {e}")
             return {}
+
+    async def get_all_case_ids(self) -> List[str]:
+        """
+        Get all case IDs from the store.
+
+        Used by the cleanup task to identify orphaned vector store collections.
+
+        Returns:
+            List of all case IDs currently in the store
+        """
+        try:
+            # Get all case keys from the case index
+            case_keys = await self.redis_client.smembers(f"{self.key_prefix}:cases:all")
+
+            if not case_keys:
+                return []
+
+            # Extract case_ids from keys (format: case:cases:{case_id})
+            case_ids = []
+            for key in case_keys:
+                if isinstance(key, bytes):
+                    key = key.decode('utf-8')
+
+                # Extract case_id from key
+                parts = key.split(':')
+                if len(parts) >= 3:
+                    case_id = parts[2]  # case:cases:{case_id}
+                    case_ids.append(case_id)
+
+            self.logger.debug(f"Found {len(case_ids)} case IDs in store")
+            return case_ids
+
+        except Exception as e:
+            self.logger.error(f"Failed to get all case IDs: {e}")
+            return []
 
     async def close(self):
         """Close Redis connection"""

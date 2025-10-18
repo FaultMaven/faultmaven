@@ -1,12 +1,10 @@
-"""Models package - maintains backward compatibility during refactoring.
+"""Models package - central exports for FaultMaven models.
 
-This module re-exports all models from the original models.py file
-to ensure existing imports continue to work during the migration.
+This module provides convenient imports for commonly used models across the application.
 """
 
-# Import everything from the legacy models for backward compatibility
-# Using explicit imports to avoid issues with star imports
-from .legacy import (
+# Import common models used throughout the application
+from .common import (
     AgentState as AgentStateDict,
     AgentStateEnum,
     DataInsightsResponse,
@@ -92,6 +90,26 @@ try:
     CASE_MODELS_AVAILABLE = True
 except ImportError:
     CASE_MODELS_AVAILABLE = False
+
+# Import report generation models (FR-CM-006)
+try:
+    from .report import (
+        ReportType,
+        ReportStatus,
+        RunbookSource,
+        RunbookMetadata,
+        CaseReport,
+        SimilarRunbook,
+        RunbookRecommendation,
+        ReportRecommendation,
+        ReportGenerationRequest,
+        ReportGenerationResponse,
+        CaseClosureRequest,
+        CaseClosureResponse
+    )
+    REPORT_MODELS_AVAILABLE = True
+except ImportError:
+    REPORT_MODELS_AVAILABLE = False
 
 # Import doctor/patient models (DEPRECATED - moved to agentic.py)
 # Legacy imports for backward compatibility
@@ -201,6 +219,23 @@ if DOCTOR_PATIENT_MODELS_AVAILABLE:
         "LLMResponse",
         "DiagnosticMode",
         "UrgencyLevel",
+    ])
+
+# Add report models to exports if available (FR-CM-006)
+if REPORT_MODELS_AVAILABLE:
+    __all__.extend([
+        "ReportType",
+        "ReportStatus",
+        "RunbookSource",
+        "RunbookMetadata",
+        "CaseReport",
+        "SimilarRunbook",
+        "RunbookRecommendation",
+        "ReportRecommendation",
+        "ReportGenerationRequest",
+        "ReportGenerationResponse",
+        "CaseClosureRequest",
+        "CaseClosureResponse",
     ])
 
 # As we migrate, we'll replace the above with:

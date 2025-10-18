@@ -6,6 +6,7 @@ Provides services for evidence-centric troubleshooting including:
 - Evidence lifecycle management
 - Conflict resolution workflow
 - Investigation stall detection
+- Evidence factory (preprocessing → evidence system bridge)
 """
 
 from faultmaven.services.evidence.classification import (
@@ -28,6 +29,19 @@ from faultmaven.services.evidence.stall_detection import (
     generate_stall_message,
 )
 
+from faultmaven.services.evidence.evidence_factory import (
+    create_evidence_from_preprocessed,
+    map_datatype_to_evidence_category,
+    match_evidence_to_requests,
+)
+
+from faultmaven.services.evidence.evidence_enhancements import (
+    extract_timeline_events,
+    should_populate_timeline,
+    generate_hypotheses_from_anomalies,
+    should_generate_hypotheses,
+)
+
 __all__ = [
     # Classification
     "classify_evidence_multidimensional",
@@ -43,4 +57,13 @@ __all__ = [
     "increment_stall_counters",
     "should_escalate",
     "generate_stall_message",
+    # Evidence Factory
+    "create_evidence_from_preprocessed",
+    "map_datatype_to_evidence_category",
+    "match_evidence_to_requests",
+    # Evidence Enhancements
+    "extract_timeline_events",
+    "should_populate_timeline",
+    "generate_hypotheses_from_anomalies",
+    "should_generate_hypotheses",
 ]

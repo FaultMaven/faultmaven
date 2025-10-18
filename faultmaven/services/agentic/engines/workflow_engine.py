@@ -17,7 +17,8 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
+from faultmaven.models import parse_utc_timestamp
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union, Callable, Set
 from dataclasses import dataclass, field
@@ -84,7 +85,7 @@ class WorkflowContext:
     request_id: Optional[str] = None
     query: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
-    started_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     deadline: Optional[datetime] = None
 
 
@@ -360,7 +361,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
             # Update execution with final results
             workflow_execution.status = WorkflowStatus.COMPLETED.value
             workflow_execution.execution_context.update(final_results)
-            workflow_execution.completed_at = datetime.utcnow()
+            workflow_execution.completed_at = datetime.now(timezone.utc)
             workflow_execution.metadata.update({
                 "quality_score": quality_assessment["score"],
                 "adaptation_count": len([r for r in execution_results if r.adaptations_needed]),
@@ -397,7 +398,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
             
             # Handle execution failure
             workflow_execution.status = WorkflowStatus.FAILED.value
-            workflow_execution.completed_at = datetime.utcnow()
+            workflow_execution.completed_at = datetime.now(timezone.utc)
             workflow_execution.execution_context["error"] = str(e)
             
             self.metrics["failed_workflows"] += 1
@@ -457,7 +458,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
             if execution_id not in self.active_workflows:
                 return ObservationResult(
                     execution_id=execution_id,
-                    observation_time=datetime.utcnow(),
+                    observation_time=datetime.now(timezone.utc),
                     performance_metrics={},
                     quality_indicators={},
                     resource_utilization={},
@@ -468,7 +469,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
                 )
             
             workflow_execution = self.active_workflows[execution_id]
-            observation_time = datetime.utcnow()
+            observation_time = datetime.now(timezone.utc)
             
             # Performance monitoring
             performance_metrics = await self._analyze_execution_performance(workflow_execution)
@@ -514,7 +515,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
             
             return ObservationResult(
                 execution_id=execution_id,
-                observation_time=datetime.utcnow(),
+                observation_time=datetime.now(timezone.utc),
                 performance_metrics={},
                 quality_indicators={},
                 resource_utilization={},
@@ -549,7 +550,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
                     adaptations_made=[],
                     adaptation_impact={},
                     success=False,
-                    adaptation_time=datetime.utcnow(),
+                    adaptation_time=datetime.now(timezone.utc),
                     metadata={"error": "Workflow execution not found"}
                 )
             
@@ -610,7 +611,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
                 adaptations_made=[a["description"] for a in adaptations_made],
                 adaptation_impact=adaptation_impact,
                 success=len(adaptations_made) > 0,
-                adaptation_time=datetime.utcnow(),
+                adaptation_time=datetime.now(timezone.utc),
                 metadata={
                     "adaptation_duration": adaptation_time,
                     "adaptations_applied": len(adaptations_made),
@@ -631,7 +632,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
                 adaptations_made=[],
                 adaptation_impact={},
                 success=False,
-                adaptation_time=datetime.utcnow(),
+                adaptation_time=datetime.now(timezone.utc),
                 metadata={"error": str(e)}
             )
 
@@ -655,12 +656,14 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
         try:
             # Parse timeframe
             hours_back = self._parse_timeframe(timeframe)
-            cutoff_time = datetime.utcnow() - timedelta(hours=hours_back)
+            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours_back)
             
             # Filter recent executions
+            # Use timezone-aware minimum datetime to avoid naive/aware comparison errors
+            min_datetime_aware = datetime.min.replace(tzinfo=timezone.utc)
             recent_executions = [
                 execution for execution in self.execution_history
-                if execution.get("start_time", datetime.min) >= cutoff_time
+                if execution.get("start_time", min_datetime_aware) >= cutoff_time
             ]
             
             analytics = {
@@ -1127,10 +1130,10 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
                     # Update existing memory
                     existing_memory.conversation_history.append({
                         "query": context.query,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                         "execution_data": execution_data
                     })
-                    existing_memory.last_updated = datetime.utcnow()
+                    existing_memory.last_updated = datetime.now(timezone.utc)
                     memory_update = existing_memory
                 else:
                     # Create new memory
@@ -1138,12 +1141,12 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
                         session_id=context.session_id or "default",
                         conversation_history=[{
                             "query": context.query,
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                             "execution_data": execution_data
                         }],
                         context={"execution_data": execution_data},
-                        created_at=datetime.utcnow(),
-                        last_updated=datetime.utcnow()
+                        created_at=datetime.now(timezone.utc),
+                        last_updated=datetime.now(timezone.utc)
                     )
 
                 success = await self.state_manager.update_conversation_memory(
@@ -1476,7 +1479,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
             return None
         
         try:
-            return datetime.fromisoformat(deadline_str)
+            return parse_utc_timestamp(deadline_str)
         except:
             return None
 
@@ -2040,7 +2043,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
 
     async def _analyze_execution_performance(self, execution: WorkflowExecution) -> Dict[str, Any]:
         """Analyze performance metrics for active execution."""
-        elapsed_time = (datetime.utcnow() - execution.start_time).total_seconds()
+        elapsed_time = (datetime.now(timezone.utc) - execution.start_time).total_seconds()
         progress = self._calculate_execution_progress(execution)
         
         return {
@@ -2080,7 +2083,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
         bottlenecks = []
         
         # Check execution time
-        elapsed = (datetime.utcnow() - execution.start_time).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - execution.start_time).total_seconds()
         if elapsed > 60:  # More than 1 minute
             bottlenecks.append("Long execution time detected")
         
@@ -2126,11 +2129,11 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
         if progress <= 0:
             return None
         
-        elapsed = (datetime.utcnow() - execution.start_time).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - execution.start_time).total_seconds()
         estimated_total = elapsed / progress
         remaining = estimated_total - elapsed
         
-        return datetime.utcnow() + timedelta(seconds=remaining)
+        return datetime.now(timezone.utc) + timedelta(seconds=remaining)
 
     # Analytics helper methods for comprehensive reporting
 
@@ -2276,7 +2279,7 @@ class BusinessLogicWorkflowEngine(IBusinessLogicWorkflowEngine):
             adaptation_context = {
                 "session_id": session_id,
                 "observation_count": len(observations),
-                "timestamp": datetime.utcnow()
+                "timestamp": datetime.now(timezone.utc)
             }
             
             # Analyze observations to determine adaptations needed

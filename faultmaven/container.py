@@ -26,18 +26,20 @@ from faultmaven.config.settings import FaultMavenSettings, get_settings
 try:
     from faultmaven.models.interfaces import ILLMProvider, ITracer, ISanitizer, BaseTool, IVectorStore, ISessionStore
     from faultmaven.models.interfaces_case import ICaseStore, ICaseService
+    from faultmaven.models.interfaces_report import IReportStore
     INTERFACES_AVAILABLE = True
 except ImportError as e:
     logging.getLogger(__name__).warning(f"Interfaces not available: {e}")
     # Create placeholder types for testing environments
     ILLMProvider = Any
-    ITracer = Any 
+    ITracer = Any
     ISanitizer = Any
     BaseTool = Any
     IVectorStore = Any
     ISessionStore = Any
     ICaseStore = Any
     ICaseService = Any
+    IReportStore = Any
     INTERFACES_AVAILABLE = False
 # Agentic Framework Components
 try:
@@ -85,21 +87,21 @@ class DIContainer:
             cls._instance.settings = None  # Will be initialized on first access
         return cls._instance
     
-    def initialize(self):
-        """Initialize all dependencies with proper error handling"""
+    async def initialize(self):
+        """Initialize all dependencies with proper error handling (async for proper event loop handling)"""
         logger = logging.getLogger(__name__)
-        
+
         if self._initialized:
             logger.debug("Container already initialized, skipping")
             return
-            
+
         if getattr(self, '_initializing', False):
             logger.debug("Container initialization already in progress, skipping")
             return
-            
+
         self._initializing = True
         logger.info("Initializing DI Container with unified settings system")
-        
+
         # Initialize settings as the single source of truth
         try:
             self.settings = get_settings()
@@ -108,27 +110,27 @@ class DIContainer:
             logger.error(f"❌ Failed to initialize settings system: {e}")
             self._initializing = False
             raise
-        
+
         try:
             # Always try to create infrastructure layer first - even if interfaces not available
             # This allows tests to mock the infrastructure layer creation
-            self._create_infrastructure_layer()
-            
+            await self._create_infrastructure_layer()
+
             # Core tools - Domain-specific functionality
             self._create_tools_layer()
-            
+
             # Service layer - Business logic orchestration
             self._create_service_layer()
-            
+
             self._initialized = True
             self._initializing = False
             logger.info("✅ DI Container initialized successfully")
-            
+
         except Exception as e:
             logger.error(f"❌ DI Container initialization failed: {e}")
             # Always reset _initializing flag regardless of error type
             self._initializing = False
-            
+
             # Check if interfaces are available - if not, this is expected and we use minimal container
             if not INTERFACES_AVAILABLE:
                 logger.warning("Interfaces not available - creating minimal container for testing")
@@ -163,8 +165,8 @@ class DIContainer:
         
         logging.getLogger(__name__).info("Created minimal container for testing")
     
-    def _create_infrastructure_layer(self):
-        """Create infrastructure components with interface implementations using unified settings"""
+    async def _create_infrastructure_layer(self):
+        """Create infrastructure components with interface implementations using unified settings (async for Redis)"""
         logger = logging.getLogger(__name__)
         
         # Ensure settings are available
@@ -194,11 +196,34 @@ class DIContainer:
         # LLMRouter does not accept settings; it reads runtime config internally
         self.llm_provider: ILLMProvider = LLMRouter()
         
-        # Core processing interfaces
-        from faultmaven.core.processing.classifier import DataClassifier
+        # Core processing interfaces (legacy log processor)
         from faultmaven.core.processing.log_analyzer import LogProcessor
-        self.data_classifier = DataClassifier()
         self.log_processor = LogProcessor()
+
+        # New preprocessing pipeline (Phase 1-2)
+        from faultmaven.services.preprocessing.classifier import DataClassifier
+        from faultmaven.services.preprocessing.extractors import LogsAndErrorsExtractor, StructuredConfigExtractor, MetricsAndPerformanceExtractor, UnstructuredTextExtractor, SourceCodeExtractor, VisualEvidenceExtractor
+        from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
+        from faultmaven.infrastructure.security.redaction import DataSanitizer
+
+        self.data_classifier = DataClassifier()
+        self.logs_extractor = LogsAndErrorsExtractor()
+        self.config_extractor = StructuredConfigExtractor()
+        self.metrics_extractor = MetricsAndPerformanceExtractor()
+        self.text_extractor = UnstructuredTextExtractor()
+        self.source_code_extractor = SourceCodeExtractor()
+        self.visual_extractor = VisualEvidenceExtractor()
+        self.data_sanitizer = DataSanitizer()
+        self.preprocessing_service = PreprocessingService(
+            classifier=self.data_classifier,
+            sanitizer=self.data_sanitizer,
+            logs_extractor=self.logs_extractor,
+            config_extractor=self.config_extractor,
+            metrics_extractor=self.metrics_extractor,
+            text_extractor=self.text_extractor,
+            source_code_extractor=self.source_code_extractor,
+            visual_extractor=self.visual_extractor
+        )
         
         # Vector store for knowledge base
         from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
@@ -212,14 +237,31 @@ class DIContainer:
         except Exception as e:
             logger.warning(f"Vector store initialization failed: {e}")
             self.vector_store = None
-        
+
+        # Case vector store for Session-Specific RAG (Working Memory)
+        from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
+        try:
+            if not self.settings.server.skip_service_checks:
+                # Lifecycle-based cleanup (deleted when case closes/archives)
+                self.case_vector_store = CaseVectorStore()
+                logger.debug("Case vector store initialized for Session-Specific RAG (lifecycle-based cleanup)")
+            else:
+                logger.info("Skipping case vector store initialization (SKIP_SERVICE_CHECKS=True)")
+                self.case_vector_store = None
+        except Exception as e:
+            logger.warning(f"Case vector store initialization failed: {e}")
+            self.case_vector_store = None
+
         # Redis client for persistence (sessions, cases, KB metadata)
         try:
             if not self.settings.server.skip_service_checks:
-                from faultmaven.infrastructure.redis_client import create_redis_client
+                from faultmaven.infrastructure.redis_client import create_redis_client, validate_redis_connection
                 self.redis_client = create_redis_client()
-                logger.info("✅ Redis client initialized for application persistence")
-                
+
+                # Validate connection in async context (ensures event loop is properly bound)
+                await validate_redis_connection(self.redis_client)
+                logger.info("✅ Redis client initialized and validated for application persistence")
+
             else:
                 logger.info("Skipping Redis client initialization (SKIP_SERVICE_CHECKS=True)")
                 self.redis_client = None
@@ -265,6 +307,26 @@ class DIContainer:
             logger.warning(f"Case store initialization failed: {e}")
             self.case_store = None
 
+        # Report store for report persistence (requires vector_store and redis_client)
+        try:
+            from faultmaven.infrastructure.persistence.redis_report_store import RedisReportStore
+            if not self.settings.server.skip_service_checks and self.redis_client and self.vector_store:
+                self.report_store: IReportStore = RedisReportStore(
+                    redis_client=self.redis_client,
+                    vector_store=self.vector_store,
+                    runbook_kb=None  # Will be injected later after RunbookKnowledgeBase is initialized
+                )
+                logger.debug("Report store initialized")
+            else:
+                logger.debug("Report store skipped (missing dependencies or SKIP_SERVICE_CHECKS=True)")
+                self.report_store = None
+        except ImportError:
+            logger.debug("Report store not available - report persistence disabled")
+            self.report_store = None
+        except Exception as e:
+            logger.warning(f"Report store initialization failed: {e}")
+            self.report_store = None
+
         # Authentication services initialization
         try:
             from faultmaven.infrastructure.auth.token_manager import DevTokenManager
@@ -294,11 +356,11 @@ class DIContainer:
         logger = logging.getLogger(__name__)
         from faultmaven.tools.registry import tool_registry
         from faultmaven.core.knowledge.ingestion import KnowledgeIngester
-        
+
         # Import tools to trigger registration
         import faultmaven.tools.knowledge_base
         import faultmaven.tools.web_search
-        
+
         # Create knowledge ingester for tools that need it
         try:
             if not self.settings.server.skip_service_checks:
@@ -309,13 +371,30 @@ class DIContainer:
         except Exception as e:
             logger.warning(f"KnowledgeIngester creation failed: {e}")
             ingester = None
-        
+
         # Create all registered tools with settings
         self.tools: List[BaseTool] = tool_registry.create_all_tools(
             knowledge_ingester=ingester,
             settings=self.settings
         )
-        
+
+        # Create answer_from_document tool for Session-Specific RAG
+        try:
+            if not self.settings.server.skip_service_checks and hasattr(self, 'case_vector_store') and self.case_vector_store:
+                from faultmaven.tools.answer_from_document import AnswerFromDocumentTool
+
+                self.answer_from_document_tool = AnswerFromDocumentTool(
+                    case_vector_store=self.case_vector_store,
+                    llm_router=self.llm_provider
+                )
+                logger.debug("answer_from_document tool created for Session-Specific RAG")
+            else:
+                logger.debug("answer_from_document tool skipped (no case_vector_store or SKIP_SERVICE_CHECKS=True)")
+                self.answer_from_document_tool = None
+        except Exception as e:
+            logger.warning(f"answer_from_document tool creation failed: {e}")
+            self.answer_from_document_tool = None
+
         logger.debug(
             f"Tools layer created with {len(self.tools)} tools: {tool_registry.list_tools()}"
         )
@@ -337,6 +416,8 @@ class DIContainer:
                 self.case_service: ICaseService = CaseService(
                     case_store=self.case_store,
                     session_store=self.get_session_store(),
+                    report_store=self.get_report_store(),
+                    case_vector_store=self.case_vector_store,
                     settings=self.settings
                 )
                 logger.debug("Case service initialized")
@@ -411,7 +492,7 @@ class DIContainer:
             session_service=self.session_service,
             settings=self.settings
         )
-        
+
         # Knowledge Service - Knowledge base operations
         # Create knowledge ingester and vector store placeholders
         from faultmaven.core.knowledge.ingestion import KnowledgeIngester
@@ -545,12 +626,13 @@ class DIContainer:
             )
             logging.getLogger(__name__).debug("Pattern learner created")
             
-            # Enhanced Data Classifier - Memory-aware classification with pattern learning
-            from faultmaven.core.processing.classifier import EnhancedDataClassifier
-            self.enhanced_data_classifier = EnhancedDataClassifier(
-                memory_service=self.get_memory_service()
-            )
-            logging.getLogger(__name__).debug("Enhanced data classifier created")
+            # Enhanced Data Classifier - DISABLED (old classifier removed, using new preprocessing pipeline)
+            # from faultmaven.core.processing.classifier import EnhancedDataClassifier
+            # self.enhanced_data_classifier = EnhancedDataClassifier(
+            #     memory_service=self.get_memory_service()
+            # )
+            self.enhanced_data_classifier = None  # Placeholder
+            logging.getLogger(__name__).debug("Enhanced data classifier disabled (using new preprocessing pipeline)")
             
             # Enhanced Log Processor - Context-aware log processing with memory integration
             from faultmaven.core.processing.log_analyzer import EnhancedLogProcessor
@@ -847,7 +929,17 @@ class DIContainer:
                 logger.warning("Data service requested but container not initialized - this should not happen after startup")
                 self.initialize()
         return getattr(self, 'data_service', None)
-        
+
+    def get_preprocessing_service(self):
+        """Get the preprocessing service with all dependencies injected"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            # Only warn if not currently initializing
+            if not getattr(self, '_initializing', False):
+                logger.warning("Preprocessing service requested but container not initialized")
+                self.initialize()
+        return getattr(self, 'preprocessing_service', None)
+
     def get_knowledge_service(self):
         """Get the knowledge service with all dependencies injected"""
         if not self._initialized:
@@ -954,8 +1046,9 @@ class DIContainer:
     def _create_minimal_knowledge_service(self):
         """Create a minimal knowledge service for testing environments"""
         import uuid
-        from datetime import datetime
-        
+        from datetime import datetime, timezone
+        from faultmaven.utils.serialization import to_json_compatible
+
         class MinimalKnowledgeService:
             def __init__(self):
                 self.documents = {}  # Simple in-memory storage for testing
@@ -974,8 +1067,8 @@ class DIContainer:
                     "tags": tags or [],
                     "source_url": source_url,
                     "description": description,
-                    "created_at": datetime.utcnow().isoformat() + 'Z',
-                    "updated_at": datetime.utcnow().isoformat() + 'Z'
+                    "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                    "updated_at": to_json_compatible(datetime.now(timezone.utc))
                 }
                 
                 return {
@@ -987,7 +1080,7 @@ class DIContainer:
                         "document_type": document_type,
                         "category": category or document_type,
                         "tags": tags or [],
-                        "created_at": datetime.utcnow().isoformat() + 'Z'
+                        "created_at": to_json_compatible(datetime.now(timezone.utc))
                     }
                 }
             
@@ -1006,8 +1099,8 @@ class DIContainer:
                         "status": "processed",
                         "tags": ["test", "sample"],
                         "source_url": None,
-                        "created_at": datetime.utcnow().isoformat() + 'Z',
-                        "updated_at": datetime.utcnow().isoformat() + 'Z',
+                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                        "updated_at": to_json_compatible(datetime.now(timezone.utc)),
                         "metadata": {
                             "author": "test-system",
                             "version": "1.0"
@@ -1083,8 +1176,8 @@ class DIContainer:
                         "document_id": document_id,
                         "status": "completed",
                         "progress": 100,
-                        "created_at": datetime.utcnow().isoformat() + 'Z',
-                        "completed_at": datetime.utcnow().isoformat() + 'Z',
+                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                        "completed_at": to_json_compatible(datetime.now(timezone.utc)),
                         "processing_results": {
                             "chunks_created": 1,
                             "embeddings_generated": 1,
@@ -1105,8 +1198,8 @@ class DIContainer:
                         "document_type": "troubleshooting",
                         "category": "troubleshooting",
                         "tags": [],
-                        "created_at": datetime.utcnow().isoformat() + 'Z',
-                        "updated_at": datetime.utcnow().isoformat() + 'Z'
+                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                        "updated_at": to_json_compatible(datetime.now(timezone.utc))
                     }
                 
                 doc = self.documents[document_id]
@@ -1116,7 +1209,7 @@ class DIContainer:
                     doc["content"] = content
                 if tags is not None:
                     doc["tags"] = tags
-                doc["updated_at"] = datetime.utcnow().isoformat() + 'Z'
+                doc["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
                 
                 # Return as KnowledgeBaseDocument-like structure
                 return {
@@ -1134,7 +1227,7 @@ class DIContainer:
                 if document_id in self.documents:
                     doc = self.documents[document_id]
                     doc.update(kwargs)
-                    doc["updated_at"] = datetime.utcnow().isoformat() + 'Z'
+                    doc["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
                     return doc
                 return None
             
@@ -1143,7 +1236,7 @@ class DIContainer:
                 for doc_id in document_ids:
                     if doc_id in self.documents:
                         self.documents[doc_id].update(updates)
-                        self.documents[doc_id]["updated_at"] = datetime.utcnow().isoformat() + 'Z'
+                        self.documents[doc_id]["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
                         updated_count += 1
                 
                 return {
@@ -1183,7 +1276,7 @@ class DIContainer:
                     "total_chunks": len(self.documents),  # Simplified
                     "avg_chunk_size": 500,  # Mock value
                     "storage_used": f"{len(self.documents) * 0.5} MB",
-                    "last_updated": datetime.utcnow().isoformat() + 'Z'
+                    "last_updated": to_json_compatible(datetime.now(timezone.utc))
                 }
             
             async def get_search_analytics(self):
@@ -1295,6 +1388,15 @@ class DIContainer:
                 logger.warning("Log processor requested but container not initialized - this should not happen after startup")
                 self.initialize()
         return getattr(self, 'log_processor', None)
+
+    def get_preprocessing_service(self):
+        """Get the preprocessing service (new Phase 1 pipeline)"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            if not getattr(self, '_initializing', False):
+                logger.warning("Preprocessing service requested but container not initialized")
+                self.initialize()
+        return getattr(self, 'preprocessing_service', None)
     
     def get_vector_store(self):
         """Get the vector store interface implementation"""
@@ -1342,6 +1444,13 @@ class DIContainer:
             if not getattr(self, '_initializing', False):
                 self.initialize()
         return getattr(self, 'case_store', None)
+
+    def get_report_store(self) -> Optional[IReportStore]:
+        """Get the report store implementation (optional feature)"""
+        if not self._initialized:
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'report_store', None)
     
     def get_config(self):
         """Get the configuration manager instance"""
@@ -1360,8 +1469,8 @@ class DIContainer:
                 self.session_id = session_id
                 self.user_id = user_id
                 self.metadata = metadata or {}
-                self.created_at = datetime.utcnow()
-                self.last_activity = datetime.utcnow()
+                self.created_at = datetime.now(timezone.utc)
+                self.last_activity = datetime.now(timezone.utc)
                 self.data_uploads = []
                 self.case_history = []
         
@@ -1407,7 +1516,7 @@ class DIContainer:
             
             async def update_last_activity(self, session_id):
                 if session_id in self.sessions:
-                    self.sessions[session_id].last_activity = datetime.utcnow()
+                    self.sessions[session_id].last_activity = datetime.now(timezone.utc)
                     return True
                 return False
             
@@ -1455,7 +1564,7 @@ class DIContainer:
                         "case_id": case_id,
                         "context": context,
                         "confidence_score": confidence_score,
-                        "timestamp": datetime.utcnow()
+                        "timestamp": datetime.now(timezone.utc)
                     })
                     return True
                 return False
@@ -1490,7 +1599,7 @@ class DIContainer:
                         "message_type": str(message_type) if message_type else "user_query",
                         "author_id": author_id,
                         "metadata": metadata or {},
-                        "timestamp": datetime.utcnow()
+                        "timestamp": datetime.now(timezone.utc)
                     })
                     return True
                 return False
@@ -1516,13 +1625,13 @@ class DIContainer:
                 final_owner_id = user_id or owner_id or "anonymous"
                 
                 # Phase 2: Handle initial_message transactionally
-                current_time = datetime.utcnow()
+                current_time = datetime.now(timezone.utc)
                 message_count = 0
                 
                 # Phase 2: If initial_message provided, set message_count=1 and update timestamp
                 if initial_message and initial_message.strip():
                     message_count = 1
-                    current_time = datetime.utcnow()  # Refresh timestamp for message creation
+                    current_time = datetime.now(timezone.utc)  # Refresh timestamp for message creation
                 
                 # Phase 3: Handle auto-title generation - set title_manually_set flag
                 provided_title = title or "New Chat"
@@ -1640,7 +1749,7 @@ class DIContainer:
             async def update_case_status(self, case_id, status):
                 if case_id in self.cases:
                     self.cases[case_id].status = status
-                    self.cases[case_id].updated_at = datetime.utcnow()
+                    self.cases[case_id].updated_at = datetime.now(timezone.utc)
                     return True
                 return False
                 
@@ -1648,7 +1757,7 @@ class DIContainer:
                 # Phase 2 & 3: Update message_count, updated_at, and handle auto-title generation
                 if case_id in self.cases:
                     case = self.cases[case_id]
-                    current_time = datetime.utcnow()
+                    current_time = datetime.now(timezone.utc)
                     
                     # Phase 2: Update message count and timestamp
                     case.message_count = getattr(case, 'message_count', 0) + 1
@@ -1671,7 +1780,7 @@ class DIContainer:
                     "case_id": case_id,
                     "query": query,
                     "priority": priority or "medium",
-                    "created_at": datetime.utcnow()
+                    "created_at": datetime.now(timezone.utc)
                 }
                 
             async def check_idempotency_key(self, idempotency_key: str):
@@ -1780,7 +1889,7 @@ class DIContainer:
                 
                 # Update case status to archived
                 self.cases[case_id].status = CaseStatus.ARCHIVED
-                self.cases[case_id].updated_at = datetime.utcnow()
+                self.cases[case_id].updated_at = datetime.now(timezone.utc)
                 
                 # Store archive reason in metadata if provided
                 if reason:
@@ -1872,7 +1981,7 @@ class DIContainer:
                             if timestamp:
                                 try:
                                     if hasattr(timestamp, 'isoformat'):
-                                        created_at = timestamp.isoformat() + 'Z'
+                                        created_at = to_json_compatible(timestamp)
                                     else:
                                         created_at = str(timestamp)
                                 except Exception:
@@ -1882,7 +1991,7 @@ class DIContainer:
                                 message_id=message_id or f"msg_{len(messages)}",
                                 role=role,
                                 content=content,
-                                created_at=created_at or datetime.utcnow().isoformat() + 'Z'
+                                created_at=created_at or to_json_compatible(datetime.now(timezone.utc))
                             ))
                         except Exception as e:
                             message_parsing_errors += 1
@@ -1935,7 +2044,7 @@ class DIContainer:
                     "case_id": case_id,
                     "message_type": "user_query", 
                     "content": query.strip(),
-                    "timestamp": datetime.utcnow(),
+                    "timestamp": datetime.now(timezone.utc),
                     "user_id": user_id or "anonymous"
                 }
                 self.case_messages[case_id].append(query_msg)
@@ -1943,7 +2052,7 @@ class DIContainer:
                 # Update case metadata
                 case = self.cases[case_id]
                 case.message_count = len(self.case_messages[case_id])
-                case.updated_at = datetime.utcnow()
+                case.updated_at = datetime.now(timezone.utc)
                 
                 return True
             
@@ -1962,7 +2071,7 @@ class DIContainer:
                     "message_type": "agent_response", 
                     "content": response_content.strip() if response_content else "",
                     "response_type": response_type,
-                    "timestamp": datetime.utcnow(),
+                    "timestamp": datetime.now(timezone.utc),
                     "user_id": user_id or "anonymous"
                 }
                 self.case_messages[case_id].append(response_msg)
@@ -1970,7 +2079,7 @@ class DIContainer:
                 # Update case metadata
                 case = self.cases[case_id]
                 case.message_count = len(self.case_messages[case_id])
-                case.updated_at = datetime.utcnow()
+                case.updated_at = datetime.now(timezone.utc)
                 
                 return True
             
@@ -2008,7 +2117,7 @@ class DIContainer:
                     return False
                 
                 case = self.cases[case_id]
-                current_time = datetime.utcnow()
+                current_time = datetime.now(timezone.utc)
                 
                 # Phase 3: Handle manual title updates
                 if 'title' in updates:

@@ -4,7 +4,8 @@ import asyncio
 import json
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
+from faultmaven.models import parse_utc_timestamp
 from typing import Dict, List, Optional, Any, Tuple
 from collections import defaultdict
 
@@ -170,7 +171,7 @@ class ReputationEngine:
             reputation.overall_score = max(0, min(100, reputation.overall_score))
             
             # Update metadata
-            reputation.last_updated = datetime.utcnow()
+            reputation.last_updated = datetime.now(timezone.utc)
             
             # Log significant changes
             score_change = reputation.overall_score - old_score
@@ -315,7 +316,7 @@ class ReputationEngine:
         """Get reputation from cache if valid"""
         if client_id in self._reputation_cache:
             cache_time = self._cache_timestamps.get(client_id)
-            if cache_time and datetime.utcnow() - cache_time < self._cache_ttl:
+            if cache_time and datetime.now(timezone.utc) - cache_time < self._cache_ttl:
                 return self._reputation_cache[client_id]
         
         return None
@@ -323,7 +324,7 @@ class ReputationEngine:
     async def _cache_reputation(self, reputation: ReputationScore):
         """Cache reputation score"""
         self._reputation_cache[reputation.client_id] = reputation
-        self._cache_timestamps[reputation.client_id] = datetime.utcnow()
+        self._cache_timestamps[reputation.client_id] = datetime.now(timezone.utc)
 
     async def _invalidate_cache(self, client_id: str):
         """Invalidate cache for client"""
@@ -347,26 +348,26 @@ class ReputationEngine:
                 
                 # Convert datetime strings back to datetime objects
                 if 'first_scored' in reputation_data:
-                    reputation_data['first_scored'] = datetime.fromisoformat(reputation_data['first_scored'])
+                    reputation_data['first_scored'] = parse_utc_timestamp(reputation_data['first_scored'])
                 if 'last_updated' in reputation_data:
-                    reputation_data['last_updated'] = datetime.fromisoformat(reputation_data['last_updated'])
+                    reputation_data['last_updated'] = parse_utc_timestamp(reputation_data['last_updated'])
                 if 'last_violation' in reputation_data and reputation_data['last_violation']:
-                    reputation_data['last_violation'] = datetime.fromisoformat(reputation_data['last_violation'])
+                    reputation_data['last_violation'] = parse_utc_timestamp(reputation_data['last_violation'])
                 if 'last_positive_event' in reputation_data and reputation_data['last_positive_event']:
-                    reputation_data['last_positive_event'] = datetime.fromisoformat(reputation_data['last_positive_event'])
+                    reputation_data['last_positive_event'] = parse_utc_timestamp(reputation_data['last_positive_event'])
                 
                 # Convert violation and event lists
                 violations = []
                 for v_data in reputation_data.get('historical_violations', []):
                     if 'timestamp' in v_data:
-                        v_data['timestamp'] = datetime.fromisoformat(v_data['timestamp'])
+                        v_data['timestamp'] = parse_utc_timestamp(v_data['timestamp'])
                     violations.append(Violation(**v_data))
                 reputation_data['historical_violations'] = violations
                 
                 events = []
                 for e_data in reputation_data.get('reputation_events', []):
                     if 'timestamp' in e_data:
-                        e_data['timestamp'] = datetime.fromisoformat(e_data['timestamp'])
+                        e_data['timestamp'] = parse_utc_timestamp(e_data['timestamp'])
                     events.append(ReputationEvent(**e_data))
                 reputation_data['reputation_events'] = events
                 
@@ -417,7 +418,7 @@ class ReputationEngine:
 
     async def _create_new_reputation(self, client_id: str) -> ReputationScore:
         """Create new reputation score with default values"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         return ReputationScore(
             client_id=client_id,
             overall_score=75,  # Start with neutral-good score
@@ -432,7 +433,7 @@ class ReputationEngine:
 
     async def _update_reputation_scores(self, reputation: ReputationScore):
         """Update component scores based on recent events"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         recent_window = timedelta(days=7)  # Consider events from last 7 days
         
         recent_events = [
@@ -464,7 +465,7 @@ class ReputationEngine:
 
     async def _apply_temporal_decay(self, reputation: ReputationScore):
         """Apply temporal decay for reputation recovery"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         # Apply daily decay if no updates in the last day
         if now - reputation.last_updated > timedelta(days=1):
@@ -576,7 +577,7 @@ class ReputationEngine:
     async def cleanup_old_reputations(self):
         """Clean up old reputation data"""
         try:
-            cutoff_time = datetime.utcnow() - timedelta(days=60)  # Keep 60 days of data
+            cutoff_time = datetime.now(timezone.utc) - timedelta(days=60)  # Keep 60 days of data
             
             # Clean up cache
             to_remove = []

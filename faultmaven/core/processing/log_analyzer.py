@@ -35,7 +35,7 @@ Core Design Principles:
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 from collections import defaultdict, deque
@@ -1160,7 +1160,7 @@ class LogProcessor(ILogProcessor):
         Returns:
             DataInsightsResponse with extracted insights
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
 
         try:
             # Parse logs into structured format
@@ -1169,7 +1169,7 @@ class LogProcessor(ILogProcessor):
             if df.empty:
                 return DataInsightsResponse(
                     data_id=data_id,
-                    data_type=DataType.LOG_FILE,
+                    data_type=DataType.LOGS_AND_ERRORS,
                     insights={"error": "No valid log entries found"},
                     confidence_score=0.0,
                     processing_time_ms=0,
@@ -1193,12 +1193,12 @@ class LogProcessor(ILogProcessor):
 
             # Calculate processing time
             processing_time = int(
-                (datetime.utcnow() - start_time).total_seconds() * 1000
+                (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
             )
 
             return DataInsightsResponse(
                 data_id=data_id,
-                data_type=DataType.LOG_FILE,
+                data_type=DataType.LOGS_AND_ERRORS,
                 insights=insights,
                 confidence_score=confidence,
                 processing_time_ms=processing_time,
@@ -1210,7 +1210,7 @@ class LogProcessor(ILogProcessor):
             self.logger.error(f"Log processing failed: {e}")
             return DataInsightsResponse(
                 data_id=data_id,
-                data_type=DataType.LOG_FILE,
+                data_type=DataType.LOGS_AND_ERRORS,
                 insights={"error": str(e)},
                 confidence_score=0.0,
                 processing_time_ms=0,

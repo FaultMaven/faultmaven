@@ -1,10 +1,15 @@
-"""Legacy models to maintain backward compatibility.
+"""Common models shared across FaultMaven.
 
-This module contains models that were originally in models_original.py
-but need to be maintained for backward compatibility during the refactoring.
+This module contains foundational models used throughout the application:
+- SessionContext: Session management and state tracking
+- AgentState: Agent workflow and execution state
+- API Response models: DataInsightsResponse, TroubleshootingResponse
+- Search models: SearchRequest, SearchResult
+- Utility functions: utc_timestamp(), parse_utc_timestamp()
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
+from faultmaven.utils.serialization import to_json_compatible
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -43,13 +48,13 @@ class SessionContext(BaseModel):
     session_id: str = Field(..., description="Unique session identifier")
     user_id: Optional[str] = Field(None, description="User identifier if authenticated")
     created_at: datetime = Field(
-        default_factory=datetime.utcnow, description="Session creation timestamp"
+        default_factory=lambda: datetime.now(timezone.utc), description="Session creation timestamp"
     )
     last_activity: datetime = Field(
-        default_factory=datetime.utcnow, description="Last activity timestamp"
+        default_factory=lambda: datetime.now(timezone.utc), description="Last activity timestamp"
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow, description="Last update timestamp"
+        default_factory=lambda: datetime.now(timezone.utc), description="Last update timestamp"
     )
     data_uploads: List[str] = Field(
         default_factory=list, description="List of uploaded data IDs"
@@ -64,13 +69,13 @@ class SessionContext(BaseModel):
     @property
     def active(self) -> bool:
         """Check if session is considered active based on last activity (24 hours default)"""
-        from datetime import timedelta
+        from datetime import timedelta, timezone
         inactive_threshold = timedelta(hours=24)
-        time_since_activity = datetime.utcnow() - self.last_activity
+        time_since_activity = datetime.now(timezone.utc) - self.last_activity
         return time_since_activity < inactive_threshold
 
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
+        json_encoders = {datetime: lambda v: to_json_compatible(v)}
 
 
 class DataInsightsResponse(BaseModel):
@@ -93,7 +98,7 @@ class DataInsightsResponse(BaseModel):
     )
 
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
+        json_encoders = {datetime: lambda v: to_json_compatible(v)}
 
 
 class TroubleshootingResponse(BaseModel):
@@ -117,14 +122,14 @@ class TroubleshootingResponse(BaseModel):
         default_factory=list, description="Recommended next steps"
     )
     created_at: datetime = Field(
-        default_factory=datetime.utcnow, description="Case creation timestamp"
+        default_factory=lambda: datetime.now(timezone.utc), description="Case creation timestamp"
     )
     completed_at: Optional[datetime] = Field(
         None, description="Case completion timestamp"
     )
 
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
+        json_encoders = {datetime: lambda v: to_json_compatible(v)}
 
 
 class SearchRequest(BaseModel):
@@ -158,24 +163,38 @@ def utc_timestamp() -> str:
     Returns:
         str: UTC timestamp in ISO format with 'Z' suffix (e.g. "2024-01-15T14:30:00.123Z")
     """
-    return datetime.utcnow().isoformat() + 'Z'
+    return to_json_compatible(datetime.now(timezone.utc))
 
 
 def parse_utc_timestamp(timestamp_str: str) -> datetime:
-    """Parse UTC timestamp string into timezone-naive datetime object.
-    
-    Handles both 'Z' suffix format and regular ISO format consistently,
-    returning timezone-naive datetime objects to avoid comparison issues.
-    
+    """Parse UTC timestamp string into timezone-aware datetime object.
+
+    Handles multiple ISO 8601 formats:
+    - '2025-10-17T04:02:59+00:00' (timezone-aware with +00:00)
+    - '2025-10-17T04:02:59Z' (Zulu time suffix)
+    - '2025-10-17T04:02:59' (naive, assumed UTC)
+    - '2025-10-17T04:02:59+00:00Z' (CORRUPTED - legacy data only, auto-fixes on save)
+
     Args:
-        timestamp_str: UTC timestamp string (with or without 'Z' suffix)
-        
+        timestamp_str: UTC timestamp string in various formats
+
     Returns:
-        datetime: Timezone-naive datetime object in UTC
+        datetime: Timezone-aware datetime object in UTC
+
+    Note:
+        The corrupted format (both +00:00 and Z) is handled for backwards compatibility
+        with old data. When cases are re-saved, timestamps are automatically standardized
+        to the proper +00:00 format.
     """
+    from datetime import timezone
+
     if timestamp_str.endswith('Z'):
-        # Remove 'Z' suffix and parse as naive datetime (already UTC)
-        return datetime.fromisoformat(timestamp_str[:-1])
+        # Remove 'Z' suffix and parse
+        # This also handles corrupted '+00:00Z' format by stripping Z, leaving valid '+00:00'
+        dt = datetime.fromisoformat(timestamp_str[:-1])
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
     else:
-        # Parse regular ISO format
-        return datetime.fromisoformat(timestamp_str)
+        # Parse ISO format (handles +00:00 automatically)
+        dt = datetime.fromisoformat(timestamp_str)
+        # If naive, assume UTC
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt

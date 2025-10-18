@@ -16,7 +16,8 @@ Design principles:
 import logging
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from faultmaven.models import parse_utc_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -336,14 +337,15 @@ class TokenAwareContextManager:
             role = item.get("role", "user")
             timestamp_str = item.get("timestamp")
 
-            # Parse timestamp
+            # Parse timestamp (convert to timezone-naive for consistency)
             try:
                 if timestamp_str:
-                    timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                    dt = parse_utc_timestamp(timestamp_str)
+                    timestamp = dt.replace(tzinfo=None)
                 else:
-                    timestamp = datetime.utcnow()
+                    timestamp = datetime.now(timezone.utc)
             except:
-                timestamp = datetime.utcnow()
+                timestamp = datetime.now(timezone.utc)
 
             # Count tokens
             tokens = TokenCounter.count_tokens(content)

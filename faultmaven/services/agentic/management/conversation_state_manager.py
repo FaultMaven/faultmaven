@@ -21,10 +21,11 @@ Design Principles:
 import json
 import logging
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, asdict
 
 from faultmaven.infrastructure.redis_client import create_redis_client
+from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +69,9 @@ class ConversationState:
         if self.repeated_questions is None:
             self.repeated_questions = []
         if self.created_at is None:
-            self.created_at = datetime.utcnow().isoformat()
+            self.created_at = to_json_compatible(datetime.now(timezone.utc))
         if self.updated_at is None:
-            self.updated_at = datetime.utcnow().isoformat()
+            self.updated_at = to_json_compatible(datetime.now(timezone.utc))
 
 
 class ConversationStateManager:
@@ -181,7 +182,7 @@ class ConversationStateManager:
             state_key = self._get_state_key(session_id, case_id)
 
             # Update timestamp
-            state.updated_at = datetime.utcnow().isoformat()
+            state.updated_at = to_json_compatible(datetime.now(timezone.utc))
 
             # Serialize to JSON
             state_dict = asdict(state)

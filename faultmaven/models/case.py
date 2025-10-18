@@ -10,7 +10,8 @@ Key Models:
 - CaseContext: Contextual information and artifacts
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
+from faultmaven.utils.serialization import to_json_compatible
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
@@ -33,7 +34,9 @@ class CaseStatus(str, Enum):
     SOLVED = "solved"
     RESOLVED = "resolved"  # Alias for solved - used by frontend/API
     STALLED = "stalled"
+    DOCUMENTING = "documenting"  # NEW: Generating reports post-resolution
     ARCHIVED = "archived"
+    CLOSED = "closed"  # NEW: Final terminal state with reports
     SHARED = "shared"
 
 
@@ -73,7 +76,7 @@ class CaseMessage(BaseModel):
     author_id: Optional[str] = Field(None, description="User who created the message")
     message_type: MessageType = Field(..., description="Type of message")
     content: str = Field(..., description="Message content")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Message creation time")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Message creation time")
     
     # Message metadata
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional message metadata")
@@ -84,7 +87,7 @@ class CaseMessage(BaseModel):
     processing_time_ms: Optional[int] = Field(None, description="Time taken to process message")
     
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
+        json_encoders = {datetime: lambda v: to_json_compatible(v)}
 
 
 class CaseParticipant(BaseModel):
@@ -92,7 +95,7 @@ class CaseParticipant(BaseModel):
     
     user_id: str = Field(..., description="User identifier")
     role: ParticipantRole = Field(..., description="User's role in the case")
-    added_at: datetime = Field(default_factory=datetime.utcnow, description="When user was added")
+    added_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="When user was added")
     added_by: Optional[str] = Field(None, description="Who added this participant")
     last_accessed: Optional[datetime] = Field(None, description="Last time user accessed case")
     
@@ -138,7 +141,7 @@ class CaseParticipant(BaseModel):
         return self
     
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
+        json_encoders = {datetime: lambda v: to_json_compatible(v)}
 
 
 class UrgencyLevel(str, Enum):
@@ -286,7 +289,7 @@ class CaseDiagnosticState(BaseModel):
     runbook_url: Optional[str] = Field(None, description="URL to generated runbook")
 
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
+        json_encoders = {datetime: lambda v: to_json_compatible(v)}
 
 
 class CaseContext(BaseModel):
@@ -333,9 +336,9 @@ class Case(BaseModel):
     # Lifecycle management
     status: CaseStatus = Field(default=CaseStatus.ACTIVE, description="Current case status")
     priority: CasePriority = Field(default=CasePriority.MEDIUM, description="Case priority level")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="Case creation time")
-    updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update time")
-    last_activity_at: datetime = Field(default_factory=datetime.utcnow, description="Last activity time")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Case creation time")
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Last update time")
+    last_activity_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Last activity time")
     
     # Persistence and expiration
     expires_at: Optional[datetime] = Field(None, description="Case expiration time")
@@ -354,7 +357,12 @@ class Case(BaseModel):
     # Metadata and tags
     tags: List[str] = Field(default_factory=list, description="Case tags for organization")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional case metadata")
-    
+
+    # Document generation (FR-CM-006)
+    documenting_started_at: Optional[datetime] = Field(None, description="When case entered DOCUMENTING state")
+    report_generation_count: int = Field(default=0, ge=0, le=5, description="Number of report generation requests")
+    max_report_regenerations: int = Field(default=5, ge=1, le=10, description="Maximum allowed regenerations")
+
     # Analytics and metrics
     resolution_time_hours: Optional[float] = Field(None, description="Time to resolution in hours")
     participant_count: int = Field(default=0, description="Number of participants")
@@ -364,7 +372,7 @@ class Case(BaseModel):
     def set_expiration_date(cls, v, values):
         """Set expiration date based on auto_archive_after_days if not provided"""
         if v is None:
-            created_at = values.get('created_at', datetime.utcnow())
+            created_at = values.get('created_at', datetime.now(timezone.utc))
             auto_archive_days = values.get('auto_archive_after_days', 30)
             return created_at + timedelta(days=auto_archive_days)
         return v
@@ -391,7 +399,7 @@ class Case(BaseModel):
         
         self.participants.append(new_participant)
         self.participant_count = len(self.participants)
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
         
         return True
     
@@ -405,7 +413,7 @@ class Case(BaseModel):
                 
                 del self.participants[i]
                 self.participant_count = len(self.participants)
-                self.updated_at = datetime.utcnow()
+                self.updated_at = datetime.now(timezone.utc)
                 return True
         
         return False  # Participant not found
@@ -419,7 +427,7 @@ class Case(BaseModel):
                     return False
                 
                 participant.role = new_role
-                self.updated_at = datetime.utcnow()
+                self.updated_at = datetime.now(timezone.utc)
                 return True
         
         return False  # Participant not found
@@ -429,8 +437,8 @@ class Case(BaseModel):
         message.case_id = self.case_id
         self.messages.append(message)
         self.message_count = len(self.messages)
-        self.last_activity_at = datetime.utcnow()
-        self.updated_at = datetime.utcnow()
+        self.last_activity_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
     
     def get_participant_role(self, user_id: str) -> Optional[ParticipantRole]:
         """Get a user's role in the case"""
@@ -461,24 +469,24 @@ class Case(BaseModel):
         """Check if the case has expired"""
         if self.expires_at is None:
             return False
-        return datetime.utcnow() > self.expires_at
+        return datetime.now(timezone.utc) > self.expires_at
     
     def extend_expiration(self, additional_days: int = 30) -> None:
         """Extend case expiration by additional days"""
         if self.expires_at is None:
-            self.expires_at = datetime.utcnow() + timedelta(days=additional_days)
+            self.expires_at = datetime.now(timezone.utc) + timedelta(days=additional_days)
         else:
             self.expires_at = self.expires_at + timedelta(days=additional_days)
         
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
     
     def mark_as_solved(self, resolution_summary: Optional[str] = None) -> None:
         """Mark case as solved"""
         self.status = CaseStatus.SOLVED
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
         
         if self.created_at:
-            duration = datetime.utcnow() - self.created_at
+            duration = datetime.now(timezone.utc) - self.created_at
             self.resolution_time_hours = duration.total_seconds() / 3600
         
         if resolution_summary:
@@ -487,7 +495,7 @@ class Case(BaseModel):
     def archive(self, reason: Optional[str] = None) -> None:
         """Archive the case"""
         self.status = CaseStatus.ARCHIVED
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
         
         if reason:
             self.metadata['archive_reason'] = reason
@@ -525,19 +533,19 @@ class Case(BaseModel):
     
     class Config:
         json_encoders = {
-            datetime: lambda v: v.isoformat() + 'Z',
+            datetime: lambda v: to_json_compatible(v),
             set: lambda v: list(v)  # Convert sets to lists for JSON serialization
         }
 
 
 class CaseCreateRequest(BaseModel):
     """Request model for creating a new case"""
-    
+
     title: str = Field(..., description="Case title", max_length=200)
     description: Optional[str] = Field(None, description="Case description", max_length=2000)
     priority: CasePriority = Field(default=CasePriority.MEDIUM, description="Case priority")
     tags: List[str] = Field(default_factory=list, description="Case tags")
-    session_id: Optional[str] = Field(None, description="Associated session ID")
+    session_id: Optional[str] = Field(None, description="Session ID for authentication")
     initial_message: Optional[str] = Field(None, description="Initial case message")
 
 
@@ -604,4 +612,4 @@ class CaseSummary(BaseModel):
     tags: List[str]
 
     class Config:
-        json_encoders = {datetime: lambda v: v.isoformat() + 'Z'}
+        json_encoders = {datetime: lambda v: to_json_compatible(v)}

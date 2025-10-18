@@ -5,7 +5,7 @@ This module provides a ChromaDB-based vector store that implements
 the IVectorStore interface for consistent vector database operations.
 """
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import os
 from urllib.parse import urlparse
 import chromadb
@@ -154,11 +154,11 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     async def search(self, query: str, k: int = 5) -> List[Dict]:
         """
         Search for similar documents in the vector store.
-        
+
         Args:
             query: Search query text
             k: Number of results to return
-            
+
         Returns:
             List of similar documents with scores
         """
@@ -168,7 +168,7 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
                 n_results=k,
                 include=["documents", "metadatas", "distances"]
             )
-            
+
             # Format results according to interface contract
             formatted_results = []
             for i in range(len(results['ids'][0])):
@@ -178,13 +178,59 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
                     'metadata': results['metadatas'][0][i],
                     'score': 1.0 - results['distances'][0][i]  # Convert distance to similarity
                 })
-            
+
             self.logger.debug(f"Found {len(formatted_results)} similar documents")
             return formatted_results
-        
+
         return await self.call_external(
             operation_name="search",
             call_func=_search_wrapper,
+            timeout=10.0,
+            retries=2,
+            retry_delay=1.0
+        )
+
+    async def query_by_embedding(
+        self,
+        query_embedding: List[float],
+        where: Optional[Dict[str, Any]] = None,
+        top_k: int = 5
+    ) -> Dict[str, Any]:
+        """
+        Query vector store using pre-computed embedding.
+
+        Used for runbook similarity search where embeddings are computed externally.
+
+        Args:
+            query_embedding: Pre-computed query embedding vector
+            where: Optional metadata filters (e.g., {"domain": "database"})
+            top_k: Number of results to return
+
+        Returns:
+            Dict with 'ids', 'distances', 'metadatas', 'documents' keys
+        """
+        async def _query_wrapper():
+            query_params = {
+                "query_embeddings": [query_embedding],
+                "n_results": top_k,
+                "include": ["documents", "metadatas", "distances"]
+            }
+
+            if where:
+                query_params["where"] = where
+
+            results = self.collection.query(**query_params)
+
+            self.logger.debug(
+                f"Embedding query returned {len(results.get('ids', [[]])[0])} results",
+                extra={"top_k": top_k, "has_filters": where is not None}
+            )
+
+            return results
+
+        return await self.call_external(
+            operation_name="query_by_embedding",
+            call_func=_query_wrapper,
             timeout=10.0,
             retries=2,
             retry_delay=1.0

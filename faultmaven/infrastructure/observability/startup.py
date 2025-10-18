@@ -16,7 +16,7 @@ Key Responsibilities:
 import asyncio
 import logging
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from faultmaven.container import container
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
@@ -45,16 +45,16 @@ class PerformanceMonitoringStartup:
         Returns:
             Initialization status and metrics
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         self.logger.info("Starting performance monitoring system initialization")
         
         try:
             # Get DI container
             di_container = container
-            
+
             # Ensure container is initialized
             if not di_container._initialized:
-                di_container.initialize()
+                await di_container.initialize()
                 await asyncio.sleep(1)  # Give container time to initialize
             
             # Initialize services in dependency order
@@ -80,7 +80,7 @@ class PerformanceMonitoringStartup:
             await self._start_sla_monitor(di_container, initialization_status)
             
             # Calculate final metrics
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             self.startup_metrics["startup_time"] = (end_time - start_time).total_seconds()
             
             # Determine overall status
@@ -125,7 +125,7 @@ class PerformanceMonitoringStartup:
                 status["services"]["metrics_collector"] = {
                     "status": "started",
                     "background_tasks": True,
-                    "startup_time": datetime.utcnow().isoformat()
+                    "startup_time": datetime.now(timezone.utc).isoformat()
                 }
                 self.startup_metrics["services_initialized"] += 1
                 self.startup_metrics["services_started"] += 1
@@ -159,7 +159,7 @@ class PerformanceMonitoringStartup:
                 status["services"]["intelligent_cache"] = {
                     "status": "started",
                     "background_tasks": True,
-                    "startup_time": datetime.utcnow().isoformat()
+                    "startup_time": datetime.now(timezone.utc).isoformat()
                 }
                 self.startup_metrics["services_initialized"] += 1
                 self.startup_metrics["services_started"] += 1
@@ -193,7 +193,7 @@ class PerformanceMonitoringStartup:
                 status["services"]["analytics_dashboard_service"] = {
                     "status": "started",
                     "background_tasks": True,
-                    "startup_time": datetime.utcnow().isoformat()
+                    "startup_time": datetime.now(timezone.utc).isoformat()
                 }
                 self.startup_metrics["services_initialized"] += 1
                 self.startup_metrics["services_started"] += 1
@@ -229,7 +229,7 @@ class PerformanceMonitoringStartup:
                     "background_tasks": True,
                     "auto_optimization_enabled": optimization_service._enable_auto_optimization,
                     "aggressiveness": optimization_service._optimization_aggressiveness,
-                    "startup_time": datetime.utcnow().isoformat()
+                    "startup_time": datetime.now(timezone.utc).isoformat()
                 }
                 self.startup_metrics["services_initialized"] += 1
                 self.startup_metrics["services_started"] += 1
@@ -265,7 +265,7 @@ class PerformanceMonitoringStartup:
                     "background_tasks": True,
                     "total_slas": len(sla_monitor._sla_definitions),
                     "alert_channels": len(sla_monitor._alert_channels),
-                    "startup_time": datetime.utcnow().isoformat()
+                    "startup_time": datetime.now(timezone.utc).isoformat()
                 }
                 self.startup_metrics["services_initialized"] += 1
                 self.startup_metrics["services_started"] += 1
@@ -294,7 +294,7 @@ class PerformanceMonitoringStartup:
         Returns:
             Shutdown status and metrics
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         self.logger.info("Starting performance monitoring system shutdown")
         
         shutdown_status = {
@@ -313,7 +313,7 @@ class PerformanceMonitoringStartup:
             await self._shutdown_intelligent_cache(di_container, shutdown_status)
             await self._shutdown_metrics_collector(di_container, shutdown_status)
             
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             shutdown_status.update({
                 "completed_at": end_time.isoformat(),
                 "shutdown_duration_seconds": (end_time - start_time).total_seconds()

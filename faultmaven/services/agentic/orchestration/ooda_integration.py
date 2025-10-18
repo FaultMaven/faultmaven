@@ -7,7 +7,7 @@ Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
 import logging
-from typing import Tuple, Optional, Any
+from typing import Tuple, Optional, Any, Dict
 from datetime import datetime
 
 from faultmaven.models.case import Case, CaseDiagnosticState
@@ -25,6 +25,7 @@ async def process_turn_with_ooda(
     llm_client: ILLMProvider,
     session_id: str,
     state_manager: Optional[AgentStateManager] = None,
+    context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[StructuredLLMResponse, CaseDiagnosticState]:
     """Process conversation turn using OODA framework
 
@@ -37,6 +38,7 @@ async def process_turn_with_ooda(
         llm_client: LLM provider
         session_id: Session identifier
         state_manager: Optional state manager for persistence
+        context: Optional context dict (e.g., file upload data, source metadata)
 
     Returns:
         Tuple of (StructuredLLMResponse, updated CaseDiagnosticState)
@@ -74,6 +76,7 @@ async def process_turn_with_ooda(
         user_query=user_query,
         investigation_state=investigation_state,
         conversation_history=conversation_history,
+        context=context,  # Pass file upload context to orchestrator
     )
 
     # Persist updated investigation state
@@ -367,6 +370,7 @@ async def process_turn_with_framework_selection(
     llm_client: ILLMProvider,
     session_id: str,
     state_manager: Optional[AgentStateManager] = None,
+    context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[StructuredLLMResponse, CaseDiagnosticState]:
     """Process turn with OODA framework
 
@@ -377,8 +381,9 @@ async def process_turn_with_framework_selection(
         user_query: User's query
         case: Case object
         llm_client: LLM provider
-        session_id: Session ID
+        session_id: Session identifier
         state_manager: Optional state manager
+        context: Optional context dict (e.g., file upload data, source metadata)
 
     Returns:
         Tuple of (StructuredLLMResponse, updated CaseDiagnosticState)
@@ -392,4 +397,5 @@ async def process_turn_with_framework_selection(
         llm_client=llm_client,
         session_id=session_id,
         state_manager=state_manager,
+        context=context,
     )

@@ -16,7 +16,7 @@ from faultmaven.models.responses import (
     ConsultantResponse,
     LeadInvestigatorResponse,
     SuggestedAction,
-    EvidenceRequest as OODAEvidenceRequest,
+    OODAEvidenceRequest,
     SolutionProposal,
 )
 from faultmaven.models.api import ResponseType, SourceType

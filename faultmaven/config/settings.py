@@ -71,7 +71,15 @@ class ServerSettings(BaseSettings):
 class LLMSettings(BaseSettings):
     """LLM provider configuration"""
     provider: LLMProvider = Field(default=LLMProvider.FIREWORKS, alias="CHAT_PROVIDER")
-    
+
+    # Multimodal provider for visual evidence processing (falls back to provider if not set)
+    multimodal_provider: Optional[LLMProvider] = Field(default=None, env="MULTIMODAL_PROVIDER")
+
+    # Synthesis provider for QA sub-agent (answer_from_document tool)
+    # Used for RAG-based question answering on uploaded documents
+    # If not specified, falls back to CHAT_PROVIDER
+    synthesis_provider: Optional[LLMProvider] = Field(default=None, env="SYNTHESIS_PROVIDER")
+
     # API Keys (SecretStr for security)
     openai_api_key: Optional[SecretStr] = Field(default=None, env="OPENAI_API_KEY")
     anthropic_api_key: Optional[SecretStr] = Field(default=None, env="ANTHROPIC_API_KEY")
@@ -134,6 +142,88 @@ class LLMSettings(BaseSettings):
             LLMProvider.LOCAL: self.local_model,
         }
         return model_map.get(self.provider, "")
+
+    def get_multimodal_provider(self) -> LLMProvider:
+        """Get multimodal provider (falls back to chat provider if not set)"""
+        return self.multimodal_provider or self.provider
+
+    def get_multimodal_api_key(self) -> Optional[str]:
+        """Get API key for multimodal provider"""
+        provider = self.get_multimodal_provider()
+        key_map = {
+            LLMProvider.OPENAI: self.openai_api_key,
+            LLMProvider.ANTHROPIC: self.anthropic_api_key,
+            LLMProvider.FIREWORKS: self.fireworks_api_key,
+            LLMProvider.COHERE: self.cohere_api_key,
+            LLMProvider.LOCAL: None,
+        }
+        key = key_map.get(provider)
+        return key.get_secret_value() if key else None
+
+    def get_multimodal_model(self) -> str:
+        """Get model for multimodal provider"""
+        provider = self.get_multimodal_provider()
+        model_map = {
+            LLMProvider.OPENAI: self.openai_model,
+            LLMProvider.ANTHROPIC: self.anthropic_model,
+            LLMProvider.FIREWORKS: self.fireworks_model,
+            LLMProvider.COHERE: self.cohere_model,
+            LLMProvider.LOCAL: self.local_model,
+        }
+        return model_map.get(provider, "")
+
+    def get_multimodal_base_url(self) -> str:
+        """Get base URL for multimodal provider"""
+        provider = self.get_multimodal_provider()
+        url_map = {
+            LLMProvider.OPENAI: self.openai_base_url,
+            LLMProvider.ANTHROPIC: self.anthropic_base_url,
+            LLMProvider.FIREWORKS: self.fireworks_base_url,
+            LLMProvider.COHERE: self.cohere_base_url,
+            LLMProvider.LOCAL: self.local_url,
+        }
+        return url_map.get(provider, "")
+
+    def get_synthesis_provider(self) -> LLMProvider:
+        """Get synthesis provider for QA sub-agent (falls back to chat provider if not set)"""
+        return self.synthesis_provider or self.provider
+
+    def get_synthesis_api_key(self) -> Optional[str]:
+        """Get API key for synthesis provider"""
+        provider = self.get_synthesis_provider()
+        key_map = {
+            LLMProvider.OPENAI: self.openai_api_key,
+            LLMProvider.ANTHROPIC: self.anthropic_api_key,
+            LLMProvider.FIREWORKS: self.fireworks_api_key,
+            LLMProvider.COHERE: self.cohere_api_key,
+            LLMProvider.LOCAL: None,
+        }
+        key = key_map.get(provider)
+        return key.get_secret_value() if key else None
+
+    def get_synthesis_model(self) -> str:
+        """Get model for synthesis provider"""
+        provider = self.get_synthesis_provider()
+        model_map = {
+            LLMProvider.OPENAI: self.openai_model,
+            LLMProvider.ANTHROPIC: self.anthropic_model,
+            LLMProvider.FIREWORKS: self.fireworks_model,
+            LLMProvider.COHERE: self.cohere_model,
+            LLMProvider.LOCAL: self.local_model,
+        }
+        return model_map.get(provider, "")
+
+    def get_synthesis_base_url(self) -> str:
+        """Get base URL for synthesis provider"""
+        provider = self.get_synthesis_provider()
+        url_map = {
+            LLMProvider.OPENAI: self.openai_base_url,
+            LLMProvider.ANTHROPIC: self.anthropic_base_url,
+            LLMProvider.FIREWORKS: self.fireworks_base_url,
+            LLMProvider.COHERE: self.cohere_base_url,
+            LLMProvider.LOCAL: self.local_url,
+        }
+        return url_map.get(provider, "")
 
     model_config = {
         "env_file": ".env",
@@ -231,12 +321,24 @@ class SecuritySettings(BaseSettings):
 
 class ProtectionSettings(BaseSettings):
     """Unified protection configuration - PII, behavioral, and ML protection"""
-    
+
     # Basic Protection Control
     protection_enabled: bool = Field(default=True, env="PROTECTION_ENABLED")
     fail_open: bool = Field(default=True, env="PROTECTION_FAIL_OPEN")
     basic_protection_enabled: bool = Field(default=True, env="BASIC_PROTECTION_ENABLED")
     intelligent_protection_enabled: bool = Field(default=True, env="INTELLIGENT_PROTECTION_ENABLED")
+
+    # PII Sanitization Control
+    # When True: Always sanitize PII before sending to LLM (safer, recommended for external LLMs)
+    # When False: Skip PII sanitization (only use with local/self-hosted LLMs)
+    # Note: This affects data sent to LLM providers. Disable only if using LOCAL provider
+    #       or if you trust your external LLM provider with sensitive data.
+    sanitize_pii: bool = Field(default=True, env="SANITIZE_PII")
+
+    # Auto-detect: Only sanitize when using external LLM providers
+    # When True: Automatically disable sanitization for LOCAL provider, enable for others
+    # When False: Use sanitize_pii setting regardless of provider
+    auto_sanitize_based_on_provider: bool = Field(default=True, env="AUTO_SANITIZE_BASED_ON_PROVIDER")
     
     # Presidio Configuration (K8s Ingress-based to avoid port conflicts)
     presidio_analyzer_url: str = Field(default="http://presidio-analyzer.faultmaven.local:30080", env="PRESIDIO_ANALYZER_URL")

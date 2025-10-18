@@ -76,9 +76,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Validate prompt
         if prompt is None:
             raise TypeError("Prompt cannot be None")
-        
-        # Sanitize prompt before sending to external providers
-        sanitized_prompt = self.sanitizer.sanitize(prompt)
+
+        # Sanitize prompt before sending to external providers (conditional)
+        sanitized_prompt = self._sanitize_if_needed(prompt)
         
         # Check cache first - always check with the original model parameter
         # The cache will be stored with the effective model used
@@ -175,6 +175,34 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Extract and return the text content from LLMResponse
         return response.content
     
+    def _sanitize_if_needed(self, prompt: str) -> str:
+        """
+        Conditionally sanitize prompt based on settings and provider type
+
+        Returns:
+            Sanitized or original prompt
+        """
+        # Check if auto-detect is enabled
+        if self.settings.protection.auto_sanitize_based_on_provider:
+            # Auto mode: Sanitize only for external providers (not LOCAL)
+            from faultmaven.config.settings import LLMProvider
+            is_local = self.settings.llm.provider == LLMProvider.LOCAL
+
+            if is_local:
+                self.logger.debug("🔓 LLM Router: Skipping PII sanitization (LOCAL provider)")
+                return prompt
+            else:
+                self.logger.debug(f"🔒 LLM Router: Applying PII sanitization (provider: {self.settings.llm.provider})")
+                return self.sanitizer.sanitize(prompt)
+        else:
+            # Manual mode: Use explicit setting
+            if self.settings.protection.sanitize_pii:
+                self.logger.debug("🔒 LLM Router: Applying PII sanitization (explicit config)")
+                return self.sanitizer.sanitize(prompt)
+            else:
+                self.logger.debug("🔓 LLM Router: Skipping PII sanitization (explicit config)")
+                return prompt
+
     def get_provider_status(self):
         """Get status of all providers"""
         return self.registry.get_provider_status()

@@ -30,7 +30,8 @@ Core Design Principles:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from faultmaven.utils.serialization import to_json_compatible
 from typing import Any, Dict, List, Optional
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -268,7 +269,7 @@ class FaultMavenAgent:
             # Add to findings
             state["findings"].append(
                 {
-                    "timestamp": datetime.utcnow().isoformat() + 'Z',
+                    "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                     "phase": "triage",
                     "finding": f"Initial assessment: {severity} severity",
                     "details": content,
@@ -301,7 +302,7 @@ class FaultMavenAgent:
                 # Add basic finding
                 state["findings"].append(
                     {
-                        "timestamp": datetime.utcnow().isoformat() + 'Z',
+                        "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                         "phase": "triage",
                         "finding": "Basic triage assessment (LLM providers unavailable)",
                         "details": basic_assessment,
@@ -357,7 +358,7 @@ class FaultMavenAgent:
                 for finding in phase_result["findings"]:
                     state["findings"].append(
                         {
-                            "timestamp": datetime.utcnow().isoformat() + 'Z',
+                            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                             "phase": "define_blast_radius",
                             "finding": finding,
                             "details": phase_result,
@@ -424,7 +425,7 @@ class FaultMavenAgent:
                 for finding in phase_result["findings"]:
                     state["findings"].append(
                         {
-                            "timestamp": datetime.utcnow().isoformat() + 'Z',
+                            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                             "phase": "establish_timeline",
                             "finding": finding,
                             "details": phase_result,
@@ -492,7 +493,7 @@ class FaultMavenAgent:
                 for finding in phase_result["findings"]:
                     state["findings"].append(
                         {
-                            "timestamp": datetime.utcnow().isoformat() + 'Z',
+                            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                             "phase": "formulate_hypothesis",
                             "finding": finding,
                             "details": phase_result,
@@ -562,7 +563,7 @@ class FaultMavenAgent:
                 for finding in phase_result["findings"]:
                     state["findings"].append(
                         {
-                            "timestamp": datetime.utcnow().isoformat() + 'Z',
+                            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                             "phase": "validate_hypothesis",
                             "finding": finding,
                             "details": phase_result,
@@ -632,7 +633,7 @@ class FaultMavenAgent:
                 for finding in phase_result["findings"]:
                     state["findings"].append(
                         {
-                            "timestamp": datetime.utcnow().isoformat() + 'Z',
+                            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                             "phase": "propose_solution",
                             "finding": finding,
                             "details": phase_result,
@@ -692,7 +693,7 @@ class FaultMavenAgent:
         state["case_context"]["last_agent_response"] = response
         state["case_context"][
             "response_timestamp"
-        ] = datetime.utcnow().isoformat() + 'Z'
+        ] = to_json_compatible(datetime.now(timezone.utc))
 
         # Set waiting for input
         state["case_context"]["waiting_for_input"] = True
@@ -747,7 +748,7 @@ class FaultMavenAgent:
         state["case_context"]["status"] = "awaiting_user_input"
         state["case_context"][
             "pause_timestamp"
-        ] = datetime.utcnow().isoformat() + 'Z'
+        ] = to_json_compatible(datetime.now(timezone.utc))
 
         return state
 
@@ -1083,7 +1084,7 @@ class FaultMavenAgent:
             current_phase="triage",
             case_context={
                 "uploaded_data": uploaded_data or [],
-                "start_time": datetime.utcnow().isoformat() + 'Z',
+                "start_time": to_json_compatible(datetime.now(timezone.utc)),
                 "interaction_count": 0,
                 "waiting_for_input": False,
             },
@@ -1154,7 +1155,7 @@ class FaultMavenAgent:
             state_values["case_context"]["last_user_input"] = user_input
             state_values["case_context"][
                 "input_timestamp"
-            ] = datetime.utcnow().isoformat() + 'Z'
+            ] = to_json_compatible(datetime.now(timezone.utc))
 
             # Resume the graph
             final_state = await self.compiled_graph.ainvoke(state_values, config=config)
@@ -1289,7 +1290,7 @@ class FaultMavenAgent:
                         "message": finding.get("finding", ""),
                         "details": finding.get("details", ""),
                         "timestamp": finding.get(
-                            "timestamp", datetime.utcnow().isoformat() + 'Z'
+                            "timestamp", to_json_compatible(datetime.now(timezone.utc))
                         ),
                         "severity": "info",
                     }
@@ -1339,7 +1340,7 @@ class FaultMavenAgent:
                         "type": "error",
                         "message": f"Processing error: {str(e)}",
                         "details": "Please try again or provide more details",
-                        "timestamp": datetime.utcnow().isoformat() + 'Z',
+                        "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                         "severity": "error",
                     }
                 ],
@@ -1413,12 +1414,12 @@ class FaultMavenAgent:
                 "error": error_message,
                 "agent_response": f"I encountered an error processing your request: {error_message}",
                 "waiting_for_input": False,
-                "start_time": datetime.utcnow().isoformat() + 'Z',
-                "end_time": datetime.utcnow().isoformat() + 'Z',
+                "start_time": to_json_compatible(datetime.now(timezone.utc)),
+                "end_time": to_json_compatible(datetime.now(timezone.utc)),
             },
             "findings": [
                 {
-                    "timestamp": datetime.utcnow().isoformat() + 'Z',
+                    "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                     "phase": "error",
                     "finding": f"Processing error: {error_message}",
                     "details": "Agent execution failed",

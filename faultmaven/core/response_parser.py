@@ -83,39 +83,122 @@ class ResponseParser:
         # Increment total attempts
         self.stats["total_attempts"] += 1
 
+
         # Tier 1: Function Calling (if dict provided)
         if isinstance(raw_response, dict):
+            logger.debug("Attempting Tier 1: Function Calling")
             result = self._tier1_function_calling(raw_response, expected_schema)
             if result:
                 self.stats["tier1_success"] += 1
                 logger.debug("Tier 1 (function calling) succeeded")
                 return result
+            logger.debug("Tier 1 failed, falling back to Tier 2")
 
         # Tier 2: JSON Parsing
         if isinstance(raw_response, str):
+            logger.debug("Attempting Tier 2: JSON Parsing")
             result = self._tier2_json_parsing(raw_response, expected_schema)
             if result:
                 # Stats already tracked by _tier2_json_parsing method
                 logger.debug("Tier 2 (JSON parsing) succeeded")
                 return result
+            logger.debug("Tier 2 failed, falling back to Tier 3")
 
             # Tier 3: Heuristic Extraction
+            logger.debug("Attempting Tier 3: Heuristic Extraction")
             result = self._tier3_heuristic_extraction(raw_response, expected_schema)
             if result:
                 self.stats["tier3_success"] += 1
                 logger.debug("Tier 3 (heuristic extraction) succeeded")
                 return result
+            logger.debug("Tier 3 failed, using minimal fallback")
 
         # Complete failure - use minimal fallback
         self.stats["total_failures"] += 1
         logger.warning(
             "All parsing tiers failed, using minimal fallback",
-            extra={"raw_response_preview": str(raw_response)[:200]},
+            extra={
+                "raw_response_preview": str(raw_response)[:200],
+                "raw_response_type": type(raw_response).__name__,
+                "expected_schema": expected_schema.__name__
+            },
         )
 
         # Extract answer text as best effort
         answer = self._extract_answer_text(raw_response)
+        logger.warning(
+            f"Minimal fallback created, answer_preview={answer[:100] if answer else 'EMPTY'}",
+            extra={"answer_length": len(answer) if answer else 0}
+        )
         return create_minimal_response(answer)  # type: ignore
+
+    def _fix_double_encoding(self, validated: T, tier_name: str) -> T:
+        """Fix double-encoded JSON in answer field (recursive)
+
+        Sometimes LLMs put the entire response structure inside the answer field.
+        This can happen multiple times (triple-encoding, etc.), so recurse until
+        we get plain text.
+
+        Args:
+            validated: Validated response object
+            tier_name: Name of tier for logging
+
+        Returns:
+            Fixed response object
+        """
+        if hasattr(validated, 'answer') and isinstance(validated.answer, str):
+            max_iterations = 5  # Prevent infinite loop
+            iteration = 0
+            while iteration < max_iterations and validated.answer.strip().startswith('{'):
+                try:
+                    parsed_inner = json.loads(validated.answer)
+                    if isinstance(parsed_inner, dict) and 'answer' in parsed_inner:
+                        logger.warning(
+                            f"{tier_name}: Detected double-encoded JSON in answer field (iteration {iteration + 1}) - extracting inner answer",
+                            extra={
+                                "outer_answer_preview": validated.answer[:100],
+                                "inner_answer_preview": str(parsed_inner['answer'])[:100]
+                            }
+                        )
+                        # Extract the actual answer from the inner JSON
+                        if isinstance(parsed_inner['answer'], (dict, list)):
+                            # Still nested - convert to JSON string to continue unwrapping
+                            validated.answer = json.dumps(parsed_inner['answer'])
+                            logger.error(
+                                f"🐛 DOUBLE ENCODING BUG: answer field contained nested dict/list at iteration {iteration + 1}",
+                                extra={"nested_content": str(parsed_inner['answer'])[:200]}
+                            )
+                        else:
+                            # Plain string/value - extract it
+                            validated.answer = str(parsed_inner['answer'])
+                        iteration += 1
+                    elif isinstance(parsed_inner, dict):
+                        # JSON doesn't have 'answer' field - this is the entire response object!
+                        # This is the BUG - extract a text representation instead of leaving JSON
+                        logger.error(
+                            f"🐛 CRITICAL BUG: Inner JSON has no 'answer' field - full response object in answer field!",
+                            extra={
+                                "parsed_inner_keys": list(parsed_inner.keys()),
+                                "parsed_inner_preview": str(parsed_inner)[:200]
+                            }
+                        )
+                        # Try to extract meaningful text from the dict
+                        if 'clarifying_questions' in parsed_inner or 'suggested_actions' in parsed_inner:
+                            # This is a ConsultantResponse/OODAResponse - should never be here!
+                            error_msg = f"ERROR: Full response object found in answer field. Keys: {list(parsed_inner.keys())}"
+                            validated.answer = error_msg
+                        else:
+                            # Unknown structure - convert to readable string
+                            validated.answer = json.dumps(parsed_inner, indent=2)
+                        break
+                    else:
+                        # Not a dict - unexpected
+                        break
+                except (json.JSONDecodeError, KeyError):
+                    # Not double-encoded, keep as-is
+                    break
+
+        return validated
 
     def _tier1_function_calling(
         self, response_dict: dict, expected_schema: Type[T]
@@ -135,6 +218,10 @@ class ResponseParser:
         try:
             # Validate against schema
             validated = expected_schema(**response_dict)
+
+            # Check for double-encoding and fix if needed
+            validated = self._fix_double_encoding(validated, "Tier 1")
+
             return validated
 
         except ValidationError as e:
@@ -175,6 +262,8 @@ class ResponseParser:
             try:
                 data = json.loads(response_text)
                 validated = expected_schema(**data)
+                # Check for double-encoding and fix if needed
+                validated = self._fix_double_encoding(validated, "Tier 2 (direct)")
                 self.stats["tier2_direct_json"] += 1
                 logger.debug("Tier 2: Direct JSON parse succeeded (LLM returned clean JSON)")
                 return validated
@@ -189,6 +278,8 @@ class ResponseParser:
                 try:
                     data = json.loads(match)
                     validated = expected_schema(**data)
+                    # Check for double-encoding and fix if needed
+                    validated = self._fix_double_encoding(validated, "Tier 2 (markdown)")
                     self.stats["tier2_markdown_extraction"] += 1
                     logger.warning(
                         "Tier 2: Markdown extraction used - LLM wrapped JSON in code blocks despite instructions",
@@ -206,6 +297,8 @@ class ResponseParser:
                 try:
                     data = json.loads(match)
                     validated = expected_schema(**data)
+                    # Check for double-encoding and fix if needed
+                    validated = self._fix_double_encoding(validated, "Tier 2 (brace)")
                     self.stats["tier2_brace_extraction"] += 1
                     logger.warning(
                         "Tier 2: Brace extraction used - LLM buried JSON in surrounding text",
@@ -277,6 +370,10 @@ class ResponseParser:
 
             # Validate what we extracted
             validated = expected_schema(**extracted)
+
+            # Check for double-encoding and fix if needed
+            validated = self._fix_double_encoding(validated, "Tier 3")
+
             return validated
 
         except ValidationError as e:
@@ -330,10 +427,47 @@ class ResponseParser:
             Plain text answer
         """
         if isinstance(raw_response, dict):
-            # Try to find answer field
-            return raw_response.get("answer", str(raw_response))
+            # Try to find answer field (case-insensitive)
+            for key in ["answer", "Answer", "content", "Content", "response", "Response"]:
+                if key in raw_response and isinstance(raw_response[key], str):
+                    # Check if the answer itself is JSON (double-encoding issue)
+                    answer_value = raw_response[key]
+                    try:
+                        # If it's a JSON string, try to extract the actual answer from it
+                        parsed_inner = json.loads(answer_value)
+                        if isinstance(parsed_inner, dict) and "answer" in parsed_inner:
+                            logger.warning(
+                                "Detected double-encoded JSON in answer field - extracting inner answer",
+                                extra={"outer_key": key, "inner_has_answer": True}
+                            )
+                            return str(parsed_inner["answer"])
+                    except (json.JSONDecodeError, TypeError):
+                        # Not JSON or can't parse - use as-is
+                        pass
+                    return answer_value
+            # If no answer field found, return first string value
+            for value in raw_response.values():
+                if isinstance(value, str) and len(value) > 10:  # Skip short metadata
+                    return value
+            # Last resort: stringify the dict
+            logger.warning(f"No answer field found in dict, keys: {list(raw_response.keys())}")
+            return str(raw_response)
 
         if isinstance(raw_response, str):
+            # Check if the string itself is JSON (single-encoded but not parsed yet)
+            try:
+                parsed = json.loads(raw_response)
+                if isinstance(parsed, dict) and "answer" in parsed:
+                    logger.warning(
+                        "Detected unparsed JSON string in _extract_answer_text - extracting answer field",
+                        extra={"preview": raw_response[:100]}
+                    )
+                    # Recursively call to handle potential double-encoding
+                    return self._extract_answer_text(parsed)
+            except (json.JSONDecodeError, TypeError):
+                # Not JSON - treat as plain text
+                pass
+
             # Remove JSON artifacts if present
             clean = re.sub(r"```(?:json)?\s*\n.*?\n```", "", raw_response, flags=re.DOTALL)
             clean = re.sub(r"\{.*?\}", "", clean, flags=re.DOTALL)

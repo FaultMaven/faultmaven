@@ -5,7 +5,7 @@ Handles slow, failing, and unpredictable responses from external APIs.
 
 import uuid
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 import asyncio
 import logging
@@ -17,6 +17,7 @@ from faultmaven.models import QueryRequest, AgentResponse, ViewState, Source, So
 from faultmaven.models.case import MessageType
 from faultmaven.exceptions import ValidationException
 from faultmaven.prompts import get_system_prompt, get_few_shot_examples, format_few_shot_prompt
+from faultmaven.utils.serialization import to_json_compatible
 
 # Intelligent prompt system imports
 
@@ -59,12 +60,12 @@ class LLMCircuitBreaker:
         elif self.state == CircuitState.OPEN:
             # Check if recovery timeout has passed
             if self.last_failure_time and \
-               datetime.utcnow() - self.last_failure_time > timedelta(seconds=self.recovery_timeout):
+               datetime.now(timezone.utc) - self.last_failure_time > timedelta(seconds=self.recovery_timeout):
                 self.state = CircuitState.HALF_OPEN
                 self.logger.warning(f"LLM Circuit Breaker: Moving to HALF_OPEN state for recovery testing")
                 return True, "Circuit half-open - testing recovery"
             else:
-                remaining_time = self.recovery_timeout - (datetime.utcnow() - self.last_failure_time).total_seconds()
+                remaining_time = self.recovery_timeout - (datetime.now(timezone.utc) - self.last_failure_time).total_seconds()
                 return False, f"Circuit open - retry in {remaining_time:.0f} seconds"
 
         elif self.state == CircuitState.HALF_OPEN:
@@ -89,7 +90,7 @@ class LLMCircuitBreaker:
     def record_failure(self, failure_type: str, error_details: str = ""):
         """Record LLM call failure"""
         self.failure_count += 1
-        self.last_failure_time = datetime.utcnow()
+        self.last_failure_time = datetime.now(timezone.utc)
 
         # Track failure types
         if failure_type == "timeout":
@@ -122,7 +123,7 @@ class LLMCircuitBreaker:
             "timeout_failures": self.timeout_failures,
             "error_failures": self.error_failures,
             "slow_call_failures": self.slow_call_failures,
-            "last_failure_time": self.last_failure_time.isoformat() if self.last_failure_time else None,
+            "last_failure_time": to_json_compatible(self.last_failure_time) if self.last_failure_time else None,
             "recovery_timeout": self.recovery_timeout
         }
 
@@ -176,7 +177,7 @@ class AgentService(BaseService):
         if not request or not request.query or not request.query.strip():
             raise ValueError("Query cannot be empty")
 
-        logger.info(f"Processing query for case {case_id} in session {request.session_id}")
+        logger.info(f"Processing query for case {case_id}")
 
         try:
             # Service Level Timeout (32 seconds) - middle timeout layer
@@ -226,13 +227,15 @@ class AgentService(BaseService):
                 llm_client=self._llm,
                 session_id=request.session_id,
                 state_manager=self._state_manager,
+                context=request.context,  # Pass file upload context to OODA framework
             )
 
             # Update case diagnostic state
             case.diagnostic_state = updated_state
+            # Redis store now handles datetime serialization automatically
             await self._case_service.update_case(
                 case_id=case_id,
-                updates={"diagnostic_state": updated_state.dict()},
+                updates={"diagnostic_state": updated_state.dict() if hasattr(updated_state, 'dict') else updated_state},
                 user_id=None  # Auth handled at API layer
             )
 
@@ -267,21 +270,60 @@ class AgentService(BaseService):
             if llm_response.suggested_actions:
                 suggested_actions_dicts = [action.model_dump() for action in llm_response.suggested_actions]
 
-            response = AgentResponse(
-                content=llm_response.answer,
-                response_type=response_type,
-                session_id=request.session_id,
-                view_state=view_state,
-                sources=[
-                    Source(
-                        type=SourceType.KNOWLEDGE_BASE,
-                        content="OODA Framework LLM Response",
-                        metadata=processing_metadata
-                    )
-                ],
-                plan=None,
-                suggested_actions=suggested_actions_dicts
-            )
+            # Map evidence_requests from diagnostic state (v3.1.0+ required)
+            from faultmaven.models.api import EvidenceRequest, InvestigationMode, EvidenceCaseStatus
+            from faultmaven.models.evidence import AcquisitionGuidance, EvidenceStatus
+            evidence_requests_api = []
+            if updated_state.evidence_requests:
+                for er in updated_state.evidence_requests:
+                    # Create EvidenceRequest with all required fields
+                    # Only include optional fields if they have non-default values
+                    evidence_dict = {
+                        "request_id": er.request_id,
+                        "label": er.label,
+                        "description": er.description,
+                        "category": er.category,
+                        "guidance": er.guidance if hasattr(er, 'guidance') and er.guidance else AcquisitionGuidance(),
+                        "created_at_turn": er.created_at_turn if hasattr(er, 'created_at_turn') else 0,
+                    }
+
+                    # Add optional fields only if present (let Pydantic use defaults otherwise)
+                    if hasattr(er, 'status') and er.status is not None:
+                        evidence_dict["status"] = er.status
+                    if hasattr(er, 'updated_at_turn') and er.updated_at_turn is not None:
+                        evidence_dict["updated_at_turn"] = er.updated_at_turn
+                    if hasattr(er, 'completeness'):
+                        evidence_dict["completeness"] = er.completeness
+
+                    evidence_requests_api.append(EvidenceRequest(**evidence_dict))
+
+
+            try:
+                response = AgentResponse(
+                    content=llm_response.answer,
+                    response_type=response_type,
+                    session_id=request.session_id,
+                    view_state=view_state,
+                    sources=[
+                        Source(
+                            type=SourceType.KNOWLEDGE_BASE,
+                            content="OODA Framework LLM Response",
+                            metadata=processing_metadata
+                        )
+                    ],
+                    plan=None,
+                    suggested_actions=suggested_actions_dicts,
+                    # v3.1.0+ required fields
+                    evidence_requests=evidence_requests_api,
+                    investigation_mode=InvestigationMode(updated_state.investigation_mode.value) if hasattr(updated_state, 'investigation_mode') else InvestigationMode.ACTIVE_INCIDENT,
+                    case_status=EvidenceCaseStatus(updated_state.case_status.value) if hasattr(updated_state, 'case_status') else EvidenceCaseStatus.INTAKE
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to create AgentResponse: {e}", exc_info=True, extra={
+                    "evidence_requests_count": len(evidence_requests_api),
+                    "evidence_requests_sample": evidence_requests_api[0].model_dump() if evidence_requests_api else None,
+                })
+                raise
 
             # Enhanced logging with circuit breaker status
             circuit_status = self.circuit_breaker.get_status()
@@ -385,7 +427,7 @@ We apologize for the inconvenience and appreciate your patience while we resolve
             }
 
         # Circuit allows execution - proceed with LLM call
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
 
         try:
             self.logger.info(f"LLM Circuit Breaker: Calling LLM for case {case_id} (State: {self.circuit_breaker.state.value})")
@@ -397,7 +439,7 @@ We apologize for the inconvenience and appreciate your patience while we resolve
             )
 
             # Record success and measure response time
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             response_time = (end_time - start_time).total_seconds()
             self.circuit_breaker.record_success(response_time)
 
@@ -536,7 +578,7 @@ We encountered a technical problem while processing your troubleshooting request
 • Email: support@faultmaven.com
 • Reference ID: ERROR-{case_id[:8]}
 • Error Type: {error_type}
-• Timestamp: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"""
+• Timestamp: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"""
 
             return error_message, {
                 "type": "llm_error",
@@ -550,6 +592,8 @@ We encountered a technical problem while processing your troubleshooting request
 
     async def _create_timeout_fallback_response(self, case_id: str, request: QueryRequest) -> AgentResponse:
         """Create a fallback response when processing times out"""
+        from faultmaven.models.api import InvestigationMode, EvidenceCaseStatus
+
         content = "Based on the available information: Discovered 2 available capabilities. Intent: information. Complexity: simple. I'm processing your request but it's taking longer than expected. Let me provide a quick response: I can help you troubleshoot this issue. Could you provide more specific details about what you're experiencing?"
 
         view_state = await self._create_view_state(case_id, request.session_id)
@@ -566,7 +610,11 @@ We encountered a technical problem while processing your troubleshooting request
                     metadata={"type": "timeout_fallback"}
                 )
             ],
-            plan=None
+            plan=None,
+            # v3.1.0+ required fields
+            evidence_requests=[],
+            investigation_mode=InvestigationMode.ACTIVE_INCIDENT,
+            case_status=EvidenceCaseStatus.INTAKE
         )
 
     async def _create_view_state(
@@ -580,7 +628,7 @@ We encountered a technical problem while processing your troubleshooting request
             # Get investigation progress if available
             investigation_progress = None
             if diagnostic_state and diagnostic_state.investigation_state_id and self._state_manager:
-                # Get investigation state from state manager (AgentStateManager, not SessionService)
+                # Get investigation state from state manager using session_id as key
                 investigation_state = await self._state_manager.get_investigation_state(session_id)
                 if investigation_state:
                     from faultmaven.services.agentic.orchestration.ooda_integration import (
@@ -594,15 +642,15 @@ We encountered a technical problem while processing your troubleshooting request
                     "user_id": "anonymous",
                     "email": "user@example.com",
                     "name": "User",
-                    "created_at": datetime.utcnow().isoformat() + 'Z'
+                    "created_at": to_json_compatible(datetime.now(timezone.utc))
                 },
                 active_case={
                     "case_id": case_id,
                     "title": f"Case {case_id}",
                     "status": "active",
                     "priority": "medium",
-                    "created_at": datetime.utcnow().isoformat() + 'Z',
-                    "updated_at": datetime.utcnow().isoformat() + 'Z',
+                    "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                    "updated_at": to_json_compatible(datetime.now(timezone.utc)),
                     "message_count": 1
                 },
                 cases=[],
@@ -622,15 +670,15 @@ We encountered a technical problem while processing your troubleshooting request
                     "user_id": "anonymous",
                     "email": "user@example.com",
                     "name": "User",
-                    "created_at": datetime.utcnow().isoformat() + 'Z'
+                    "created_at": to_json_compatible(datetime.now(timezone.utc))
                 },
                 active_case={
                     "case_id": case_id,
                     "title": f"Case {case_id}",
                     "status": "active",
                     "priority": "medium",
-                    "created_at": datetime.utcnow().isoformat() + 'Z',
-                    "updated_at": datetime.utcnow().isoformat() + 'Z',
+                    "created_at": to_json_compatible(datetime.now(timezone.utc)),
+                    "updated_at": to_json_compatible(datetime.now(timezone.utc)),
                     "message_count": 0
                 },
                 cases=[],
