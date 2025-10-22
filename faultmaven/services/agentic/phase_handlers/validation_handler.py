@@ -103,15 +103,15 @@ class ValidationHandler(BasePhaseHandler):
         current_step = self.determine_ooda_step(investigation_state)
 
         if current_step == OODAStep.OBSERVE:
-            return await self._execute_observe(investigation_state, user_query, conversation_history)
+            return await self._execute_observe(investigation_state, user_query, conversation_history, context)
         elif current_step == OODAStep.ORIENT:
-            return await self._execute_orient(investigation_state, user_query, conversation_history)
+            return await self._execute_orient(investigation_state, user_query, conversation_history, context)
         elif current_step == OODAStep.DECIDE:
-            return await self._execute_decide(investigation_state, user_query, conversation_history)
+            return await self._execute_decide(investigation_state, user_query, conversation_history, context)
         elif current_step == OODAStep.ACT:
-            return await self._execute_act(investigation_state, user_query, conversation_history)
+            return await self._execute_act(investigation_state, user_query, conversation_history, context)
         else:
-            return await self._execute_observe(investigation_state, user_query, conversation_history)
+            return await self._execute_observe(investigation_state, user_query, conversation_history, context)
 
     async def _consume_validation_evidence(
         self,
@@ -238,7 +238,7 @@ class ValidationHandler(BasePhaseHandler):
                 }
             )
 
-    async def _execute_observe(self, investigation_state, user_query, conversation_history) -> PhaseHandlerResult:
+    async def _execute_observe(self, investigation_state, user_query, conversation_history, context: Optional[dict] = None) -> PhaseHandlerResult:
         """Execute OODA Observe: Request testing evidence"""
         if not investigation_state.ooda_engine.iterations or investigation_state.ooda_engine.iterations[-1].steps_completed:
             iteration = self.start_new_ooda_iteration(investigation_state)
@@ -275,7 +275,8 @@ class ValidationHandler(BasePhaseHandler):
         structured_response = await self.generate_llm_response(
             system_prompt=system_prompt,
             user_query=user_query,
-            max_tokens=500,
+            context=context,
+            
             expected_schema=LeadInvestigatorResponse,
         )
 
@@ -292,7 +293,7 @@ class ValidationHandler(BasePhaseHandler):
             made_progress=True,
         )
 
-    async def _execute_orient(self, investigation_state, user_query, conversation_history) -> PhaseHandlerResult:
+    async def _execute_orient(self, investigation_state, user_query, conversation_history, context: Optional[dict] = None) -> PhaseHandlerResult:
         """Execute OODA Orient: Analyze test results"""
         # Apply confidence decay to stagnant hypotheses
         current_turn = investigation_state.metadata.current_turn
@@ -313,7 +314,8 @@ class ValidationHandler(BasePhaseHandler):
         structured_response = await self.generate_llm_response(
             system_prompt=system_prompt,
             user_query=user_query,
-            max_tokens=500,
+            context=context,
+            
             expected_schema=LeadInvestigatorResponse,
         )
 
@@ -329,7 +331,7 @@ class ValidationHandler(BasePhaseHandler):
             made_progress=True,
         )
 
-    async def _execute_decide(self, investigation_state, user_query, conversation_history) -> PhaseHandlerResult:
+    async def _execute_decide(self, investigation_state, user_query, conversation_history, context: Optional[dict] = None) -> PhaseHandlerResult:
         """Execute OODA Decide: Choose next hypothesis to test"""
         system_prompt = get_lead_investigator_prompt(
             current_phase=self.get_phase(),
@@ -344,7 +346,8 @@ class ValidationHandler(BasePhaseHandler):
         structured_response = await self.generate_llm_response(
             system_prompt=system_prompt,
             user_query=user_query,
-            max_tokens=500,
+            context=context,
+            
             expected_schema=LeadInvestigatorResponse,
         )
 
@@ -360,7 +363,7 @@ class ValidationHandler(BasePhaseHandler):
             made_progress=True,
         )
 
-    async def _execute_act(self, investigation_state, user_query, conversation_history) -> PhaseHandlerResult:
+    async def _execute_act(self, investigation_state, user_query, conversation_history, context: Optional[dict] = None) -> PhaseHandlerResult:
         """Execute OODA Act: Execute test"""
         current_iteration = investigation_state.ooda_engine.iterations[-1]
         current_iteration.steps_completed.append(OODAStep.ACT)
@@ -383,7 +386,8 @@ class ValidationHandler(BasePhaseHandler):
         structured_response = await self.generate_llm_response(
             system_prompt=system_prompt,
             user_query=user_query,
-            max_tokens=500,
+            context=context,
+            
             expected_schema=LeadInvestigatorResponse,
         )
 

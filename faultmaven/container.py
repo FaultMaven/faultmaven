@@ -200,9 +200,10 @@ class DIContainer:
         from faultmaven.core.processing.log_analyzer import LogProcessor
         self.log_processor = LogProcessor()
 
-        # New preprocessing pipeline (Phase 1-2)
+        # New preprocessing pipeline (Phase 1-4)
         from faultmaven.services.preprocessing.classifier import DataClassifier
         from faultmaven.services.preprocessing.extractors import LogsAndErrorsExtractor, StructuredConfigExtractor, MetricsAndPerformanceExtractor, UnstructuredTextExtractor, SourceCodeExtractor, VisualEvidenceExtractor
+        from faultmaven.services.preprocessing.chunking_service import ChunkingService
         from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
         from faultmaven.infrastructure.security.redaction import DataSanitizer
 
@@ -214,6 +215,15 @@ class DIContainer:
         self.source_code_extractor = SourceCodeExtractor()
         self.visual_extractor = VisualEvidenceExtractor()
         self.data_sanitizer = DataSanitizer()
+
+        # ChunkingService for large documents (Phase 4)
+        self.chunking_service = ChunkingService(
+            llm_router=self.llm_provider,
+            chunk_size_tokens=self.settings.preprocessing.chunk_size_tokens,
+            overlap_tokens=self.settings.preprocessing.chunk_overlap_tokens,
+            max_parallel_chunks=self.settings.preprocessing.map_reduce_max_parallel
+        )
+
         self.preprocessing_service = PreprocessingService(
             classifier=self.data_classifier,
             sanitizer=self.data_sanitizer,
@@ -222,7 +232,9 @@ class DIContainer:
             metrics_extractor=self.metrics_extractor,
             text_extractor=self.text_extractor,
             source_code_extractor=self.source_code_extractor,
-            visual_extractor=self.visual_extractor
+            visual_extractor=self.visual_extractor,
+            chunking_service=self.chunking_service,
+            chunk_trigger_tokens=self.settings.preprocessing.chunk_trigger_tokens
         )
         
         # Vector store for knowledge base
@@ -251,6 +263,20 @@ class DIContainer:
         except Exception as e:
             logger.warning(f"Case vector store initialization failed: {e}")
             self.case_vector_store = None
+
+        # User KB vector store for persistent user knowledge bases
+        from faultmaven.infrastructure.persistence.user_kb_vector_store import UserKBVectorStore
+        try:
+            if not self.settings.server.skip_service_checks:
+                # Permanent storage (documents persist until explicitly deleted)
+                self.user_kb_vector_store = UserKBVectorStore()
+                logger.debug("User KB vector store initialized for persistent runbooks")
+            else:
+                logger.info("Skipping user KB vector store initialization (SKIP_SERVICE_CHECKS=True)")
+                self.user_kb_vector_store = None
+        except Exception as e:
+            logger.warning(f"User KB vector store initialization failed: {e}")
+            self.user_kb_vector_store = None
 
         # Redis client for persistence (sessions, cases, KB metadata)
         try:
@@ -378,25 +404,64 @@ class DIContainer:
             settings=self.settings
         )
 
-        # Create answer_from_document tool for Session-Specific RAG
+        # Create KB-neutral document Q&A tools (Strategy Pattern)
+        # Three tool instances from ONE DocumentQATool class configured differently
         try:
             if not self.settings.server.skip_service_checks and hasattr(self, 'case_vector_store') and self.case_vector_store:
-                from faultmaven.tools.answer_from_document import AnswerFromDocumentTool
+                from faultmaven.tools.case_evidence_qa import AnswerFromCaseEvidence
+                from faultmaven.tools.user_kb_qa import AnswerFromUserKB
+                from faultmaven.tools.global_kb_qa import AnswerFromGlobalKB
 
-                self.answer_from_document_tool = AnswerFromDocumentTool(
-                    case_vector_store=self.case_vector_store,
+                # All three use same LLM router but configured differently via KBConfig strategy pattern
+                # Tool 1 and 3 share case_vector_store, Tool 2 uses dedicated user_kb_vector_store
+
+                # Tool 1: Case Evidence (case-scoped forensic analysis)
+                self.case_evidence_qa_tool = AnswerFromCaseEvidence(
+                    vector_store=self.case_vector_store,
                     llm_router=self.llm_provider
                 )
-                logger.debug("answer_from_document tool created for Session-Specific RAG")
+
+                # Tool 2: User KB (user-scoped personal runbooks) - uses dedicated store
+                if hasattr(self, 'user_kb_vector_store') and self.user_kb_vector_store:
+                    self.user_kb_qa_tool = AnswerFromUserKB(
+                        vector_store=self.user_kb_vector_store,  # Dedicated user KB store
+                        llm_router=self.llm_provider
+                    )
+                else:
+                    logger.warning("User KB QA tool skipped (user_kb_vector_store not available)")
+                    self.user_kb_qa_tool = None
+
+                # Tool 3: Global KB (system-wide best practices)
+                self.global_kb_qa_tool = AnswerFromGlobalKB(
+                    vector_store=self.case_vector_store,  # Shares case vector store
+                    llm_router=self.llm_provider
+                )
+
+                # Add available tools to agent's tool list
+                tools_to_add = [self.case_evidence_qa_tool, self.global_kb_qa_tool]
+                if self.user_kb_qa_tool:
+                    tools_to_add.insert(1, self.user_kb_qa_tool)
+
+                self.tools.extend(tools_to_add)
+
+                logger.info(
+                    f"✅ Created 3 KB-neutral document Q&A tools from single DocumentQATool class "
+                    f"(case evidence, user KB, global KB) - {len(self.tools)} total tools"
+                )
             else:
-                logger.debug("answer_from_document tool skipped (no case_vector_store or SKIP_SERVICE_CHECKS=True)")
-                self.answer_from_document_tool = None
+                logger.debug("Document Q&A tools skipped (no case_vector_store or SKIP_SERVICE_CHECKS=True)")
+                self.case_evidence_qa_tool = None
+                self.user_kb_qa_tool = None
+                self.global_kb_qa_tool = None
         except Exception as e:
-            logger.warning(f"answer_from_document tool creation failed: {e}")
-            self.answer_from_document_tool = None
+            logger.warning(f"Document Q&A tools creation failed: {e}")
+            self.case_evidence_qa_tool = None
+            self.user_kb_qa_tool = None
+            self.global_kb_qa_tool = None
 
         logger.debug(
-            f"Tools layer created with {len(self.tools)} tools: {tool_registry.list_tools()}"
+            f"Tools layer created with {len(self.tools)} tools: "
+            f"{tool_registry.list_tools() + (['case_evidence_qa', 'user_kb_qa', 'global_kb_qa'] if self.case_evidence_qa_tool else [])}"
         )
     
     def _create_service_layer(self):

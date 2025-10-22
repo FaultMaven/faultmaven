@@ -1,46 +1,46 @@
 # FaultMaven How-To Guides
 
-This directory contains **procedural how-to guides** for integrating with FaultMaven, setting up systems, and contributing to the project.
+This directory contains **procedural how-to guides** for using FaultMaven, contributing content, and operating the system.
 
 ---
 
 ## User Guides
 
 ### Knowledge Base System
-- **[Knowledge Base System Guide](./knowledge-base-system.md)** - Comprehensive guide for contributing to the knowledge base: runbook creation, review process, quality standards, tools & commands, FAQs (1566 lines)
+- **[Knowledge Base System Guide](./knowledge-base-system.md)** - Comprehensive guide for contributing to the Global Knowledge Base: runbook creation, review process, quality standards, tools & commands, and FAQs
 
 ---
 
-## Developer Guides
+## Developer & Operations Guides
 
 ### Testing Investigation Framework
-- **[Testing Investigation Framework](./testing-investigation-framework.md)** - Comprehensive testing strategies for investigation phases, OODA framework, hypothesis management, and evidence tracking. Includes unit tests, integration tests, performance benchmarks, and test fixtures.
+- **[Testing Investigation Framework](./testing-investigation-framework.md)** - Testing strategies for investigation phases, OODA framework, hypothesis management, and evidence tracking with unit tests, integration tests, and performance benchmarks
 
 ### Operational Configuration
-- **[Operational Configuration](./operational-configuration.md)** - System requirements, configuration parameters, monitoring setup (Prometheus metrics), and deployment considerations for production environments.
+- **[Operational Configuration](./operational-configuration.md)** - System requirements, configuration parameters, monitoring setup (Prometheus metrics), and deployment considerations for production environments
 
 ---
 
-## Contributing
+## Related Documentation
 
-For general contribution guidelines, see:
-- [Project README](../../README.md)
-- [Architecture Documentation](../architecture/README.md)
-- [Development Setup](../architecture/developer-guide.md)
+For related documentation, see:
+- [Architecture Documentation](../architecture/) - System design and technical architecture
+- [Feature Documentation](../features/) - Feature specifications and capabilities
+- [Infrastructure Documentation](../infrastructure/) - Redis, Opik, and local LLM setup
 
 ---
 
 ## Purpose
 
 These guides provide:
-- **User Documentation** - How to use FaultMaven features
-- **Contributor Guides** - How to contribute content
-- **Workflow Documentation** - Standard processes and procedures
+- **Procedural Instructions** - Step-by-step workflows
+- **Contribution Workflows** - How to contribute content
+- **Operational Guidance** - Production deployment and monitoring
 - **Best Practices** - Recommended patterns and approaches
 
 ---
 
-**Last Updated**: 2025-10-11  
+**Last Updated**: 2025-10-22
 **Maintained By**: FaultMaven Team
 
 

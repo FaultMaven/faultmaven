@@ -228,6 +228,7 @@ class AgentService(BaseService):
                 session_id=request.session_id,
                 state_manager=self._state_manager,
                 context=request.context,  # Pass file upload context to OODA framework
+                tools=self._tools,  # Pass tools to enable QA sub-agent access in phase handlers
             )
 
             # Update case diagnostic state

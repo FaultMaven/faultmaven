@@ -7,6 +7,7 @@ including Phi-3, Ollama, and other local inference servers.
 
 import asyncio
 import aiohttp
+import logging
 from typing import List, Optional
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
@@ -14,6 +15,10 @@ from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
 class LocalProvider(BaseLLMProvider):
     """Local LLM provider implementation"""
+    
+    def __init__(self, config: ProviderConfig):
+        super().__init__(config)
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     @property
     def provider_name(self) -> str:
@@ -137,8 +142,8 @@ class LocalProvider(BaseLLMProvider):
     ) -> LLMResponse:
         """Call OpenAI-compatible API (for llama.cpp with OpenAI API, Phi-3 ONNX and similar)"""
 
-        print(f"🔍 LOCAL DEBUG: Starting OpenAI-compatible API call to {self.config.base_url}")
-        print(f"🔍 LOCAL DEBUG: Model: {model}, Max tokens: {max_tokens}, Temperature: {temperature}")
+        self.logger.debug(f"Starting OpenAI-compatible API call to {self.config.base_url}")
+        self.logger.debug(f"Model: {model}, Max tokens: {max_tokens}, Temperature: {temperature}")
 
         headers = {
             "Content-Type": "application/json",
@@ -154,7 +159,7 @@ class LocalProvider(BaseLLMProvider):
         # Add any additional kwargs
         payload.update(kwargs)
 
-        print(f"🔍 LOCAL DEBUG: Payload: {payload}")
+        self.logger.debug(f"Request payload: {payload}")
 
         async with aiohttp.ClientSession() as session:
             try:
@@ -165,31 +170,31 @@ class LocalProvider(BaseLLMProvider):
                     timeout=aiohttp.ClientTimeout(total=self.config.timeout),
                 ) as response:
 
-                    print(f"🔍 LOCAL DEBUG: Response status: {response.status}")
+                    self.logger.debug(f"Response status: {response.status}")
 
                     if response.status != 200:
                         error_text = await response.text()
                         error_msg = f"Local OpenAI-compatible API error {response.status}: {error_text}"
-                        print(f"❌ LOCAL DEBUG: HTTP Error: {error_msg}")
+                        self.logger.error(f"HTTP Error: {error_msg}")
                         raise Exception(error_msg)
 
                     data = await response.json()
-                    print(f"🔍 LOCAL DEBUG: Response data: {data}")
+                    self.logger.debug(f"Response data: {data}")
 
                     # Extract response content
                     if not data.get("choices") or len(data["choices"]) == 0:
                         error_msg = "Local OpenAI-compatible API returned no choices"
-                        print(f"❌ LOCAL DEBUG: No choices: {error_msg}")
+                        self.logger.error(f"No choices: {error_msg}")
                         raise Exception(error_msg)
 
                     content = data["choices"][0]["message"]["content"]
-                    print(f"🔍 LOCAL DEBUG: Raw content: {repr(content)}")
+                    self.logger.debug(f"Raw content: {repr(content)}")
 
                     try:
                         content = self._validate_response_content(content)
-                        print(f"✅ LOCAL DEBUG: Validated content: {repr(content)}")
+                        self.logger.debug(f"Validated content: {repr(content)}")
                     except Exception as e:
-                        print(f"❌ LOCAL DEBUG: Content validation failed: {e}")
+                        self.logger.error(f"Content validation failed: {e}")
                         raise
 
                     # Extract token usage
@@ -198,7 +203,7 @@ class LocalProvider(BaseLLMProvider):
 
                     response_time = self._get_response_time_ms()
 
-                    print(f"✅ LOCAL DEBUG: Successful response with {tokens_used} tokens, {response_time}ms")
+                    self.logger.info(f"Successful response with {tokens_used} tokens, {response_time}ms")
 
                     return LLMResponse(
                         content=content,
@@ -211,16 +216,16 @@ class LocalProvider(BaseLLMProvider):
 
             except asyncio.TimeoutError as e:
                 response_time = self._get_response_time_ms()
-                print(f"⏰ LOCAL DEBUG: Timeout after {response_time}ms (limit: {self.config.timeout * 1000}ms)")
-                print(f"⏰ LOCAL DEBUG: Model: {model}, Max tokens: {max_tokens}, Temperature: {temperature}")
-                print(f"⏰ LOCAL DEBUG: Timeout error: {e}")
+                self.logger.warning(f"Timeout after {response_time}ms (limit: {self.config.timeout * 1000}ms)")
+                self.logger.warning(f"Model: {model}, Max tokens: {max_tokens}, Temperature: {temperature}")
+                self.logger.debug(f"Timeout error: {e}")
                 raise Exception(f"Local LLM request timed out after {self.config.timeout} seconds")
 
             except Exception as e:
                 response_time = self._get_response_time_ms()
-                print(f"❌ LOCAL DEBUG: Request failed after {response_time}ms")
-                print(f"❌ LOCAL DEBUG: Error type: {type(e).__name__}")
-                print(f"❌ LOCAL DEBUG: Error details: {e}")
+                self.logger.error(f"Request failed after {response_time}ms")
+                self.logger.error(f"Error type: {type(e).__name__}")
+                self.logger.error(f"Error details: {e}")
                 raise
 
     async def _call_llamacpp_api(

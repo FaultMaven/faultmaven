@@ -7,7 +7,7 @@ Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
 import logging
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from datetime import datetime, timezone
 
 from faultmaven.models.investigation import (
@@ -50,6 +50,7 @@ class PhaseOrchestrator:
         llm_provider: ILLMProvider,
         session_id: str,
         logger: Optional[logging.Logger] = None,
+        tools: Optional[List[Any]] = None,
     ):
         """Initialize phase orchestrator
 
@@ -57,23 +58,31 @@ class PhaseOrchestrator:
             llm_provider: LLM provider for generating responses
             session_id: Session identifier
             logger: Optional logger instance
+            tools: Optional list of tools available to phase handlers (e.g., QA sub-agents)
         """
         self.llm_provider = llm_provider
         self.session_id = session_id
         self.logger = logger or logging.getLogger(__name__)
+        self.tools = tools or []
 
-        # Initialize all phase handlers
+        # Initialize all phase handlers with tools for QA sub-agent access
+        # Using keyword arguments to match BasePhaseHandler(llm_provider, tools, tracer) signature
         self.handlers: Dict[InvestigationPhase, Any] = {
-            InvestigationPhase.INTAKE: IntakeHandler(llm_provider, session_id, self.logger),
-            InvestigationPhase.BLAST_RADIUS: BlastRadiusHandler(llm_provider, session_id, self.logger),
-            InvestigationPhase.TIMELINE: TimelineHandler(llm_provider, session_id, self.logger),
-            InvestigationPhase.HYPOTHESIS: HypothesisHandler(llm_provider, session_id, self.logger),
-            InvestigationPhase.VALIDATION: ValidationHandler(llm_provider, session_id, self.logger),
-            InvestigationPhase.SOLUTION: SolutionHandler(llm_provider, session_id, self.logger),
-            InvestigationPhase.DOCUMENT: DocumentHandler(llm_provider, session_id, self.logger),
+            InvestigationPhase.INTAKE: IntakeHandler(llm_provider=llm_provider, tools=self.tools, tracer=None),
+            InvestigationPhase.BLAST_RADIUS: BlastRadiusHandler(llm_provider=llm_provider, tools=self.tools, tracer=None),
+            InvestigationPhase.TIMELINE: TimelineHandler(llm_provider=llm_provider, tools=self.tools, tracer=None),
+            InvestigationPhase.HYPOTHESIS: HypothesisHandler(llm_provider=llm_provider, tools=self.tools, tracer=None),
+            InvestigationPhase.VALIDATION: ValidationHandler(llm_provider=llm_provider, tools=self.tools, tracer=None),
+            InvestigationPhase.SOLUTION: SolutionHandler(llm_provider=llm_provider, tools=self.tools, tracer=None),
+            InvestigationPhase.DOCUMENT: DocumentHandler(llm_provider=llm_provider, tools=self.tools, tracer=None),
         }
 
-        self.logger.info(f"PhaseOrchestrator initialized for session {session_id}")
+        # Log tool availability
+        if self.tools:
+            tool_names = [getattr(t, 'name', str(t)) for t in self.tools]
+            self.logger.info(f"PhaseOrchestrator initialized for session {session_id} with {len(self.tools)} tools: {tool_names}")
+        else:
+            self.logger.warning(f"PhaseOrchestrator initialized for session {session_id} with NO TOOLS - QA sub-agents will not be available!")
 
     async def process_turn(
         self,

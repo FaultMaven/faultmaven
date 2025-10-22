@@ -74,13 +74,14 @@ class DocumentHandler(BasePhaseHandler):
             )
 
         # Execute Orient step - synthesize investigation
-        return await self._execute_orient(investigation_state, user_query, conversation_history)
+        return await self._execute_orient(investigation_state, user_query, conversation_history, context)
 
     async def _execute_orient(
         self,
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str,
+        context: Optional[dict] = None,
     ) -> PhaseHandlerResult:
         """Execute OODA Orient: Synthesize investigation and offer artifacts
 
@@ -115,7 +116,8 @@ class DocumentHandler(BasePhaseHandler):
         structured_response = await self.generate_llm_response(
             system_prompt=system_prompt,
             user_query=user_query,
-            max_tokens=400,
+            context=context,
+            
             expected_schema=LeadInvestigatorResponse,
         )
 

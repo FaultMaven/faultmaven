@@ -19,6 +19,7 @@ except ImportError:
 from .base import BaseLLMProvider, ProviderConfig, LLMResponse
 from .fireworks_provider import FireworksProvider
 from .openai_provider import OpenAIProvider
+from .groq_provider import GroqProvider
 from .local_provider import LocalProvider
 from .anthropic import AnthropicProvider
 from .gemini import GeminiProvider
@@ -34,9 +35,8 @@ PROVIDER_SCHEMA = {
         "default_base_url": "https://api.fireworks.ai/inference/v1",
         "default_model": "accounts/fireworks/models/llama-v3p1-8b-instruct",
         "provider_class": FireworksProvider,
-        "max_retries": 3,
-        "timeout": 30,
         "confidence_score": 0.9
+        # max_retries and timeout loaded from settings.llm.max_retries and settings.llm.request_timeout
     },
     "openai": {
         "api_key_var": "OPENAI_API_KEY",
@@ -45,9 +45,8 @@ PROVIDER_SCHEMA = {
         "default_base_url": "https://api.openai.com/v1",
         "default_model": "gpt-4o",
         "provider_class": OpenAIProvider,
-        "max_retries": 3,
-        "timeout": 30,
         "confidence_score": 0.85
+        # max_retries and timeout loaded from settings
     },
     "local": {
         "api_key_var": None,  # No API key needed
@@ -56,9 +55,10 @@ PROVIDER_SCHEMA = {
         "default_base_url": "http://localhost:5000",  # Default llama.cpp server endpoint
         "default_model": "llama2-7b",     # Default model name
         "provider_class": LocalProvider,
-        "max_retries": 1,
-        "timeout": 60,
+        "max_retries": 1,  # Local typically needs fewer retries
+        "timeout": 60,  # Local may need more time
         "confidence_score": 0.6
+        # Note: Local provider has different defaults for retries/timeout than settings
     },
     "gemini": {
         "api_key_var": "GEMINI_API_KEY",
@@ -67,9 +67,8 @@ PROVIDER_SCHEMA = {
         "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
         "default_model": "gemini-1.5-pro",
         "provider_class": GeminiProvider,
-        "max_retries": 3,
-        "timeout": 30,
         "confidence_score": 0.8
+        # max_retries and timeout loaded from settings
     },
     "huggingface": {
         "api_key_var": "HUGGINGFACE_API_KEY",
@@ -78,9 +77,8 @@ PROVIDER_SCHEMA = {
         "default_base_url": "https://api-inference.huggingface.co/models",
         "default_model": "tiiuae/falcon-7b-instruct",
         "provider_class": HuggingFaceProvider,
-        "max_retries": 3,
-        "timeout": 30,
         "confidence_score": 0.75
+        # max_retries and timeout loaded from settings
     },
     "openrouter": {
         "api_key_var": "OPENROUTER_API_KEY",
@@ -89,9 +87,8 @@ PROVIDER_SCHEMA = {
         "default_base_url": "https://openrouter.ai/api/v1",
         "default_model": "openrouter-default",
         "provider_class": OpenAIProvider,  # Compatible API
-        "max_retries": 3,
-        "timeout": 30,
         "confidence_score": 0.8
+        # max_retries and timeout loaded from settings
     },
     "anthropic": {
         "api_key_var": "ANTHROPIC_API_KEY",
@@ -100,9 +97,18 @@ PROVIDER_SCHEMA = {
         "default_base_url": "https://api.anthropic.com/v1",
         "default_model": "claude-3-sonnet-20240229",
         "provider_class": AnthropicProvider,
-        "max_retries": 3,
-        "timeout": 30,
         "confidence_score": 0.85
+        # max_retries and timeout loaded from settings
+    },
+    "groq": {
+        "api_key_var": "GROQ_API_KEY",
+        "model_var": "GROQ_MODEL",
+        "base_url_var": "GROQ_API_BASE",
+        "default_base_url": "https://api.groq.com/openai/v1",
+        "default_model": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        "provider_class": GroqProvider,
+        "confidence_score": 0.88  # Groq is fast and reliable
+        # max_retries and timeout loaded from settings
     }
 }
 
@@ -199,11 +205,15 @@ class ProviderRegistry:
         # Initialize all providers defined in schema
         for provider_name, schema in PROVIDER_SCHEMA.items():
             try:
+                self.logger.info(f"🔍 Attempting to initialize provider: {provider_name}")
                 config = self._create_provider_config(provider_name, schema)
                 if config:
                     self._initialize_provider(provider_name, config)
+                    self.logger.info(f"✅ Provider '{provider_name}' initialized successfully")
+                else:
+                    self.logger.warning(f"⚠️ Provider '{provider_name}' config returned None (skipped)")
             except Exception as e:
-                self.logger.warning(f"Failed to initialize provider {provider_name}: {e}")
+                self.logger.warning(f"❌ Failed to initialize provider {provider_name}: {e}")
         
         # Set up fallback chain with primary first
         self._setup_fallback_chain(primary_provider)
@@ -245,9 +255,17 @@ class ProviderRegistry:
                 api_key = self.settings.llm.openrouter_api_key.get_secret_value() if self.settings.llm.openrouter_api_key else None
                 model = self.settings.llm.openrouter_model or schema["default_model"]
                 base_url = self.settings.llm.openrouter_base_url or schema["default_base_url"]
+            elif provider_name == "groq":
+                api_key = self.settings.llm.groq_api_key.get_secret_value() if self.settings.llm.groq_api_key else None
+                model = self.settings.llm.groq_chat_model or schema["default_model"]
+                base_url = self.settings.llm.groq_base_url or schema["default_base_url"]
             
             # Skip providers without required API keys (except local)
             if schema.get("api_key_var") and not api_key and provider_name != "local":
+                self.logger.warning(
+                    f"⚠️ Skipping provider '{provider_name}': "
+                    f"API key '{schema['api_key_var']}' not found in settings"
+                )
                 return None
                 
         else:
@@ -275,20 +293,28 @@ class ProviderRegistry:
         
         # Debug configuration values
         self.logger.info(f"🔍 Provider '{provider_name}' config:")
-        self.logger.info(f"🔍   Model: {model} (from {schema['model_var']})")
+        self.logger.info(f"🔍   Model: {model} (from {schema.get('model_var', 'N/A')})")
         self.logger.info(f"🔍   Base URL: {base_url} (from {schema.get('base_url_var', 'default')})")
         self.logger.info(f"🔍   API Key: {'SET' if api_key else 'NOT_SET'}")
 
-        # Use LLM_REQUEST_TIMEOUT environment variable if set, otherwise use schema default
-        timeout = int(os.getenv("LLM_REQUEST_TIMEOUT", schema["timeout"]))
-        self.logger.info(f"🔍   Timeout: {timeout}s (from {'LLM_REQUEST_TIMEOUT' if os.getenv('LLM_REQUEST_TIMEOUT') else 'schema'})")
+        # Get timeout and max_retries from schema or settings
+        if self.settings:
+            timeout = schema.get("timeout", self.settings.llm.request_timeout)
+            max_retries = schema.get("max_retries", self.settings.llm.max_retries)
+        else:
+            # Fallback to environment or defaults
+            timeout = schema.get("timeout", int(os.getenv("LLM_REQUEST_TIMEOUT", "30")))
+            max_retries = schema.get("max_retries", int(os.getenv("LLM_MAX_RETRIES", "3")))
+        
+        self.logger.info(f"🔍   Timeout: {timeout}s")
+        self.logger.info(f"🔍   Max Retries: {max_retries}")
 
         return ProviderConfig(
             name=provider_name,
             api_key=api_key,
             base_url=base_url,
             models=[model],
-            max_retries=schema["max_retries"],
+            max_retries=max_retries,
             timeout=timeout,
             confidence_score=schema["confidence_score"]
         )

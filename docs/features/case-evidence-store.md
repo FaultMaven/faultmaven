@@ -1,14 +1,16 @@
-# Working Memory Feature: Session-Specific RAG
+# Case Evidence Store: Case-Specific RAG
 
-**Version**: 1.0
+**Version**: 2.0
 **Status**: Implemented
-**Last Updated**: 2025-10-16
+**Last Updated**: 2025-10-18
 
 ---
 
 ## Overview
 
-The **Working Memory** feature implements Session-Specific RAG (Retrieval-Augmented Generation) for handling detailed follow-up questions about user-uploaded documents. It uses a dedicated QA sub-agent with a separate synthesis LLM to prevent context pollution in the main diagnostic agent.
+The **Case Evidence Store** implements Case-Specific RAG (Retrieval-Augmented Generation) for handling detailed follow-up questions about user-uploaded troubleshooting evidence (logs, configs, stack traces, etc.). It uses a dedicated QA sub-agent with a separate synthesis LLM to prevent context pollution in the main diagnostic agent.
+
+**Important**: The vector store is tied to the **case**, not the session. Documents uploaded to a case remain accessible across all sessions until the case is archived or closed (lifecycle-based cleanup).
 
 ---
 
@@ -40,17 +42,17 @@ Concise Answer with Citations
 
 1. **Separate Collections Per Case**
    - Each case gets its own ChromaDB collection: `case_{case_id}`
-   - Isolated from global knowledge base
-   - Automatically cleaned up after 7 days (TTL)
+   - Isolated from global knowledge base and user knowledge bases
+   - Automatically cleaned up when case is archived or closed (lifecycle-based)
 
 2. **Dedicated Synthesis LLM**
    - Uses `SYNTHESIS_PROVIDER` config (separate from `CHAT_PROVIDER`)
    - Recommended: Fast, cost-effective models (gpt-4o-mini, claude-haiku, llama-3.1-8b)
    - Prevents pollution of main agent's context
 
-3. **TTL-Based Cleanup**
-   - Background scheduler runs every 6 hours
-   - Deletes collections older than 7 days
+3. **Lifecycle-Based Cleanup**
+   - Collections deleted automatically when case is archived or closed
+   - Background scheduler runs every 6 hours as safety net (orphan detection)
    - No manual cleanup required
 
 ---
@@ -74,16 +76,17 @@ CHROMADB_URL=http://chromadb.faultmaven.local:30080
 
 ### Code Configuration
 
-**Case Vector Store TTL** (in [container.py](../../faultmaven/container.py)):
+**Case Vector Store Initialization** (in [container.py](../../faultmaven/container.py)):
 ```python
-self.case_vector_store = CaseVectorStore(ttl_days=7)
+self.case_vector_store = CaseVectorStore()
 ```
 
 **Cleanup Scheduler Interval** (in [main.py](../../faultmaven/main.py)):
 ```python
 case_cleanup_scheduler = start_case_cleanup_scheduler(
     case_vector_store=case_vector_store,
-    interval_hours=6  # Run cleanup every 6 hours
+    case_store=case_store,
+    interval_hours=6  # Run orphan detection every 6 hours
 )
 ```
 
@@ -129,13 +132,14 @@ result = await answer_from_document_tool.answer_question(
 # → Synthesis LLM correlates information
 ```
 
-### 3. Case Expiration
+### 3. Case Closure
 
 ```python
-# After 7 days of inactivity:
-# → Background scheduler runs cleanup_expired_cases()
+# When user archives or closes case:
+# → CaseService triggers cleanup
 # → Deletes ChromaDB collection: case_abc123
 # → Frees up storage space
+# → Evidence only lives as long as case is active
 ```
 
 ---
@@ -187,13 +191,13 @@ async def search(
             - score: Similarity score (0.0-1.0)
     """
 
-async def delete_case(case_id: str) -> None:
-    """Delete entire case collection."""
+async def delete_case_collection(case_id: str) -> None:
+    """Delete entire case collection when case closes/archives."""
 
-async def cleanup_expired_cases() -> int:
+async def cleanup_orphaned_collections(active_case_ids: List[str]) -> int:
     """
-    Clean up case collections that have exceeded TTL.
-    Returns: Number of collections deleted
+    Clean up case collections without active cases (safety net).
+    Returns: Number of orphaned collections deleted
     """
 
 async def get_case_document_count(case_id: str) -> int:
@@ -238,13 +242,15 @@ async def answer_question(
 ```python
 def start_case_cleanup_scheduler(
     case_vector_store: CaseVectorStore,
+    case_store: CaseStore,
     interval_hours: int = 6
 ) -> Optional[BackgroundScheduler]:
     """
-    Start background scheduler for case collection cleanup.
+    Start background scheduler for orphaned case collection cleanup.
 
     Args:
         case_vector_store: CaseVectorStore instance
+        case_store: CaseStore instance (for getting active case IDs)
         interval_hours: Cleanup interval in hours (default: 6)
 
     Returns:
@@ -309,7 +315,7 @@ Returns:
 - **Per document**: ~100-500 chunks (depends on size)
 - **Per chunk**: ~256-dimensional embedding (BGE-M3)
 - **Collection overhead**: ~1-10 MB per case
-- **Automatic cleanup**: After 7 days TTL
+- **Automatic cleanup**: When case closes/archives
 
 ---
 
@@ -328,16 +334,17 @@ INFO: Added 47 documents to case abc123
 DEBUG: Case abc123 search returned 5 results
 
 # Cleanup scheduler
-INFO: Case cleanup scheduler started (interval: 6 hours)
-INFO: Cleanup complete: deleted 3 expired case collections
+INFO: Case cleanup scheduler started (interval: 6 hours, lifecycle-based)
+INFO: Cleanup complete: deleted 3 orphaned case collections
 ```
 
 ### Metrics (Future Enhancement)
 
-- `case_vector_store_collections_total`: Total active case collections
-- `case_vector_store_documents_total`: Total documents across all cases
-- `case_vector_store_search_latency_ms`: Search operation latency
-- `case_cleanup_expired_total`: Total expired collections deleted
+- `case_evidence_store_collections_total`: Total active case collections
+- `case_evidence_store_documents_total`: Total documents across all cases
+- `case_evidence_store_search_latency_ms`: Search operation latency
+- `case_cleanup_orphaned_total`: Total orphaned collections deleted
+- `case_cleanup_lifecycle_total`: Total collections deleted on case close
 - `answer_from_document_calls_total`: Total QA tool invocations
 - `synthesis_llm_token_usage_total`: Token usage for synthesis calls
 
@@ -449,9 +456,10 @@ curl http://localhost:8000/api/v1/case/abc123/documents/count
    - Process multiple questions in parallel
    - Optimize chunk retrieval for related queries
 
-3. **Advanced TTL Management**
-   - Dynamic TTL based on case activity
-   - Manual retention for important cases
+3. **Advanced Retention Management**
+   - Manual retention extension for long-running investigations
+   - Export evidence before case closure
+   - Archive evidence snapshots for post-mortem analysis
 
 ---
 
@@ -476,8 +484,8 @@ curl http://localhost:8000/api/v1/case/abc123/documents/count
 ### Case collection not found
 
 **Symptom**: Search returns 0 results even after upload
-**Cause**: Collection creation failed or TTL expired
-**Fix**: Check ChromaDB logs, verify connection settings
+**Cause**: Collection creation failed or case was archived/closed
+**Fix**: Check ChromaDB logs, verify connection settings, confirm case is still active
 
 ### Synthesis LLM timeout
 
@@ -487,15 +495,16 @@ curl http://localhost:8000/api/v1/case/abc123/documents/count
 
 ### Background cleanup not running
 
-**Symptom**: Old case collections not deleted
-**Cause**: Scheduler failed to start or crashed
-**Fix**: Check main.py logs during startup, restart server
+**Symptom**: Orphaned case collections not deleted
+**Cause**: Scheduler failed to start, crashed, or case_store unavailable
+**Fix**: Check main.py logs during startup, verify both case_vector_store and case_store initialized, restart server
 
 ---
 
 ## References
 
-- [User Proposal: Working Memory Feature](../../docs/proposals/working-memory-feature.md)
+- [Knowledge Base Architecture](../architecture/knowledge-base-architecture.md) - Three-tier RAG system overview
+- [Case Lifecycle Cleanup Implementation](../implementation/CASE_LIFECYCLE_CLEANUP_IMPLEMENTED.md) - Lifecycle-based cleanup details
 - [CaseVectorStore Implementation](../../faultmaven/infrastructure/persistence/case_vector_store.py)
 - [AnswerFromDocumentTool Implementation](../../faultmaven/tools/answer_from_document.py)
 - [Background Cleanup Task](../../faultmaven/infrastructure/tasks/case_cleanup.py)

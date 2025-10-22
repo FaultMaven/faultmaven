@@ -121,6 +121,7 @@ class IntakeHandler(BasePhaseHandler):
                 user_query,
                 conversation_history,
                 signal_strength,
+                context,
             )
         else:
             # Normal question - answer in consultant mode
@@ -128,6 +129,7 @@ class IntakeHandler(BasePhaseHandler):
                 investigation_state,
                 user_query,
                 conversation_history,
+                context,
             )
 
     async def _handle_problem_detection(
@@ -136,6 +138,7 @@ class IntakeHandler(BasePhaseHandler):
         user_query: str,
         conversation_history: str,
         signal_strength: ProblemSignalStrength,
+        context: Optional[dict] = None,
     ) -> PhaseHandlerResult:
         """Handle detected problem signal
 
@@ -146,6 +149,7 @@ class IntakeHandler(BasePhaseHandler):
             user_query: User query with problem signal
             conversation_history: Recent history
             signal_strength: Strength of problem signal
+            context: Optional context dict (e.g., file upload metadata, case evidence)
 
         Returns:
             PhaseHandlerResult with problem confirmation offer
@@ -177,12 +181,18 @@ class IntakeHandler(BasePhaseHandler):
             signal_strength=signal_strength.value,
         )
 
+        # Build context including file upload data and case evidence (if provided)
+        llm_context = {"consent_prompt": consent_prompt}
+        if context:
+            llm_context.update(context)
+
         # Get LLM to craft structured response
+        # Note: case_evidence is automatically included in context by ooda_integration.py
         structured_response = await self.generate_llm_response(
             system_prompt=system_prompt,
             user_query=user_query,
-            context={"consent_prompt": consent_prompt},
-            max_tokens=400,
+            context=llm_context,
+            
             expected_schema=ConsultantResponse,
         )
 
@@ -299,6 +309,7 @@ class IntakeHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str,
+        context: Optional[dict] = None,
     ) -> PhaseHandlerResult:
         """Handle general informational query
 
@@ -308,6 +319,7 @@ class IntakeHandler(BasePhaseHandler):
             investigation_state: Current state
             user_query: User question
             conversation_history: Recent history
+            context: Optional context dict (e.g., file upload metadata, case evidence)
 
         Returns:
             PhaseHandlerResult with answer
@@ -321,10 +333,12 @@ class IntakeHandler(BasePhaseHandler):
             problem_signals_detected=False,
         )
 
+        # Note: case_evidence is automatically included in context by ooda_integration.py
         structured_response = await self.generate_llm_response(
             system_prompt=system_prompt,
             user_query=user_query,
-            max_tokens=400,
+            context=context,  # Pass through context which includes case evidence
+            
             expected_schema=ConsultantResponse,
         )
 

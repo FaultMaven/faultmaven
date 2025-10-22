@@ -2083,11 +2083,22 @@ async def upload_case_data(
     """
     Upload data file to a specific case with AI analysis.
 
-    Pipeline:
+    Pipeline (Option C: Hybrid - Fast Upload + Background Preparation):
     1. Upload file
-    2. Preprocess data (classify, extract insights, generate LLM-ready summary)
-    3. Get AI analysis via agent service
-    4. Return combined response with agent's conversational analysis
+    2. Preprocess data (classify, extract insights, generate LLM-ready summary) - 0.1s
+    3. Launch background vector DB build (for future detailed queries) - ~6s in background
+    4. Get AI analysis via agent service (uses preprocessed summary directly) - ~2s
+    5. Return immediate response with agent's analysis
+
+    User Experience:
+    - Upload feels instant (~2.1s total: 0.1s preprocessing + 2s agent)
+    - Vector DB builds in background for detailed queries later
+    - If user asks "show line 1045" within 6s, waits briefly for DB; after 6s, instant
+
+    Storage:
+    - Preprocessed summary (8KB) stored in vector DB
+    - Full evidence metadata stored in case diagnostic state
+    - Timeline events and hypotheses automatically extracted
 
     Returns 201 with DataUploadResponse including agent_response field.
     """
@@ -2174,7 +2185,8 @@ async def upload_case_data(
                     detail="Unable to decode file content. Please upload text files only."
                 )
 
-        preprocessed = preprocessing_service.preprocess(
+        # Phase 4: Now includes map-reduce chunking for large documents (>8K tokens)
+        preprocessed = await preprocessing_service.preprocess(
             filename=file.filename,
             content=content_str,
             source_metadata=parsed_source_metadata
@@ -2258,36 +2270,47 @@ async def upload_case_data(
             # Log but don't fail - evidence integration is supplementary
             logger.warning(f"Failed to update case with evidence: {e}")
 
-        # Step 3.11: Store preprocessed summary in Case Working Memory
+        # Step 3.11: Store preprocessed summary in Case Evidence Store (BACKGROUND TASK - Option C)
+        # Launch vector DB build in background - don't await! This allows immediate response while
+        # vector DB builds for future detailed queries.
         try:
             from faultmaven.container import container
             case_vector_store = getattr(container, 'case_vector_store', None)
 
             if case_vector_store:
-                await case_vector_store.add_documents(
-                    case_id=case.case_id,
-                    documents=[{
-                        'id': data_id,
-                        'content': preprocessed.content,  # LLM-ready preprocessed content
-                        'metadata': {
-                            'filename': file.filename,
-                            'data_type': preprocessed.metadata.data_type.value,
-                            'file_size': file_size,
-                            'uploaded_at': to_json_compatible(datetime.now(timezone.utc)),
-                            'user_id': current_user.user_id
-                        }
-                    }]
-                )
-                logger.info(
-                    f"Stored preprocessed content in Working Memory: "
-                    f"case_{case.case_id}/{data_id} "
-                    f"({len(preprocessed.content)} chars)"
-                )
+                # Create background task - returns immediately, vector DB builds in background
+                async def _store_in_vector_db():
+                    """Background task to build vector DB for detailed queries"""
+                    try:
+                        await case_vector_store.add_documents(
+                            case_id=case.case_id,
+                            documents=[{
+                                'id': data_id,
+                                'content': preprocessed.content,  # Store preprocessed summary for retrieval
+                                'metadata': {
+                                    'filename': file.filename,
+                                    'data_type': preprocessed.metadata.data_type.value,
+                                    'file_size': file_size,
+                                    'uploaded_at': to_json_compatible(datetime.now(timezone.utc)),
+                                    'user_id': current_user.user_id
+                                }
+                            }]
+                        )
+                        logger.info(
+                            f"✅ Background: Vector DB ready for {file.filename} "
+                            f"(case_{case.case_id}/{data_id}, {len(preprocessed.content)} chars)"
+                        )
+                    except Exception as e:
+                        logger.error(f"❌ Background: Vector DB build failed for {file.filename}: {e}")
+
+                # Launch background task - don't await
+                asyncio.create_task(_store_in_vector_db())
+                logger.info(f"📤 Launched background vector DB build for {file.filename} (will complete in ~6s)")
             else:
-                logger.warning("Case vector store not available, skipping Working Memory storage")
+                logger.warning("Case vector store not available, skipping Case Evidence Store storage")
         except Exception as e:
-            # Log but don't fail - Working Memory storage is supplementary
-            logger.warning(f"Failed to store in Working Memory: {e}")
+            # Log but don't fail - Case Evidence Store storage is supplementary
+            logger.warning(f"Failed to launch Case Evidence Store background task: {e}")
 
         # Step 4: Generate AI analysis via agent service
         context_dict = {

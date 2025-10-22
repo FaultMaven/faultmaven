@@ -39,7 +39,9 @@ class PreprocessingService:
         metrics_extractor: Optional['MetricsAndPerformanceExtractor'] = None,
         text_extractor: Optional['UnstructuredTextExtractor'] = None,
         source_code_extractor: Optional['SourceCodeExtractor'] = None,
-        visual_extractor: Optional['VisualEvidenceExtractor'] = None
+        visual_extractor: Optional['VisualEvidenceExtractor'] = None,
+        chunking_service: Optional['ChunkingService'] = None,
+        chunk_trigger_tokens: int = 8000
     ):
         """
         Initialize preprocessing service
@@ -53,9 +55,13 @@ class PreprocessingService:
             text_extractor: UNSTRUCTURED_TEXT extractor (Phase 2, optional)
             source_code_extractor: SOURCE_CODE extractor (Phase 2, optional)
             visual_extractor: VISUAL_EVIDENCE extractor (Phase 2 placeholder, Phase 3 full implementation)
+            chunking_service: ChunkingService for large documents (Phase 4, optional)
+            chunk_trigger_tokens: Token threshold to trigger chunking (default 8000)
         """
         self.classifier = classifier
         self.sanitizer = sanitizer
+        self.chunking_service = chunking_service
+        self.chunk_trigger_tokens = chunk_trigger_tokens
 
         # Extractor registry (Phase 1-2: All extractors available)
         self.extractors = {
@@ -77,7 +83,7 @@ class PreprocessingService:
         if visual_extractor:
             self.extractors[DataType.VISUAL_EVIDENCE] = visual_extractor
 
-    def preprocess(
+    async def preprocess(
         self,
         filename: str,
         content: str,
@@ -167,8 +173,44 @@ class PreprocessingService:
             strategy = extractor.strategy_name
             llm_calls = extractor.llm_calls_used
 
-        # Step 3: Chunking (skip in Phase 1)
-        # Phase 4: Implement map-reduce for long UNSTRUCTURED_TEXT
+        # Step 3: Chunking (Phase 4 - Map-Reduce for long documents)
+        token_count = self._estimate_tokens(extracted)
+
+        if token_count > self.chunk_trigger_tokens and self.chunking_service:
+            logger.info(
+                f"Document exceeds {self.chunk_trigger_tokens} tokens ({token_count} tokens) "
+                f"- triggering map-reduce chunking"
+            )
+
+            try:
+                # Use ChunkingService for intelligent map-reduce processing
+                extracted = await self.chunking_service.process_long_text(
+                    content=extracted,
+                    data_type=classification.data_type,
+                    filename=filename
+                )
+
+                strategy = "map_reduce"
+                # Estimate LLM calls: N chunks + 1 synthesis
+                chunk_count = (token_count // 4000) + 1
+                llm_calls += chunk_count + 1
+
+                logger.info(
+                    f"Map-reduce chunking complete: {token_count} tokens → "
+                    f"{self._estimate_tokens(extracted)} tokens "
+                    f"({chunk_count + 1} LLM calls)"
+                )
+            except Exception as e:
+                logger.error(f"Chunking failed: {e}. Falling back to truncation.")
+                # Fallback to truncation if chunking fails
+                if len(extracted) > 10000:
+                    extracted = extracted[:10000] + "\n\n... [Chunking failed, content truncated]"
+
+        elif token_count > self.chunk_trigger_tokens and not self.chunking_service:
+            logger.warning(
+                f"Document exceeds {self.chunk_trigger_tokens} tokens ({token_count} tokens) "
+                f"but ChunkingService not available - will truncate instead"
+            )
 
         # Step 4: Sanitization
         logger.info("Applying PII/secret sanitization")
@@ -277,3 +319,12 @@ class PreprocessingService:
             return content
 
         return content[:max_chars] + f"\n\n... [Truncated {len(content) - max_chars} chars]"
+
+    def _estimate_tokens(self, text: str) -> int:
+        """
+        Estimate token count for text
+
+        Uses simple heuristic: 1 token ≈ 4 characters
+        This is conservative for English text
+        """
+        return len(text) // 4

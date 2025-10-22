@@ -7,7 +7,7 @@ Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
 import logging
-from typing import Tuple, Optional, Any, Dict
+from typing import Tuple, Optional, Any, Dict, List
 from datetime import datetime
 
 from faultmaven.models.case import Case, CaseDiagnosticState
@@ -26,6 +26,7 @@ async def process_turn_with_ooda(
     session_id: str,
     state_manager: Optional[AgentStateManager] = None,
     context: Optional[Dict[str, Any]] = None,
+    tools: Optional[List[Any]] = None,
 ) -> Tuple[StructuredLLMResponse, CaseDiagnosticState]:
     """Process conversation turn using OODA framework
 
@@ -39,6 +40,7 @@ async def process_turn_with_ooda(
         session_id: Session identifier
         state_manager: Optional state manager for persistence
         context: Optional context dict (e.g., file upload data, source metadata)
+        tools: Optional list of tools available to phase handlers (e.g., QA sub-agents)
 
     Returns:
         Tuple of (StructuredLLMResponse, updated CaseDiagnosticState)
@@ -59,24 +61,44 @@ async def process_turn_with_ooda(
         user_query=user_query,
         llm_client=llm_client,
         state_manager=state_manager,
+        tools=tools,
     )
 
-    # Initialize orchestrator
+    # Initialize orchestrator with tools for phase handlers
     orchestrator = PhaseOrchestrator(
         llm_provider=llm_client,
         session_id=session_id,
         logger=logger,
+        tools=tools or [],  # Pass tools to enable QA sub-agent access
     )
 
     # Build conversation history
     conversation_history = await _build_conversation_history(case, session_id, state_manager)
+
+    # Build enriched context with case evidence
+    enriched_context = context.copy() if context else {}
+
+    # Include case evidence in context for all phase handlers
+    if case.diagnostic_state and case.diagnostic_state.evidence_provided:
+        evidence_summary = []
+        for evidence in case.diagnostic_state.evidence_provided:
+            # Include evidence with reasonable length limit
+            evidence_content = evidence.content[:2000] + "..." if len(evidence.content) > 2000 else evidence.content
+            evidence_summary.append(
+                f"[Evidence ID: {evidence.evidence_id}]\n"
+                f"Form: {evidence.form.value}\n"
+                f"Type: {evidence.evidence_type.value}\n"
+                f"Content: {evidence_content}\n"
+            )
+        enriched_context["case_evidence"] = "\n---\n".join(evidence_summary)
+        logger.info(f"Including {len(case.diagnostic_state.evidence_provided)} evidence items in context")
 
     # Process turn through orchestrator
     response_text, updated_investigation_state = await orchestrator.process_turn(
         user_query=user_query,
         investigation_state=investigation_state,
         conversation_history=conversation_history,
-        context=context,  # Pass file upload context to orchestrator
+        context=enriched_context,  # Pass enriched context with case evidence
     )
 
     # Persist updated investigation state
@@ -111,6 +133,7 @@ async def _get_or_initialize_investigation_state(
     user_query: str,
     llm_client: ILLMProvider,
     state_manager: AgentStateManager,
+    tools: Optional[List[Any]] = None,
 ) -> InvestigationState:
     """Get existing or initialize new investigation state
 
@@ -140,6 +163,7 @@ async def _get_or_initialize_investigation_state(
         llm_provider=llm_client,
         session_id=session_id,
         logger=logger,
+        tools=tools or [],  # Pass tools to enable QA sub-agent access
     )
 
     investigation_state = await orchestrator.initialize_investigation(
@@ -371,6 +395,7 @@ async def process_turn_with_framework_selection(
     session_id: str,
     state_manager: Optional[AgentStateManager] = None,
     context: Optional[Dict[str, Any]] = None,
+    tools: Optional[List[Any]] = None,
 ) -> Tuple[StructuredLLMResponse, CaseDiagnosticState]:
     """Process turn with OODA framework
 
@@ -384,6 +409,7 @@ async def process_turn_with_framework_selection(
         session_id: Session identifier
         state_manager: Optional state manager
         context: Optional context dict (e.g., file upload data, source metadata)
+        tools: Optional list of tools available to phase handlers
 
     Returns:
         Tuple of (StructuredLLMResponse, updated CaseDiagnosticState)
@@ -398,4 +424,5 @@ async def process_turn_with_framework_selection(
         session_id=session_id,
         state_manager=state_manager,
         context=context,
+        tools=tools,
     )

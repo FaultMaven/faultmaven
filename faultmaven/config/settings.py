@@ -43,6 +43,7 @@ class LLMProvider(str, Enum):
     ANTHROPIC = "anthropic"
     COHERE = "cohere"
     LOCAL = "local"
+    GROQ = "groq"
     NOT_SET = "NOT_SET"
 
 
@@ -69,16 +70,14 @@ class ServerSettings(BaseSettings):
 
 
 class LLMSettings(BaseSettings):
-    """LLM provider configuration"""
+    """LLM provider configuration with flexible multi-model support"""
+    
+    # Task-specific provider selection
     provider: LLMProvider = Field(default=LLMProvider.FIREWORKS, alias="CHAT_PROVIDER")
-
-    # Multimodal provider for visual evidence processing (falls back to provider if not set)
     multimodal_provider: Optional[LLMProvider] = Field(default=None, env="MULTIMODAL_PROVIDER")
-
-    # Synthesis provider for QA sub-agent (answer_from_document tool)
-    # Used for RAG-based question answering on uploaded documents
-    # If not specified, falls back to CHAT_PROVIDER
     synthesis_provider: Optional[LLMProvider] = Field(default=None, env="SYNTHESIS_PROVIDER")
+    classifier_provider: Optional[LLMProvider] = Field(default=None, env="CLASSIFIER_PROVIDER")
+    code_provider: Optional[LLMProvider] = Field(default=None, env="CODE_PROVIDER")
 
     # API Keys (SecretStr for security)
     openai_api_key: Optional[SecretStr] = Field(default=None, env="OPENAI_API_KEY")
@@ -88,8 +87,66 @@ class LLMSettings(BaseSettings):
     gemini_api_key: Optional[SecretStr] = Field(default=None, env="GEMINI_API_KEY")
     huggingface_api_key: Optional[SecretStr] = Field(default=None, env="HUGGINGFACE_API_KEY")
     openrouter_api_key: Optional[SecretStr] = Field(default=None, env="OPENROUTER_API_KEY")
+    groq_api_key: Optional[SecretStr] = Field(default=None, env="GROQ_API_KEY")
     
-    # Model configuration
+    # Flexible model configuration per provider and task
+    # OpenAI models
+    openai_chat_model: str = Field(default="gpt-4o", env="OPENAI_CHAT_MODEL")
+    openai_multimodal_model: str = Field(default="gpt-4o-vision", env="OPENAI_MULTIMODAL_MODEL")
+    openai_synthesis_model: str = Field(default="gpt-4o-mini", env="OPENAI_SYNTHESIS_MODEL")
+    openai_classifier_model: str = Field(default="gpt-4o-mini", env="OPENAI_CLASSIFIER_MODEL")
+    openai_code_model: str = Field(default="gpt-4o", env="OPENAI_CODE_MODEL")
+    
+    # Anthropic models
+    anthropic_chat_model: str = Field(default="claude-3-5-sonnet-20241022", env="ANTHROPIC_CHAT_MODEL")
+    anthropic_multimodal_model: str = Field(default="claude-3-5-sonnet-20241022", env="ANTHROPIC_MULTIMODAL_MODEL")
+    anthropic_synthesis_model: str = Field(default="claude-3-haiku", env="ANTHROPIC_SYNTHESIS_MODEL")
+    anthropic_classifier_model: str = Field(default="claude-3-haiku", env="ANTHROPIC_CLASSIFIER_MODEL")
+    anthropic_code_model: str = Field(default="claude-3-5-sonnet-20241022", env="ANTHROPIC_CODE_MODEL")
+    
+    # Fireworks models
+    fireworks_chat_model: str = Field(default="accounts/fireworks/models/llama-v3p1-405b-instruct", env="FIREWORKS_CHAT_MODEL")
+    fireworks_multimodal_model: str = Field(default="accounts/fireworks/models/llama-v3p1-405b-instruct", env="FIREWORKS_MULTIMODAL_MODEL")
+    fireworks_synthesis_model: str = Field(default="accounts/fireworks/models/llama-v3p1-405b-instruct", env="FIREWORKS_SYNTHESIS_MODEL")
+    fireworks_classifier_model: str = Field(default="accounts/fireworks/models/llama-v3p1-405b-instruct", env="FIREWORKS_CLASSIFIER_MODEL")
+    fireworks_code_model: str = Field(default="accounts/fireworks/models/qwen3-coder-480b-a35b-instruct", env="FIREWORKS_CODE_MODEL")
+    
+    # Google Gemini models
+    gemini_chat_model: str = Field(default="gemini-1.5-pro", env="GEMINI_CHAT_MODEL")
+    gemini_multimodal_model: str = Field(default="gemini-1.5-pro", env="GEMINI_MULTIMODAL_MODEL")
+    gemini_synthesis_model: str = Field(default="gemini-1.5-flash", env="GEMINI_SYNTHESIS_MODEL")
+    gemini_classifier_model: str = Field(default="gemini-1.5-flash", env="GEMINI_CLASSIFIER_MODEL")
+    gemini_code_model: str = Field(default="gemini-1.5-pro", env="GEMINI_CODE_MODEL")
+    
+    # Cohere models
+    cohere_chat_model: str = Field(default="command-r-plus", env="COHERE_CHAT_MODEL")
+    cohere_multimodal_model: str = Field(default="command-r-plus", env="COHERE_MULTIMODAL_MODEL")
+    cohere_synthesis_model: str = Field(default="command-r-plus", env="COHERE_SYNTHESIS_MODEL")
+    cohere_classifier_model: str = Field(default="command-r-plus", env="COHERE_CLASSIFIER_MODEL")
+    cohere_code_model: str = Field(default="command-r-plus", env="COHERE_CODE_MODEL")
+    
+    # HuggingFace models
+    huggingface_chat_model: str = Field(default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CHAT_MODEL")
+    huggingface_multimodal_model: str = Field(default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_MULTIMODAL_MODEL")
+    huggingface_synthesis_model: str = Field(default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_SYNTHESIS_MODEL")
+    huggingface_classifier_model: str = Field(default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CLASSIFIER_MODEL")
+    huggingface_code_model: str = Field(default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CODE_MODEL")
+    
+    # OpenRouter models
+    openrouter_chat_model: str = Field(default="openrouter-default", env="OPENROUTER_CHAT_MODEL")
+    openrouter_multimodal_model: str = Field(default="openrouter-default", env="OPENROUTER_MULTIMODAL_MODEL")
+    openrouter_synthesis_model: str = Field(default="openrouter-default", env="OPENROUTER_SYNTHESIS_MODEL")
+    openrouter_classifier_model: str = Field(default="openrouter-default", env="OPENROUTER_CLASSIFIER_MODEL")
+    openrouter_code_model: str = Field(default="openrouter-default", env="OPENROUTER_CODE_MODEL")
+    
+    # Groq models
+    groq_chat_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CHAT_MODEL")
+    groq_multimodal_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_MULTIMODAL_MODEL")
+    groq_synthesis_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_SYNTHESIS_MODEL")
+    groq_classifier_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CLASSIFIER_MODEL")
+    groq_code_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CODE_MODEL")
+    
+    # Legacy model configuration (backward compatibility)
     openai_model: str = Field(default="gpt-4o", env="OPENAI_MODEL")
     anthropic_model: str = Field(default="claude-3-sonnet-20240229", env="ANTHROPIC_MODEL")
     fireworks_model: str = Field(default="accounts/fireworks/models/llama-v3p1-405b-instruct", env="FIREWORKS_MODEL")
@@ -110,6 +167,7 @@ class LLMSettings(BaseSettings):
     gemini_base_url: str = Field(default="https://generativelanguage.googleapis.com/v1beta", env="GEMINI_API_BASE")
     huggingface_base_url: str = Field(default="https://api-inference.huggingface.co/models", env="HUGGINGFACE_API_URL")
     openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1", env="OPENROUTER_API_BASE")
+    groq_base_url: str = Field(default="https://api.groq.com/openai/v1", env="GROQ_API_BASE")
     
     # Request configuration
     request_timeout: int = Field(default=30, env="LLM_REQUEST_TIMEOUT")
@@ -119,6 +177,30 @@ class LLMSettings(BaseSettings):
     # Token limits
     max_tokens: int = Field(default=4096, env="LLM_MAX_TOKENS")
     context_window: int = Field(default=128000, env="LLM_CONTEXT_WINDOW")
+    
+    # Phase/Tool response limits (separate from provider limits)
+    phase_response_max_tokens: int = Field(
+        default=2000,
+        env="LLM_PHASE_RESPONSE_MAX_TOKENS",
+        ge=500,
+        le=4096,
+        description="Maximum tokens for phase handler and tool responses (OODA structure needs 400-1500 tokens)"
+    )
+    
+    @field_validator('max_tokens')
+    @classmethod
+    def validate_max_tokens(cls, v, info):
+        """Ensure max_tokens is reasonable and within context window"""
+        if v < 100:
+            raise ValueError("LLM_MAX_TOKENS must be >= 100 for useful responses")
+        
+        values = info.data
+        context_window = values.get('context_window', 128000)
+        if v > context_window:
+            raise ValueError(
+                f"LLM_MAX_TOKENS ({v}) cannot exceed LLM_CONTEXT_WINDOW ({context_window})"
+            )
+        return v
     
     def get_api_key(self) -> Optional[str]:
         """Get API key for current provider"""
@@ -132,16 +214,81 @@ class LLMSettings(BaseSettings):
         key = key_map.get(self.provider)
         return key.get_secret_value() if key else None
     
-    def get_model(self) -> str:
-        """Get model for current provider"""
+    def get_model(self, task: str = "chat") -> str:
+        """Get model for current provider and specific task
+        
+        Args:
+            task: Task type ('chat', 'multimodal', 'synthesis', 'classifier', 'code')
+        """
+        provider = self.provider
         model_map = {
-            LLMProvider.OPENAI: self.openai_model,
-            LLMProvider.ANTHROPIC: self.anthropic_model,
-            LLMProvider.FIREWORKS: self.fireworks_model,
-            LLMProvider.COHERE: self.cohere_model,
-            LLMProvider.LOCAL: self.local_model,
+            LLMProvider.OPENAI: {
+                "chat": self.openai_chat_model,
+                "multimodal": self.openai_multimodal_model,
+                "synthesis": self.openai_synthesis_model,
+                "classifier": self.openai_classifier_model,
+                "code": self.openai_code_model,
+            },
+            LLMProvider.ANTHROPIC: {
+                "chat": self.anthropic_chat_model,
+                "multimodal": self.anthropic_multimodal_model,
+                "synthesis": self.anthropic_synthesis_model,
+                "classifier": self.anthropic_classifier_model,
+                "code": self.anthropic_code_model,
+            },
+            LLMProvider.FIREWORKS: {
+                "chat": self.fireworks_chat_model,
+                "multimodal": self.fireworks_multimodal_model,
+                "synthesis": self.fireworks_synthesis_model,
+                "classifier": self.fireworks_classifier_model,
+                "code": self.fireworks_code_model,
+            },
+            LLMProvider.COHERE: {
+                "chat": self.cohere_chat_model,
+                "multimodal": self.cohere_multimodal_model,
+                "synthesis": self.cohere_synthesis_model,
+                "classifier": self.cohere_classifier_model,
+                "code": self.cohere_code_model,
+            },
+            LLMProvider.GEMINI: {
+                "chat": self.gemini_chat_model,
+                "multimodal": self.gemini_multimodal_model,
+                "synthesis": self.gemini_synthesis_model,
+                "classifier": self.gemini_classifier_model,
+                "code": self.gemini_code_model,
+            },
+            LLMProvider.HUGGINGFACE: {
+                "chat": self.huggingface_chat_model,
+                "multimodal": self.huggingface_multimodal_model,
+                "synthesis": self.huggingface_synthesis_model,
+                "classifier": self.huggingface_classifier_model,
+                "code": self.huggingface_code_model,
+            },
+            LLMProvider.OPENROUTER: {
+                "chat": self.openrouter_chat_model,
+                "multimodal": self.openrouter_multimodal_model,
+                "synthesis": self.openrouter_synthesis_model,
+                "classifier": self.openrouter_classifier_model,
+                "code": self.openrouter_code_model,
+            },
+            LLMProvider.GROQ: {
+                "chat": self.groq_chat_model,
+                "multimodal": self.groq_multimodal_model,
+                "synthesis": self.groq_synthesis_model,
+                "classifier": self.groq_classifier_model,
+                "code": self.groq_code_model,
+            },
+            LLMProvider.LOCAL: {
+                "chat": self.local_model,
+                "multimodal": self.local_model,
+                "synthesis": self.local_model,
+                "classifier": self.local_model,
+                "code": self.local_model,
+            },
         }
-        return model_map.get(self.provider, "")
+        
+        provider_models = model_map.get(provider, {})
+        return provider_models.get(task, "")
 
     def get_multimodal_provider(self) -> LLMProvider:
         """Get multimodal provider (falls back to chat provider if not set)"""
@@ -161,16 +308,107 @@ class LLMSettings(BaseSettings):
         return key.get_secret_value() if key else None
 
     def get_multimodal_model(self) -> str:
-        """Get model for multimodal provider"""
+        """Get model for multimodal provider using task-specific configuration"""
         provider = self.get_multimodal_provider()
+        return self._get_model_for_provider_and_task(provider, "multimodal")
+    
+    def get_synthesis_provider(self) -> LLMProvider:
+        """Get synthesis provider for QA sub-agent (falls back to chat provider if not set)"""
+        return self.synthesis_provider or self.provider
+    
+    def get_synthesis_model(self) -> str:
+        """Get model for synthesis provider using task-specific configuration"""
+        provider = self.get_synthesis_provider()
+        return self._get_model_for_provider_and_task(provider, "synthesis")
+    
+    def get_classifier_provider(self) -> LLMProvider:
+        """Get classifier provider (falls back to chat provider if not set)"""
+        return self.classifier_provider or self.provider
+    
+    def get_classifier_model(self) -> str:
+        """Get model for classifier provider using task-specific configuration"""
+        provider = self.get_classifier_provider()
+        return self._get_model_for_provider_and_task(provider, "classifier")
+    
+    def get_code_provider(self) -> LLMProvider:
+        """Get code analysis provider (falls back to chat provider if not set)"""
+        return self.code_provider or self.provider
+    
+    def get_code_model(self) -> str:
+        """Get model for code analysis provider using task-specific configuration"""
+        provider = self.get_code_provider()
+        return self._get_model_for_provider_and_task(provider, "code")
+    
+    def _get_model_for_provider_and_task(self, provider: LLMProvider, task: str) -> str:
+        """Helper method to get model for any provider and task combination"""
         model_map = {
-            LLMProvider.OPENAI: self.openai_model,
-            LLMProvider.ANTHROPIC: self.anthropic_model,
-            LLMProvider.FIREWORKS: self.fireworks_model,
-            LLMProvider.COHERE: self.cohere_model,
-            LLMProvider.LOCAL: self.local_model,
+            LLMProvider.OPENAI: {
+                "chat": self.openai_chat_model,
+                "multimodal": self.openai_multimodal_model,
+                "synthesis": self.openai_synthesis_model,
+                "classifier": self.openai_classifier_model,
+                "code": self.openai_code_model,
+            },
+            LLMProvider.ANTHROPIC: {
+                "chat": self.anthropic_chat_model,
+                "multimodal": self.anthropic_multimodal_model,
+                "synthesis": self.anthropic_synthesis_model,
+                "classifier": self.anthropic_classifier_model,
+                "code": self.anthropic_code_model,
+            },
+            LLMProvider.FIREWORKS: {
+                "chat": self.fireworks_chat_model,
+                "multimodal": self.fireworks_multimodal_model,
+                "synthesis": self.fireworks_synthesis_model,
+                "classifier": self.fireworks_classifier_model,
+                "code": self.fireworks_code_model,
+            },
+            LLMProvider.COHERE: {
+                "chat": self.cohere_chat_model,
+                "multimodal": self.cohere_multimodal_model,
+                "synthesis": self.cohere_synthesis_model,
+                "classifier": self.cohere_classifier_model,
+                "code": self.cohere_code_model,
+            },
+            LLMProvider.GEMINI: {
+                "chat": self.gemini_chat_model,
+                "multimodal": self.gemini_multimodal_model,
+                "synthesis": self.gemini_synthesis_model,
+                "classifier": self.gemini_classifier_model,
+                "code": self.gemini_code_model,
+            },
+            LLMProvider.HUGGINGFACE: {
+            LLMProvider.GROQ: {
+                "chat": self.groq_chat_model,
+                "multimodal": self.groq_multimodal_model,
+                "synthesis": self.groq_synthesis_model,
+                "classifier": self.groq_classifier_model,
+                "code": self.groq_code_model,
+            },
+                "chat": self.huggingface_chat_model,
+                "multimodal": self.huggingface_multimodal_model,
+                "synthesis": self.huggingface_synthesis_model,
+                "classifier": self.huggingface_classifier_model,
+                "code": self.huggingface_code_model,
+            },
+            LLMProvider.OPENROUTER: {
+                "chat": self.openrouter_chat_model,
+                "multimodal": self.openrouter_multimodal_model,
+                "synthesis": self.openrouter_synthesis_model,
+                "classifier": self.openrouter_classifier_model,
+                "code": self.openrouter_code_model,
+            },
+            LLMProvider.LOCAL: {
+                "chat": self.local_model,
+                "multimodal": self.local_model,
+                "synthesis": self.local_model,
+                "classifier": self.local_model,
+                "code": self.local_model,
+            },
         }
-        return model_map.get(provider, "")
+        
+        provider_models = model_map.get(provider, {})
+        return provider_models.get(task, "")
 
     def get_multimodal_base_url(self) -> str:
         """Get base URL for multimodal provider"""
@@ -184,10 +422,6 @@ class LLMSettings(BaseSettings):
         }
         return url_map.get(provider, "")
 
-    def get_synthesis_provider(self) -> LLMProvider:
-        """Get synthesis provider for QA sub-agent (falls back to chat provider if not set)"""
-        return self.synthesis_provider or self.provider
-
     def get_synthesis_api_key(self) -> Optional[str]:
         """Get API key for synthesis provider"""
         provider = self.get_synthesis_provider()
@@ -196,22 +430,14 @@ class LLMSettings(BaseSettings):
             LLMProvider.ANTHROPIC: self.anthropic_api_key,
             LLMProvider.FIREWORKS: self.fireworks_api_key,
             LLMProvider.COHERE: self.cohere_api_key,
+            LLMProvider.GEMINI: self.gemini_api_key,
+            LLMProvider.HUGGINGFACE: self.huggingface_api_key,
+            LLMProvider.OPENROUTER: self.openrouter_api_key,
+            LLMProvider.GROQ: self.groq_api_key,
             LLMProvider.LOCAL: None,
         }
         key = key_map.get(provider)
         return key.get_secret_value() if key else None
-
-    def get_synthesis_model(self) -> str:
-        """Get model for synthesis provider"""
-        provider = self.get_synthesis_provider()
-        model_map = {
-            LLMProvider.OPENAI: self.openai_model,
-            LLMProvider.ANTHROPIC: self.anthropic_model,
-            LLMProvider.FIREWORKS: self.fireworks_model,
-            LLMProvider.COHERE: self.cohere_model,
-            LLMProvider.LOCAL: self.local_model,
-        }
-        return model_map.get(provider, "")
 
     def get_synthesis_base_url(self) -> str:
         """Get base URL for synthesis provider"""
@@ -221,6 +447,10 @@ class LLMSettings(BaseSettings):
             LLMProvider.ANTHROPIC: self.anthropic_base_url,
             LLMProvider.FIREWORKS: self.fireworks_base_url,
             LLMProvider.COHERE: self.cohere_base_url,
+            LLMProvider.GEMINI: self.gemini_base_url,
+            LLMProvider.HUGGINGFACE: self.huggingface_base_url,
+            LLMProvider.OPENROUTER: self.openrouter_base_url,
+            LLMProvider.GROQ: self.groq_base_url,
             LLMProvider.LOCAL: self.local_url,
         }
         return url_map.get(provider, "")
@@ -285,6 +515,21 @@ class SessionSettings(BaseSettings):
         timeout_seconds = values.get('timeout_minutes', 30) * 60
         if v >= timeout_seconds:
             raise ValueError(f"Heartbeat interval ({v}s) must be less than session timeout ({timeout_seconds}s)")
+        return v
+    
+    @field_validator('cleanup_interval_minutes')
+    @classmethod
+    def validate_cleanup_interval(cls, v, info):
+        """Ensure cleanup interval is reasonable vs timeout"""
+        values = info.data
+        timeout = values.get('timeout_minutes', 180)
+        
+        if v > timeout:
+            raise ValueError(
+                f"SESSION_CLEANUP_INTERVAL_MINUTES ({v}) should not exceed "
+                f"SESSION_TIMEOUT_MINUTES ({timeout}). "
+                f"Cleanup should run at least as often as session expiration."
+            )
         return v
     
     model_config = {"env_prefix": "", "extra": "ignore"}
@@ -571,6 +816,57 @@ class OODASettings(BaseSettings):
     max_conversation_turns: int = Field(default=20, env="MAX_CONVERSATION_TURNS")
     max_conversation_tokens: int = Field(default=4000, env="MAX_CONVERSATION_TOKENS")
 
+    @field_validator('warm_memory_tokens')
+    @classmethod
+    def validate_memory_hierarchy_warm(cls, v, info):
+        """Ensure WARM <= HOT for memory hierarchy"""
+        values = info.data
+        hot = values.get('hot_memory_tokens', 500)
+        
+        if v > hot:
+            raise ValueError(
+                f"WARM_MEMORY_TOKENS ({v}) cannot exceed HOT_MEMORY_TOKENS ({hot}). "
+                f"Memory quality degrades from hot to cold."
+            )
+        return v
+    
+    @field_validator('cold_memory_tokens')
+    @classmethod
+    def validate_memory_hierarchy_cold(cls, v, info):
+        """Ensure COLD <= WARM for memory hierarchy"""
+        values = info.data
+        warm = values.get('warm_memory_tokens', 300)
+        
+        if v > warm:
+            raise ValueError(
+                f"COLD_MEMORY_TOKENS ({v}) cannot exceed WARM_MEMORY_TOKENS ({warm}). "
+                f"Memory quality degrades from hot to cold."
+            )
+        
+        if v <= 0:
+            raise ValueError(f"COLD_MEMORY_TOKENS must be > 0, got {v}")
+        
+        return v
+    
+    @field_validator('persistent_memory_tokens')
+    @classmethod
+    def validate_persistent_memory(cls, v, info):
+        """Validate persistent memory is reasonable"""
+        if v <= 0:
+            raise ValueError(f"PERSISTENT_MEMORY_TOKENS must be > 0, got {v}")
+        return v
+    
+    def model_post_init(self, __context):
+        """Validate total memory budget after all fields loaded"""
+        total = (self.hot_memory_tokens + self.warm_memory_tokens + 
+                 self.cold_memory_tokens + self.persistent_memory_tokens)
+        
+        if total > 5000:
+            raise ValueError(
+                f"Total OODA memory ({total} tokens) exceeds reasonable budget (5000 tokens). "
+                f"Consider reducing individual memory tier allocations."
+            )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
@@ -751,9 +1047,88 @@ class AlertingSettings(BaseSettings):
 class WorkspaceSettings(BaseSettings):
     """Workspace and collaboration settings (comet_workspace moved to ObservabilitySettings)"""
     comet_api_key: Optional[SecretStr] = Field(default=None, env="COMET_API_KEY")
-    
+
     # Feature toggles for experimental features
     enable_experimental_features: bool = Field(default=False, env="ENABLE_EXPERIMENTAL_FEATURES")
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
+class PreprocessingSettings(BaseSettings):
+    """Data preprocessing and chunking configuration"""
+
+    # Chunking thresholds
+    chunk_trigger_tokens: int = Field(
+        default=8000,
+        env="CHUNK_TRIGGER_TOKENS",
+        description="Documents >8K tokens trigger map-reduce chunking"
+    )
+
+    # Chunking parameters
+    chunk_size_tokens: int = Field(
+        default=4000,
+        env="CHUNK_SIZE_TOKENS",
+        description="Target chunk size for map-reduce (~16KB text)"
+    )
+
+    chunk_overlap_tokens: int = Field(
+        default=200,
+        env="CHUNK_OVERLAP_TOKENS",
+        description="Overlap between chunks for context preservation"
+    )
+
+    map_reduce_max_parallel: int = Field(
+        default=5,
+        env="MAP_REDUCE_MAX_PARALLEL",
+        ge=1,
+        le=10,
+        description="Maximum parallel LLM calls during MAP phase"
+    )
+
+    # Provider for chunking (defaults to synthesis provider)
+    chunking_provider: str = Field(
+        default="synthesis",
+        env="CHUNKING_PROVIDER",
+        description="LLM provider for chunking operations (synthesis, chat, or specific provider)"
+    )
+
+    @field_validator('chunk_size_tokens')
+    @classmethod
+    def validate_chunk_size(cls, v, info):
+        """Ensure chunk size is less than trigger"""
+        values = info.data
+        trigger = values.get('chunk_trigger_tokens', 8000)
+        
+        if v >= trigger:
+            raise ValueError(
+                f"CHUNK_SIZE_TOKENS ({v}) must be < CHUNK_TRIGGER_TOKENS ({trigger}). "
+                f"Trigger must activate before reaching chunk size."
+            )
+        return v
+    
+    @field_validator('chunk_overlap_tokens')
+    @classmethod
+    def validate_chunk_overlap(cls, v, info):
+        """Ensure overlap is reasonable percentage of chunk size"""
+        values = info.data
+        chunk_size = values.get('chunk_size_tokens', 4000)
+        
+        if v >= chunk_size:
+            raise ValueError(
+                f"CHUNK_OVERLAP_TOKENS ({v}) must be < CHUNK_SIZE_TOKENS ({chunk_size}). "
+                f"Overlap is a subset of the chunk."
+            )
+        
+        if v > chunk_size * 0.5:
+            raise ValueError(
+                f"CHUNK_OVERLAP_TOKENS ({v}) should not exceed 50% of CHUNK_SIZE_TOKENS ({chunk_size}). "
+                f"Recommended: 5-10% overlap for optimal context preservation."
+            )
+        
+        if v < 0:
+            raise ValueError(f"CHUNK_OVERLAP_TOKENS must be >= 0, got {v}")
+        
+        return v
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -801,6 +1176,7 @@ class FaultMavenSettings(BaseSettings):
     knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
     features: FeatureSettings = Field(default_factory=FeatureSettings)
     tools: ToolsSettings = Field(default_factory=ToolsSettings)
+    preprocessing: PreprocessingSettings = Field(default_factory=PreprocessingSettings)
     
     # Enhanced configuration sections merged into main sections above
     # enhanced_protection merged into protection above  

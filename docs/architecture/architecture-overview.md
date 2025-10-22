@@ -437,8 +437,8 @@ def get_tiered_prompt(response_type: str = "ANSWER", complexity: str = "simple")
 **Components**:
 - **AI Agent Core**: Multi-phase troubleshooting reasoning engine
 - **Data Processing**: Log analysis and insight extraction
-- **Knowledge Base**: RAG-enabled document retrieval with semantic search
-- **Agent Tools**: Knowledge search and web search capabilities  
+- **Knowledge Base**: RAG-enabled document retrieval with semantic search across three distinct vector store systems (User KB, Global KB, Case Evidence Store)
+- **Agent Tools**: Three specialized Q&A tools for stateless document retrieval, plus web search capabilities
 - **Data Classifier**: Automatic file type and content detection
 - **Log Analyzer**: Structured log parsing and anomaly detection
 
@@ -446,9 +446,16 @@ def get_tiered_prompt(response_type: str = "ANSWER", complexity: str = "simple")
 - `faultmaven/core/agent/` - AI reasoning engine
 - `faultmaven/core/processing/` - Data analysis algorithms
 - `faultmaven/core/knowledge/` - Knowledge management
-- `faultmaven/tools/` - Agent tool implementations
+- `faultmaven/tools/` - Agent tool implementations (KB-neutral Q&A tools with Strategy Pattern)
 
 **AI Reasoning**: FaultMaven implements a **7-phase investigation lifecycle** (Phases 0-6) for systematic troubleshooting. Investigation phases provide strategic structure while OODA steps (Observe, Orient, Decide, Act) provide tactical flexibility through adaptive iterations. See [Investigation Phases and OODA Integration Framework](./investigation-phases-and-ooda-integration.md) for complete methodology.
+
+**Knowledge Base Architecture**: FaultMaven implements **three completely separate vector storage systems** with distinct purposes, lifecycles, and ownership models:
+- **User Knowledge Base** (per-user permanent storage) - Personal runbooks and procedures
+- **Global Knowledge Base** (system-wide permanent storage) - Admin-managed troubleshooting reference
+- **Case Evidence Store** (ephemeral case-specific storage) - Temporary evidence uploaded during active investigations
+
+The knowledge base uses a **KB-neutral Strategy Pattern** where one core DocumentQATool class works with all three KB types through injected KBConfig strategies. This enables adding new KB types without modifying core code. See [Knowledge Base Architecture](./knowledge-base-architecture.md) for storage layer details (ChromaDB collections, Strategy Pattern, lifecycle management), [Q&A Sub-Agent Design](./qa-subagent-design.md) for access layer details (stateless document librarian philosophy, prompt engineering, tool wrappers), and [Vector Database Operations](./vector-database-operations.md) for operational procedures (ingestion pipelines, query flows, admin workflows).
 
 ### Infrastructure Layer
 **Purpose**: External service integrations and cross-cutting concerns
@@ -1595,7 +1602,8 @@ Core business services implementing case, data, knowledge, planning, and session
 - [`Document Generation and Closure Design v1.0`](./document-generation-and-closure-design.md) - 🎯 **NEW** - Case documentation system (case_service.py, report_service.py): DOCUMENTING state, report generation (Incident Report, Runbook, Post-Mortem), restricted input mode, case closure workflow
 - [`Session Management Specification v1.0`](./specifications/session-management-spec.md) - Multi-session architecture (session_service.py): Client-based resumption, OODA state persistence, Redis storage
 - [`Data Preprocessing Design v4.0`](./data-preprocessing-design.md) - Complete preprocessing system (data_service.py): 3-step pipeline, 8 data types, custom preprocessors, LLM integration
-- [`Knowledge Base Architecture`](./knowledge-base-architecture.md) - 📝 Design document (implementation pending) - Document management (knowledge_service.py): RAG, ingestion, semantic search
+- [`Knowledge Base Architecture v4.0`](./knowledge-base-architecture.md) - 🟢 **PRODUCTION READY** - Storage layer (knowledge_service.py): Three distinct vector stores (User KB, Global KB, Case Evidence), KB-neutral Strategy Pattern with KBConfig, ChromaDB collections, lifecycle management
+- [`Q&A Sub-Agent Design v1.0`](./qa-subagent-design.md) - 🟢 **PRODUCTION READY** - Access layer (core/tools/): Stateless document librarian, three tool wrappers (AnswerFromCaseEvidence, AnswerFromUserKB, AnswerFromGlobalKB), prompt engineering, system prompts
 - [`Planning System Architecture`](./planning-system-architecture.md) - 📝 Design document (implementation pending) - Strategic planning (planning_service.py): Problem decomposition, risk assessment
 
 #### Agentic Framework (`services/agentic/`)
@@ -1654,7 +1662,8 @@ Evidence collection implementation:
 
 #### Knowledge Management
 
-- Knowledge Base Architecture (Section 2) covers core/knowledge/
+- [`Knowledge Base Architecture v4.0`](./knowledge-base-architecture.md) - Storage layer (core/knowledge/): Three distinct vector stores, Strategy Pattern, ChromaDB collections
+- [`Q&A Sub-Agent Design v1.0`](./qa-subagent-design.md) - Access layer (core/tools/): Stateless document librarian, KB-neutral tool wrappers, prompt engineering
 
 ---
 

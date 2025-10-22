@@ -173,28 +173,56 @@ class ResponseParser:
                             validated.answer = str(parsed_inner['answer'])
                         iteration += 1
                     elif isinstance(parsed_inner, dict):
-                        # JSON doesn't have 'answer' field - this is the entire response object!
-                        # This is the BUG - extract a text representation instead of leaving JSON
+                        # LLM returned nested structure - extract text flexibly
                         logger.error(
-                            f"🐛 CRITICAL BUG: Inner JSON has no 'answer' field - full response object in answer field!",
+                            "LLM returned malformed response: nested structure in answer field",
                             extra={
-                                "parsed_inner_keys": list(parsed_inner.keys()),
-                                "parsed_inner_preview": str(parsed_inner)[:200]
+                                "keys": list(parsed_inner.keys()),
+                                "full_content": json.dumps(parsed_inner)  # Log full content, no truncation
                             }
                         )
-                        # Try to extract meaningful text from the dict
-                        if 'clarifying_questions' in parsed_inner or 'suggested_actions' in parsed_inner:
-                            # This is a ConsultantResponse/OODAResponse - should never be here!
-                            error_msg = f"ERROR: Full response object found in answer field. Keys: {list(parsed_inner.keys())}"
-                            validated.answer = error_msg
-                        else:
-                            # Unknown structure - convert to readable string
-                            validated.answer = json.dumps(parsed_inner, indent=2)
+
+                        # Flexible extraction: try common field names first (fast path for correct behavior)
+                        extracted = None
+                        for field in ['answer', 'response', 'content', 'message', 'text']:
+                            if field in parsed_inner and isinstance(parsed_inner[field], str):
+                                extracted = parsed_inner[field]
+                                if field != 'answer':  # Log if we had to use fallback field
+                                    logger.warning(f"Extracted text from unexpected field: {field}")
+                                break
+
+                        # Fallback: find first substantial string (LLM might use different field name)
+                        if not extracted:
+                            for key, value in parsed_inner.items():
+                                if isinstance(value, str) and len(value) > 50:
+                                    extracted = value
+                                    logger.warning(f"Extracted text from unknown field: {key}")
+                                    break
+
+                        # Use extracted text or graceful fallback
+                        validated.answer = extracted if extracted else json.dumps(parsed_inner, indent=2)
                         break
                     else:
                         # Not a dict - unexpected
                         break
-                except (json.JSONDecodeError, KeyError):
+                except (json.JSONDecodeError, KeyError) as e:
+                    # JSON parsing failed - but if answer looks like truncated JSON, try to salvage it
+                    if isinstance(validated.answer, str) and validated.answer.strip().startswith('{'):
+                        logger.error(
+                            "Malformed JSON in answer field (truncated or invalid)",
+                            extra={
+                                "parse_error": str(e),
+                                "answer_preview": validated.answer[:200]
+                            }
+                        )
+                        # Extract whatever text we can find between quotes
+                        import re
+                        # Look for "answer": "actual text here..."
+                        match = re.search(r'"answer"\s*:\s*"([^"]+)', validated.answer)
+                        if match:
+                            extracted_text = match.group(1)
+                            logger.warning(f"Extracted text from malformed JSON: {extracted_text[:100]}")
+                            validated.answer = extracted_text
                     # Not double-encoded, keep as-is
                     break
 

@@ -221,34 +221,58 @@ class HierarchicalMemoryManager:
     """Manages token-optimized hierarchical memory system
 
     Memory Tiers:
-    - Hot: Last 2 iterations, full fidelity (~500 tokens)
-    - Warm: Iterations 3-5, summarized (~300 tokens)
-    - Cold: Older iterations, key facts only (~100 tokens)
-    - Persistent: Always-available insights (~100 tokens)
+    - Hot: Last 2 iterations, full fidelity (configurable via HOT_MEMORY_TOKENS)
+    - Warm: Iterations 3-5, summarized (configurable via WARM_MEMORY_TOKENS)
+    - Cold: Older iterations, key facts only (configurable via COLD_MEMORY_TOKENS)
+    - Persistent: Always-available insights (configurable via PERSISTENT_MEMORY_TOKENS)
 
-    Total budget: ~1,600 tokens (64% reduction from unmanaged ~4,500)
+    Total budget: Configurable, recommended ~1,600 tokens (64% reduction from unmanaged ~4,500)
     """
 
-    # Token budget allocation
-    HOT_MEMORY_TOKENS = 500
-    WARM_MEMORY_TOKENS = 300
-    COLD_MEMORY_TOKENS = 100
-    PERSISTENT_TOKENS = 100
-    TOTAL_BUDGET = 1600
+    # Default token budget allocation (fallbacks if settings not provided)
+    DEFAULT_HOT_MEMORY_TOKENS = 500
+    DEFAULT_WARM_MEMORY_TOKENS = 300
+    DEFAULT_COLD_MEMORY_TOKENS = 100
+    DEFAULT_PERSISTENT_TOKENS = 100
 
     # Tier sizes
     HOT_TIER_SIZE = 2  # Last 2 iterations
     WARM_TIER_SIZE = 3  # Max 3 snapshots (iterations 3-5)
     COLD_TIER_SIZE = 5  # Max 5 snapshots (older iterations)
 
-    def __init__(self, llm_provider=None):
+    def __init__(self, llm_provider=None, settings=None):
         """Initialize hierarchical memory manager
 
         Args:
             llm_provider: Optional LLM provider for summarization
+            settings: Optional FaultMavenSettings instance for configuration
         """
         self.compression_engine = MemoryCompressionEngine(llm_provider)
         self.logger = logging.getLogger(__name__)
+        
+        # Load token budgets from settings or use defaults
+        if settings and hasattr(settings, 'ooda'):
+            self.hot_memory_tokens = settings.ooda.hot_memory_tokens
+            self.warm_memory_tokens = settings.ooda.warm_memory_tokens
+            self.cold_memory_tokens = settings.ooda.cold_memory_tokens
+            self.persistent_tokens = settings.ooda.persistent_memory_tokens
+        else:
+            # Fallback to defaults
+            self.hot_memory_tokens = self.DEFAULT_HOT_MEMORY_TOKENS
+            self.warm_memory_tokens = self.DEFAULT_WARM_MEMORY_TOKENS
+            self.cold_memory_tokens = self.DEFAULT_COLD_MEMORY_TOKENS
+            self.persistent_tokens = self.DEFAULT_PERSISTENT_TOKENS
+        
+        # Calculate total budget
+        self.total_budget = (self.hot_memory_tokens + self.warm_memory_tokens + 
+                            self.cold_memory_tokens + self.persistent_tokens)
+        
+        self.logger.info(
+            f"Memory Manager initialized with token budget: "
+            f"HOT={self.hot_memory_tokens}, WARM={self.warm_memory_tokens}, "
+            f"COLD={self.cold_memory_tokens}, PERSISTENT={self.persistent_tokens}, "
+            f"TOTAL={self.total_budget}"
+        )
 
     async def update_memory(
         self,
@@ -340,7 +364,7 @@ class HierarchicalMemoryManager:
         # Compress to snapshot
         snapshot = await self.compression_engine.compress_iterations(
             iterations_to_compress,
-            target_tokens=self.WARM_MEMORY_TOKENS // self.WARM_TIER_SIZE,
+            target_tokens=self.warm_memory_tokens // self.WARM_TIER_SIZE,
         )
 
         # Add to warm tier
@@ -535,7 +559,7 @@ class HierarchicalMemoryManager:
             "cold_snapshots": len(memory.cold_snapshots),
             "persistent_insights": len(memory.persistent_insights),
             "estimated_tokens": self.estimate_token_usage(memory),
-            "budget_utilization": f"{(self.estimate_token_usage(memory) / self.TOTAL_BUDGET) * 100:.1f}%",
+            "budget_utilization": f"{(self.estimate_token_usage(memory) / self.total_budget) * 100:.1f}%",
             "last_compression_turn": memory.last_compression_turn,
         }
 

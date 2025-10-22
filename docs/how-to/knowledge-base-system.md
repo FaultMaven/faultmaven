@@ -1,31 +1,74 @@
-# FaultMaven Knowledge Base System
+# FaultMaven Knowledge Base Systems
 
-**Version:** 1.1
-**Last Updated:** 2025-10-03
-**Purpose:** Comprehensive guide to the FaultMaven system-wide knowledge base
+**Version:** 2.0
+**Last Updated:** 2025-10-18
+**Purpose:** Comprehensive guide to FaultMaven's three-tier knowledge base architecture
 
 ---
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Knowledge Base Toolkit](#knowledge-base-toolkit)
-3. [Knowledge Base Structure](#knowledge-base-structure)
-4. [Content Creation & Sources](#content-creation--sources)
-5. [Contribution Workflow](#contribution-workflow)
-6. [Review Process](#review-process)
-7. [Ingestion, Updates & Maintenance](#ingestion-updates--maintenance)
-8. [Tools & Commands](#tools--commands)
-9. [Quality Standards](#quality-standards)
-10. [FAQ](#faq)
+2. [Three-Tier Knowledge Base Architecture](#three-tier-knowledge-base-architecture)
+3. [Global Knowledge Base (System 2)](#global-knowledge-base-system-2)
+4. [Knowledge Base Toolkit](#knowledge-base-toolkit)
+5. [Knowledge Base Structure](#knowledge-base-structure)
+6. [Content Creation & Sources](#content-creation--sources)
+7. [Contribution Workflow](#contribution-workflow)
+8. [Review Process](#review-process)
+9. [Ingestion, Updates & Maintenance](#ingestion-updates--maintenance)
+10. [Tools & Commands](#tools--commands)
+11. [Quality Standards](#quality-standards)
+12. [FAQ](#faq)
 
 ---
 
 ## Overview
 
-### What is the FaultMaven Knowledge Base?
+FaultMaven implements a **three-tier RAG (Retrieval-Augmented Generation) architecture** with distinct knowledge base systems serving different purposes:
 
-The FaultMaven Knowledge Base is a **system-wide collection of curated troubleshooting runbooks** that enhances the AI agent's ability to help users resolve infrastructure and application issues.
+1. **User Knowledge Base** (System 1) - Personal runbooks and procedures
+2. **Global Knowledge Base** (System 2) - System-wide troubleshooting documentation
+3. **Case Evidence Store** (System 3) - Temporary case-specific evidence
+
+This document focuses on the **Global Knowledge Base** (System 2). For complete architecture details, see [Knowledge Base Architecture](../architecture/knowledge-base-architecture.md).
+
+---
+
+## Three-Tier Knowledge Base Architecture
+
+### Quick Reference
+
+| System | Scope | Lifecycle | Purpose | Status |
+|--------|-------|-----------|---------|--------|
+| **User KB** | User-level | Permanent | Personal runbooks & procedures | ⏳ Planned |
+| **Global KB** | System-level | Permanent | System-wide troubleshooting docs | ✅ Implemented |
+| **Case Evidence Store** | Case-level | Ephemeral | Case-specific uploaded evidence | ✅ Implemented |
+
+### When to Use Each System
+
+**Use Global KB (this document) when:**
+- Creating system-wide troubleshooting runbooks
+- Contributing general technical documentation
+- Building reusable troubleshooting procedures
+
+**Use User KB (planned) when:**
+- Storing personal/team-specific runbooks
+- Managing private procedures and playbooks
+- Building custom troubleshooting workflows
+
+**Use Case Evidence Store when:**
+- Uploading logs, configs, or error dumps for active case
+- Asking questions about uploaded troubleshooting evidence
+- Analyzing case-specific data
+
+---
+
+## Global Knowledge Base (System 2)
+
+### What is the Global Knowledge Base?
+
+The Global Knowledge Base is a **system-wide collection of curated troubleshooting runbooks** that enhances the AI agent's ability to help users resolve infrastructure and application issues.
 
 **Key Characteristics:**
 - 🌐 **Universal Access** - All users benefit automatically
@@ -33,6 +76,7 @@ The FaultMaven Knowledge Base is a **system-wide collection of curated troublesh
 - 📚 **Source Attribution** - Responses reference specific runbooks
 - ✅ **Quality Controlled** - Team-verified, community-contributed
 - 🔄 **Continuously Updated** - Regular additions and improvements
+- 🏛️ **System-Wide** - Shared across all users and cases
 
 ### How It Works
 
@@ -1559,7 +1603,48 @@ git push origin runbook/[technology]-[problem]
 
 ---
 
-**Document Version:** 1.0
-**Last Updated:** 2025-01-15
+---
+
+## Other Knowledge Base Systems
+
+This document focuses on the **Global Knowledge Base** (System 2). For the other two systems:
+
+### User Knowledge Base (System 1) - ⏳ Planned
+
+**Purpose**: Personal/team runbooks and procedures
+
+**Status**: Not yet implemented (Phase 2)
+
+**Planned Features**:
+- Per-user permanent knowledge storage (`user_{user_id}_kb` collections)
+- Private runbooks and playbooks accessible across all user's cases
+- Knowledge Management UI for upload/organization
+- Cross-case accessibility for personal procedures
+
+**Documentation**: See [Knowledge Base Architecture](../architecture/knowledge-base-architecture.md#system-1-user-knowledge-base-per-user-permanent-storage)
+
+---
+
+### Case Evidence Store (System 3) - ✅ Implemented
+
+**Purpose**: Temporary storage for case-specific troubleshooting evidence
+
+**Status**: Production deployed with lifecycle-based cleanup
+
+**Key Features**:
+- Case-specific collections (`case_{case_id}`)
+- Evidence upload via browser extension during active investigations
+- QA sub-agent for evidence questions
+- Lifecycle-based cleanup (deleted when case closes/archives)
+- Background orphan detection every 6 hours
+
+**Documentation**:
+- [Case Evidence Store Feature](../features/case-evidence-store.md)
+- [Knowledge Base Architecture](../architecture/knowledge-base-architecture.md#system-3-case-evidence-store-ephemeral-case-specific-storage)
+
+---
+
+**Document Version:** 2.0
+**Last Updated:** 2025-10-18
 **Maintained By:** FaultMaven Team
 **License:** Apache-2.0

@@ -2350,7 +2350,12 @@ paths:
         Associates a case with the given session. If no case exists, creates a new
         one.
 
-        If force_new is true, always creates a new case.'
+        If force_new is true, always creates a new case.
+
+
+        Supports idempotency via ''idempotency-key'' header to prevent duplicate case
+
+        creation on retry when using force_new=true.'
       operationId: create_case_for_session_api_v1_cases_sessions__session_id__case_post
       parameters:
       - name: session_id
@@ -2719,15 +2724,39 @@ paths:
       description: 'Upload data file to a specific case with AI analysis.
 
 
-        Pipeline:
+        Pipeline (Option C: Hybrid - Fast Upload + Background Preparation):
 
         1. Upload file
 
         2. Preprocess data (classify, extract insights, generate LLM-ready summary)
+        - 0.1s
 
-        3. Get AI analysis via agent service
+        3. Launch background vector DB build (for future detailed queries) - ~6s in
+        background
 
-        4. Return combined response with agent''s conversational analysis
+        4. Get AI analysis via agent service (uses preprocessed summary directly)
+        - ~2s
+
+        5. Return immediate response with agent''s analysis
+
+
+        User Experience:
+
+        - Upload feels instant (~2.1s total: 0.1s preprocessing + 2s agent)
+
+        - Vector DB builds in background for detailed queries later
+
+        - If user asks "show line 1045" within 6s, waits briefly for DB; after 6s,
+        instant
+
+
+        Storage:
+
+        - Preprocessed summary (8KB) stored in vector DB
+
+        - Full evidence metadata stored in case diagnostic state
+
+        - Timeline events and hypotheses automatically extracted
 
 
         Returns 201 with DataUploadResponse including agent_response field.'
@@ -3142,6 +3171,299 @@ paths:
           content:
             application/json:
               schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/users/{user_id}/kb/documents:
+    post:
+      tags:
+      - user_kb
+      - user_kb
+      summary: Upload User Kb Document
+      description: "Upload a document to user's personal knowledge base.\n\nAccepts\
+        \ runbooks, procedures, troubleshooting guides, and documentation.\nDocuments\
+        \ are preprocessed to extract key information and stored permanently\nin the\
+        \ user's knowledge base for future agent queries.\n\n**Access Control**: Users\
+        \ can only upload to their own knowledge base.\n\n**File Types Supported**:\n\
+        - Text files (.txt, .md)\n- Logs (.log)\n- Configuration files (.yaml, .json,\
+        \ .xml, .conf)\n- Code files (.py, .js, .java, etc.)\n\n**Processing**:\n\
+        1. File uploaded and validated\n2. Content preprocessed (classification, extraction,\
+        \ sanitization)\n3. Document stored in user-scoped ChromaDB collection\n4.\
+        \ Available immediately for agent queries via answer_from_user_kb tool\n\n\
+        **Example**:\n```bash\ncurl -X POST \"http://localhost:8000/api/v1/users/alice/kb/documents\"\
+        \ \\\n  -H \"Authorization: Bearer dev_token\" \\\n  -F \"file=@database_runbook.md\"\
+        \ \\\n  -F \"title=Database Timeout Troubleshooting\" \\\n  -F \"category=database\"\
+        \ \\\n  -F \"tags=postgresql,timeout,performance\"\n```"
+      operationId: upload_user_kb_document_api_v1_users__user_id__kb_documents_post
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: User Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_upload_user_kb_document_api_v1_users__user_id__kb_documents_post'
+      responses:
+        '201':
+          description: Document uploaded successfully
+          content:
+            application/json:
+              schema: {}
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Bad Request
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Service Unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - user_kb
+      - user_kb
+      summary: List User Kb Documents
+      description: "List all documents in user's knowledge base.\n\nReturns metadata\
+        \ for all documents in the user's KB, with optional filtering\nby category\
+        \ and pagination support.\n\n**Access Control**: Users can only list their\
+        \ own documents.\n\n**Query Parameters**:\n- `limit`: Maximum number of documents\
+        \ to return (default: all)\n- `offset`: Number of documents to skip for pagination\
+        \ (default: 0)\n- `category`: Filter by document category (optional)\n\n**Example**:\n\
+        ```bash\n# List all documents\ncurl \"http://localhost:8000/api/v1/users/alice/kb/documents\"\
+        \ \\\n  -H \"Authorization: Bearer dev_token\"\n\n# List database runbooks\
+        \ only\ncurl \"http://localhost:8000/api/v1/users/alice/kb/documents?category=database\"\
+        \ \\\n  -H \"Authorization: Bearer dev_token\"\n\n# Paginate (10 documents\
+        \ at a time)\ncurl \"http://localhost:8000/api/v1/users/alice/kb/documents?limit=10&offset=0\"\
+        \ \\\n  -H \"Authorization: Bearer dev_token\"\n```"
+      operationId: list_user_kb_documents_api_v1_users__user_id__kb_documents_get
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: User Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          description: Maximum documents to return
+          title: Limit
+        description: Maximum documents to return
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          description: Number of documents to skip
+          default: 0
+          title: Offset
+        description: Number of documents to skip
+      - name: category
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by category
+          title: Category
+        description: Filter by category
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: List of user's KB documents
+          content:
+            application/json:
+              schema: {}
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Service Unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/users/{user_id}/kb/documents/{doc_id}:
+    delete:
+      tags:
+      - user_kb
+      - user_kb
+      summary: Delete User Kb Document
+      description: "Delete a specific document from user's knowledge base.\n\nPermanently\
+        \ removes the document from the user's KB. This action cannot be undone.\n\
+        \n**Access Control**: Users can only delete their own documents.\n\n**Example**:\n\
+        ```bash\ncurl -X DELETE \"http://localhost:8000/api/v1/users/alice/kb/documents/abc-123\"\
+        \ \\\n  -H \"Authorization: Bearer dev_token\"\n```"
+      operationId: delete_user_kb_document_api_v1_users__user_id__kb_documents__doc_id__delete
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: User Id
+      - name: doc_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Doc Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '204':
+          description: Document deleted successfully
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '404':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Not Found
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Service Unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/users/{user_id}/kb/stats:
+    get:
+      tags:
+      - user_kb
+      - user_kb
+      summary: Get User Kb Stats
+      description: "Get statistics about user's knowledge base.\n\nReturns summary\
+        \ information about the user's KB including document count\nand category breakdown.\n\
+        \n**Access Control**: Users can only view their own KB stats.\n\n**Example**:\n\
+        ```bash\ncurl \"http://localhost:8000/api/v1/users/alice/kb/stats\" \\\n \
+        \ -H \"Authorization: Bearer dev_token\"\n```"
+      operationId: get_user_kb_stats_api_v1_users__user_id__kb_stats_get
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: User Id
+      - name: Authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: User KB statistics
+          content:
+            application/json:
+              schema: {}
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Unauthorized
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Forbidden
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          description: Service Unavailable
         '422':
           description: Validation Error
           content:
@@ -3910,6 +4232,41 @@ components:
       - file
       - title
       title: Body_upload_document_kb_api_v1_kb_documents_post
+    Body_upload_user_kb_document_api_v1_users__user_id__kb_documents_post:
+      properties:
+        file:
+          type: string
+          format: binary
+          title: File
+          description: Runbook or procedure document
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+          description: Document title (defaults to filename)
+        category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Category
+          description: Document category (e.g., 'database', 'networking')
+        tags:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tags
+          description: Comma-separated tags
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Document description
+      type: object
+      required:
+      - file
+      title: Body_upload_user_kb_document_api_v1_users__user_id__kb_documents_post
     Case:
       properties:
         case_id:
@@ -4411,6 +4768,69 @@ components:
         display_name: John Doe
         email: john.doe@faultmaven.local
         username: john.doe
+    ErrorDetail:
+      properties:
+        code:
+          type: string
+          title: Code
+        message:
+          type: string
+          title: Message
+        session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Id
+        timeout_info:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Timeout Info
+      type: object
+      required:
+      - code
+      - message
+      title: ErrorDetail
+      description: A detailed error message with optional session-specific error codes.
+    ErrorResponse:
+      type: object
+      required:
+      - detail
+      properties:
+        detail:
+          type: string
+          description: Human-readable error description
+        error_type:
+          type: string
+          description: Machine-readable error classification
+          enum:
+          - ValidationError
+          - AuthenticationError
+          - AuthorizationError
+          - NotFoundError
+          - RateLimitError
+          - ServiceUnavailableError
+          - InternalServerError
+        correlation_id:
+          type: string
+          format: uuid
+          description: Unique identifier for request tracing and support
+        timestamp:
+          type: string
+          format: date-time
+          description: Error occurrence timestamp in ISO format
+        context:
+          type: object
+          description: Additional error context for debugging
+      example:
+        detail: Invalid session ID provided
+        error_type: ValidationError
+        correlation_id: 123e4567-e89b-12d3-a456-426614174000
+        timestamp: '2025-01-15T10:30:00Z'
+        context:
+          session_id: invalid_session_123
+          validation_errors:
+          - Session ID format invalid
     EvidenceCategory:
       type: string
       enum:
@@ -5401,45 +5821,6 @@ components:
       - closed
       title: CaseStatus
       description: Current case investigation state
-    ErrorResponse:
-      type: object
-      required:
-      - detail
-      properties:
-        detail:
-          type: string
-          description: Human-readable error description
-        error_type:
-          type: string
-          description: Machine-readable error classification
-          enum:
-          - ValidationError
-          - AuthenticationError
-          - AuthorizationError
-          - NotFoundError
-          - RateLimitError
-          - ServiceUnavailableError
-          - InternalServerError
-        correlation_id:
-          type: string
-          format: uuid
-          description: Unique identifier for request tracing and support
-        timestamp:
-          type: string
-          format: date-time
-          description: Error occurrence timestamp in ISO format
-        context:
-          type: object
-          description: Additional error context for debugging
-      example:
-        detail: Invalid session ID provided
-        error_type: ValidationError
-        correlation_id: 123e4567-e89b-12d3-a456-426614174000
-        timestamp: '2025-01-15T10:30:00Z'
-        context:
-          session_id: invalid_session_123
-          validation_errors:
-          - Session ID format invalid
     TroubleshootingResponse:
       type: object
       required:

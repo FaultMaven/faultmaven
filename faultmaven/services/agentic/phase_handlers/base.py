@@ -117,6 +117,10 @@ class BasePhaseHandler(ABC):
         self.tracer = tracer
         self.logger = logging.getLogger(self.__class__.__name__)
 
+        # Access settings for configurable values
+        from faultmaven.config.settings import get_settings
+        self._settings = get_settings()
+
     @abstractmethod
     def get_phase(self) -> InvestigationPhase:
         """Get the investigation phase this handler manages
@@ -250,7 +254,7 @@ class BasePhaseHandler(ABC):
         system_prompt: str,
         user_query: str,
         context: Dict[str, Any] = None,
-        max_tokens: int = 500,
+        max_tokens: int = None,
         expected_schema: type = None,
     ) -> "OODAResponse":
         """Generate structured LLM response for phase
@@ -275,6 +279,10 @@ class BasePhaseHandler(ABC):
         if not self.llm_provider:
             raise ValueError("LLM provider not configured")
 
+        # Use configured max_tokens if not explicitly provided
+        if max_tokens is None:
+            max_tokens = self._settings.llm.phase_response_max_tokens
+
         # Default to base OODAResponse if no schema specified
         if expected_schema is None:
             expected_schema = OODAResponse
@@ -284,7 +292,11 @@ class BasePhaseHandler(ABC):
             full_prompt = system_prompt
 
             if context:
-                full_prompt += f"\n\n# Context\n\n{context}"
+                # Format context dictionary as readable text
+                context_parts = []
+                for key, value in context.items():
+                    context_parts.append(f"## {key.replace('_', ' ').title()}\n\n{value}")
+                full_prompt += f"\n\n# Context\n\n" + "\n\n".join(context_parts)
 
             full_prompt += f"\n\n# User Query\n\n{user_query}"
 

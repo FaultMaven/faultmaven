@@ -102,6 +102,10 @@ POST /api/v1/cases/{case_id}/data
 - ✅ Endpoint exists ([case.py:2094-2149](../../faultmaven/api/v1/routes/case.py#L2094))
 - ⚠️ Returns mock data (not real file processing)
 - ❌ Does not return `agent_response` field (needs implementation)
+- ✅ **Preprocessing Layer**: **~85% COMPLETE** - see [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md)
+  - ✅ **Crime Scene Extraction** - FULLY implemented (`LogsAndErrorsExtractor`)
+  - ✅ **5 other extractors** - FULLY implemented (metrics, config, text, code)
+  - ⚠️ **Not yet wired** - extractors exist but not connected to upload endpoint
 
 ---
 
@@ -1001,11 +1005,11 @@ Focus on DIAGNOSIS and SOLUTIONS.
 
 ---
 
-## Case Working Memory Integration
+## Case Evidence Store Integration
 
 ### Overview
 
-All data uploaded through either submission path (explicit upload or implicit detection) is stored in the **Case Working Memory** vector store system. This is a critical architectural distinction that must be understood.
+All data uploaded through either submission path (explicit upload or implicit detection) is stored in the **Case Evidence Store** vector store system. This is a critical architectural distinction that must be understood.
 
 ### Three Distinct Vector Store Systems
 
@@ -1021,12 +1025,12 @@ FaultMaven implements **three completely separate vector storage systems** (see 
    - Shared across all users
    - Permanent system reference
 
-3. **Case Working Memory** (`case_{case_id}`) - IMPLEMENTED ✅
+3. **Case Evidence Store** (`case_{case_id}`) - IMPLEMENTED ✅
    - **This is where uploaded data goes**
    - Troubleshooting evidence uploaded during active case
    - Ephemeral - tied to case lifecycle
 
-### Data Upload → Case Working Memory Flow
+### Data Upload → Case Evidence Store Flow
 
 When a user uploads data (file, text, or page capture) in the troubleshooting chat:
 
@@ -1057,7 +1061,7 @@ Case closes → Collection automatically deleted
 
 ### Use Cases
 
-**Case Working Memory is for:**
+**Case Evidence Store is for:**
 - ✅ Log files uploaded during troubleshooting
 - ✅ Configuration files from affected system
 - ✅ Stack traces and error dumps
@@ -1065,7 +1069,7 @@ Case closes → Collection automatically deleted
 - ✅ Screenshots and diagnostic output
 - ✅ Captured page content from error pages
 
-**Case Working Memory is NOT for:**
+**Case Evidence Store is NOT for:**
 - ❌ Permanent runbooks (use User KB when implemented)
 - ❌ General reference documentation (use Global KB)
 - ❌ Long-term knowledge storage
@@ -1095,7 +1099,7 @@ Case closes → Collection automatically deleted
 
 **Current Implementation** (as of 2025-10-16):
 
-The Case Working Memory lifecycle is **tied to case status**, not time-based TTL:
+The Case Evidence Store lifecycle is **tied to case status**, not time-based TTL:
 
 ```python
 # Case states
@@ -1131,7 +1135,7 @@ CHROMADB_URL=http://chromadb.faultmaven.local:30080
 
 ### Relationship to Data Submission Paths
 
-Both data submission paths (explicit upload and implicit detection) ultimately store documents in Case Working Memory:
+Both data submission paths (explicit upload and implicit detection) ultimately store documents in Case Evidence Store:
 
 ```
 Path 1: Explicit Upload
@@ -1161,19 +1165,19 @@ ChromaDB Instance (chromadb.faultmaven.local:30080)
 ├── faultmaven_kb                    # Global KB (permanent)
 │   └── [system-wide documentation]
 │
-├── case_abc123                      # Case Working Memory (active case)
+├── case_abc123                      # Case Evidence Store (active case)
 │   └── [server.log uploaded by user]
 │   └── [config.yaml uploaded by user]
 │   └── [Lifecycle: deleted when case closes]
 │
-└── case_xyz789                      # Case Working Memory (active case)
+└── case_xyz789                      # Case Evidence Store (active case)
     └── [stack_trace.txt uploaded by user]
     └── [Lifecycle: deleted when case closes]
 ```
 
 ### Access Control
 
-| User Action | Case Working Memory |
+| User Action | Case Evidence Store |
 |-------------|---------------------|
 | **Upload document** | ✅ Own cases only |
 | **Query documents** | ✅ Own cases only (via answer_from_document tool) |
@@ -1340,84 +1344,53 @@ The v3.0 design provides a seamless conversational experience where data uploads
 
 ## Appendix: Current Implementation Status
 
-### Implementation Status: 3-Step Pipeline
+### Implementation Status: Data Preprocessing Pipeline
 
-**See**: [`data-preprocessing-design.md`](./data-preprocessing-design.md) for **authoritative design specification** (v4.0).
+**Status as of 2025-10-19**: ✅ **~85% COMPLETE - EXTRACTORS IMPLEMENTED, WIRING PENDING**
 
-This document consolidates all data submission and preprocessing design decisions into a single comprehensive blueprint ready for implementation.
+**Authoritative References**:
+- **Design Specification**: [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md)
+- **Implementation Location**: `faultmaven/services/preprocessing/`
 
 ```
-Step 1: Classify → Step 2: Preprocess → Step 3: LLM Analysis
-    ✅ Done         ⚠️ Partial           ✅ Ready
+Step 1: Classify → Step 2: Extract → Step 3: Chunk → Step 4: Sanitize
+    ✅ Complete      ✅ 5 of 6 ready   ⚠️ Partial      ✅ Complete
 ```
 
-#### Step 1: Classification ✅ DONE
-- **Tool**: DataClassifier (`core/processing/classifier.py`)
-- **Status**: Fully functional
-- Routes to one of 4 main preprocessors: LOG_FILE, METRICS_DATA, ERROR_REPORT, CONFIG_FILE
+#### Step 1: Classification ✅ FULLY IMPLEMENTED
 
-#### Step 2: Preprocessing ⚠️ PARTIAL (CRITICAL GAP)
+**Location**: `faultmaven/services/preprocessing/classifier.py`
 
-Each preprocessor is self-contained and produces LLM-ready summary:
+- ✅ 6-class system (LOGS, METRICS, CONFIG, TEXT, CODE, VISUAL)
+- ✅ 3-tier prioritization: user → agent → browser → rules
+- ✅ Confidence scoring
 
-| Preprocessor | Input | Output | Status |
-|--------------|-------|--------|--------|
-| `preprocess_logs()` | 50KB raw logs | 8K summary | ⚠️ Partial: has analysis, missing formatting |
-| `preprocess_metrics()` | Metrics data | 6K summary | ❌ Not implemented |
-| `preprocess_errors()` | Stack traces | 5K summary | ❌ Not implemented |
-| `preprocess_config()` | Config files | 6K summary | ❌ Not implemented |
+#### Step 2: Extraction ✅ 5 of 6 COMPLETE
 
-**Current Reality for LOG_FILE** (most common):
-- ✅ LogProcessor extracts insights (errors, anomalies, patterns)
-- ❌ Missing formatter to convert insights → LLM-ready summary
-- **Result**: Can't send data to LLM yet (either overflows context or loses critical data)
+| Extractor | Status | Size |
+|-----------|--------|------|
+| LogsAndErrorsExtractor | ✅ Crime Scene Extraction | 10KB |
+| MetricsAndPerformanceExtractor | ✅ Anomaly detection | 12KB |
+| StructuredConfigExtractor | ✅ Parse + validate | 7KB |
+| UnstructuredTextExtractor | ✅ Smart extraction | 10KB |
+| SourceCodeExtractor | ✅ AST analysis | 15KB |
+| VisualEvidenceExtractor | ⚠️ Stub only | 3KB |
 
-**Libraries Needed**:
-- Logs: None (use existing LogProcessor + string formatting)
-- Metrics: pandas ✅, numpy ✅, scipy ✅ (all available)
-- Errors: traceback ✅ (built-in)
-- Config: pyyaml ➕, json ✅, configparser ✅
+**Total**: ~58KB of production extractor code
 
-#### Step 3: LLM Analysis ✅ READY
-- **Tool**: AgentService + AI Agent
-- **Status**: Ready, waiting for Step 2 preprocessed summaries
-- Receives LLM-ready summary (not raw data)
-- Generates AgentResponse with diagnosis and recommendations
+### Current Status
 
-### What's Missing
+**Implemented (85%)**:
+- ✅ PreprocessingService orchestrator
+- ✅ DataClassifier with full feature set
+- ✅ 5 fully-functional extractors
+- ✅ DataSanitizer (PII/secrets)
 
-**CRITICAL GAP**: Step 2 preprocessing formatters
+**Missing (15%)**:
+- ❌ Wiring to upload endpoint
+- ❌ ChunkingService (long docs)
+- ❌ Vision model integration
 
-**When you upload a 50KB log file today:**
-```
-1. Step 1: Classification ✅ → DataType.LOG_FILE
-2. Step 2: LogProcessor extracts insights ✅
-3. Step 2: Formatter missing ❌ → Can't create LLM summary
-4. Step 3: Agent service ready ⚠️ → But receives no preprocessed data
-5. Result: No conversational AI response ❌
-```
+**Next Steps**: Wire extractors to data upload → unlock 5 data types (2-4 hours)
 
-**What needs to happen:**
-```
-1. Step 1: Classification ✅ → DataType.LOG_FILE
-2. Step 2: preprocess_logs() ❌ → Parse + Analyze + Format → 8K summary
-3. Step 3: Agent analyzes summary ✅ → Conversational AI response
-4. Result: User gets diagnosis and recommendations ✅
-```
-
-### Next Steps
-
-**Priority 1**: Implement log preprocessor (highest value)
-- Reuse existing LogProcessor for analysis
-- Add formatter to create LLM-ready summary
-- ~4-6 hours effort
-
-**Priority 2**: Implement error preprocessor
-- Parse stack traces, format for LLM
-- ~4-6 hours effort
-
-**Priority 3+**: Metrics and config preprocessors
-- More complex, lower priority
-- ~8-10 hours each
-
-**Critical Gap**: The preprocessing layer that formats insights into LLM-ready summaries is **documented but not implemented**.
+See [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) for complete details.

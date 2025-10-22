@@ -116,19 +116,20 @@ class HypothesisHandler(BasePhaseHandler):
         current_step = self.determine_ooda_step(investigation_state)
 
         if current_step == OODAStep.OBSERVE:
-            return await self._execute_observe(investigation_state, user_query, conversation_history)
+            return await self._execute_observe(investigation_state, user_query, conversation_history, context)
         elif current_step == OODAStep.ORIENT:
-            return await self._execute_orient(investigation_state, user_query, conversation_history)
+            return await self._execute_orient(investigation_state, user_query, conversation_history, context)
         elif current_step == OODAStep.DECIDE:
-            return await self._execute_decide(investigation_state, user_query, conversation_history)
+            return await self._execute_decide(investigation_state, user_query, conversation_history, context)
         else:
-            return await self._execute_observe(investigation_state, user_query, conversation_history)
+            return await self._execute_observe(investigation_state, user_query, conversation_history, context)
 
     async def _execute_observe(
         self,
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str,
+        context: Optional[dict] = None,
     ) -> PhaseHandlerResult:
         """Execute OODA Observe: Gather info for hypothesis generation
 
@@ -185,7 +186,8 @@ class HypothesisHandler(BasePhaseHandler):
         structured_response = await self.generate_llm_response(
             system_prompt=system_prompt,
             user_query=user_query,
-            max_tokens=500,
+            context=context,
+            
             expected_schema=LeadInvestigatorResponse,
         )
 
@@ -209,6 +211,7 @@ class HypothesisHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str,
+        context: Optional[dict] = None,
     ) -> PhaseHandlerResult:
         """Execute OODA Orient: Generate hypotheses from evidence
 
@@ -267,7 +270,8 @@ class HypothesisHandler(BasePhaseHandler):
         structured_response = await self.generate_llm_response(
             system_prompt=system_prompt,
             user_query=user_query,
-            max_tokens=600,
+            context=context,
+            
             expected_schema=LeadInvestigatorResponse,
         )
 
@@ -290,6 +294,7 @@ class HypothesisHandler(BasePhaseHandler):
         investigation_state: InvestigationState,
         user_query: str,
         conversation_history: str,
+        context: Optional[dict] = None,
     ) -> PhaseHandlerResult:
         """Execute OODA Decide: Rank hypotheses and plan validation
 
@@ -316,7 +321,8 @@ class HypothesisHandler(BasePhaseHandler):
         structured_response = await self.generate_llm_response(
             system_prompt=system_prompt,
             user_query=user_query,
-            max_tokens=500,
+            context=context,
+            
             expected_schema=LeadInvestigatorResponse,
         )
 

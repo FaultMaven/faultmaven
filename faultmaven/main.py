@@ -77,6 +77,9 @@ from .api.v1.routes import data, knowledge, session, auth
 from .api.v1.routes import case
 CASE_ROUTES_AVAILABLE = True
 
+# Import user KB routes
+from .api.v1.routes import user_kb
+
 # Import jobs routes
 from .api.v1.routes import jobs
 
@@ -521,6 +524,10 @@ app.include_router(auth.router, prefix="/api/v1", tags=["authentication"])
 # Case persistence routes (always included in production)
 app.include_router(case.router, prefix="/api/v1", tags=["case_persistence"])
 logger.info("✅ Case persistence endpoints added")
+
+# User KB routes
+app.include_router(user_kb.router, prefix="/api/v1", tags=["user_kb"])
+logger.info("✅ User KB endpoints added")
 
 # Jobs management routes
 app.include_router(jobs.router, prefix="/api/v1", tags=["job_management"])
