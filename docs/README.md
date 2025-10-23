@@ -12,7 +12,7 @@ Master index for all FaultMaven documentation.
 - 🏗️ **[Infrastructure](./infrastructure/)** - Infrastructure setup (Redis, ChromaDB, LLM providers, Opik)
 - 🧪 **[Testing](./testing/)** - Testing strategies, patterns, and guides
 - 📚 **[How-To Guides](./how-to/)** - Integration guides and operational procedures
-- 🔒 **[Security](./security/)** - Security implementation and policies
+- 🔒 **[Security](./security/)** - Security implementation, RBAC, and policies
 - 📝 **[Logging](./logging/)** - Logging architecture and configuration
 - 🎨 **[Frontend](./frontend/)** - Frontend documentation (website + copilot browser extension)
 - 📖 **[Runbooks](./runbooks/)** - Operational runbooks for common issues
@@ -66,6 +66,7 @@ Start here:
 
 ### Architecture Deep-Dive
 - [Architecture Overview](./architecture/architecture-overview.md) - Complete system design
+- [Authentication Design](./architecture/authentication-design.md) - ✅ **IMPLEMENTED** - Token-based authentication with RBAC
 - [Investigation Framework](./architecture/investigation-phases-and-ooda-integration.md) - ✅ **IMPLEMENTED** - 7-phase OODA investigation framework
 - [Data Preprocessing Design](./architecture/data-preprocessing-design.md) - ⭐ **AUTHORITATIVE** - Data types, tools, formats, LLM integration
 - [Data Submission Design](./architecture/data-submission-design.md) - How file uploads and data ingestion work
@@ -85,6 +86,11 @@ Start here:
 - [PostgreSQL Issues](./runbooks/postgresql/) - Database troubleshooting
 - [Redis Issues](./runbooks/redis/) - Cache troubleshooting
 - [Networking Issues](./runbooks/networking/) - Connection, DNS issues
+
+### Security
+- [Role-Based Access Control](./security/role-based-access-control.md) - ✅ **IMPLEMENTED** - User roles, permissions, and management
+- [Security Implementation Guide](./security/implementation-guide.md) - Security architecture and best practices
+- [PII Sanitization](./security/pii-sanitization-configuration.md) - Privacy protection configuration
 
 ### Logging
 - [Logging Architecture](./logging/architecture.md) - Logging system design

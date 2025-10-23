@@ -43,6 +43,7 @@ class DevUser:
         created_at: Account creation timestamp
         is_dev_user: Flag indicating development account
         is_active: Account active status
+        roles: List of user roles for access control (e.g., ['admin'], ['user'])
     """
     user_id: str
     username: str
@@ -51,6 +52,14 @@ class DevUser:
     created_at: datetime
     is_dev_user: bool = True
     is_active: bool = True
+    roles: list[str] = None  # Will be set to ['admin'] by default in __post_init__
+
+    def __post_init__(self):
+        """Set default roles if not provided"""
+        if self.roles is None:
+            # Default: all dev users are admins for development
+            # In production, this should default to ['user']
+            self.roles = ['admin']
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization"""
@@ -61,7 +70,8 @@ class DevUser:
             "display_name": self.display_name,
             "created_at": to_json_compatible(self.created_at),
             "is_dev_user": self.is_dev_user,
-            "is_active": self.is_active
+            "is_active": self.is_active,
+            "roles": self.roles if self.roles else ['admin']
         }
 
     @classmethod
@@ -74,7 +84,8 @@ class DevUser:
             display_name=data["display_name"],
             created_at=parse_utc_timestamp(data["created_at"]),
             is_dev_user=data.get("is_dev_user", True),
-            is_active=data.get("is_active", True)
+            is_active=data.get("is_active", True),
+            roles=data.get("roles", ['admin'])  # Default to admin for dev users
         )
 
 

@@ -14,7 +14,7 @@ Key Components:
 """
 
 from pydantic import BaseModel, Field, validator
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 import re
 
@@ -110,6 +110,11 @@ class UserProfile(BaseModel):
         default=True,
         description="Development user flag"
     )
+    roles: List[str] = Field(
+        default=["user"],
+        description="User roles for access control (e.g., ['user'], ['user', 'admin'])",
+        example=["user", "admin"]
+    )
 
     class Config:
         """Pydantic configuration"""
@@ -120,7 +125,8 @@ class UserProfile(BaseModel):
                 "email": "john.doe@faultmaven.local",
                 "display_name": "John Doe",
                 "created_at": "2025-01-15T10:00:00Z",
-                "is_dev_user": True
+                "is_dev_user": True,
+                "roles": ["user", "admin"]
             }
         }
 
@@ -169,7 +175,8 @@ class AuthTokenResponse(BaseModel):
                     "email": "john.doe@faultmaven.local",
                     "display_name": "John Doe",
                     "created_at": "2025-01-15T10:00:00Z",
-                    "is_dev_user": True
+                    "is_dev_user": True,
+                    "roles": ["user", "admin"]
                 }
             }
         }
@@ -276,6 +283,7 @@ class UserInfoResponse(UserProfile):
                 "display_name": "John Doe",
                 "created_at": "2025-01-15T10:00:00Z",
                 "is_dev_user": True,
+                "roles": ["user", "admin"],
                 "last_login": "2025-01-15T14:30:00Z",
                 "token_count": 2
             }

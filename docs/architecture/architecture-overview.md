@@ -1417,11 +1417,36 @@ except ServiceException as e:
 - **Encryption**: Data encrypted in transit and at rest
 - **Audit Logging**: Comprehensive audit trail for all operations
 
-### Authentication (Future Enhancement)
+### Authentication and Authorization
+
+**Status**: ✅ **IMPLEMENTED** (Token-based auth with RBAC)
+
+#### Authentication System
+- **Token-Based Authentication**: UUID tokens with SHA-256 hashing
+- **Token Lifecycle**: 24-hour expiration with automatic cleanup
+- **Storage**: Redis-backed with user profiles and token metadata
+- **User Management**: CLI tools and API endpoints for user administration
+
+#### Authorization (RBAC)
+- **Role-Based Access Control**: Two-tier role system (user, admin)
+- **Regular Users**: Can search/read Global KB, manage own User KB
+- **Admin Users**: Can manage Global KB (upload, update, delete)
+- **Endpoint Protection**: Server-side role validation on all admin operations
+- **Frontend Integration**: Roles included in login response for UI decisions
+
+#### Implementation Details
+See [Authentication Design](./authentication-design.md#role-based-access-control) for complete system design and [Role-Based Access Control](../security/role-based-access-control.md) for user management and integration guide.
+
+#### User Management
+- **CLI Tools**: Scripts for listing, creating, promoting users (see `scripts/auth/`)
+- **API Endpoints**: `POST /auth/dev-login`, `POST /auth/dev-register`, `GET /auth/me`
+- **Role Assignment**: Programmatic role management via user store API
+
+#### Future Enhancements
 - **API Key Authentication**: High priority for production deployment
-- **JWT Tokens**: Support for bearer token authentication
-- **Role-Based Access**: Medium priority RBAC implementation
-- **Rate Limiting**: Per-authentication-context rate limiting
+- **OAuth2/OIDC**: Enterprise SSO integration (Auth0/Clerk)
+- **Multi-Factor Authentication**: Enhanced security for production
+- **Rate Limiting**: Per-user and per-role rate limiting
 
 ### Network Security
 - **CORS Configuration**: Restrictive CORS policies for browser security
@@ -1686,8 +1711,8 @@ Evidence collection implementation:
 
 #### Security and Protection (`infrastructure/security/`, `infrastructure/protection/`)
 
-- [`Authentication Design`](./authentication-design.md) - Auth implementation (infrastructure/auth/): Token management, user store
-- [`Authorization and Access Control`](./authorization-and-access-control.md) - 📝 *To create* - RBAC: Permissions, case ownership validation
+- [`Authentication Design`](./authentication-design.md) - ✅ **IMPLEMENTED** - Auth implementation (infrastructure/auth/): Token management, user store, RBAC
+- [`Role-Based Access Control`](../security/role-based-access-control.md) - ✅ **IMPLEMENTED** - RBAC system: User roles, permissions, management tools, frontend integration
 - [`Security Architecture and Policies`](./security-architecture-and-policies.md) - 📝 *To create* - Security (infrastructure/security/): PII redaction (Presidio), data sanitization
 - [`Protection Systems`](./protection-systems.md) - 📝 *To create* - Protection (infrastructure/protection/): Rate limiting, circuit breakers, anomaly detection, reputation engine
 

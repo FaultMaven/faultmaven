@@ -138,7 +138,8 @@ async def dev_login(
             email=user.email,
             display_name=user.display_name,
             created_at=user.created_at.isoformat(),
-            is_dev_user=user.is_dev_user
+            is_dev_user=user.is_dev_user,
+            roles=user.roles if user.roles else ['admin']  # Ensure roles are included
         )
 
         token_response = AuthTokenResponse(
@@ -243,7 +244,8 @@ async def dev_register(
             email=user.email,
             display_name=user.display_name,
             created_at=user.created_at.isoformat(),
-            is_dev_user=user.is_dev_user
+            is_dev_user=user.is_dev_user,
+            roles=user.roles if user.roles else ['admin']  # Ensure roles are included
         )
 
         token_response = AuthTokenResponse(
@@ -350,6 +352,7 @@ async def get_current_user_profile(
             display_name=current_user.display_name,
             created_at=current_user.created_at.isoformat(),
             is_dev_user=current_user.is_dev_user,
+            roles=current_user.roles if current_user.roles else ['admin'],  # Ensure roles are included
             last_login=None,  # TODO: Implement last login tracking
             token_count=active_token_count
         )

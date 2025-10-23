@@ -153,16 +153,20 @@ Content-Type: application/json
   "access_token": "550e8400-e29b-41d4-a716-446655440000",
   "token_type": "bearer",
   "expires_in": 86400,
+  "session_id": "session-41afd36b-3f3c-46dd-8794-1565984d843d",
   "user": {
     "user_id": "user_f939a782",
     "username": "user123",
     "email": "user@example.com",
     "display_name": "User Name",
+    "roles": ["user"],
     "is_dev_user": true,
-    "is_active": true
+    "created_at": "2025-10-23T12:00:00Z"
   }
 }
 ```
+
+**Note:** Response now includes `roles` array for role-based access control (see [Role-Based Access Control](#role-based-access-control) section).
 
 #### 2. Get Current User
 ```http
@@ -623,6 +627,352 @@ class ProgressiveAuthClient {
 - Multi-tab authentication
 - Token expiration scenarios
 - Network failure recovery
+
+---
+
+## Role-Based Access Control
+
+### Overview
+
+FaultMaven implements role-based access control (RBAC) to manage user permissions for Global Knowledge Base operations. The system uses a simple, flexible role model stored with user profiles.
+
+### User Roles
+
+#### 1. Regular User (`user` role)
+Default role for all users. Can:
+- ✅ Login and authenticate
+- ✅ Search Global KB (read-only)
+- ✅ List Global KB documents (read-only)
+- ✅ Upload to their own User KB
+- ✅ Manage their own User KB documents
+- ✅ Use all troubleshooting features
+- ❌ Upload to Global KB
+- ❌ Modify Global KB documents
+- ❌ Delete Global KB documents
+
+#### 2. Admin User (`user` + `admin` roles)
+Enhanced permissions for KB management. Can do everything regular users can, PLUS:
+- ✅ Upload documents to Global KB
+- ✅ Update Global KB documents
+- ✅ Delete Global KB documents
+- ✅ Bulk update/delete operations on Global KB
+
+### Role Implementation
+
+#### User Model with Roles
+```python
+@dataclass
+class DevUser:
+    user_id: str
+    username: str
+    email: str
+    display_name: str
+    roles: List[str] = field(default_factory=lambda: ['user'])
+    created_at: datetime
+    is_dev_user: bool = True
+    is_active: bool = True
+```
+
+#### API Response with Roles
+```json
+{
+  "user": {
+    "user_id": "user-123",
+    "username": "alice",
+    "email": "alice@company.com",
+    "display_name": "Alice Smith",
+    "roles": ["user", "admin"],
+    "is_dev_user": true,
+    "created_at": "2025-10-23T12:00:00Z"
+  }
+}
+```
+
+### Protected Endpoints
+
+#### Admin-Only Endpoints
+```python
+from faultmaven.api.v1.role_dependencies import require_admin
+
+@router.post("/knowledge/documents")
+async def upload_document(
+    file: UploadFile,
+    current_user: DevUser = Depends(require_admin)  # Admin only
+):
+    """Upload document to Global KB (admin only)"""
+    ...
+
+@router.delete("/knowledge/documents/{doc_id}")
+async def delete_document(
+    doc_id: str,
+    current_user: DevUser = Depends(require_admin)  # Admin only
+):
+    """Delete Global KB document (admin only)"""
+    ...
+```
+
+#### Public Endpoints (All Authenticated Users)
+```python
+from faultmaven.api.v1.auth_dependencies import require_authentication
+
+@router.post("/knowledge/search")
+async def search_knowledge(
+    request: SearchRequest,
+    current_user: DevUser = Depends(require_authentication)  # Any user
+):
+    """Search Global KB (all users)"""
+    ...
+
+@router.get("/knowledge/documents")
+async def list_documents(
+    current_user: DevUser = Depends(require_authentication)  # Any user
+):
+    """List Global KB documents (all users)"""
+    ...
+```
+
+### Authorization Decorators
+
+#### Available Decorators
+```python
+# 1. Require admin role
+from faultmaven.api.v1.role_dependencies import require_admin
+
+@router.post("/admin-endpoint")
+async def admin_only(current_user: DevUser = Depends(require_admin)):
+    # Only admins can access
+    ...
+
+# 2. Require any of multiple roles
+from faultmaven.api.v1.role_dependencies import require_roles
+
+@router.post("/editor-endpoint")
+async def editor_or_admin(
+    current_user: DevUser = Depends(require_roles(['editor', 'admin']))
+):
+    # Users with 'editor' OR 'admin' role can access
+    ...
+
+# 3. Require admin or resource owner
+from faultmaven.api.v1.role_dependencies import require_admin_or_owner
+
+@router.delete("/users/{user_id}/resource")
+async def delete_resource(
+    user_id: str,
+    current_user: DevUser = Depends(require_admin_or_owner(user_id))
+):
+    # Admins or the resource owner can access
+    ...
+```
+
+### Error Responses
+
+#### 403 Forbidden (Insufficient Permissions)
+```json
+{
+  "error": "Forbidden",
+  "message": "This operation requires administrator privileges",
+  "required_role": "admin",
+  "user_roles": ["user"]
+}
+```
+
+### User Management
+
+#### Using Management Scripts
+
+**List all users:**
+```bash
+python scripts/auth/list_users.py
+```
+
+**Create a regular user:**
+```bash
+python scripts/auth/create_user.py --username alice --role user
+```
+
+**Create an admin user:**
+```bash
+python scripts/auth/create_user.py --username bob --role admin
+```
+
+**Promote user to admin:**
+```bash
+python scripts/auth/promote_to_admin.py alice
+```
+
+**Demote admin to regular user:**
+```bash
+python scripts/auth/demote_from_admin.py bob
+```
+
+#### Using the API
+
+**Register a new user (defaults to 'user' role):**
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/dev-register \
+  -H 'Content-Type: application/json' \
+  -d '{"username": "alice"}'
+```
+
+**Login and verify roles:**
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/dev-login \
+  -H 'Content-Type: application/json' \
+  -d '{"username": "alice"}'
+```
+
+**Get current user profile (includes roles):**
+```bash
+curl http://localhost:8000/api/v1/auth/me \
+  -H 'Authorization: Bearer YOUR_TOKEN'
+```
+
+### Frontend Integration
+
+#### Check User Roles
+```typescript
+interface User {
+  user_id: string;
+  username: string;
+  email: string;
+  display_name: string;
+  roles: string[];
+  is_dev_user: boolean;
+  created_at: string;
+}
+
+class RoleChecker {
+  hasRole(user: User, role: string): boolean {
+    return user.roles.includes(role);
+  }
+
+  isAdmin(user: User): boolean {
+    return this.hasRole(user, 'admin');
+  }
+
+  canManageGlobalKB(user: User): boolean {
+    return this.isAdmin(user);
+  }
+}
+```
+
+#### Conditional UI Rendering
+```typescript
+// Show/hide admin features based on roles
+const LoginComponent = () => {
+  const [user, setUser] = useState<User | null>(null);
+
+  // After login
+  const handleLogin = async (username: string) => {
+    const response = await fetch('/api/v1/auth/dev-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username })
+    });
+
+    const data = await response.json();
+    setUser(data.user);  // Contains roles array
+  };
+
+  return (
+    <div>
+      <h1>Welcome, {user?.display_name}</h1>
+      <p>Roles: {user?.roles.join(', ')}</p>
+
+      {/* Show admin UI only for admins */}
+      {user?.roles.includes('admin') && (
+        <div className="admin-panel">
+          <h2>Admin Features</h2>
+          <button onClick={uploadToGlobalKB}>
+            Upload to Global KB
+          </button>
+          <button onClick={manageGlobalKB}>
+            Manage Global KB
+          </button>
+        </div>
+      )}
+
+      {/* Show user KB for all users */}
+      <div className="user-panel">
+        <h2>My Knowledge Base</h2>
+        <button onClick={uploadToUserKB}>
+          Upload to My KB
+        </button>
+      </div>
+    </div>
+  );
+};
+```
+
+### Storage Details
+
+**Redis Storage:**
+- User data includes `roles` array
+- Redis keys: `auth:user:{user_id}`
+- Roles persisted with user profile
+- Survives server restarts
+
+**Example User Data in Redis:**
+```json
+{
+  "user_id": "user-123",
+  "username": "alice",
+  "email": "alice@company.com",
+  "display_name": "Alice Smith",
+  "roles": ["user", "admin"],
+  "created_at": "2025-10-23T12:00:00Z",
+  "is_dev_user": true,
+  "is_active": true
+}
+```
+
+### Security Considerations
+
+1. **Role Validation**: All role checks happen server-side
+2. **Frontend Roles**: Only used for UI rendering, not security
+3. **Token Integrity**: Roles verified on every request
+4. **Audit Logging**: All admin operations logged with user ID
+5. **Role Changes**: Require new token to reflect updated roles
+
+### Testing
+
+**Test RBAC implementation:**
+```bash
+cd /home/swhouse/projects/FaultMaven
+python scripts/test_rbac.py
+```
+
+**Expected output:**
+```
+✅ Regular user has 'user' role: True
+✅ Regular user has 'admin' role: False
+✅ Admin user has 'user' role: True
+✅ Admin user has 'admin' role: True
+✅ All role checks passed!
+```
+
+### Migration to Production
+
+When migrating to Auth0/Clerk:
+1. **Roles Mapping**: Map FaultMaven roles to Auth0 roles
+2. **Claims**: Include roles in JWT claims
+3. **Backend Validation**: Verify roles from JWT
+4. **Data Migration**: Preserve existing role assignments
+
+**Auth0 Role Configuration:**
+```javascript
+// Auth0 Custom Claims
+function addRolesToToken(user, context, callback) {
+  const namespace = 'https://faultmaven.ai/';
+  const assignedRoles = context.authorization.roles;
+
+  context.idToken[namespace + 'roles'] = assignedRoles;
+  context.accessToken[namespace + 'roles'] = assignedRoles;
+
+  callback(null, user, context);
+}
+```
 
 ---
 

@@ -34,9 +34,11 @@ from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Response
 
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
+from faultmaven.models.auth import DevUser
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.api.v1.dependencies import get_knowledge_service
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
+from faultmaven.api.v1.role_dependencies import require_admin
 from faultmaven.services.domain.knowledge_service import KnowledgeService
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
@@ -60,6 +62,7 @@ async def upload_document(
     description: Optional[str] = Form(None),
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     response: Response = Response(),
+    current_user: DevUser = Depends(require_admin)
 ) -> dict:
     """
     Upload a document to the knowledge base
@@ -235,7 +238,9 @@ async def get_document(
 
 @router.delete("/documents/{document_id}", status_code=204)
 async def delete_document(
-    document_id: str, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    document_id: str,
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: DevUser = Depends(require_admin)
 ):
     """
     Delete a knowledge base document
@@ -355,7 +360,8 @@ async def search_documents(
 async def update_document(
     document_id: str,
     update_data: dict,
-    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: DevUser = Depends(require_admin)
 ) -> dict:
     """Update document metadata and content."""
     logger = logging.getLogger(__name__)
@@ -400,7 +406,8 @@ async def update_document(
 @router.post("/documents/bulk-update")
 async def bulk_update_documents(
     request: Dict[str, Any],
-    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: DevUser = Depends(require_admin)
 ) -> dict:
     """Bulk update document metadata."""
     logger = logging.getLogger(__name__)
@@ -437,7 +444,8 @@ async def bulk_update_documents(
 @router.post("/documents/bulk-delete")
 async def bulk_delete_documents(
     request: Dict[str, List[str]],
-    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: DevUser = Depends(require_admin)
 ) -> dict:
     """Bulk delete documents."""
     logger = logging.getLogger(__name__)
@@ -516,9 +524,10 @@ async def upload_document_kb(
     description: Optional[str] = Form(None),
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     response: Response = Response(),
+    current_user: DevUser = Depends(require_admin)
 ) -> dict:
     """Upload a document to the knowledge base (kb prefix)"""
-    return await upload_document(file, title, document_type, category, tags, source_url, description, knowledge_service, response)
+    return await upload_document(file, title, document_type, category, tags, source_url, description, knowledge_service, response, current_user)
 
 
 @kb_router.get("/documents")
@@ -543,10 +552,12 @@ async def get_document_kb(
 
 @kb_router.delete("/documents/{document_id}", status_code=204)
 async def delete_document_kb(
-    document_id: str, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    document_id: str,
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: DevUser = Depends(require_admin)
 ):
     """Delete a document (kb prefix)"""
-    return await delete_document(document_id, knowledge_service)
+    return await delete_document(document_id, knowledge_service, current_user)
 
 
 @kb_router.get("/jobs/{job_id}")
@@ -570,28 +581,31 @@ async def search_documents_kb(
 async def update_document_kb(
     document_id: str,
     update_data: dict,
-    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: DevUser = Depends(require_admin)
 ) -> dict:
     """Update document (kb prefix)"""
-    return await update_document(document_id, update_data, knowledge_service)
+    return await update_document(document_id, update_data, knowledge_service, current_user)
 
 
 @kb_router.post("/documents/bulk-update")
 async def bulk_update_documents_kb(
     request: Dict[str, Any],
-    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: DevUser = Depends(require_admin)
 ) -> dict:
     """Bulk update documents (kb prefix)"""
-    return await bulk_update_documents(request, knowledge_service)
+    return await bulk_update_documents(request, knowledge_service, current_user)
 
 
 @kb_router.post("/documents/bulk-delete")
 async def bulk_delete_documents_kb(
     request: Dict[str, List[str]],
-    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    current_user: DevUser = Depends(require_admin)
 ) -> dict:
     """Bulk delete documents (kb prefix)"""
-    return await bulk_delete_documents(request, knowledge_service)
+    return await bulk_delete_documents(request, knowledge_service, current_user)
 
 
 @kb_router.get("/stats")
