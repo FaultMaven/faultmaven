@@ -1,0 +1,41 @@
+# Baseline Test Results - Pre-Migration
+
+**Date**: 2025-11-04
+**Status**: Before v2.0 Milestone-Based Migration
+
+## Test Collection Summary
+
+```
+Total tests collected: 1861
+Collection errors: 4
+```
+
+### Collection Errors (Existing Issues)
+
+```
+ERROR tests/prompts/test_v3_prompts.py
+ERROR tests/unit/investigation/test_working_conclusion_generator.py
+ERROR tests/unit/services/evidence/test_stall_detection.py
+(One more not shown in tail)
+```
+
+## Fixes Applied During Phase 0
+
+### Fix 1: EvidenceCaseStatus.INTAKE → CONSULTING
+**File**: `faultmaven/models/case.py:245`
+**Issue**: Referenced `EvidenceCaseStatus.INTAKE` which doesn't exist
+**Fix**: Changed to `EvidenceCaseStatus.CONSULTING` (correct value)
+**Reason**: Enum mismatch between case.py and evidence.py
+
+## Next Steps
+
+Phase 1 will:
+1. Archive old case.py
+2. Replace with milestone-based v2.0 models
+3. Fix remaining collection errors
+4. Establish clean test baseline
+
+---
+
+**Checkpoint Created**: Phase 0 Complete
+**Git Tag**: pre-migration-baseline

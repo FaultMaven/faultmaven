@@ -172,7 +172,7 @@ class CaseDiagnosticState(BaseModel):
     # Reference to new InvestigationState (from investigation.py)
     investigation_state_id: Optional[str] = Field(
         None,
-        description="ID of InvestigationState object (v3.2.0 OODA framework)"
+        description="ID of InvestigationState object - case-scoped in Redis as investigation:{case_id} (v3.3.0 FIXED)"
     )
 
     # =========================================================================
@@ -242,7 +242,7 @@ class CaseDiagnosticState(BaseModel):
         description="Investigation approach: active_incident (speed) vs post_mortem (depth)"
     )
     evidence_case_status: EvidenceCaseStatus = Field(
-        default=EvidenceCaseStatus.INTAKE,
+        default=EvidenceCaseStatus.CONSULTING,
         description="Current evidence-centric case status"
     )
 
