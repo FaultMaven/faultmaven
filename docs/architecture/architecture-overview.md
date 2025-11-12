@@ -1,20 +1,24 @@
-# FaultMaven System Architecture Overview v2.0
+# FaultMaven System Architecture Overview v3.0
 
-> **📝 Critical Update (2025-11-04)**
+> **✅ Architecture Migration Complete (2025-11-12)**
 >
-> **Investigation Architecture Redesigned** - Milestone-Based Framework v2.0:
-> - **OLD**: 7-phase OODA investigation lifecycle (ARCHIVED)
-> - **NEW**: Milestone-based opportunistic completion (see [Investigation Architecture v2.0](./milestone-based-investigation-framework.md))
-> - **Case Status**: CONSULTING → INVESTIGATING → RESOLVED/CLOSED (4 states)
-> - **Investigation Stages**: UNDERSTANDING, DIAGNOSING, RESOLVING (computed from milestones)
-> - **Canonical Docs**: milestone-based-investigation-framework.md, case-data-model-design.md, prompt-engineering-guide.md
+> **Major Migration**: Redis-to-PostgreSQL Storage + Milestone-Based Investigation
+> - **Storage Layer**: PostgreSQL hybrid (10-table normalized schema) + Redis (sessions/cache)
+> - **Investigation Model**: Milestone-based opportunistic completion (7-phase system archived)
+> - **Code Simplification**: 8,000+ lines of agentic services removed, replaced with streamlined MilestoneEngine
+> - **Case Ownership**: User-owned cases (decoupled from sessions)
+> - **Message Schema**: Standardized to industry conventions (`created_at`, `author_id`, metadata)
+> - **Migration Status**: ✅ Code complete, ⏸️ Alembic migrations pending
 >
-> ⚠️ **This document needs comprehensive v2.0 update** - some sections still reference old 7-phase design.
-> **For current design**: Refer to [Investigation Architecture v2.0](./milestone-based-investigation-framework.md)
+> **Authoritative Design Documents**:
+> - [Milestone-Based Investigation Framework v2.0](./milestone-based-investigation-framework.md) - Investigation architecture
+> - [Case Storage Design](./case-storage-design.md) - PostgreSQL schema specification
+> - [Redis Usage Design](./redis-usage-design.md) - Redis vs PostgreSQL roles
+> - [Prompt Engineering Guide](./prompt-engineering-guide.md) - Current prompting system
 
-> **Session-Case Architecture (2025-10-24)**:
-> - Sessions are **authentication-only** (no case/investigation state)
-> - Cases are **independent resources** owned directly by users
+> **Session-Case Architecture**:
+> - Sessions: **Authentication + ephemeral state** (Redis storage)
+> - Cases: **Independent user-owned resources** (PostgreSQL storage)
 > - Multi-device support via `client_id` and session resumption
 > - Implementation: ✅ **100% COMPLIANT**
 
@@ -23,17 +27,19 @@
 FaultMaven implements a sophisticated clean architecture pattern with dependency injection, interface-based design, and comprehensive observability. The system features a modern v3.1.0 schema-driven API that provides intent-driven responses, evidence-based troubleshooting, and structured state management. Designed as a privacy-first, AI-powered troubleshooting assistant that scales horizontally and integrates seamlessly with existing DevOps toolchains.
 
 **Key Architectural Principles:**
-- **Milestone-Based Investigation (v2.0)**: Opportunistic task completion based on data availability, not rigid phases (see [Investigation Architecture](./milestone-based-investigation-framework.md))
-- **Dual Engagement Modes**: Consultant Mode (CONSULTING status) and Lead Investigator (INVESTIGATING status) for natural user interaction
-- **Turn-Based Progress Tracking**: Replaces OODA iterations with turn-by-turn milestone completion
-- **Hierarchical Memory System**: 64% token reduction with Hot/Warm/Cold/Persistent tiers
-- **Hypothesis Confidence Management**: Automatic decay (0.85^n) prevents anchoring bias
-- **Evidence-Centric Troubleshooting**: Structured evidence collection with 5-dimensional classification
+- **PostgreSQL Hybrid Storage**: Normalized 10-table schema for persistent case data + Redis for ephemeral sessions/cache
+- **Milestone-Based Investigation**: Opportunistic task completion based on data availability, not rigid phases (see [Investigation Architecture](./milestone-based-investigation-framework.md))
+- **User-Owned Cases**: Cases owned by users, not sessions - enables long-term tracking and multi-session continuity
+- **Streamlined Investigation Engine**: MilestoneEngine replaces complex 7-phase handler system (8,000+ lines simplified)
+- **Turn-Based Progress Tracking**: Milestone completions with workflow progression detection and loopback prevention
+- **Dual Engagement Modes**: Consultant Mode (CONSULTING status) and Lead Investigator (INVESTIGATING status) for natural interaction
+- **Hypothesis Management**: Opportunistic capture + systematic generation with confidence tracking
+- **Evidence-Centric Troubleshooting**: Structured evidence collection with platform-specific extractors
 - **Interface-Based Dependencies**: Clean architecture with dependency injection and interface compliance
-- **Persistent State Management**: Redis-backed investigation state with automatic compression
-- **Comprehensive Security**: PII protection, guardrails, and policy enforcement
+- **Comprehensive Security**: PII protection, RBAC authorization, guardrails, and policy enforcement
 - **Enterprise-Grade Reliability**: Circuit breakers, error handling, and fallback strategies
-- **Multi-LLM Support**: OpenAI, Anthropic, Fireworks AI with automatic failover
+- **Multi-LLM Support**: OpenAI, Anthropic, Fireworks AI, Groq with automatic failover
+- **Industry-Standard Message Schema**: `created_at`, `author_id`, `turn_number`, `token_count` following Rails/Django/GitHub conventions
 
 ## Architecture Diagram
 
@@ -58,47 +64,47 @@ flowchart TB
         DEP["Dependencies"]
   end
  subgraph subGraph2["Service Layer"]
-        AS["Agent Service"]
+        CS["Case Service"]
+        IS["Investigation Service"]
         DS["Data Service"]
         KS["Knowledge Service"]
         SS["Session Service"]
+        CSM["Case Status Manager"]
   end
- subgraph subGraph3["Agentic Framework"]
-        AWE["Business Logic & Workflow Engine"]
-        ASM["State & Session Manager"]
-        ACE["Query Classification Engine"]
-        ATB["Tool & Skill Broker"]
-        AGL["Guardrails & Policy Layer"]
-        ARS["Response Synthesizer"]
-        AEM["Error Handling & Fallback Manager"]
+ subgraph subGraph3["Core Investigation"]
+        ME["Milestone Engine"]
+        HM["Hypothesis Manager"]
+        IC["Investigation Coordinator"]
+        WPD["Workflow Progression Detector"]
+        OE["OODA Engine"]
+        WCG["Working Conclusion Generator"]
   end
  subgraph subGraph4["Core Domain"]
-        AGENT["AI Agent Core"]
         PROC["Data Processing"]
         KB["Knowledge Base"]
         TOOLS["Agent Tools"]
         CLASS["Data Classifier"]
-        LOG_ANALYZER["Log Analyzer"]
-        PROMPT["Prompt Engine"]
+        PROMPT["Prompt Manager"]
   end
  subgraph subGraph5["Infrastructure Layer"]
         LLM["LLM Router"]
         SEC["Security/PII"]
         OBS["Observability"]
-        PERSIST["Persistence"]
+        PERSIST["Case Repository"]
+        USER_REPO["User Repository"]
         HEALTH["Health Monitor"]
-        METRICS["Metrics Collector"]
-        ALERT["Alert Manager"]
-        CACHE["Memory Cache"]
+        CACHE["Cache Manager"]
   end
  subgraph subGraph6["External Services"]
-        REDIS[("Redis<br>Session Store")]
+        POSTGRES[("PostgreSQL<br>Cases/Users/Evidence")]
+        REDIS[("Redis<br>Sessions/Cache")]
         CHROMA[("ChromaDB<br>Vector Store")]
         PRESIDIO["Presidio<br>PII Protection"]
         OPIK_SVC["Opik<br>LLM Observability"]
         OPENAI["OpenAI<br>GPT Models"]
         ANTHROPIC["Anthropic<br>Claude Models"]
         FIREWORKS["Fireworks AI<br>Open Models"]
+        GROQ["Groq<br>Fast Inference"]
   end
     BE --> CORS
     API_CLIENT --> CORS
@@ -108,26 +114,26 @@ flowchart TB
     PERF --> OPIK
     OPIK --> ROUTE
     ROUTE --> DEP
-    DEP --> AS & DS & KS & SS
-    AS --> AGENT & AWE & LLM & OBS
-    DS --> PROC & CLASS & LOG_ANALYZER & SEC
-    KS --> KB & PERSIST
-    SS --> PERSIST
-    AWE --> ASM & ACE & ATB & AGL & ARS & AEM & LLM & OBS
-    ASM --> CACHE & PERSIST
-    AGENT --> TOOLS & OBS
+    DEP --> CS & IS & DS & KS & SS
+    CS --> CSM & PERSIST & OBS
+    IS --> ME & HM & IC & WPD & LLM & OBS
+    DS --> PROC & CLASS & SEC
+    KS --> KB & CHROMA
+    SS --> REDIS
+    ME --> OE & WCG & HM
+    HM --> PERSIST
+    IC --> ME & WPD
+    WPD --> OE
+    WCG --> LLM
     TOOLS --> KB
-    ACE --> LLM
-    ATB --> KB
-    AGL --> SEC
-    ARS --> LLM
-    LLM --> OPENAI & ANTHROPIC & FIREWORKS
+    PROMPT --> LLM
+    LLM --> OPENAI & ANTHROPIC & FIREWORKS & GROQ
     SEC --> PRESIDIO
     OBS --> OPIK_SVC
-    PERSIST --> REDIS & CHROMA
+    PERSIST --> POSTGRES
+    USER_REPO --> POSTGRES
     CACHE --> REDIS
-    HEALTH --> REDIS & CHROMA & PRESIDIO & OPIK_SVC
-    METRICS --> ALERT
+    HEALTH --> POSTGRES & REDIS & CHROMA & PRESIDIO & OPIK_SVC
      BE:::external
      API_CLIENT:::external
      CURL:::external
@@ -137,31 +143,31 @@ flowchart TB
      OPIK:::api
      ROUTE:::api
      DEP:::api
-     AS:::service
+     CS:::service
+     IS:::service
      DS:::service
      KS:::service
      SS:::service
-     AWE:::agentic
-     ASM:::agentic
-     ACE:::agentic
-     ATB:::agentic
-     AGL:::agentic
-     ARS:::agentic
-     AEM:::agentic
-     AGENT:::core
+     CSM:::service
+     ME:::investigation
+     HM:::investigation
+     IC:::investigation
+     WPD:::investigation
+     OE:::investigation
+     WCG:::investigation
      PROC:::core
      KB:::core
      TOOLS:::core
      CLASS:::core
-     LOG_ANALYZER:::core
+     PROMPT:::core
      LLM:::infra
      SEC:::infra
      OBS:::infra
      PERSIST:::infra
+     USER_REPO:::infra
      HEALTH:::infra
-     METRICS:::infra
-     ALERT:::infra
      CACHE:::infra
+     POSTGRES:::storage
      REDIS:::storage
      CHROMA:::storage
      PRESIDIO:::storage
@@ -169,216 +175,148 @@ flowchart TB
      OPENAI:::storage
      ANTHROPIC:::storage
      FIREWORKS:::storage
+     GROQ:::storage
     classDef external fill:#e1f5fe
     classDef api fill:#f3e5f5
     classDef service fill:#e8f5e8
+    classDef investigation fill:#fff9c4
     classDef core fill:#fff3e0
     classDef infra fill:#fce4ec
     classDef storage fill:#f1f8e9
 ```
 
-## Recent Infrastructure Enhancements (2025-10-10)
+## Major Architecture Migration (November 2025)
 
-### 1. Investigation Phases and OODA Integration Framework
+### 1. PostgreSQL Hybrid Storage Migration
 
-**Status**: 🟡 **PARTIALLY IMPLEMENTED** (~65% complete)
+**Status**: ✅ **CODE COMPLETE** - Alembic migrations pending
 
-FaultMaven implements a sophisticated **investigation process framework** for systematic incident resolution:
+FaultMaven completed a major storage layer migration from Redis-only to PostgreSQL hybrid architecture:
 
-**High-Level Overview**:
-- **Investigation Phases**: 7 phases (0-6) defining strategic progression (Intake → Blast Radius → Timeline → Hypothesis → Validation → Solution → Document)
-- **OODA Framework**: 4 tactical steps (Observe → Orient → Decide → Act) executing within each phase
-- **Adaptive Intensity**: Dynamically scales OODA iterations from 1-2 (simple) to 6+ (complex) based on case complexity
-- **Engagement Modes**: Consultant (Q&A) and Lead Investigator (active troubleshooting)
-- **Investigation Strategies**: Active Incident (speed) vs Post-Mortem (thoroughness)
+**Migration Overview**:
+- **From**: Redis-based case storage (RedisCaseStore - 1,170 lines deleted)
+- **To**: PostgreSQL normalized schema (10 tables) + Redis for ephemeral data
+- **Net Impact**: -33,928 lines (42% code reduction through simplification)
+
+**PostgreSQL Schema** (10 normalized tables):
+- **cases** - Case metadata, status, ownership
+- **case_messages** - Conversation turns with `created_at`, `author_id`, metadata
+- **case_evidence** - Evidence items with lifecycle tracking
+- **case_hypotheses** - Hypothesis tracking with confidence scores
+- **case_milestones** - Milestone completion tracking
+- **case_uploaded_files** - File metadata and linkage
+- **users** - User profiles and authentication
+- **user_sessions** - Session management with client_id support
+- **auth_tokens** - Token-based authentication
+- **vector_metadata** - ChromaDB collection tracking
+
+**Redis Role** (Ephemeral data only):
+- Session state and resumption
+- Cache layer for performance
+- Temporary working memory
 
 **Key Benefits**:
-- Natural investigation flow matching human reasoning patterns
-- Flexible entry points based on incident context and urgency
-- Hierarchical state management preventing token explosion (64% reduction)
-- Evidence-driven hypothesis testing with cognitive bias prevention
-- Adaptive resource allocation based on problem complexity
+- Proper relational data integrity
+- Efficient queries with indexing
+- Long-term case persistence
+- Industry-standard message schema (`created_at` vs `timestamp`)
+- Audit trail and compliance support
 
-**Detailed Documentation**: See [Investigation Phases and OODA Integration Framework v2.1](./investigation-phases-and-ooda-integration.md) for:
-- Complete 7-phase model (0-indexed) with OODA step integration
-- Engagement mode transition logic and problem signal detection
-- User journey scenarios (4 common patterns)
-- State management architecture with token budgets
-- Hypothesis confidence decay and anchoring detection
-- Evidence overload handling (3-stage pipeline)
-- Implementation roadmap (8-week plan)
+**Authoritative Documentation**: [Case Storage Design](./case-storage-design.md), [Redis Usage Design](./redis-usage-design.md)
 
-**Evidence Collection**: See [Evidence Collection and Tracking Design v2.1](./evidence-collection-and-tracking-design.md) for complete evidence schemas, classification system, and agent behaviors
+### 2. Milestone-Based Investigation Framework
 
-**Implementation Status (as of 2025-10-24):**
-- ✅ 7-phase prompts implemented (`prompts/phase_prompts.py`)
-- ✅ Test coverage significantly improved (56+ investigation tests, 18x increase)
-- ✅ All critical components operational (phase handlers, memory compression, planning service)
-- 🟡 Documentation consolidation ongoing (implementation-module-mapping.md, data-models-reference.md created)
+**Status**: ✅ **CODE COMPLETE**
 
-### 2. Typed Context System
+Replaced complex 7-phase handler system with streamlined milestone-based investigation:
 
-**Status**: ✅ IMPLEMENTED
+**Migration Overview**:
+- **Deleted**: 7-phase handler system (4,000+ lines) + Agentic services layer (8,000+ lines)
+- **Replaced With**: MilestoneEngine + simplified investigation components
+- **Philosophy**: Opportunistic completion based on data availability vs rigid phase progression
 
-FaultMaven now uses a strongly-typed `QueryContext` model instead of loose dictionaries for passing context between components.
+**Core Components** (in `core/investigation/`):
+- **MilestoneEngine** - State-driven investigation workflow with opportunistic task completion
+- **HypothesisManager** - Opportunistic capture + systematic generation with confidence tracking
+- **InvestigationCoordinator** - Orchestrates milestone-based workflows
+- **WorkflowProgressionDetector** - Detects forward progress vs circular conversations
+- **OODAEngine** - Simplified OODA integration (no phase coupling)
+- **WorkingConclusionGenerator** - Synthesizes conclusions from completed milestones
 
-**Benefits**:
-- **Type Safety**: IDE autocomplete and static type checking
-- **Validation**: Pydantic automatically validates data structure
-- **Clearer Intent**: Explicit fields document what context is needed
-- **Better Errors**: Invalid context caught at creation time, not runtime
+**Investigation Model**:
+- **Case Status**: CONSULTING → INVESTIGATING → RESOLVED/CLOSED (user-facing lifecycle)
+- **Investigation Stages**: Understanding → Diagnosing → Resolving (computed from milestones)
+- **Milestone Tracking**: Agent completes multiple milestones per turn when data available
+- **Turn-Based Progress**: Track progress by turn, not OODA iterations
 
-**Usage**:
-```python
-from faultmaven.models.agentic import QueryContext
+**Key Benefits**:
+- Simpler mental model - complete tasks as data becomes available
+- Faster resolution - no artificial phase barriers
+- Easier to understand and debug
+- More maintainable codebase
 
-context = QueryContext(
-    session_id="abc-123",
-    case_id="case-456",
-    conversation_history="User: Hello\nAssistant: Hi there",
-    same_provider_for_response=True
-)
+**Authoritative Documentation**: [Milestone-Based Investigation Framework v2.0](./milestone-based-investigation-framework.md)
 
-classification = await engine.classify_query(query, context)
-```
+### 3. Case Ownership Model Change
 
-**Developer Documentation**: Context Management Guide (to be created in `../development/`)
+**Status**: ✅ **CODE COMPLETE**
 
-### 3. Accurate Token Estimation
+Cases transitioned from session-coupled to user-owned:
 
-**Status**: ✅ IMPLEMENTED
+**Old Model**:
+- Cases belonged to sessions
+- Session expiry = case data loss
+- Cross-device continuation problematic
 
-Provider-specific tokenizers replace character-based estimation (±20% error) with exact token counts.
+**New Model**:
+- Cases owned directly by users
+- Persistent across sessions
+- Multi-device support via session resumption
+- Architecture: Session → User → Cases (indirect relationship)
 
-**Supported Providers**:
-- **OpenAI**: tiktoken with cl100k_base encoding
-- **Anthropic**: Official Anthropic tokenizer
-- **Fireworks**: tiktoken (most models are OpenAI-compatible)
-- **Fallback**: Character-based for unsupported providers
+**Implementation**:
+- `user_id` field on cases table (foreign key to users)
+- Case queries independent of session lifecycle
+- Session provides authentication context only
 
-**Usage**:
-```python
-from faultmaven.utils.token_estimation import estimate_tokens, estimate_prompt_tokens
+### 4. Message Schema Standardization
 
-# Single text
-tokens = estimate_tokens(text, provider="fireworks", model="llama-v3p1-405b-instruct")
+**Status**: ✅ **CODE COMPLETE**
 
-# Complete prompt breakdown
-breakdown = estimate_prompt_tokens(
-    system_prompt=system,
-    user_message=query,
-    conversation_history=history,
-    provider="fireworks"
-)
-# Returns: {"system": 210, "user": 15, "history": 340, "total": 565}
-```
+Aligned message schema with industry conventions (Rails/Django/GitHub):
 
-**Impact**:
-- **Cost Optimization**: Accurate token tracking prevents overages
-- **Context Management**: Stay within model context limits
-- **Performance Monitoring**: Track token usage patterns by response type and complexity
-
-**Developer Documentation**: [Token Estimation Guide](../development/TOKEN_ESTIMATION.md)
-
-### 4. Centralized Configuration
-
-**Status**: ✅ IMPLEMENTED
-
-All conversation and classification thresholds centralized in `ConversationThresholds` configuration class.
-
-**Configurable Thresholds**:
-```bash
-# Conversation limits
-MAX_CLARIFICATIONS=3
-MAX_CONVERSATION_TURNS=20
-MAX_CONVERSATION_TOKENS=4000
-
-# Token budgets
-CONTEXT_TOKEN_BUDGET=4000
-SYSTEM_PROMPT_MAX_TOKENS=500
-PATTERN_TEMPLATE_MAX_TOKENS=300
-
-# Classification thresholds
-PATTERN_CONFIDENCE_THRESHOLD=0.7
-CONFIDENCE_OVERRIDE_THRESHOLD=0.4
-SELF_CORRECTION_MIN_CONFIDENCE=0.4
-SELF_CORRECTION_MAX_CONFIDENCE=0.7
-```
+**Changes**:
+- **Renamed**: `timestamp` → `created_at` (industry standard)
+- **Added**: `turn_number` - Explicit turn tracking for milestone progress
+- **Added**: `author_id` - User attribution for multi-participant cases
+- **Added**: `token_count` - Per-message token tracking for optimization
+- **Added**: `metadata` - Extensible JSON field for platform-specific data
+- **Fixed**: AttributeError on `CaseMessage.message_type` (use `.role` instead)
 
 **Benefits**:
-- **Single Source of Truth**: No hardcoded magic numbers
-- **Environment-Based**: Different values per environment (dev/staging/prod)
-- **Runtime Adjustable**: Change thresholds without code changes
-- **Consistent Behavior**: Same thresholds used across all components
+- Familiar to developers from other platforms
+- Better tooling support (ORMs, migrations)
+- Future-proof for multi-user collaboration
+- Detailed audit trails
 
-**Usage**:
-```python
-from faultmaven.config.settings import get_settings
+### 5. Prompt Engineering Reorganization
 
-settings = get_settings()
+**Status**: ✅ **CODE COMPLETE**
 
-# Access thresholds
-if clarifications >= settings.thresholds.max_clarifications:
-    return escalate()
+Reorganized prompts to support milestone-based investigation:
 
-if confidence < settings.thresholds.pattern_confidence_threshold:
-    use_llm_classification()
-```
+**New Structure** (`prompts/investigation/`):
+- **consultant_mode.py** - Consultant engagement mode prompts
+- **lead_investigator.py** - Lead investigator engagement mode
+- **degraded_mode_prompts.py** - Fallback prompts for service degradation
+- **loopback_prompts.py** - Circular conversation detection and recovery
+- **ooda_guidance.py** - OODA framework integration
+- **workflow_progression_prompts.py** - Milestone completion detection
+- **phase1_routing_prompts.py** - Initial routing logic
+- **phase3_structured_output.py** - Structured hypothesis generation
+- **phase5_entry_modes.py** - Solution phase entry points
 
-### 5. Enhanced Prompt Validation
-
-**Status**: ✅ IMPLEMENTED
-
-Prompt assembly now includes input validation to catch errors early.
-
-**Validations**:
-- Base system prompt cannot be empty
-- Response type must be ResponseType enum
-- Warning if prompt exceeds 2000 chars (~500 tokens)
-
-**Example Error**:
-```python
-# This will raise ValueError
-assemble_intelligent_prompt(
-    base_system_prompt="",  # Invalid!
-    response_type=ResponseType.ANSWER
-)
-# ValueError: base_system_prompt cannot be empty
-```
-
-### 6. Improved Documentation
-
-**Status**: ✅ IMPLEMENTED
-
-Standardized docstrings across all prompts modules with consistent format:
-- Summary line
-- Args with types
-- Returns with structure
-- Examples showing actual usage
-- Deprecation warnings where applicable
-
-**Example**:
-```python
-def get_tiered_prompt(response_type: str = "ANSWER", complexity: str = "simple") -> str:
-    """Get optimized system prompt based on response type and complexity
-
-    Implements tiered prompt loading for token efficiency (81% reduction):
-    - ANSWER/INFO responses: Minimal prompt (30 tokens)
-    - Simple troubleshooting: Brief prompt (90 tokens)
-    - Moderate/Complex troubleshooting: Standard prompt (210 tokens)
-
-    Args:
-        response_type: ResponseType value (ANSWER, PLAN_PROPOSAL, etc.)
-        complexity: Query complexity (simple, moderate, complex)
-
-    Returns:
-        Optimized system prompt string
-
-    Examples:
-        >>> get_tiered_prompt("ANSWER", "simple")
-        'You are FaultMaven, an expert SRE...'  # 30 tokens
-    """
-```
+**Authoritative Documentation**: [Prompt Engineering Guide](./prompt-engineering-guide.md)
 
 ## Layer Responsibilities
 
@@ -403,71 +341,76 @@ def get_tiered_prompt(response_type: str = "ANSWER", complexity: str = "simple")
 - **Performance Profiling**: Detailed timing analysis for optimization
 - **Request Correlation**: End-to-end request tracking across all layers
 
-### Service Layer  
+### Service Layer
 **Purpose**: Business logic orchestration and transaction management
 
 **Components**:
-- **Agent Service**: AI reasoning workflow orchestration with investigation phases and OODA framework integration
-- **Data Service**: File upload and data processing coordination
-- **Knowledge Service**: Document ingestion and retrieval management
-- **Session Service**: Multi-session per user state management with client-based session resumption
+- **Case Service**: Case lifecycle management and state transitions (CONSULTING → INVESTIGATING → RESOLVED/CLOSED)
+- **Investigation Service**: Milestone-based investigation orchestration with MilestoneEngine integration
+- **Case Status Manager**: Case status state machine with transition validation
+- **Data Service**: File upload and data processing coordination with platform-specific extractors
+- **Knowledge Service**: Document ingestion and retrieval management across three KB types
+- **Session Service**: Multi-session per user with client-based resumption (decoupled from cases, 2,004 lines simplified)
 
 **Key Files**:
-- `faultmaven/services/agent.py` - AI agent orchestration
-- `faultmaven/services/data.py` - Data processing workflows
-- `faultmaven/services/knowledge.py` - Knowledge base operations
-- `faultmaven/services/session.py` - Session lifecycle management
+- `faultmaven/services/domain/case_service.py` - Case management (706 lines changed)
+- `faultmaven/services/domain/investigation_service.py` - Investigation workflows (new)
+- `faultmaven/services/domain/case_status_manager.py` - Status management (new)
+- `faultmaven/services/domain/data_service.py` - Data processing
+- `faultmaven/services/domain/knowledge_service.py` - KB operations
+- `faultmaven/services/domain/session_service.py` - Session lifecycle (streamlined)
 
-**Design Note**: Agent Service integrates with the investigation phases framework for systematic troubleshooting. See [Investigation Phases and OODA Integration Framework](./investigation-phases-and-ooda-integration.md) for integration details.
+**Design Note**: Investigation Service orchestrates milestone-based workflows through MilestoneEngine. Cases are user-owned resources, independent of session lifecycle. See [Milestone-Based Investigation Framework](./milestone-based-investigation-framework.md) for complete design.
 
-### Agentic Framework
-**Purpose**: Modern 7-component AI agent architecture implementing Plan→Execute→Observe→Re-plan cycles
+### Core Investigation
+**Purpose**: Milestone-based investigation engine with opportunistic task completion
+
+**Status**: ✅ Replaces old 7-phase handler system (8,000+ lines archived to `archive/agentic_services_old/`)
 
 **Components**:
-- **Business Logic & Workflow Engine**: Main orchestrator managing all agentic components
-- **State & Session Manager**: Persistent memory backbone with execution planning
-- **Query Classification Engine**: Multi-dimensional query analysis (intent, complexity, domain, urgency)
-- **Tool & Skill Broker**: Dynamic capability discovery and orchestration
-- **Guardrails & Policy Layer**: Multi-layer security validation and PII protection
-- **Response Synthesizer**: Multi-source response assembly with quality validation
-- **Error Handling & Fallback Manager**: Comprehensive error recovery with circuit breakers
+- **MilestoneEngine**: State-driven investigation workflow completing tasks based on data availability
+- **HypothesisManager**: Dual-mode hypothesis handling (opportunistic capture + systematic generation)
+- **InvestigationCoordinator**: Orchestrates milestone-based workflows and OODA integration
+- **WorkflowProgressionDetector**: Detects forward progress vs circular conversations (loopback detection)
+- **OODAEngine**: Simplified OODA integration without phase coupling
+- **WorkingConclusionGenerator**: Synthesizes conclusions from completed milestones
+- **Phase Loopback Detector**: Prevents infinite loops within investigation stages
 
 **Key Files**:
-- `faultmaven/services/agentic/workflow_engine.py` - Main orchestrator
-- `faultmaven/services/agentic/state_manager.py` - Memory and state management
-- `faultmaven/services/agentic/classification_engine.py` - Query processing
-- `faultmaven/services/agentic/tool_broker.py` - Tool orchestration
-- `faultmaven/services/agentic/guardrails_layer.py` - Security and validation
-- `faultmaven/services/agentic/response_synthesizer.py` - Response assembly
-- `faultmaven/services/agentic/error_manager.py` - Error handling
-- `faultmaven/models/agentic.py` - Core interfaces and models
+- `faultmaven/core/investigation/milestone_engine.py` - Main investigation engine (785 lines)
+- `faultmaven/core/investigation/hypothesis_manager.py` - Hypothesis tracking (367 lines)
+- `faultmaven/core/investigation/investigation_coordinator.py` - Workflow orchestration (194 lines)
+- `faultmaven/core/investigation/workflow_progression_detector.py` - Progress detection (258 lines)
+- `faultmaven/core/investigation/ooda_engine.py` - OODA integration (simplified)
+- `faultmaven/core/investigation/working_conclusion_generator.py` - Conclusion synthesis (494 lines)
+- `faultmaven/core/investigation/phase_loopback.py` - Loop prevention (424 lines)
 
-**Design Patterns**:
-- Interface-based dependency injection
-- Transaction boundary management
-- Error context propagation
-- Async/await throughout
-- Memory-aware processing
-- Planning-driven execution
+**Design Principles**:
+- Opportunistic completion - complete tasks when data available
+- No artificial phase barriers
+- Turn-based progress tracking
+- Milestone-driven state transitions
+- Simplified mental model
 
 ### Core Domain
 **Purpose**: Core business logic and domain models
 
 **Components**:
-- **AI Agent Core**: Multi-phase troubleshooting reasoning engine
-- **Data Processing**: Log analysis and insight extraction
+- **Investigation Engine**: Milestone-based troubleshooting with opportunistic completion (see Core Investigation section above)
+- **Data Processing**: Log analysis and insight extraction with platform-specific extractors
 - **Knowledge Base**: RAG-enabled document retrieval with semantic search across three distinct vector store systems (User KB, Global KB, Case Evidence Store)
 - **Agent Tools**: Three specialized Q&A tools for stateless document retrieval, plus web search capabilities
 - **Data Classifier**: Automatic file type and content detection
-- **Log Analyzer**: Structured log parsing and anomaly detection
+- **Prompt Manager**: Centralized prompt assembly and optimization
 
 **Key Files**:
-- `faultmaven/core/agent/` - AI reasoning engine
+- `faultmaven/core/investigation/` - Milestone-based investigation engine (replaces old agent/)
 - `faultmaven/core/processing/` - Data analysis algorithms
 - `faultmaven/core/knowledge/` - Knowledge management
 - `faultmaven/tools/` - Agent tool implementations (KB-neutral Q&A tools with Strategy Pattern)
+- `faultmaven/prompts/` - Prompt engineering (investigation/, phase prompts)
 
-**AI Reasoning**: FaultMaven implements a **7-phase investigation lifecycle** (Phases 0-6) for systematic troubleshooting. Investigation phases provide strategic structure while OODA steps (Observe, Orient, Decide, Act) provide tactical flexibility through adaptive iterations. See [Investigation Phases and OODA Integration Framework](./investigation-phases-and-ooda-integration.md) for complete methodology.
+**Investigation Model**: FaultMaven implements **milestone-based investigation** where the agent completes tasks opportunistically based on data availability rather than following rigid phases. Case Status (CONSULTING/INVESTIGATING/RESOLVED/CLOSED) tracks user-facing lifecycle. Investigation Stages (Understanding/Diagnosing/Resolving) provide optional progress detail computed from milestones. See [Milestone-Based Investigation Framework](./milestone-based-investigation-framework.md) for complete methodology.
 
 **Knowledge Base Architecture**: FaultMaven implements **three completely separate vector storage systems** with distinct purposes, lifecycles, and ownership models:
 - **User Knowledge Base** (per-user permanent storage) - Personal runbooks and procedures
@@ -480,28 +423,35 @@ The knowledge base uses a **KB-neutral Strategy Pattern** where one core Documen
 **Purpose**: External service integrations and cross-cutting concerns
 
 **Components**:
-- **LLM Router**: Multi-provider routing with failover and automatic provider selection
-- **Security/PII**: Data sanitization and privacy protection with Presidio integration
+- **LLM Router**: Multi-provider routing with failover (OpenAI, Anthropic, Fireworks, Groq)
+- **Security/PII**: Data sanitization and privacy protection with Presidio integration + RBAC
 - **Observability**: Comprehensive tracing and metrics collection with Opik integration
-- **Persistence**: Database abstraction and session storage with Redis and ChromaDB
+- **Persistence**: PostgreSQL hybrid storage + Redis ephemeral + ChromaDB vectors
+- **Case Repository**: PostgreSQLHybridCaseRepository (10-table normalized schema)
+- **User Repository**: User and authentication storage in PostgreSQL
 - **Health Monitor**: Component health checking and SLA tracking
 - **Metrics Collector**: Performance metrics aggregation
 - **Alert Manager**: Real-time alerting and notification
-- **Cache**: Redis-backed caching for session and state management
+- **Cache**: Redis-backed caching for sessions and performance
 
 **Key Files**:
-- `faultmaven/infrastructure/llm/` - LLM provider implementations
-- `faultmaven/infrastructure/security/` - PII redaction and sanitization
+- `faultmaven/infrastructure/llm/` - LLM provider implementations (including groq_provider.py)
+- `faultmaven/infrastructure/security/` - PII redaction and RBAC authorization
 - `faultmaven/infrastructure/observability/` - Tracing and metrics
-- `faultmaven/infrastructure/persistence/` - Data storage abstractions
+- `faultmaven/infrastructure/persistence/` - Storage layer implementations
+  - `postgresql_hybrid_case_repository.py` - PostgreSQL case storage (945 lines)
+  - `case_repository.py` - Repository interface (967 lines)
+  - `user_repository.py` - User storage (506 lines)
+  - `redis_session_store.py` - Session management (ephemeral)
+  - `inmemory_*_store.py` - Testing implementations
 - `faultmaven/infrastructure/health/` - Health monitoring
 - `faultmaven/infrastructure/monitoring/` - Performance monitoring
-- `faultmaven/infrastructure/memory/` - Memory storage and retrieval
 - `faultmaven/infrastructure/redis_client.py` - Lightweight Redis client factory
 
-**Architecture Principle**: Infrastructure layer differentiates between internal and external service clients:
-- **Internal Infrastructure** (Redis session storage): Uses lightweight `create_redis_client()` for high-frequency operations
-- **External Service Monitoring** (API calls, LLM providers): Uses comprehensive `BaseExternalClient` with full logging and monitoring
+**Architecture Principle**: Hybrid storage strategy with clear separation:
+- **PostgreSQL** (Persistent): Cases, messages, evidence, hypotheses, milestones, users, auth
+- **Redis** (Ephemeral): Sessions, cache, temporary working state
+- **ChromaDB** (Vectors): Knowledge base embeddings (3 separate collections)
 
 ## Advanced Communication Architecture
 
@@ -811,70 +761,72 @@ sequenceDiagram
     participant Client
     participant Middleware
     participant Router
-    participant Service
-    participant Memory
-    participant Planning
-    participant Core
+    participant CaseService
+    participant InvestigationService
+    participant MilestoneEngine
+    participant PostgreSQL
     participant Infrastructure
-    participant External
-    
+    participant LLM
+
     Client->>Middleware: HTTP Request
     Middleware->>Middleware: CORS + Logging + Performance
     Middleware->>Router: Processed Request
     Router->>Router: Route Matching + Validation
-    Router->>Service: Business Method Call
-    
-    %% Memory and Context Retrieval
-    Service->>Memory: Retrieve Relevant Context
-    Memory->>Memory: Semantic Search + Relevance Scoring
-    Memory-->>Service: Contextual Information
-    
-    %% Strategic Planning
-    Service->>Planning: Plan Response Strategy
-    Planning->>Planning: Problem Decomposition + Solution Planning
-    Planning-->>Service: Strategic Plan
-    
-    Service->>Core: Domain Logic Execution
-    Core->>Infrastructure: Interface Call
-    Infrastructure->>External: External Service Request
-    External-->>Infrastructure: Response
-    Infrastructure-->>Core: Processed Response
-    Core-->>Service: Domain Result
-    
-    %% Memory Consolidation
-    Service->>Memory: Consolidate New Insights
-    Memory->>Memory: Extract Key Learnings + Update Memory
-    Memory-->>Service: Consolidation Complete
-    
-    Service->>Service: Transaction Completion
-    Service-->>Router: Service Response
+    Router->>CaseService: Process Query
+
+    %% Load Case from PostgreSQL
+    CaseService->>PostgreSQL: Load Case + Messages + Evidence
+    PostgreSQL-->>CaseService: Case Data
+
+    %% Investigation Processing
+    CaseService->>InvestigationService: Execute Investigation Turn
+    InvestigationService->>MilestoneEngine: Process with Current State
+    MilestoneEngine->>MilestoneEngine: Check Data Availability
+    MilestoneEngine->>MilestoneEngine: Complete Available Milestones
+
+    %% LLM Processing
+    MilestoneEngine->>Infrastructure: Sanitize + LLM Call
+    Infrastructure->>LLM: Process Query
+    LLM-->>Infrastructure: Response
+    Infrastructure-->>MilestoneEngine: Processed Response
+
+    %% State Update
+    MilestoneEngine-->>InvestigationService: Updated State + Milestones
+    InvestigationService-->>CaseService: Investigation Result
+
+    %% Persist to PostgreSQL
+    CaseService->>PostgreSQL: Save Message + Milestones + State
+    PostgreSQL-->>CaseService: Persisted
+
+    CaseService-->>Router: Structured Response
     Router-->>Middleware: HTTP Response
     Middleware->>Middleware: Response Logging + Metrics
     Middleware-->>Client: Final Response
-    
+
     Note over Middleware: Correlation ID tracking
-    Note over Service: Error context propagation
+    Note over CaseService: User-owned cases
+    Note over MilestoneEngine: Opportunistic completion
+    Note over PostgreSQL: Persistent storage
     Note over Infrastructure: Retry + Circuit breaker
-    Note over External: Rate limiting + Caching
-    Note over Memory: Context-aware processing
-    Note over Planning: Strategic execution
 ```
 
 **High-Level Flow**:
 1. **Client Request** → API Gateway with middleware processing
-2. **Service Layer** → Business logic orchestration
-3. **Memory Retrieval** → Semantic search for relevant context
-4. **Strategic Planning** → Problem decomposition and solution planning
-5. **Core Execution** → Domain logic with tool usage
-6. **Memory Consolidation** → Extract insights and update memory
+2. **Case Service** → Load case from PostgreSQL (messages, evidence, milestones)
+3. **Investigation Service** → Orchestrate milestone-based investigation
+4. **Milestone Engine** → Complete tasks based on data availability
+5. **LLM Processing** → Generate responses via infrastructure layer
+6. **State Persistence** → Save updated state to PostgreSQL
 7. **Response Assembly** → Format and return structured response
 
 **Special Flows**:
-- **Lead Investigator Mode**: Activates investigation phases with OODA framework for systematic troubleshooting
-- **Evidence Collection**: Intelligent extraction from large files (3-stage pipeline)
-- **Hypothesis Management**: Confidence tracking with anchoring prevention
+- **Lead Investigator Mode**: Milestone-based investigation with opportunistic completion
+- **Evidence Collection**: Platform-specific extractors for logs, metrics, configs
+- **Hypothesis Management**: Dual-mode (opportunistic capture + systematic generation)
+- **Workflow Progression**: Loopback detection prevents circular conversations
+- **Case Status Transitions**: CONSULTING → INVESTIGATING → RESOLVED/CLOSED
 
-See [Investigation Phases Framework - User Journeys](./investigation-phases-and-ooda-integration.md#user-journey-scenarios) for detailed investigation flow scenarios.
+See [Milestone-Based Investigation Framework](./milestone-based-investigation-framework.md) for detailed investigation flow scenarios.
 
 ## v3.1.0 Schema Architecture
 
@@ -1540,41 +1492,61 @@ This section provides a high-level mapping of architectural components to Python
 - `api/v1/dependencies.py` - DI configuration
 
 ### Service Layer
-- `services/agent.py` - AI agent orchestration
-- `services/data.py` - File processing
-- `services/knowledge.py` - Document management
-- `services/session.py` - Session lifecycle
-- `services/case.py` - Case management
+- `services/domain/case_service.py` - Case management (706 lines changed)
+- `services/domain/investigation_service.py` - Investigation orchestration (new)
+- `services/domain/case_status_manager.py` - Status state machine (new)
+- `services/domain/data_service.py` - File processing
+- `services/domain/knowledge_service.py` - Document management
+- `services/domain/session_service.py` - Session lifecycle (streamlined, 2,004 lines simplified)
+- `services/adapters/case_ui_adapter.py` - UI data transformation (new, 425 lines)
+- `services/converters/case_converter.py` - Case data mapping
 
-### Agentic Framework
-- `services/agentic/workflow_engine.py` - Main orchestrator
-- `services/agentic/state_manager.py` - State management
-- `services/agentic/classification_engine.py` - Query classification
-- `services/agentic/tool_broker.py` - Tool orchestration
-- `services/agentic/guardrails_layer.py` - Security
-- `services/agentic/response_synthesizer.py` - Response assembly
-- `services/agentic/error_manager.py` - Error handling
+### Core Investigation (replaces Agentic Framework)
+**Status**: ✅ Replaces 8,000+ lines from `archive/agentic_services_old/`
+
+- `core/investigation/milestone_engine.py` - Main investigation engine (785 lines)
+- `core/investigation/hypothesis_manager.py` - Hypothesis tracking (367 lines)
+- `core/investigation/investigation_coordinator.py` - Workflow orchestration (194 lines)
+- `core/investigation/workflow_progression_detector.py` - Progress detection (258 lines)
+- `core/investigation/ooda_engine.py` - OODA integration (simplified)
+- `core/investigation/working_conclusion_generator.py` - Conclusion synthesis (494 lines)
+- `core/investigation/phase_loopback.py` - Loop prevention (424 lines)
+- `core/investigation/engagement_modes.py` - Mode switching
+- `core/investigation/phases.py` - Phase definitions
+- `core/investigation/strategy_selector.py` - Strategy selection
+- `core/investigation/memory_manager.py` - Memory integration
 
 ### Core Domain
-- `core/agent/` - AI reasoning engine
+- `core/investigation/` - Milestone-based investigation (see above)
 - `core/processing/` - Data analysis
-- `core/knowledge/` - Knowledge base
-- `core/planning/` - Strategic planning
-- `core/memory/` - Memory management
-- `tools/` - Agent capabilities
+- `core/knowledge/` - Knowledge base management
+- `tools/` - Agent capabilities (KB-neutral Q&A tools)
+- `prompts/` - Prompt engineering
 
 ### Infrastructure
-- `infrastructure/llm/` - LLM providers
-- `infrastructure/security/` - PII protection
+- `infrastructure/llm/` - LLM providers (OpenAI, Anthropic, Fireworks, Groq)
+- `infrastructure/security/` - PII protection + RBAC
 - `infrastructure/observability/` - Tracing and metrics
-- `infrastructure/persistence/` - Data storage
+- `infrastructure/persistence/` - Hybrid storage layer
+  - `postgresql_hybrid_case_repository.py` - PostgreSQL storage (945 lines)
+  - `case_repository.py` - Repository interface (967 lines)
+  - `user_repository.py` - User storage (506 lines)
+  - `redis_session_store.py` - Session management
+  - `inmemory_*_store.py` - Testing implementations
 - `infrastructure/health/` - Health monitoring
 - `infrastructure/monitoring/` - Performance monitoring
 
 ### Data Models
 - `models/interfaces.py` - Service interfaces
-- `models/agentic.py` - Agentic framework models
+- `models/interfaces_case.py` - Case repository interface
+- `models/case.py` - Case models (3,723 lines, extensive expansion)
+- `models/case_ui.py` - UI models (838 lines, new)
 - `models/api.py` - v3.1.0 schema models
+- `models/api_models.py` - Additional API models (709 lines, new)
+- `models/investigation.py` - Investigation models (630 lines, expanded)
+- `models/llm_schemas.py` - LLM structured output (457 lines, new)
+- `models/evidence.py` - Evidence tracking
+- `models/common.py` - Shared models
 
 ### Configuration
 - `config/settings.py` - Unified configuration
@@ -1638,30 +1610,31 @@ This section provides a complete navigation map to all FaultMaven design documen
 
 #### Domain Services (`services/domain/`)
 
-Core business services implementing case, data, knowledge, planning, and session management:
+Core business services implementing case, data, knowledge, investigation, and session management:
 
-- [`Investigation Phases and OODA Integration Framework v2.1`](./investigation-phases-and-ooda-integration.md) - 🎯 Investigation process (used by case_service, planning_service): 7-phase lifecycle (0-6), OODA steps, engagement modes, state management
-- [`Evidence Collection and Tracking Design v2.1`](./evidence-collection-and-tracking-design.md) - 🎯 Evidence data models (used by case_service): Schemas, 5D classification, strategies, agent behaviors  
-- [`Case Lifecycle Management v1.0`](./case-lifecycle-management.md) - Case status state machine (case_service.py): 7 states, transition rules, stall detection
-- [`Document Generation and Closure Design v1.0`](./document-generation-and-closure-design.md) - 🎯 **NEW** - Case documentation system (case_service.py, report_service.py): DOCUMENTING state, report generation (Incident Report, Runbook, Post-Mortem), restricted input mode, case closure workflow
-- [`Session Management Specification v1.0`](./specifications/session-management-spec.md) - Multi-session architecture (session_service.py): Client-based resumption, OODA state persistence, Redis storage
-- [`Data Preprocessing Design v4.0`](./data-preprocessing-design.md) - Complete preprocessing system (data_service.py): 3-step pipeline, 8 data types, custom preprocessors, LLM integration
+- [`Milestone-Based Investigation Framework v2.0`](./milestone-based-investigation-framework.md) - ✅ **IMPLEMENTED** - Authoritative investigation design (used by investigation_service.py, case_service.py): Opportunistic completion, milestone tracking, case status lifecycle, turn-based progress
+- [`Case Storage Design`](./case-storage-design.md) - ✅ **IMPLEMENTED** - PostgreSQL schema specification (10 tables): cases, messages, evidence, hypotheses, milestones, users, auth
+- [`Redis Usage Design`](./redis-usage-design.md) - ✅ **IMPLEMENTED** - Hybrid storage strategy: PostgreSQL (persistent) vs Redis (ephemeral), usage guidelines
+- [`Session Management Specification v1.0`](./specifications/session-management-spec.md) - Multi-session architecture (session_service.py): Client-based resumption, user-owned cases, Redis storage
+- [`Data Preprocessing Design v4.0`](./data-preprocessing-design.md) - Complete preprocessing system (data_service.py): 3-step pipeline, 8 data types, platform-specific extractors, LLM integration
 - [`Knowledge Base Architecture v4.0`](./knowledge-base-architecture.md) - 🟢 **PRODUCTION READY** - Storage layer (knowledge_service.py): Three distinct vector stores (User KB, Global KB, Case Evidence), KB-neutral Strategy Pattern with KBConfig, ChromaDB collections, lifecycle management
 - [`Q&A Sub-Agent Design v1.0`](./qa-subagent-design.md) - 🟢 **PRODUCTION READY** - Access layer (core/tools/): Stateless document librarian, three tool wrappers (AnswerFromCaseEvidence, AnswerFromUserKB, AnswerFromGlobalKB), prompt engineering, system prompts
-- [`Planning System Architecture`](./planning-system-architecture.md) - 📝 Design document (implementation pending) - Strategic planning (planning_service.py): Problem decomposition, risk assessment
+- [`Prompt Engineering Guide`](./prompt-engineering-guide.md) - ✅ **IMPLEMENTED** - Current prompting system: Investigation prompts, engagement modes, OODA guidance, loopback detection
 
-#### Agentic Framework (`services/agentic/`)
+#### Core Investigation (`core/investigation/`)
 
-AI agent framework with orchestration, engines, management, and safety:
+Milestone-based investigation engine (replaces old agentic framework):
 
-- [`Investigation Phases and OODA Integration Framework`](./investigation-phases-and-ooda-integration.md) - ✅ **IMPLEMENTED** (v3.2.0) - 7-phase investigation with OODA engine, phase handlers, and adaptive reasoning
-- [`Prompt Engineering Architecture`](./prompt-engineering-architecture.md) - ✅ **ACTIVE** (v3.2.0) - Prompting system: Multi-layer assembly, optimization, phase-aware selection, doctor-patient philosophy
+- [`Milestone-Based Investigation Framework v2.0`](./milestone-based-investigation-framework.md) - Complete design document covering MilestoneEngine, HypothesisManager, WorkflowProgressionDetector, and all investigation components
 
-#### Evidence Services (`services/evidence/`)
+#### Archived Documentation
 
-Evidence collection implementation:
+Old architecture (moved to `archive/`):
 
-- Evidence Collection Design (above) covers: classification.py, lifecycle.py, stall_detection.py
+- `archive/investigation-phases-and-ooda-integration.md` - 🗄️ OLD 7-phase system (superseded by milestone-based framework)
+- `archive/evidence-collection-and-tracking-design.md` - 🗄️ OLD evidence design
+- `archive/prompt-engineering-architecture.md` - 🗄️ OLD prompting (superseded by prompt-engineering-guide.md)
+- `archive/agentic_services_old/` - 🗄️ OLD agentic services code (8,000+ lines)
 
 #### Supporting Services
 
@@ -1843,8 +1816,8 @@ faultmaven/config/              → Section 7 (Configuration)
 
 ---
 
-**Document Version**: 2.0
-**Last Updated**: 2025-10-12  
-**Documentation Version**: 2.1 (Updated for folder reorganization)  
-**Status**: Master Architecture Document - Organized by actual code structure for easy implementation navigation
+**Document Version**: 3.0
+**Last Updated**: 2025-11-12
+**Migration**: PostgreSQL Hybrid Storage + Milestone-Based Investigation (November 2025)
+**Status**: Master Architecture Document - Reflects completed major architecture migration (-33,928 lines, 42% code reduction)
 
