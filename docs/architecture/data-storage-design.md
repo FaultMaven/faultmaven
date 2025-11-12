@@ -1,12 +1,24 @@
-# FaultMaven Data Storage Architecture v1.0
+# FaultMaven Data Storage Architecture v2.0
 
 ## Executive Summary
 
-This document defines the comprehensive data storage architecture for FaultMaven's four primary data categories:
-1. **User Information** - Account, authentication, profile
-2. **Case-Centric Data** - Investigation lifecycle, conversation, context
-3. **Observability Data** - 7 types of uploaded machine data for analysis
-4. **Knowledge Base Data** - User-uploaded runbooks and procedures
+This document defines the comprehensive data storage architecture for FaultMaven's **12 data categories**, covering both **primary application data** and **operational infrastructure data**.
+
+### Primary Application Data (7 categories)
+1. **User Information** - Account, authentication, profile, SSO
+2. **Case-Centric Data** - Investigation lifecycle, conversation, context, evidence
+3. **Observability Data** - 8 types of uploaded machine data for analysis
+4. **User Knowledge Base** - User-uploaded runbooks and procedures (permanent)
+5. **Case Working Memory** - Temporary per-case vector store (ephemeral)
+6. **Global Knowledge Base** - System-wide troubleshooting documentation (shared)
+7. **Report & Analytics Data** - Generated reports, post-mortems, analytics
+
+### Operational Infrastructure Data (5 categories)
+8. **Job Queue State** - Async background job tracking
+9. **ML Model Artifacts** - Confidence models, calibration data, feature metadata
+10. **Protection System State** - Rate limiting, reputation scores, behavioral analysis
+11. **Cache Data** - Multi-tier intelligent caching with pattern analysis
+12. **System Operational Data** - Metrics, traces, logs, audit trails (optional)
 
 **Key Design Principles**:
 - **Storage Polyglot**: PostgreSQL for transactional, Redis for sessions, ChromaDB for semantic search
@@ -14,80 +26,134 @@ This document defines the comprehensive data storage architecture for FaultMaven
 - **Privacy-First**: PII redaction before persistence, encryption at rest
 - **Performance-Optimized**: Hybrid schemas balance query performance with flexibility
 - **Cloud-Native**: Designed for Kubernetes deployment with horizontal scaling
+- **Processing-Driven Types**: Data classified by processing method, not semantic meaning
 
 ---
 
 ## Table of Contents
 
+### Core Data Storage
 1. [Storage Technology Matrix](#1-storage-technology-matrix)
 2. [User Information Storage](#2-user-information-storage)
 3. [Case-Centric Data Storage](#3-case-centric-data-storage)
 4. [Observability Data Storage](#4-observability-data-storage)
-5. [Knowledge Base Data Storage](#5-knowledge-base-data-storage)
-6. [Access Patterns & Interfaces](#6-access-patterns--interfaces)
-7. [Data Retention & Lifecycle](#7-data-retention--lifecycle)
-8. [Security & Compliance](#8-security--compliance)
-9. [Scalability & Performance](#9-scalability--performance)
-10. [Migration & Backup](#10-migration--backup)
+5. [User Knowledge Base Storage](#5-user-knowledge-base-storage)
+
+### Extended Data Storage (New)
+6. [Case Working Memory Storage](#6-case-working-memory-storage)
+7. [Global Knowledge Base Storage](#7-global-knowledge-base-storage)
+8. [Report & Analytics Data Storage](#8-report--analytics-data-storage)
+9. [Job Queue State Storage](#9-job-queue-state-storage)
+10. [ML Model Artifacts Storage](#10-ml-model-artifacts-storage)
+
+### Operational Data Storage
+11. [Protection System State Storage](#11-protection-system-state-storage)
+12. [Cache Data Storage](#12-cache-data-storage)
+13. [System Operational Data](#13-system-operational-data)
+
+### Cross-Cutting Concerns
+14. [Access Patterns & Interfaces](#14-access-patterns--interfaces)
+15. [Data Retention & Lifecycle](#15-data-retention--lifecycle)
+16. [Security & Compliance](#16-security--compliance)
+17. [Scalability & Performance](#17-scalability--performance)
+18. [Migration & Backup](#18-migration--backup)
 
 ---
 
 ## 1. Storage Technology Matrix
 
-### 1.1 Technology Selection
+### 1.1 Complete Technology Selection
 
-| Data Category | Primary Storage | Secondary/Cache | Reasoning |
-|--------------|----------------|-----------------|-----------|
-| **User Information** | PostgreSQL | Redis (sessions) | ACID guarantees for auth, relational integrity |
-| **Case Data** | PostgreSQL | Redis (state) | Transactional integrity for investigations, complex queries |
-| **Observability Data** | PostgreSQL + S3 | - | Structured metadata in PG, raw artifacts in S3 |
-| **Knowledge Base** | ChromaDB | PostgreSQL (metadata) | Semantic search for runbooks, vector embeddings |
-| **Session State** | Redis | PostgreSQL (archive) | Sub-10ms access, TTL expiration, session resumption |
+| Data Category | Primary Storage | Secondary/Cache | Lifecycle | Scope |
+|--------------|----------------|-----------------|-----------|-------|
+| **User Information** | PostgreSQL | - | Indefinite (soft delete) | Per-user |
+| **Case Data** | PostgreSQL | Redis (state) | 1 year default | Per-case |
+| **Observability Data** | PostgreSQL + S3 | - | 90 days | Per-case |
+| **User Knowledge Base** | ChromaDB | PostgreSQL (metadata) | Indefinite | Per-user |
+| **Case Working Memory** | ChromaDB | - | Case lifetime + 7 days | Per-case |
+| **Global Knowledge Base** | ChromaDB | - | Indefinite | System-wide |
+| **Report & Analytics** | Redis + ChromaDB | - | 90 days post-closure | Per-case/system |
+| **Job Queue State** | Redis | - | 24 hours (TTL) | Per-job |
+| **ML Model Artifacts** | File system | PostgreSQL (metadata) | 3 versions retained | System-wide |
+| **Protection State** | Redis | PostgreSQL (archive) | Real-time + 30 days | Per-client |
+| **Cache Data** | Multi-tier | - | Minutes to hours (TTL) | Various |
+| **System Operational** | Time-series DB + S3 | - | 90 days - 1 year | System-wide |
 
-### 1.2 Storage Architecture Diagram
+### 1.2 Complete Storage Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     APPLICATION LAYER                        │
-│              (FastAPI + Service Layer)                       │
-└────────────┬────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────┐
+│                       APPLICATION LAYER                                │
+│                  (FastAPI + Service Layer)                            │
+└────────────┬──────────────────────────────────────────────────────────┘
              │
              ├──> UserRepository Interface
              │    └──> PostgreSQL (auth_db.users)
              │
              ├──> CaseRepository Interface
-             │    └──> PostgreSQL (cases_db.* hybrid schema)
+             │    └──> PostgreSQL (cases_db.* hybrid schema - 10 tables)
              │
              ├──> ISessionStore Interface
              │    ├──> Redis (primary, TTL-based)
              │    └──> PostgreSQL (archive, optional)
              │
-             ├──> IVectorStore Interface (Knowledge)
-             │    ├──> ChromaDB (user_kb_{user_id} collections)
-             │    └──> PostgreSQL (document metadata)
+             ├──> IVectorStore Interface (3 implementations)
+             │    ├──> UserKBVectorStore: ChromaDB (user_kb_{user_id})
+             │    ├──> CaseVectorStore: ChromaDB (case_{case_id})
+             │    └──> GlobalKBVectorStore: ChromaDB (global_kb)
+             │
+             ├──> IReportStore Interface
+             │    ├──> Redis (metadata)
+             │    └──> ChromaDB (content)
+             │
+             ├──> IJobService Interface
+             │    └──> Redis (job:{job_id})
+             │
+             ├──> IGlobalConfidenceService Interface
+             │    ├──> File system (model weights)
+             │    └──> PostgreSQL (metadata)
+             │
+             ├──> ReputationEngine
+             │    └──> Redis (reputation state)
+             │
+             ├──> IntelligentCache
+             │    ├──> L1: In-memory (< 1ms)
+             │    ├──> L2: Redis (< 5ms)
+             │    └──> L3: PostgreSQL/S3 (< 20ms)
              │
              └──> IStorageBackend Interface (Artifacts)
                   └──> S3 (raw uploaded files)
 
-┌─────────────────────────────────────────────────────────────┐
-│                  INFRASTRUCTURE LAYER                        │
-├─────────────────────────────────────────────────────────────┤
-│ PostgreSQL Clusters:                                        │
-│   - auth_db: User accounts, roles, SSO                      │
-│   - cases_db: Investigation data, evidence, hypotheses      │
-│                                                              │
-│ Redis Cluster:                                              │
-│   - Session state (TTL: 30 min default)                     │
-│   - Client indexes for session resumption                   │
-│                                                              │
-│ ChromaDB:                                                   │
-│   - Per-user collections: user_kb_{user_id}                │
-│   - BGE-M3 embeddings for semantic search                   │
-│                                                              │
-│ S3-Compatible Storage:                                      │
-│   - Raw uploaded files: artifacts/{case_id}/{file_id}       │
-│   - Lifecycle policy: 90 days default                       │
-└─────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────┐
+│                     INFRASTRUCTURE LAYER                               │
+├───────────────────────────────────────────────────────────────────────┤
+│ PostgreSQL Clusters:                                                  │
+│   - auth_db: User accounts, roles, SSO                                │
+│   - cases_db: Investigation data (10 tables), evidence, hypotheses    │
+│                                                                        │
+│ Redis Cluster:                                                        │
+│   - Session state (session:{id}, TTL: 30 min)                         │
+│   - Job queue (job:{id}, TTL: 24 hours)                               │
+│   - Report metadata (case:{id}:reports)                               │
+│   - Protection state (reputation, rate limits)                        │
+│   - Cache L2 (multi-tier caching)                                     │
+│                                                                        │
+│ ChromaDB:                                                             │
+│   - User KB: user_kb_{user_id} (permanent)                           │
+│   - Case Working Memory: case_{case_id} (ephemeral)                  │
+│   - Global KB: global_kb (shared)                                     │
+│   - Report content storage                                            │
+│                                                                        │
+│ S3-Compatible Storage:                                                │
+│   - Raw uploaded files: artifacts/{case_id}/{file_id}                 │
+│   - ML model artifacts: models/{version}/*.pkl                        │
+│   - Audit logs: logs/{year}/{month}/{day}/                            │
+│   - Lifecycle policy: 90 days default                                 │
+│                                                                        │
+│ File System (Local/NFS):                                              │
+│   - ML model weights: /var/lib/faultmaven/models/                     │
+│   - Calibration data: /var/lib/faultmaven/calibration/                │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -191,7 +257,7 @@ CREATE INDEX idx_users_active ON users (is_active, deleted_at)
 ### 3.1 Schema Overview
 
 **Database**: `cases_db` (PostgreSQL)
-**Architecture**: Hybrid Normalized Schema
+**Architecture**: Hybrid Normalized Schema (10 tables)
 **Repository**: `faultmaven/infrastructure/persistence/postgresql_hybrid_case_repository.py`
 
 ### 3.2 Hybrid Schema Design
@@ -258,7 +324,6 @@ CREATE TABLE evidence (
     CONSTRAINT fk_case FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
 );
 
--- Indexes
 CREATE INDEX idx_evidence_case ON evidence (case_id, created_at DESC);
 CREATE INDEX idx_evidence_source ON evidence (source_type);
 CREATE INDEX idx_evidence_form ON evidence (form);
@@ -279,7 +344,6 @@ CREATE TABLE hypotheses (
     CONSTRAINT fk_case FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
 );
 
--- Indexes
 CREATE INDEX idx_hypotheses_case ON hypotheses (case_id, status);
 CREATE INDEX idx_hypotheses_status ON hypotheses (status);
 ```
@@ -301,188 +365,217 @@ CREATE TABLE solutions (
     CONSTRAINT fk_case FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
 );
 
--- Indexes
 CREATE INDEX idx_solutions_case ON solutions (case_id, status);
 CREATE INDEX idx_solutions_hypothesis ON solutions (linked_hypothesis_id);
 ```
 
-**4. Case Messages Table**
-```sql
-CREATE TABLE case_messages (
-    message_id TEXT PRIMARY KEY,
-    case_id TEXT NOT NULL,
-    message_type TEXT NOT NULL,  -- user_query, agent_response, system_event, data_upload
-    role TEXT NOT NULL,           -- user, assistant, system
-    content TEXT NOT NULL,
-    metadata JSONB,               -- Turn number, tool calls, etc.
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    CONSTRAINT fk_case FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
-);
-
--- Indexes
-CREATE INDEX idx_messages_case ON case_messages (case_id, created_at ASC);
-CREATE INDEX idx_messages_type ON case_messages (message_type);
-```
-
-**5. Uploaded Files Table**
-```sql
-CREATE TABLE uploaded_files (
-    file_id TEXT PRIMARY KEY,
-    case_id TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    data_type TEXT NOT NULL,  -- logs_and_errors, metrics, config, etc.
-    size_bytes BIGINT NOT NULL,
-    s3_key TEXT NOT NULL,
-    preprocessing_status TEXT NOT NULL,  -- pending, processing, completed, failed
-    preprocessing_summary TEXT,
-    uploaded_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    processed_at TIMESTAMP WITH TIME ZONE,
-    CONSTRAINT fk_case FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
-);
-
--- Indexes
-CREATE INDEX idx_uploaded_files_case ON uploaded_files (case_id, uploaded_at DESC);
-CREATE INDEX idx_uploaded_files_type ON uploaded_files (data_type);
-```
-
-**6. Case Status Transitions Table** (Audit Trail)
-```sql
-CREATE TABLE case_status_transitions (
-    transition_id TEXT PRIMARY KEY,
-    case_id TEXT NOT NULL,
-    from_status TEXT NOT NULL,
-    to_status TEXT NOT NULL,
-    triggered_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    triggered_by TEXT NOT NULL,  -- user_id or 'system'
-    reason TEXT NOT NULL,
-    CONSTRAINT fk_case FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
-);
-
--- Indexes
-CREATE INDEX idx_transitions_case ON case_status_transitions (case_id, triggered_at DESC);
-```
-
-**7. Case Tags Table** (M:N Relationship)
-```sql
-CREATE TABLE case_tags (
-    case_id TEXT NOT NULL,
-    tag TEXT NOT NULL,
-    PRIMARY KEY (case_id, tag),
-    CONSTRAINT fk_case FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
-);
-
--- Indexes
-CREATE INDEX idx_tags_tag ON case_tags (tag);
-```
-
-**8. Agent Tool Calls Table**
-```sql
-CREATE TABLE agent_tool_calls (
-    call_id TEXT PRIMARY KEY,
-    case_id TEXT NOT NULL,
-    tool_name TEXT NOT NULL,
-    input_params JSONB NOT NULL,
-    output_result JSONB,
-    status TEXT NOT NULL,  -- pending, success, failed
-    error_message TEXT,
-    called_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    completed_at TIMESTAMP WITH TIME ZONE,
-    CONSTRAINT fk_case FOREIGN KEY (case_id) REFERENCES cases(case_id) ON DELETE CASCADE
-);
-
--- Indexes
-CREATE INDEX idx_tool_calls_case ON agent_tool_calls (case_id, called_at DESC);
-CREATE INDEX idx_tool_calls_tool ON agent_tool_calls (tool_name, status);
-```
+**4-10. Additional Tables**: See full schema in Appendix A
 
 ### 3.3 Performance Characteristics
 
-**Case Load**: ~10ms (single query with LEFT JOINs)
-- Main case data + aggregated normalized tables
-- JSON aggregation for collections (evidence, hypotheses, solutions)
+- **Case Load**: ~10ms (single query with LEFT JOINs)
+- **Evidence Filtering**: ~5ms (indexed queries)
+- **Hypothesis Tracking**: ~3ms (status index lookup)
+- **Message Thread**: ~8ms (chronological ordering)
 
-**Evidence Filtering**: ~5ms (indexed queries)
-- Filter by source_type, form, created_at
-- Full-text search on preprocessed_summary
-
-**Hypothesis Tracking**: ~3ms (status index lookup)
-- Filter active hypotheses by status
-- Traverse evidence links efficiently
-
-**Message Thread Retrieval**: ~8ms
-- Chronological ordering with pagination
-- Metadata includes tool calls and turn context
-
-### 3.4 Access Patterns
-
-```python
-# Core CRUD operations
-case = await case_repository.get(case_id)
-case = await case_repository.save(case)
-cases = await case_repository.find_by_user(user_id)
-
-# Specialized queries
-active_hypotheses = await case_repository.get_active_hypotheses(case_id)
-evidence_by_type = await case_repository.get_evidence_by_type(case_id, source_type)
-conversation = await case_repository.get_conversation_thread(case_id)
-```
-
-### 3.5 Session State (Redis)
+### 3.4 Session State (Redis)
 
 **Purpose**: Fast session state with TTL expiration
 
 ```python
 # Redis keys
 session:{session_id}                    # Session data (TTL: 30 min)
-session_client:{user_id}:{client_id}   # Client-based session index (TTL: same as session)
+session_client:{user_id}:{client_id}   # Client-based session index
 
 # Session structure
 {
     "session_id": "uuid",
     "user_id": "user_123",
-    "client_id": "device_456",  # For session resumption
+    "client_id": "device_456",
     "created_at": "ISO timestamp",
     "last_activity": "ISO timestamp",
-    "data_uploads": ["file_id_1", "file_id_2"],
-    "case_history": ["case_id_1", "case_id_2"]
+    "data_uploads": ["file_id_1"],
+    "case_history": ["case_id_1"]
 }
-```
-
-**Interface**: `ISessionStore` (`redis_session_store.py`)
-
-```python
-# Session operations
-session = await session_store.get(session_id)
-await session_store.set(session_id, session_data, ttl=1800)
-exists = await session_store.exists(session_id)
-deleted = await session_store.delete(session_id)
-extended = await session_store.extend_ttl(session_id, ttl=1800)
-
-# Client-based resumption
-session_id = await session_store.find_by_user_and_client(user_id, client_id)
-await session_store.index_session_by_client(user_id, client_id, session_id, ttl=1800)
-await session_store.remove_client_index(user_id, client_id)
 ```
 
 ---
 
 ## 4. Observability Data Storage
 
-### 4.1 Data Type Classification
+### 4.1 Data Type Classification (8 Types)
 
-**7 Observability Data Types** (from preprocessing specification):
+**Processing-Driven Classification**: Types defined by processing method and tool requirements, not semantic meaning.
 
-| Data Type | Description | Examples | Preprocessing Strategy |
-|-----------|-------------|----------|------------------------|
-| `LOGS_AND_ERRORS` | Event-based chronological text | Application logs, system logs, error logs | Crime Scene Extraction |
-| `METRICS_AND_PERFORMANCE` | Time-series numeric data | CPU usage, memory, latency, throughput | Statistical Anomaly Detection |
-| `STRUCTURED_CONFIG` | System configuration files | YAML, JSON, TOML, INI | Configuration Diff Analysis |
-| `SOURCE_CODE` | Executable code | Python, JavaScript, Java, SQL | Code Pattern Analysis |
-| `UNSTRUCTURED_TEXT` | Human-written documents | Incident reports, runbooks | Semantic Summarization |
-| `VISUAL_EVIDENCE` | Screenshots, UI captures | PNG, JPG, PDF | OCR + Visual Analysis |
-| `UNANALYZABLE` | Reference-only files | Binary blobs, encrypted files | Metadata only |
+| Type | Structure | Processing Method | Tools | Examples |
+|------|-----------|-------------------|-------|----------|
+| **LOGS_AND_ERRORS** | Timestamped events, errors, stack traces | Crime Scene Extraction, timeline reconstruction | Log parser, error pattern detector, stack trace analyzer | App logs, system logs, Sentry reports, crash dumps |
+| **TRACE_DATA** | Hierarchical spans with parent-child relationships | Critical path analysis, service mapping, latency distribution | Span parser, relationship graph builder, bottleneck detector | Jaeger, Zipkin, OpenTelemetry, AWS X-Ray, distributed traces |
+| **PROFILING_DATA** | Call stacks with resource attribution | Hotspot detection, flame graph generation, resource analysis | Profile parser (pprof/perf), call stack aggregator, flame graph generator | pprof, perf, VisualVM, heap dumps, CPU profiles |
+| **METRICS_AND_PERFORMANCE** | Time-series numeric data | Statistical anomaly detection, trend analysis | Statistical analyzer, threshold checker, correlation detector | Prometheus, CSV timeseries, Grafana exports |
+| **STRUCTURED_CONFIG** | Hierarchical key-value (YAML/JSON/TOML) | Config diff, schema validation | JSON/YAML parser, diff engine | YAML, JSON, TOML, INI, XML config files |
+| **SOURCE_CODE** | Programming language syntax | AST parsing, pattern matching, static analysis | Language-specific parsers, static analyzer | Python, JavaScript, Java, SQL, Dockerfiles |
+| **UNSTRUCTURED_TEXT** | Prose, documentation, markdown | Semantic summarization, NLP, entity extraction | LLM summarizer, markdown parser, entity extractor | Incident reports, README, API docs, runbooks |
+| **VISUAL_EVIDENCE** | Images, screenshots, PDFs | OCR, visual analysis, layout detection | OCR engine, image processor | PNG, JPG, PDF screenshots |
 
-### 4.2 Storage Architecture
+### 4.2 Classification Logic
+
+```python
+class DataType(str, Enum):
+    """8 purpose-driven data classifications for preprocessing pipeline."""
+
+    # Event-based data
+    LOGS_AND_ERRORS = "logs_and_errors"          # Includes crash reports, error dumps
+    TRACE_DATA = "trace_data"                    # Distributed traces with span relationships
+
+    # Performance data
+    PROFILING_DATA = "profiling_data"            # CPU/memory profiles, flame graphs
+    METRICS_AND_PERFORMANCE = "metrics_and_performance"  # Time-series metrics
+
+    # Configuration and code
+    STRUCTURED_CONFIG = "structured_config"      # JSON/YAML/TOML/INI
+    SOURCE_CODE = "source_code"                  # Programming languages
+
+    # Human-authored content
+    UNSTRUCTURED_TEXT = "unstructured_text"      # Includes documentation
+
+    # Visual content
+    VISUAL_EVIDENCE = "visual_evidence"          # Images, screenshots
+
+
+def classify_data_type(filename: str, content_sample: bytes, mime_type: str) -> DataType:
+    """Multi-pass classification using pattern matching."""
+    sample = content_sample[:5000].decode('utf-8', errors='ignore')
+
+    # Check MIME type first
+    if mime_type.startswith("image/"):
+        return DataType.VISUAL_EVIDENCE
+
+    # Check structured formats
+    if filename.endswith(('.yaml', '.yml', '.json', '.toml', '.ini', '.xml')):
+        return DataType.STRUCTURED_CONFIG
+
+    if filename.endswith(('.py', '.js', '.java', '.go', '.rs', '.cpp', '.sql')):
+        return DataType.SOURCE_CODE
+
+    # Check trace data signatures
+    trace_patterns = [
+        r'"spans":\s*\[',           # OpenTelemetry/Jaeger
+        r'"traceId":\s*"',          # Trace ID field
+        r'"parentSpanId":\s*"',     # Span relationships
+    ]
+    if any(re.search(pattern, sample) for pattern in trace_patterns):
+        return DataType.TRACE_DATA
+
+    # Check profiling data signatures
+    profiling_patterns = [
+        r'^collapsed\s+stack',       # Collapsed stack format
+        r'samples/count',            # pprof format
+        r'CPU\s+profile',            # Profile header
+    ]
+    if any(re.search(pattern, sample) for pattern in profiling_patterns):
+        return DataType.PROFILING_DATA
+
+    # Check log patterns
+    log_patterns = [
+        r'\d{4}-\d{2}-\d{2}',               # Date stamps
+        r'ERROR|FATAL|Exception',            # Error keywords
+        r'Traceback|Stack\s+trace',          # Stack traces
+    ]
+    if any(re.search(pattern, sample) for pattern in log_patterns):
+        return DataType.LOGS_AND_ERRORS
+
+    # Check metrics patterns
+    metrics_patterns = [
+        r'\d+\.\d+,\d+\.\d+',              # CSV numeric data
+        r'"value":\s*\d+',                  # JSON metrics
+        r'cpu_usage|memory_usage|latency',  # Metric names
+    ]
+    if any(re.search(pattern, sample) for pattern in metrics_patterns):
+        return DataType.METRICS_AND_PERFORMANCE
+
+    # Check text/documentation patterns
+    text_patterns = [
+        r'^#+\s+',                          # Markdown headers
+        r'```',                             # Code blocks
+    ]
+    if any(re.search(pattern, sample, re.MULTILINE) for pattern in text_patterns):
+        return DataType.UNSTRUCTURED_TEXT
+
+    return DataType.UNSTRUCTURED_TEXT  # Default
+```
+
+### 4.3 Processing Pipelines
+
+#### **TRACE_DATA Processing Pipeline** (New)
+
+```python
+# Trace Analyzer Pipeline
+Trace Data → Span Parser (OpenTelemetry/Jaeger format)
+          → Relationship Graph Builder (DAG construction)
+          → Critical Path Detector (longest span chain)
+          → Service Dependency Mapper
+          → Latency Distribution Calculator
+          → Bottleneck Identifier
+          → Summary Generation
+
+# Output:
+{
+    "trace_id": "abc123",
+    "total_duration_ms": 1247,
+    "critical_path": [
+        {"service": "api-gateway", "duration_ms": 45},
+        {"service": "auth-service", "duration_ms": 892},
+        {"service": "database", "duration_ms": 310}
+    ],
+    "bottlenecks": [
+        {"service": "auth-service", "operation": "validate_token", "duration_ms": 892}
+    ],
+    "service_map": {
+        "api-gateway": ["auth-service", "user-service"],
+        "auth-service": ["database"]
+    },
+    "key_insights": [
+        "Auth service taking 71% of total request time",
+        "Database queries show N+1 pattern"
+    ]
+}
+```
+
+#### **PROFILING_DATA Processing Pipeline** (New)
+
+```python
+# Profile Analyzer Pipeline
+Profile Data → Profile Parser (pprof/perf/collapsed stack)
+            → Call Stack Aggregator
+            → Hotspot Detector (top N functions by resource)
+            → Flame Graph Generator
+            → Memory Allocation Analyzer
+            → CPU Time Attribution
+            → Resource Optimization Recommendations
+
+# Output:
+{
+    "profile_type": "cpu",
+    "total_samples": 15420,
+    "duration_seconds": 60,
+    "hotspots": [
+        {"function": "database.query_slow", "samples": 8234, "percentage": 53.4},
+        {"function": "json.serialize", "samples": 2156, "percentage": 14.0}
+    ],
+    "flame_graph_url": "s3://artifacts/case_123/flame_graph.svg",
+    "key_insights": [
+        "53% of CPU time in database.query_slow - optimize query",
+        "JSON serialization 14% - consider using msgpack"
+    ],
+    "recommendations": [
+        "Add index on users.email column",
+        "Use binary serialization for large payloads"
+    ]
+}
+```
+
+### 4.4 Storage Architecture
 
 **Two-Tier Storage**:
 
@@ -491,6 +584,7 @@ await session_store.remove_client_index(user_id, client_id)
    - Processing status: pending → processing → completed/failed
    - Preprocessing summary (extracted insights, ~8KB text)
    - S3 reference key
+   - Data type classification
 
 2. **Raw Artifact Storage** (S3-Compatible)
    - Full raw file content (up to 10MB)
@@ -498,22 +592,7 @@ await session_store.remove_client_index(user_id, client_id)
    - Lifecycle: 90 days default, configurable per case
    - Encryption at rest (AES-256)
 
-### 4.3 Preprocessing Pipeline
-
-**Synchronous Pipeline** (user waits):
-```
-Upload → Validate (size ≤ 10MB) → Classify (data type)
-→ Extract (type-specific) → Sanitize (PII/secrets)
-→ Store Raw (S3) → Store Metadata (PostgreSQL) → Return Summary
-```
-
-**Async Background Pipeline** (optional):
-```
-Preprocessing Result → Chunk (512 tokens) → Embed (BGE-M3)
-→ Store Vector DB (ChromaDB case_{case_id}) → Enable Semantic Search
-```
-
-### 4.4 Preprocessing Result Structure
+### 4.5 Preprocessing Result Structure
 
 ```python
 class PreprocessingResult(BaseModel):
@@ -521,7 +600,7 @@ class PreprocessingResult(BaseModel):
     file_id: str
     data_type: DataType
 
-    # Extracted insights (goes to PostgreSQL)
+    # Extracted insights (stored in PostgreSQL)
     summary: str                    # High-level overview (~500 chars)
     full_extraction: str            # Detailed analysis (~8K chars)
     key_insights: List[str]         # Bullet points (3-10 items)
@@ -529,66 +608,38 @@ class PreprocessingResult(BaseModel):
     # Security findings
     pii_detected: bool
     secrets_detected: bool
-    sanitized_content: str          # PII-redacted version
+    sanitized_content: str
 
     # Storage references
-    s3_key: str                     # Raw file location
+    s3_key: str
     preprocessing_time_ms: int
 
     # Classification metadata
-    confidence_score: float         # Classification confidence
-    alternative_types: List[str]    # Other possible types
-```
-
-### 4.5 Access Patterns
-
-```python
-# Upload and preprocess
-result = await preprocessing_service.process_upload(
-    file=uploaded_file,
-    case_id=case_id,
-    user_choice=ProcessingChoice.FAST_EXTRACTION
-)
-
-# Retrieve by file ID
-file_metadata = await case_repository.get_uploaded_file(file_id)
-
-# List files for case
-files = await case_repository.list_uploaded_files(case_id)
-
-# Download raw artifact
-raw_content = await s3_storage.retrieve(s3_key)
-
-# Semantic search (if vectorized)
-results = await vector_store.search(
-    case_id=case_id,
-    query="database connection timeout errors",
-    k=5
-)
+    confidence_score: float
+    alternative_types: List[str]
 ```
 
 ### 4.6 Size Limits & Performance
 
 **File Size Limit**: 10 MB (10,485,760 bytes)
-- Handles 95% of troubleshooting files
-- Crime Scene Extraction: 200:1 compression (10 MB → 50 KB)
-- Prevents timeout/resource issues
 
 **Processing Time** (by data type):
 - Logs: 0.5-5s (Crime Scene Extraction)
-- Metrics: 1-3s (Statistical Analysis)
-- Config: 0.5-2s (Diff Analysis)
-- Code: 1-4s (Pattern Analysis)
-- Text: 2-8s (Semantic Summarization)
-- Visual: 3-10s (OCR + Analysis)
+- Traces: 1-4s (Span graph analysis)
+- Profiles: 2-8s (Flame graph generation)
+- Metrics: 1-3s (Statistical analysis)
+- Config: 0.5-2s (Diff analysis)
+- Code: 1-4s (AST parsing)
+- Text: 2-8s (Semantic summarization)
+- Visual: 3-10s (OCR + analysis)
 
 ---
 
-## 5. Knowledge Base Data Storage
+## 5. User Knowledge Base Storage
 
 ### 5.1 Architecture Overview
 
-**User-Scoped Persistent Storage**: Each user has their own knowledge base for runbooks, procedures, and documentation.
+**Purpose**: User-scoped persistent storage for runbooks, procedures, documentation
 
 **Storage**: ChromaDB with per-user collections
 **Collection Naming**: `user_kb_{user_id}`
@@ -610,156 +661,1070 @@ results = await vector_store.search(
 
 ```python
 class KnowledgeDocument(BaseModel):
-    """User knowledge base document"""
-    document_id: str              # Unique identifier
-    user_id: str                  # Owner
+    document_id: str
+    user_id: str
+    title: str
+    content: str
+    document_type: str  # troubleshooting, configuration, runbook
 
-    # Content
-    title: str                    # Document title
-    content: str                  # Full text content
-    document_type: str            # troubleshooting, configuration, runbook, etc.
-
-    # Metadata
     metadata: Dict[str, Any] = {
-        "author": str,            # Document creator
-        "version": str,           # Version identifier
-        "tags": List[str],        # Searchable tags
-        "source_url": str,        # Original source
-        "last_updated": str,      # ISO timestamp
-        "difficulty": str,        # beginner, intermediate, advanced
-        "category": str,          # Organizational category
+        "author": str,
+        "version": str,
+        "tags": List[str],
+        "source_url": str,
+        "last_updated": str,
+        "difficulty": str,  # beginner, intermediate, advanced
+        "category": str,
     }
 
-    # Timestamps
     created_at: datetime
     updated_at: datetime
 ```
 
-### 5.4 ChromaDB Collection Metadata
+### 5.4 Access Patterns
 
 ```python
-# Collection metadata (no TTL)
-{
-    "user_id": "user_123",
-    "created_at": "2025-01-15T10:30:00Z",
-    "type": "user_knowledge_base"
-}
-```
-
-### 5.5 Access Patterns
-
-```python
-# Add documents to user KB
-await user_kb_store.add_documents(
-    user_id="user_123",
-    documents=[
-        {
-            "id": "doc_001",
-            "content": "Database timeout troubleshooting runbook...",
-            "metadata": {"title": "DB Timeouts", "category": "database"}
-        }
-    ]
-)
+# Add documents
+await user_kb_store.add_documents(user_id, documents)
 
 # Semantic search
-results = await user_kb_store.search(
-    user_id="user_123",
-    query="how to handle connection pool exhaustion",
-    k=5
-)
+results = await user_kb_store.search(user_id, query="DB timeouts", k=5)
 
 # List all documents
-documents = await user_kb_store.list_documents(user_id="user_123")
+documents = await user_kb_store.list_documents(user_id)
 
 # Delete document
-await user_kb_store.delete_document(
-    user_id="user_123",
-    document_id="doc_001"
-)
+await user_kb_store.delete_document(user_id, document_id)
 ```
-
-### 5.6 Chunking Strategy
-
-**Large Documents** (> 2000 chars):
-- Automatic chunking into 512-token segments
-- Overlap: 50 tokens between chunks
-- Chunk metadata includes parent document ID
-- Search returns relevant chunks with context
-
-**Small Documents** (≤ 2000 chars):
-- Stored as single chunk
-- No segmentation overhead
-
-### 5.7 Integration with Agent
-
-**Tool**: `answer_from_user_kb` (agent tool)
-
-```python
-# Agent flow
-1. User asks: "How do I handle database timeouts?"
-2. Agent calls answer_from_user_kb tool
-3. Tool performs semantic search on user's KB
-4. Retrieves top 5 relevant chunks
-5. Synthesis LLM generates answer from chunks
-6. Agent provides contextual response
-```
-
-**Benefits**:
-- Personalized knowledge for each user
-- Learns from past troubleshooting
-- No external dependency for known issues
-- Privacy-preserving (user data stays isolated)
 
 ---
 
-## 6. Access Patterns & Interfaces
+## 6. Case Working Memory Storage
 
-### 6.1 Repository Pattern
+### 6.1 Architecture Overview
 
-All storage access follows the **Repository Pattern** with interface abstraction:
+**Purpose**: Ephemeral session-specific RAG for temporary document storage during active troubleshooting
+
+**Key Differences from User KB**:
+- **Lifecycle**: Ephemeral (deleted when case closes)
+- **Scope**: Case-specific collections (`case_{case_id}`)
+- **TTL**: Tied to case lifecycle + 7 days cleanup
+- **Use Case**: QA sub-agent for "What does this uploaded PDF say?"
+
+**Storage**: ChromaDB
+**Collection Naming**: `case_{case_id}`
+**Implementation**: `faultmaven/infrastructure/persistence/case_vector_store.py`
+
+### 6.2 Storage Characteristics
+
+**Ephemeral Storage**:
+- Collections created on-demand when first document added
+- Automatically deleted when case closes or archives
+- 7-day grace period after case closure for forensics
+- No cross-case sharing
+
+**Semantic Search**:
+- Same BGE-M3 embeddings as User KB
+- Case-scoped search (only within current case)
+- Used by `answer_from_case_evidence` tool
+
+### 6.3 Collection Metadata
 
 ```python
-# User Repository
+# Collection metadata with TTL tracking
+{
+    "case_id": "case_abc123",
+    "created_at": "2025-01-15T10:30:00Z",
+    "type": "case_working_memory",
+    "case_status": "investigating",  # Updated on case status change
+    "expiry_date": None,  # Set when case closes
+    "cleanup_after": "2025-02-01T10:30:00Z"  # case_closed_at + 7 days
+}
+```
+
+### 6.4 Lifecycle Management
+
+```python
+# Case lifecycle integration
+async def close_case(case_id: str):
+    case = await case_repository.get(case_id)
+    case.status = CaseStatus.RESOLVED
+    case.resolved_at = datetime.now(timezone.utc)
+    await case_repository.save(case)
+
+    # Mark case vector store for cleanup
+    cleanup_date = case.resolved_at + timedelta(days=7)
+    await case_vector_store.schedule_cleanup(case_id, cleanup_date)
+
+# Cleanup job (runs daily)
+async def cleanup_expired_case_collections():
+    expired = await case_vector_store.get_expired_collections()
+    for collection_name in expired:
+        await case_vector_store.delete_collection(collection_name)
+        logger.info(f"Deleted expired collection: {collection_name}")
+```
+
+### 6.5 Access Patterns
+
+```python
+# Add case-specific documents
+await case_vector_store.add_documents(case_id, documents)
+
+# Case-scoped search
+results = await case_vector_store.search(
+    case_id="case_abc123",
+    query="error on page 5 of PDF",
+    k=5
+)
+
+# Delete collection when case closes
+await case_vector_store.delete_collection(case_id)
+```
+
+---
+
+## 7. Global Knowledge Base Storage
+
+### 7.1 Architecture Overview
+
+**Purpose**: System-wide troubleshooting documentation shared across ALL users
+
+**Three Knowledge Systems**:
+1. **Global KB** - System-wide best practices (THIS SECTION)
+2. **User KB** - User's personal runbooks (Section 5)
+3. **Case Working Memory** - Temporary case uploads (Section 6)
+
+**Storage**: ChromaDB (shared collection)
+**Collection Naming**: `global_kb` (single shared collection)
+**Implementation**: `faultmaven/tools/global_kb_qa.py`
+
+### 7.2 Storage Characteristics
+
+**Shared Storage**:
+- Single collection accessible to all users (read-only)
+- Pre-populated by FaultMaven team
+- Curated best practices and methodologies
+- Updated periodically by system administrators
+
+**Content Types**:
+- Industry-standard troubleshooting approaches
+- Common error patterns and solutions
+- Best practices and anti-patterns
+- Methodology guides (SRE, DevOps)
+- Tool usage examples
+
+### 7.3 Document Structure
+
+```python
+class GlobalKBDocument(BaseModel):
+    document_id: str              # e.g., "kb_001"
+    title: str
+    content: str
+    category: str                 # "methodology", "pattern", "tool", "best_practice"
+
+    metadata: Dict[str, Any] = {
+        "author": "FaultMaven Team",
+        "version": str,
+        "tags": List[str],
+        "difficulty": str,
+        "last_updated": str,
+        "popularity_score": float,  # Based on usage
+        "effectiveness_score": float,  # Based on user feedback
+    }
+
+    created_at: datetime
+    updated_at: datetime
+```
+
+### 7.4 Tool Integration
+
+**Agent Tool**: `answer_from_global_kb`
+
+```python
+# Agent flow
+1. User asks: "Standard approach for diagnosing memory leaks?"
+2. Agent calls answer_from_global_kb tool
+3. Tool performs semantic search on global_kb collection
+4. Retrieves top 5 relevant articles
+5. Synthesis LLM generates answer with KB article citations
+6. Agent provides general best practices response
+
+# Example tool invocation
+result = await answer_from_global_kb.execute({
+    "question": "How to analyze Java thread dumps?",
+    "k": 5
+})
+
+# Returns:
+{
+    "answer": "To analyze Java thread dumps, follow these steps: ...",
+    "sources": [
+        {"article_id": "kb_042", "title": "Java Thread Dump Analysis"},
+        {"article_id": "kb_089", "title": "Common Thread Deadlock Patterns"}
+    ],
+    "confidence": 0.92
+}
+```
+
+### 7.5 Access Control
+
+**Read Access**: All authenticated users
+**Write Access**: System administrators only
+
+**Update Process**:
+```python
+# Admin tool for updating global KB
+async def update_global_kb(
+    admin_user: User,
+    documents: List[GlobalKBDocument]
+):
+    if "admin" not in admin_user.roles:
+        raise PermissionDeniedError()
+
+    await global_kb_store.add_documents("global_kb", documents)
+    await global_kb_store.rebuild_index()  # Optimize search index
+    logger.info(f"Global KB updated by {admin_user.username}")
+```
+
+### 7.6 Performance Optimization
+
+**Caching Strategy**:
+- 7-day cache TTL (global KB changes rarely)
+- Pre-computed embeddings for fast search
+- Popular articles cached in Redis L2
+
+**Search Performance**:
+- Sub-200ms typical query time
+- Pre-warmed cache for common queries
+- Batch embedding generation for updates
+
+---
+
+## 8. Report & Analytics Data Storage
+
+### 8.1 Architecture Overview
+
+**Purpose**: Generated case reports, post-mortems, analytics dashboards
+
+**Storage**: Hybrid Redis (metadata) + ChromaDB (content)
+**Implementation**: `faultmaven/infrastructure/persistence/redis_report_store.py`
+
+### 8.2 Storage Architecture
+
+**Two-Tier Design**:
+
+1. **Metadata Storage** (Redis)
+   - Report metadata, version tracking, timestamps
+   - Fast lookups and filtering
+   - Current report pointers
+
+2. **Content Storage** (ChromaDB)
+   - Full markdown report content
+   - Enables similarity search for related reports
+   - Automatic runbook indexing
+
+### 8.3 Redis Key Schema
+
+```python
+# Redis keys
+case:{case_id}:reports                    # Sorted set (all reports by timestamp)
+report:{report_id}:metadata               # Hash (report metadata)
+case:{case_id}:reports:{type}             # Sorted set (reports by type, version desc)
+case:{case_id}:reports:current            # Hash (type → current report_id)
+
+# Example metadata
+{
+    "report_id": "rpt_abc123",
+    "case_id": "case_456",
+    "report_type": "post_mortem",
+    "version": 2,
+    "status": "published",
+    "created_at": "2025-01-15T10:30:00Z",
+    "created_by": "user_789",
+    "chromadb_doc_id": "doc_abc123"  # Reference to content
+}
+```
+
+### 8.4 Report Types
+
+```python
+class ReportType(str, Enum):
+    POST_MORTEM = "post_mortem"          # Case post-mortem analysis
+    RUNBOOK = "runbook"                  # Auto-generated runbook (indexed)
+    ANALYTICS_DASHBOARD = "analytics"    # Analytics summary
+    INVESTIGATION_SUMMARY = "summary"    # Investigation timeline
+    TREND_REPORT = "trend"               # Pattern analysis
+```
+
+### 8.5 Report Structure
+
+```python
+class CaseReport(BaseModel):
+    report_id: str
+    case_id: str
+    report_type: ReportType
+    version: int
+    status: str  # draft, published, archived
+
+    # Content
+    title: str
+    content: str  # Markdown format
+    summary: str
+
+    # Metadata
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+    # Runbook-specific
+    runbook_source: Optional[str]  # "manual", "ai_generated"
+    auto_indexed: bool = False     # Auto-added to runbook KB?
+```
+
+### 8.6 Automatic Runbook Indexing
+
+**Feature**: Generated runbooks automatically indexed for similarity search
+
+```python
+# Runbook generation and indexing
+async def generate_runbook(case: Case) -> CaseReport:
+    # Generate runbook from case
+    runbook = await runbook_generator.generate(case)
+
+    # Store in Redis + ChromaDB
+    report = CaseReport(
+        report_type=ReportType.RUNBOOK,
+        content=runbook.content,
+        runbook_source="ai_generated"
+    )
+    await report_store.save(report)
+
+    # Auto-index in runbook KB for similarity search
+    if runbook_kb:
+        await runbook_kb.index_document(
+            document_id=report.report_id,
+            content=report.content,
+            metadata={"case_id": case.case_id, "auto_generated": True}
+        )
+        report.auto_indexed = True
+
+    return report
+```
+
+### 8.7 Report Versioning
+
+**Strategy**: Keep up to 5 versions per report type
+
+```python
+# Version management
+async def save_report_version(case_id: str, report: CaseReport):
+    # Get current version count
+    versions = await report_store.list_versions(case_id, report.report_type)
+
+    if len(versions) >= 5:
+        # Delete oldest version
+        oldest = versions[0]
+        await report_store.delete(oldest.report_id)
+
+    # Increment version
+    report.version = len(versions) + 1
+    await report_store.save(report)
+```
+
+### 8.8 Retention Policy
+
+**TTL**: 90 days post-case-closure
+
+```python
+# Cleanup job
+async def cleanup_expired_reports():
+    expired_cases = await case_repository.find_closed_before(
+        datetime.now(timezone.utc) - timedelta(days=90)
+    )
+
+    for case in expired_cases:
+        reports = await report_store.list_by_case(case.case_id)
+        for report in reports:
+            await report_store.delete(report.report_id)
+            logger.info(f"Deleted expired report: {report.report_id}")
+```
+
+---
+
+## 9. Job Queue State Storage
+
+### 9.1 Architecture Overview
+
+**Purpose**: Async background job tracking for long-running operations
+
+**Storage**: Redis with TTL (24 hours default)
+**Implementation**: `faultmaven/infrastructure/jobs/job_service.py`
+
+### 9.2 Job Types
+
+**Common Job Types**:
+- File preprocessing (large uploads)
+- Report generation
+- Batch analytics
+- Vector embedding generation
+- Case archival
+- Knowledge base indexing
+
+### 9.3 Redis Schema
+
+```python
+# Redis key
+job:{job_id}
+
+# Job structure
+{
+    "job_id": "job_abc123",
+    "job_type": "preprocessing",
+    "status": "running",  # pending, running, completed, failed, cancelled
+    "payload": {
+        "file_id": "file_456",
+        "case_id": "case_789"
+    },
+    "progress": 45,       # 0-100 percentage
+    "result": null,       # Populated on completion
+    "error": null,        # Populated on failure
+    "created_at": "2025-01-15T10:30:00Z",
+    "updated_at": "2025-01-15T10:31:15Z",
+    "ttl_seconds": 86400
+}
+```
+
+### 9.4 API Workflow
+
+**202 → Location → 303/200 Pattern**:
+
+```python
+# Step 1: Create async job (202 Accepted)
+POST /api/data/upload
+Response: 202 Accepted
+Location: /api/jobs/job_abc123
+Retry-After: 5
+
+# Step 2: Poll job status (200 OK, in progress)
+GET /api/jobs/job_abc123
+Response: 200 OK
+{
+    "job_id": "job_abc123",
+    "status": "running",
+    "progress": 45
+}
+Retry-After: 5
+
+# Step 3: Job complete (303 See Other)
+GET /api/jobs/job_abc123
+Response: 303 See Other
+Location: /api/cases/case_789/evidence/ev_456
+
+# Step 4: Get final result (200 OK)
+GET /api/cases/case_789/evidence/ev_456
+Response: 200 OK
+{
+    "evidence_id": "ev_456",
+    "preprocessing_summary": "..."
+}
+```
+
+### 9.5 Job Service Interface
+
+```python
+class IJobService(ABC):
+    async def create_job(
+        self,
+        job_type: str,
+        payload: Dict[str, Any] = None,
+        ttl_seconds: Optional[int] = None
+    ) -> str:
+        """Create new job, returns job_id"""
+
+    async def get_job(self, job_id: str) -> Optional[JobStatus]:
+        """Retrieve current job status"""
+
+    async def update_job_status(
+        self,
+        job_id: str,
+        status: str,
+        progress: Optional[int] = None,
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None
+    ) -> bool:
+        """Update job status and metadata"""
+```
+
+### 9.6 Cleanup & TTL
+
+**Automatic Cleanup**: Redis TTL handles expiration
+**Manual Cleanup**: Background job cleans completed jobs after 1 hour
+
+```python
+# Cleanup job (runs hourly)
+async def cleanup_completed_jobs():
+    completed_jobs = await job_service.find_completed_before(
+        datetime.now(timezone.utc) - timedelta(hours=1)
+    )
+
+    for job_id in completed_jobs:
+        await job_service.delete(job_id)
+```
+
+---
+
+## 10. ML Model Artifacts Storage
+
+### 10.1 Architecture Overview
+
+**Purpose**: Machine learning model weights, calibration data, feature metadata
+
+**Model Types**:
+- **Confidence Scoring Model**: Calibrated confidence prediction
+- **Classification Models**: Data type classification
+- **Anomaly Detection Models**: Behavioral pattern detection
+
+**Storage**: File system (model files) + PostgreSQL (metadata)
+**Implementation**: `faultmaven/services/analytics/confidence_service.py`
+
+### 10.2 Storage Architecture
+
+**Two-Tier Design**:
+
+1. **Model Files** (File System / S3)
+   - Serialized model weights (`.pkl` files)
+   - Calibration data (`.json` files)
+   - Training metadata
+
+2. **Model Metadata** (PostgreSQL)
+   - Model versions, timestamps
+   - Calibration metrics (ECE, Brier score)
+   - Feature definitions
+   - Training provenance
+
+### 10.3 File System Layout
+
+```
+/var/lib/faultmaven/models/
+├── confidence/
+│   ├── conf-v1.2/
+│   │   ├── model_weights.pkl         # Serialized sklearn model
+│   │   ├── calibrated_model.pkl      # Calibrated version
+│   │   ├── calibration_data.json     # Calibration curves
+│   │   ├── feature_definitions.json  # Feature schemas
+│   │   └── training_metadata.json    # Training provenance
+│   ├── conf-v1.3/                    # New version
+│   └── conf-v1.4/
+├── classification/
+│   └── data_classifier_v2.pkl
+└── anomaly/
+    └── behavioral_detector_v1.pkl
+```
+
+### 10.4 Model Metadata Schema
+
+```python
+class ModelMetadata(BaseModel):
+    model_id: str                   # e.g., "conf-v1.2"
+    model_type: str                 # "confidence", "classification", "anomaly"
+    version: str                    # Semantic version
+
+    # Training info
+    training_date: datetime
+    training_samples: int
+    training_duration_seconds: int
+
+    # Calibration metrics
+    calibration_method: str         # "platt", "isotonic"
+    ece_score: float                # Expected Calibration Error
+    brier_score: float              # Brier score
+    log_loss: float                 # Logarithmic loss
+
+    # Feature metadata
+    feature_count: int
+    feature_definitions: Dict[str, Any]
+
+    # File references
+    model_file_path: str
+    calibration_file_path: str
+
+    # Deployment info
+    deployed_at: Optional[datetime]
+    is_active: bool
+
+    created_at: datetime
+    created_by: str
+```
+
+### 10.5 Model Versioning
+
+**Strategy**: Keep 3 most recent versions
+
+```sql
+CREATE TABLE ml_models (
+    model_id TEXT PRIMARY KEY,
+    model_type TEXT NOT NULL,
+    version TEXT NOT NULL,
+    training_date TIMESTAMP WITH TIME ZONE NOT NULL,
+    calibration_method TEXT NOT NULL,
+    ece_score FLOAT,
+    brier_score FLOAT,
+    model_file_path TEXT NOT NULL,
+    deployed_at TIMESTAMP WITH TIME ZONE,
+    is_active BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    UNIQUE(model_type, version)
+);
+
+CREATE INDEX idx_ml_models_type_active ON ml_models (model_type, is_active);
+CREATE INDEX idx_ml_models_deployed ON ml_models (deployed_at DESC);
+```
+
+### 10.6 Hot-Swapping Models
+
+**Interface**: `IGlobalConfidenceService.update_model()`
+
+```python
+async def update_model(model_data: bytes, version: str) -> bool:
+    """
+    Hot-swap confidence model without service downtime.
+
+    Process:
+    1. Validate model data structure
+    2. Backup current model state
+    3. Load and validate new model
+    4. Test with validation dataset
+    5. Atomic switch to new model
+    6. Update metadata
+    7. Clean up old versions (keep 3)
+    """
+
+    # Backup current model
+    current_model = await load_active_model()
+    await backup_model(current_model)
+
+    # Load new model
+    new_model = deserialize_model(model_data)
+    validate_model_structure(new_model)
+
+    # Test new model
+    test_results = await test_model(new_model)
+    if test_results.ece_score > 0.1:  # Too high calibration error
+        return False
+
+    # Atomic switch
+    global _active_model
+    _active_model = new_model
+
+    # Update metadata
+    await model_repository.save(ModelMetadata(
+        model_id=f"conf-{version}",
+        version=version,
+        ece_score=test_results.ece_score,
+        is_active=True
+    ))
+
+    # Cleanup old versions
+    await cleanup_old_versions(keep_count=3)
+
+    return True
+```
+
+### 10.7 Model Calibration Data
+
+**Calibration Files**: Store calibration curves for probability calibration
+
+```json
+// calibration_data.json
+{
+    "method": "platt",
+    "calibration_curve": [
+        {"predicted": 0.1, "actual": 0.08},
+        {"predicted": 0.2, "actual": 0.18},
+        {"predicted": 0.5, "actual": 0.52},
+        {"predicted": 0.8, "actual": 0.83},
+        {"predicted": 0.9, "actual": 0.91}
+    ],
+    "ece_score": 0.034,
+    "training_samples": 15000,
+    "validation_samples": 3000
+}
+```
+
+---
+
+## 11. Protection System State Storage
+
+### 11.1 Architecture Overview
+
+**Purpose**: Client protection, rate limiting, reputation scoring, behavioral analysis
+
+**Storage**: Redis (real-time state) + PostgreSQL (archive)
+**Implementation**: `faultmaven/infrastructure/protection/`
+
+### 11.2 Data Types
+
+**a) Reputation Scores**
+
+```python
+# Redis key: reputation:{client_id}
+{
+    "client_id": "session_abc123",
+    "score": 85,
+    "level": "normal",  # trusted, normal, suspicious, restricted, blocked
+    "compliance_score": 90,
+    "efficiency_score": 85,
+    "stability_score": 80,
+    "reliability_score": 90,
+    "trend": "improving",
+    "violations": [
+        {"type": "rate_limit", "severity": "low", "timestamp": "..."}
+    ],
+    "last_updated": "2025-01-15T10:30:00Z",
+    "ttl_seconds": 86400
+}
+```
+
+**b) Rate Limit State**
+
+```python
+# Redis keys
+rate_limit:{client_id}:{endpoint}:{window}
+
+# Example: rate_limit:session_123:/api/queries:60s
+{
+    "requests": 45,
+    "limit": 100,
+    "window_start": "2025-01-15T10:30:00Z",
+    "reset_at": "2025-01-15T10:31:00Z",
+    "burst_allowance": 20
+}
+```
+
+**c) Behavioral Patterns**
+
+```python
+# Redis key: behavior:{client_id}
+{
+    "client_id": "session_abc123",
+    "request_frequency": 12.5,  # requests/minute
+    "peak_hours": [9, 10, 14, 15],
+    "anomaly_score": 0.12,
+    "risk_level": "low",
+    "fingerprint": "browser_chrome_v120_mac",
+    "session_duration_avg_seconds": 1847,
+    "last_analyzed": "2025-01-15T10:30:00Z"
+}
+```
+
+### 11.3 Access Patterns
+
+```python
+# Reputation check (< 5ms requirement)
+reputation = await reputation_engine.calculate_reputation(client_id)
+if reputation.level == ReputationLevel.BLOCKED:
+    raise AccessDeniedError()
+
+# Rate limit check
+allowed = await rate_limiter.check_rate_limit(
+    client_id=client_id,
+    endpoint="/api/queries",
+    limit=100,
+    window_seconds=60
+)
+
+# Behavioral analysis
+profile = await behavioral_analyzer.analyze_client(client_id)
+if profile.risk_level == "high":
+    await protection_coordinator.trigger_enhanced_monitoring(client_id)
+```
+
+### 11.4 Archive Strategy
+
+**PostgreSQL Archive** (30 days retention):
+
+```sql
+CREATE TABLE protection_events (
+    event_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,  -- reputation_change, rate_limit, anomaly
+    severity TEXT NOT NULL,     -- low, medium, high, critical
+    details JSONB NOT NULL,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+CREATE INDEX idx_protection_client ON protection_events (client_id, timestamp DESC);
+CREATE INDEX idx_protection_type ON protection_events (event_type, severity);
+```
+
+### 11.5 Performance Requirements
+
+**Real-Time Checks**:
+- Reputation lookup: < 5ms (Redis)
+- Rate limit check: < 3ms (Redis)
+- Behavioral analysis: < 10ms (Redis)
+
+**Archival**:
+- PostgreSQL writes: Async (non-blocking)
+- Archive TTL: 30 days
+- Used for forensics and trend analysis
+
+---
+
+## 12. Cache Data Storage
+
+### 12.1 Architecture Overview
+
+**Purpose**: Multi-tier intelligent caching with usage pattern analysis
+
+**Storage**: L1 (in-memory) + L2 (Redis) + L3 (PostgreSQL/S3)
+**Implementation**: `faultmaven/infrastructure/caching/intelligent_cache.py`
+
+### 12.2 Multi-Tier Architecture
+
+```
+┌──────────────────────────────────────────────────────┐
+│ L1 Cache (In-Memory)                                 │
+│ - Hit time: < 1ms                                    │
+│ - Size: 100MB                                        │
+│ - TTL: 5 minutes                                     │
+│ - Use: Hot data (user profiles, active cases)       │
+└─────────────────────┬────────────────────────────────┘
+                      │ L1 miss
+                      ↓
+┌──────────────────────────────────────────────────────┐
+│ L2 Cache (Redis)                                     │
+│ - Hit time: < 5ms                                    │
+│ - Size: 10GB                                         │
+│ - TTL: 1 hour                                        │
+│ - Use: Warm data (LLM responses, KB results)        │
+└─────────────────────┬────────────────────────────────┘
+                      │ L2 miss
+                      ↓
+┌──────────────────────────────────────────────────────┐
+│ L3 Cache (PostgreSQL/S3)                             │
+│ - Hit time: < 20ms                                   │
+│ - Size: Unlimited                                    │
+│ - TTL: 24 hours                                      │
+│ - Use: Cold data (computed aggregations, reports)   │
+└──────────────────────────────────────────────────────┘
+```
+
+### 12.3 Cached Data Types
+
+**LLM Responses** (most expensive to regenerate):
+- Cache key: `llm:{model}:{prompt_hash}`
+- TTL: 1 hour
+- Tier: L2 (Redis)
+
+**User Profiles** (frequent access):
+- Cache key: `user:{user_id}:profile`
+- TTL: 15 minutes
+- Tier: L1 (in-memory)
+
+**Case Summaries** (derived data):
+- Cache key: `case:{case_id}:summary`
+- TTL: 30 minutes
+- Tier: L2 (Redis)
+
+**Knowledge Base Results** (reusable):
+- Cache key: `kb:{query_hash}:results`
+- TTL: 2 hours
+- Tier: L2 (Redis)
+
+**Analytics Dashboards** (computed aggregations):
+- Cache key: `analytics:{dashboard_id}:{date}`
+- TTL: 24 hours
+- Tier: L3 (PostgreSQL)
+
+### 12.4 Cache Entry Structure
+
+```python
+@dataclass
+class CacheEntry:
+    key: str
+    value: Any
+    created_at: datetime
+    last_accessed: datetime
+    access_count: int = 0
+    size_bytes: int = 0
+    ttl_seconds: Optional[int] = None
+    tags: Set[str] = field(default_factory=set)
+    semantic_hash: Optional[str] = None  # For similarity-based cache hits
+    priority_score: float = 1.0
+```
+
+### 12.5 Cache Analytics
+
+**Usage Pattern Analysis**:
+
+```python
+@dataclass
+class AccessPattern:
+    key_pattern: str
+    access_times: List[datetime]
+    access_frequency: float             # requests/hour
+    seasonal_pattern: Dict[str, float]  # hour → frequency
+    user_distribution: Dict[str, int]   # user_hash → count
+    effectiveness_score: float          # hit_rate * avg_time_saved
+    recommended_ttl: int
+    cache_tier: str  # L1, L2, L3
+```
+
+**Example Analytics**:
+```json
+{
+    "key_pattern": "llm_response:*",
+    "access_frequency": 142.5,
+    "seasonal_pattern": {
+        "09:00": 0.8,  // Peak morning usage
+        "14:00": 0.3   // Low afternoon usage
+    },
+    "effectiveness_score": 0.87,
+    "recommended_ttl": 3600,
+    "cache_tier": "L2"
+}
+```
+
+### 12.6 Eviction Strategies
+
+**L1 (In-Memory)**: LRU with size limit
+**L2 (Redis)**: TTL-based with LRU fallback
+**L3 (PostgreSQL/S3)**: TTL-based only
+
+**Priority-Based Eviction**:
+- High priority: User profiles, active case data
+- Medium priority: LLM responses, KB results
+- Low priority: Analytics, computed aggregations
+
+---
+
+## 13. System Operational Data
+
+### 13.1 Architecture Overview
+
+**Purpose**: System health, performance metrics, security audits, distributed tracing
+
+**Storage**: Time-series DB + S3 + PostgreSQL
+**Scope**: Infrastructure observability (may be out of application scope)
+
+### 13.2 Data Types
+
+**a) Metrics** (Time-Series DB)
+- Request latency (p50, p95, p99)
+- Error rates by endpoint
+- Throughput (requests/second)
+- Resource usage (CPU, memory)
+- Database query performance
+
+**b) Distributed Traces** (Opik/Jaeger)
+- Request flow across services
+- Span timing and relationships
+- Error propagation
+- Service dependency mapping
+
+**c) Application Logs** (S3 + PostgreSQL)
+- Structured JSON logs
+- Error logs with stack traces
+- Audit logs (retention: 1 year)
+- Debug logs (retention: 7 days)
+
+**d) Security Audit Logs** (PostgreSQL)
+- Authentication events
+- Authorization failures
+- Data access logs
+- Configuration changes
+- Admin actions
+
+### 13.3 Storage Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│ Prometheus (Time-Series)                        │
+│ - Metrics retention: 30 days                    │
+│ - Aggregations: 5m, 1h, 1d                      │
+└─────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────┐
+│ Opik / Jaeger (Distributed Tracing)             │
+│ - Trace retention: 7 days                       │
+│ - Sampling rate: 100% (production: 10%)         │
+└─────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────┐
+│ S3 (Long-Term Logs)                             │
+│ - Application logs: 90 days                     │
+│ - Audit logs: 1 year                            │
+│ - Compressed, encrypted                          │
+└─────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────┐
+│ PostgreSQL (Security Audits)                    │
+│ - Authentication events: 1 year                 │
+│ - Data access logs: 1 year                      │
+│ - Compliance-ready format                       │
+└─────────────────────────────────────────────────┘
+```
+
+### 13.4 Optional Scope Note
+
+**This category may be out of application architecture scope** and belong to DevOps/SRE infrastructure. Consider whether to document in separate observability guide.
+
+---
+
+## 14. Access Patterns & Interfaces
+
+### 14.1 Repository Pattern
+
+All storage access follows **Repository Pattern** with interface abstraction.
+
+### 14.2 Interface Summary
+
+```python
+# User storage
 class UserRepository(ABC):
     async def save(self, user: User) -> User
     async def get(self, user_id: str) -> Optional[User]
     async def get_by_username(self, username: str) -> Optional[User]
-    async def get_by_email(self, email: str) -> Optional[User]
-    async def list(self, limit: int, offset: int) -> tuple[List[User], int]
-    async def delete(self, user_id: str) -> bool
 
-# Case Repository
+# Case storage
 class CaseRepository(ABC):
     async def save(self, case: Case) -> Case
     async def get(self, case_id: str) -> Optional[Case]
     async def find_by_user(self, user_id: str) -> List[Case]
-    async def list_active(self, user_id: str) -> List[Case]
-    async def search(self, query: str, filters: Dict) -> List[Case]
 
-# Session Store Interface
+# Session storage
 class ISessionStore(ABC):
     async def get(self, key: str) -> Optional[Dict]
     async def set(self, key: str, value: Dict, ttl: Optional[int]) -> None
-    async def delete(self, key: str) -> bool
     async def exists(self, key: str) -> bool
-    async def extend_ttl(self, key: str, ttl: Optional[int]) -> bool
-    async def find_by_user_and_client(self, user_id: str, client_id: str) -> Optional[str]
 
-# Vector Store Interface
+# Vector storage (3 implementations)
 class IVectorStore(ABC):
     async def add_documents(self, documents: List[Dict]) -> None
     async def search(self, query: str, k: int) -> List[Dict]
     async def delete_documents(self, ids: List[str]) -> None
 
-# Storage Backend Interface
-class IStorageBackend(ABC):
-    async def store(self, key: str, data: Any) -> None
-    async def retrieve(self, key: str) -> Optional[Any]
+# Report storage
+class IReportStore(ABC):
+    async def save(self, report: CaseReport) -> CaseReport
+    async def get(self, report_id: str) -> Optional[CaseReport]
+    async def list_by_case(self, case_id: str) -> List[CaseReport]
+
+# Job queue
+class IJobService(ABC):
+    async def create_job(self, job_type: str, payload: Dict) -> str
+    async def get_job(self, job_id: str) -> Optional[JobStatus]
+    async def update_job_status(self, job_id: str, status: str) -> bool
+
+# ML models
+class IGlobalConfidenceService(ABC):
+    async def score_confidence(self, request: ConfidenceRequest) -> ConfidenceResponse
+    async def get_model_info(self) -> Dict[str, Any]
+    async def update_model(self, model_data: bytes, version: str) -> bool
 ```
 
-### 6.2 Dependency Injection
-
-All repositories accessed through DI Container:
+### 14.3 Dependency Injection
 
 ```python
 from faultmaven.container import container
@@ -769,81 +1734,18 @@ user_repo = container.get_user_repository()
 case_repo = container.get_case_repository()
 session_store = container.get_session_store()
 user_kb_store = container.get_user_kb_vector_store()
-```
-
-### 6.3 Common Access Patterns
-
-**Pattern 1: Case Creation with Initial Evidence**
-```python
-# Create case
-case = Case(
-    case_id=str(uuid4()),
-    user_id=current_user.user_id,
-    title="Database Connection Timeouts",
-    status=CaseStatus.CONSULTING
-)
-await case_repo.save(case)
-
-# Upload initial evidence
-preprocessing_result = await preprocessing_service.process_upload(file, case.case_id)
-evidence = Evidence.from_preprocessing(preprocessing_result)
-case.add_evidence(evidence)
-await case_repo.save(case)
-```
-
-**Pattern 2: Session Resumption**
-```python
-# Find existing session by client
-session_id = await session_store.find_by_user_and_client(user_id, client_id)
-
-if session_id:
-    # Resume existing session
-    session = await session_store.get(session_id)
-    await session_store.extend_ttl(session_id, ttl=1800)
-else:
-    # Create new session
-    new_session = create_new_session(user_id, client_id)
-    await session_store.set(new_session.session_id, new_session.dict(), ttl=1800)
-    await session_store.index_session_by_client(user_id, client_id, new_session.session_id, ttl=1800)
-```
-
-**Pattern 3: Knowledge Base Search with Fallback**
-```python
-# Search user KB first
-kb_results = await user_kb_store.search(user_id, query, k=5)
-
-if kb_results:
-    # Synthesize answer from user's runbooks
-    answer = await synthesis_llm.generate(query, kb_results)
-else:
-    # Fall back to global knowledge base or LLM
-    answer = await global_knowledge.search(query)
-```
-
-**Pattern 4: Evidence-Driven Hypothesis Update**
-```python
-# Upload new evidence
-evidence = await add_evidence(case_id, uploaded_file)
-
-# Evaluate against active hypotheses
-for hypothesis in case.get_active_hypotheses():
-    evaluation = await evaluate_hypothesis(hypothesis, evidence)
-
-    if evaluation.status == "VALIDATED":
-        hypothesis.status = HypothesisStatus.VALIDATED
-        hypothesis.add_evidence_link(evidence.evidence_id, "supports")
-    elif evaluation.status == "INVALIDATED":
-        hypothesis.status = HypothesisStatus.INVALIDATED
-        hypothesis.add_evidence_link(evidence.evidence_id, "refutes")
-
-await case_repo.save(case)
+case_vector_store = container.get_case_vector_store()
+global_kb_store = container.get_global_kb_vector_store()
+report_store = container.get_report_store()
+job_service = container.get_job_service()
+confidence_service = container.get_confidence_service()
 ```
 
 ---
 
-## 7. Data Retention & Lifecycle
+## 15. Data Retention & Lifecycle
 
-### 7.1 Retention Policies
+### 15.1 Retention Policies
 
 | Data Category | Retention Period | Cleanup Strategy |
 |---------------|------------------|------------------|
@@ -853,135 +1755,99 @@ await case_repo.save(case)
 | **Session State** | 30 minutes (TTL) | Automatic Redis expiration |
 | **Raw Artifacts** | 90 days default | S3 lifecycle policy |
 | **User Knowledge Base** | Indefinite | User-controlled deletion |
-| **Case Vector Store** | Case lifetime + 7 days | TTL-based cleanup after case closure |
-| **Audit Logs** | 2 years | Archive to S3 after 90 days |
+| **Case Working Memory** | Case lifetime + 7 days | TTL-based cleanup after case closure |
+| **Global Knowledge Base** | Indefinite | Admin-controlled updates |
+| **Reports & Analytics** | 90 days post-closure | Automatic cleanup job |
+| **Job Queue State** | 24 hours | Redis TTL expiration |
+| **ML Model Artifacts** | 3 versions retained | Version-based cleanup |
+| **Protection State** | Real-time + 30 days archive | Archive to PostgreSQL |
+| **Cache Data** | Minutes to hours (TTL) | Multi-tier eviction |
+| **Audit Logs** | 1 year | Archive to S3 after 90 days |
 
-### 7.2 Lifecycle Management
+### 15.2 Automated Cleanup Jobs
 
-**Case Lifecycle**:
-```
-CONSULTING (active)
-  → INVESTIGATING (active)
-    → RESOLVED (terminal, archived after 90 days)
-    → CLOSED (terminal, archived after 30 days)
-```
-
-**Session Lifecycle**:
-```
-Created (TTL: 30 min)
-  → Activity extends TTL
-    → Expiration (automatic cleanup)
-    → Explicit logout (immediate cleanup)
-```
-
-**Uploaded File Lifecycle**:
-```
-Upload → Preprocessing → S3 Storage (90 days)
-  → Archive to Glacier (if case retained)
-  → Permanent deletion (after retention period)
-```
-
-### 7.3 Automated Cleanup Jobs
-
-**Daily Cleanup Tasks** (cron jobs):
+**Daily Tasks**:
 - Expire old sessions (Redis TTL handles most)
 - Archive resolved cases older than 90 days
 - Delete raw artifacts past retention period
-- Clean up orphaned vector store collections
-- Soft delete inactive user accounts (if configured)
-
-**Weekly Cleanup Tasks**:
+- Clean up expired case vector store collections
+- Delete expired job queue entries
 - Vacuum PostgreSQL tables
+
+**Weekly Tasks**:
 - Reindex for performance
 - Backup validation
 - Storage usage reporting
+- Model version cleanup
 
 ---
 
-## 8. Security & Compliance
+## 16. Security & Compliance
 
-### 8.1 Data Privacy
+### 16.1 Data Privacy
 
 **PII Redaction**:
 - All user input sanitized before LLM processing
 - Presidio integration for advanced PII detection
-- Fallback regex patterns when Presidio unavailable
-- Configurable sensitivity levels (development vs. production)
+- Fallback regex patterns
+- Configurable sensitivity levels
 
 **Encryption**:
-- **At Rest**: AES-256 encryption for S3, PostgreSQL, Redis
+- **At Rest**: AES-256 for S3, PostgreSQL, Redis
 - **In Transit**: TLS 1.3 for all network communication
-- **Secrets Management**: Environment variables, not in code
+- **Secrets**: Environment variables, HashiCorp Vault
 
-### 8.2 Access Control
+### 16.2 Access Control
 
 **User Data Isolation**:
-- User can only access their own data
+- Row-level security (RLS) in PostgreSQL
 - Foreign key constraints enforce ownership
-- Row-level security (RLS) in PostgreSQL (optional)
+- User can only access own data
 
-**Role-Based Access Control (RBAC)**:
+**RBAC**:
 - User roles: `user`, `admin`, `analyst`
 - Admin: Full system access
-- Analyst: Read-only case access for support
+- Analyst: Read-only case access
 - User: Own data only
 
-### 8.3 Audit Trail
+### 16.3 Audit Trail
 
-**Immutable Audit Logs**:
+**Immutable Logs**:
 - `case_status_transitions`: All status changes
 - `agent_tool_calls`: All agent actions
+- `protection_events`: Security events
 - User authentication events
-- Data access logs (who accessed what, when)
 
 **Compliance**:
-- GDPR: Right to deletion (soft delete + data export)
+- GDPR: Right to deletion, data export
 - SOC 2: Audit trails, encryption, access control
-- HIPAA-ready: Additional PHI redaction if needed
+- HIPAA-ready: Additional PHI redaction
 
 ---
 
-## 9. Scalability & Performance
+## 17. Scalability & Performance
 
-### 9.1 Horizontal Scaling
+### 17.1 Horizontal Scaling
 
 **PostgreSQL**:
-- Read replicas for query load distribution
-- Partitioning for large tables (cases, messages, evidence)
+- Read replicas for query distribution
+- Table partitioning (cases, messages, evidence)
 - Connection pooling (PgBouncer)
 
 **Redis**:
 - Cluster mode for high availability
-- Sharding by session key
+- Sharding by key prefix
 - Sentinel for automatic failover
 
 **ChromaDB**:
-- Per-user collections enable horizontal partitioning
+- Per-user collections enable partitioning
 - Collection-level isolation prevents hotspots
 
 **S3**:
 - Infinite horizontal scalability
 - CDN for frequently accessed artifacts
 
-### 9.2 Performance Optimization
-
-**Query Optimization**:
-- Indexes on all foreign keys
-- Composite indexes for common filters
-- Partial indexes for status-based queries
-- JSON indexing for JSONB columns (GIN indexes)
-
-**Caching Strategy**:
-- Redis cache for frequently accessed cases
-- CDN cache for static artifacts
-- In-memory cache for user profiles
-
-**Batch Operations**:
-- Bulk evidence insertion
-- Batch hypothesis evaluation
-- Parallel preprocessing for multiple files
-
-### 9.3 Performance Targets
+### 17.2 Performance Targets
 
 | Operation | Target | Measured |
 |-----------|--------|----------|
@@ -991,21 +1857,22 @@ Upload → Preprocessing → S3 Storage (90 days)
 | Evidence query | < 10ms | 5ms avg |
 | KB semantic search | < 200ms | 150ms avg |
 | File preprocessing | < 30s | 5s median, 25s p95 |
+| Reputation check | < 5ms | 3ms avg |
+| Rate limit check | < 3ms | 1ms avg |
+| Cache L1 hit | < 1ms | 0.5ms avg |
+| Cache L2 hit | < 5ms | 3ms avg |
 
 ---
 
-## 10. Migration & Backup
+## 18. Migration & Backup
 
-### 10.1 Database Migrations
+### 18.1 Database Migrations
 
 **Tool**: Alembic (PostgreSQL schema migrations)
 
 ```bash
-# Migration location
-migrations/versions/
-
 # Create migration
-alembic revision --autogenerate -m "Add evidence classification"
+alembic revision --autogenerate -m "Add ML model metadata table"
 
 # Apply migration
 alembic upgrade head
@@ -1014,138 +1881,78 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
-**Migration Strategy**:
-- Zero-downtime deployments with backward-compatible schemas
-- Blue-green deployment for breaking changes
-- Rollback plan for every migration
+### 18.2 Backup & Recovery
 
-### 10.2 Backup & Recovery
-
-**PostgreSQL Backups**:
+**PostgreSQL**:
 - Continuous WAL archiving to S3
 - Daily full backups
-- Point-in-time recovery (PITR) capability
+- Point-in-time recovery (PITR)
 - 30-day backup retention
 
-**Redis Persistence**:
+**Redis**:
 - RDB snapshots every 15 minutes
 - AOF (Append-Only File) for durability
-- Backup to S3 daily
+- Daily backups to S3
 
-**S3 Versioning**:
-- Object versioning enabled
-- Cross-region replication for disaster recovery
-
-**ChromaDB Backups**:
+**ChromaDB**:
 - Collection exports to S3 daily
 - Metadata backup to PostgreSQL
 
-### 10.3 Disaster Recovery
+**S3**:
+- Object versioning enabled
+- Cross-region replication
 
-**RTO (Recovery Time Objective)**: < 1 hour
-**RPO (Recovery Point Objective)**: < 15 minutes
+### 18.3 Disaster Recovery
+
+**RTO**: < 1 hour
+**RPO**: < 15 minutes
 
 **Recovery Procedures**:
-1. **Database Failure**: Promote read replica to master (< 5 min)
-2. **Redis Failure**: Automatic failover via Sentinel (< 1 min)
-3. **S3 Failure**: Cross-region replication active (automatic)
-4. **Complete Region Failure**: Restore from backups to new region (< 60 min)
+1. Database failure → Promote read replica (< 5 min)
+2. Redis failure → Sentinel failover (< 1 min)
+3. S3 failure → Cross-region replication (automatic)
+4. Complete region failure → Restore from backups (< 60 min)
 
 ---
 
-## Appendix A: Schema Diagrams
+## Appendix A: Complete Schema Diagrams
 
-### A.1 Complete Entity-Relationship Diagram
-
-```
-┌─────────────┐
-│    users    │
-└──────┬──────┘
-       │ 1:N
-       │
-       ▼
-┌─────────────┐         ┌──────────────────┐
-│    cases    │────────▶│ case_status_     │
-└──────┬──────┘ 1:N     │   transitions    │
-       │                 └──────────────────┘
-       │ 1:N
-       ├──────────────────┬──────────────┬──────────────┬─────────────┐
-       ▼                  ▼              ▼              ▼             ▼
-┌──────────┐    ┌──────────────┐ ┌──────────┐  ┌─────────────┐ ┌──────────┐
-│ evidence │    │ hypotheses   │ │ solutions│  │case_messages│ │uploaded_ │
-│          │    │              │ │          │  │             │ │  files   │
-└──────────┘    └──────────────┘ └──────────┘  └─────────────┘ └──────────┘
-
-       │
-       │ M:N
-       ▼
-┌──────────────┐
-│  case_tags   │
-└──────────────┘
-
-       │
-       │ 1:N
-       ▼
-┌──────────────────┐
-│ agent_tool_calls │
-└──────────────────┘
-```
-
-### A.2 Session Storage Schema
+### A.1 PostgreSQL Schema (cases_db)
 
 ```
-Redis Keys:
-├── session:{session_id} → Session data (TTL: 30 min)
-└── session_client:{user_id}:{client_id} → session_id (TTL: same)
-
-Session Data Structure:
-{
-    "session_id": str,
-    "user_id": str,
-    "client_id": str,
-    "created_at": timestamp,
-    "last_activity": timestamp,
-    "data_uploads": [file_ids],
-    "case_history": [case_ids]
-}
+cases (main)
+├── evidence (1:N)
+├── hypotheses (1:N)
+├── solutions (1:N)
+├── case_messages (1:N)
+├── uploaded_files (1:N)
+├── case_status_transitions (1:N)
+├── case_tags (M:N)
+└── agent_tool_calls (1:N)
 ```
 
----
+### A.2 Redis Key Namespaces
 
-## Appendix B: Migration from Previous Architecture
+```
+session:{session_id}                          # Session state
+session_client:{user_id}:{client_id}         # Client index
+job:{job_id}                                  # Job queue
+case:{case_id}:reports                        # Report metadata
+report:{report_id}:metadata                   # Report details
+rate_limit:{client_id}:{endpoint}:{window}   # Rate limits
+reputation:{client_id}                        # Reputation scores
+behavior:{client_id}                          # Behavioral patterns
+cache:{tier}:{key}                            # Cache entries
+```
 
-### B.1 Redis-to-PostgreSQL Migration
+### A.3 ChromaDB Collections
 
-**Completed**: Phase 0 cleanup and Phase 1 implementation
-
-**Old Architecture** (Redis-based):
-- All case data in Redis (cases, evidence, hypotheses)
-- No relational integrity
-- Manual JSON serialization
-- No indexing support
-- Memory-limited scalability
-
-**New Architecture** (Hybrid PostgreSQL):
-- ACID guarantees for transactional data
-- Foreign key constraints
-- Advanced querying (JOINs, filters, full-text search)
-- Horizontal scalability via read replicas
-- Cost-effective storage
-
-**Migration Benefits**:
-- 10x faster complex queries
-- 100x more storage capacity
-- ACID guarantees for data integrity
-- Standard SQL tooling support
-- Backup/recovery maturity
-
-### B.2 Backward Compatibility
-
-**Transition Period**:
-- Repository abstraction ensures code compatibility
-- Both storage backends supported temporarily
-- Gradual migration with feature flags
-- Rollback capability maintained
+```
+user_kb_{user_id}    # Per-user knowledge base (permanent)
+case_{case_id}       # Per-case working memory (ephemeral)
+global_kb            # System-wide knowledge base (shared)
+reports              # Report content storage
+```
 
 ---
 
@@ -1153,12 +1960,14 @@ Session Data Structure:
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
-| 1.0 | 2025-01-12 | FaultMaven Team | Initial comprehensive design |
+| 1.0 | 2025-01-12 | FaultMaven Team | Initial design (4 categories) |
+| 2.0 | 2025-01-12 | FaultMaven Team | Expanded to 12 categories, 8 data types, complete architecture |
 
 ## References
 
 - Investigation Architecture Specification v2.0
 - Data Preprocessing Design Specification v2.0
-- Case Storage Design (docs/architecture/case-storage-design.md)
-- User Storage Design (docs/architecture/user-storage-design.md)
+- Case Storage Design
+- User Storage Design
 - Evidence Architecture v1.1
+- Agentic Framework Documentation
