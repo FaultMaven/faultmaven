@@ -18,7 +18,28 @@ The integration directory contains comprehensive integration test infrastructure
 
 ### New Architecture Integration Tests
 
-#### `test_new_architecture_workflows.py` ✅ NEW
+#### `test_architectural_compliance.py` ✅ NEW (2025-10-24)
+Comprehensive spec compliance testing with 17 tests validating [case-and-session-concepts.md v2.0](../../docs/architecture/case-and-session-concepts.md):
+
+- **Session Resumption Tests** (3 tests) - client_id-based session resumption validation
+- **Multi-Device Support Tests** (2 tests) - Concurrent sessions on multiple devices
+- **Case Access Tests** (3 tests) - Case persistence and cross-session access
+- **Forbidden Field Validation Tests** (4 tests) - Session updates reject case data
+- **Security Tests** (3 tests) - owner_id requirements and ownership enforcement
+- **Field Compliance Tests** (2 tests) - Multi-device fields in SessionContext
+
+**Setup:** Tests use Redis configuration from `.env` file. Configure `REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` in your `.env`.
+
+**Run tests:**
+```bash
+# All compliance tests
+./run_tests.py --integration
+
+# Specific test
+.venv/bin/pytest tests/integration/test_architectural_compliance.py::TestArchitecturalCompliance::test_session_resumption_with_same_client_id -v
+```
+
+#### `test_new_architecture_workflows.py` ✅
 Comprehensive end-to-end architecture testing with 18+ tests across 5 test classes:
 
 - **TestSettingsContainerServicesFlow** (4 tests) - Settings → Container → Services integration flow

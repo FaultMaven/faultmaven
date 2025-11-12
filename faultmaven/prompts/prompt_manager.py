@@ -332,7 +332,187 @@ class PromptManager:
         return get_examples_by_response_type(response_type, num_examples)
 
 
-# Singleton instance for global access
+    def inject_v3_context(
+        self,
+        base_prompt: str,
+        investigation_state: Any,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Inject v3.0 context: loop-back, degraded mode, working conclusion, Phase 5 entry
+
+        Args:
+            base_prompt: Base phase prompt
+            investigation_state: Current investigation state
+            context: Optional context dict with phase-specific data
+
+        Returns:
+            Enhanced prompt with v3.0 context injected
+        """
+        from faultmaven.models.investigation import InvestigationPhase
+
+        enhanced_prompt = base_prompt
+        current_phase = investigation_state.lifecycle.current_phase
+        context = context or {}
+
+        # 1. Loop-back prompt injection (if in loop-back scenario)
+        if context.get('is_loop_back'):
+            loop_back_prompt = self._get_loopback_prompt(
+                investigation_state,
+                context.get('loop_back_pattern'),
+                context.get('loop_back_count', 0),
+            )
+            if loop_back_prompt:
+                enhanced_prompt = f"{loop_back_prompt}\n\n---\n\n{enhanced_prompt}"
+
+        # 2. Degraded mode prompt injection (overrides engagement mode layer)
+        escalation_state = investigation_state.lifecycle.escalation_state
+        if escalation_state.operating_in_degraded_mode:
+            degraded_prompt = self._get_degraded_mode_prompt(
+                escalation_state,
+                investigation_state.metadata.current_turn,
+            )
+            if degraded_prompt:
+                enhanced_prompt = f"{degraded_prompt}\n\n---\n\n{enhanced_prompt}"
+
+        # 3. Phase 5 entry mode context injection
+        if current_phase == InvestigationPhase.SOLUTION and context.get('phase5_entry_mode'):
+            entry_mode_context = self._get_phase5_entry_context(
+                context['phase5_entry_mode'],
+                investigation_state,
+            )
+            if entry_mode_context:
+                enhanced_prompt = f"{entry_mode_context}\n\n---\n\n{enhanced_prompt}"
+
+        # 4. Working conclusion injection (when confidence < 90%)
+        working_conclusion = investigation_state.lifecycle.working_conclusion
+        if working_conclusion and working_conclusion.confidence < 0.90:
+            wc_context = self._format_working_conclusion(working_conclusion)
+            enhanced_prompt = f"{enhanced_prompt}\n\n{wc_context}"
+
+        # 5. Progress summary (every 5 turns)
+        if investigation_state.metadata.current_turn % 5 == 0:
+            progress_summary = self._format_progress_summary(
+                investigation_state.lifecycle.progress_metrics
+            )
+            enhanced_prompt = f"{enhanced_prompt}\n\n{progress_summary}"
+
+        return enhanced_prompt
+
+    def _get_loopback_prompt(
+        self,
+        investigation_state: Any,
+        pattern: Optional[str],
+        loop_count: int,
+    ) -> str:
+        """Get loop-back prompt based on pattern"""
+        from faultmaven.prompts.investigation.loopback_prompts import (
+            get_hypothesis_refutation_loopback_prompt,
+            get_scope_change_loopback_prompt,
+            get_timeline_wrong_loopback_prompt,
+        )
+
+        working_conclusion = investigation_state.lifecycle.working_conclusion
+        if not working_conclusion:
+            return ""
+
+        wc_dict = {
+            'statement': working_conclusion.statement,
+            'confidence': working_conclusion.confidence,
+            'confidence_level': working_conclusion.confidence_level.value,
+            'generated_at_turn': working_conclusion.generated_at_turn,
+        }
+
+        if pattern == 'hypothesis_refutation':
+            return get_hypothesis_refutation_loopback_prompt(
+                investigation_state,
+                loop_count,
+                wc_dict,
+                "All hypotheses refuted by validation evidence",
+            )
+        elif pattern == 'scope_change':
+            return get_scope_change_loopback_prompt(
+                investigation_state,
+                loop_count,
+                "Validation revealed broader scope than initially assessed",
+            )
+        elif pattern == 'timeline_wrong':
+            return get_timeline_wrong_loopback_prompt(
+                investigation_state,
+                loop_count,
+                "Evidence contradicts initial timeline assessment",
+            )
+        return ""
+
+    def _get_degraded_mode_prompt(
+        self,
+        escalation_state: Any,
+        current_turn: int,
+    ) -> str:
+        """Get degraded mode prompt"""
+        from faultmaven.prompts.investigation.degraded_mode_prompts import get_degraded_mode_prompt
+
+        if not escalation_state.degraded_mode_type:
+            return ""
+
+        return get_degraded_mode_prompt(
+            escalation_state.degraded_mode_type,
+            escalation_state.degraded_mode_explanation or "Unknown limitation",
+            current_turn,
+            escalation_state.entered_degraded_mode_at_turn or current_turn,
+        )
+
+    def _get_phase5_entry_context(
+        self,
+        entry_mode: str,
+        investigation_state: Any,
+    ) -> str:
+        """Get Phase 5 entry mode context"""
+        from faultmaven.prompts.investigation.phase5_entry_modes import get_phase5_entry_mode_context
+
+        return get_phase5_entry_mode_context(entry_mode, investigation_state)
+
+    def _format_working_conclusion(self, working_conclusion: Any) -> str:
+        """Format working conclusion for prompt injection"""
+        return f"""
+## Current Working Conclusion (v3.0)
+
+**Statement**: {working_conclusion.statement}
+**Confidence**: {working_conclusion.confidence*100:.0f}% ({working_conclusion.confidence_level.value})
+**Supporting Evidence**: {working_conclusion.supporting_evidence_count}/{working_conclusion.total_evidence_count}
+**Evidence Completeness**: {working_conclusion.evidence_completeness*100:.0f}%
+
+**Caveats**:
+{chr(10).join(f"- {c}" for c in working_conclusion.caveats) if working_conclusion.caveats else "- None"}
+
+**Alternative Explanations**:
+{chr(10).join(f"- {a}" for a in working_conclusion.alternative_explanations) if working_conclusion.alternative_explanations else "- None"}
+
+**Next Evidence Needed**:
+{chr(10).join(f"- {e}" for e in working_conclusion.next_evidence_needed) if working_conclusion.next_evidence_needed else "- None"}
+
+**Can Proceed to Solution**: {"Yes (≥70% confidence)" if working_conclusion.can_proceed_with_solution else "No (<70% confidence)"}
+"""
+
+    def _format_progress_summary(self, progress_metrics: Any) -> str:
+        """Format progress summary for 5-turn checkpoints"""
+        return f"""
+## Investigation Progress Summary (Every 5 Turns)
+
+**Evidence Completeness**: {progress_metrics.evidence_completeness*100:.0f}%
+**Investigation Momentum**: {progress_metrics.investigation_momentum.value.upper()}
+**Turns Since Last Progress**: {progress_metrics.turns_since_last_progress}
+**Active Hypotheses**: {progress_metrics.active_hypotheses_count}
+**Hypotheses with Sufficient Evidence** (≥70%): {progress_metrics.hypotheses_with_sufficient_evidence}
+**Highest Hypothesis Confidence**: {progress_metrics.highest_hypothesis_confidence*100:.0f}%
+
+**Next Steps**:
+{chr(10).join(f"- {s}" for s in progress_metrics.next_steps) if progress_metrics.next_steps else "- Continue investigation"}
+
+{f"**Blocked Reasons**:{chr(10)}{chr(10).join(f'- {r}' for r in progress_metrics.blocked_reasons)}" if progress_metrics.blocked_reasons else ""}
+"""
+
+
+# Module-level singleton
 _prompt_manager_instance: Optional[PromptManager] = None
 
 

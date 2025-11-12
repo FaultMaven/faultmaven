@@ -138,14 +138,21 @@ class ViewState(BaseModel):
 # --- Main Payloads ---
 
 class QueryRequest(BaseModel):
-    """The JSON payload sent from the frontend when the user asks a question.
+    """The JSON payload sent from the frontend when the user asks a question or submits machine data.
     Note: case_id is provided in the URL path, not in the request body.
+
+    Enhanced in v3.2: Supports both human questions and machine data (logs, errors, alerts)
     """
     session_id: str  # For authentication context
-    query: str
+    query: str = Field(..., min_length=1, max_length=200000, description="User query or machine data (max 200KB)")
     context: Optional[Dict[str, Any]] = None
     priority: Literal["low", "normal", "medium", "high", "critical"] = "normal"
     timestamp: str = Field(default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)))
+
+    # v3.2 enhancements for machine data support
+    query_type: Optional[Literal["question", "machine_data"]] = None  # Hint from UI about content type
+    content_type: Optional[DataType] = None  # Optional data type hint (if UI knows it's logs, metrics, etc.)
+    is_raw_content: bool = False  # True if copy&paste machine data, False if typed question
 
 class AgentResponse(BaseModel):
     """The single, unified JSON payload returned from the backend (v3.1.0 - Evidence-Centric)."""
@@ -172,7 +179,7 @@ class AgentResponse(BaseModel):
         description="Current investigation approach (speed vs depth)"
     )
     case_status: EvidenceCaseStatus = Field(
-        default=EvidenceCaseStatus.INTAKE,
+        default=EvidenceCaseStatus.CONSULTING,
         description="Current case investigation state"
     )
 
@@ -256,13 +263,12 @@ class Case(BaseModel):
     case_id: str  # Match frontend expectations
     title: str
     description: Optional[str] = None
-    status: Literal["active", "resolved", "archived"] = "active"  # Match frontend expectations
+    status: Literal["consulting", "investigating", "resolved", "closed"] = "consulting"  # Valid CaseStatus values
     priority: Literal["low", "medium", "high", "critical"] = "medium"
     created_at: str = Field(default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)))
     updated_at: str = Field(default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)))
     message_count: int = 0
-    session_id: Optional[str] = None  # Session linkage for frontend
-    owner_id: Optional[str] = None  # Case owner user ID
+    owner_id: str  # Case owner user ID - REQUIRED per spec (no session binding)
 
 class CaseRequest(BaseModel):
     """Request payload for creating a new case."""
@@ -406,11 +412,20 @@ class CaseSummary(BaseModel):
     session_id: Optional[str] = None
 
 class Message(BaseModel):
-    """Message model for conversation endpoints."""
+    """Message model for conversation endpoints.
+
+    Schema matches case-storage-design.md Section 4.7 (case_messages table).
+    """
     message_id: str
+    turn_number: int = Field(..., description="Turn number in conversation (user messages increment turn)")
     role: Literal["user", "agent", "assistant", "system"]
     content: str
-    created_at: str = Field(..., description="ISO 8601 datetime string")
+    created_at: str = Field(..., description="ISO 8601 datetime string (matches SQL schema)")
+
+    # Optional fields
+    author_id: Optional[str] = Field(None, description="User who created the message")
+    token_count: Optional[int] = Field(None, description="Number of tokens in content")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Sources, tools used, etc.")
 
 class MessageRetrievalDebugInfo(BaseModel):
     """Debug information for message retrieval operations."""

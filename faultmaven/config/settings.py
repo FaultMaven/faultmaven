@@ -495,7 +495,51 @@ class DatabaseSettings(BaseSettings):
     embedding_model: str = Field(default="BAAI/bge-m3", env="EMBEDDING_MODEL")
     similarity_threshold: float = Field(default=0.7, env="SIMILARITY_THRESHOLD")
     max_search_results: int = Field(default=10, env="MAX_SEARCH_RESULTS")
-    
+
+    # ============================================
+    # PostgreSQL Configuration (K8s Deployment)
+    # ============================================
+
+    # Storage adapter selection
+    user_storage_type: str = Field(default="inmemory", env="USER_STORAGE_TYPE")
+    case_storage_type: str = Field(default="inmemory", env="CASE_STORAGE_TYPE")
+
+    # PostgreSQL - Auth Database (for user data)
+    auth_db_host: str = Field(default="postgres.faultmaven.local", env="AUTH_DB_HOST")
+    auth_db_port: int = Field(default=30432, env="AUTH_DB_PORT")
+    auth_db_name: str = Field(default="auth_db", env="AUTH_DB_NAME")
+    auth_db_user: str = Field(default="auth_service", env="AUTH_DB_USER")
+    auth_db_password: Optional[SecretStr] = Field(default=None, env="AUTH_DB_PASSWORD")
+
+    # PostgreSQL - Cases Database (for case data)
+    cases_db_host: str = Field(default="postgres.faultmaven.local", env="CASES_DB_HOST")
+    cases_db_port: int = Field(default=30432, env="CASES_DB_PORT")
+    cases_db_name: str = Field(default="cases_db", env="CASES_DB_NAME")
+    cases_db_user: str = Field(default="case_service", env="CASES_DB_USER")
+    cases_db_password: Optional[SecretStr] = Field(default=None, env="CASES_DB_PASSWORD")
+
+    @property
+    def auth_db_url(self) -> str:
+        """Build PostgreSQL auth database URL"""
+        password = self.auth_db_password.get_secret_value() if self.auth_db_password else ""
+        return f"postgresql+asyncpg://{self.auth_db_user}:{password}@{self.auth_db_host}:{self.auth_db_port}/{self.auth_db_name}"
+
+    @property
+    def cases_db_url(self) -> str:
+        """Build PostgreSQL cases database URL"""
+        password = self.cases_db_password.get_secret_value() if self.cases_db_password else ""
+        return f"postgresql+asyncpg://{self.cases_db_user}:{password}@{self.cases_db_host}:{self.cases_db_port}/{self.cases_db_name}"
+
+    # ============================================
+    # Session Storage Adapter Configuration
+    # ============================================
+    session_storage_type: str = Field(default="inmemory", env="SESSION_STORAGE_TYPE")
+
+    # ============================================
+    # Vector Storage Adapter Configuration
+    # ============================================
+    vector_storage_type: str = Field(default="inmemory", env="VECTOR_STORAGE_TYPE")
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
@@ -697,7 +741,11 @@ class LoggingSettings(BaseSettings):
 
 class UploadSettings(BaseSettings):
     """File upload configuration"""
-    max_file_size_mb: int = Field(default=50, env="MAX_FILE_SIZE_MB")
+    max_upload_size_mb: int = Field(
+        default=10,
+        env="MAX_UPLOAD_SIZE_MB",
+        description="Maximum file size for uploads (also used as document processing limit)"
+    )
     allowed_mime_types: List[str] = Field(
         default=[
             "text/plain", "text/csv", "application/json",
@@ -707,7 +755,7 @@ class UploadSettings(BaseSettings):
     )
     upload_timeout_seconds: int = Field(default=300, env="UPLOAD_TIMEOUT_SECONDS")  # 5 minutes
     temp_storage_path: str = Field(default="/tmp/faultmaven", env="TEMP_STORAGE_PATH")
-    
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
@@ -720,9 +768,8 @@ class KnowledgeSettings(BaseSettings):
     # Search limits
     max_search_results: int = Field(default=5, env="KNOWLEDGE_MAX_SEARCH_RESULTS")
     search_timeout_seconds: int = Field(default=30, env="SEARCH_TIMEOUT_SECONDS")
-    
-    # Document processing
-    max_document_size_mb: int = Field(default=10, env="MAX_DOCUMENT_SIZE_MB")
+
+    # Document processing (size limit now in UploadSettings.max_upload_size_mb)
     chunk_size: int = Field(default=1000, env="DOCUMENT_CHUNK_SIZE")
     chunk_overlap: int = Field(default=100, env="DOCUMENT_CHUNK_OVERLAP")
     
@@ -1254,8 +1301,8 @@ class FaultMavenSettings(BaseSettings):
             warnings.append("Rate limiting disabled - frontend expects rate limit headers")
         
         # Upload size warnings
-        if self.upload.max_file_size_mb > 100:
-            warnings.append("Large upload size may cause timeout issues")
+        if self.upload.max_upload_size_mb > 50:
+            warnings.append("Upload size > 50MB may cause timeout or processing issues")
         
         return {
             "compatible": len(issues) == 0,

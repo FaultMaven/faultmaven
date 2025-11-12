@@ -43,6 +43,16 @@ class ValidationException(FaultMavenException):
     pass
 
 
+class NotFoundException(FaultMavenException):
+    """Raised when a requested resource is not found."""
+    pass
+
+
+class PermissionDeniedException(FaultMavenException):
+    """Raised when user lacks permission for an operation."""
+    pass
+
+
 class ConfigurationException(FaultMavenException):
     """Raised when configuration is invalid."""
     pass

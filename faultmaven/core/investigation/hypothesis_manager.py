@@ -1,60 +1,64 @@
-"""Hypothesis Manager - Hypothesis Lifecycle and Confidence Management
+"""Unified Hypothesis Manager - Complete Hypothesis Lifecycle Management
 
-This module manages the lifecycle of root cause hypotheses throughout the
-investigation, including confidence decay, anchoring prevention, and
-hypothesis testing coordination.
+Consolidates all hypothesis management logic into ONE coherent system.
 
-Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
+Merges:
+- faultmaven/core/investigation/hypothesis_manager.py (OLD - HypothesisManager class)
+- faultmaven/services/agentic/hypothesis/hypothesis_manager.py (NEW - evidence linking)
 
-Hypothesis Lifecycle:
-- PENDING: Generated but not yet tested
-- TESTING: Currently under evaluation
-- VALIDATED: Confirmed by evidence (confidence ≥70%)
-- REFUTED: Disproved by evidence
+Design Reference:
+- docs/architecture/investigation-phases-and-ooda-integration.md
+
+Hypothesis Lifecycle (Unified):
+- CAPTURED: Opportunistic hypothesis from early phases (Phases 0-2)
+- ACTIVE: Currently being tested (promoted from CAPTURED or systematic generation)
+- VALIDATED: Confirmed by evidence (confidence ≥70% + ≥2 supporting evidence)
+- REFUTED: Disproved by evidence (confidence ≤20% + ≥2 refuting evidence)
 - RETIRED: Abandoned due to low confidence or anchoring
+- SUPERSEDED: Better hypothesis found
+
+Confidence Management:
+- Evidence-ratio based: initial + (0.15 × supporting) - (0.20 × refuting)
+- Confidence decay for stagnation: base × 0.85^iterations_without_progress
+- Auto-transition to VALIDATED/REFUTED based on thresholds
 
 Anchoring Prevention:
-- Detect when 4+ hypotheses in same category
-- Detect when 3+ iterations without progress
-- Trigger forced alternative generation
-- Apply confidence decay to stagnant hypotheses
-
-Confidence Decay:
-- Base confidence × 0.85^iterations_without_progress
-- Retire when confidence < 0.3
+- Detect: 4+ hypotheses in same category
+- Detect: 3+ iterations without progress
+- Detect: Top hypothesis stagnant for 3+ iterations
+- Action: Retire low-progress hypotheses, force alternative generation
 """
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from faultmaven.models.investigation import InvestigationState
 
 from faultmaven.models.investigation import (
     Hypothesis,
     HypothesisStatus,
+    HypothesisGenerationMode,
     HypothesisTest,
-    InvestigationState,
+    InvestigationPhase,
 )
-
 
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Hypothesis Manager
-# =============================================================================
-
-
 class HypothesisManager:
-    """Manages hypothesis lifecycle and confidence throughout investigation
+    """Unified hypothesis lifecycle and confidence management
 
     Responsibilities:
-    - Create new hypotheses
-    - Update hypothesis confidence based on evidence
-    - Apply confidence decay for stagnant hypotheses
+    - Create new hypotheses (CAPTURED or ACTIVE)
+    - Update confidence based on evidence
+    - Apply confidence decay for stagnation
     - Detect and prevent anchoring bias
-    - Retire low-confidence hypotheses
     - Track hypothesis testing
+    - Auto-transition status (VALIDATED/REFUTED)
+    - Evidence linking and ratio calculation
     """
 
     def __init__(self):
@@ -67,14 +71,24 @@ class HypothesisManager:
         category: str,
         initial_likelihood: float,
         current_turn: int,
+        generation_mode: HypothesisGenerationMode = HypothesisGenerationMode.SYSTEMATIC,
+        captured_in_phase: InvestigationPhase = InvestigationPhase.HYPOTHESIS,
+        status: HypothesisStatus = HypothesisStatus.ACTIVE,
+        triggering_observation: Optional[str] = None,
     ) -> Hypothesis:
         """Create a new hypothesis
+
+        Supports both opportunistic (CAPTURED) and systematic (ACTIVE) creation.
 
         Args:
             statement: Hypothesis statement describing root cause
             category: Category (infrastructure, code, config, etc.)
             initial_likelihood: Initial confidence (0.0 to 1.0)
             current_turn: Current conversation turn
+            generation_mode: How hypothesis was generated
+            captured_in_phase: Phase where hypothesis was captured/generated
+            status: Initial status (CAPTURED for opportunistic, ACTIVE for systematic)
+            triggering_observation: What triggered this hypothesis (for opportunistic)
 
         Returns:
             New Hypothesis object
@@ -85,7 +99,12 @@ class HypothesisManager:
             likelihood=initial_likelihood,
             initial_likelihood=initial_likelihood,
             confidence_trajectory=[(current_turn, initial_likelihood)],
-            status=HypothesisStatus.PENDING,
+            status=status,
+            generation_mode=generation_mode,
+            captured_in_phase=captured_in_phase,
+            captured_at_turn=current_turn,
+            promoted_to_active_at_turn=current_turn if status == HypothesisStatus.ACTIVE else None,
+            triggering_observation=triggering_observation,
             created_at_turn=current_turn,
             last_updated_turn=current_turn,
             last_progress_at_turn=current_turn,
@@ -93,10 +112,108 @@ class HypothesisManager:
 
         self.logger.info(
             f"Created hypothesis {hypothesis.hypothesis_id}: "
-            f"{statement[:50]}... (category={category}, likelihood={initial_likelihood})"
+            f"{statement[:50]}... (category={category}, likelihood={initial_likelihood}, "
+            f"mode={generation_mode.value}, status={status.value})"
         )
 
         return hypothesis
+
+    def link_evidence(
+        self,
+        hypothesis: Hypothesis,
+        evidence_id: str,
+        supports: bool,
+        turn: int,
+    ) -> None:
+        """Link evidence to hypothesis (supporting or refuting)
+
+        Args:
+            hypothesis: Hypothesis to update
+            evidence_id: Evidence identifier
+            supports: True if evidence supports, False if refutes
+            turn: Current turn number
+        """
+        if supports:
+            if evidence_id not in hypothesis.supporting_evidence:
+                hypothesis.supporting_evidence.append(evidence_id)
+                self.logger.info(
+                    f"Linked supporting evidence to hypothesis: {evidence_id}",
+                    extra={
+                        "hypothesis_id": hypothesis.hypothesis_id,
+                        "hypothesis": hypothesis.statement[:50],
+                    },
+                )
+        else:
+            if evidence_id not in hypothesis.refuting_evidence:
+                hypothesis.refuting_evidence.append(evidence_id)
+                self.logger.info(
+                    f"Linked refuting evidence to hypothesis: {evidence_id}",
+                    extra={
+                        "hypothesis_id": hypothesis.hypothesis_id,
+                        "hypothesis": hypothesis.statement[:50],
+                    },
+                )
+
+        # Update confidence after linking evidence
+        self.update_confidence_from_evidence(hypothesis, turn)
+
+    def update_confidence_from_evidence(
+        self,
+        hypothesis: Hypothesis,
+        turn: int,
+    ) -> None:
+        """Update hypothesis confidence based on evidence accumulation
+
+        Confidence formula:
+        - Start with initial_likelihood
+        - Add 0.15 per supporting evidence
+        - Subtract 0.20 per refuting evidence
+        - Clamp to [0.0, 1.0]
+
+        Args:
+            hypothesis: Hypothesis to update
+            turn: Current turn number
+        """
+        from faultmaven.services.agentic.hypothesis.opportunistic_capture import (
+            calculate_evidence_ratio,
+        )
+
+        supporting_count = len(hypothesis.supporting_evidence)
+        refuting_count = len(hypothesis.refuting_evidence)
+
+        # Calculate new confidence
+        new_confidence = hypothesis.initial_likelihood
+        new_confidence += supporting_count * 0.15
+        new_confidence -= refuting_count * 0.20
+
+        # Clamp to valid range
+        new_confidence = max(0.0, min(1.0, new_confidence))
+
+        # Update hypothesis
+        old_confidence = hypothesis.likelihood
+        hypothesis.likelihood = new_confidence
+        hypothesis.last_updated_turn = turn
+        hypothesis.confidence_trajectory.append((turn, new_confidence))
+
+        # Check if this represents progress
+        if abs(new_confidence - old_confidence) >= 0.05:  # 5% threshold
+            hypothesis.last_progress_at_turn = turn
+            hypothesis.iterations_without_progress = 0
+        else:
+            hypothesis.iterations_without_progress += 1
+
+        self.logger.info(
+            f"Updated hypothesis confidence: {old_confidence:.2f} → {new_confidence:.2f}",
+            extra={
+                "hypothesis_id": hypothesis.hypothesis_id,
+                "supporting": supporting_count,
+                "refuting": refuting_count,
+                "evidence_ratio": calculate_evidence_ratio(hypothesis),
+            },
+        )
+
+        # Check if hypothesis should transition status
+        self._check_status_transition(hypothesis, turn)
 
     def update_hypothesis_confidence(
         self,
@@ -105,7 +222,7 @@ class HypothesisManager:
         current_turn: int,
         reason: str,
     ) -> Hypothesis:
-        """Update hypothesis confidence based on new evidence
+        """Update hypothesis confidence manually (for test results)
 
         Args:
             hypothesis: Hypothesis to update
@@ -136,17 +253,63 @@ class HypothesisManager:
                 f"iterations_without_progress={hypothesis.iterations_without_progress}"
             )
 
-        # Update status based on confidence
-        if hypothesis.likelihood >= 0.7 and hypothesis.status == HypothesisStatus.TESTING:
-            hypothesis.status = HypothesisStatus.VALIDATED
-            self.logger.info(f"Hypothesis {hypothesis.hypothesis_id} VALIDATED (≥70% confidence)")
+        # Check status transition
+        self._check_status_transition(hypothesis, current_turn)
 
+        return hypothesis
+
+    def _check_status_transition(
+        self,
+        hypothesis: Hypothesis,
+        turn: int,
+    ) -> None:
+        """Check if hypothesis should transition to VALIDATED or REFUTED
+
+        Transition criteria:
+        - VALIDATED: confidence ≥ 0.70 and at least 2 supporting evidence
+        - REFUTED: confidence ≤ 0.20 and at least 2 refuting evidence
+
+        Args:
+            hypothesis: Hypothesis to check
+            turn: Current turn number
+        """
+        if hypothesis.status != HypothesisStatus.ACTIVE:
+            # Only active hypotheses can be auto-transitioned
+            return
+
+        supporting_count = len(hypothesis.supporting_evidence)
+        refuting_count = len(hypothesis.refuting_evidence)
+
+        # Check for validation
+        if hypothesis.likelihood >= 0.70 and supporting_count >= 2:
+            hypothesis.status = HypothesisStatus.VALIDATED
+            self.logger.info(
+                f"Hypothesis VALIDATED: {hypothesis.statement}",
+                extra={
+                    "hypothesis_id": hypothesis.hypothesis_id,
+                    "confidence": hypothesis.likelihood,
+                    "supporting_evidence": supporting_count,
+                },
+            )
+
+        # Check for refutation
+        elif hypothesis.likelihood <= 0.20 and refuting_count >= 2:
+            hypothesis.status = HypothesisStatus.REFUTED
+            hypothesis.retirement_reason = "Refuted by evidence"
+            self.logger.info(
+                f"Hypothesis REFUTED: {hypothesis.statement}",
+                extra={
+                    "hypothesis_id": hypothesis.hypothesis_id,
+                    "confidence": hypothesis.likelihood,
+                    "refuting_evidence": refuting_count,
+                },
+            )
+
+        # Check for retirement due to low confidence
         elif hypothesis.likelihood < 0.3 and hypothesis.status != HypothesisStatus.RETIRED:
             hypothesis.status = HypothesisStatus.RETIRED
             hypothesis.retirement_reason = "Low confidence after testing"
             self.logger.info(f"Hypothesis {hypothesis.hypothesis_id} RETIRED (confidence < 30%)")
-
-        return hypothesis
 
     def apply_confidence_decay(
         self,
@@ -327,7 +490,7 @@ class HypothesisManager:
         if len(stalled_hypotheses) >= 2:
             return (
                 True,
-                f"Anchoring: {len(stalled_hypotheses)} hypotheses stalled for 3+ iterations",
+                f"Anchoring: {len(stalled_hypotheses)} hypotheses without progress for 3+ iterations",
                 stalled_hypotheses,
             )
 
@@ -384,7 +547,7 @@ class HypothesisManager:
             if (
                 h.category == dominant_category
                 and h.iterations_without_progress >= 2
-                and h.status == HypothesisStatus.TESTING
+                and h.status == HypothesisStatus.ACTIVE
             ):
                 h.status = HypothesisStatus.RETIRED
                 h.retirement_reason = f"Anchoring prevention: retired to diversify from {dominant_category}"
@@ -416,7 +579,7 @@ class HypothesisManager:
 
         Priority:
         1. Highest likelihood
-        2. Not yet tested (PENDING status)
+        2. Active status (ready for testing)
         3. Has supporting evidence
 
         Args:
@@ -429,7 +592,7 @@ class HypothesisManager:
         testable = [
             h
             for h in hypotheses
-            if h.status in [HypothesisStatus.PENDING, HypothesisStatus.TESTING]
+            if h.status == HypothesisStatus.ACTIVE
             and h.likelihood > 0.2  # Skip very low confidence
         ]
 
@@ -472,53 +635,117 @@ class HypothesisManager:
             hypotheses: All hypotheses
 
         Returns:
-            Summary dictionary
+            Summary dictionary with status counts, generation modes, and confidence stats
         """
-        status_counts = {status: 0 for status in HypothesisStatus}
-        for h in hypotheses:
-            status_counts[h.status] += 1
-
-        active_hypotheses = [
-            h
-            for h in hypotheses
-            if h.status not in [HypothesisStatus.RETIRED, HypothesisStatus.REFUTED]
-        ]
-
-        return {
-            "total_count": len(hypotheses),
-            "active_count": len(active_hypotheses),
-            "status_breakdown": {status.value: count for status, count in status_counts.items()},
-            "max_confidence": max((h.likelihood for h in active_hypotheses), default=0.0),
-            "avg_confidence": (
-                sum(h.likelihood for h in active_hypotheses) / len(active_hypotheses)
-                if active_hypotheses
-                else 0.0
-            ),
-            "categories": list(set(h.category for h in active_hypotheses)),
+        summary = {
+            "total": len(hypotheses),
+            "captured": sum(1 for h in hypotheses if h.status == HypothesisStatus.CAPTURED),
+            "active": sum(1 for h in hypotheses if h.status == HypothesisStatus.ACTIVE),
+            "validated": sum(1 for h in hypotheses if h.status == HypothesisStatus.VALIDATED),
+            "refuted": sum(1 for h in hypotheses if h.status == HypothesisStatus.REFUTED),
+            "retired": sum(1 for h in hypotheses if h.status == HypothesisStatus.RETIRED),
+            "superseded": sum(1 for h in hypotheses if h.status == HypothesisStatus.SUPERSEDED),
         }
 
+        # Count by generation mode
+        summary["opportunistic"] = sum(
+            1 for h in hypotheses
+            if h.generation_mode == HypothesisGenerationMode.OPPORTUNISTIC
+        )
+        summary["systematic"] = sum(
+            1 for h in hypotheses
+            if h.generation_mode == HypothesisGenerationMode.SYSTEMATIC
+        )
+        summary["forced_alternative"] = sum(
+            1 for h in hypotheses
+            if h.generation_mode == HypothesisGenerationMode.FORCED_ALTERNATIVE
+        )
 
-# =============================================================================
-# Utility Functions
-# =============================================================================
+        # Active hypotheses statistics
+        active_hypotheses = [h for h in hypotheses if h.status == HypothesisStatus.ACTIVE]
+
+        summary["max_confidence"] = max((h.likelihood for h in active_hypotheses), default=0.0)
+        summary["avg_confidence"] = (
+            sum(h.likelihood for h in active_hypotheses) / len(active_hypotheses)
+            if active_hypotheses
+            else 0.0
+        )
+        summary["categories"] = list(set(h.category for h in active_hypotheses))
+
+        return summary
+
+    def get_best_hypothesis(
+        self,
+        hypotheses: List[Hypothesis],
+    ) -> Optional[Hypothesis]:
+        """Get the hypothesis with highest confidence
+
+        Args:
+            hypotheses: All hypotheses
+
+        Returns:
+            Hypothesis with highest likelihood, or None if no active hypotheses
+        """
+        active_hypotheses = [
+            h for h in hypotheses
+            if h.status == HypothesisStatus.ACTIVE
+        ]
+
+        if not active_hypotheses:
+            return None
+
+        return max(active_hypotheses, key=lambda h: h.likelihood)
+
+    def get_hypotheses_by_category(
+        self,
+        hypotheses: List[Hypothesis],
+        category: str,
+    ) -> List[Hypothesis]:
+        """Get all hypotheses for a specific category
+
+        Args:
+            hypotheses: All hypotheses
+            category: Category name
+
+        Returns:
+            List of hypotheses in category
+        """
+        return [h for h in hypotheses if h.category == category]
+
+    def has_validated_hypothesis(
+        self,
+        hypotheses: List[Hypothesis],
+    ) -> bool:
+        """Check if investigation has at least one validated hypothesis
+
+        Args:
+            hypotheses: All hypotheses
+
+        Returns:
+            True if at least one hypothesis is validated
+        """
+        return any(
+            h.status == HypothesisStatus.VALIDATED
+            for h in hypotheses
+        )
 
 
 def create_hypothesis_manager() -> HypothesisManager:
-    """Factory function to create hypothesis manager
+    """Factory function for HypothesisManager
 
     Returns:
-        Configured HypothesisManager instance
+        New HypothesisManager instance
     """
     return HypothesisManager()
 
 
 def rank_hypotheses_by_likelihood(hypotheses: List[Hypothesis]) -> List[Hypothesis]:
-    """Sort hypotheses by likelihood descending
+    """Sort hypotheses by confidence (descending)
 
     Args:
-        hypotheses: List of hypotheses
+        hypotheses: List of hypotheses to sort
 
     Returns:
-        Sorted list (highest likelihood first)
+        Sorted list with highest confidence first
     """
     return sorted(hypotheses, key=lambda h: h.likelihood, reverse=True)

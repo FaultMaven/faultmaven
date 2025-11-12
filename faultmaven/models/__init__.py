@@ -111,29 +111,9 @@ try:
 except ImportError:
     REPORT_MODELS_AVAILABLE = False
 
-# Import doctor/patient models (DEPRECATED - moved to agentic.py)
-# Legacy imports for backward compatibility
-try:
-    from .legacy_doctor_patient import (
-        ActionType,
-        CommandSafety,
-        CommandSuggestion,
-        CommandValidationResponse,
-        LLMResponse,
-        DiagnosticMode
-    )
-    # SuggestedAction now comes from agentic.py (used by OODA framework)
-    from .agentic import SuggestedAction
-    from .case import UrgencyLevel
-    DOCTOR_PATIENT_MODELS_AVAILABLE = True
-except ImportError:
-    # Fallback: Try to import from agentic.py only
-    try:
-        from .agentic import SuggestedAction
-        from .case import UrgencyLevel
-        DOCTOR_PATIENT_MODELS_AVAILABLE = False  # Legacy models not available
-    except ImportError:
-        DOCTOR_PATIENT_MODELS_AVAILABLE = False
+# Import agentic models (active OODA framework)
+from .agentic import SuggestedAction
+from .case import UrgencyLevel
 
 # Utility functions are now imported from legacy.py
 
@@ -208,18 +188,11 @@ if CASE_MODELS_AVAILABLE:
         "ICaseIntegrationService",
     ])
 
-# Add doctor/patient models to exports if available
-if DOCTOR_PATIENT_MODELS_AVAILABLE:
-    __all__.extend([
-        "ActionType",
-        "CommandSafety",
-        "SuggestedAction",
-        "CommandSuggestion",
-        "CommandValidationResponse",
-        "LLMResponse",
-        "DiagnosticMode",
-        "UrgencyLevel",
-    ])
+# Add agentic models to exports (always available)
+__all__.extend([
+    "SuggestedAction",
+    "UrgencyLevel",
+])
 
 # Add report models to exports if available (FR-CM-006)
 if REPORT_MODELS_AVAILABLE:

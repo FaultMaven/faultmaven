@@ -24,8 +24,11 @@ from .mock_servers import MockServerManager
 from faultmaven.models.interfaces import (
     IMemoryService, IPlanningService, ILLMProvider, ITracer, IVectorStore, ISanitizer
 )
-from faultmaven.core.orchestration.troubleshooting_orchestrator import WorkflowContext
+# WorkflowContext removed - using dict instead
 from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.services.domain.session_service import SessionService
+from faultmaven.services.domain.case_service import CaseService
+from faultmaven.infrastructure.persistence.redis_session_store import RedisSessionStore
 
 # Configure pytest-asyncio to fix deprecation warnings
 pytest_asyncio.asyncio_default_fixture_loop_scope = "function"
@@ -510,12 +513,12 @@ async def mock_llm_provider_integration():
 @pytest.fixture
 def sample_complex_workflow_context():
     """Complex workflow context for comprehensive integration testing"""
-    return WorkflowContext(
-        session_id="integration-test-session-complex",
-        case_id="integration-test-case-complex",
-        user_id="integration-test-user-complex",
-        problem_description="Complex multi-system issue affecting database performance, API response times, and user authentication across microservices architecture",
-        initial_context={
+    return {
+        "session_id": "integration-test-session-complex",
+        "case_id": "integration-test-case-complex",
+        "user_id": "integration-test-user-complex",
+        "problem_description": "Complex multi-system issue affecting database performance, API response times, and user authentication across microservices architecture",
+        "initial_context": {
             "affected_services": ["user-api", "auth-service", "database-cluster"],
             "environment": "production",
             "infrastructure": "kubernetes",
@@ -537,11 +540,11 @@ def sample_complex_workflow_context():
                 "customer_complaints": 47
             }
         },
-        priority_level="critical",
-        domain_expertise="expert",
-        time_constraints=1800,  # 30 minutes
-        available_tools=["enhanced_knowledge_search", "knowledge_discovery", "web_search", "log_analysis"]
-    )
+        "priority_level": "critical",
+        "domain_expertise": "expert",
+        "time_constraints": 1800,  # 30 minutes
+        "available_tools": ["enhanced_knowledge_search", "knowledge_discovery", "web_search", "log_analysis"]
+    }
 
 
 @pytest.fixture
@@ -726,3 +729,44 @@ class AsyncTestUtilities:
 def async_test_utils():
     """Async testing utilities for integration tests"""
     return AsyncTestUtilities
+
+
+# Architectural Compliance Test Fixtures
+
+@pytest_asyncio.fixture
+async def session_service() -> SessionService:
+    """Create SessionService with real Redis for integration testing
+
+    Note: Uses RedisSessionStore which creates its own Redis client from .env.
+    Does NOT clean Redis - tests work with existing data to simulate
+    production environment where FLUSHDB may be disabled.
+    """
+    from faultmaven.infrastructure.persistence.redis_session_store import RedisSessionStore
+
+    # Create RedisSessionStore - it will use create_redis_client() from .env
+    session_store = RedisSessionStore()
+
+    # Create SessionService with session store
+    service = SessionService(
+        session_store=session_store,
+        max_sessions_per_user=10,
+        inactive_threshold_hours=24
+    )
+
+    return service
+
+
+@pytest_asyncio.fixture
+async def case_service() -> CaseService:
+    """Create CaseService with real dependencies for integration testing
+
+    Note: Uses services from dependency injection container.
+    Does NOT clean Redis - tests work with existing data.
+    """
+    from faultmaven.container import get_container
+
+    # Get container and initialize case service
+    container = get_container()
+
+    # Return the case service from the container
+    return container.case_service

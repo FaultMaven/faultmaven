@@ -2,6 +2,9 @@
 
 Master index for all FaultMaven documentation.
 
+> **📝 Recent Update (2025-10-24):** Session-Case architecture refactored to v2.0 spec.
+> See **[case-and-session-concepts.md](./architecture/case-and-session-concepts.md)** for the authoritative specification.
+
 ## Quick Navigation
 
 - 🚀 **[Getting Started](./getting-started/)** - Installation, quickstart, user guide
@@ -43,6 +46,12 @@ Master index for all FaultMaven documentation.
    - 5-dimensional evidence classification
    - ProblemConfirmation and AnomalyFrame schemas
    - Investigation strategies (Active/Post-Mortem)
+
+5. **[Case and Session Concepts](./architecture/case-and-session-concepts.md)** - 🎯 Authoritative specification (v2.0)
+   - User, Client, Session, and Case definitions
+   - Authentication-only session model
+   - Multi-device support and session resumption
+   - ✅ 100% spec-compliant implementation (as of 2025-10-24)
 
 ---
 

@@ -1,9 +1,11 @@
 # Data Classification Strategy: Highly Effective Rules and Fallback Design
 
-**Version**: 1.0  
-**Status**: Design Specification  
-**Date**: 2025-10-14  
+**Version**: 1.1
+**Status**: Design Specification
+**Date**: 2025-10-23 (Updated)
 **Purpose**: Define comprehensive classification rules, disambiguation strategies, and multi-tier fallback for accurate data type detection
+
+**Note**: This document addresses **data type classification** (LOG_FILE vs METRICS_DATA etc.). For **query classification** (human question vs machine data), see the v3.2 QueryClassifier implementation ([query_classifier.py](../../faultmaven/services/preprocessing/query_classifier.py)).
 
 ---
 
@@ -39,6 +41,30 @@ Data submitted to FaultMaven can have:
 3. **Speed**: <100ms for heuristic classification, <2s for LLM fallback
 4. **Explainability**: Clear reasoning for classification decisions
 5. **Adaptability**: Learn from user corrections
+
+### Classification Scope (v1.1 Clarification)
+
+This document addresses **data type classification** - determining what **kind** of data has been submitted:
+- LOG_FILE vs ERROR_REPORT vs METRICS_DATA vs CONFIG_FILE etc.
+
+This is **separate from** and **downstream of** **query classification** (v3.2):
+- QueryClassifier determines **IF** content is machine data vs human question
+- DataClassifier (this document) determines **WHAT TYPE** of machine data it is
+
+**Relationship**:
+```
+/queries endpoint receives content
+         ↓
+QueryClassifier (v3.2): "Machine data or question?" → [MACHINE_DATA/QUESTION]
+         ↓ (if MACHINE_DATA with confidence >= 0.7)
+DataService.ingest_data()
+         ↓
+DataClassifier (this doc): "What type of data?" → [LOG_FILE/METRICS/ERROR_REPORT/etc]
+         ↓
+Appropriate Extractor (LogsAndErrorsExtractor, MetricsExtractor, etc.)
+```
+
+**Hint Passing**: QueryClassifier's `detected_data_type` field (if present) can be passed as a hint to DataClassifier to improve accuracy.
 
 ---
 
@@ -1348,9 +1374,15 @@ ClassificationResult(
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2025-10-14  
-**Next Review**: After Phase 1 implementation  
+**Document Version**: 1.1
+**Last Updated**: 2025-10-23
+**Changelog (v1.1)**:
+- Added clarification: This document addresses data type classification, not query classification
+- Documented relationship with v3.2 QueryClassifier
+- Added note about hint passing from QueryClassifier to DataClassifier
+- No changes to classification rules (still applicable)
+
+**Next Review**: After Phase 1 implementation
 **Owner**: Data Processing Team
 
 

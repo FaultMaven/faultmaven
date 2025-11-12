@@ -94,5 +94,22 @@
   "test_tool_skill_broker_integration.py::TestToolSkillBrokerIntegration::test_tool_skill_broker_fallback_to_skills": true,
   "test_tool_skill_broker_integration.py::TestToolSkillBrokerIntegration::test_api_compatibility_maintained": true,
   "test_tool_skill_broker_integration.py::TestToolSkillBrokerIntegration::test_enhanced_tool_orchestration": true,
-  "test_token_aware_context_integration.py::TestTokenAwareContextIntegration::test_empty_conversation_handling": true
+  "test_token_aware_context_integration.py::TestTokenAwareContextIntegration::test_empty_conversation_handling": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_session_context_has_required_multi_device_fields": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_session_resumption_with_same_client_id": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_different_client_ids_create_separate_sessions": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_session_without_client_id_creates_new_session": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_multi_device_sessions_concurrent_access": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_session_expiry_does_not_affect_other_devices": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_cases_accessible_from_all_user_sessions": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_cases_persist_after_session_deletion": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_direct_case_access_matches_session_case_access": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_session_update_rejects_case_history": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_session_update_rejects_current_case_id": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_session_update_rejects_data_uploads": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_session_update_accepts_valid_fields": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_case_creation_requires_owner_id": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_case_creation_with_valid_owner_id": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_case_ownership_enforced_in_retrieval": true,
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_session_context_user_id_is_required": true
 }

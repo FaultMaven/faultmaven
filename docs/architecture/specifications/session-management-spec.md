@@ -401,8 +401,10 @@ async def initialize_investigation_session(
     Returns:
         True if successful
     """
+    # FIXED: Pass case_id (investigation state belongs to case, not session)
     orchestrator = PhaseOrchestrator(
         llm_provider=llm_provider or self.default_llm,
+        case_id=case_id,
         session_id=session_id
     )
 
@@ -449,8 +451,10 @@ async def process_turn_with_ooda(
     )
 
     # Process turn
+    # FIXED: Pass case_id (investigation state belongs to case, not session)
     orchestrator = PhaseOrchestrator(
         llm_provider=llm_client,
+        case_id=case_id,
         session_id=session_id,
     )
 

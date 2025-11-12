@@ -108,18 +108,93 @@ class ProblemSignalDetector:
         "should i",
     ]
 
+    # Critical urgency keywords (emergency situations)
+    CRITICAL_URGENCY_KEYWORDS = [
+        "production down",
+        "all users affected",
+        "complete outage",
+        "revenue impacting",
+        "data loss",
+        "security breach",
+        "system down",
+        "total failure",
+        "everything down",
+        "cannot access",
+        "all customers",
+    ]
+
+    # Temporal active keywords (happening now)
+    TEMPORAL_ACTIVE_KEYWORDS = [
+        "happening now",
+        "currently",
+        "right now",
+        "just started",
+        "in progress",
+        "ongoing",
+        "at this moment",
+        "as we speak",
+        "active",
+        "live issue",
+    ]
+
+    # Scope total keywords (widespread impact)
+    SCOPE_TOTAL_KEYWORDS = [
+        "all users",
+        "entire system",
+        "complete failure",
+        "everything",
+        "global",
+        "all regions",
+        "whole platform",
+        "every",
+        "across the board",
+        "company-wide",
+    ]
+
     @classmethod
-    def detect_signal_strength(cls, query: str) -> Tuple[ProblemSignalStrength, List[str]]:
-        """Detect problem signal strength in user query
+    def detect_signal_strength(
+        cls, query: str
+    ) -> Tuple[ProblemSignalStrength, List[str], Optional[str], Optional[str], Optional[str]]:
+        """Detect problem signal strength and contextual hints in user query
 
         Args:
             query: User query text
 
         Returns:
-            Tuple of (signal_strength, detected_keywords)
+            Tuple of (signal_strength, detected_keywords, urgency_hint, temporal_hint, scope_hint)
+            - signal_strength: STRONG/MODERATE/WEAK/NONE
+            - detected_keywords: List of matched keywords
+            - urgency_hint: "critical"|"high"|"medium"|"low"|None
+            - temporal_hint: "active"|"recent"|"historical"|None
+            - scope_hint: "total"|"partial"|"isolated"|None
         """
         query_lower = query.lower()
         detected_keywords = []
+
+        # Detect urgency level
+        urgency_hint: Optional[str] = None
+        if any(kw in query_lower for kw in cls.CRITICAL_URGENCY_KEYWORDS):
+            urgency_hint = "critical"
+        elif "production" in query_lower or "users" in query_lower:
+            urgency_hint = "high"
+
+        # Detect temporal context
+        temporal_hint: Optional[str] = None
+        if any(kw in query_lower for kw in cls.TEMPORAL_ACTIVE_KEYWORDS):
+            temporal_hint = "active"
+        elif any(word in query_lower for word in ["today", "this morning", "this hour"]):
+            temporal_hint = "recent"
+        elif any(word in query_lower for word in ["yesterday", "last week", "last month"]):
+            temporal_hint = "historical"
+
+        # Detect scope
+        scope_hint: Optional[str] = None
+        if any(kw in query_lower for kw in cls.SCOPE_TOTAL_KEYWORDS):
+            scope_hint = "total"
+        elif any(word in query_lower for word in ["some users", "one customer", "specific"]):
+            scope_hint = "partial"
+        elif any(word in query_lower for word in ["my machine", "local", "just me"]):
+            scope_hint = "isolated"
 
         # Check for informational intent first
         for keyword in cls.INFORMATIONAL_KEYWORDS:
@@ -127,7 +202,7 @@ class ProblemSignalDetector:
                 detected_keywords.append(keyword)
 
         if detected_keywords:
-            return ProblemSignalStrength.NONE, detected_keywords
+            return ProblemSignalStrength.NONE, detected_keywords, urgency_hint, temporal_hint, scope_hint
 
         # Check for strong problem signals
         for keyword in cls.STRONG_PROBLEM_KEYWORDS:
@@ -135,7 +210,7 @@ class ProblemSignalDetector:
                 detected_keywords.append(keyword)
 
         if detected_keywords:
-            return ProblemSignalStrength.STRONG, detected_keywords
+            return ProblemSignalStrength.STRONG, detected_keywords, urgency_hint, temporal_hint, scope_hint
 
         # Check for moderate signals
         for keyword in cls.MODERATE_PROBLEM_KEYWORDS:
@@ -143,7 +218,7 @@ class ProblemSignalDetector:
                 detected_keywords.append(keyword)
 
         if detected_keywords:
-            return ProblemSignalStrength.MODERATE, detected_keywords
+            return ProblemSignalStrength.MODERATE, detected_keywords, urgency_hint, temporal_hint, scope_hint
 
         # Check for weak signals
         for keyword in cls.WEAK_PROBLEM_KEYWORDS:
@@ -151,9 +226,9 @@ class ProblemSignalDetector:
                 detected_keywords.append(keyword)
 
         if detected_keywords:
-            return ProblemSignalStrength.WEAK, detected_keywords
+            return ProblemSignalStrength.WEAK, detected_keywords, urgency_hint, temporal_hint, scope_hint
 
-        return ProblemSignalStrength.NONE, []
+        return ProblemSignalStrength.NONE, [], urgency_hint, temporal_hint, scope_hint
 
     @classmethod
     def requires_problem_confirmation(cls, signal_strength: ProblemSignalStrength) -> bool:
@@ -198,13 +273,17 @@ class EngagementModeManager:
             query: User's initial query
 
         Returns:
-            Analysis result with signal strength and recommended mode
+            Analysis result with signal strength, recommended mode, and contextual hints
         """
-        signal_strength, keywords = self.signal_detector.detect_signal_strength(query)
+        signal_strength, keywords, urgency_hint, temporal_hint, scope_hint = \
+            self.signal_detector.detect_signal_strength(query)
 
         result = {
             "signal_strength": signal_strength.value,
             "detected_keywords": keywords,
+            "urgency_hint": urgency_hint,
+            "temporal_hint": temporal_hint,
+            "scope_hint": scope_hint,
             "recommended_mode": EngagementMode.CONSULTANT,  # Default
             "requires_confirmation": False,
             "suggested_response_type": "answer",
@@ -240,35 +319,54 @@ class EngagementModeManager:
         query: str,
         conversation_context: Optional[str] = None,
     ) -> ProblemConfirmation:
-        """Create ProblemConfirmation structure from user query
+        """Create ProblemConfirmation structure from user query with enhanced signal detection
 
         Args:
             query: User query describing problem
             conversation_context: Optional conversation history
 
         Returns:
-            ProblemConfirmation object
+            ProblemConfirmation object with urgency_signals metadata
         """
-        # This is a simplified version - in practice, this would use LLM
-        # to synthesize the problem confirmation structure
+        # Enhanced signal detection with urgency/temporal/scope hints
+        signal_strength, keywords, urgency_hint, temporal_hint, scope_hint = \
+            self.signal_detector.detect_signal_strength(query)
 
-        signal_strength, keywords = self.signal_detector.detect_signal_strength(query)
+        # More nuanced severity estimation using contextual hints
+        if urgency_hint == "critical" or (signal_strength == ProblemSignalStrength.STRONG and scope_hint == "total"):
+            severity = "critical"
+        elif urgency_hint == "high" or signal_strength == ProblemSignalStrength.STRONG:
+            severity = "high"
+        elif signal_strength == ProblemSignalStrength.MODERATE:
+            severity = "medium"
+        else:
+            severity = "low"
 
-        # Approximate severity based on signal strength
-        severity_map = {
-            ProblemSignalStrength.STRONG: "high",
-            ProblemSignalStrength.MODERATE: "medium",
-            ProblemSignalStrength.WEAK: "low",
-            ProblemSignalStrength.NONE: "low",
-        }
+        # Determine investigation approach based on temporal hint
+        if temporal_hint == "active":
+            investigation_approach = "active_incident"
+        else:
+            investigation_approach = "systematic"
+
+        # Build impact description with scope hint
+        if scope_hint:
+            impact = f"Scope: {scope_hint}"
+        else:
+            impact = "Unknown"
 
         confirmation = ProblemConfirmation(
             problem_statement=query[:200],  # Truncate long queries
-            affected_components=[],  # To be filled by LLM
-            severity=severity_map[signal_strength],
-            impact="Unknown",  # To be filled by LLM
-            investigation_approach="systematic",  # Default
+            affected_components=[],  # To be filled by Phase 1 OODA
+            severity=severity,
+            impact=impact,
+            investigation_approach=investigation_approach,
             estimated_evidence_needed=["symptoms", "timeline", "scope"],
+            urgency_signals={
+                "urgency_hint": urgency_hint,
+                "temporal_hint": temporal_hint,
+                "scope_hint": scope_hint,
+                "source": "initial_query_keywords"
+            }
         )
 
         return confirmation

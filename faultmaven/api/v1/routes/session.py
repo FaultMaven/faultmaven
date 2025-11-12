@@ -43,7 +43,7 @@ from faultmaven.services.domain.session_service import SessionService
 from faultmaven.services.converters import CaseConverter
 from faultmaven.models import utc_timestamp
 from faultmaven.models.api import SessionResponse, SessionCasesResponse, ErrorResponse, ErrorDetail, SessionErrorCode, SessionStatus
-from faultmaven.models.case import CaseListFilter
+from faultmaven.models.api_models import CaseListFilter
 from faultmaven.models.auth import DevUser
 import logging
 import uuid
@@ -191,7 +191,7 @@ class SessionRestoreRequest(BaseModel):
                             "client_id": "browser-client-abc123",
                             "created_at": "2025-01-15T10:00:00Z",
                             "expires_at": "2025-01-15T13:00:00Z",
-                            "status": "active",
+                            "status": "consulting",
                             "session_type": "troubleshooting",
                             "session_resumed": False,
                             "timeout_minutes": 180,
@@ -206,7 +206,7 @@ class SessionRestoreRequest(BaseModel):
                             "client_id": "browser-client-abc123",
                             "created_at": "2025-01-15T09:30:00Z",
                             "expires_at": "2025-01-15T14:30:00Z",
-                            "status": "active",
+                            "status": "consulting",
                             "session_type": "troubleshooting",
                             "session_resumed": True,
                             "timeout_minutes": 300,
@@ -498,7 +498,7 @@ async def list_sessions(
                 "user_id": session.user_id,
                 "created_at": _safe_datetime_to_utc_string(session.created_at),
                 "last_activity": _safe_datetime_to_utc_string(session.last_activity),
-                "status": "active",
+                "status": "consulting",
                 "session_type": session_type_val,
                 "usage_type": session_type_val,  # For backward compatibility
                 "data_uploads_count": len(session.data_uploads),
@@ -526,7 +526,7 @@ async def list_session_cases(
     offset: int = Query(0, ge=0),
     # Phase 1: New filtering parameters (default to exclude non-active cases)
     include_empty: bool = Query(False, description="Include cases with message_count == 0"),
-    include_archived: bool = Query(False, description="Include archived cases"),
+    include_terminal: bool = Query(False, description="Include terminal state cases (resolved/closed)"),
     include_deleted: bool = Query(False, description="Include deleted cases (admin only)"),
     session_service: SessionService = Depends(get_session_service),
     case_service = Depends(get_case_service),
@@ -561,7 +561,7 @@ async def list_session_cases(
                 # Create filters for user cases with session filtering
                 filters = CaseListFilter(
                     include_empty=include_empty,
-                    include_archived=include_archived,
+                    include_terminal=include_terminal,
                     include_deleted=include_deleted,
                     limit=limit,
                     offset=offset
@@ -784,7 +784,7 @@ async def session_heartbeat(
         
         return {
             "session_id": session_id,
-            "status": "active",
+            "status": "consulting",
             "last_activity": last_activity,
             "message": "Session heartbeat updated",
         }

@@ -123,7 +123,7 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
                 logger.debug(f"Could not analyze response shape: {e}")
         
         # Detect contract violations
-        violations = self._detect_violations(probe_data, path, method)
+        violations = self._detect_violations(probe_data, path, method, query_params)
         if violations:
             probe_data["contract_violations"] = violations
             
@@ -146,7 +146,7 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
             logger.debug(f"Response shape analysis failed: {e}")
             return {"analysis_error": str(e)}
 
-    def _detect_violations(self, probe_data: Dict[str, Any], path: str, method: str) -> List[str]:
+    def _detect_violations(self, probe_data: Dict[str, Any], path: str, method: str, query_params: Dict[str, str]) -> List[str]:
         """Detect common contract violations"""
         violations = []
         status_code = probe_data["status_code"]
@@ -167,13 +167,16 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
         # Critical violation: Missing Retry-After on 202
         if status_code == 202 and not headers.get("Retry-After"):
             violations.append("MISSING_RETRY_AFTER: 202 response missing Retry-After header")
-        
+
         # Critical violation: Missing pagination headers on list endpoints
-        if method == "GET" and any(list_path in path for list_path in ["/cases", "/sessions"]):
-            if status_code == 200:
-                if not headers.get("X-Total-Count"):
-                    violations.append("MISSING_PAGINATION_HEADER: List endpoint missing X-Total-Count header")
-        
+        # Detect pagination by checking for limit/offset query parameters
+        has_pagination_params = "limit" in query_params or "offset" in query_params
+        is_list_endpoint = method == "GET" and has_pagination_params
+
+        if is_list_endpoint and status_code == 200:
+            if not headers.get("X-Total-Count"):
+                violations.append("MISSING_PAGINATION_HEADER: List endpoint missing X-Total-Count header")
+
         return violations
 
     def _log_contract_probe(self, probe_data: Dict[str, Any], request: Request, response: Response):

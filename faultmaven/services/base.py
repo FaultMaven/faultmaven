@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, Optional, TypeVar, Union
 import asyncio
 from abc import ABC
 from datetime import datetime, timezone
+from faultmaven.utils.serialization import to_json_compatible
 
 from faultmaven.infrastructure.logging.unified import get_unified_logger, UnifiedLogger
 from faultmaven.exceptions import ValidationException, FaultMavenException
@@ -164,14 +165,14 @@ class BaseService(ABC):
                         raise ValueError(f"Validation failed: {str(validation_error)}") from validation_error
                 
                 # Execute the operation function
-                ctx["execution_started"] = datetime.now(timezone.utc).isoformat()
+                ctx["execution_started"] = to_json_compatible(datetime.now(timezone.utc))
                 
                 if asyncio.iscoroutinefunction(operation_func):
                     result = await operation_func(*args, **kwargs)
                 else:
                     result = operation_func(*args, **kwargs)
                 
-                ctx["execution_completed"] = datetime.now(timezone.utc).isoformat()
+                ctx["execution_completed"] = to_json_compatible(datetime.now(timezone.utc))
                 
                 # Transform result if transformer provided
                 if transform_result:
@@ -382,9 +383,9 @@ class BaseService(ABC):
                         raise ValueError(f"Validation failed: {str(validation_error)}") from validation_error
                 
                 # Execute the operation function
-                ctx["execution_started"] = datetime.now(timezone.utc).isoformat()
+                ctx["execution_started"] = to_json_compatible(datetime.now(timezone.utc))
                 result = operation_func(*args, **kwargs)
-                ctx["execution_completed"] = datetime.now(timezone.utc).isoformat()
+                ctx["execution_completed"] = to_json_compatible(datetime.now(timezone.utc))
                 
                 # Transform result if transformer provided
                 if transform_result:
@@ -598,6 +599,6 @@ class BaseService(ABC):
         return {
             "service": self.service_name,
             "status": "healthy",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "layer": "service"
         }

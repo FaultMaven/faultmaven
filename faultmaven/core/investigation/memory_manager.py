@@ -503,7 +503,7 @@ class HierarchicalMemoryManager:
                 if iteration.made_progress:
                     parts.append(f"  ✓ Progress made (Δconfidence: {iteration.confidence_delta:+.2f})")
                 else:
-                    parts.append(f"  ⚠ Stalled: {iteration.stall_reason}")
+                    parts.append(f"  ⚠ No progress in this iteration")
             parts.append("")
 
         # Warm memory (summarized)

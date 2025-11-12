@@ -121,10 +121,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return self._create_rate_limit_response(e, request)
             
         except Exception as e:
-            # Unexpected error
-            self.logger.error(f"Rate limiting error: {e}")
+            # Log the error cleanly without trying to serialize exception objects
+            self.logger.error(
+                f"Rate limiting error: {type(e).__name__}: {str(e)}",
+                exc_info=False  # Avoid serialization issues
+            )
             self.metrics["errors"] += 1
-            
+
             # Fail open if configured
             if self.settings.fail_open_on_redis_error:
                 self.logger.warning("Rate limiting failed, allowing request")

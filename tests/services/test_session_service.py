@@ -55,17 +55,7 @@ class ComprehensiveMockSessionManager:
             created_at=datetime.utcnow(),
             last_activity=datetime.utcnow(),
             updated_at=datetime.utcnow(),
-            data_uploads=[],
-            case_history=[],
-            agent_state={
-                "status": AgentState.IDLE,
-                "case_context": initial_context or {},
-                "current_phase": "initial",
-                "findings": [],
-                "recommendations": [],
-                "confidence_score": 0.0,
-                "tools_used": []
-            }
+            metadata=initial_context or {}
         )
         # Store additional test attributes in a separate dict
         self._test_attributes[session_id] = {
@@ -211,39 +201,6 @@ class ComprehensiveMockSessionManager:
             return False
         return self._test_attributes.get(session_id, {}).get('active', True)
     
-    async def add_case_history(self, session_id: str, investigation_data: Dict) -> bool:
-        """Mock add investigation history"""
-        self.call_count += 1
-        self.operations_log.append(("add_case_history", session_id, investigation_data))
-        
-        if self.should_fail and self.failure_type == "add_investigation_error":
-            raise Exception("Add investigation history failed")
-        
-        if session_id in self.sessions:
-            session = self.sessions[session_id]
-            # Add timestamp if not present
-            if "timestamp" not in investigation_data:
-                investigation_data["timestamp"] = datetime.utcnow().isoformat()
-            session.case_history.append(investigation_data)
-            session.last_activity = datetime.utcnow()
-            return True
-        return False
-    
-    async def add_data_upload(self, session_id: str, data_id: str) -> bool:
-        """Mock add data upload"""
-        self.call_count += 1
-        self.operations_log.append(("add_data_upload", session_id, data_id))
-        
-        if self.should_fail and self.failure_type == "add_data_upload_error":
-            raise Exception("Add data upload failed")
-        
-        if session_id in self.sessions:
-            session = self.sessions[session_id]
-            if data_id not in session.data_uploads:
-                session.data_uploads.append(data_id)
-                session.last_activity = datetime.utcnow()
-            return True
-        return False
 
 
 class TestSessionServiceComprehensive:
@@ -624,55 +581,7 @@ class TestSessionServiceComprehensive:
         assert recent_session is not None
         assert recent_session.active is True
     
-    # Test 9: Cross-Service Session Operations
-    @pytest.mark.asyncio
-    @pytest.mark.unit
-    async def test_cross_service_session_operations(
-        self, session_service, mock_session_manager
-    ):
-        """Test session operations that coordinate with other services"""
-        user_id = "cross_service_user"
-        session, was_resumed = await session_service.create_session(user_id)
-        session_id = session.session_id
-        
-        # Test recording query operation
-        await session_service.record_query_operation(
-            session_id=session_id,
-            query="Database connection timeout troubleshooting",
-            case_id="inv_001",
-            context={"service": "database", "priority": "high"},
-            confidence_score=0.85
-        )
-        
-        # Verify operation was recorded - session should have investigation history
-        session = await session_service.get_session(session_id)
-        assert session is not None
-        assert len(session.case_history) > 0
-        # Check that the query operation was recorded
-        last_investigation = session.case_history[-1]
-        assert last_investigation["action"] == "query_processed"
-        assert last_investigation["investigation_id"] == "inv_001"
-        assert last_investigation["confidence_score"] == 0.85
-        
-        # Test recording data upload operation
-        await session_service.record_data_upload_operation(
-            session_id=session_id,
-            operation_type="data_ingestion",
-            data_id="data_001",
-            context={"data_type": "log_file", "size_mb": 2.5}
-        )
-        
-        # Verify data operation was recorded
-        updated_session = await session_service.get_session(session_id)
-        assert updated_session is not None
-        
-        # Verify data upload was recorded in investigation history
-        assert len(updated_session.case_history) >= 2  # Query + data upload
-        data_upload_record = updated_session.case_history[-1]
-        assert data_upload_record["action"] == "data_uploaded"
-        assert data_upload_record["data_id"] == "data_001"
-    
-    # Test 10: Error Handling Scenarios
+    # Test 9: Error Handling Scenarios
     @pytest.mark.asyncio
     @pytest.mark.unit
     async def test_error_handling_scenarios(
@@ -947,39 +856,20 @@ class TestSessionServiceComprehensive:
             session = await session_service.get_session(session_id)
             assert session.agent_state["current_phase"] == phase
         
-        # 3. Record cross-service operations
-        await session_service.record_query_operation(
-            session_id=session_id,
-            query="Database connection timeout affecting user transactions",
-            case_id="inv_business_001",
-            context={"urgency": "high", "impact": "multiple_users"},
-            confidence_score=0.85
-        )
-        
-        await session_service.record_data_upload_operation(
-            session_id=session_id,
-            operation_type="log_analysis",
-            data_id="log_data_001",
-            context={"analysis_duration": 15.5, "insights_found": 8}
-        )
-        
-        # 4. Validate final session state
+        # 3. Validate final session state
         final_session = await session_service.get_session(session_id)
         assert final_session is not None
-        
-        # Validate that the session has investigation history from all operations
-        assert len(final_session.case_history) >= 2  # Query + data operations
-        
+
         # Validate final state and business logic consistency
         assert final_session.agent_state["current_phase"] == "completed"
         assert final_session.active is True
         assert final_session.user_id == user_id
-        
-        # 5. Test session analytics for business insights
+
+        # 4. Test session analytics for business insights
         analytics = await session_service.get_session_analytics()
         assert analytics["total_sessions"] >= 1
-        
-        # 6. Clean up session
+
+        # 5. Clean up session
         end_success = await session_service.delete_session(session_id)
         assert end_success is True
         

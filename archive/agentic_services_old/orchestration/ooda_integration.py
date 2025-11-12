@@ -1,0 +1,434 @@
+"""OODA Integration Layer
+
+Connects the OODA PhaseOrchestrator to the existing AgentService infrastructure.
+Provides migration path from legacy doctor/patient system to OODA framework.
+
+Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
+"""
+
+import logging
+from typing import Tuple, Optional, Any, Dict, List
+from datetime import datetime
+
+from faultmaven.models.case import Case, CaseDiagnosticState
+from faultmaven.models.investigation import InvestigationState
+from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.models.agentic import StructuredLLMResponse
+
+from faultmaven.services.agentic.orchestration.phase_orchestrator import PhaseOrchestrator
+from faultmaven.services.agentic.management.state_manager import AgentStateManager
+
+
+async def process_turn_with_ooda(
+    user_query: str,
+    case: Case,
+    llm_client: ILLMProvider,
+    session_id: str,
+    state_manager: Optional[AgentStateManager] = None,
+    context: Optional[Dict[str, Any]] = None,
+    tools: Optional[List[Any]] = None,
+) -> Tuple[StructuredLLMResponse, CaseDiagnosticState]:
+    """Process conversation turn using OODA framework
+
+    This is the main entry point that replaces process_turn_with_orchestrator
+    from the legacy doctor/patient system.
+
+    Args:
+        user_query: User's query
+        case: Case object
+        llm_client: LLM provider
+        session_id: Session identifier
+        state_manager: Optional state manager for persistence
+        context: Optional context dict (e.g., file upload data, source metadata)
+        tools: Optional list of tools available to phase handlers (e.g., QA sub-agents)
+
+    Returns:
+        Tuple of (StructuredLLMResponse, updated CaseDiagnosticState)
+    """
+    logger = logging.getLogger(__name__)
+    logger.info(f"Processing turn with OODA framework for case {case.case_id}")
+
+    # Initialize state manager if not provided
+    if state_manager is None:
+        from faultmaven.container import get_container
+        container = get_container()
+        state_manager = container.get_state_manager()
+
+    # Get or initialize investigation state
+    investigation_state = await _get_or_initialize_investigation_state(
+        case=case,
+        session_id=session_id,
+        user_query=user_query,
+        llm_client=llm_client,
+        state_manager=state_manager,
+        tools=tools,
+    )
+
+    # Initialize orchestrator with tools for phase handlers
+    # FIXED: Pass case_id (investigation state belongs to case, not session)
+    orchestrator = PhaseOrchestrator(
+        llm_provider=llm_client,
+        case_id=case.case_id,
+        session_id=session_id,
+        logger=logger,
+        tools=tools or [],  # Pass tools to enable QA sub-agent access
+    )
+
+    # Build conversation history
+    conversation_history = await _build_conversation_history(case, session_id, state_manager)
+
+    # Build enriched context with case evidence
+    enriched_context = context.copy() if context else {}
+
+    # Include case evidence in context for all phase handlers
+    if case.diagnostic_state and case.diagnostic_state.evidence_provided:
+        evidence_summary = []
+        for evidence in case.diagnostic_state.evidence_provided:
+            # Include evidence with reasonable length limit
+            evidence_content = evidence.content[:2000] + "..." if len(evidence.content) > 2000 else evidence.content
+            evidence_summary.append(
+                f"[Evidence ID: {evidence.evidence_id}]\n"
+                f"Form: {evidence.form.value}\n"
+                f"Type: {evidence.evidence_type.value}\n"
+                f"Content: {evidence_content}\n"
+            )
+        enriched_context["case_evidence"] = "\n---\n".join(evidence_summary)
+        logger.info(f"Including {len(case.diagnostic_state.evidence_provided)} evidence items in context")
+
+    # Process turn through orchestrator
+    response_text, updated_investigation_state = await orchestrator.process_turn(
+        user_query=user_query,
+        investigation_state=investigation_state,
+        conversation_history=conversation_history,
+        context=enriched_context,  # Pass enriched context with case evidence
+    )
+
+    # Persist updated investigation state
+    # FIXED: Use case_id (investigation state belongs to case, not session)
+    await state_manager.update_investigation_state(
+        case_id=case.case_id,
+        state=updated_investigation_state,
+    )
+
+    # Convert to StructuredLLMResponse for compatibility
+    structured_response = _convert_to_structured_response(
+        response_text=response_text,
+        investigation_state=updated_investigation_state,
+    )
+
+    # Update case diagnostic state with OODA data
+    updated_diagnostic_state = _update_diagnostic_state_from_investigation(
+        case_diagnostic_state=case.diagnostic_state,
+        investigation_state=updated_investigation_state,
+    )
+
+    logger.info(
+        f"OODA turn processed: phase={updated_investigation_state.lifecycle.current_phase.name}, "
+        f"turn={updated_investigation_state.metadata.current_turn}"
+    )
+
+    return structured_response, updated_diagnostic_state
+
+
+async def _get_or_initialize_investigation_state(
+    case: Case,
+    session_id: str,
+    user_query: str,
+    llm_client: ILLMProvider,
+    state_manager: AgentStateManager,
+    tools: Optional[List[Any]] = None,
+) -> InvestigationState:
+    """Get existing or initialize new investigation state
+
+    Args:
+        case: Case object
+        session_id: Session ID
+        user_query: User's query
+        llm_client: LLM provider
+        state_manager: State manager
+
+    Returns:
+        InvestigationState object
+    """
+    logger = logging.getLogger(__name__)
+
+    # FIXED: Try to get existing investigation state by case_id (not session_id!)
+    # Investigation state belongs to CASE (permanent), not SESSION (temporary)
+    investigation_state = await state_manager.get_investigation_state(case.case_id)
+
+    if investigation_state:
+        logger.info(f"Retrieved existing investigation state for case {case.case_id}")
+        return investigation_state
+
+    # Initialize new investigation state
+    logger.info(f"Initializing new investigation state for case {case.case_id}")
+
+    # FIXED: Pass case_id to PhaseOrchestrator
+    orchestrator = PhaseOrchestrator(
+        llm_provider=llm_client,
+        case_id=case.case_id,
+        session_id=session_id,
+        logger=logger,
+        tools=tools or [],  # Pass tools to enable QA sub-agent access
+    )
+
+    investigation_state = await orchestrator.initialize_investigation(
+        user_query=user_query,
+        case_diagnostic_state=case.diagnostic_state,
+    )
+
+    # FIXED: Persist new state by case_id (not session_id!)
+    await state_manager.update_investigation_state(
+        case_id=case.case_id,
+        state=investigation_state,
+    )
+
+    return investigation_state
+
+
+async def _build_conversation_history(
+    case: Case,
+    session_id: str,
+    state_manager: AgentStateManager,
+    max_messages: int = 5,
+) -> str:
+    """Build conversation history for context
+
+    Args:
+        case: Case object
+        session_id: Session ID
+        state_manager: State manager
+        max_messages: Maximum messages to include
+
+    Returns:
+        Formatted conversation history
+    """
+    # Get recent messages from case
+    if not case.messages:
+        return ""
+
+    # Take last N messages
+    recent_messages = case.messages[-max_messages:]
+
+    # Format as conversation
+    history_parts = []
+    for msg in recent_messages:
+        role = "User" if msg.message_type.value == "user" else "Assistant"
+        history_parts.append(f"{role}: {msg.content}")
+
+    return "\n".join(history_parts)
+
+
+def _convert_to_structured_response(
+    response_text: str,
+    investigation_state: InvestigationState,
+) -> StructuredLLMResponse:
+    """Convert OODA response to StructuredLLMResponse format
+
+    Maintains compatibility with existing API contracts.
+
+    Args:
+        response_text: Response text from phase handler
+        investigation_state: Current investigation state
+
+    Returns:
+        StructuredLLMResponse object
+    """
+    from faultmaven.models.agentic import SuggestedAction
+
+    # Extract evidence requests as suggested actions
+    suggested_actions = []
+    if investigation_state.evidence.evidence_requests:
+        for req in investigation_state.evidence.evidence_requests[-3:]:  # Last 3 requests
+            action = SuggestedAction(
+                action_type="evidence_request",
+                description=req.description,
+                commands=req.acquisition_guidance.suggested_commands if req.acquisition_guidance else [],
+                rationale=req.acquisition_guidance.rationale if req.acquisition_guidance else "",
+                priority=req.priority,
+            )
+            suggested_actions.append(action)
+
+    # Build structured response
+    return StructuredLLMResponse(
+        answer=response_text,
+        reasoning=_extract_reasoning_from_state(investigation_state),
+        suggested_actions=suggested_actions if suggested_actions else None,
+        clarifying_questions=None,  # OODA uses evidence requests instead
+        command_validation=None,
+        suggested_commands=None,
+    )
+
+
+def _extract_reasoning_from_state(investigation_state: InvestigationState) -> Optional[str]:
+    """Extract reasoning from investigation state
+
+    Args:
+        investigation_state: Investigation state
+
+    Returns:
+        Reasoning string if available
+    """
+    reasoning_parts = []
+
+    # Current phase reasoning
+    current_phase = investigation_state.lifecycle.current_phase
+    reasoning_parts.append(f"Current phase: {current_phase.name}")
+
+    # OODA iteration info
+    if investigation_state.ooda_engine.current_iteration > 0:
+        reasoning_parts.append(
+            f"OODA iteration {investigation_state.ooda_engine.current_iteration}"
+        )
+
+    # Hypothesis reasoning
+    if investigation_state.ooda_engine.hypotheses:
+        top_hypothesis = max(
+            investigation_state.ooda_engine.hypotheses,
+            key=lambda h: h.likelihood,
+        )
+        reasoning_parts.append(
+            f"Leading hypothesis: {top_hypothesis.statement} ({top_hypothesis.likelihood:.0%})"
+        )
+
+    # Memory insights
+    if investigation_state.memory.hierarchical_memory.persistent_insights:
+        reasoning_parts.append(
+            f"Key insights: {len(investigation_state.memory.hierarchical_memory.persistent_insights)}"
+        )
+
+    return " | ".join(reasoning_parts) if reasoning_parts else None
+
+
+def _update_diagnostic_state_from_investigation(
+    case_diagnostic_state: CaseDiagnosticState,
+    investigation_state: InvestigationState,
+) -> CaseDiagnosticState:
+    """Update case diagnostic state with OODA investigation data
+
+    Maintains both legacy fields and new OODA fields during transition.
+
+    Args:
+        case_diagnostic_state: Current case diagnostic state
+        investigation_state: OODA investigation state
+
+    Returns:
+        Updated CaseDiagnosticState
+    """
+    # Update OODA-specific fields
+    case_diagnostic_state.investigation_state_id = investigation_state.metadata.investigation_id
+
+    # Map OODA phase to legacy current_phase if needed
+    # Phase mapping: INTAKE->0, BLAST_RADIUS->1, etc.
+    case_diagnostic_state.current_phase = investigation_state.lifecycle.current_phase.value
+
+    # Update urgency level if available
+    if investigation_state.problem_confirmation:
+        # Map ProblemConfirmation.severity to CaseDiagnosticState.urgency_level
+        # ProblemConfirmation.severity: "low", "medium", "high", "critical"
+        # UrgencyLevel enum values: "normal", "high", "critical"
+        severity_to_urgency_map = {
+            "low": "normal",        # low severity -> normal urgency
+            "medium": "normal",     # medium severity -> normal urgency
+            "high": "high",         # high severity -> high urgency
+            "critical": "critical", # critical severity -> critical urgency
+        }
+        severity = investigation_state.problem_confirmation.severity.lower()
+        if severity in severity_to_urgency_map:
+            from faultmaven.models.case import UrgencyLevel
+            case_diagnostic_state.urgency_level = UrgencyLevel(severity_to_urgency_map[severity])
+
+    # Update has_active_problem based on engagement mode
+    from faultmaven.models.investigation import EngagementMode
+    case_diagnostic_state.has_active_problem = (
+        investigation_state.metadata.engagement_mode == EngagementMode.LEAD_INVESTIGATOR
+    )
+
+    return case_diagnostic_state
+
+
+def get_investigation_progress_summary(
+    investigation_state: InvestigationState,
+) -> dict:
+    """Get investigation progress summary for API responses
+
+    Args:
+        investigation_state: Investigation state
+
+    Returns:
+        Dictionary with progress information
+    """
+    from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
+
+    hypothesis_manager = create_hypothesis_manager()
+    validated = hypothesis_manager.get_validated_hypothesis(
+        investigation_state.ooda_engine.hypotheses
+    )
+
+    summary = {
+        "phase": {
+            "current": investigation_state.lifecycle.current_phase.name,
+            "number": investigation_state.lifecycle.current_phase.value,
+        },
+        "engagement_mode": investigation_state.metadata.engagement_mode.value,
+        "ooda_iteration": investigation_state.ooda_engine.current_iteration,
+        "turn_count": investigation_state.metadata.current_turn,
+        "case_status": investigation_state.lifecycle.case_status,
+        "hypotheses": {
+            "total": len(investigation_state.ooda_engine.hypotheses),
+            "validated": validated.statement if validated else None,
+            "validated_confidence": validated.likelihood if validated else None,
+        },
+        "evidence_collected": len(investigation_state.evidence.evidence_provided),
+        "evidence_requested": len(investigation_state.evidence.evidence_requests),
+    }
+
+    # Add anomaly frame if available
+    if investigation_state.ooda_engine.anomaly_frame:
+        summary["anomaly_frame"] = {
+            "statement": investigation_state.ooda_engine.anomaly_frame.statement,
+            "severity": investigation_state.ooda_engine.anomaly_frame.severity,
+            "affected_components": investigation_state.ooda_engine.anomaly_frame.affected_components,
+        }
+
+    return summary
+
+
+async def process_turn_with_framework_selection(
+    user_query: str,
+    case: Case,
+    llm_client: ILLMProvider,
+    session_id: str,
+    state_manager: Optional[AgentStateManager] = None,
+    context: Optional[Dict[str, Any]] = None,
+    tools: Optional[List[Any]] = None,
+) -> Tuple[StructuredLLMResponse, CaseDiagnosticState]:
+    """Process turn with OODA framework
+
+    OODA is the production framework (v3.2.0+).
+    Legacy doctor/patient system has been archived.
+
+    Args:
+        user_query: User's query
+        case: Case object
+        llm_client: LLM provider
+        session_id: Session identifier
+        state_manager: Optional state manager
+        context: Optional context dict (e.g., file upload data, source metadata)
+        tools: Optional list of tools available to phase handlers
+
+    Returns:
+        Tuple of (StructuredLLMResponse, updated CaseDiagnosticState)
+    """
+    logger = logging.getLogger(__name__)
+    logger.info("Using OODA framework for turn processing")
+
+    return await process_turn_with_ooda(
+        user_query=user_query,
+        case=case,
+        llm_client=llm_client,
+        session_id=session_id,
+        state_manager=state_manager,
+        context=context,
+        tools=tools,
+    )

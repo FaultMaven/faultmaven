@@ -245,16 +245,16 @@ class InvestigationStrategySelector:
         """
         current_phase = investigation_state.lifecycle.current_phase
 
-        # Scenario 1: Active → Post-Mortem after mitigation
+        # Scenario 1: Active → Post-Mortem after resolution
         if current_strategy == InvestigationStrategy.ACTIVE_INCIDENT:
-            # Check if solution implemented and problem mitigated
+            # Check if solution implemented and problem resolved
             if current_phase == InvestigationPhase.SOLUTION:
                 # Check lifecycle status
-                if investigation_state.lifecycle.case_status in ["mitigated", "resolved"]:
+                if investigation_state.lifecycle.case_status == "resolved":
                     return (
                         True,
                         InvestigationStrategy.POST_MORTEM,
-                        "Problem mitigated, recommend thorough post-mortem for prevention"
+                        "Problem resolved, recommend thorough post-mortem for prevention"
                     )
 
         # Scenario 2: Post-Mortem → Active if new critical issue found
@@ -387,10 +387,10 @@ class InvestigationStrategySelector:
         if not config["offer_post_mortem"]:
             return False, ""
 
-        # Check if problem is mitigated/resolved
-        if investigation_state.lifecycle.case_status in ["mitigated", "resolved"]:
+        # Check if problem is resolved
+        if investigation_state.lifecycle.case_status == "resolved":
             message = (
-                "Your problem has been mitigated. Would you like me to conduct a thorough "
+                "Your problem has been resolved. Would you like me to conduct a thorough "
                 "post-mortem analysis to identify the root cause and prevent recurrence? "
                 "This will involve deeper evidence gathering and comprehensive hypothesis testing."
             )

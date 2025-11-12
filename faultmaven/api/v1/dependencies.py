@@ -22,8 +22,10 @@ from ...models.interfaces_case import ICaseService
 from ...models.interfaces_report import IReportStore
 from ...models.interfaces import IJobService
 from ...services import DataService, KnowledgeService, SessionService
-from ...services.agentic.orchestration.agent_service import AgentService
+# OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
+from faultmaven.services.agentic_stub import AgentService  # Type hint only
 from ...services.preprocessing import PreprocessingService
+from .dependencies_stub import get_agent_service  # Stub for old OODA endpoints
 
 
 # Service Dependencies
@@ -33,9 +35,10 @@ async def get_session_service() -> SessionService:
     return container.get_session_service()
 
 
-async def get_agent_service() -> AgentService:
-    """Get AgentService instance from container"""
-    return container.get_agent_service()
+# OLD OODA AgentService - REMOVED (use InvestigationService instead)
+# async def get_agent_service() -> AgentService:
+#     """Get AgentService instance from container"""
+#     return container.get_agent_service()
 
 
 async def get_preprocessing_service() -> PreprocessingService:
@@ -73,12 +76,33 @@ async def get_case_service() -> Optional[ICaseService]:
         return None
 
 
+async def get_investigation_service():
+    """Get InvestigationService instance from container (v2.0 milestone-based)"""
+    from ...services.domain.investigation_service import InvestigationService
+    service = container.get_investigation_service()
+    if service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Investigation service not available"
+        )
+    return service
+
+
 async def get_report_store() -> Optional[IReportStore]:
     """Get ReportStore instance from container"""
     try:
         return container.get_report_store()
     except Exception:
         # Report store is optional - return None if not available
+        return None
+
+
+async def get_case_vector_store():
+    """Get CaseVectorStore instance from container"""
+    try:
+        return container.case_vector_store
+    except Exception:
+        # Case vector store is optional - return None if not available
         return None
 
 
@@ -422,3 +446,5 @@ async def get_job_service() -> Optional[IJobService]:
 async def get_classification_engine():
     """Get QueryClassificationEngine instance from container"""
     return container.get_query_classification_engine()
+
+

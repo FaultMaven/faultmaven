@@ -20,6 +20,7 @@ Key Components:
 
 from typing import List, Optional, Any
 import logging
+from datetime import datetime, timezone
 from faultmaven.config.settings import FaultMavenSettings, get_settings
 
 # Import interfaces with graceful fallback for testing environments
@@ -237,18 +238,32 @@ class DIContainer:
             chunk_trigger_tokens=self.settings.preprocessing.chunk_trigger_tokens
         )
         
-        # Vector store for knowledge base
-        from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+        # ============================================
+        # Vector Store (Configurable Adapter)
+        # ============================================
         try:
-            if not self.settings.server.skip_service_checks:
-                self.vector_store: IVectorStore = ChromaDBVectorStore()
-                logger.debug("Vector store initialized")
+            vector_storage_type = self.settings.database.vector_storage_type.lower()
+
+            if vector_storage_type == "chromadb":
+                # ChromaDB adapter for vector embeddings
+                from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+
+                if not self.settings.server.skip_service_checks:
+                    self.vector_store: IVectorStore = ChromaDBVectorStore()
+                    logger.info(f"✅ Vector store: ChromaDB @ {self.settings.database.chromadb_url}")
+                else:
+                    logger.info("Skipping vector store initialization (SKIP_SERVICE_CHECKS=True)")
+                    self.vector_store = None
             else:
-                logger.info("Skipping vector store initialization (SKIP_SERVICE_CHECKS=True)")
-                self.vector_store = None
+                # In-memory adapter for vector embeddings (default)
+                from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
+
+                self.vector_store = InMemoryVectorStore()
+                logger.debug("Vector store: InMemory (RAM) - simple word-based similarity, data lost on restart")
         except Exception as e:
-            logger.warning(f"Vector store initialization failed: {e}")
-            self.vector_store = None
+            logger.warning(f"Vector store initialization failed; falling back to in-memory: {e}")
+            from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
+            self.vector_store = InMemoryVectorStore()
 
         # Case vector store for Session-Specific RAG (Working Memory)
         from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
@@ -295,43 +310,126 @@ class DIContainer:
             logger.warning(f"Redis client initialization failed: {e}")
             self.redis_client = None
         
-        # Session store for session management (fail-fast unless skipped)
-        from faultmaven.infrastructure.persistence.redis_session_store import RedisSessionStore
-        from faultmaven.infrastructure.persistence.redis_session_manager import RedisSessionManager
+        # ============================================
+        # Session Store (Configurable Adapter)
+        # ============================================
         try:
-            if not self.settings.server.skip_service_checks:
-                # Create RedisSessionStore for low-level ISessionStore interface (used by CaseService, etc.)
-                self.session_store = RedisSessionStore()
-                logger.debug("Session store initialized with RedisSessionStore")
+            session_storage_type = self.settings.database.session_storage_type.lower()
+
+            if session_storage_type == "redis":
+                # Redis adapter for session data
+                from faultmaven.infrastructure.persistence.redis_session_store import RedisSessionStore
+
+                if not self.settings.server.skip_service_checks:
+                    self.session_store = RedisSessionStore()
+                    logger.info(f"✅ Session store: Redis @ {self.settings.database.redis_host}:{self.settings.database.redis_port}")
+                else:
+                    logger.info("Skipping session store initialization (SKIP_SERVICE_CHECKS=True)")
+                    self.session_store = None
             else:
-                logger.info("Skipping session store initialization (SKIP_SERVICE_CHECKS=True)")
-                self.session_store = None
+                # In-memory adapter for session data (default)
+                from faultmaven.infrastructure.persistence.inmemory_session_store import InMemorySessionStore
+
+                self.session_store = InMemorySessionStore()
+                logger.debug("Session store: InMemory (RAM) - data lost on restart")
         except Exception as e:
-            # In production, Redis session store is a hard dependency - fail fast
-            if self.settings.is_production() and not self.settings.server.skip_service_checks:
+            # In production with Redis, fail fast
+            if self.settings.is_production() and session_storage_type == "redis" and not self.settings.server.skip_service_checks:
                 logger.error(f"CRITICAL: Redis session store required in production but initialization failed: {e}")
                 logger.error("Production deployment cannot continue without Redis session store")
                 raise RuntimeError(f"Redis session store required in production: {e}") from e
-            
-            # Only fall back to minimal service in non-production environments
-            logger.warning(f"Redis session store initialization failed in non-production environment; continuing with in-memory minimal service: {e}")
-            self.session_store = None
-        
-        # Case store for case persistence (optional feature)
+
+            # Fall back to in-memory in non-production
+            logger.warning(f"Session store initialization failed; falling back to in-memory: {e}")
+            from faultmaven.infrastructure.persistence.inmemory_session_store import InMemorySessionStore
+            self.session_store = InMemorySessionStore()
+
+        # ============================================
+        # User Repository (Configurable Adapter)
+        # ============================================
         try:
-            from faultmaven.infrastructure.persistence.redis_case_store import RedisCaseStore
-            if not self.settings.server.skip_service_checks:
-                self.case_store: ICaseStore = RedisCaseStore(redis_client=self.redis_client)
-                logger.debug("Case store initialized")
+            user_storage_type = self.settings.database.user_storage_type.lower()
+
+            if user_storage_type == "postgres":
+                # PostgreSQL adapter for user data
+                from faultmaven.infrastructure.persistence.user_repository import PostgreSQLUserRepository
+                from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+                from sqlalchemy.orm import sessionmaker
+
+                auth_engine = create_async_engine(
+                    self.settings.database.auth_db_url,
+                    echo=False,
+                    pool_size=10,
+                    max_overflow=20
+                )
+                auth_session_factory = sessionmaker(auth_engine, class_=AsyncSession, expire_on_commit=False)
+
+                self.user_repository = PostgreSQLUserRepository(auth_session_factory())
+                logger.info(f"✅ User repository: PostgreSQL @ {self.settings.database.auth_db_host}:{self.settings.database.auth_db_port}/{self.settings.database.auth_db_name}")
             else:
-                logger.debug("Case store skipped (SKIP_SERVICE_CHECKS=True)")
-                self.case_store = None
-        except ImportError:
-            logger.debug("Case store not available - case persistence disabled")
-            self.case_store = None
+                # In-memory adapter for user data (default)
+                from faultmaven.infrastructure.persistence.user_repository import InMemoryUserRepository
+
+                self.user_repository = InMemoryUserRepository()
+                logger.debug("User repository: InMemory (RAM) - data lost on restart")
         except Exception as e:
-            logger.warning(f"Case store initialization failed: {e}")
-            self.case_store = None
+            logger.warning(f"User repository initialization failed: {e}")
+            self.user_repository = None
+
+        # ============================================
+        # Case Repository (Configurable Adapter)
+        # ============================================
+        try:
+            case_storage_type = self.settings.database.case_storage_type.lower()
+
+            if case_storage_type == "postgres_hybrid":
+                # PostgreSQL Hybrid adapter (10-table normalized schema)
+                # Production-ready implementation with hybrid normalization
+                # Reference: docs/architecture/case-storage-design.md
+                from faultmaven.infrastructure.persistence.postgresql_hybrid_case_repository import PostgreSQLHybridCaseRepository
+                from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+                from sqlalchemy.orm import sessionmaker
+
+                cases_engine = create_async_engine(
+                    self.settings.database.cases_db_url,
+                    echo=False,
+                    pool_size=10,
+                    max_overflow=20
+                )
+                cases_session_factory = sessionmaker(cases_engine, class_=AsyncSession, expire_on_commit=False)
+
+                self.case_repository = PostgreSQLHybridCaseRepository(cases_session_factory())
+                logger.info(f"✅ Case repository: PostgreSQL Hybrid (10-table schema) @ {self.settings.database.cases_db_host}:{self.settings.database.cases_db_port}/{self.settings.database.cases_db_name}")
+
+            elif case_storage_type == "postgres":
+                # PostgreSQL adapter for case data (legacy single-table JSONB)
+                # NOTE: Deprecated - use postgres_hybrid for production
+                from faultmaven.infrastructure.persistence.case_repository import PostgreSQLCaseRepository
+                from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+                from sqlalchemy.orm import sessionmaker
+
+                cases_engine = create_async_engine(
+                    self.settings.database.cases_db_url,
+                    echo=False,
+                    pool_size=10,
+                    max_overflow=20
+                )
+                cases_session_factory = sessionmaker(cases_engine, class_=AsyncSession, expire_on_commit=False)
+
+                self.case_repository = PostgreSQLCaseRepository(cases_session_factory())
+                logger.info(f"✅ Case repository: PostgreSQL (legacy single-table) @ {self.settings.database.cases_db_host}:{self.settings.database.cases_db_port}/{self.settings.database.cases_db_name}")
+            else:
+                # In-memory adapter for case data (default)
+                from faultmaven.infrastructure.persistence.case_repository import InMemoryCaseRepository
+
+                self.case_repository = InMemoryCaseRepository()
+                logger.debug("Case repository: InMemory (RAM) - data lost on restart")
+        except Exception as e:
+            logger.warning(f"Case repository initialization failed: {e}")
+            self.case_repository = None
+
+        # Legacy case store (deprecated - will be removed)
+        self.case_store = None
 
         # Report store for report persistence (requires vector_store and redis_client)
         try:
@@ -468,24 +566,25 @@ class DIContainer:
         """Create service layer with interface dependencies"""
         import logging
         logger = logging.getLogger(__name__)
-        
-        from faultmaven.services.agentic.orchestration.agent_service import AgentService
+
+        # OLD OODA AgentService removed - use InvestigationService instead
+        # from faultmaven.services.agentic.orchestration.agent_service import AgentService
         from faultmaven.services.domain.data_service import DataService
         from faultmaven.services.domain.knowledge_service import KnowledgeService
         from faultmaven.services.domain.session_service import SessionService
         
-        # Case Service - Case persistence and management (optional)
+        # Case Service - Case persistence and management (v2.0 milestone-based)
         try:
             from faultmaven.services.domain.case_service import CaseService
-            if hasattr(self, 'case_store') and self.case_store:
+            if hasattr(self, 'case_repository') and self.case_repository:
                 self.case_service: ICaseService = CaseService(
-                    case_store=self.case_store,
+                    case_repository=self.case_repository,
                     session_store=self.get_session_store(),
                     report_store=self.get_report_store(),
                     case_vector_store=self.case_vector_store,
                     settings=self.settings
                 )
-                logger.debug("Case service initialized")
+                logger.debug("Case service initialized with milestone-based repository")
             else:
                 # Use cached minimal case service to maintain state across requests
                 self.case_service = self._create_minimal_case_service()
@@ -496,8 +595,40 @@ class DIContainer:
             self.case_service = self._create_minimal_case_service()
         except Exception as e:
             logger.warning(f"Case service initialization failed: {e}, using cached minimal implementation")
-            # Use cached minimal case service to maintain state across requests  
+            # Use cached minimal case service to maintain state across requests
             self.case_service = self._create_minimal_case_service()
+
+        # MilestoneEngine - Core investigation engine (v2.0)
+        try:
+            from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+            if hasattr(self, 'case_repository') and self.case_repository:
+                self.milestone_engine = MilestoneEngine(
+                    llm_provider=self.get_llm_provider(),
+                    repository=self.case_repository,
+                    trace_enabled=True
+                )
+                logger.debug("MilestoneEngine initialized")
+            else:
+                self.milestone_engine = None
+        except Exception as e:
+            logger.warning(f"MilestoneEngine initialization failed: {e}")
+            self.milestone_engine = None
+
+        # InvestigationService - Investigation workflow orchestration (v2.0)
+        try:
+            from faultmaven.services.domain.investigation_service import InvestigationService
+            if hasattr(self, 'milestone_engine') and self.milestone_engine and hasattr(self, 'case_repository') and self.case_repository:
+                self.investigation_service = InvestigationService(
+                    milestone_engine=self.milestone_engine,
+                    case_repository=self.case_repository
+                )
+                logger.debug("InvestigationService initialized")
+            else:
+                self.investigation_service = None
+                logger.debug("InvestigationService not available - milestone engine or repository missing")
+        except Exception as e:
+            logger.warning(f"InvestigationService initialization failed: {e}")
+            self.investigation_service = None
 
         # Session Service - Session management and validation
         try:
@@ -516,32 +647,18 @@ class DIContainer:
             # Create a minimal session service for testing
             self.session_service = self._create_minimal_session_service()
             
-        # Agentic Framework Services - Must be created before AgentService
-        self._create_agentic_framework_services()
-            
-        # Agent Service - Core troubleshooting orchestration with Agentic Framework
-        # Only create if not already set or if it's a mock object (testing scenario)
-        from unittest.mock import MagicMock
-        if (not hasattr(self, 'agent_service') or
-            self.agent_service is None or
-            isinstance(self.agent_service, MagicMock)):
-            self.agent_service = AgentService(
-                llm_provider=self.get_llm_provider(),
-                tools=self.get_tools(),
-                tracer=self.get_tracer(),
-                sanitizer=self.get_sanitizer(),
-                session_service=self.session_service,
-                case_service=self.case_service,
-                settings=self.settings,
-                # Agentic Framework Components (required - direct access during initialization)
-                business_logic_workflow_engine=self.business_logic_workflow_engine,
-                query_classification_engine=self.query_classification_engine,
-                tool_skill_broker=self.tool_skill_broker,
-                guardrails_policy_layer=self.guardrails_policy_layer,
-                response_synthesizer=self.response_synthesizer,
-                error_fallback_manager=self.error_fallback_manager,
-                agent_state_manager=self.agent_state_manager
-            )
+        # OLD OODA Agentic Framework Services - REMOVED
+        # self._create_agentic_framework_services()
+
+        # OLD OODA Agent Service - REMOVED (use InvestigationService instead)
+        # Agent Service was core OODA troubleshooting orchestration
+        # Now replaced by MilestoneEngine + InvestigationService for v2.0
+        # from unittest.mock import MagicMock
+        # if (not hasattr(self, 'agent_service') or
+        #     self.agent_service is None or
+        #     isinstance(self.agent_service, MagicMock)):
+        #     self.agent_service = AgentService(...)
+        self.agent_service = None  # Explicitly set to None for clean architecture
         
         # Data Service - Data processing and analysis
         # Create simple storage backend for development
@@ -840,30 +957,9 @@ class DIContainer:
                 logging.getLogger(__name__).debug(f"Gateway service import failed: {e}")
                 self.gateway_service = None
             
-            # Loop Guard Service - Prevents infinite processing loops
-            try:
-                from faultmaven.core.loop_guard.loop_guard import LoopGuard
-                self.loop_guard_service = LoopGuard()
-                logging.getLogger(__name__).debug("Loop guard service created")
-            except ImportError as e:
-                logging.getLogger(__name__).debug(f"Loop guard service import failed: {e}")
-                self.loop_guard_service = None
-            
-            # Orchestrator Service - Multi-service coordination
-            try:
-                from faultmaven.core.orchestration.troubleshooting_orchestrator import TroubleshootingOrchestrator
-                self.orchestrator_service = TroubleshootingOrchestrator(
-                    memory_service=getattr(self, 'memory_service', None),
-                    planning_service=getattr(self, 'planning_service', None),
-                    reasoning_service=None,  # Legacy parameter - service removed
-                    enhanced_knowledge_service=self.get_knowledge_service(),
-                    llm_provider=self.get_llm_provider(),
-                    tracer=self.get_tracer()
-                )
-                logging.getLogger(__name__).debug("Troubleshooting orchestrator service created")
-            except ImportError as e:
-                logging.getLogger(__name__).debug(f"Orchestrator service import failed: {e}")
-                self.orchestrator_service = None
+            # Legacy services removed - no longer needed
+            self.loop_guard_service = None
+            self.orchestrator_service = None
             
         except Exception as e:
             logging.getLogger(__name__).warning(f"Phase B orchestration services creation failed: {e}")
@@ -1502,7 +1598,25 @@ class DIContainer:
             if not getattr(self, '_initializing', False):
                 self.initialize()
         return getattr(self, 'case_service', None)
-    
+
+    def get_investigation_service(self):
+        """Get the investigation service implementation (v2.0 milestone-based)"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Investigation service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'investigation_service', None)
+
+    def get_milestone_engine(self):
+        """Get the milestone engine implementation (v2.0 core investigation)"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Milestone engine requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'milestone_engine', None)
+
     def get_case_store(self) -> Optional[ICaseStore]:
         """Get the case store implementation (optional feature)"""
         if not self._initialized:
@@ -1540,16 +1654,10 @@ class DIContainer:
                 self.case_history = []
         
         class MockSessionManager:
-            """Mock session manager that tracks operations"""
+            """Mock session manager for testing (spec-compliant v2.0)"""
             def __init__(self):
                 self.sessions = {}
-                
-            async def add_case_history(self, session_id, record):
-                if session_id in self.sessions:
-                    self.sessions[session_id].case_history.append(record)
-                    return True
-                return False
-                
+
 
         class MinimalSessionService:
             def __init__(self):
@@ -1715,7 +1823,7 @@ class DIContainer:
                     case_id=case_id,
                     title=provided_title,
                     description=description or "",
-                    status=CaseStatus.ACTIVE,  # Use enum value
+                    status=CaseStatus.CONSULTING,  # Use enum value
                     priority=CasePriority(priority) if priority else CasePriority.MEDIUM,  # Use enum value
                     owner_id=final_owner_id,
                     message_count=message_count,
@@ -1763,22 +1871,22 @@ class DIContainer:
                 
                 # Phase 1: Apply same core filtering as list_user_cases
                 if filters:
-                    # Phase 1: Default filtering behavior (exclude non-active cases)
+                    # Phase 1: Default filtering behavior (exclude terminal cases)
                     if not getattr(filters, 'include_deleted', False):
-                        # Exclude cases marked as deleted
-                        session_cases = [case for case in session_cases if case.status != CaseStatus.ARCHIVED]
-                    
-                    if not getattr(filters, 'include_archived', False):
-                        # Exclude archived cases
-                        session_cases = [case for case in session_cases if case.status != CaseStatus.ARCHIVED]
-                    
+                        # Exclude closed cases
+                        session_cases = [case for case in session_cases if case.status != CaseStatus.CLOSED]
+
+                    if not getattr(filters, 'include_terminal', False):
+                        # Exclude terminal cases (resolved and closed)
+                        session_cases = [case for case in session_cases if case.status not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]]
+
                     if not getattr(filters, 'include_empty', False):
                         # Exclude empty cases (message_count == 0)
                         session_cases = [case for case in session_cases if getattr(case, 'message_count', 1) > 0]
                 else:
                     # Phase 1: No filters provided - apply default exclusions (same as list_user_cases)
-                    # Exclude archived/deleted cases by default
-                    session_cases = [case for case in session_cases if case.status == CaseStatus.ACTIVE]
+                    # Only show active (non-terminal) cases by default
+                    session_cases = [case for case in session_cases if case.status in [CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]]
                     # Exclude empty cases by default
                     session_cases = [case for case in session_cases if getattr(case, 'message_count', 1) > 0]
                 
@@ -1790,22 +1898,22 @@ class DIContainer:
                 
                 # Phase 1: Apply same core filtering as list_cases_by_session
                 if filters:
-                    # Phase 1: Default filtering behavior (exclude non-active cases)
+                    # Phase 1: Default filtering behavior (exclude terminal cases)
                     if not getattr(filters, 'include_deleted', False):
-                        # Exclude cases marked as deleted
-                        session_cases = [case for case in session_cases if case.status != CaseStatus.ARCHIVED]
-                    
-                    if not getattr(filters, 'include_archived', False):
-                        # Exclude archived cases
-                        session_cases = [case for case in session_cases if case.status != CaseStatus.ARCHIVED]
-                    
+                        # Exclude closed cases
+                        session_cases = [case for case in session_cases if case.status != CaseStatus.CLOSED]
+
+                    if not getattr(filters, 'include_terminal', False):
+                        # Exclude terminal cases (resolved and closed)
+                        session_cases = [case for case in session_cases if case.status not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]]
+
                     if not getattr(filters, 'include_empty', False):
                         # Exclude empty cases (message_count == 0)
                         session_cases = [case for case in session_cases if getattr(case, 'message_count', 1) > 0]
                 else:
                     # Phase 1: No filters provided - apply default exclusions (same as list_cases_by_session)
-                    # Exclude archived/deleted cases by default
-                    session_cases = [case for case in session_cases if case.status == CaseStatus.ACTIVE]
+                    # Only show active (non-terminal) cases by default
+                    session_cases = [case for case in session_cases if case.status in [CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]]
                     # Exclude empty cases by default
                     session_cases = [case for case in session_cases if getattr(case, 'message_count', 1) > 0]
                 
@@ -1867,21 +1975,20 @@ class DIContainer:
                 
                 # Phase 1: Apply core filtering - exclude deleted/archived/empty by default
                 if filters:
-                    # Phase 1: Default filtering behavior (exclude non-active cases)
+                    # Phase 1: Default filtering behavior (exclude terminal cases)
                     if not getattr(filters, 'include_deleted', False):
-                        # Exclude cases marked as deleted (we'll use ARCHIVED status as "deleted" marker for now)
-                        # In full implementation, this would check a deleted flag or soft delete status
-                        user_cases = [case for case in user_cases if case.status != CaseStatus.ARCHIVED]
-                    
-                    if not getattr(filters, 'include_archived', False):
-                        # Exclude archived cases (already handled above for delete, but explicit for clarity)
-                        user_cases = [case for case in user_cases if case.status != CaseStatus.ARCHIVED]
-                    
+                        # Exclude closed cases
+                        user_cases = [case for case in user_cases if case.status != CaseStatus.CLOSED]
+
+                    if not getattr(filters, 'include_terminal', False):
+                        # Exclude terminal cases (resolved and closed)
+                        user_cases = [case for case in user_cases if case.status not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]]
+
                     if not getattr(filters, 'include_empty', False):
                         # Exclude empty cases (message_count == 0)
                         # For MinimalCaseService, we'll consider all cases as having at least 1 message unless explicitly marked
                         user_cases = [case for case in user_cases if getattr(case, 'message_count', 1) > 0]
-                    
+
                     # Apply other existing filters
                     if hasattr(filters, 'status') and filters.status:
                         user_cases = [case for case in user_cases if case.status == filters.status]
@@ -1891,8 +1998,8 @@ class DIContainer:
                         user_cases = [case for case in user_cases if case.owner_id == filters.owner_id]
                 else:
                     # Phase 1: No filters provided - apply default exclusions
-                    # Exclude archived/deleted cases by default
-                    user_cases = [case for case in user_cases if case.status == CaseStatus.ACTIVE]
+                    # Only show active (non-terminal) cases by default
+                    user_cases = [case for case in user_cases if case.status in [CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]]
                     # Exclude empty cases by default
                     user_cases = [case for case in user_cases if getattr(case, 'message_count', 1) > 0]
                 
@@ -1918,19 +2025,19 @@ class DIContainer:
                 
                 # Phase 1: Apply same core filtering as list_user_cases
                 if filters:
-                    # Phase 1: Default filtering behavior (exclude non-active cases)
+                    # Phase 1: Default filtering behavior (exclude terminal cases)
                     if not getattr(filters, 'include_deleted', False):
-                        # Exclude cases marked as deleted (we'll use ARCHIVED status as "deleted" marker for now)
-                        user_cases = [case for case in user_cases if case.status != CaseStatus.ARCHIVED]
-                    
-                    if not getattr(filters, 'include_archived', False):
-                        # Exclude archived cases (already handled above for delete, but explicit for clarity)
-                        user_cases = [case for case in user_cases if case.status != CaseStatus.ARCHIVED]
-                    
+                        # Exclude closed cases
+                        user_cases = [case for case in user_cases if case.status != CaseStatus.CLOSED]
+
+                    if not getattr(filters, 'include_terminal', False):
+                        # Exclude terminal cases (resolved and closed)
+                        user_cases = [case for case in user_cases if case.status not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]]
+
                     if not getattr(filters, 'include_empty', False):
                         # Exclude empty cases (message_count == 0)
                         user_cases = [case for case in user_cases if getattr(case, 'message_count', 1) > 0]
-                    
+
                     # Apply other existing filters
                     if hasattr(filters, 'status') and filters.status:
                         user_cases = [case for case in user_cases if case.status == filters.status]
@@ -1940,31 +2047,12 @@ class DIContainer:
                         user_cases = [case for case in user_cases if case.owner_id == filters.owner_id]
                 else:
                     # Phase 1: No filters provided - apply default exclusions (same as list_user_cases)
-                    # Exclude archived/deleted cases by default
-                    user_cases = [case for case in user_cases if case.status == CaseStatus.ACTIVE]
+                    # Only show active (non-terminal) cases by default
+                    user_cases = [case for case in user_cases if case.status in [CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]]
                     # Exclude empty cases by default
                     user_cases = [case for case in user_cases if getattr(case, 'message_count', 1) > 0]
                 
                 return len(user_cases)
-                
-            async def archive_case(self, case_id: str, reason: str = None, user_id: str = None) -> bool:
-                """Archive a case by updating its status to ARCHIVED"""
-                if case_id not in self.cases:
-                    return False
-                
-                # Update case status to archived
-                self.cases[case_id].status = CaseStatus.ARCHIVED
-                self.cases[case_id].updated_at = datetime.now(timezone.utc)
-                
-                # Store archive reason in metadata if provided
-                if reason:
-                    if not hasattr(self.cases[case_id], 'metadata') or self.cases[case_id].metadata is None:
-                        self.cases[case_id].metadata = {}
-                    self.cases[case_id].metadata['archive_reason'] = reason
-                    if user_id:
-                        self.cases[case_id].metadata['archived_by'] = user_id
-                
-                return True
                 
             async def hard_delete_case(self, case_id: str, user_id: str = None) -> bool:
                 """Permanently delete a case and all associated data (idempotent)"""
@@ -2201,7 +2289,15 @@ class DIContainer:
                 if 'description' in updates:
                     case.description = updates.get('description', '')
                 if 'status' in updates:
-                    case.status = CaseStatus(updates['status']) if updates['status'] else case.status
+                    status_value = updates['status']
+                    if status_value:
+                        # Validate status before setting
+                        valid_statuses = {'consulting', 'investigating', 'resolved', 'closed'}
+                        if status_value not in valid_statuses:
+                            raise ValueError(
+                                f"Invalid case status '{status_value}'. Valid statuses: {valid_statuses}"
+                            )
+                        case.status = CaseStatus(status_value)
                 if 'priority' in updates:
                     case.priority = CasePriority(updates['priority']) if updates['priority'] else case.priority
                 
@@ -2337,22 +2433,12 @@ class DIContainer:
         return getattr(self, 'gateway_service', None)
     
     def get_loop_guard_service(self):
-        """Get the loop guard service"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Loop guard service requested but container not initialized")
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        return getattr(self, 'loop_guard_service', None)
+        """Get the loop guard service (legacy - always returns None)"""
+        return None
     
     def get_orchestrator_service(self):
-        """Get the orchestrator service"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Orchestrator service requested but container not initialized")
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        return getattr(self, 'orchestrator_service', None)
+        """Get the orchestrator service (legacy - always returns None)"""
+        return None
     
     def get_redis_client(self):
         """Get the Redis client for job persistence and caching"""

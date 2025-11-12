@@ -9,7 +9,8 @@ and maintaining clear separation between persistence and presentation layers.
 from typing import List, Optional, Union
 from datetime import datetime, timezone
 from uuid import uuid4
-from faultmaven.models.case import Case as CaseEntity, CaseSummary
+from faultmaven.models.case import Case as CaseEntity
+from faultmaven.models.api_models import CaseSummary
 from faultmaven.models.api import Case as CaseAPI
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -40,7 +41,7 @@ class CaseConverter:
             case_id=getattr(case_entity, 'case_id', str(uuid4())),
             title=getattr(case_entity, 'title', 'Untitled Case'),
             description=getattr(case_entity, 'description', None),
-            status=case_entity.status.value if hasattr(case_entity.status, 'value') else str(getattr(case_entity, 'status', 'active')),
+            status=case_entity.status.value if hasattr(case_entity.status, 'value') else str(getattr(case_entity, 'status', 'consulting')),
             priority=case_entity.priority.value if hasattr(case_entity.priority, 'value') else str(getattr(case_entity, 'priority', 'medium')),
             created_at=to_json_compatible(case_entity.created_at) if hasattr(case_entity.created_at, 'isoformat') else str(getattr(case_entity, 'created_at', to_json_compatible(datetime.now(timezone.utc)))),
             updated_at=to_json_compatible(case_entity.updated_at) if hasattr(case_entity.updated_at, 'isoformat') else str(getattr(case_entity, 'updated_at', to_json_compatible(datetime.now(timezone.utc)))),

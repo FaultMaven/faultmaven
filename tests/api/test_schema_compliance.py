@@ -109,34 +109,41 @@ class TestResponseSchemaCompliance:
         await client.delete(f"/api/v1/sessions/{session_id}")
     
     @pytest.mark.api 
+    @pytest.mark.skip(reason="FIXME: /data/upload endpoint removed - use /cases/{case_id}/data instead")
     async def test_data_upload_response_schema_compliance(self, client: AsyncClient):
-        """Validate data upload endpoints return proper schema-compliant responses."""
-        
-        # Create session
-        session_response = await client.post("/api/v1/sessions/")
-        session_id = session_response.json()["session_id"]
-        
-        # Test data upload response - Note: current implementation returns dict, not DataUploadResponse
-        files = {"file": ("schema_test.log", b"ERROR: Schema validation test", "text/plain")}
-        data = {"session_id": session_id, "description": "Schema compliance test"}
-        
-        upload_response = await client.post("/api/v1/data/upload", files=files, data=data)
-        assert upload_response.status_code == 201
-        
-        response_data = upload_response.json()
-        
-        # Current implementation returns dict - validate it has expected structure
-        required_fields = ["data_id", "session_id", "data_type", "processing_status"]
-        for field in required_fields:
-            assert field in response_data, f"Missing required field in data upload response: {field}"
-        
-        # Validate field types
-        assert isinstance(response_data["data_id"], str)
-        assert isinstance(response_data["session_id"], str)
-        assert isinstance(response_data["processing_status"], str)
-        
-        # Clean up
-        await client.delete(f"/api/v1/sessions/{session_id}")
+        """Validate data upload endpoints return proper schema-compliant responses.
+
+        NOTE: This test is disabled because /api/v1/data/upload endpoint was removed.
+        Data uploads now use the RESTful case-scoped endpoint: POST /api/v1/cases/{case_id}/data
+        Schema validation should be moved to test_case_endpoints.py
+        """
+        pass
+        # # ORIGINAL TEST (kept for reference):
+        # # Create session
+        # session_response = await client.post("/api/v1/sessions/")
+        # session_id = session_response.json()["session_id"]
+        #
+        # # Test data upload response - Note: current implementation returns dict, not DataUploadResponse
+        # files = {"file": ("schema_test.log", b"ERROR: Schema validation test", "text/plain")}
+        # data = {"session_id": session_id, "description": "Schema compliance test"}
+        #
+        # upload_response = await client.post("/api/v1/data/upload", files=files, data=data)
+        # assert upload_response.status_code == 201
+        #
+        # response_data = upload_response.json()
+        #
+        # # Current implementation returns dict - validate it has expected structure
+        # required_fields = ["data_id", "session_id", "data_type", "processing_status"]
+        # for field in required_fields:
+        #     assert field in response_data, f"Missing required field in data upload response: {field}"
+        #
+        # # Validate field types
+        # assert isinstance(response_data["data_id"], str)
+        # assert isinstance(response_data["session_id"], str)
+        # assert isinstance(response_data["processing_status"], str)
+        #
+        # # Clean up
+        # await client.delete(f"/api/v1/sessions/{session_id}")
     
     @pytest.mark.api
     async def test_knowledge_document_response_schema_compliance(self, client: AsyncClient):

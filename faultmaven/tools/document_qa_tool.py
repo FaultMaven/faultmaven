@@ -139,8 +139,19 @@ class DocumentQATool(LangChainBaseTool):
 
         if not chunks:
             logger.info(f"No chunks found in collection: {collection}")
+            # This can happen if:
+            # 1. No files uploaded yet
+            # 2. Background vectorization still in progress
+            # 3. Vectorization failed
             return {
-                "answer": "No documents found.",
+                "answer": (
+                    "No evidence documents are available for deep analysis yet. "
+                    "This could mean:\n"
+                    "- No files have been uploaded to this case\n"
+                    "- Uploaded files are still being indexed (usually takes 5-15 seconds)\n"
+                    "- Evidence indexing failed (check logs)\n\n"
+                    "Note: You can still ask about the file summaries I received when the files were uploaded."
+                ),
                 "sources": [],
                 "chunk_count": 0,
                 "confidence": 0.0

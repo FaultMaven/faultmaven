@@ -1,63 +1,63 @@
 # FaultMaven Documentation Map and Status
 
-**Version:** 1.0  
-**Last Updated:** 2025-10-10  
-**Purpose:** Navigation guide and creation roadmap for all architecture documentation
+**Version:** 2.0  
+**Last Updated:** 2025-11-04  
+**Purpose:** Navigation guide for v2.0 milestone-based architecture documentation
+
+---
+
+## ⚠️ Major Architecture Update (v2.0)
+
+**Investigation framework redesigned** from 7-phase OODA model to **milestone-based opportunistic completion**.
+
+**Superseded Documents** (moved to `/archive/`):
+- ~~Investigation Phases and OODA Integration Framework v2.1~~ → milestone-based-investigation-framework.md v2.0
+- ~~Evidence Collection and Tracking Design v2.1~~ → case-data-model-design.md v2.0
+- ~~Investigation State and Control Design~~ → milestone-based-investigation-framework.md v2.0
+- ~~Prompt Engineering Architecture~~ → prompt-engineering-guide.md v2.0
+- ~~Data Models Reference~~ → case-data-model-design.md v2.0
 
 ---
 
 ## Document Organization Structure
 
-This map shows all FaultMaven design documents organized by functional area, with status indicators.
-
 **Status Legend**:
-- ✅ **Exists** - Document created and maintained
-- 📝 **To be created** - Document planned, buckets created
+- ✅ **Current** - v2.0 production specification
 - 🎯 **Authoritative** - Source of truth for this domain
-- 🔄 **Legacy** - Historical, superseded by newer design
+- 📝 **Needs Update** - References old design
+- 🔄 **Archived** - Superseded by v2.0
 
 ---
 
-## 1. Foundation Documents
+## 1. Core Investigation Architecture (v2.0) 🎯
 
 | Document | Status | Description | Priority |
 |----------|--------|-------------|----------|
-| System Requirements Specification (SRS) v2.0 | ✅ 🎯 | 62 requirements: Response Types, Case Management, Performance, Security | CRITICAL |
-| Investigation Phases and OODA Integration Framework v2.1 | ✅ 🎯 | 7-phase lifecycle (0-6), OODA steps, engagement modes, state management | CRITICAL |
+| **Investigation Architecture** ([milestone-based-investigation-framework.md](./milestone-based-investigation-framework.md)) | ✅ 🎯 | Milestone-based investigation framework, lifecycle, stages | CRITICAL |
+| **Case Data Model Design** ([case-data-model-design.md](./case-data-model-design.md)) | ✅ 🎯 | Complete data models, validation rules, schemas | CRITICAL |
+| **DB Design Specifications** ([db-design-specifications.md](./db-design-specifications.md)) | ✅ 🎯 | PostgreSQL schema, JSONB fields, migrations | CRITICAL |
+| **Prompt Engineering Guide** ([prompt-engineering-guide.md](./prompt-engineering-guide.md)) | ✅ 🎯 | Three-template system, LLM interaction patterns | CRITICAL |
+| **Prompt Templates** ([prompt-templates.md](./prompt-templates.md)) | ✅ | Implementation-ready prompt code | HIGH |
+| **Prompt Implementation Examples** ([prompt-implementation-examples.md](./prompt-implementation-examples.md)) | ✅ | Complete integration code examples | HIGH |
 
-**Purpose**: Define WHAT the system must do (SRS) and HOW investigations flow (Framework)
+**Purpose**: Define HOW investigation works in v2.0 (milestone-based, opportunistic completion)
+
+**Key Principles**:
+- Milestones track completion, not position
+- Agent completes multiple milestones in one turn if data allows
+- 4 case statuses: CONSULTING, INVESTIGATING, RESOLVED, CLOSED
+- 3 investigation stages (computed): UNDERSTANDING, DIAGNOSING, RESOLVING
 
 ---
 
-## 2. Core Investigation Components
+## 2. Supporting Architecture
 
 | Document | Status | Description | Priority |
 |----------|--------|-------------|----------|
-| Evidence Collection and Tracking Design v2.1 | ✅ 🎯 | Evidence schemas, 5D classification, strategies, agent prompts | CRITICAL |
-| Case Lifecycle Management v1.0 | ✅ 🎯 | Case status state machine (7 states), transition rules, stall detection | HIGH |
-| Case and Session Concepts | ✅ | Case vs Session distinction, multi-session architecture | HIGH |
-| Conversation Intelligence Design | 📝 | Circular dialogue detection, progress measurement, dead-end prevention | HIGH |
-
-**Purpose**: Core investigation mechanics and case management
-
-**To Create - Conversation Intelligence Design**:
-- Circular dialogue detection algorithms (FR-CNV-002 requirement)
-- Progressive dialogue measurement (FR-CNV-003 requirement)
-- Information completeness tracking
-- Dead-end detection and recovery
-- Conversation phase advancement triggers
-
----
-
-## 3. AI Agent Architecture
-
-| Document | Status | Description | Priority |
-|----------|--------|-------------|----------|
-| Investigation Phases and OODA Integration Framework v2.1 | ✅ 🎯 | **IMPLEMENTED**: 7-phase investigation, OODA engine, phase handlers | CRITICAL |
-| Query Classification and Prompt Engineering | ✅ | 17 intent taxonomy, 9 ResponseTypes, pattern classification | HIGH |
-| Prompt Engineering Architecture | 📝 | Multi-layer prompting, optimization, version management | MEDIUM |
-| Agent Orchestration Design | ✅ | Agent workflow coordination, reasoning engine | MEDIUM |
-| Planning System Architecture | 📝 | Problem decomposition, strategic planning, risk assessment | MEDIUM |
+| Case and Session Concepts | ✅ | Case vs Session distinction, multi-device support | HIGH |
+| Knowledge Base Architecture | ✅ | Vector database, RAG, knowledge retrieval | HIGH |
+| Data Preprocessing Design | ✅ | Data preprocessing pipeline | MEDIUM |
+| QA Tools Design | ✅ | Question answering tools and sub-agents | MEDIUM |
 
 **Purpose**: AI agent intelligence, classification, and reasoning
 
@@ -81,20 +81,14 @@ This map shows all FaultMaven design documents organized by functional area, wit
 
 | Document | Status | Description | Priority |
 |----------|--------|-------------|----------|
-| Schema v3.1.0 Design | 📝 | v3.1.0 API schema, AgentResponse, ViewState, validation | CRITICAL |
+| Schema v3.1.0 Design | ✅ | v3.1.0 API schema documented in [architecture-overview.md](./architecture-overview.md#v310-schema-architecture) | CRITICAL |
 | Data Submission Design | ✅ | 10K limit, pattern matching, async/sync processing | MEDIUM |
 | Data Flow Architecture | 📝 | End-to-end request lifecycle, middleware, response assembly | HIGH |
 | API Contracts and Integration | 📝 | REST endpoints, formats, error codes, versioning | MEDIUM |
 
 **Purpose**: API contracts, data models, and integration specifications
 
-**To Create - Schema v3.1.0 Design**:
-- Complete AgentResponse schema
-- ViewState structure and fields
-- Source attribution model
-- Schema validation rules
-- Request/response examples
-- Breaking changes from v3.0
+**Note**: Schema v3.1.0 is fully documented within the architecture-overview.md document (see section "v3.1.0 Schema Architecture")
 
 **To Create - Data Flow Architecture**:
 - Complete request lifecycle (from client to response)
@@ -138,20 +132,14 @@ This map shows all FaultMaven design documents organized by functional area, wit
 | Document | Status | Description | Priority |
 |----------|--------|-------------|----------|
 | Dependency Injection System | ✅ | DI container, service interfaces, lifecycle management | HIGH |
-| LLM Provider Integration | 📝 | Multi-provider routing, failover, cost tracking | HIGH |
-| Observability and Tracing | 📝 | Distributed tracing, metrics, monitoring, alerting | HIGH |
+| LLM Provider Integration | ✅ | See [how-to-add-providers.md](../../development/how-to-add-providers.md) | HIGH |
+| Observability and Tracing | ✅ | Implemented - see `infrastructure/observability/tracing.py` | HIGH |
 | Persistence Layer Design | 📝 | Redis, ChromaDB, data durability, backup | HIGH |
-| Memory Management Architecture | 📝 | Memory hierarchy, consolidation, decay mechanisms | MEDIUM |
+| Memory Management Architecture | ✅ | See `core/investigation/memory_manager.py` - hierarchical memory with LLM compression | MEDIUM |
 
 **Purpose**: Infrastructure services and cross-cutting concerns
 
-**To Create - LLM Provider Integration**:
-- Provider abstraction interface
-- OpenAI, Anthropic, Fireworks implementations
-- Automatic failover logic
-- Cost tracking and budgeting
-- Token usage monitoring
-- Provider selection algorithms
+**Note**: LLM provider integration is fully documented in the development guide with step-by-step instructions for adding new providers
 
 **To Create - Observability and Tracing**:
 - Opik integration architecture
@@ -292,10 +280,11 @@ This map shows all FaultMaven design documents organized by functional area, wit
 
 | Document | Status | Description | Priority |
 |----------|--------|-------------|----------|
-| Implementation Module Mapping | 📝 | File-by-file code organization breakdown | HIGH |
+| Implementation Module Mapping | 📝 | File-by-file code organization breakdown | **HIGH PRIORITY** |
+| Data Models Reference | 📝 | Comprehensive model catalog with field descriptions | **HIGH PRIORITY** |
 | Design Patterns Guide | 📝 | Implementation patterns with code examples | MEDIUM |
 | Service Layer Patterns | ✅ | Service implementation patterns | MEDIUM |
-| Interface-Based Design Guide | ✅ | Interface definitions and guidelines | MEDIUM |
+| Interface-Based Design Guide | ✅ | See [interface-based-design.md](./interface-based-design.md) | MEDIUM |
 
 **Purpose**: Code organization and implementation patterns
 
@@ -539,6 +528,14 @@ When updating related documents:
 **Maintained By**: Architecture Team  
 **Review Cycle**: Monthly  
 **Next Review**: 2025-11-10
+
+
+
+
+
+
+
+
 
 
 

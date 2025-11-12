@@ -56,6 +56,10 @@ class TrailingSlashMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
             return response
         except Exception as e:
-            logger.error(f"Error in trailing slash middleware: {e}")
-            # Return the original error
+            # Log the error cleanly without trying to serialize exception objects
+            logger.error(
+                f"Error in trailing slash middleware: {type(e).__name__}: {str(e)}",
+                exc_info=False  # Avoid serialization issues with exception objects
+            )
+            # Re-raise to let FastAPI handle it properly
             raise

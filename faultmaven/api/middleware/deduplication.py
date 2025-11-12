@@ -24,6 +24,7 @@ from ...models.protection import (
     ProtectionErrorResponse
 )
 from ...infrastructure.protection import RequestHasher
+from ...utils.serialization import to_json_compatible
 
 
 class DeduplicationMiddleware(BaseHTTPMiddleware):
@@ -133,10 +134,14 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             return self._create_duplicate_error_response(e, request)
             
         except Exception as e:
-            self.logger.error(f"Deduplication error: {e}")
+            # Log the error cleanly without trying to serialize exception objects
+            self.logger.error(
+                f"Deduplication error: {type(e).__name__}: {str(e)}",
+                exc_info=False  # Avoid serialization issues
+            )
             self.metrics["errors"] += 1
-            
-            # Fail open
+
+            # Fail open - re-raise to let upstream handle it
             if self.settings.fail_open_on_redis_error:
                 return await call_next(request)
             else:

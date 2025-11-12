@@ -1,17 +1,24 @@
 """
 Data Classification Service
 
-Fast, rule-based classification (0 LLM calls) with 3-tier prioritization:
+Fast, rule-based classification (0 LLM calls) with 5-tier prioritization:
 1. User override (confidence=1.0)
 2. Agent hint (confidence=0.95)
-3. Browser context (confidence=0.90)
-4. Rule-based patterns (confidence=0.60-0.98)
+3. Source URL patterns (confidence=0.88-0.94) - for page captures
+4. Browser context (confidence=0.85-0.92)
+5. Rule-based patterns with file upload boost (confidence=0.60-0.98)
+
+Optimized for /data endpoint (file uploads + page captures).
+Copy&paste text is handled by /queries endpoint with separate classification.
 """
 
 import re
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from faultmaven.models.api import DataType, ClassificationResult
+
+if TYPE_CHECKING:
+    from faultmaven.models.api import SourceMetadata
 
 
 class DataClassifier:
@@ -28,16 +35,18 @@ class DataClassifier:
         content: str,
         agent_hint: Optional[DataType] = None,
         browser_context: Optional[str] = None,
-        user_override: Optional[DataType] = None
+        user_override: Optional[DataType] = None,
+        source_metadata: Optional['SourceMetadata'] = None
     ) -> ClassificationResult:
         """
-        3-tier classification with confidence scoring
+        5-tier classification with confidence scoring
 
-        Priority order:
-        1. User override (highest)
-        2. Agent hint
-        3. Browser context
-        4. Rule-based patterns (fallback)
+        Priority order (optimized for /data endpoint):
+        1. User override (highest - confidence=1.0)
+        2. Agent hint (confidence=0.95 if validated)
+        3. Source URL patterns (confidence=0.88-0.94) - NEW for page captures
+        4. Browser context (confidence=0.85-0.92)
+        5. Rule-based patterns with file upload boost (fallback)
 
         Args:
             filename: Original filename
@@ -45,6 +54,7 @@ class DataClassifier:
             agent_hint: Expected data type from agent
             browser_context: Page type from browser extension
             user_override: User-selected type (from fallback modal)
+            source_metadata: Optional source info (URL, capture time, source type)
 
         Returns:
             ClassificationResult with data_type, confidence, and source
@@ -68,14 +78,24 @@ class DataClassifier:
                 classification_failed=False
             )
 
-        # Priority 3: Browser context (90% confidence)
+        # Priority 3: Source URL patterns (page captures - NEW)
+        # Higher confidence than browser_context because URL is more specific
+        if source_metadata and source_metadata.source_url:
+            url_result = self._classify_from_source_url(
+                source_metadata.source_url,
+                source_metadata.source_type
+            )
+            if url_result:
+                return url_result
+
+        # Priority 4: Browser context (confidence adjusted for ranking)
         if browser_context:
             context_result = self._classify_from_browser_context(browser_context)
             if context_result:
                 return context_result
 
-        # Priority 4: Rule-based patterns (fallback)
-        return self._classify_with_rules(filename, content)
+        # Priority 5: Rule-based patterns with source_type boost
+        return self._classify_with_rules(filename, content, source_metadata)
 
     def _validate_hint(self, filename: str, content: str, hint: DataType) -> bool:
         """
@@ -113,22 +133,105 @@ class DataClassifier:
         # Other types: accept hint (can't validate easily)
         return True
 
+    def _classify_from_source_url(
+        self,
+        source_url: str,
+        source_type: str
+    ) -> Optional[ClassificationResult]:
+        """
+        Classify based on source URL patterns (Priority 3)
+
+        Higher confidence than browser_context because URL is more specific.
+        Handles page captures from monitoring/observability tools.
+
+        Args:
+            source_url: URL where content was captured from
+            source_type: Type of source ("page_capture", "file_upload", etc.)
+
+        Returns:
+            ClassificationResult if URL matches known patterns, None otherwise
+        """
+        url_lower = source_url.lower()
+
+        # URL pattern mappings: (pattern, data_type, confidence)
+        # Confidence: 0.88-0.94 (higher than browser_context due to specificity)
+        url_patterns = [
+            # Error Tracking & Logs platforms
+            ('sentry.io', DataType.LOGS_AND_ERRORS, 0.94),
+            ('bugsnag.com', DataType.LOGS_AND_ERRORS, 0.94),
+            ('rollbar.com', DataType.LOGS_AND_ERRORS, 0.94),
+            ('app.datadoghq.com/logs', DataType.LOGS_AND_ERRORS, 0.92),
+            ('kibana', DataType.LOGS_AND_ERRORS, 0.92),
+            ('splunk.com', DataType.LOGS_AND_ERRORS, 0.92),
+            ('logz.io', DataType.LOGS_AND_ERRORS, 0.90),
+            ('papertrailapp.com', DataType.LOGS_AND_ERRORS, 0.90),
+            ('/logs/', DataType.LOGS_AND_ERRORS, 0.85),  # Generic logs path
+
+            # APM & Metrics platforms
+            ('grafana', DataType.METRICS_AND_PERFORMANCE, 0.92),
+            ('app.datadoghq.com/apm', DataType.METRICS_AND_PERFORMANCE, 0.92),
+            ('app.datadoghq.com/metric', DataType.METRICS_AND_PERFORMANCE, 0.92),
+            ('app.datadoghq.com/dashboard', DataType.METRICS_AND_PERFORMANCE, 0.90),
+            ('prometheus', DataType.METRICS_AND_PERFORMANCE, 0.92),
+            ('newrelic.com', DataType.METRICS_AND_PERFORMANCE, 0.90),
+            ('honeycomb.io', DataType.METRICS_AND_PERFORMANCE, 0.90),
+            ('jaeger', DataType.METRICS_AND_PERFORMANCE, 0.88),
+            ('zipkin', DataType.METRICS_AND_PERFORMANCE, 0.88),
+            ('/metrics/', DataType.METRICS_AND_PERFORMANCE, 0.85),  # Generic metrics path
+            ('/dashboard/', DataType.METRICS_AND_PERFORMANCE, 0.82),  # Generic dashboard
+
+            # Cloud Platform Consoles
+            ('console.aws.amazon.com/cloudwatch', DataType.METRICS_AND_PERFORMANCE, 0.90),
+            ('console.cloud.google.com/logs', DataType.LOGS_AND_ERRORS, 0.90),
+            ('portal.azure.com', DataType.METRICS_AND_PERFORMANCE, 0.88),
+
+            # Source code platforms
+            ('github.com', DataType.SOURCE_CODE, 0.90),
+            ('gitlab.com', DataType.SOURCE_CODE, 0.90),
+            ('bitbucket.org', DataType.SOURCE_CODE, 0.90),
+
+            # Documentation platforms
+            ('readthedocs.io', DataType.UNSTRUCTURED_TEXT, 0.88),
+            ('docs.', DataType.UNSTRUCTURED_TEXT, 0.88),
+            ('confluence', DataType.UNSTRUCTURED_TEXT, 0.88),
+            ('notion.so', DataType.UNSTRUCTURED_TEXT, 0.88),
+        ]
+
+        for pattern, data_type, confidence in url_patterns:
+            if pattern in url_lower:
+                # Boost confidence slightly for page_capture vs file_upload
+                if source_type == "page_capture":
+                    confidence = min(confidence + 0.02, 0.98)
+
+                return ClassificationResult(
+                    data_type=data_type,
+                    confidence=confidence,
+                    source="source_url",
+                    classification_failed=False
+                )
+
+        return None
+
     def _classify_from_browser_context(self, context: str) -> Optional[ClassificationResult]:
         """
-        Classify based on browser page type
+        Classify based on browser page type (Priority 4)
 
         Supports: grafana, kibana, sentry, datadog, splunk, prometheus
+
+        Note: Confidence lowered from 0.90 to 0.85-0.92 because source_url
+        classification (Priority 3) is now more reliable for page captures.
         """
         context = context.lower()
 
         # Mapping: page_type -> (data_type, confidence)
+        # Confidence adjusted: now lower priority than source_url
         context_mappings = {
-            'grafana': (DataType.METRICS_AND_PERFORMANCE, 0.90),
-            'kibana': (DataType.LOGS_AND_ERRORS, 0.90),
             'sentry': (DataType.LOGS_AND_ERRORS, 0.92),
-            'datadog': (DataType.METRICS_AND_PERFORMANCE, 0.88),
+            'kibana': (DataType.LOGS_AND_ERRORS, 0.90),
             'splunk': (DataType.LOGS_AND_ERRORS, 0.90),
+            'grafana': (DataType.METRICS_AND_PERFORMANCE, 0.90),
             'prometheus': (DataType.METRICS_AND_PERFORMANCE, 0.92),
+            'datadog': (DataType.METRICS_AND_PERFORMANCE, 0.88),
             'jaeger': (DataType.METRICS_AND_PERFORMANCE, 0.85),
             'zipkin': (DataType.METRICS_AND_PERFORMANCE, 0.85),
         }
@@ -144,21 +247,42 @@ class DataClassifier:
 
         return None
 
-    def _classify_with_rules(self, filename: str, content: str) -> ClassificationResult:
+    def _classify_with_rules(
+        self,
+        filename: str,
+        content: str,
+        source_metadata: Optional['SourceMetadata'] = None
+    ) -> ClassificationResult:
         """
-        Rule-based classification with confidence scoring
+        Rule-based classification with confidence scoring (Priority 5)
 
-        Uses extension + content pattern matching
+        Uses extension + content pattern matching.
+        Boosts confidence for file uploads (more reliable than page captures).
+
+        Args:
+            filename: Original filename
+            content: File content (first 5KB for sampling)
+            source_metadata: Optional source info for confidence boosting
+
+        Returns:
+            ClassificationResult
         """
         # Sample content (first 5KB for performance)
         sample = content[:5000].lower()
         ext = Path(filename).suffix.lower()
 
+        # Confidence boost for file uploads (file extensions are trustworthy)
+        is_file_upload = (
+            source_metadata and
+            source_metadata.source_type == "file_upload"
+        )
+        confidence_boost = 0.03 if is_file_upload else 0.0
+
         # 1. Check for VISUAL_EVIDENCE (highest priority - most specific)
         if ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']:
             return ClassificationResult(
                 data_type=DataType.VISUAL_EVIDENCE,
-                confidence=0.98,
+                confidence=min(0.98 + confidence_boost, 0.99),
                 source="rule_based",
                 classification_failed=False
             )
@@ -188,10 +312,10 @@ class DataClassifier:
 
         # Strong indicator: .log file with any log patterns
         if ext in ['.log', '.txt'] and (text_score >= 2 or structured_score >= 2):
-            confidence = 0.85 + min(text_score + structured_score, 3) * 0.03  # 0.85-0.94
+            base_confidence = 0.85 + min(text_score + structured_score, 3) * 0.03  # 0.85-0.94
             return ClassificationResult(
                 data_type=DataType.LOGS_AND_ERRORS,
-                confidence=confidence,
+                confidence=min(base_confidence + confidence_boost, 0.98),
                 source="rule_based",
                 classification_failed=False
             )
@@ -200,7 +324,7 @@ class DataClassifier:
         if text_score >= 3 or structured_score >= 3:
             return ClassificationResult(
                 data_type=DataType.LOGS_AND_ERRORS,
-                confidence=0.88,
+                confidence=min(0.88 + confidence_boost, 0.95),
                 source="rule_based",
                 classification_failed=False
             )
@@ -250,7 +374,7 @@ class DataClassifier:
         if ext in config_exts:
             return ClassificationResult(
                 data_type=DataType.STRUCTURED_CONFIG,
-                confidence=0.92,
+                confidence=min(0.92 + confidence_boost, 0.98),
                 source="rule_based",
                 classification_failed=False
             )
@@ -258,7 +382,7 @@ class DataClassifier:
         if config_score >= 2:
             return ClassificationResult(
                 data_type=DataType.STRUCTURED_CONFIG,
-                confidence=0.75,
+                confidence=min(0.75 + confidence_boost, 0.85),
                 source="rule_based",
                 classification_failed=False
             )
@@ -280,7 +404,7 @@ class DataClassifier:
         if ext in code_exts:
             return ClassificationResult(
                 data_type=DataType.SOURCE_CODE,
-                confidence=0.95,
+                confidence=min(0.95 + confidence_boost, 0.98),
                 source="rule_based",
                 classification_failed=False
             )
@@ -288,7 +412,7 @@ class DataClassifier:
         if code_score >= 2:
             return ClassificationResult(
                 data_type=DataType.SOURCE_CODE,
-                confidence=0.80,
+                confidence=min(0.80 + confidence_boost, 0.90),
                 source="rule_based",
                 classification_failed=False
             )

@@ -21,20 +21,18 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from faultmaven.services.base import BaseService
-from faultmaven.models.case import (
-    Case,
+from faultmaven.models.case import Case, CaseStatus, MessageType
+from faultmaven.models.api_models import (
     CaseCreateRequest,
-    CaseListFilter,
-    CaseMessage,
-    CaseSearchRequest,
-    CaseSummary,
     CaseUpdateRequest,
-    MessageType,
-    ParticipantRole,
-    CaseStatus,
-    CaseParticipant
+    CaseSummary,
+    CaseListFilter,
+    CaseSearchRequest,
+    CaseMessage,
+    CaseParticipant,
 )
-from faultmaven.models.interfaces_case import ICaseStore, ICaseService
+from faultmaven.models.interfaces_case import ICaseService, ParticipantRole  # ParticipantRole is deprecated
+from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.models.interfaces_report import IReportStore
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.infrastructure.observability.tracing import trace
@@ -48,28 +46,26 @@ class CaseService(BaseService, ICaseService):
 
     def __init__(
         self,
-        case_store: ICaseStore,
+        case_repository: CaseRepository,
         session_store: Optional[ISessionStore] = None,
         report_store: Optional[IReportStore] = None,
         case_vector_store: Optional[Any] = None,
         settings: Optional[Any] = None,
-        default_case_expiry_days: int = 30,
         max_cases_per_user: int = 100
     ):
         """
         Initialize the Case Service
 
         Args:
-            case_store: Case persistence store interface
+            case_repository: Case repository for persistence
             session_store: Optional session store for integration
             report_store: Optional report store for cascade deletion
             case_vector_store: Optional case vector store for Working Memory cleanup
             settings: Configuration settings for the service
-            default_case_expiry_days: Default case expiration in days
             max_cases_per_user: Maximum cases per user
         """
         super().__init__("case_service")
-        self.case_store = case_store
+        self.repository = case_repository
         self.session_store = session_store
         self.case_vector_store = case_vector_store
         self.report_store = report_store
@@ -77,16 +73,14 @@ class CaseService(BaseService, ICaseService):
 
         # Use settings values if available, otherwise use parameter defaults
         if settings and hasattr(settings, 'case'):
-            self.default_case_expiry_days = getattr(settings.case, 'expiry_days', default_case_expiry_days)
             self.max_cases_per_user = getattr(settings.case, 'max_per_user', max_cases_per_user)
         else:
-            self.default_case_expiry_days = default_case_expiry_days
             self.max_cases_per_user = max_cases_per_user
 
     @trace("case_service_create_case")
     async def create_case(
         self,
-        title: str,
+        title: Optional[str] = None,
         description: Optional[str] = None,
         owner_id: Optional[str] = None,
         session_id: Optional[str] = None,
@@ -96,11 +90,11 @@ class CaseService(BaseService, ICaseService):
         Create a new troubleshooting case
 
         Args:
-            title: Case title
+            title: Case title (required)
             owner_id: Required owner user ID
             description: Optional case description
             session_id: Optional session to associate with case
-            initial_message: Optional initial message content
+            initial_message: Optional initial message content (added as USER_QUERY message)
 
         Returns:
             Created case object
@@ -109,68 +103,78 @@ class CaseService(BaseService, ICaseService):
             ValidationException: If input validation fails
             ServiceException: If case creation fails
         """
-        if not title or not title.strip():
-            raise ValidationException("Case title cannot be empty")
-
-        if len(title) > 200:
-            raise ValidationException("Case title cannot exceed 200 characters")
-
-        # Anonymous case creation is supported (owner_id can be None)
-        # If owner_id is provided, it must not be empty
-        if owner_id is not None and (not owner_id or not owner_id.strip()):
-            raise ValidationException("Owner ID cannot be empty when provided")
+        # Validate owner_id
+        if not owner_id or not owner_id.strip():
+            raise ValidationException("Owner ID is required")
 
         try:
-            # Check user case limits (skip for anonymous users)
-            if owner_id is not None:
-                user_cases = await self.list_user_cases(owner_id)
-                active_cases = [c for c in user_cases if c.status not in [CaseStatus.ARCHIVED]]
+            # Check user case limits and prepare for title auto-generation
+            user_cases_list, total = await self.repository.list(user_id=owner_id.strip())
+            # Only count non-terminal cases
+            active_cases = [c for c in user_cases_list if c.status not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]]
 
-                if len(active_cases) >= self.max_cases_per_user:
-                    raise ValidationException(f"User has reached maximum case limit ({self.max_cases_per_user})")
+            if len(active_cases) >= self.max_cases_per_user:
+                raise ValidationException(f"User has reached maximum case limit ({self.max_cases_per_user})")
 
-            # Create new case (supports anonymous owner_id=None)
+            # Auto-generate title if not provided (API spec: Case-MMDD-N)
+            if not title or not title.strip():
+                # Format: Case-MMDD-N (e.g., Case-1106-1, Case-1106-2)
+                # Sequence counter resets daily
+                now = datetime.now(timezone.utc)
+                date_suffix = now.strftime("%m%d")  # MMDD format
+
+                # Count today's cases for this user to get sequence number
+                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                today_cases = [c for c in user_cases_list if c.created_at >= today_start]
+                sequence = len(today_cases) + 1
+
+                title = f"Case-{date_suffix}-{sequence}"
+                self.logger.debug(f"Auto-generated title: {title}")
+            else:
+                title = title.strip()
+                if len(title) > 200:
+                    raise ValidationException("Case title cannot exceed 200 characters")
+
+            # Create new case using milestone-based model
+            # Note: organization_id required by new model - using owner_id for now
             case = Case(
-                title=title.strip(),
-                description=description.strip() if description else None,
-                owner_id=owner_id.strip() if owner_id else None,
-                expires_at=datetime.now(timezone.utc) + timedelta(days=self.default_case_expiry_days)
+                title=title,
+                description=description.strip() if description else "",
+                user_id=owner_id.strip(),
+                organization_id=owner_id.strip()  # TODO: Get from user context
             )
 
-            # Add owner as participant (only if owner_id is provided)
-            if owner_id:
-                case.add_participant(owner_id.strip(), ParticipantRole.OWNER)
-
-            # Add initial message if provided
+            # Add initial message if provided (restored from old implementation)
             if initial_message:
-                message = CaseMessage(
-                    case_id=case.case_id,
-                    session_id=session_id,
-                    author_id=owner_id.strip() if owner_id else None,
-                    message_type=MessageType.USER_QUERY,
-                    content=initial_message.strip()
-                )
-                case.add_message(message)
+                message_dict = {
+                    "message_id": f"msg_{uuid.uuid4().hex[:12]}",
+                    "case_id": case.case_id,
+                    "author_id": owner_id.strip(),
+                    "role": "user",
+                    "content": initial_message.strip(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "turn_number": 1,
+                    "metadata": {}
+                }
+                case.messages.append(message_dict)
+                case.message_count = len(case.messages)
 
-            # Session association removed - cases are user-owned, not session-bound
-            # Update session with case ID if session store available
-                if self.session_store:
-                    try:
-                        await self.session_store.set(
-                            f"session:{session_id}:current_case_id", 
-                            case.case_id, 
-                            ttl=86400  # 24 hours
-                        )
-                    except Exception as e:
-                        self.logger.warning(f"Failed to update session with case ID: {e}")
+            # Session association via session store if available
+            if session_id and self.session_store:
+                try:
+                    await self.session_store.set(
+                        f"session:{session_id}:current_case_id",
+                        case.case_id,
+                        ttl=86400  # 24 hours
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Failed to update session with case ID: {e}")
 
-            # Store the case
-            success = await self.case_store.create_case(case)
-            if not success:
-                raise ServiceException("Failed to create case in store")
+            # Save the case using repository
+            saved_case = await self.repository.save(case)
 
-            self.logger.info(f"Created case {case.case_id} with title '{title}'")
-            return case
+            self.logger.info(f"Created case {saved_case.case_id} with title '{title}'")
+            return saved_case
 
         except ValidationException:
             raise
@@ -198,35 +202,15 @@ class CaseService(BaseService, ICaseService):
             return None
 
         try:
-            case = await self.case_store.get_case(case_id)
+            case = await self.repository.get(case_id)
             if not case:
                 return None
 
             # Apply access control if user_id provided
-            if user_id:
-                if not case.can_user_access(user_id):
-                    self.logger.warning(f"User {user_id} denied access to case {case_id}")
-                    return None
-
-                # Update participant last accessed time
-                for participant in case.participants:
-                    if participant.user_id == user_id:
-                        participant.last_accessed = datetime.now(timezone.utc)
-                        # Update in store - serialize datetime objects properly
-                        participants_data = []
-                        for p in case.participants:
-                            p_dict = p.dict()
-                            # Convert datetime fields to ISO strings
-                            if p_dict.get('added_at'):
-                                p_dict['added_at'] = to_json_compatible(p_dict['added_at']) if hasattr(p_dict['added_at'], 'isoformat') else str(p_dict['added_at'])
-                            if p_dict.get('last_accessed'):
-                                p_dict['last_accessed'] = to_json_compatible(p_dict['last_accessed']) if hasattr(p_dict['last_accessed'], 'isoformat') else str(p_dict['last_accessed'])
-                            participants_data.append(p_dict)
-
-                        await self.case_store.update_case(case_id, {
-                            "participants": participants_data
-                        })
-                        break
+            # Simple check: must be case owner
+            if user_id and case.user_id != user_id:
+                self.logger.warning(f"User {user_id} denied access to case {case_id} (owner: {case.user_id})")
+                return None
 
             return case
 
@@ -246,7 +230,7 @@ class CaseService(BaseService, ICaseService):
 
         Args:
             case_id: Case identifier
-            updates: Updates to apply
+            updates: Updates to apply (title, description, status, closure_reason)
             user_id: Optional user ID for access control
 
         Returns:
@@ -259,56 +243,23 @@ class CaseService(BaseService, ICaseService):
             raise ValidationException("Updates cannot be empty")
 
         try:
-            # Get current case and check access with retry logic for race conditions
-            # This handles the case where case was just created and Redis hasn't fully committed
-            case = None
-            max_retries = 3
-            retry_delay = 0.05  # 50ms initial delay
-
-            for attempt in range(max_retries):
-                case = await self.get_case(case_id, user_id)
-                if case:
-                    break
-                if attempt < max_retries - 1:
-                    # Exponential backoff: 50ms, 100ms, 200ms
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2
-                    self.logger.debug(f"Retry {attempt + 1}/{max_retries} for case {case_id}")
-
+            # Get current case and check access
+            case = await self.get_case(case_id, user_id)
             if not case:
                 return False
 
-            # Check edit permissions
-            if user_id:
-                if not case.can_user_edit(user_id):
-                    self.logger.warning(f"User {user_id} denied edit access to case {case_id}")
-                    return False
+            # Validate and apply updates directly to Case object
+            allowed_fields = {'title', 'description', 'status', 'closure_reason'}
 
-            # Validate update fields
-            allowed_fields = {
-                'title', 'description', 'status', 'priority', 'tags',
-                'metadata', 'context', 'auto_archive_after_days', 'diagnostic_state'
-            }
-            
-            filtered_updates = {k: v for k, v in updates.items() if k in allowed_fields}
-            if not filtered_updates:
-                raise ValidationException("No valid update fields provided")
+            for key, value in updates.items():
+                if key in allowed_fields and hasattr(case, key):
+                    setattr(case, key, value)
 
-            # Add update metadata
-            # Don't serialize - let RedisCaseStore handle it to avoid double-serialization
-            filtered_updates['updated_at'] = datetime.now(timezone.utc)
-            if user_id:
-                filtered_updates['metadata'] = {
-                    **case.metadata,
-                    'last_updated_by': user_id
-                }
+            # Save updated case
+            saved_case = await self.repository.save(case)
 
-            # Apply updates
-            success = await self.case_store.update_case(case_id, filtered_updates)
-            if success:
-                self.logger.info(f"Updated case {case_id}")
-            
-            return success
+            self.logger.info(f"Updated case {case_id}")
+            return saved_case is not None
 
         except ValidationException:
             raise
@@ -336,70 +287,15 @@ class CaseService(BaseService, ICaseService):
         Returns:
             True if case was shared successfully
         """
-        if not case_id or not target_user_id:
-            raise ValidationException("Case ID and target user ID are required")
-
-        if role == ParticipantRole.OWNER:
-            raise ValidationException("Cannot assign owner role through sharing")
-
-        try:
-            # Get case and check share permissions
-            case = await self.get_case(case_id, sharer_user_id)
-            if not case:
-                return False
-
-            if sharer_user_id and not case.can_user_share(sharer_user_id):
-                self.logger.warning(f"User {sharer_user_id} denied share access to case {case_id}")
-                return False
-
-            # Check if user is already a participant
-            existing_role = case.get_participant_role(target_user_id)
-            if existing_role:
-                # Update existing participant role if different
-                if existing_role != role:
-                    success = await self.case_store.update_case(case_id, {
-                        "participants": [
-                            {**p.dict(), "role": role.value} if p.user_id == target_user_id else p.dict()
-                            for p in case.participants
-                        ],
-                        "updated_at": datetime.now(timezone.utc)
-                    })
-                    if success:
-                        self.logger.info(f"Updated role for user {target_user_id} in case {case_id}")
-                    return success
-                else:
-                    # User already has the same role
-                    return True
-
-            # Add new participant
-            success = await self.case_store.add_case_participant(
-                case_id, target_user_id, role, sharer_user_id
-            )
-
-            if success:
-                # Update case metadata
-                await self.case_store.update_case(case_id, {
-                    "share_count": case.share_count + 1,
-                    "updated_at": datetime.now(timezone.utc),
-                    "metadata": {
-                        **case.metadata,
-                        f"shared_with_{target_user_id}": {
-                            "shared_by": sharer_user_id,
-                            "shared_at": datetime.now(timezone.utc),
-                            "role": role.value
-                        }
-                    }
-                })
-
-                self.logger.info(f"Shared case {case_id} with user {target_user_id} as {role.value}")
-
-            return success
-
-        except ValidationException:
-            raise
-        except Exception as e:
-            self.logger.error(f"Failed to share case {case_id}: {e}")
-            raise ServiceException(f"Case sharing failed: {str(e)}") from e
+        # NOTE: Case sharing feature is deprecated
+        # The Case model no longer supports participants - only single owner (user_id)
+        # This method is kept for backward compatibility but returns False (not implemented)
+        self.logger.warning(
+            f"share_case called but feature is deprecated. "
+            f"Case model only supports single owner, not participants. "
+            f"case_id={case_id}, target_user={target_user_id}"
+        )
+        return False
 
     @trace("case_service_add_message")
     async def add_message_to_case(
@@ -423,20 +319,32 @@ class CaseService(BaseService, ICaseService):
             raise ValidationException("Case ID and message are required")
 
         try:
+            # Verify case exists
+            case = await self.repository.get(case_id)
+            if not case:
+                raise ValidationException(f"Case {case_id} not found")
+
             # Ensure message belongs to this case
             message.case_id = case_id
-            if session_id:
-                message.session_id = session_id
 
-            # Add message to store
-            success = await self.case_store.add_message_to_case(case_id, message)
-            
+            # Convert CaseMessage to dict format for storage (per case-storage-design.md spec)
+            message_dict = {
+                "message_id": message.message_id,
+                "case_id": case_id,
+                "author_id": message.author_id,
+                "role": getattr(message, 'role', 'system'),
+                "message_type": message.message_type.value if hasattr(message.message_type, 'value') else str(message.message_type),
+                "content": message.content,
+                "created_at": message.created_at.isoformat() if hasattr(message.created_at, 'isoformat') else str(message.created_at),
+                "turn_number": case.current_turn,
+                "token_count": getattr(message, 'token_count', None),
+                "metadata": message.metadata or {}
+            }
+
+            # Delegate to repository - it handles storage-specific logic
+            success = await self.repository.add_message(case_id, message_dict)
+
             if success:
-                # Update case activity
-                await self.case_store.update_case_activity(case_id, session_id)
-                
-                # Session tracking removed - cases are accessed via user authentication
-
                 self.logger.debug(f"Added message to case {case_id}")
 
             return success
@@ -478,7 +386,7 @@ class CaseService(BaseService, ICaseService):
                     if existing_case_id:
                         # Verify case still exists and is accessible
                         case = await self.get_case(existing_case_id, user_id)
-                        if case and not case.is_expired():
+                        if case:
                             self.logger.debug(f"Using existing case {existing_case_id} for session {session_id}")
                             return existing_case_id
                 except Exception as e:
@@ -519,18 +427,12 @@ class CaseService(BaseService, ICaseService):
 
         try:
             # Verify case exists
-            case = await self.case_store.get_case(case_id)
+            case = await self.repository.get(case_id)
             if not case:
                 return False
 
-            # Session tracking removed - cases are accessed via user authentication
-            # Update last activity time
-            success = await self.case_store.update_case(case_id, {
-                "last_activity_at": datetime.now(timezone.utc)
-            })
-
-            if not success:
-                return False
+            # Update last activity timestamp via repository
+            await self.repository.update_activity_timestamp(case_id)
 
             # Update session store with case reference
             if self.session_store:
@@ -572,27 +474,32 @@ class CaseService(BaseService, ICaseService):
             return ""
 
         try:
-            messages = await self.case_store.get_case_messages(case_id, limit=limit)
+            # Get messages via repository - it handles pagination
+            messages = await self.repository.get_messages(case_id, limit=limit)
             if not messages:
                 return ""
 
-            # Sort messages by timestamp
-            sorted_messages = sorted(messages, key=lambda m: m.timestamp)
-
             # Format for LLM context
             context_lines = ["Previous conversation in this troubleshooting case:"]
-            
-            for i, message in enumerate(sorted_messages[:-1], 1):  # Exclude current query
-                timestamp = message.timestamp.strftime("%H:%M")
-                
-                if message.message_type == MessageType.USER_QUERY:
-                    context_lines.append(f"{i}. [{timestamp}] User: {message.content}")
-                elif message.message_type == MessageType.AGENT_RESPONSE:
-                    # Truncate long agent responses
-                    content = message.content[:200] + "..." if len(message.content) > 200 else message.content
-                    context_lines.append(f"{i}. [{timestamp}] Assistant: {content}")
-                elif message.message_type == MessageType.SYSTEM_EVENT:
-                    context_lines.append(f"{i}. [{timestamp}] System: {message.content}")
+
+            for i, msg_dict in enumerate(messages[:-1], 1):  # Exclude current query
+                try:
+                    created_at = parse_utc_timestamp(msg_dict.get("created_at"))
+                    timestamp = created_at.strftime("%H:%M") if created_at else "??:??"
+                    message_type = msg_dict.get("message_type", "system_event")
+                    content = msg_dict.get("content", "")
+
+                    if message_type == "user_query":
+                        context_lines.append(f"{i}. [{timestamp}] User: {content}")
+                    elif message_type == "agent_response":
+                        # Truncate long agent responses
+                        truncated = content[:200] + "..." if len(content) > 200 else content
+                        context_lines.append(f"{i}. [{timestamp}] Assistant: {truncated}")
+                    elif message_type == "system_event":
+                        context_lines.append(f"{i}. [{timestamp}] System: {content}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to format message {i} in context: {e}")
+                    continue
 
             if len(context_lines) > 1:  # More than just header
                 context_lines.append("")  # Add spacing
@@ -645,74 +552,6 @@ class CaseService(BaseService, ICaseService):
             self.logger.error(f"Failed to resume case {case_id} in session {session_id}: {e}")
             return False
 
-    @trace("case_service_archive_case")
-    async def archive_case(
-        self,
-        case_id: str,
-        reason: Optional[str] = None,
-        user_id: Optional[str] = None
-    ) -> bool:
-        """
-        Archive a case
-
-        Args:
-            case_id: Case identifier
-            reason: Optional archive reason
-            user_id: Optional user ID for access control
-
-        Returns:
-            True if case was archived successfully
-        """
-        if not case_id:
-            raise ValidationException("Case ID cannot be empty")
-
-        try:
-            # Check permissions if user provided
-            if user_id:
-                case = await self.get_case(case_id, user_id)
-                if not case:
-                    return False
-
-                # Check if user can archive
-                user_role = case.get_participant_role(user_id)
-                if user_role not in [ParticipantRole.OWNER, ParticipantRole.COLLABORATOR]:
-                    self.logger.warning(f"User {user_id} denied archive access to case {case_id}")
-                    return False
-
-            # Archive the case
-            updates = {
-                "status": CaseStatus.ARCHIVED.value,
-                "updated_at": datetime.now(timezone.utc),
-                "metadata": {}
-            }
-
-            if reason:
-                updates["metadata"]["archive_reason"] = reason
-            if user_id:
-                updates["metadata"]["archived_by"] = user_id
-
-            success = await self.case_store.update_case(case_id, updates)
-
-            if success:
-                self.logger.info(f"Archived case {case_id}")
-
-                # Clean up Case Working Memory (delete vector store collection)
-                if self.case_vector_store:
-                    try:
-                        await self.case_vector_store.delete_case_collection(case_id)
-                        self.logger.info(f"Deleted Working Memory collection for archived case {case_id}")
-                    except Exception as e:
-                        self.logger.error(f"Failed to delete Working Memory for case {case_id}: {e}")
-                        # Don't fail the archive operation if cleanup fails
-
-            return success
-
-        except ValidationException:
-            raise
-        except Exception as e:
-            self.logger.error(f"Failed to archive case {case_id}: {e}")
-            return False
-
     @trace("case_service_hard_delete_case")
     async def hard_delete_case(
         self,
@@ -749,11 +588,10 @@ class CaseService(BaseService, ICaseService):
                 if not case:
                     # Case not found or no access - idempotent behavior
                     return True
-                    
-                # Check if user can delete (only owner or admin)
-                user_role = case.get_participant_role(user_id)
-                if user_role != ParticipantRole.OWNER:
-                    self.logger.warning(f"User {user_id} denied delete access to case {case_id}")
+
+                # Check if user can delete (only owner can delete)
+                if case.user_id != user_id:
+                    self.logger.warning(f"User {user_id} denied delete access to case {case_id} (not owner)")
                     return False
             
             # Cascade delete reports BEFORE deleting case
@@ -771,8 +609,8 @@ class CaseService(BaseService, ICaseService):
                     )
                     # Continue with case deletion even if report cleanup fails
 
-            # Perform hard delete through case store
-            success = await self.case_store.delete_case(case_id)
+            # Perform hard delete through repository
+            success = await self.repository.delete(case_id)
 
             if success:
                 self.logger.info(f"Hard deleted case {case_id}")
@@ -816,16 +654,36 @@ class CaseService(BaseService, ICaseService):
 
         Args:
             user_id: User identifier
-            filters: Optional filter criteria
+            filters: Optional filter criteria (include_empty, include_archived, status, etc.)
 
         Returns:
-            List of user's cases
+            List of user's cases (as CaseSummary objects)
         """
         if not user_id:
             raise ValidationException("User ID cannot be empty")
 
         try:
-            return await self.case_store.get_user_cases(user_id, filters)
+            # Get cases from repository
+            status_filter = filters.status if filters else None
+            cases_list, total = await self.repository.list(user_id=user_id, status=status_filter)
+
+            # Apply additional filters in service layer (restored from old implementation)
+            if filters:
+                # Filter empty cases (current_turn == 0) unless include_empty=True
+                # Note: New model uses current_turn instead of message_count
+                if not filters.include_empty:
+                    cases_list = [c for c in cases_list if c.current_turn > 0]
+
+                # Filter archived cases unless include_archived=True
+                # Note: New model uses CLOSED status instead of ARCHIVED
+                if not filters.include_archived:
+                    cases_list = [c for c in cases_list if c.status != CaseStatus.CLOSED]
+
+            # Convert to CaseSummary
+            from faultmaven.models.api_models import CaseSummary
+            summaries = [CaseSummary.from_case(case) for case in cases_list]
+
+            return summaries
 
         except Exception as e:
             self.logger.error(f"Failed to list cases for user {user_id}: {e}")
@@ -848,13 +706,18 @@ class CaseService(BaseService, ICaseService):
             List of matching cases
         """
         try:
-            # Add user filter if provided
-            if user_id and search_request.filters:
-                search_request.filters.user_id = user_id
-            elif user_id:
-                search_request.filters = CaseListFilter(user_id=user_id)
+            # Search using repository
+            cases_list, total = await self.repository.search(query=search_request.query)
 
-            return await self.case_store.search_cases(search_request)
+            # Filter by user if provided
+            if user_id:
+                cases_list = [c for c in cases_list if c.user_id == user_id]
+
+            # Convert to CaseSummary
+            from faultmaven.models.api_models import CaseSummary
+            summaries = [CaseSummary.from_case(case) for case in cases_list]
+
+            return summaries
 
         except Exception as e:
             self.logger.error(f"Failed to search cases: {e}")
@@ -872,7 +735,8 @@ class CaseService(BaseService, ICaseService):
             Case analytics dictionary
         """
         try:
-            return await self.case_store.get_case_analytics(case_id)
+            # Delegate to repository - it computes analytics efficiently
+            return await self.repository.get_analytics(case_id)
 
         except Exception as e:
             self.logger.error(f"Failed to get analytics for case {case_id}: {e}")
@@ -887,8 +751,9 @@ class CaseService(BaseService, ICaseService):
             Number of cases cleaned up
         """
         try:
-            cleaned_count = await self.case_store.cleanup_expired_cases()
-            
+            # Delegate to repository - it handles cleanup efficiently
+            cleaned_count = await self.repository.cleanup_expired(max_age_days=90, batch_size=100)
+
             if cleaned_count > 0:
                 self.logger.info(f"Cleaned up {cleaned_count} expired cases")
 
@@ -906,23 +771,41 @@ class CaseService(BaseService, ICaseService):
         offset: int = 0
     ) -> List[Case]:
         """
-        List cases associated with a session
+        List cases owned by the user authenticated via session.
+
+        Architecture: Session → User → User's Cases (indirect relationship)
+        Per case-and-session-concepts.md: Cases are owned by users, NOT bound to sessions.
 
         Args:
-            session_id: Session identifier
+            session_id: Session identifier (provides authentication context)
             limit: Maximum number of cases to return
             offset: Number of cases to skip
 
         Returns:
-            List of cases associated with the session
+            List of cases owned by the authenticated user
         """
         if not session_id:
             raise ValidationException("Session ID cannot be empty")
 
         try:
-            # Get user's cases (session provides authentication context)
-            all_cases = await self.case_store.get_cases_by_session(session_id, limit, offset)
-            return all_cases
+            # Step 1: Get user_id from session (authentication)
+            user_id = None
+            if self.session_store:
+                session_data = await self.session_store.get(f"session:{session_id}")
+                if session_data:
+                    user_id = session_data.get('user_id')
+
+            if not user_id:
+                self.logger.warning(f"No user_id found for session {session_id}")
+                return []
+
+            # Step 2: Get user's cases (authorization via ownership)
+            cases, _ = await self.repository.list(
+                user_id=user_id,
+                limit=limit,
+                offset=offset
+            )
+            return cases
 
         except Exception as e:
             self.logger.error(f"Failed to list cases for session {session_id}: {e}")
@@ -931,20 +814,37 @@ class CaseService(BaseService, ICaseService):
     @trace("case_service_count_cases_by_session")
     async def count_cases_by_session(self, session_id: str) -> int:
         """
-        Count total cases associated with a session
+        Count cases owned by the user authenticated via session.
+
+        Architecture: Session → User → User's Cases
 
         Args:
-            session_id: Session identifier
+            session_id: Session identifier (provides authentication context)
 
         Returns:
-            Total number of cases associated with the session
+            Total number of cases owned by the authenticated user
         """
         if not session_id:
             return 0
 
         try:
-            count = await self.case_store.count_cases_by_session(session_id)
-            return count
+            # Step 1: Get user_id from session
+            user_id = None
+            if self.session_store:
+                session_data = await self.session_store.get(f"session:{session_id}")
+                if session_data:
+                    user_id = session_data.get('user_id')
+
+            if not user_id:
+                return 0
+
+            # Step 2: Count user's cases
+            cases, total_count = await self.repository.list(
+                user_id=user_id,
+                limit=0,
+                offset=0
+            )
+            return total_count
 
         except Exception as e:
             self.logger.error(f"Failed to count cases for session {session_id}: {e}")
@@ -959,12 +859,11 @@ class CaseService(BaseService, ICaseService):
         """
         try:
             # Get some basic metrics
-            # This would typically query the case store for metrics
             return {
                 "service_status": "healthy",
-                "case_store_connected": True,
+                "repository_connected": self.repository is not None,
                 "session_store_connected": self.session_store is not None,
-                "default_expiry_days": self.default_case_expiry_days,
+                "report_store_connected": self.report_store is not None,
                 "max_cases_per_user": self.max_cases_per_user
             }
 
@@ -986,7 +885,7 @@ class CaseService(BaseService, ICaseService):
         offset: int = 0
     ) -> List[CaseMessage]:
         """
-        Get messages for a case with pagination
+        Get messages for a case with pagination (FIXED IMPLEMENTATION)
 
         Args:
             case_id: Case identifier
@@ -1000,13 +899,37 @@ class CaseService(BaseService, ICaseService):
             raise ValidationException("Case ID is required")
 
         try:
-            # Delegate to case store following interface contract
-            messages = await self.case_store.get_case_messages(case_id, limit, offset)
+            # Get case from repository (messages are stored in Case.messages now)
+            case = await self.repository.get(case_id)
+            if not case:
+                raise ValidationException(f"Case {case_id} not found")
+
+            # DEBUG: Log case.messages length
+            self.logger.info(f"Case {case_id} has {len(case.messages)} messages in case.messages array, message_count={case.message_count}")
+
+            # Convert dict messages to CaseMessage objects
+            case_messages = []
+            for msg_dict in case.messages:
+                # Convert dict to CaseMessage object for compatibility
+                # Per case-storage-design.md Section 4.7, use "created_at"
+                case_msg = CaseMessage(
+                    message_id=msg_dict["message_id"],
+                    case_id=case_id,
+                    turn_number=msg_dict.get("turn_number", 0),
+                    role=msg_dict.get("role", "user"),
+                    content=msg_dict["content"],
+                    created_at=msg_dict.get("created_at"),
+                    author_id=msg_dict.get("author_id"),
+                    token_count=msg_dict.get("token_count"),
+                    metadata=msg_dict.get("metadata", {}),
+                    attachments=msg_dict.get("attachments")
+                )
+                case_messages.append(case_msg)
 
             # Log for observability
-            self.logger.debug(f"Retrieved {len(messages)} messages for case {case_id}")
+            self.logger.debug(f"Retrieved {len(case_messages)} messages for case {case_id}")
 
-            return messages or []
+            return case_messages
 
         except Exception as e:
             self.logger.error(f"Failed to get messages for case {case_id}: {e}")
@@ -1022,8 +945,8 @@ class CaseService(BaseService, ICaseService):
         """
         Add a user query to case conversation
 
-        This method creates a USER_QUERY message and adds it to the case.
-        It follows our design principle of using existing message infrastructure.
+        This method tracks the query in the case's message history.
+        For milestone-based system, queries are implicit in turn processing.
 
         Args:
             case_id: Case identifier
@@ -1031,28 +954,41 @@ class CaseService(BaseService, ICaseService):
             user_id: Optional user identifier
 
         Returns:
-            True if query was added successfully
+            True if query was tracked successfully
         """
         if not case_id or not query_text:
             raise ValidationException("Case ID and query text are required")
 
         try:
-            # Create proper CaseMessage following data model contracts
-            query_message = CaseMessage(
-                case_id=case_id,
-                author_id=user_id,
-                message_type=MessageType.USER_QUERY,
-                content=query_text.strip(),
-                metadata={"query": True}  # Flag for filtering
-            )
+            # Get the case to verify it exists
+            case = await self.repository.get(case_id)
+            if not case:
+                raise ValidationException(f"Case {case_id} not found")
 
-            # Use existing message infrastructure
-            success = await self.add_message_to_case(case_id, query_message)
+            # Create user message and add to conversation (FIXED IMPLEMENTATION)
+            from uuid import uuid4
+            # Per case-storage-design.md Section 4.7, use "created_at"
+            user_message = {
+                "message_id": f"msg_{uuid4().hex[:12]}",
+                "turn_number": case.current_turn + 1,  # Next turn
+                "role": "user",
+                "message_type": "user_query",  # MessageType enum value
+                "content": query_text.strip(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "author_id": user_id,
+                "token_count": None,
+                "metadata": {}
+            }
 
-            if success:
-                self.logger.debug(f"Added query to case {case_id}")
+            case.messages.append(user_message)
+            case.message_count += 1
+            case.last_activity_at = datetime.now(timezone.utc)
 
-            return success
+            # Save updated case with message
+            await self.repository.save(case)
+
+            self.logger.debug(f"Added user message to case {case_id}, message_count now {case.message_count}")
+            return True
 
         except ValidationException:
             raise
@@ -1104,7 +1040,7 @@ class CaseService(BaseService, ICaseService):
                 query_dict = {
                     "query_id": msg.message_id,
                     "query_text": msg.content,
-                    "timestamp": to_json_compatible(msg.timestamp),
+                    "created_at": to_json_compatible(msg.created_at),
                     "user_id": msg.author_id,
                     "metadata": msg.metadata or {}
                 }
@@ -1236,7 +1172,7 @@ class CaseService(BaseService, ICaseService):
                         "content": msg.content,
                         "response_type": msg.metadata.get("response_type", "ANSWER"),
                         "confidence_score": msg.metadata.get("confidence_score", 0.8),
-                        "timestamp": to_json_compatible(msg.timestamp),
+                        "created_at": to_json_compatible(msg.created_at),
                         "query_id": query_id,
                         "response_id": msg.message_id
                     }
@@ -1382,35 +1318,33 @@ class CaseService(BaseService, ICaseService):
             messages = []
             for case_msg in paginated_messages:
                 try:
-                    # Map message_type to role
-                    role = "system"  # default
-                    if case_msg.message_type == MessageType.USER_QUERY:
-                        role = "user"
-                    elif case_msg.message_type == MessageType.AGENT_RESPONSE:
-                        role = "assistant"  # Use "assistant" as per API spec
-                    elif case_msg.message_type == MessageType.CASE_NOTE:
-                        role = "user"
-                    # Keep system for other types (SYSTEM_EVENT, DATA_UPLOAD, STATUS_CHANGE)
+                    # CaseMessage already has 'role' field, use it directly
+                    # No need to map from message_type (that field doesn't exist in CaseMessage)
+                    role = case_msg.role if hasattr(case_msg, 'role') else "system"
 
-                    # Format timestamp
-                    created_at = None
-                    if case_msg.timestamp:
+                    # Format created_at
+                    created_at_str = None
+                    if case_msg.created_at:
                         try:
-                            if hasattr(case_msg.timestamp, 'isoformat'):
-                                created_at = to_json_compatible(case_msg.timestamp)
+                            if hasattr(case_msg.created_at, 'isoformat'):
+                                created_at_str = to_json_compatible(case_msg.created_at)
                             else:
-                                created_at = str(case_msg.timestamp)
+                                created_at_str = str(case_msg.created_at)
                         except Exception as e:
-                            self.logger.warning(f"Failed to format timestamp for message {case_msg.message_id}: {e}")
-                            created_at = str(case_msg.timestamp)
+                            self.logger.warning(f"Failed to format created_at for message {case_msg.message_id}: {e}")
+                            created_at_str = str(case_msg.created_at)
 
                     # Create API Message object
+                    # Per case-storage-design.md Section 4.7, use "created_at" field
                     api_message = Message(
                         message_id=case_msg.message_id,
+                        turn_number=case_msg.turn_number,
                         role=role,
                         content=case_msg.content,
-                        created_at=created_at,
-                        metadata=case_msg.metadata or {}
+                        created_at=created_at_str,
+                        author_id=case_msg.author_id,
+                        token_count=case_msg.token_count,
+                        metadata=case_msg.metadata
                     )
                     messages.append(api_message)
 

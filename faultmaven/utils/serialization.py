@@ -32,7 +32,7 @@ def to_json_compatible(obj: Any) -> Any:
     This is the single source of truth for serialization in FaultMaven.
 
     Handles:
-    - datetime: timezone-aware → ISO with offset, timezone-naive → ISO with 'Z'
+    - datetime: UTC → ISO with 'Z', other timezones → ISO with offset, naive → ISO with 'Z'
     - UUID: string representation
     - Pydantic models: .model_dump() or .dict()
     - dict: recursive processing
@@ -46,11 +46,11 @@ def to_json_compatible(obj: Any) -> Any:
         JSON-compatible version of the object
 
     Examples:
-        >>> from datetime import datetime, timezone, timezone
+        >>> from datetime import datetime, timezone
         >>> to_json_compatible(datetime(2025, 1, 1, 12, 0, 0))
         '2025-01-01T12:00:00Z'
         >>> to_json_compatible(datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc))
-        '2025-01-01T12:00:00+00:00'
+        '2025-01-01T12:00:00Z'
     """
     # Handle None
     if obj is None:
@@ -59,8 +59,13 @@ def to_json_compatible(obj: Any) -> Any:
     # Handle datetime - MOST COMMON CASE FIRST
     if isinstance(obj, datetime):
         if obj.tzinfo is not None:
-            # Timezone-aware: isoformat() includes timezone (e.g., +00:00)
-            return obj.isoformat()
+            # Timezone-aware: use 'Z' for UTC, otherwise include offset
+            if obj.tzinfo == timezone.utc or obj.utcoffset() == timezone.utc.utcoffset(None):
+                # UTC timezone: use 'Z' suffix for clean ISO 8601 format
+                return obj.replace(tzinfo=None).isoformat() + 'Z'
+            else:
+                # Non-UTC timezone: include offset (e.g., +05:00)
+                return obj.isoformat()
         else:
             # Timezone-naive: assume UTC, add 'Z' suffix
             return obj.isoformat() + 'Z'

@@ -1,0 +1,442 @@
+# Database Migrations
+
+This directory contains PostgreSQL migration scripts for the FaultMaven case storage system.
+
+## Migration Strategy
+
+**Current State**: InMemory storage (development) or legacy single-table PostgreSQL (deprecated)
+
+**Target State**: Hybrid normalized PostgreSQL schema (10 tables, production-ready)
+
+---
+
+## Available Migrations
+
+### 001_initial_hybrid_schema.sql
+
+**Status**: ✅ Ready for production deployment
+
+**Description**: Creates the complete hybrid normalized schema with:
+- 10 normalized tables (cases, evidence, hypotheses, solutions, case_messages, uploaded_files, case_status_transitions, case_tags, agent_tool_calls)
+- JSONB columns for flexible low-cardinality data
+- Full-text search indexes (GIN)
+- Foreign key constraints with CASCADE deletes
+- Auto-update triggers for timestamps
+- Utility views (case_overview, active_hypotheses, recent_evidence)
+
+**Reference**: `/home/swhouse/projects/FaultMaven/docs/architecture/case-storage-design.md`
+
+**When to use**: Fresh PostgreSQL database deployment (recommended for K8s production)
+
+---
+
+## How to Apply Migrations
+
+### Option 1: Manual Application (PostgreSQL CLI)
+
+```bash
+# Connect to PostgreSQL database
+psql -h localhost -U faultmaven -d faultmaven_cases
+
+# Apply migration
+\i migrations/001_initial_hybrid_schema.sql
+
+# Verify tables created
+\dt
+
+# Verify views created
+\dv
+
+# Check indexes
+\di
+```
+
+### Option 2: Using Docker (Development)
+
+```bash
+# Start PostgreSQL container
+docker run -d \
+  --name faultmaven-postgres \
+  -e POSTGRES_USER=faultmaven \
+  -e POSTGRES_PASSWORD=devpassword \
+  -e POSTGRES_DB=faultmaven_cases \
+  -p 5432:5432 \
+  postgres:15
+
+# Wait for PostgreSQL to be ready
+sleep 5
+
+# Apply migration
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < migrations/001_initial_hybrid_schema.sql
+
+# Verify
+docker exec -it faultmaven-postgres psql -U faultmaven -d faultmaven_cases -c "\dt"
+```
+
+### Option 3: Kubernetes Deployment (Production)
+
+```bash
+# Create ConfigMap from migration file
+kubectl create configmap case-db-migration \
+  --from-file=001_initial_hybrid_schema.sql=migrations/001_initial_hybrid_schema.sql \
+  -n faultmaven
+
+# Create migration Job
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: case-db-migration-001
+  namespace: faultmaven
+spec:
+  template:
+    spec:
+      containers:
+      - name: migration
+        image: postgres:15
+        command:
+        - psql
+        - -h
+        - postgresql.faultmaven.svc.cluster.local
+        - -U
+        - faultmaven
+        - -d
+        - faultmaven_cases
+        - -f
+        - /migrations/001_initial_hybrid_schema.sql
+        volumeMounts:
+        - name: migration
+          mountPath: /migrations
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-credentials
+              key: password
+      volumes:
+      - name: migration
+        configMap:
+          name: case-db-migration
+      restartPolicy: OnFailure
+EOF
+
+# Wait for completion
+kubectl wait --for=condition=complete job/case-db-migration-001 -n faultmaven --timeout=120s
+
+# Check logs
+kubectl logs job/case-db-migration-001 -n faultmaven
+
+# Verify tables created
+kubectl exec -it postgresql-0 -n faultmaven -- psql -U faultmaven -d faultmaven_cases -c "\dt"
+```
+
+---
+
+## Configuration
+
+After applying migrations, update `.env` to use the hybrid schema:
+
+```bash
+# Case Storage Configuration
+CASE_STORAGE_TYPE=postgres_hybrid  # Use hybrid normalized schema
+
+# PostgreSQL Connection
+CASES_DB_HOST=localhost            # or postgresql.faultmaven.svc.cluster.local in K8s
+CASES_DB_PORT=5432
+CASES_DB_NAME=faultmaven_cases
+CASES_DB_USER=faultmaven
+CASES_DB_PASSWORD=your_password_here
+
+# Connection Pool
+CASES_DB_POOL_SIZE=10
+CASES_DB_MAX_OVERFLOW=20
+```
+
+**Configuration Options**:
+- `CASE_STORAGE_TYPE=inmemory` - InMemory storage (development, data lost on restart)
+- `CASE_STORAGE_TYPE=postgres` - Legacy single-table JSONB (deprecated)
+- `CASE_STORAGE_TYPE=postgres_hybrid` - **Production-ready 10-table hybrid schema (recommended)**
+
+---
+
+## Migration Verification
+
+After applying migration and configuring `.env`, verify the system works:
+
+### 1. Start FaultMaven API
+
+```bash
+cd /home/swhouse/projects/FaultMaven
+source .venv/bin/activate
+python -m faultmaven.main
+```
+
+**Expected log output**:
+```
+✅ Case repository: PostgreSQL Hybrid (10-table schema) @ localhost:5432/faultmaven_cases
+```
+
+### 2. Create Test Case
+
+```bash
+curl -X POST http://localhost:8000/api/v1/cases \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Test migration case",
+    "description": "Verifying hybrid schema works"
+  }'
+```
+
+**Expected response**:
+```json
+{
+  "case_id": "case_abc123xyz...",
+  "title": "Test migration case",
+  "status": "consulting",
+  "created_at": "2025-01-09T12:00:00Z"
+}
+```
+
+### 3. Upload Evidence
+
+```bash
+curl -X POST http://localhost:8000/api/v1/cases/case_abc123xyz.../data \
+  -F "file=@test.log" \
+  -F "description=Test evidence upload"
+```
+
+### 4. Verify Database Records
+
+```sql
+-- Connect to PostgreSQL
+psql -U faultmaven -d faultmaven_cases
+
+-- Check case created
+SELECT case_id, title, status, created_at FROM cases;
+
+-- Check evidence created (normalized table)
+SELECT evidence_id, case_id, category, summary FROM evidence;
+
+-- Check using utility view
+SELECT * FROM case_overview;
+```
+
+**Expected**:
+- 1 row in `cases` table
+- 1 row in `evidence` table
+- 1 row in `case_overview` view with evidence_count=1
+
+---
+
+## Rollback Strategy
+
+### Development: Drop and Recreate
+
+```sql
+-- Drop all tables (cascades to dependent tables)
+DROP TABLE IF EXISTS cases CASCADE;
+DROP TABLE IF EXISTS evidence CASCADE;
+DROP TABLE IF EXISTS hypotheses CASCADE;
+DROP TABLE IF EXISTS solutions CASCADE;
+DROP TABLE IF EXISTS case_messages CASCADE;
+DROP TABLE IF EXISTS uploaded_files CASCADE;
+DROP TABLE IF EXISTS case_status_transitions CASCADE;
+DROP TABLE IF EXISTS case_tags CASCADE;
+DROP TABLE IF EXISTS agent_tool_calls CASCADE;
+
+-- Drop views
+DROP VIEW IF EXISTS case_overview CASCADE;
+DROP VIEW IF EXISTS active_hypotheses CASCADE;
+DROP VIEW IF EXISTS recent_evidence CASCADE;
+
+-- Drop types
+DROP TYPE IF EXISTS case_status CASCADE;
+DROP TYPE IF EXISTS evidence_category CASCADE;
+DROP TYPE IF EXISTS hypothesis_status CASCADE;
+DROP TYPE IF EXISTS solution_status CASCADE;
+DROP TYPE IF EXISTS message_role CASCADE;
+DROP TYPE IF EXISTS file_processing_status CASCADE;
+
+-- Reapply migration
+\i migrations/001_initial_hybrid_schema.sql
+```
+
+### Production: Export and Reimport
+
+```bash
+# 1. Export existing data
+pg_dump -U faultmaven -d faultmaven_cases --data-only --table=cases > backup.sql
+
+# 2. Drop schema
+psql -U faultmaven -d faultmaven_cases < migrations/rollback_001.sql
+
+# 3. Revert to legacy single-table schema
+psql -U faultmaven -d faultmaven_cases < migrations/legacy_single_table.sql
+
+# 4. Reimport data
+psql -U faultmaven -d faultmaven_cases < backup.sql
+
+# 5. Update .env
+sed -i 's/CASE_STORAGE_TYPE=postgres_hybrid/CASE_STORAGE_TYPE=postgres/' .env
+```
+
+---
+
+## Performance Testing
+
+After migration, verify performance meets expectations:
+
+### Case Load Performance (Target: <10ms)
+
+```bash
+# Load test: Create 100 cases
+for i in {1..100}; do
+  curl -X POST http://localhost:8000/api/v1/cases \
+    -H "Content-Type: application/json" \
+    -d "{\"title\": \"Load test case $i\", \"description\": \"Testing hybrid schema performance\"}"
+done
+
+# Measure retrieval time
+time curl http://localhost:8000/api/v1/cases/{case_id}
+```
+
+### Evidence Filtering Performance (Target: <5ms)
+
+```sql
+-- Measure evidence query time
+EXPLAIN ANALYZE
+SELECT * FROM evidence
+WHERE case_id = 'case_abc123'
+AND category = 'LOGS_AND_ERRORS'
+ORDER BY upload_timestamp DESC
+LIMIT 10;
+```
+
+**Expected**:
+- Execution time: < 5ms
+- Index Scan on `idx_evidence_case_id` and `idx_evidence_category`
+
+### Full-Text Search Performance (Target: <15ms)
+
+```sql
+-- Measure search query time
+EXPLAIN ANALYZE
+SELECT c.case_id, c.title,
+  ts_rank(to_tsvector('english', c.title), plainto_tsquery('english', 'error')) as rank
+FROM cases c
+WHERE to_tsvector('english', c.title) @@ plainto_tsquery('english', 'error')
+ORDER BY rank DESC
+LIMIT 20;
+```
+
+**Expected**:
+- Execution time: < 15ms
+- Bitmap Index Scan on GIN index
+
+---
+
+## Troubleshooting
+
+### Issue: Migration fails with "relation already exists"
+
+**Cause**: Tables already exist from previous migration attempt
+
+**Fix**:
+```sql
+-- Drop all tables first
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+
+-- Reapply migration
+\i migrations/001_initial_hybrid_schema.sql
+```
+
+### Issue: FaultMaven fails to connect with "connection refused"
+
+**Cause**: PostgreSQL not running or wrong connection string
+
+**Fix**:
+```bash
+# Check PostgreSQL is running
+docker ps | grep postgres
+# or
+pg_isready -h localhost -p 5432
+
+# Verify connection string in .env
+echo $CASES_DB_URL
+# Should be: postgresql+asyncpg://faultmaven:password@localhost:5432/faultmaven_cases
+```
+
+### Issue: "asyncpg.exceptions.UndefinedTableError: relation 'cases' does not exist"
+
+**Cause**: Migration not applied
+
+**Fix**:
+```bash
+# Apply migration
+psql -U faultmaven -d faultmaven_cases < migrations/001_initial_hybrid_schema.sql
+
+# Verify tables exist
+psql -U faultmaven -d faultmaven_cases -c "\dt"
+```
+
+### Issue: Slow queries after migration
+
+**Cause**: Missing VACUUM or ANALYZE
+
+**Fix**:
+```sql
+-- Analyze all tables to update statistics
+ANALYZE cases;
+ANALYZE evidence;
+ANALYZE hypotheses;
+ANALYZE solutions;
+
+-- Vacuum to reclaim space
+VACUUM ANALYZE;
+
+-- Check index usage
+SELECT schemaname, tablename, indexname, idx_scan
+FROM pg_stat_user_indexes
+ORDER BY idx_scan ASC;
+```
+
+---
+
+## Future Migrations
+
+### Naming Convention
+
+```
+{number}_{description}.sql
+```
+
+Examples:
+- `002_add_case_tags_index.sql`
+- `003_add_evidence_s3_ref.sql`
+- `004_add_agent_tool_calls_performance_indexes.sql`
+
+### Migration Template
+
+```sql
+-- Migration: {number} - {description}
+-- Date: {YYYY-MM-DD}
+-- Description: {detailed description}
+
+BEGIN;
+
+-- DDL changes here
+
+COMMIT;
+
+-- Verification queries
+SELECT COUNT(*) FROM {new_table};
+```
+
+---
+
+## References
+
+- **Design Document**: [case-storage-design.md](../docs/architecture/case-storage-design.md)
+- **DB Abstraction Layer**: [db-abstraction-layer-specification.md](../docs/architecture/db-abstraction-layer-specification.md)
+- **Implementation**: [postgresql_hybrid_case_repository.py](../faultmaven/infrastructure/persistence/postgresql_hybrid_case_repository.py)

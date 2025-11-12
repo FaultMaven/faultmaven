@@ -23,6 +23,7 @@ import uuid
 import logging
 from datetime import datetime, timezone
 from typing import Optional
+from faultmaven.utils.serialization import to_json_compatible
 
 from fastapi import APIRouter, HTTPException, Depends, Header, Response
 from fastapi.security import HTTPBearer
@@ -64,7 +65,7 @@ from faultmaven.services.domain.session_service import SessionService
 
 # Authentication endpoints
 
-@router.post("/dev-login", response_model=AuthTokenResponse, status_code=201)
+@router.post("/dev-login", response_model=AuthTokenResponse, status_code=200)
 @trace("auth_dev_login")
 async def dev_login(
     request: DevLoginRequest,
@@ -100,13 +101,23 @@ async def dev_login(
         user = await user_store.get_user_by_username(request.username)
 
         if user:
-            logger.info(f"User login: {request.username} (existing user: {user.user_id})")
+            logger.info(
+                f"User login: {request.username} (existing user: {user.user_id})",
+                extra={"user_id": user.user_id, "username": request.username, "correlation_id": correlation_id}
+            )
         else:
             # User doesn't exist - return authentication error
-            logger.warning(f"Login attempt for non-existent user: {request.username}")
+            logger.warning(
+                f"Login attempt for non-existent user: {request.username}",
+                extra={"username": request.username, "correlation_id": correlation_id}
+            )
             raise HTTPException(
                 status_code=401,
-                detail="Invalid credentials. User does not exist.",
+                detail={
+                    "error": "authentication_failed",
+                    "message": f"User '{request.username}' does not exist. Please check the username or register a new account.",
+                    "username": request.username
+                },
                 headers={"WWW-Authenticate": "Bearer"}
             )
 
@@ -137,7 +148,7 @@ async def dev_login(
             username=user.username,
             email=user.email,
             display_name=user.display_name,
-            created_at=user.created_at.isoformat(),
+            created_at=to_json_compatible(user.created_at),
             is_dev_user=user.is_dev_user,
             roles=user.roles if user.roles else ['admin']  # Ensure roles are included
         )
@@ -158,11 +169,32 @@ async def dev_login(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        # Handle validation errors (e.g., invalid username format)
+        logger.warning(
+            f"Login validation error: {str(e)}",
+            extra={"username": request.username, "correlation_id": correlation_id}
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "validation_error",
+                "message": str(e),
+                "username": request.username
+            }
+        )
     except Exception as e:
-        logger.error(f"Dev login failed: {e} (correlation: {correlation_id})")
+        logger.error(
+            f"Dev login failed: {type(e).__name__}: {str(e)}",
+            extra={"correlation_id": correlation_id},
+            exc_info=True
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Login failed: {str(e)}"
+            detail={
+                "error": "internal_error",
+                "message": "Login failed due to an internal error. Please try again later."
+            }
         )
 
 
@@ -243,7 +275,7 @@ async def dev_register(
             username=user.username,
             email=user.email,
             display_name=user.display_name,
-            created_at=user.created_at.isoformat(),
+            created_at=to_json_compatible(user.created_at),
             is_dev_user=user.is_dev_user,
             roles=user.roles if user.roles else ['admin']  # Ensure roles are included
         )
@@ -265,16 +297,31 @@ async def dev_register(
     except HTTPException:
         raise
     except ValueError as e:
-        logger.error(f"Registration validation failed: {e} (correlation: {correlation_id})")
+        # Handle validation errors (e.g., invalid username/email format)
+        logger.warning(
+            f"Registration validation error: {str(e)}",
+            extra={"username": request.username, "correlation_id": correlation_id}
+        )
         raise HTTPException(
             status_code=400,
-            detail=f"Registration failed: {str(e)}"
+            detail={
+                "error": "validation_error",
+                "message": str(e),
+                "username": request.username
+            }
         )
     except Exception as e:
-        logger.error(f"Dev registration failed: {e} (correlation: {correlation_id})")
+        logger.error(
+            f"Dev registration failed: {type(e).__name__}: {str(e)}",
+            extra={"correlation_id": correlation_id},
+            exc_info=True
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Registration failed: {str(e)}"
+            detail={
+                "error": "internal_error",
+                "message": "Registration failed due to an internal error. Please try again later."
+            }
         )
 
 
@@ -350,7 +397,7 @@ async def get_current_user_profile(
             username=current_user.username,
             email=current_user.email,
             display_name=current_user.display_name,
-            created_at=current_user.created_at.isoformat(),
+            created_at=to_json_compatible(current_user.created_at),
             is_dev_user=current_user.is_dev_user,
             roles=current_user.roles if current_user.roles else ['admin'],  # Ensure roles are included
             last_login=None,  # TODO: Implement last login tracking
@@ -383,7 +430,7 @@ async def auth_health_check():
         health_status = await check_auth_services_health()
 
         # Add timestamp
-        health_status["authentication"]["timestamp"] = datetime.now(timezone.utc).isoformat()
+        health_status["authentication"]["timestamp"] = to_json_compatible(datetime.now(timezone.utc))
 
         return health_status["authentication"]
 
@@ -391,7 +438,7 @@ async def auth_health_check():
         logger.error(f"Auth health check failed: {e}")
         return {
             "status": "unhealthy",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
             "error": str(e)
         }
 

@@ -12,6 +12,7 @@ Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 
 from typing import Dict, Any, Optional
 from faultmaven.models.investigation import InvestigationPhase, InvestigationStrategy
+from faultmaven.prompts.investigation.ooda_guidance import get_complete_ooda_prompt
 
 
 # =============================================================================
@@ -58,7 +59,32 @@ Within each phase, you use OODA cycles:
 
 5. **Track Progress**: Maintain clear sense of where you are in investigation
 
-6. **Adapt**: If stuck, try different approach or hypothesis
+6. **Avoid Stalls - Adapt When Stuck**:
+   If you notice:
+   - No new evidence in 3+ turns
+   - Hypothesis confidence unchanged (<5% delta) in 2+ turns
+   - Repeatedly requesting same type of evidence
+   - User unable to provide requested evidence
+
+   **Take alternative action**:
+   - Request different evidence category
+   - Test different hypothesis
+   - Use available tools (knowledge_base_search, web_search, document_qa)
+   - Suggest workaround if evidence blocked
+   - Consider forced alternative hypothesis generation
+
+7. **Be Transparent About Progress**:
+   When investigation is stalled (lack of evidence):
+   - **Continue helping user** - Answer their questions, provide general guidance
+   - **But be honest** - Make it clear you're in consulting mode, not making investigation progress
+   - **Set expectations** - Explain what evidence is needed to resume investigation
+
+   Example phrasing:
+   "I'm happy to answer your questions, but I want to be clear: without error logs,
+   I can't make progress identifying the root cause. We're in consulting mode right now.
+
+   To resume the investigation, I need [specific evidence]. Until then, I can provide
+   general guidance but can't definitively solve this issue."
 
 # Tools Available
 
@@ -535,6 +561,41 @@ def get_lead_investigator_prompt(
 - Gather comprehensive evidence
 - Never skip phases
 - Mandatory documentation at end
+""")
+
+    # Add OODA guidance for current phase (weighted step emphasis + explicit declaration)
+    prompt_parts.append(f"\n{get_complete_ooda_prompt(current_phase)}")
+
+    # Add stall context if investigation is stalled
+    if investigation_state.get("stall_detected"):
+        stall_info = investigation_state.get("stall_info", {})
+        iterations_stalled = stall_info.get("iterations_stalled", 0)
+        stall_type = stall_info.get("stall_type", "unknown")
+        stall_severity = stall_info.get("severity", "moderate")
+
+        prompt_parts.append(f"""
+# ⚠️ STALL DETECTED - TRANSPARENCY REQUIRED
+
+**Current Status**: Investigation is stalled ({iterations_stalled} iterations without progress)
+**Stall Type**: {stall_type}
+**Severity**: {stall_severity}
+
+**IMPORTANT - Be Transparent with User**:
+You are currently in **consulting mode**, not making investigation progress.
+
+When responding to the user:
+1. **Continue to be helpful** - Answer their questions, provide guidance
+2. **But be explicit** - Make it clear you cannot make investigation progress without specific evidence
+3. **Set expectations** - Explain exactly what evidence is needed to resume
+
+Example framing (adapt to context):
+"I'm happy to help with your questions, but I want to be transparent: without [specific evidence],
+I can't make progress on identifying the root cause. We're in consulting mode right now.
+
+To resume the investigation and find the solution, I need [X]. Until then, I can provide general
+guidance but cannot definitively resolve this issue."
+
+**After {iterations_stalled} stalled iterations, user needs to understand investigation is blocked.**
 """)
 
     # Add current phase context

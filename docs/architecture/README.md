@@ -6,36 +6,44 @@ Master index for all architecture documentation.
 
 ## 🎯 Start Here
 
-**[Architecture Overview v2.0](./architecture-overview.md)** - Master architecture document (code-aligned, 40+ linked docs)
+**Investigation Architecture v2.0** - Milestone-based investigation framework (current design)
 
-This is the authoritative architecture document that provides:
-- Complete system design overview
-- Visual architecture diagrams
-- Code-aligned documentation map (10 sections)
-- Links to all architecture documents
+### **Core v2.0 Documents (Production Specification)**:
+
+| Document | Purpose |
+|----------|---------|
+| **[Investigation Architecture](./milestone-based-investigation-framework.md)** | 🎯 Investigation workflow, lifecycle, stages, milestones |
+| **[Case Data Model Design](./case-data-model-design.md)** | 🎯 Complete data structures, validation, database schema |
+| **[DB Design Specifications](./db-design-specifications.md)** | 🎯 PostgreSQL schema, migrations, queries |
+| **[Prompt Engineering Guide](./prompt-engineering-guide.md)** | 🎯 LLM prompts, templates, strategies |
+| **[Prompt Templates](./prompt-templates.md)** | Implementation-ready prompt code |
+| **[Prompt Implementation Examples](./prompt-implementation-examples.md)** | Complete code examples |
+
+**Architecture Philosophy**: Milestone-based (not phase-based) investigation where agents complete tasks opportunistically based on data availability.
 
 ---
 
 ## 📋 Navigation
 
-### Primary Documents
+### Primary Documents (v2.0 - Current)
 
 | Document | Version | Purpose |
 |----------|---------|---------|
-| **[Architecture Overview](./architecture-overview.md)** | v2.0 | 🎯 Master architecture document |
-| **[Documentation Map](./documentation-map.md)** | - | Complete document navigation and status |
-| **[Investigation Phases Framework](./investigation-phases-and-ooda-integration.md)** | v2.1 | 🎯 Process framework (7 phases + OODA) |
-| **[Evidence Collection Design](./evidence-collection-and-tracking-design.md)** | v2.1 | 🎯 Evidence data models and behaviors |
-| **[Case Lifecycle Management](./case-lifecycle-management.md)** | v1.0 | Case status state machine |
+| **[Investigation Architecture](./milestone-based-investigation-framework.md)** | v2.0 | 🎯 Milestone-based investigation framework |
+| **[Case Data Model Design](./case-data-model-design.md)** | v2.0 | 🎯 Complete data models and validation |
+| **[DB Design Specifications](./db-design-specifications.md)** | v2.0 | 🎯 Database schema and migrations |
+| **[Prompt Engineering Guide](./prompt-engineering-guide.md)** | v2.0 | 🎯 Prompt templates and strategies |
+| **[Architecture Overview](./architecture-overview.md)** | v2.0* | System architecture (needs v2.0 update) |
 
-### Framework and Components
+### Supporting Components
 
 | Document | Purpose |
 |----------|---------|
-| **[Investigation Phases and OODA Integration](./investigation-phases-and-ooda-integration.md)** | ✅ **IMPLEMENTED** - 7-phase investigation framework |
-| **[Agent Orchestration](./agent_orchestration_design.md)** | Agent workflow coordination |
-| **[Data Submission Design](./data-submission-design.md)** | Data upload handling (10K limit) |
-| **[Data Preprocessing Design](./data-preprocessing-design.md)** | ✅ **AUTHORITATIVE** - Complete data preprocessing blueprint (v4.0) |
+| **[Case and Session Concepts](./case-and-session-concepts.md)** | Case vs Session distinction, multi-device support |
+| **[Knowledge Base Architecture](./knowledge-base-architecture.md)** | Vector database, RAG, knowledge retrieval |
+| **[Data Submission Design](./data-submission-design.md)** | File uploads and data handling |
+| **[Data Preprocessing Design](./data-preprocessing-design-specification.md)** | Data preprocessing pipeline |
+| **[QA Tools Design](./qa-tools-design.md)** | Question answering tools and sub-agents |
 
 ### Infrastructure
 
@@ -54,12 +62,21 @@ This is the authoritative architecture document that provides:
 | **[Service Patterns](./service-patterns.md)** | Service layer patterns |
 | **[Interface-Based Design](./interface-based-design.md)** | Interface design guidelines |
 
-### Evolution and History
+### Archived Documents (Superseded by v2.0)
 
-| Document | Purpose |
-|----------|---------|
-| **[Configuration Refactor](./configuration-system-refactor-design.md)** | Config system evolution |
-| **[Prompt Engineering Architecture](./prompt-engineering-architecture.md)** | Multi-layer prompts, context management, token optimization |
+**These documents are OBSOLETE** - superseded by milestone-based investigation framework v2.0
+
+| Archived Document | Superseded By | Reason |
+|-------------------|---------------|--------|
+| ~~investigation-phases-and-ooda-integration.md~~ | milestone-based-investigation-framework.md v2.0 | Old 7-phase model replaced by milestones |
+| ~~evidence-collection-and-tracking-design.md~~ | case-data-model-design.md v2.0 (Evidence sections) | Merged into unified data model |
+| ~~investigation-state-and-control-design.md~~ | milestone-based-investigation-framework.md v2.0 | Old phase-based design |
+| ~~prompt-engineering-architecture.md~~ | prompt-engineering-guide.md v2.0 | Outdated prompt design |
+| ~~data-models-reference.md~~ | case-data-model-design.md v2.0 | Old OODA-based models |
+
+**Location**: `/archive/` directory
+
+**Note**: `document-generation-and-closure-design.md` introduces `DOCUMENTING` status - conflicts with v2.0 (needs review)
 
 ---
 

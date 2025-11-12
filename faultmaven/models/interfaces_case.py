@@ -7,16 +7,25 @@ following FaultMaven's interface-based dependency injection pattern.
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from enum import Enum
 
-from .case import (
-    Case,
+from .case import Case
+from .api_models import (
     CaseListFilter,
     CaseMessage,
     CaseSearchRequest,
     CaseSummary,
-    ParticipantRole
+    CaseParticipant,
 )
 from .api import CaseMessagesResponse
+
+
+# Stub for deprecated participant feature (will be removed)
+class ParticipantRole(str, Enum):
+    """Deprecated: Participant roles from old model"""
+    OWNER = "owner"
+    COLLABORATOR = "collaborator"
+    VIEWER = "viewer"
 
 
 class ICaseStore(ABC):
@@ -406,26 +415,7 @@ class ICaseService(ABC):
             True if case was resumed successfully
         """
         pass
-    
-    @abstractmethod
-    async def archive_case(
-        self, 
-        case_id: str, 
-        reason: Optional[str] = None,
-        user_id: Optional[str] = None
-    ) -> bool:
-        """Archive a case.
-        
-        Args:
-            case_id: Case identifier
-            reason: Optional archive reason
-            user_id: Optional user ID for access control
-            
-        Returns:
-            True if case was archived successfully
-        """
-        pass
-    
+
     @abstractmethod
     async def hard_delete_case(
         self, 

@@ -43,8 +43,10 @@ def session_id():
 @pytest.fixture
 async def orchestrator(mock_llm_provider, session_id):
     """Create PhaseOrchestrator instance"""
+    # FIXED: Pass case_id (investigation state belongs to case, not session)
     return PhaseOrchestrator(
         llm_provider=mock_llm_provider,
+        case_id="test_case_123",  # Mock case ID for testing
         session_id=session_id,
     )
 

@@ -116,13 +116,14 @@ class PreprocessingService:
             f"(size={len(content)} bytes, hint={agent_hint})"
         )
 
-        # Step 1: Classification
+        # Step 1: Classification (with source_metadata for URL-based classification)
         classification = self.classifier.classify(
             filename,
             content,
             agent_hint,
             browser_context,
-            user_override
+            user_override,
+            source_metadata  # Pass for URL pattern matching and file upload boost
         )
 
         logger.info(

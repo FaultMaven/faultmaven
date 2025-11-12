@@ -4,14 +4,14 @@ Phase-Specific Prompts for FaultMaven Seven-Phase OODA Framework
 This module contains prompt templates for each phase of the OODA-based troubleshooting methodology.
 The 7-phase framework (0-6) guides the agent through structured investigation with adaptive OODA cycles.
 
-OODA Framework Integration:
-- Phase 0 (Intake): No OODA - Consultant mode, reactive
-- Phase 1 (Blast Radius): Observe + Orient - Quick scope assessment
-- Phase 2 (Timeline): Observe + Orient - Establish chronology
-- Phase 3 (Hypothesis): Observe + Orient + Decide - Generate theories
-- Phase 4 (Validation): Full OODA cycle - Systematic testing
-- Phase 5 (Solution): Decide + Act + Orient - Implement and verify
-- Phase 6 (Document): Orient only - Synthesis and learning capture
+OODA Framework Integration (Weighted Activation System):
+- Phase 0 (Intake): Observe 50%, Orient 50% (light signal detection)
+- Phase 1 (Blast Radius): Observe 60% (PRIMARY), Orient 30% (PRIMARY), Decide 8%, Act 2%
+- Phase 2 (Timeline): Observe 60% (PRIMARY), Orient 30% (PRIMARY), Decide 8%, Act 2%
+- Phase 3 (Hypothesis): Orient 35% (PRIMARY), Decide 30% (PRIMARY), Observe 30%, Act 5%
+- Phase 4 (Validation): Balanced 25% each (full OODA cycle)
+- Phase 5 (Solution): Act 35% (PRIMARY), Decide 30% (PRIMARY), Orient 25%, Observe 10%
+- Phase 6 (Document): Orient 100% (pure synthesis)
 
 Design Reference: docs/architecture/prompt-engineering-architecture.md
 """
@@ -65,15 +65,15 @@ Continue answering questions in Consultant mode. Re-offer investigation if new p
 
 
 # Phase 1: Blast Radius
-# OODA Steps: Observe + Orient (1-2 cycles, light intensity)
+# OODA Weight Profile: Observe 60% (PRIMARY), Orient 30% (PRIMARY), Decide 8%, Act 2%
 PHASE_1_BLAST_RADIUS = """## Investigation Focus: Understanding Scope and Impact
 
 **Objective:** Quickly understand what's affected and how severe the issue is.
 
-**OODA Approach (Internal):**
-- **Observe:** Request scope metrics, affected systems, user impact data
-- **Orient:** Analyze severity and affected components
-- Target: 1-2 quick OODA cycles to define blast radius
+**OODA Weight Profile (Internal):**
+Focus primarily on **observe** (gathering scope data) and **orient** (analyzing impact).
+Use decide tactically for "check this specific metric" and act for quick diagnostic queries.
+Target: 1-2 iterations to define blast radius
 
 **Your Focus:**
 - Identify which systems/services are affected
@@ -81,6 +81,15 @@ PHASE_1_BLAST_RADIUS = """## Investigation Focus: Understanding Scope and Impact
 - Determine severity level (critical/high/medium/low)
 - Gather initial symptoms and observations
 - Check for recent changes (deployments, configs, infrastructure)
+
+**Early Hypothesis Capture (Internal - Opportunistic Mode):**
+If patterns emerge naturally during scope assessment, capture early intuitions:
+- "This looks like [X]" → Early pattern recognition
+- "Probably caused by [Y]" → Causal hypothesis
+- "Reminds me of [Z]" → Similar incident pattern
+
+Don't force hypothesis generation - let them emerge naturally from evidence.
+These captured hypotheses (status: CAPTURED) will be systematically reviewed in Phase 3.
 
 **Key Questions to Ask:**
 1. What specific symptoms are you observing? (errors, slowness, downtime)
@@ -115,15 +124,15 @@ PHASE_1_BLAST_RADIUS = """## Investigation Focus: Understanding Scope and Impact
 
 
 # Phase 2: Timeline
-# OODA Steps: Observe + Orient (1-2 cycles, light intensity)
+# OODA Weight Profile: Observe 60% (PRIMARY), Orient 30% (PRIMARY), Decide 8%, Act 2%
 PHASE_2_TIMELINE = """## Investigation Focus: Establishing Timeline
 
 **Objective:** Pinpoint when the issue started and what changed around that time.
 
-**OODA Approach (Internal):**
-- **Observe:** Request deployment logs, change history, timeline data
-- **Orient:** Correlate events with issue onset
-- Target: 1-2 quick OODA cycles to establish timeline
+**OODA Weight Profile (Internal):**
+Focus primarily on **observe** (collecting timeline evidence) and **orient** (correlating events).
+Use decide tactically for "check deployment time" and act for querying change logs.
+Target: 1-2 iterations to establish timeline
 
 **Your Focus:**
 - Pinpoint exact incident start time
@@ -131,6 +140,14 @@ PHASE_2_TIMELINE = """## Investigation Focus: Establishing Timeline
 - Correlate with system events (deployments, traffic changes, infrastructure)
 - Look for patterns (time of day, specific operations, load-related)
 - Map symptom progression
+
+**Early Hypothesis Capture (Internal - Opportunistic Mode):**
+If timeline evidence suggests causes, capture intuitions:
+- "Coincides with [deployment/change]" → Temporal correlation hypothesis
+- "Suggests [resource exhaustion/config issue]" → Inference from pattern
+- "Could be due to [X]" → Causal possibility
+
+Let hypotheses emerge naturally from timeline analysis. Don't force generation yet.
 
 **Key Questions to Ask:**
 1. What is the exact timestamp when the issue started?
@@ -172,20 +189,29 @@ PHASE_2_TIMELINE = """## Investigation Focus: Establishing Timeline
 
 
 # Phase 3: Hypothesis
-# OODA Steps: Observe + Orient + Decide (2-3 cycles, medium intensity)
+# OODA Weight Profile: Orient 35% (PRIMARY), Decide 30% (PRIMARY), Observe 30%, Act 5%
 PHASE_3_HYPOTHESIS = """## Investigation Focus: Generating Root Cause Theories
 
 **Objective:** Formulate ranked hypotheses for what could be causing this issue.
 
-**OODA Approach (Internal):**
-- **Observe:** Request configuration, environment details, dependency status
-- **Orient:** Synthesize evidence from Phases 1-2 to identify patterns
-- **Decide:** Rank hypotheses by likelihood and define testing strategy
-- Target: 2-3 OODA cycles to generate and rank theories
+**OODA Weight Profile (Internal):**
+Focus primarily on **orient** (pattern analysis) and **decide** (hypothesis generation).
+Support with observe (reviewing evidence) and light act (preliminary checks).
+Target: 2-3 iterations to generate and rank theories
+
+**Systematic Hypothesis Generation (Internal):**
+This phase uses SYSTEMATIC generation mode:
+1. **Review Opportunistic Hypotheses** (captured in Phases 1-2):
+   - Promote to ACTIVE if evidence_ratio > 0.7 (strong supporting evidence)
+   - Retire if evidence_ratio < 0.3 (weak or refuting evidence)
+2. **Identify Coverage Gaps**: Check which root cause categories lack hypotheses
+3. **Generate New Hypotheses**: Create systematic hypotheses for uncovered categories
+4. **Ensure Minimum 2 Active**: Always have at least 2 competing hypotheses for testing
 
 **Your Focus:**
 - Synthesize information from Phases 1 and 2
-- Generate multiple possible root causes
+- Review any early hypotheses captured opportunistically
+- Generate multiple possible root causes systematically
 - Rank by likelihood (most probable first)
 - Provide supporting evidence for each hypothesis
 - Identify quick tests to validate/invalidate
@@ -256,18 +282,16 @@ For each hypothesis, provide:
 
 
 # Phase 4: Validation
-# OODA Steps: Full OODA Cycle - Observe + Orient + Decide + Act (3-6 cycles, full intensity)
+# OODA Weight Profile: Balanced 25% each (observe, orient, decide, act) - Full OODA cycle
 PHASE_4_VALIDATION = """## Investigation Focus: Testing Root Cause Theories
 
 **Objective:** Systematically test each hypothesis to find the confirmed root cause.
 
-**OODA Approach (Internal):**
-- **Observe:** Request test results, logs, metrics, configuration details
-- **Orient:** Analyze evidence to update hypothesis confidence
-- **Decide:** Choose which hypothesis to test next, when to pivot
-- **Act:** Guide user to execute specific tests and gather proof
-- Target: 3-6 full OODA cycles with iterative hypothesis testing
-- **Anchoring Prevention:** After 3 iterations without progress, deliberately consider alternative angles
+**OODA Weight Profile (Internal):**
+Balanced full OODA cycle - all steps equally weighted at 25% each.
+Observe (test results), orient (analyze evidence), decide (choose next test), act (execute tests).
+Target: 3-6 iterations with systematic hypothesis testing.
+**Anchoring Prevention:** After 3 iterations without progress, deliberately consider alternative angles
 
 **Your Focus:**
 - Test most likely hypothesis first
@@ -275,6 +299,15 @@ PHASE_4_VALIDATION = """## Investigation Focus: Testing Root Cause Theories
 - Analyze evidence objectively
 - Conclude: CONFIRMED, RULED OUT, or INCONCLUSIVE
 - Move to next hypothesis if current one is ruled out
+
+**Phase Loop-Back Conditions (Internal):**
+If validation reveals fundamental issues, signal loop-back:
+- **All hypotheses refuted** (confidence < 0.30) → Loop back to Phase 3 (generate alternatives)
+- **Scope significantly changed** → Loop back to Phase 1 (reassess blast radius)
+- **Timeline analysis incorrect** → Loop back to Phase 2 (reestablish timeline)
+
+Set `phase_complete: false` and include `loop_back_reason` in response.
+Maximum 3 loop-backs allowed. After 3 failed attempts, force progress to Solution phase (best-effort mitigation).
 
 **Validation Methods:**
 1. **Logs Analysis**
@@ -356,16 +389,15 @@ PHASE_4_VALIDATION = """## Investigation Focus: Testing Root Cause Theories
 
 
 # Phase 5: Solution
-# OODA Steps: Decide + Act + Orient (2-4 cycles, medium intensity)
+# OODA Weight Profile: Act 35% (PRIMARY), Decide 30% (PRIMARY), Orient 25%, Observe 10%
 PHASE_5_SOLUTION = """## Investigation Focus: Implementing the Fix
 
 **Objective:** Provide clear resolution steps and verify the problem is solved.
 
-**OODA Approach (Internal):**
-- **Decide:** Choose specific fix approach based on validated root cause
-- **Act:** Guide implementation with step-by-step instructions
-- **Orient:** Verify fix effectiveness and adjust if needed
-- Target: 2-4 OODA cycles to implement, verify, and prevent recurrence
+**OODA Weight Profile (Internal):**
+Focus primarily on **act** (implementing fix) and **decide** (choosing solution approach).
+Support with orient (verifying results) and light observe (monitoring effects).
+Target: 2-4 iterations to implement, verify, and prevent recurrence
 
 **Your Focus:**
 - Immediate fix to restore service (if down)
@@ -515,14 +547,15 @@ PHASE_5_SOLUTION = """## Investigation Focus: Implementing the Fix
 
 
 # Phase 6: Document
-# OODA Steps: Orient only (1 cycle, synthesis and learning capture)
+# OODA Weight Profile: Orient 100% (pure synthesis) - Observe 0%, Decide 0%, Act 0%
 PHASE_6_DOCUMENT = """## Investigation Focus: Capturing Learnings
 
 **Objective:** Document what was learned and offer artifacts for future reference.
 
-**OODA Approach (Internal):**
-- **Orient:** Synthesize the entire investigation into learnings
-- Target: 1 OODA cycle to offer documentation options
+**OODA Weight Profile (Internal):**
+Pure **orient** (100%) - synthesis and artifact generation mode only.
+No observe/decide/act needed - purely reflective documentation phase.
+Target: 1 iteration to offer documentation options
 
 **Your Approach:**
 - Offer to create documentation artifacts (don't force)

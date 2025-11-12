@@ -1,501 +1,1240 @@
-# Data Submission Handling - Implementation Specification (v3.0)
+# FaultMaven Data Submission Design v4.0
 
-## Problem Statement
+## Executive Summary
 
-**Scenario:** Users submit data (files, logs, error traces, metrics) either through dedicated upload UI or by pasting into the query box.
+This document specifies how users submit diagnostic data (logs, metrics, traces, configs) to FaultMaven through two complementary paths:
 
-**Evolution:**
-- **v1.0**: Classification engine treated pasted data as queries, overwhelming LLM context
-- **v2.0**: Automatic detection via length/pattern matching, routed to data ingestion
-- **v3.0** (Current): Dual submission paths with conversational AI responses
+1. **Explicit Upload Path**: Dedicated "Upload" UI for files/text/pages via `POST /api/v1/cases/{case_id}/data`
+2. **Implicit Detection Path**: Intelligent paste detection in query box via `POST /api/v1/cases/{case_id}/queries`
 
-**Current Solution (v3.0):**
-- **Explicit Upload**: Dedicated UI for file/text/page uploads via `POST /api/v1/cases/{case_id}/data`
-- **Implicit Detection**: Pasted data auto-detected via `POST /api/v1/cases/{case_id}/queries` with smart routing
-- **Conversational UX**: All data submissions appear as conversation turns with AI analysis responses
+**Key Principle**: Both paths converge into the same processing pipeline, appearing as natural conversation turns with AI-generated analysis responses.
+
+**Architecture Layers**:
+```
+Data Submission (THIS DOC) → Data Preprocessing → Evidence Evaluation → Agent Response
+    ↓                              ↓                      ↓                  ↓
+API/UX Layer              Transformation Layer      Analysis Layer     Generation Layer
+```
+
+**Related Documents**:
+- [Data Preprocessing Architecture v2.0](./data-preprocessing-architecture.md) - How raw data transforms into insights
+- [Evidence Architecture v1.1](./evidence-architecture.md) - How insights link to hypotheses
+- [API Specification](../api/openapi.locked.yaml) - OpenAPI endpoint definitions
 
 ---
 
-## Design Philosophy
+## Table of Contents
 
-### Core Principles
+1. [System Context](#1-system-context)
+2. [Core Principles](#2-core-principles)
+3. [Architecture Overview](#3-architecture-overview)
+4. [Submission Path 1: Explicit Upload](#4-submission-path-1-explicit-upload)
+5. [Submission Path 2: Implicit Detection](#5-submission-path-2-implicit-detection)
+6. [API Specifications](#6-api-specifications)
+7. [Frontend Integration](#7-frontend-integration)
+8. [Backend Integration](#8-backend-integration)
+9. [Source Metadata Enhancement](#9-source-metadata-enhancement)
+10. [Testing Requirements](#10-testing-requirements)
+11. [Cross-References](#11-cross-references)
 
-1. **Conversational Flow**: Data uploads are conversation messages, not separate UI elements
-2. **Backend-Driven Analysis**: Backend analyzes data and generates insights, not just "upload successful"
-3. **Context-Aware**: Data is processed in the context of the ongoing conversation
-4. **Unified Experience**: File upload, text paste, and page capture all work the same way
+---
 
-### User Experience
+## 1. System Context
 
-**User uploads data** → **Frontend shows upload message** → **Backend processes & analyzes** → **AI responds with insights**
+### 1.1 Role in System Architecture
 
+Data Submission is the **API and UX layer** that handles user interactions with the data ingestion system. It does not implement data processing—that's delegated to specialized architectures.
+
+**Three-Layer Architecture**:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ DATA SUBMISSION DESIGN v4.0 (THIS DOCUMENT)                 │
+│ Layer: API & UX                                              │
+│ Responsibility: User interaction, routing, conversation UX   │
+│                                                              │
+│ • POST /data endpoint for explicit uploads                   │
+│ • POST /queries endpoint with paste detection                │
+│ • Query classification (hints → patterns → heuristics)       │
+│ • Conversational response formatting                         │
+│ • Frontend conversation integration                          │
+└──────────────────────┬───────────────────────────────────────┘
+                       │ Routes to
+                       ↓
+┌──────────────────────────────────────────────────────────────┐
+│ DATA PREPROCESSING ARCHITECTURE v2.0                         │
+│ Layer: Transformation                                        │
+│ Responsibility: Extract insights from raw data               │
+│                                                              │
+│ • Validate & classify data type (6 types)                    │
+│ • Type-specific extraction (Crime Scene, Anomaly Detection)  │
+│ • Sanitize PII/secrets                                       │
+│ • Output: PreprocessingResult                                │
+└──────────────────────┬───────────────────────────────────────┘
+                       │ PreprocessingResult
+                       ↓
+┌──────────────────────────────────────────────────────────────┐
+│ EVIDENCE ARCHITECTURE v1.1                                   │
+│ Layer: Analysis                                              │
+│ Responsibility: Link evidence to hypotheses                  │
+│                                                              │
+│ • 6-dimensional evidence classification                      │
+│ • Create Evidence objects                                    │
+│ • Update hypothesis links and status                         │
+│ • Output: Evidence + Updated Case                            │
+└──────────────────────┬───────────────────────────────────────┘
+                       │ Evidence + Case
+                       ↓
+┌──────────────────────────────────────────────────────────────┐
+│ AGENT SERVICE                                                │
+│ Layer: Generation                                            │
+│ Responsibility: Generate conversational AI responses         │
+│                                                              │
+│ • Analyze evidence in case context                           │
+│ • Generate insights and recommendations                      │
+│ • Output: AgentResponse                                      │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 1.2 Scope Boundaries
+
+**This Document Covers**:
+- ✅ API endpoint definitions (`/data`, `/queries`)
+- ✅ Request/response schemas
+- ✅ Query classification algorithm (3-tier)
+- ✅ Frontend conversation UX
+- ✅ Integration points with other layers
+- ✅ Source metadata flow
+
+**This Document Does NOT Cover** (See Other Docs):
+- ❌ Data type classification algorithms → See Data Preprocessing v2.0
+- ❌ Extraction strategies (Crime Scene, Anomaly Detection) → See Data Preprocessing v2.0
+- ❌ Evidence-hypothesis linkage → See Evidence Architecture v1.1
+- ❌ Hypothesis status updates → See Evidence Architecture v1.1
+- ❌ Agent prompt engineering → See Prompt Engineering Architecture
+
+---
+
+## 2. Core Principles
+
+### 2.1 Conversational Flow First
+
+**Principle**: Data uploads are conversation messages, not separate UI elements.
+
+**User Experience**:
 ```
 User: 📎 Uploaded: application.log (45KB)
 
-AI: I've analyzed your application log file. I found 127 error entries, with the most critical being:
-- 45 database connection timeouts starting at 14:23 UTC
-- 12 out-of-memory exceptions in the cache service
-Would you like me to help diagnose the connection timeout issue first?
+AI: I've analyzed your application log. I found 127 error entries, 
+    with the most critical being:
+    - 45 database connection timeouts starting at 14:23 UTC
+    - 12 out-of-memory exceptions in the cache service
+    
+    Would you like me to help diagnose the connection timeout issue first?
 ```
+
+**Not This**:
+```
+✓ File uploaded successfully
+[Separate "Session Data" UI section shows uploaded files]
+```
+
+### 2.2 Dual Path Convergence
+
+**Principle**: Explicit uploads and implicit detection (paste) use the same processing pipeline.
+
+```
+Path 1: Explicit Upload          Path 2: Implicit Paste
+POST /data                       POST /queries
+     ↓                                ↓
+     ↓                         Query Classifier
+     ↓                         (if machine data)
+     ↓                                ↓
+     └────────────┬───────────────────┘
+                  ↓
+        Same Processing Pipeline
+        (Preprocessing → Evidence → Agent)
+```
+
+### 2.3 Backend-Driven Analysis
+
+**Principle**: Backend generates insights, frontend displays them. No "upload successful" toasts.
+
+**Backend Responsibility**:
+- Extract key findings from data
+- Link to relevant hypotheses
+- Generate actionable recommendations
+- Format as conversational response
+
+**Frontend Responsibility**:
+- Display upload + AI response in conversation
+- No separate "uploaded files" UI section
+- Show processing state gracefully
+
+### 2.4 Context Preservation
+
+**Principle**: Data submissions are part of conversation history, not separate system state.
+
+**Maintained Context**:
+- Evidence links to hypotheses
+- Timeline events extracted from data
+- Previous analyses reference uploaded evidence
+- Agent can say: "Based on the log you uploaded earlier..."
 
 ---
 
-## Architecture: Dual Submission Paths
+## 3. Architecture Overview
 
-### Path 1: Explicit Data Upload (Designed for Files)
+### 3.1 End-to-End Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ USER ACTION                                                  │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+        ┌─────────────┴──────────────┐
+        │                            │
+        ↓ Explicit                   ↓ Implicit
+  POST /data                    POST /queries
+  (upload button)               (paste in chat)
+        │                            │
+        │                            ↓
+        │                       QueryClassifier
+        │                       (3-tier detection)
+        │                            │
+        │                            ↓
+        │                    if is_machine_data:
+        └─────────────┬──────────────┘
+                      │
+                      ↓
+┌─────────────────────────────────────────────────────────────┐
+│ DATA PREPROCESSING (See: data-preprocessing-architecture.md)│
+│                                                              │
+│ 1. Validate (size ≤10MB, type allowed)                      │
+│ 2. Classify data type (LOGS_AND_ERRORS, METRICS, etc.)      │
+│ 3. Extract insights (Crime Scene, Anomaly Detection, etc.)  │
+│ 4. Sanitize (PII/secrets redacted)                          │
+│ 5. Package → PreprocessingResult                             │
+│    - summary: <500 chars (for Evidence.summary)             │
+│    - full_extraction: complete insights                      │
+│    - content_ref: s3://bucket/case/file                     │
+│    - extraction_metadata: {method, compression_ratio, ...}   │
+│                                                              │
+│ Time: 0.5-30s depending on type/size/user choices           │
+└─────────────────────┬───────────────────────────────────────┘
+                      │ PreprocessingResult
+                      ↓
+┌─────────────────────────────────────────────────────────────┐
+│ EVIDENCE EVALUATION (See: evidence-architecture.md)         │
+│                                                              │
+│ 1. Multi-dimensional classification (6 dimensions)          │
+│    - Request matching (which EvidenceRequirements?)         │
+│    - Hypothesis matching (relevant hypotheses)              │
+│    - Completeness, Form, Type, Intent                       │
+│                                                              │
+│ 2. Create Evidence object                                   │
+│    Evidence(                                                │
+│        summary=preprocessing_result.summary,                │
+│        content_ref=preprocessing_result.content_ref,        │
+│        source_type=LOGS_AND_ERRORS,  # Mapped from DataType│
+│        form=DOCUMENT,                                       │
+│    )                                                        │
+│                                                              │
+│ 3. Hypothesis analysis (function calling)                   │
+│    For each hypothesis:                                     │
+│    - Update evidence_links with stance & reasoning          │
+│    - Update status (PROPOSED → TESTING → VALIDATED)         │
+│                                                              │
+│ Time: 1-3s                                                  │
+└─────────────────────┬───────────────────────────────────────┘
+                      │ Evidence + Updated Hypotheses
+                      ↓
+┌─────────────────────────────────────────────────────────────┐
+│ AGENT RESPONSE GENERATION                                    │
+│                                                              │
+│ Generate conversational analysis response:                  │
+│ "I've analyzed your application log. I found 127 errors..." │
+│                                                              │
+│ Time: 2-4s                                                  │
+└─────────────────────┬───────────────────────────────────────┘
+                      │ AgentResponse
+                      ↓
+┌─────────────────────────────────────────────────────────────┐
+│ FRONTEND CONVERSATION UPDATE                                 │
+│                                                              │
+│ Add two messages to chat:                                   │
+│ 1. User message: "📎 Uploaded: application.log (45KB)"      │
+│ 2. AI message: [agent response content]                    │
+└─────────────────────────────────────────────────────────────┘
+
+                ┌─ PARALLEL ASYNC (Fire-and-forget) ─┐
+                ↓
+┌─────────────────────────────────────────────────────────────┐
+│ VECTOR DB BACKGROUND STORAGE (Optional)                     │
+│                                                              │
+│ IF user chose caching mode:                                 │
+│   - Chunk full_extraction (512 tokens)                      │
+│   - Generate embeddings (BGE-M3)                            │
+│   - Store in case_{case_id} collection                      │
+│                                                              │
+│ Purpose: Long-term memory for forensic deep dives           │
+│ NOT for: Primary evidence storage (uses Evidence objects)   │
+│                                                              │
+│ Time: 2-5s (user doesn't wait)                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 3.2 Data Type Flow
+
+**Preprocessing Classification → Evidence Source Type Mapping**:
+
+From [Data Preprocessing v2.0 - Section 2.3](./data-preprocessing-architecture.md#23-data-type-mapping):
+
+| Preprocessing DataType | Evidence SourceType | Example |
+|------------------------|---------------------|---------|
+| `LOGS_AND_ERRORS` | `LOG_FILE` | application.log, syslog |
+| `METRICS_AND_PERFORMANCE` | `METRICS_DATA` | prometheus.txt, metrics.csv |
+| `STRUCTURED_CONFIG` | `CONFIG_FILE` | database.yaml, app.json |
+| `SOURCE_CODE` | `CODE_REVIEW` | auth_service.py |
+| `UNSTRUCTURED_TEXT` | `USER_OBSERVATION` | incident_report.txt |
+| `VISUAL_EVIDENCE` | `SCREENSHOT` | error_page.png |
+
+All file uploads have `form=DOCUMENT` (vs `USER_INPUT` for typed text in query box).
+
+---
+
+## 4. Submission Path 1: Explicit Upload
+
+### 4.1 Overview
 
 **Endpoint**: `POST /api/v1/cases/{case_id}/data`
 
-**Use Case**: User uses dedicated "Upload" UI in browser extension
+**Use Case**: User clicks "Upload" button in browser extension UI
 
-**Why Designed for Files:**
-This path is architecturally designed for potentially large data submissions because it includes:
-1. **Classification First**: Data type is identified before LLM involvement
-2. **Intelligent Preprocessing**: Large files are condensed into LLM-digestible summaries
-3. **Structured Analysis**: Domain-specific processors extract key information
-4. **LLM-Ready Context**: Only preprocessed summaries (not raw data) sent to LLM
+**User Flow**:
+1. User clicks upload button
+2. Selects file OR pastes text OR captures page
+3. Frontend converts to File object, uploads via FormData
+4. Backend processes through full pipeline
+5. User sees upload message + AI analysis in conversation
 
-**Pipeline**: `Upload → Classify → Preprocess → Generate Summary → LLM Analysis → Response`
+**Why This Path Exists**: Provides explicit, intentional data submission with clear UI affordance.
 
-**API Spec** ([openapi.locked.yaml:2294-2350](../api/openapi.locked.yaml#L2294)):
-```yaml
-POST /api/v1/cases/{case_id}/data
-  Parameters:
-    - case_id: path (required)
-    - description: query (optional)
-    - expected_type: query (optional)
-  Request Body: multipart/form-data
-    - file: binary (required)
-    - session_id: string (required)
-  Response: 201 Created
-    Headers:
-      - Location: /api/v1/cases/{case_id}/data/{data_id}
-      - X-Correlation-ID: <uuid>
-    Body:
+### 4.2 API Specification
+
+**Request**:
+```http
+POST /api/v1/cases/{case_id}/data HTTP/1.1
+Content-Type: multipart/form-data
+Authorization: Bearer <token>
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="application.log"
+Content-Type: text/plain
+
+[file content]
+--boundary
+Content-Disposition: form-data; name="session_id"
+
+sess_abc123
+--boundary
+Content-Disposition: form-data; name="source_metadata"
+
+{"source_type": "file_upload", "user_description": "Application logs from server-1"}
+--boundary--
+```
+
+**Parameters**:
+- `file` (required): Binary file data
+- `session_id` (required): Active session identifier
+- `source_metadata` (optional): JSON string with source context (see Section 9)
+- `description` (optional): User's description of the file
+
+**Response** (201 Created):
+```http
+HTTP/1.1 201 Created
+Location: /api/v1/cases/case_123/evidence/ev_abc
+X-Correlation-ID: <uuid>
+Content-Type: application/json
+
+{
+  "evidence_id": "ev_abc",
+  "preprocessing": {
+    "data_type": "logs_and_errors",
+    "extraction_method": "crime_scene_extraction",
+    "compression_ratio": 0.005,
+    "summary": "Application log: 847 entries, 23 NullPointerExceptions in auth-service"
+  },
+  "evidence": {
+    "source_type": "log_file",
+    "form": "document",
+    "content_ref": "s3://faultmaven-evidence/case_123/ev_abc.log",
+    "content_size_bytes": 5242880,
+    "collected_at": "2025-11-01T14:30:00Z"
+  },
+  "agent_response": {
+    "content": "I've analyzed your application log. I found 23 NullPointerExceptions...",
+    "response_type": "ANSWER",
+    "confidence_score": 0.85,
+    "sources": [
       {
-        "data_id": "data_...",
-        "filename": "application.log",
-        "file_size": 45000,
-        "data_type": "log_file",
-        "processing_status": "completed",
-        "agent_response": {
-          "response_type": "ANSWER",
-          "content": "I've analyzed your application log...",
-          "confidence_score": 0.85,
-          "sources": [...]
-        }
+        "type": "uploaded_evidence",
+        "evidence_id": "ev_abc",
+        "relevance": 0.95
       }
-```
-
-**Processing Flow**:
-1. User selects file/pastes text/captures page content
-2. Frontend converts to File object, uploads via FormData
-3. **Backend classifies data type** (log_file, metrics_data, error_report, etc.)
-4. **Backend preprocesses** - Extracts key information, reduces size for LLM
-5. **Backend analyzes** - LLM processes preprocessed summary (not raw data)
-6. Backend generates conversational AI response with insights
-7. Frontend displays user message + AI response in conversation
-
-**Key Advantage**: Large files (50K+ lines) are preprocessed into ~8K char summaries before LLM analysis, preventing context overflow while preserving critical information.
-
-**Current Implementation Status**:
-- ✅ Endpoint exists ([case.py:2094-2149](../../faultmaven/api/v1/routes/case.py#L2094))
-- ⚠️ Returns mock data (not real file processing)
-- ❌ Does not return `agent_response` field (needs implementation)
-- ✅ **Preprocessing Layer**: **~85% COMPLETE** - see [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md)
-  - ✅ **Crime Scene Extraction** - FULLY implemented (`LogsAndErrorsExtractor`)
-  - ✅ **5 other extractors** - FULLY implemented (metrics, config, text, code)
-  - ⚠️ **Not yet wired** - extractors exist but not connected to upload endpoint
-
----
-
-### Path 2: Implicit Detection (Paste in Query Box)
-
-**Endpoint**: `POST /api/v1/cases/{case_id}/queries`
-
-**Use Case**: User pastes large log/data into the regular query box
-
-**Why Different from Path 1:**
-This path is designed for **query-like submissions** that may contain data. It uses pattern detection to decide whether to:
-- Route to Path 1's preprocessing pipeline (if detected as data submission)
-- Process as a normal query with code/context (if below threshold)
-
-**Detection → Route**: If patterns indicate data submission, internally routes to same preprocessing pipeline as Path 1.
-
-**API Spec** ([openapi.locked.yaml:2062-2125](../api/openapi.locked.yaml#L2062)):
-```yaml
-POST /api/v1/cases/{case_id}/queries
-  Request Body:
-    {
-      "session_id": "...",
-      "query": "<user pasted large log content>",
-      "context": {...}
-    }
-  Response:
-    - 201 Created (sync processing)
-    - 202 Accepted (async processing for >10K chars)
-```
-
-**Detection Logic** ([classification_engine.py:498-661](../../faultmaven/services/agentic/engines/classification_engine.py)):
-```python
-# Hard limit threshold
-HARD_LIMIT = 10000  # Characters
-
-if len(query) > HARD_LIMIT:
-    # Auto-route to data ingestion
-    return {
-        "should_route_to_upload": True,
-        "confidence": 1.0,
-        "reason": f"Message length {len(query)} exceeds hard limit"
-    }
-else:
-    # Pattern detection for hints
-    detected_patterns = detect_patterns(query)
-    return {
-        "should_route_to_upload": len(detected_patterns) >= 3,
-        "data_indicators": detected_patterns,
-        "confidence": calculate_confidence(detected_patterns)
-    }
-```
-
-**Flow**:
-1. User pastes large content into query box
-2. Classification engine detects data submission
-3. Routes to `data_service.ingest_data()` instead of normal query processing
-4. Async analysis if >10K chars, sync if smaller
-5. Returns AgentResponse with analysis results
-
-**Implementation Status**:
-- ✅ Classification engine detection implemented
-- ✅ Routing logic in `submit_case_query()`
-- ✅ Async/sync processing based on size
-- ✅ Returns conversational responses
-
----
-
-## Frontend Implementation
-
-### Current State
-
-**File**: `faultmaven-copilot/src/shared/ui/SidePanelApp.tsx:1717-1767`
-
-**Issues**:
-- ✅ Converts text/page to File objects
-- ✅ Calls `uploadDataToCase()`
-- ❌ Shows toast message instead of conversation message
-- ❌ Has separate "Session Data" UI section (bad UX)
-
-### Required Changes
-
-#### 1. Add Conversation Messages for Uploads
-
-```typescript
-const handleDataUpload = async (
-  data: string | File,
-  dataSource: "text" | "file" | "page"
-): Promise<{ success: boolean; message: string }> => {
-  // Convert to File
-  const fileToUpload = data instanceof File
-    ? data
-    : new File([new Blob([data])], `${dataSource}-content.txt`);
-
-  // Upload to backend
-  const uploadResponse = await uploadDataToCase(
-    activeCaseId,
-    sessionId,
-    fileToUpload
-  );
-
-  // Add USER message to conversation
-  const userMessage: ConversationItem = {
-    id: `upload-${Date.now()}`,
-    question: `📎 Uploaded: ${uploadResponse.filename} (${formatFileSize(uploadResponse.file_size)})`,
-    timestamp: new Date().toISOString(),
-  };
-
-  // Add AI RESPONSE message from backend
-  const aiMessage: ConversationItem = {
-    id: `response-${Date.now()}`,
-    response: uploadResponse.agent_response?.content || "Data received and processed.",
-    timestamp: new Date().toISOString(),
-    responseType: uploadResponse.agent_response?.response_type,
-    confidenceScore: uploadResponse.agent_response?.confidence_score,
-    sources: uploadResponse.agent_response?.sources,
-  };
-
-  // Update conversation
-  setConversation(prev => [...prev, userMessage, aiMessage]);
-
-  return { success: true, message: "" }; // No toast needed
-};
-```
-
-#### 2. Remove "Session Data" Section
-
-Delete lines 419-441 in `ChatWindow.tsx` - no longer needed.
-
-#### 3. Update Type Definitions
-
-```typescript
-export interface DataUploadResponse {
-  data_id: string;
-  filename: string;
-  file_size: number;
-  data_type: string;
-  processing_status: string;
-  uploaded_at: string;
-  agent_response?: AgentResponse;  // NEW: AI analysis
-}
-```
-
----
-
-## Backend Implementation Requirements
-
-### Endpoint: POST /api/v1/cases/{case_id}/data
-
-**Current**: Stub implementation ([case.py:2094-2149](../../faultmaven/api/v1/routes/case.py#L2094))
-
-**Required**:
-
-```python
-@router.post("/{case_id}/data", status_code=status.HTTP_201_CREATED)
-@trace("api_upload_case_data")
-async def upload_case_data(
-    case_id: str,
-    file: UploadFile = File(...),                    # NEW: Accept actual file
-    session_id: str = Form(...),                     # NEW: From form data
-    description: Optional[str] = Form(None),
-    case_service: ICaseService = Depends(...),
-    data_service: DataService = Depends(...),
-    agent_service: AgentService = Depends(...),      # NEW: For AI response
-    current_user: DevUser = Depends(require_authentication)
-):
-    """Upload data file to case and generate AI analysis."""
-
-    # 1. Verify case exists and user has access
-    case = await case_service.get_case(case_id, current_user.user_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-
-    # 2. Upload and process file
-    file_content = await file.read()
-    uploaded_data = await data_service.upload_data(
-        session_id=session_id,
-        case_id=case_id,
-        file_content=file_content,
-        file_name=file.filename,
-        content_type=file.content_type,
-        description=description
-    )
-
-    # 3. Classify data type and analyze
-    data_analysis = await data_service.analyze_data(
-        data_id=uploaded_data.data_id,
-        session_id=session_id
-    )
-
-    # 4. Generate conversational AI response
-    query_request = QueryRequest(
-        session_id=session_id,
-        query=f"I've uploaded {file.filename}. Please analyze it.",
-        context={
-            "uploaded_data_ids": [uploaded_data.data_id],
-            "case_id": case_id,
-            "data_insights": data_analysis
-        }
-    )
-
-    agent_response = await agent_service.process_query_for_case(
-        case_id,
-        query_request
-    )
-
-    # 5. Return upload metadata + AI response
-    return DataUploadResponse(
-        data_id=uploaded_data.data_id,
-        filename=file.filename,
-        file_size=len(file_content),
-        data_type=uploaded_data.data_type,
-        processing_status="completed",
-        uploaded_at=datetime.utcnow().isoformat() + 'Z',
-        agent_response=agent_response  # NEW: Include AI analysis
-    )
-```
-
----
-
-## Pattern Detection (Implicit Submission)
-
-**File**: `classification_engine.py` lines 498-546
-
-**Categories Implemented**:
-```python
-data_submission_patterns = {
-    "timestamps": [
-        (r'\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}', 2.0),
-        (r'\[\d{4}-\d{2}-\d{2}.*?\]', 2.0),
-        (r'\d{2}:\d{2}:\d{2}\.\d{3}', 2.0)
-    ],
-    "log_levels": [
-        (r'(ERROR|WARN|INFO|DEBUG|TRACE).*\n.*\1', 2.0),
-        (r'\b(ERROR|WARNING|INFO|DEBUG)\b.*\n.*\b(ERROR|WARNING|INFO|DEBUG)\b', 1.8)
-    ],
-    "stack_traces": [
-        (r'at\s+[\w.$]+\(.*?:\d+\)', 2.0),  # Java
-        (r'File ".*?", line \d+', 2.0),      # Python
-        (r'^\s+at\s+.*\(.*:\d+:\d+\)$', 2.0), # JavaScript
-        (r'Traceback \(most recent call last\)', 2.5),
-        (r'Exception in thread', 2.0)
-    ],
-    "structured_data": [
-        (r'^\s*\{[\s\S]*"[\w]+":\s*[\[\{"][\s\S]*\}\s*$', 1.8),
-        (r'^<\?xml', 1.8),
-        (r'^\w+:\s*\S+\s*\n\w+:\s*\S+', 1.5)
-    ],
-    "server_logs": [
-        (r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b.*\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', 1.5),
-        (r'(GET|POST|PUT|DELETE|PATCH)\s+/\S+\s+HTTP/\d\.\d', 1.8)
-    ],
-    "metrics_data": [
-        (r'(\d+\.\d+|\d+)\s+(cpu|memory|disk|network|latency|throughput)', 1.8),
-        (r'\b(metric|gauge|counter|histogram)\s*:\s*\d+', 1.8),
-        (r'(\d+\s*%|GB|MB|KB|ms|µs|ns)\s*.*\n.*(\d+\s*%|GB|MB|KB|ms|µs|ns)', 1.5)
     ]
+  }
 }
 ```
 
----
+**Error Responses**:
+```json
+// 400 Bad Request - File too large
+{
+  "error": "file_too_large",
+  "file_size": 15728640,
+  "max_size": 10485760,
+  "message": "File exceeds 10MB limit",
+  "suggestions": [
+    "Upload only the relevant time range",
+    "Filter to ERROR/FATAL level logs only"
+  ]
+}
 
-## Testing Scenarios
-
-### Scenario 1: Explicit File Upload (New Conversation)
-```
-User opens extension, no active case
-User: [Clicks "Upload File", selects application.log]
-
-Frontend creates case automatically
-Frontend: 📎 Uploaded: application.log (45KB)
-
-Backend analyzes file
-AI: I've analyzed your application log file. I found 127 error entries...
-```
-
-### Scenario 2: Explicit Text Upload (Mid-Conversation)
-```
-User: My database is slow
-
-AI: Let me help you diagnose. Could you share your slow query log?
-
-User: [Pastes 3KB of slow query log text, clicks "Submit Data"]
-Frontend: 📎 Uploaded: text-data.txt (3KB)
-
-AI: Thank you. I've analyzed your slow query log. The main bottleneck is...
+// 415 Unsupported Media Type
+{
+  "error": "unsupported_file_type",
+  "content_type": "application/exe",
+  "allowed_types": ["text/plain", "text/csv", "application/json", ...]
+}
 ```
 
-### Scenario 3: Implicit Detection (Paste Large Data)
-```
-User: [Pastes 15KB of application logs directly into query box]
+### 4.3 Processing Pipeline Integration
 
-Backend detects >10K chars
-Backend: Auto-routes to data ingestion
-Returns 202 Accepted, processes in background
-
-User sees: "Analyzing your data submission..."
-[Polls for completion]
-
-AI: I've analyzed your 15,000 character log submission. Found...
-```
-
-### Scenario 4: Normal Query with Code (No Upload)
-```
-User: Why is this code failing? [pastes 500 char function]
-
-Backend: Detects code but below threshold
-Processes as normal query with code context
-
-AI: The issue in your code is on line 12...
-```
-
----
-
-## Benefits of v3.0 Design
-
-✅ **Natural Conversation**: Uploads appear inline, not in separate UI section
-✅ **Immediate AI Feedback**: User sees analysis results, not just "upload successful"
-✅ **Context Preservation**: Upload is part of conversation history
-✅ **Cleaner UI**: No "Session Data" clutter
-✅ **Dual Path Support**: Works for both explicit uploads and paste detection
-✅ **Backend-Driven**: AI generates insights, frontend just displays
-✅ **Consistent UX**: File, text, and page capture all work the same way
-✅ **Scalable Processing**: Preprocessing handles large files without overwhelming LLM context
-✅ **Intelligent Analysis**: Domain-specific processors extract relevant information per data type
-
----
-
-## Source Metadata Enhancement (PROPOSED)
-
-### Motivation
-
-**Current Design**: Backend receives data without knowing its source (paste/page/file).
-
-**Proposed Enhancement**: Include optional source metadata to provide richer context for AI analysis and better user experience.
-
-### API Extension
-
-#### Request Schema (Backend)
-
-**Add optional `source_metadata` field to data upload**:
-
+**Backend Implementation**:
 ```python
-# In faultmaven/api/v1/routes/case.py
-
-from pydantic import BaseModel, Field
-from typing import Optional, Literal
-
-class SourceMetadata(BaseModel):
-    """Metadata about where the data originated"""
-    source_type: Literal["file_upload", "text_paste", "page_capture"]
-    source_url: Optional[str] = Field(None, description="URL if from page capture")
-    captured_at: Optional[str] = Field(None, description="Timestamp if from page capture")
-    user_description: Optional[str] = Field(None, description="User's description of the data")
-
 @router.post("/{case_id}/data", status_code=status.HTTP_201_CREATED)
 async def upload_case_data(
     case_id: str,
     file: UploadFile = File(...),
     session_id: str = Form(...),
-    source_metadata: Optional[str] = Form(None),  # JSON string
+    source_metadata: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
-    # ... other params
+    case_service: ICaseService = Depends(...),
+    preprocessing_service: PreprocessingService = Depends(...),
+    evidence_service: EvidenceService = Depends(...),
+    agent_service: AgentService = Depends(...),
+    current_user: DevUser = Depends(require_authentication)
 ):
-    """Upload data with optional source context."""
+    """
+    Upload data file to case and generate AI analysis.
     
-    # Parse source metadata if provided
-    metadata = None
-    if source_metadata:
-        try:
-            metadata = SourceMetadata.parse_raw(source_metadata)
-        except Exception:
-            # Invalid metadata - ignore gracefully
-            pass
+    Pipeline:
+    1. Preprocessing (Data Preprocessing v2.0)
+    2. Evidence creation (Evidence Architecture v1.1)
+    3. Agent response generation
+    """
     
-    # Pass to data service
-    uploaded_data = await data_service.upload_data(
-        session_id=session_id,
+    # 1. Verify case access
+    case = await case_service.get_case(case_id, current_user.user_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    
+    # 2. Read file content
+    file_content = await file.read()
+    
+    # 3. Data Preprocessing (delegates to Data Preprocessing Architecture)
+    preprocessing_result = await preprocessing_service.process_upload(
+        file=file,
         case_id=case_id,
-        file_content=file_content,
-        file_name=file.filename,
-        source_metadata=metadata  # NEW
+        source_metadata=parse_source_metadata(source_metadata),
+    )
+    # Returns: PreprocessingResult with summary, full_extraction, content_ref
+    
+    # 4. Evidence Classification (delegates to Evidence Architecture)
+    classification = await evidence_service.classify_evidence(
+        user_input=preprocessing_result.summary,
+        case=case,
+    )
+    # Returns: EvidenceClassification with 6 dimensions
+    
+    # 5. Evidence Creation (delegates to Evidence Architecture)
+    evidence = await evidence_service.create_evidence(
+        preprocessing_result=preprocessing_result,
+        classification=classification,
+        case_id=case_id,
+        phase=case.current_phase,
+        uploaded_by=current_user.email,
+    )
+    # Returns: Evidence object stored in DB
+    
+    # 6. Hypothesis Analysis (delegates to Evidence Architecture)
+    case = await evidence_service.analyze_evidence_impact(
+        evidence=evidence,
+        classification=classification,
+        case=case,
+    )
+    # Updates: Hypothesis evidence_links and status
+    
+    # 7. Agent Response Generation
+    agent_response = await agent_service.generate_evidence_analysis_response(
+        evidence=evidence,
+        case=case,
+    )
+    # Returns: AgentResponse with conversational insights
+    
+    # 8. Background: Vector DB storage (fire-and-forget)
+    if should_cache_in_vector_db(preprocessing_result):
+        background_tasks.add_task(
+            store_in_vector_db,
+            case_id=case_id,
+            evidence_id=evidence.evidence_id,
+            preprocessed_content=preprocessing_result.full_extraction,
+        )
+    
+    # 9. Return response
+    return DataUploadResponse(
+        evidence_id=evidence.evidence_id,
+        preprocessing=PreprocessingSummary(
+            data_type=preprocessing_result.data_type,
+            extraction_method=preprocessing_result.extraction_method,
+            compression_ratio=preprocessing_result.compression_ratio,
+            summary=preprocessing_result.summary,
+        ),
+        evidence=EvidenceSummary(
+            source_type=evidence.source_type,
+            form=evidence.form,
+            content_ref=evidence.content_ref,
+            content_size_bytes=evidence.content_size_bytes,
+            collected_at=evidence.collected_at,
+        ),
+        agent_response=agent_response,
     )
 ```
 
-#### Frontend Implementation
+**Key Integration Points**:
 
-**Update data upload to include source metadata**:
+1. **Preprocessing Service** (Data Preprocessing v2.0)
+   - Handles: Validation, classification, extraction, sanitization
+   - Input: Raw file + metadata
+   - Output: `PreprocessingResult`
+
+2. **Evidence Service** (Evidence Architecture v1.1)
+   - Handles: Classification, evidence creation, hypothesis analysis
+   - Input: `PreprocessingResult`
+   - Output: `Evidence` object + updated `Case`
+
+3. **Agent Service**
+   - Handles: Conversational response generation
+   - Input: `Evidence` + `Case`
+   - Output: `AgentResponse`
+
+---
+
+## 5. Submission Path 2: Implicit Detection
+
+### 5.1 Overview
+
+**Endpoint**: `POST /api/v1/cases/{case_id}/queries`
+
+**Use Case**: User pastes large data into query box, or UI explicitly marks content as machine data
+
+**User Flow**:
+1. User pastes content into query input (or UI marks as machine data)
+2. QueryClassifier analyzes content (3-tier system)
+3. If detected as machine data → routes to preprocessing pipeline
+4. Otherwise → processes as normal query
+5. User sees their input + AI analysis in conversation
+
+**Why This Path Exists**: Enables friction-free data submission without requiring explicit upload button clicks.
+
+### 5.2 Query Classification (3-Tier System)
+
+**Classification Tiers**:
+
+```python
+# Tier 1: Explicit UI Hints (Confidence: 1.0)
+if request.query_type == "machine_data" or request.is_raw_content:
+    return ClassificationResult(
+        is_machine_data=True,
+        confidence=1.0,
+        source="explicit_hint"
+    )
+
+# Tier 2: Pattern Matching (Confidence: 0.70-0.90)
+patterns = detect_patterns(query)  # Timestamps, errors, metrics
+severity = calculate_severity(patterns)
+confidence = min(0.90, 0.50 + severity/100)
+
+if confidence >= 0.70:
+    return ClassificationResult(
+        is_machine_data=True,
+        confidence=confidence,
+        data_type=infer_data_type(patterns),
+        source="pattern_matching"
+    )
+
+# Tier 3: Fallback Heuristics (Confidence: 0.50)
+if len(query) > 500 and not is_conversational(query):
+    return ClassificationResult(
+        is_machine_data=True,
+        confidence=0.50,
+        source="heuristics"
+    )
+
+# Default: Human question
+return ClassificationResult(
+    is_machine_data=False,
+    confidence=0.80,
+    source="default"
+)
+```
+
+**Pattern Categories**:
+
+| Pattern | Regex | Example Match |
+|---------|-------|---------------|
+| Timestamps | `\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}` | `2025-11-01T14:30:00` |
+| Log Levels | `\b(FATAL\|ERROR\|WARN\|INFO)\b` | `ERROR` |
+| Stack Traces | `at\s+[\w.$]+\(.*?:\d+\)` | `at com.app.Service(Service.java:42)` |
+| Error Keywords | `\b(exception\|error\|failure\|timeout)\b` | `NullPointerException` |
+| Metrics | `\d+\.\d+\s*(ms\|MB\|%\|req/s)` | `45.2 ms` |
+
+**Severity Scoring**:
+```python
+SEVERITY_WEIGHTS = {
+    "FATAL": 100,
+    "CRITICAL": 90,
+    "ERROR": 50,
+    "WARN": 10,
+    "INFO": 1
+}
+
+severity_score = sum(
+    SEVERITY_WEIGHTS[level] * count
+    for level, count in detected_levels.items()
+)
+```
+
+### 5.3 API Specification (Enhanced v3.2)
+
+**Request**:
+```http
+POST /api/v1/cases/{case_id}/queries HTTP/1.1
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "session_id": "sess_abc123",
+  "query": "[Large pasted content or question]",
+  
+  // v3.2 enhancements
+  "query_type": "question" | "machine_data",  // Optional UI hint
+  "content_type": "LOGS_AND_ERRORS" | "METRICS_AND_PERFORMANCE",  // Optional
+  "is_raw_content": false,  // True if known machine data
+  
+  "context": {
+    "current_phase": 4,
+    "active_hypothesis_ids": ["hyp_001"]
+  }
+}
+```
+
+**Response Options**:
+
+**Option A: Sync Processing** (201 Created - for small data or questions):
+```json
+{
+  "response_id": "resp_xyz",
+  "session_id": "sess_abc123",
+  "response_type": "ANSWER",
+  "content": "I've analyzed your data submission. Found 23 errors...",
+  "confidence_score": 0.85,
+  "sources": [
+    {
+      "type": "uploaded_evidence",
+      "evidence_id": "ev_def",
+      "relevance": 0.95
+    }
+  ],
+  "context": {
+    "classification": {
+      "is_machine_data": true,
+      "confidence": 0.85,
+      "data_type": "logs_and_errors",
+      "source": "pattern_matching"
+    },
+    "evidence_created": {
+      "evidence_id": "ev_def",
+      "source_type": "log_file"
+    }
+  }
+}
+```
+
+**Option B: Async Processing** (202 Accepted - for large data >10K chars):
+```json
+{
+  "status": "processing",
+  "processing_id": "proc_ghi",
+  "estimated_completion_seconds": 30,
+  "poll_url": "/api/v1/cases/case_123/processing/proc_ghi/status"
+}
+```
+
+### 5.4 Processing Logic
+
+```python
+@router.post("/{case_id}/queries", status_code=status.HTTP_201_CREATED)
+async def submit_case_query(
+    case_id: str,
+    query_request: QueryRequest,
+    query_classifier: QueryClassifier = Depends(...),
+    preprocessing_service: PreprocessingService = Depends(...),
+    agent_service: AgentService = Depends(...),
+):
+    """
+    Process query with intelligent machine data detection.
+    
+    Routes to preprocessing if machine data detected.
+    """
+    
+    # 1. Classify query (3-tier system)
+    classification = await query_classifier.classify(
+        query=query_request.query,
+        query_type=query_request.query_type,  # UI hint
+        is_raw_content=query_request.is_raw_content,  # UI hint
+        content_type=query_request.content_type,  # UI hint
+    )
+    
+    # 2. Route based on classification
+    if classification.is_machine_data and classification.confidence >= 0.70:
+        # Route to preprocessing pipeline (Path 1 convergence)
+        preprocessing_result = await preprocessing_service.process_text(
+            text=query_request.query,
+            case_id=case_id,
+            data_type_hint=classification.data_type,
+        )
+        
+        # Create evidence (same as explicit upload)
+        evidence = await evidence_service.create_from_preprocessing(
+            preprocessing_result=preprocessing_result,
+            case_id=case_id,
+        )
+        
+        # Generate response with evidence context
+        agent_response = await agent_service.generate_response(
+            query=f"[Machine data detected and processed]",
+            evidence=evidence,
+            case_id=case_id,
+        )
+        
+        # Include classification metadata in response
+        agent_response.context["classification"] = classification
+        agent_response.context["evidence_created"] = {
+            "evidence_id": evidence.evidence_id,
+            "source_type": evidence.source_type.value
+        }
+        
+        return agent_response
+    
+    else:
+        # Process as normal query
+        return await agent_service.process_query_for_case(
+            case_id=case_id,
+            query_request=query_request,
+        )
+```
+
+**Key Difference from Path 1**:
+- Path 1 (explicit): Always treats input as data
+- Path 2 (implicit): Classifies first, then routes
+
+**Convergence Point**: Both paths end up calling the same preprocessing and evidence services.
+
+---
+
+## 6. API Specifications
+
+### 6.1 Request Schemas
+
+**DataUploadRequest** (Path 1):
+```typescript
+interface DataUploadRequest {
+  // Multipart form data
+  file: File;
+  session_id: string;
+  source_metadata?: string;  // JSON-serialized SourceMetadata
+  description?: string;
+}
+```
+
+**QueryRequest** (Path 2 - Enhanced v3.2):
+```typescript
+interface QueryRequest {
+  session_id: string;
+  query: string;
+  
+  // v3.2 UI hints
+  query_type?: "question" | "machine_data";
+  content_type?: DataType;  // LOGS_AND_ERRORS, METRICS_AND_PERFORMANCE, etc.
+  is_raw_content?: boolean;
+  
+  context?: {
+    current_phase?: number;
+    active_hypothesis_ids?: string[];
+    [key: string]: any;
+  };
+}
+```
+
+### 6.2 Response Schemas
+
+**DataUploadResponse** (Path 1):
+```typescript
+interface DataUploadResponse {
+  evidence_id: string;
+  
+  preprocessing: {
+    data_type: DataType;  // From Data Preprocessing v2.0
+    extraction_method: string;
+    compression_ratio: number;
+    summary: string;
+  };
+  
+  evidence: {
+    source_type: EvidenceSourceType;  // From Evidence Architecture v1.1
+    form: "document";
+    content_ref: string;  // S3 URI
+    content_size_bytes: number;
+    collected_at: string;  // ISO 8601
+  };
+  
+  agent_response: AgentResponse;
+}
+```
+
+**AgentResponse** (Both Paths):
+```typescript
+interface AgentResponse {
+  response_id: string;
+  session_id: string;
+  response_type: ResponseType;  // ANSWER, NEEDS_MORE_DATA, etc.
+  content: string;  // Main conversational text
+  confidence_score?: number;
+  
+  sources?: Array<{
+    type: "uploaded_evidence" | "knowledge_base" | "case_context";
+    evidence_id?: string;
+    relevance: number;
+  }>;
+  
+  context?: {
+    classification?: QueryClassification;  // Path 2 only
+    evidence_created?: {
+      evidence_id: string;
+      source_type: string;
+    };
+    [key: string]: any;
+  };
+}
+```
+
+### 6.3 Enum Definitions
+
+**DataType** (from Data Preprocessing v2.0):
+```typescript
+enum DataType {
+  LOGS_AND_ERRORS = "logs_and_errors",
+  METRICS_AND_PERFORMANCE = "metrics_and_performance",
+  STRUCTURED_CONFIG = "structured_config",
+  SOURCE_CODE = "source_code",
+  UNSTRUCTURED_TEXT = "unstructured_text",
+  VISUAL_EVIDENCE = "visual_evidence"
+}
+```
+
+**EvidenceSourceType** (from Evidence Architecture v1.1):
+```typescript
+enum EvidenceSourceType {
+  LOG_FILE = "log_file",
+  METRICS_DATA = "metrics_data",
+  CONFIG_FILE = "config_file",
+  CODE_REVIEW = "code_review",
+  USER_OBSERVATION = "user_observation",
+  SCREENSHOT = "screenshot",
+  COMMAND_OUTPUT = "command_output",
+  DATABASE_QUERY = "database_query",
+  TRACE_DATA = "trace_data",
+  API_RESPONSE = "api_response"
+}
+```
+
+---
+
+## 7. Frontend Integration
+
+### 7.1 Conversation UX Implementation
+
+**Goal**: Display uploads as natural conversation turns with AI responses.
+
+**Current Issue**: Frontend shows toast notifications instead of conversation messages.
+
+**Required Changes**:
 
 ```typescript
-// In faultmaven-copilot/src/lib/api.ts
+// src/shared/ui/SidePanelApp.tsx
+
+interface ConversationItem {
+  id: string;
+  question?: string;  // User message
+  response?: string;  // AI message
+  timestamp: string;
+  responseType?: string;
+  confidenceScore?: number;
+  sources?: Array<any>;
+}
+
+const handleDataUpload = async (
+  data: string | File,
+  dataSource: "text" | "file" | "page"
+): Promise<void> => {
+  // 1. Convert to File if needed
+  const fileToUpload = data instanceof File
+    ? data
+    : new File(
+        [new Blob([data])],
+        `${dataSource}-content.txt`,
+        { type: "text/plain" }
+      );
+  
+  // 2. Upload to backend
+  const uploadResponse = await uploadDataToCase(
+    activeCaseId,
+    sessionId,
+    fileToUpload,
+    // NEW: Include source metadata (optional)
+    {
+      source_type: dataSource === "file" ? "file_upload" : 
+                   dataSource === "text" ? "text_paste" : 
+                   "page_capture",
+      source_url: dataSource === "page" ? currentPageUrl : undefined,
+    }
+  );
+  
+  // 3. Add USER message to conversation
+  const userMessage: ConversationItem = {
+    id: `upload-${Date.now()}`,
+    question: `📎 Uploaded: ${uploadResponse.preprocessing.data_type} - ${fileToUpload.name} (${formatFileSize(uploadResponse.evidence.content_size_bytes)})`,
+    timestamp: new Date().toISOString(),
+  };
+  
+  // 4. Add AI RESPONSE message
+  const aiMessage: ConversationItem = {
+    id: `response-${Date.now()}`,
+    response: uploadResponse.agent_response.content,
+    timestamp: new Date().toISOString(),
+    responseType: uploadResponse.agent_response.response_type,
+    confidenceScore: uploadResponse.agent_response.confidence_score,
+    sources: uploadResponse.agent_response.sources,
+  };
+  
+  // 5. Update conversation state
+  setConversation(prev => [...prev, userMessage, aiMessage]);
+  
+  // 6. Scroll to bottom
+  scrollToBottom();
+  
+  // NO toast notification - conversation message is the feedback
+};
+```
+
+### 7.2 Upload Button Handler
+
+```typescript
+// src/shared/ui/components/ChatWindow.tsx
+
+const handleFileUpload = async (file: File) => {
+  try {
+    await handleDataUpload(file, "file");
+    // Success - conversation updated automatically
+  } catch (error) {
+    // Only show toast on ERROR
+    toast.error("Failed to upload file: " + error.message);
+  }
+};
+```
+
+### 7.3 Paste Detection (Optional Enhancement)
+
+**Frontend can hint machine data to backend**:
+
+```typescript
+const handlePaste = async (e: ClipboardEvent) => {
+  const pastedText = e.clipboardData?.getData("text");
+  
+  if (!pastedText || pastedText.length < 500) {
+    // Short paste - let user submit normally
+    return;
+  }
+  
+  // Large paste - check if looks like machine data
+  const looksMachineData = detectMachineDataPatterns(pastedText);
+  
+  if (looksMachineData) {
+    // Show confirmation dialog
+    const confirmed = await confirm(
+      "This looks like log data. Submit as data file for analysis?"
+    );
+    
+    if (confirmed) {
+      // Submit via data upload path with hint
+      await handleDataUpload(pastedText, "text");
+      e.preventDefault();
+      return;
+    }
+  }
+  
+  // Otherwise, let normal paste happen
+};
+
+function detectMachineDataPatterns(text: string): boolean {
+  // Basic client-side detection (backend does full classification)
+  const hasTimestamps = /\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}/.test(text);
+  const hasLogLevels = /\b(ERROR|FATAL|WARN|INFO)\b/.test(text);
+  const hasStackTrace = /at\s+[\w.$]+\(.*?:\d+\)/.test(text);
+  
+  return hasTimestamps || hasLogLevels || hasStackTrace;
+}
+```
+
+### 7.4 Remove Legacy UI Elements
+
+**Delete**: "Session Data" section in ChatWindow.tsx
+
+**Before**:
+```typescript
+// Lines 419-441 (REMOVE THIS)
+<div className="session-data">
+  <h3>Uploaded Files</h3>
+  {sessionData.map(data => (
+    <div key={data.id}>{data.filename}</div>
+  ))}
+</div>
+```
+
+**After**: No separate section - uploads appear in conversation.
+
+---
+
+## 8. Backend Integration
+
+### 8.1 Service Dependencies
+
+**Upload Endpoint Dependencies**:
+```python
+from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
+from faultmaven.services.evidence.evidence_service import EvidenceService
+from faultmaven.services.agentic.orchestration.agent_service import AgentService
+from faultmaven.services.case.case_service import ICaseService
+```
+
+**Query Endpoint Dependencies**:
+```python
+from faultmaven.services.preprocessing.query_classifier import QueryClassifier
+from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
+from faultmaven.services.agentic.orchestration.agent_service import AgentService
+```
+
+### 8.2 Integration Flow Example
+
+**Complete Backend Flow**:
+
+```python
+# In routes/case.py
+
+@router.post("/{case_id}/data")
+async def upload_case_data(
+    case_id: str,
+    file: UploadFile,
+    session_id: str = Form(...),
+    source_metadata: Optional[str] = Form(None),
+    # ... dependencies ...
+):
+    """Upload data with full pipeline integration."""
+    
+    # Step 1: Preprocessing (delegates to Data Preprocessing Architecture)
+    preprocessing_result = await preprocessing_service.process_upload(
+        file=file,
+        case_id=case_id,
+        source_metadata=parse_source_metadata(source_metadata),
+    )
+    # Output: PreprocessingResult
+    #   - data_type: DataType enum (LOGS_AND_ERRORS, etc.)
+    #   - summary: <500 chars
+    #   - full_extraction: complete insights
+    #   - content_ref: s3://...
+    
+    # Step 2: Evidence Classification (delegates to Evidence Architecture)
+    case = await case_service.get_case_with_relations(case_id)
+    
+    classification = await evidence_service.classify_evidence(
+        user_input=preprocessing_result.summary,
+        case=case,
+    )
+    # Output: EvidenceClassification
+    #   - matched_requirement_ids: []
+    #   - relevant_hypothesis_ids: ["hyp_001"]
+    #   - hypothesis_support: {"hyp_001": "strongly_supports"}
+    #   - completeness: "complete"
+    #   - form: "document"
+    #   - evidence_type: "strongly_supports"
+    #   - user_intent: "providing_evidence"
+    
+    # Step 3: Evidence Creation (delegates to Evidence Architecture)
+    evidence = await evidence_service.create_evidence(
+        preprocessing_result=preprocessing_result,
+        classification=classification,
+        case_id=case_id,
+        phase=case.current_phase,
+        uploaded_by=current_user.email,
+    )
+    # Output: Evidence object
+    #   - evidence_id: "ev_abc"
+    #   - summary: preprocessing_result.summary
+    #   - content_ref: preprocessing_result.content_ref
+    #   - source_type: LOG_FILE (mapped from DataType.LOGS_AND_ERRORS)
+    #   - form: DOCUMENT
+    #   - fulfills_requirement_ids: classification.matched_requirement_ids
+    
+    # Step 4: Hypothesis Analysis (delegates to Evidence Architecture)
+    case = await evidence_service.analyze_evidence_impact(
+        evidence=evidence,
+        classification=classification,
+        case=case,
+    )
+    # Updates: Hypothesis objects
+    #   - hypothesis.evidence_links["ev_abc"] = EvidenceLink(
+    #       stance="strongly_supports",
+    #       reasoning="Pool at 95% confirms theory",
+    #       completeness=0.9,
+    #     )
+    #   - hypothesis.status = VALIDATED (if strong evidence)
+    
+    # Step 5: Agent Response Generation
+    agent_response = await agent_service.generate_evidence_analysis_response(
+        evidence=evidence,
+        case=case,
+    )
+    # Output: AgentResponse
+    #   - content: "I've analyzed your log file. I found..."
+    #   - response_type: ANSWER
+    #   - confidence_score: 0.85
+    
+    # Step 6: Background Storage (fire-and-forget)
+    if should_cache_in_vector_db(preprocessing_result):
+        background_tasks.add_task(
+            store_in_vector_db,
+            case_id=case_id,
+            evidence_id=evidence.evidence_id,
+            preprocessed_content=preprocessing_result.full_extraction,
+        )
+    
+    # Step 7: Return combined response
+    return DataUploadResponse(
+        evidence_id=evidence.evidence_id,
+        preprocessing=PreprocessingSummary.from_result(preprocessing_result),
+        evidence=EvidenceSummary.from_evidence(evidence),
+        agent_response=agent_response,
+    )
+```
+
+### 8.3 Error Handling
+
+**Preprocessing Errors**:
+```python
+try:
+    preprocessing_result = await preprocessing_service.process_upload(...)
+except FileTooLargeError as e:
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error": "file_too_large",
+            "file_size": e.file_size,
+            "max_size": e.max_size,
+            "suggestions": e.suggestions
+        }
+    )
+except UnsupportedFileTypeError as e:
+    raise HTTPException(
+        status_code=415,
+        detail={
+            "error": "unsupported_file_type",
+            "content_type": e.content_type,
+            "allowed_types": e.allowed_types
+        }
+    )
+```
+
+**Evidence Creation Errors**:
+```python
+try:
+    evidence = await evidence_service.create_evidence(...)
+except CaseNotFoundError:
+    raise HTTPException(status_code=404, detail="Case not found")
+except PhaseValidationError as e:
+    # Evidence collection not allowed in current phase
+    raise HTTPException(
+        status_code=400,
+        detail=f"Cannot collect evidence in Phase {e.current_phase}"
+    )
+```
+
+---
+
+## 9. Source Metadata Enhancement
+
+### 9.1 Overview
+
+**Status**: Optional enhancement (backward compatible)
+
+**Purpose**: Provide richer context about data origin for better AI analysis.
+
+**Use Cases**:
+- Page capture: AI knows it's from live status page
+- File upload: AI knows it's local vs remote file
+- Text paste: AI knows it was manually extracted
+
+### 9.2 Schema
+
+```python
+class SourceMetadata(BaseModel):
+    """Optional metadata about data origin"""
+    
+    source_type: Literal["file_upload", "text_paste", "page_capture"]
+    
+    # For page captures
+    source_url: Optional[str] = Field(
+        None,
+        description="URL if from page capture"
+    )
+    captured_at: Optional[str] = Field(
+        None,
+        description="ISO 8601 timestamp if from page capture"
+    )
+    
+    # For all sources
+    user_description: Optional[str] = Field(
+        None,
+        max_length=200,
+        description="User's description of the data"
+    )
+```
+
+### 9.3 Frontend Implementation
+
+```typescript
+// In lib/api.ts
 
 interface SourceMetadata {
   source_type: "file_upload" | "text_paste" | "page_capture";
@@ -508,7 +1247,7 @@ export async function uploadDataToCase(
   caseId: string,
   sessionId: string,
   file: File,
-  sourceMetadata?: SourceMetadata  // NEW parameter
+  sourceMetadata?: SourceMetadata  // NEW: Optional parameter
 ): Promise<DataUploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
@@ -518,7 +1257,7 @@ export async function uploadDataToCase(
   if (sourceMetadata) {
     formData.append("source_metadata", JSON.stringify(sourceMetadata));
   }
-
+  
   const response = await fetch(
     `${API_BASE_URL}/api/v1/cases/${caseId}/data`,
     {
@@ -529,17 +1268,15 @@ export async function uploadDataToCase(
       },
     }
   );
-
+  
   return response.json();
 }
 ```
 
-**Update data source handlers**:
+**Usage in Handlers**:
 
 ```typescript
-// In SidePanelApp.tsx
-
-// 1. File Upload
+// File Upload
 const handleFileUpload = async (file: File) => {
   await uploadDataToCase(caseId, sessionId, file, {
     source_type: "file_upload",
@@ -547,7 +1284,7 @@ const handleFileUpload = async (file: File) => {
   });
 };
 
-// 2. Text Paste
+// Text Paste
 const handleTextPaste = async (text: string) => {
   const file = new File([new Blob([text])], "pasted-text.txt");
   await uploadDataToCase(caseId, sessionId, file, {
@@ -556,7 +1293,7 @@ const handleTextPaste = async (text: string) => {
   });
 };
 
-// 3. Page Capture
+// Page Capture
 const handlePageCapture = async (pageContent: string, url: string) => {
   const file = new File([new Blob([pageContent])], "captured-page.html");
   await uploadDataToCase(caseId, sessionId, file, {
@@ -568,31 +1305,54 @@ const handlePageCapture = async (pageContent: string, url: string) => {
 };
 ```
 
-### Backend Processing
-
-**How source metadata enhances analysis**:
+### 9.4 Backend Integration
 
 ```python
-# In data_service.py
-
-async def upload_data(
-    self,
-    session_id: str,
+async def upload_case_data(
     case_id: str,
-    file_content: bytes,
-    file_name: str,
-    source_metadata: Optional[SourceMetadata] = None  # NEW
-) -> UploadedData:
-    """Upload data with optional source context."""
+    file: UploadFile,
+    session_id: str = Form(...),
+    source_metadata: Optional[str] = Form(None),  # NEW: JSON string
+    # ...
+):
+    # Parse source metadata
+    metadata = None
+    if source_metadata:
+        try:
+            metadata = SourceMetadata.parse_raw(source_metadata)
+        except Exception:
+            # Invalid JSON - ignore gracefully
+            pass
     
-    # 1. Classify data type (content-based)
-    data_type = await self.classifier.classify(content, file_name)
+    # Pass to preprocessing
+    preprocessing_result = await preprocessing_service.process_upload(
+        file=file,
+        case_id=case_id,
+        source_metadata=metadata,  # NEW: Pass through
+    )
+```
+
+**Enhancement in Preprocessing** (optional):
+
+```python
+# In preprocessing_service.py
+
+async def process_upload(
+    self,
+    file: UploadFile,
+    case_id: str,
+    source_metadata: Optional[SourceMetadata] = None,
+) -> PreprocessingResult:
+    """Process upload with optional source context."""
     
-    # 2. Enhance context with source metadata
-    context = {
-        "case_id": case_id,
-        "data_type": data_type,
-    }
+    # Extract content
+    content = await file.read()
+    
+    # Classify data type
+    data_type = self.classifier.classify(content, file.filename)
+    
+    # Build enhanced context
+    context = {"case_id": case_id, "data_type": data_type}
     
     if source_metadata:
         context["source_type"] = source_metadata.source_type
@@ -601,27 +1361,23 @@ async def upload_data(
         if source_metadata.source_type == "page_capture":
             context["source_url"] = source_metadata.source_url
             context["is_live_page"] = True
-            # Could extract domain/service name from URL
+            # Extract service hint from URL
             context["service_hint"] = self._extract_service_from_url(
                 source_metadata.source_url
             )
     
-    # 3. Preprocess with enhanced context
-    preprocessed = await self.prepare_data_for_llm_analysis(
-        data_id=data_id,
-        data_type=data_type,
-        raw_content=content,
-        context=context  # Enhanced with source info
-    )
+    # Extract with enhanced context
+    result = await self.extractor.extract(content, data_type, context)
     
-    return uploaded_data
+    # Store source metadata in result
+    result.source_metadata = source_metadata
+    
+    return result
 ```
 
-**Agent prompt enhancement**:
+**Agent Prompt Enhancement**:
 
 ```python
-# In agent prompts
-
 # When source_metadata is available:
 """
 The user has captured the status page from https://api.myapp.com/status.
@@ -639,758 +1395,320 @@ Here is some HTML content the user provided:
 [Preprocessed content here...]
 
 What issues do you see in this data?
-"""
 ```
 
-### Benefits of Source Metadata
+### 9.5 Benefits
 
 | Benefit | Example |
 |---------|---------|
 | **Better Context** | "Looking at the status page from api.myapp.com..." vs "Looking at this HTML..." |
-| **Service Discovery** | URL reveals service name for better knowledge base search |
-| **Temporal Context** | Page captures include timestamp for timeline analysis |
+| **Service Discovery** | URL reveals service name for knowledge base search |
+| **Temporal Context** | Page captures include timestamp for timeline correlation |
 | **Intent Understanding** | Paste vs file vs page indicates user's mental model |
-| **Richer Responses** | Agent can reference the source: "The page you captured shows..." |
-| **Audit Trail** | Track where data originated for compliance/debugging |
+| **Richer Responses** | Agent can reference: "The page you captured shows..." |
 
-### Implementation Scope
+---
 
-#### Frontend Changes (Low Effort)
-- ✅ Already creates File objects from all sources
-- ➕ Add `SourceMetadata` interface
-- ➕ Update 3 handler functions to include metadata
-- ➕ Pass metadata to `uploadDataToCase()`
+## 10. Testing Requirements
 
-#### Backend Changes (Medium Effort)
-- ➕ Add `SourceMetadata` model to `models/api.py`
-- ➕ Update `upload_case_data()` to accept `source_metadata` form field
-- ➕ Update `DataService.upload_data()` signature
-- ➕ Enhance preprocessing context with source info
-- ➕ Update agent prompts to mention source when available
-- ➕ Optional: Extract service hints from URLs
+### 10.1 Scenario-Based Tests
 
-### Rollout Strategy
-
-**Phase 1: Optional Field** (Recommended)
-- Add as optional field - backward compatible
-- Frontend sends when available
-- Backend gracefully handles absence
-- No breaking changes
-
-**Phase 2: Enhanced Processing**
-- Use source metadata in preprocessing decisions
-- Enhance agent prompts with source context
-- Add service discovery from URLs
-
-**Phase 3: Full Integration**
-- Use source in analytics and insights
-- Track which sources produce best data
-- Optimize UX based on source patterns
-
-### Testing Requirements
-
-```python
-# Backend tests
-async def test_upload_with_page_capture_metadata():
-    metadata = {
-        "source_type": "page_capture",
-        "source_url": "https://status.myapp.com",
-        "captured_at": "2025-10-12T10:30:00Z"
-    }
-    
-    response = await upload_case_data(
-        case_id="case_123",
-        file=mock_file,
-        session_id="sess_456",
-        source_metadata=json.dumps(metadata)
-    )
-    
-    # Verify source context used in agent response
-    assert "status page" in response.agent_response.content.lower()
-    assert "myapp.com" in response.agent_response.content.lower()
-
-async def test_upload_without_metadata():
-    # Should work without source_metadata (backward compatible)
-    response = await upload_case_data(
-        case_id="case_123",
-        file=mock_file,
-        session_id="sess_456"
-    )
-    assert response.data_id is not None
+**Test Scenario 1: Explicit File Upload (New Case)**
+```
+GIVEN: User opens extension, no active case
+WHEN: User clicks "Upload File", selects application.log (45KB)
+THEN:
+  1. Frontend creates case automatically
+  2. POST /data uploads file
+  3. Preprocessing extracts crime scene (200:1 compression)
+  4. Evidence created with source_type=LOG_FILE
+  5. Hypothesis updated with evidence link
+  6. Agent generates response: "Found 127 errors..."
+  7. Frontend shows two messages:
+     - User: "📎 Uploaded: application.log (45KB)"
+     - AI: "I've analyzed your application log..."
 ```
 
+**Test Scenario 2: Explicit Text Upload (Mid-Conversation)**
+```
+GIVEN: Active case with conversation history
+WHEN: User pastes 3KB query log, clicks "Submit Data"
+THEN:
+  1. POST /data uploads text
+  2. Preprocessing summarizes query patterns
+  3. Evidence created with source_type=DATABASE_QUERY
+  4. Agent response references earlier conversation
+  5. Frontend appends to conversation (not new case)
+```
+
+**Test Scenario 3: Implicit Detection (Large Paste)**
+```
+GIVEN: Active case
+WHEN: User pastes 15KB of application logs into query box
+THEN:
+  1. POST /queries with large content
+  2. QueryClassifier detects machine data (confidence 0.85)
+  3. Routes to preprocessing pipeline (same as explicit)
+  4. Evidence created
+  5. Agent response: "I've analyzed your log submission..."
+  6. Frontend shows as conversation messages
+```
+
+**Test Scenario 4: Normal Query with Code (No Upload)**
+```
+GIVEN: Active case
+WHEN: User pastes 500 char function with question
+THEN:
+  1. POST /queries
+  2. QueryClassifier: NOT machine data (confidence 0.80)
+  3. Processes as normal query (no evidence creation)
+  4. Agent analyzes code in query context
+  5. Agent response: "The issue in your code is on line 12..."
+```
+
+**Test Scenario 5: Page Capture with Source Metadata**
+```
+GIVEN: Active case
+WHEN: User captures page from https://status.myapp.com
+THEN:
+  1. POST /data with source_metadata.source_url
+  2. Preprocessing extracts page content
+  3. Agent prompt includes: "status page from myapp.com"
+  4. Agent response references the source
+  5. Frontend shows: "📎 Captured: https://status.myapp.com"
+```
+
+### 10.2 Unit Tests
+
+**QueryClassifier Tests**:
+```python
+def test_explicit_hint_overrides_patterns():
+    """UI hint should always take precedence"""
+    result = classifier.classify(
+        query="What's the weather?",
+        query_type="machine_data"  # Explicit hint
+    )
+    assert result.is_machine_data == True
+    assert result.confidence == 1.0
+
+def test_pattern_detection_logs():
+    """Strong log patterns should detect machine data"""
+    log_content = """
+    2025-11-01 14:30:00 ERROR NullPointerException
+    2025-11-01 14:30:01 ERROR Connection timeout
+    2025-11-01 14:30:02 FATAL Database unavailable
+    """
+    result = classifier.classify(query=log_content)
+    assert result.is_machine_data == True
+    assert result.confidence >= 0.70
+    assert result.data_type == DataType.LOGS_AND_ERRORS
+
+def test_short_question_not_detected():
+    """Short conversational text should not be detected"""
+    result = classifier.classify(query="Why is my app slow?")
+    assert result.is_machine_data == False
+    assert result.confidence >= 0.80
+```
+
+**Integration Tests**:
+```python
+async def test_upload_creates_evidence_and_updates_hypothesis():
+    """Full pipeline: upload → evidence → hypothesis update"""
+    # Upload log file
+    response = await client.post(
+        f"/api/v1/cases/{case_id}/data",
+        files={"file": ("app.log", log_content)},
+        data={"session_id": session_id}
+    )
+    
+    assert response.status_code == 201
+    data = response.json()
+    
+    # Verify evidence created
+    assert data["evidence_id"].startswith("ev_")
+    assert data["preprocessing"]["data_type"] == "logs_and_errors"
+    
+    # Verify hypothesis updated
+    case = await case_service.get_case(case_id)
+    hypothesis = case.theories[0]
+    assert data["evidence_id"] in hypothesis.evidence_links
+    assert hypothesis.evidence_links[data["evidence_id"]].stance in [
+        "strongly_supports", "supports"
+    ]
+```
+
+### 10.3 Frontend Tests
+
 ```typescript
-// Frontend tests
-test("handlePageCapture includes source metadata", async () => {
-  const url = "https://dashboard.myapp.com/metrics";
-  const content = "<html>...</html>";
+test("file upload adds conversation messages", async () => {
+  const file = new File(["log content"], "app.log");
   
-  await handlePageCapture(content, url);
+  await handleDataUpload(file, "file");
   
-  // Verify uploadDataToCase called with metadata
-  expect(mockUpload).toHaveBeenCalledWith(
-    expect.anything(),
-    expect.anything(),
-    expect.anything(),
-    expect.objectContaining({
-      source_type: "page_capture",
-      source_url: url
-    })
+  // Verify two messages added
+  expect(conversation.length).toBe(2);
+  
+  // User message
+  expect(conversation[0].question).toContain("Uploaded: app.log");
+  
+  // AI response
+  expect(conversation[1].response).toContain("analyzed");
+});
+
+test("large paste triggers detection", async () => {
+  const largeLog = "ERROR ".repeat(1000);  // 6000 chars
+  
+  await handlePaste({clipboardData: {getData: () => largeLog}});
+  
+  // Verify detection dialog shown
+  expect(mockConfirm).toHaveBeenCalledWith(
+    expect.stringContaining("log data")
   );
 });
 ```
 
-### Decision
-
-**Recommendation**: ✅ **Implement as optional enhancement**
-
-**Pros**:
-- ✅ Richer context for AI analysis
-- ✅ Better user experience ("the page you captured...")
-- ✅ Service discovery from URLs
-- ✅ Enhanced audit trail
-- ✅ No breaking changes (optional field)
-
-**Cons**:
-- ⚠️ Slightly more complex frontend code
-- ⚠️ Backend needs to handle optional field gracefully
-- ⚠️ Minimal benefit if not used in prompts/preprocessing
-
-**Status**: 🔲 **Proposed Enhancement** - Not yet implemented, but architecturally sound and backward compatible.
-
 ---
 
-## Data Preprocessing Implementation (TODO)
+## 11. Cross-References
 
-### Problem Statement
+### 11.1 Related Documents
 
-**Current State**: Data is ingested and basic insights are extracted, but **large data files cannot be sent directly to LLM** due to context limits.
+**Primary Dependencies**:
+- [Data Preprocessing Architecture v2.0](./data-preprocessing-architecture.md)
+  - Section 3: Synchronous Pipeline (Steps 1-4)
+  - Section 4: Async Background Pipeline (Vector DB)
+  - Section 6: Data Type Specifications
+  - Section 7: Output Formats (PreprocessingResult)
 
-**Why Path 1 is Designed for Files**: The explicit data upload endpoint includes a **preprocessing pipeline** that is essential for handling large files. This is why it's not just "recommended" but architecturally designed for file submissions.
+- [Evidence Architecture v1.1](./evidence-architecture.md)
+  - Section 4: Data Models - Layer 2 (Collection Workflow)
+  - Section 6: Evidence Evaluation (Classification, Analysis)
+  - Section 7: Investigation Strategies (Active Incident vs Post-Mortem)
+  - Section 9: Integration Points
 
-**Required Preprocessing Layer**:
-1. Extracts key information from uploaded data
-2. Summarizes large datasets into LLM-digestible format (~8K chars max)
-3. Preserves critical details (errors, anomalies, patterns)
-4. Enables AI to provide meaningful analysis without context overflow
-5. Domain-specific processing per data type (logs, metrics, traces, configs)
+**Secondary References**:
+- [Investigation State and Control Framework](./investigation-phases-and-ooda-integration.md)
+  - Phase definitions and transitions
+  - Working conclusion and progress tracking
 
-### Preprocessing Requirements by Data Type
+- [API Specification](../api/openapi.locked.yaml)
+  - POST /api/v1/cases/{case_id}/data (line 2294)
+  - POST /api/v1/cases/{case_id}/queries (line 2062)
 
-#### 1. Log Files (DataType.LOG_FILE)
+### 11.2 Key Integration Points
 
-**Input**: Application logs (potentially 100K+ lines)
-
-**Preprocessing Steps**:
-```python
-# TODO: Implement in data_service.py or new preprocessing module
-async def preprocess_log_file(content: str, data_insights: Dict) -> str:
-    """
-    Extract key information from log file for LLM analysis
-
-    Returns condensed summary with:
-    - Error statistics (count, rate, top errors)
-    - Timeline of critical events
-    - Anomaly patterns detected
-    - Sample error messages (5-10 examples)
-    """
-
-    # 1. Extract error statistics from insights
-    error_summary = f"""
-    Total lines: {insights['line_count']}
-    Error count: {insights['error_count']} ({insights['error_rate']:.1f}%)
-    Critical errors: {insights['critical_errors']}
-    Time range: {insights['first_timestamp']} to {insights['last_timestamp']}
-    """
-
-    # 2. Get top error patterns
-    top_errors = insights['error_patterns'][:10]  # Top 10 unique errors
-
-    # 3. Extract timeline of anomalies
-    anomaly_timeline = insights['anomalies_detected']
-
-    # 4. Sample representative error messages
-    error_samples = insights['error_samples'][:5]
-
-    # 5. Build condensed context for LLM
-    preprocessed = f"""
-    LOG FILE ANALYSIS SUMMARY
-
-    {error_summary}
-
-    TOP ERROR PATTERNS:
-    {format_error_patterns(top_errors)}
-
-    ANOMALIES DETECTED:
-    {format_anomalies(anomaly_timeline)}
-
-    SAMPLE ERROR MESSAGES:
-    {format_samples(error_samples)}
-    """
-
-    return preprocessed[:8000]  # Keep under token limit
+**Data Flow Summary**:
 ```
-
-#### 2. Metrics/Time-Series Data
-
-**Input**: Performance metrics, resource utilization data
-
-**Preprocessing Steps**:
-```python
-async def preprocess_metrics_data(content: str, data_insights: Dict) -> str:
-    """
-    Summarize metrics data for LLM analysis
-
-    Returns:
-    - Statistical summary (min, max, avg, p95, p99)
-    - Anomaly detection results
-    - Trend analysis (increasing, decreasing, stable)
-    - Correlation patterns
-    """
-    # Extract key statistics
-    # Identify spikes/drops
-    # Correlate related metrics
-    # Format for LLM consumption
-```
-
-#### 3. Stack Traces (DataType.ERROR_REPORT)
-
-**Input**: Exception stack traces
-
-**Preprocessing Steps**:
-```python
-async def preprocess_stack_trace(content: str, data_insights: Dict) -> str:
-    """
-    Extract critical information from stack trace
-
-    Returns:
-    - Exception type and message
-    - Root cause frame (deepest relevant frame)
-    - Call chain summary (top 5-10 frames)
-    - Context variables if available
-    """
-    # Parse stack trace structure
-    # Identify root cause
-    # Extract relevant frames
-    # Format for LLM
-```
-
-### Implementation Location
-
-**Option 1: Extend DataService** (Recommended)
-```python
-# In data_service.py
-
-async def prepare_data_for_llm_analysis(
-    self,
-    data_id: str,
-    data_type: DataType,
-    raw_content: str,
-    data_insights: Dict
-) -> str:
-    """
-    Preprocess data for LLM analysis based on data type
-
-    Args:
-        data_id: Data identifier
-        data_type: Classified data type
-        raw_content: Original uploaded content
-        data_insights: Extracted insights from processor
-
-    Returns:
-        Preprocessed summary suitable for LLM (< 8K chars)
-    """
-    preprocessors = {
-        DataType.LOG_FILE: self._preprocess_log_file,
-        DataType.ERROR_REPORT: self._preprocess_stack_trace,
-        # Add metrics, config, etc.
-    }
-
-    preprocessor = preprocessors.get(data_type, self._preprocess_generic)
-    return await preprocessor(raw_content, data_insights)
-```
-
-**Option 2: New Preprocessing Module**
-```python
-# New file: faultmaven/core/preprocessing/data_preprocessor.py
-
-class DataPreprocessor:
-    """Intelligent data preprocessing for LLM analysis"""
-
-    async def preprocess(
-        self,
-        data_type: DataType,
-        content: str,
-        insights: Dict
-    ) -> PreprocessedData:
-        """Route to appropriate preprocessor"""
-```
-
-### Integration Points
-
-**Step 1: After data ingestion** (`data.py` line 268-272)
-```python
-# 3. Classify data type and analyze
-data_analysis = await data_service.analyze_data(
-    data_id=uploaded_data.data_id,
-    session_id=session_id
-)
-
-# NEW: Preprocess data for LLM analysis
-preprocessed_summary = await data_service.prepare_data_for_llm_analysis(
-    data_id=uploaded_data.data_id,
-    data_type=uploaded_data.data_type,
-    raw_content=file_content,
-    data_insights=data_analysis
-)
-```
-
-**Step 2: Pass to agent** (line 275-288)
-```python
-# 4. Generate conversational AI response
-query_request = QueryRequest(
-    session_id=session_id,
-    query=f"I've uploaded {file.filename}. Please analyze it and tell me what issues you found.",
-    context={
-        "uploaded_data_ids": [uploaded_data.data_id],
-        "case_id": case_id,
-        "data_type": uploaded_data.data_type,
-        "preprocessed_data": preprocessed_summary,  # NEW: LLM-ready summary
-        "full_insights": data_analysis  # Keep full insights for reference
-    }
-)
-
-agent_response = await agent_service.process_query_for_case(
-    case_id,
-    query_request
-)
-```
-
-### Agent Prompt Enhancement
-
-**Update agent system prompt to handle preprocessed data**:
-```python
-# In agent prompts
-"""
-When the user uploads data (logs, metrics, traces), you will receive:
-1. preprocessed_data: A condensed summary of key findings
-2. data_type: The type of data uploaded
-3. full_insights: Complete analysis results for reference
-
-Your task:
-- Analyze the preprocessed summary
-- Identify root causes of errors/issues
-- Provide actionable recommendations
-- Ask clarifying questions if needed
-
-DO NOT summarize the data - it's already summarized.
-Focus on DIAGNOSIS and SOLUTIONS.
-"""
-```
-
-### Testing Strategy
-
-**Test Cases**:
-1. Large log file (50K lines) → Verify preprocessing reduces to <8K chars
-2. Metrics with anomalies → Verify anomalies are highlighted in summary
-3. Complex stack trace → Verify root cause is identified
-4. Multiple data types → Verify correct preprocessor is used
-
-### Performance Considerations
-
-- **Async Processing**: Preprocessing should be async for large files
-- **Caching**: Cache preprocessed results keyed by data_id
-- **Streaming**: Consider streaming for very large files
-- **Timeouts**: Set reasonable timeouts (5-10s for preprocessing)
-
----
-
-## Case Evidence Store Integration
-
-### Overview
-
-All data uploaded through either submission path (explicit upload or implicit detection) is stored in the **Case Evidence Store** vector store system. This is a critical architectural distinction that must be understood.
-
-### Three Distinct Vector Store Systems
-
-FaultMaven implements **three completely separate vector storage systems** (see [knowledge-base-architecture.md](./knowledge-base-architecture.md)):
-
-1. **User Knowledge Base** (`user_{user_id}_kb`) - NOT YET IMPLEMENTED
-   - Per-user permanent runbooks and procedures
-   - Accessed via Knowledge Management UI (separate from troubleshooting)
-   - Lives with user account indefinitely
-
-2. **Global Knowledge Base** (`faultmaven_kb`) - IMPLEMENTED
-   - System-wide documentation (admin-managed)
-   - Shared across all users
-   - Permanent system reference
-
-3. **Case Evidence Store** (`case_{case_id}`) - IMPLEMENTED ✅
-   - **This is where uploaded data goes**
-   - Troubleshooting evidence uploaded during active case
-   - Ephemeral - tied to case lifecycle
-
-### Data Upload → Case Evidence Store Flow
-
-When a user uploads data (file, text, or page capture) in the troubleshooting chat:
-
-```
-User Uploads Data
+User Submits Data (THIS DOC)
     ↓
-POST /api/v1/cases/{case_id}/data
+Preprocessing Extracts Insights (Data Preprocessing v2.0)
+    ↓ PreprocessingResult
+Evidence Classification & Creation (Evidence Architecture v1.1)
+    ↓ Evidence + Updated Hypotheses
+Agent Response Generation (Agent Service)
+    ↓ AgentResponse
+Frontend Conversation Update (THIS DOC)
+```
+
+**Schema Flow**:
+```
+File/Text Input (THIS DOC)
     ↓
-CaseVectorStore.add_documents(case_id, documents)
+PreprocessingResult (Data Preprocessing v2.0)
+    - data_type: DataType enum
+    - summary: <500 chars
+    - full_extraction: complete insights
+    - content_ref: S3 URI
     ↓
-ChromaDB collection: case_{case_id}
+Evidence (Evidence Architecture v1.1)
+    - summary: from PreprocessingResult.summary
+    - content_ref: from PreprocessingResult.content_ref
+    - source_type: mapped from DataType
+    - evidence_links: updated via hypothesis analysis
     ↓
-Documents available for Q&A via answer_from_document tool
-    ↓
-Case closes → Collection automatically deleted
+AgentResponse (Agent Service)
+    - content: conversational insights
+    - sources: includes evidence_id
 ```
 
-### Key Characteristics
+### 11.3 Design Consistency Checklist
 
-| Aspect | Details |
-|--------|---------|
-| **Collection Name** | `case_{case_id}` (e.g., `case_abc123`) |
-| **Lifecycle** | Tied to case - deleted when case closes or archives |
-| **Scope** | Case-specific - isolated per case_id |
-| **Access Pattern** | QA sub-agent for detailed document questions |
-| **LLM Provider** | SYNTHESIS_PROVIDER (dedicated for document Q&A) |
-| **UI Context** | Active troubleshooting chat (document upload in chat) |
-
-### Use Cases
-
-**Case Evidence Store is for:**
-- ✅ Log files uploaded during troubleshooting
-- ✅ Configuration files from affected system
-- ✅ Stack traces and error dumps
-- ✅ Performance metrics and traces
-- ✅ Screenshots and diagnostic output
-- ✅ Captured page content from error pages
-
-**Case Evidence Store is NOT for:**
-- ❌ Permanent runbooks (use User KB when implemented)
-- ❌ General reference documentation (use Global KB)
-- ❌ Long-term knowledge storage
-- ❌ Cross-case information sharing
-
-### Example Workflow
-
-```
-1. User opens troubleshooting case for "Database timeout errors"
-
-2. User uploads server.log (50KB) via chat upload button
-   → Stored in case_abc123 collection
-   → Preprocessed summary created
-   → AI analyzes: "I found 127 timeout errors starting at 14:23 UTC..."
-
-3. User asks: "What error is on line 1045?"
-   → answer_from_document tool queries case_abc123 collection
-   → QA sub-agent synthesizes answer from uploaded log
-
-4. User resolves issue and closes case
-   → Case status changes to CLOSED
-   → case_abc123 collection automatically deleted via case lifecycle hook
-   → Storage reclaimed
-```
-
-### Lifecycle Management
-
-**Current Implementation** (as of 2025-10-16):
-
-The Case Evidence Store lifecycle is **tied to case status**, not time-based TTL:
-
-```python
-# Case states
-ACTIVE → INVESTIGATING → RESOLVED → CLOSED
-  ↓                                    ↓
-Documents available            Documents deleted
-```
-
-**Deletion Triggers**:
-- Case status transition to `CLOSED`
-- Case status transition to `ARCHIVED`
-- Case deleted by user
-
-**NOT deleted when**:
-- Case is still `ACTIVE` (even if weeks/months old)
-- Case is in `INVESTIGATING` state
-- Case is in `RESOLVED` state (awaiting final closure)
-
-### Implementation Components
-
-**Backend**:
-- [case_vector_store.py](../../faultmaven/infrastructure/persistence/case_vector_store.py) - Case-specific document management
-- [answer_from_document.py](../../faultmaven/tools/answer_from_document.py) - QA sub-agent for document queries
-- [case_cleanup.py](../../faultmaven/infrastructure/tasks/case_cleanup.py) - Lifecycle-based cleanup
-
-**Configuration**:
-```bash
-SYNTHESIS_PROVIDER=openai  # Dedicated LLM for QA sub-agent
-CHROMADB_URL=http://chromadb.faultmaven.local:30080
-# Lifecycle: Tied to case status (deleted when case closes/archives)
-# Cleanup: Triggered by case state transitions, not time-based
-```
-
-### Relationship to Data Submission Paths
-
-Both data submission paths (explicit upload and implicit detection) ultimately store documents in Case Evidence Store:
-
-```
-Path 1: Explicit Upload
-  POST /api/v1/cases/{case_id}/data
-    → Classify → Preprocess → Store in case_{case_id}
-    → Generate AI response with insights
-
-Path 2: Implicit Detection
-  POST /api/v1/cases/{case_id}/queries
-    → Detect large paste → Route to data ingestion
-    → Classify → Preprocess → Store in case_{case_id}
-    → Generate AI response with insights
-```
-
-**Key Point**: Both paths result in the same outcome:
-1. Data is preprocessed into LLM-ready summary
-2. Documents stored in `case_{case_id}` collection
-3. AI analyzes and responds with insights
-4. User can ask follow-up questions via answer_from_document tool
-5. Collection deleted when case closes
-
-### Storage Architecture
-
-```
-ChromaDB Instance (chromadb.faultmaven.local:30080)
-│
-├── faultmaven_kb                    # Global KB (permanent)
-│   └── [system-wide documentation]
-│
-├── case_abc123                      # Case Evidence Store (active case)
-│   └── [server.log uploaded by user]
-│   └── [config.yaml uploaded by user]
-│   └── [Lifecycle: deleted when case closes]
-│
-└── case_xyz789                      # Case Evidence Store (active case)
-    └── [stack_trace.txt uploaded by user]
-    └── [Lifecycle: deleted when case closes]
-```
-
-### Access Control
-
-| User Action | Case Evidence Store |
-|-------------|---------------------|
-| **Upload document** | ✅ Own cases only |
-| **Query documents** | ✅ Own cases only (via answer_from_document tool) |
-| **Delete document** | ✅ Own cases only |
-| **Access other user's data** | ❌ Forbidden (case isolation) |
-| **Access after case closes** | ❌ Documents deleted with case |
-
-### Future Enhancement: User Knowledge Base
-
-When User Knowledge Base is implemented (Phase 2 - planned):
-
-**Users will have TWO upload destinations**:
-
-1. **Knowledge Management UI** (separate from troubleshooting)
-   - Upload to `user_{user_id}_kb` (permanent)
-   - For runbooks, procedures, best practices
-   - Accessible across all cases
-
-2. **Troubleshooting Chat UI** (current implementation)
-   - Upload to `case_{case_id}` (ephemeral)
-   - For incident-specific evidence
-   - Deleted when case closes
-
-**Critical Design Principle**: These must **never be confused** in implementation. They serve completely different purposes with different lifecycles.
+✅ **Data Type Names**: Uses canonical `DataType` enum from Data Preprocessing v2.0  
+✅ **Evidence Source Types**: Maps to `EvidenceSourceType` enum from Evidence v1.1  
+✅ **PreprocessingResult Schema**: References Data Preprocessing v2.0 Section 7  
+✅ **Evidence Evaluation**: Delegates to Evidence Architecture v1.1 Section 6  
+✅ **Vector DB Role**: Clarified as async background (Data Preprocessing v2.0 Section 4)  
+✅ **No Duplicate Specs**: References other docs instead of redefining algorithms  
 
 ---
 
-## Implementation Checklist
+## 12. Summary
 
-### Backend (Priority: HIGH)
+### 12.1 Key Design Decisions
 
-#### Core Data Processing (CRITICAL)
-- [ ] **CRITICAL**: Implement data preprocessing layer in `data_service.py`
-  - [ ] Add `prepare_data_for_llm_analysis()` method
-  - [ ] Implement log file preprocessor
-  - [ ] Implement metrics data preprocessor
-  - [ ] Implement stack trace preprocessor
-  - [ ] Add generic fallback preprocessor
-- [ ] Update `upload_case_data()` to accept actual file uploads
-- [ ] Integrate with `DataService.upload_data()` for file processing
-- [ ] **CRITICAL**: Call preprocessing before passing to agent
-- [ ] Integrate with `AgentService` to generate AI responses
-- [ ] Return `agent_response` field in response body
-- [ ] Update agent prompts to handle preprocessed data context
-- [ ] Test file upload with various file types (.log, .txt, .json)
+1. **Dual Path Convergence**: Explicit upload and implicit detection use the same processing pipeline
+2. **Conversational UX**: Data submissions appear as conversation messages, not separate UI
+3. **Layered Architecture**: Clear separation between API/UX, transformation, and analysis layers
+4. **Backend-Driven**: AI generates insights; frontend displays them
+5. **Context Preservation**: Evidence persists in case state and links to hypotheses
+6. **Optional Enhancements**: Source metadata enriches analysis without breaking compatibility
 
-#### Source Metadata Enhancement (OPTIONAL - Proposed)
-- [ ] Add `SourceMetadata` model to `models/api.py`
-- [ ] Update `upload_case_data()` to accept optional `source_metadata` form field
-- [ ] Update `DataService.upload_data()` to accept and store source metadata
-- [ ] Enhance preprocessing context with source information
-- [ ] Update agent prompts to mention source when available (e.g., "the page you captured from...")
-- [ ] Optional: Implement URL-based service discovery
-- [ ] Test with and without source metadata (backward compatibility)
+### 12.2 Implementation Priorities
 
-### Frontend (Priority: HIGH)
+**High Priority**:
+1. ✅ Frontend conversation integration (display AI responses in chat)
+2. ✅ Backend preprocessing integration (wire to endpoint)
+3. ✅ Evidence creation pipeline (link preprocessing → evidence → hypothesis)
+4. ✅ Agent response generation with evidence context
 
-#### Core Conversation Integration (CRITICAL)
+**Medium Priority**:
+5. ✅ Query classification (3-tier: hints → patterns → heuristics)
+6. ✅ Frontend UI hint support (query_type, is_raw_content)
+7. ⚠️ Remove legacy "Session Data" UI section
 
-- [x] Convert text/page to File objects in `handleDataUpload()`
-- [ ] Add user message to conversation on upload
-- [ ] Add AI response message from `uploadResponse.agent_response`
-- [ ] Remove "Session Data" UI section from ChatWindow
-- [ ] Update `DataUploadResponse` interface with `agent_response` field
-- [ ] Test all three data sources (file, text, page)
+**Low Priority (Optional)**:
+8. 🔲 Source metadata support (backward compatible enhancement)
+9. 🔲 Client-side paste detection with confirmation dialog
+10. 🔲 Vision model integration for screenshots (stub exists)
 
-#### Source Metadata Enhancement (OPTIONAL - Proposed)
-- [ ] Add `SourceMetadata` interface to types
-- [ ] Update `uploadDataToCase()` to accept optional `sourceMetadata` parameter
-- [ ] Update `handleFileUpload()` to pass `{source_type: "file_upload"}`
-- [ ] Update `handleTextPaste()` to pass `{source_type: "text_paste"}`
-- [ ] Update `handlePageCapture()` to pass `{source_type: "page_capture", source_url, captured_at}`
-- [ ] Ensure backward compatibility (metadata is optional)
-- [ ] Test with and without metadata
+### 12.3 Success Criteria
 
-### Testing
+**User Experience**:
+- ✅ Data upload appears as natural conversation turn
+- ✅ AI provides immediate analysis (not just "upload successful")
+- ✅ No separate "uploaded files" UI clutter
+- ✅ Both explicit upload and paste detection work seamlessly
 
-#### Core Functionality (CRITICAL)
+**Technical Integration**:
+- ✅ Preprocessing correctly extracts insights (Crime Scene, Anomaly Detection)
+- ✅ Evidence objects link to hypotheses with reasoning
+- ✅ Hypothesis status updates based on evidence (PROPOSED → VALIDATED)
+- ✅ Agent responses reference uploaded evidence
 
-- [ ] File upload → conversational response
-- [ ] Text paste (via upload UI) → conversational response
-- [ ] Page capture → conversational response
-- [ ] Large paste (>10K) in query box → auto-detection + analysis
-- [ ] Normal query with code snippet → processes normally
-
-#### Source Metadata Testing (OPTIONAL)
-- [ ] File upload with source metadata → metadata stored and used
-- [ ] Page capture with URL → AI mentions source URL in response
-- [ ] Text paste without metadata → works normally (backward compatible)
-- [ ] Invalid metadata JSON → gracefully ignored
-- [ ] Verify service discovery from URLs (e.g., "api.myapp.com" → "MyApp API")
+**API Compliance**:
+- ✅ Response schemas match OpenAPI specification
+- ✅ Uses canonical enum values from other designs
+- ✅ Proper error handling with user-friendly messages
+- ✅ Backward compatible (optional fields don't break existing clients)
 
 ---
 
-## Files Modified
-
-### Backend
-1. **`faultmaven/api/v1/routes/case.py`**
-   - Lines 2094-2149: `upload_case_data()` - needs real implementation
-   - Lines 116-168: `_process_data_analysis()` - async processing function
-   - Lines 1330-1416: Data submission routing in `submit_case_query()`
-
-2. **`faultmaven/services/agentic/engines/classification_engine.py`**
-   - Lines 498-546: Pattern detection dictionaries
-   - Lines 939-989: `_detect_data_submission()` method
-   - Lines 585-661: Integration into `classify_query()`
-
-### Frontend
-1. **`faultmaven-copilot/src/shared/ui/SidePanelApp.tsx`**
-   - Lines 1717-1767: `handleDataUpload()` - needs conversation integration
-
-2. **`faultmaven-copilot/src/shared/ui/components/ChatWindow.tsx`**
-   - Lines 419-441: Remove "Session Data" section
-   - Lines 151-183: `handleDataSubmit()` - updated for async response
-
-3. **`faultmaven-copilot/src/lib/api.ts`**
-   - Lines 1046-1074: `uploadDataToCase()` - update return type
-   - Lines 190-200: `UploadedData` interface - add `agent_response` field
+**Document Version**: 4.0  
+**Last Updated**: 2025-11-01  
+**Status**: Production Ready  
+**Authors**: System Architecture Team  
+**Related Documents**: Data Preprocessing v2.0, Evidence Architecture v1.1
 
 ---
 
-## API Specification Alignment
-
-### OpenAPI Spec Status
-
-✅ **`POST /api/v1/cases/{case_id}/data`** - Defined ([openapi.locked.yaml:2294](../api/openapi.locked.yaml#L2294))
-- Security: BearerAuth required
-- Request: multipart/form-data with file
-- Response: 201 Created with Location header
-- ⚠️ Response schema needs `agent_response` field added
-
-✅ **`POST /api/v1/cases/{case_id}/queries`** - Defined ([openapi.locked.yaml:2062](../api/openapi.locked.yaml#L2062))
-- Supports both 201 (sync) and 202 (async) responses
-- Data detection handled transparently
-- Returns AgentResponse format
-
----
-
-## Conclusion
-
-The v3.0 design provides a seamless conversational experience where data uploads are treated as natural conversation turns, with the backend responsible for analyzing data and generating insights. This eliminates UI clutter, provides immediate feedback, and maintains conversation context.
-
-**Status**:
-- ✅ Backend classification & routing implemented
-- ⚠️ Backend file upload endpoint needs real implementation
-- ⚠️ Backend preprocessing layer needs implementation (CRITICAL)
-- ⚠️ Frontend needs conversation integration
-- 🔲 Source metadata enhancement proposed (OPTIONAL)
-
-**Next Steps**: 
-1. **High Priority**: Implement backend preprocessing layer and frontend conversation updates
-2. **Optional Enhancement**: Add source metadata support for richer context
-
-**Implementation Order**:
-1. Core preprocessing pipeline (enables basic file analysis)
-2. Conversational integration (improves UX)
-3. Source metadata (enhances context - can be added later)
-
----
-
-**Last Updated**: 2025-10-12  
-**Version**: 3.1 (Updated with source metadata proposal and preprocessing status clarification)  
-**Authors**: System Architecture Team
-
-## Appendix: Current Implementation Status
-
-### Implementation Status: Data Preprocessing Pipeline
-
-**Status as of 2025-10-19**: ✅ **~85% COMPLETE - EXTRACTORS IMPLEMENTED, WIRING PENDING**
-
-**Authoritative References**:
-- **Design Specification**: [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md)
-- **Implementation Location**: `faultmaven/services/preprocessing/`
-
-```
-Step 1: Classify → Step 2: Extract → Step 3: Chunk → Step 4: Sanitize
-    ✅ Complete      ✅ 5 of 6 ready   ⚠️ Partial      ✅ Complete
-```
-
-#### Step 1: Classification ✅ FULLY IMPLEMENTED
-
-**Location**: `faultmaven/services/preprocessing/classifier.py`
-
-- ✅ 6-class system (LOGS, METRICS, CONFIG, TEXT, CODE, VISUAL)
-- ✅ 3-tier prioritization: user → agent → browser → rules
-- ✅ Confidence scoring
-
-#### Step 2: Extraction ✅ 5 of 6 COMPLETE
-
-| Extractor | Status | Size |
-|-----------|--------|------|
-| LogsAndErrorsExtractor | ✅ Crime Scene Extraction | 10KB |
-| MetricsAndPerformanceExtractor | ✅ Anomaly detection | 12KB |
-| StructuredConfigExtractor | ✅ Parse + validate | 7KB |
-| UnstructuredTextExtractor | ✅ Smart extraction | 10KB |
-| SourceCodeExtractor | ✅ AST analysis | 15KB |
-| VisualEvidenceExtractor | ⚠️ Stub only | 3KB |
-
-**Total**: ~58KB of production extractor code
-
-### Current Status
-
-**Implemented (85%)**:
-- ✅ PreprocessingService orchestrator
-- ✅ DataClassifier with full feature set
-- ✅ 5 fully-functional extractors
-- ✅ DataSanitizer (PII/secrets)
-
-**Missing (15%)**:
-- ❌ Wiring to upload endpoint
-- ❌ ChunkingService (long docs)
-- ❌ Vision model integration
-
-**Next Steps**: Wire extractors to data upload → unlock 5 data types (2-4 hours)
-
-See [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) for complete details.
+**Changes from v3.2**:
+1. ✅ Aligned with Data Preprocessing Architecture v2.0 schemas
+2. ✅ Aligned with Evidence Architecture v1.1 evaluation pipeline
+3. ✅ Removed redundant preprocessing implementation specs
+4. ✅ Clarified two-stage classification (data type vs evidence)
+5. ✅ Updated architecture diagrams with correct layer separation
+6. ✅ Added proper cross-references to authoritative sources
+7. ✅ Clarified vector DB role as async background storage
+8. ✅ Used canonical enum values throughout (DataType, EvidenceSourceType)
+9. ✅ Enhanced source metadata as optional backward-compatible feature
+10. ✅ Improved testing scenarios with complete pipeline validation

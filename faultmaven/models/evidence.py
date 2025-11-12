@@ -87,14 +87,19 @@ InvestigationStrategy = InvestigationMode
 
 
 class CaseStatus(str, Enum):
-    """Current case investigation state"""
-    INTAKE = "intake"              # Problem confirmation
-    IN_PROGRESS = "in_progress"    # Active investigation
-    RESOLVED = "resolved"          # Root cause found + fixed
-    MITIGATED = "mitigated"        # Temporary fix, escalated
-    STALLED = "stalled"            # Blocked evidence, can't proceed
-    ABANDONED = "abandoned"        # User gave up / escalated
-    CLOSED = "closed"              # Final state
+    """Case lifecycle status - matches faultmaven.models.case.CaseStatus
+
+    NOTE: This is kept for backwards compatibility with diagnostic state tracking.
+    The canonical definition is in faultmaven.models.case.CaseStatus.
+    These MUST match exactly to avoid validation errors.
+    """
+    # Active states
+    CONSULTING = "consulting"      # Q&A, exploring (Phase: INTAKE)
+    INVESTIGATING = "investigating" # Active troubleshooting (Phases 1-5)
+
+    # Terminal states (cannot be changed)
+    RESOLVED = "resolved"          # Closed with root cause found + solution
+    CLOSED = "closed"              # Closed without resolution
 
 
 # =============================================================================

@@ -513,9 +513,6 @@ app.include_router(data.router, prefix="/api/v1", tags=["data_ingestion"])
 
 app.include_router(knowledge.router, prefix="/api/v1", tags=["knowledge_base"])
 
-# Include kb router for backward compatibility with /kb/ prefix
-app.include_router(knowledge.kb_router, prefix="/api/v1", tags=["knowledge_base"])
-
 app.include_router(session.router, prefix="/api/v1", tags=["session_management"])
 
 # Authentication routes
@@ -607,15 +604,37 @@ except Exception as e:
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Custom handler for request/response validation errors (422)"""
-    logger.error(f"Validation error on {request.method} {request.url}: {exc.errors()}", extra={
-        "validation_errors": exc.errors(),
-        "body": exc.body if hasattr(exc, 'body') else None,
-    })
+    # Convert validation errors to JSON-serializable format
+    errors = []
+    for error in exc.errors():
+        # Create a copy of the error dict
+        clean_error = dict(error)
+
+        # Convert any ValueError objects in ctx to strings
+        if 'ctx' in clean_error and isinstance(clean_error['ctx'], dict):
+            clean_ctx = {}
+            for key, value in clean_error['ctx'].items():
+                if isinstance(value, ValueError):
+                    clean_ctx[key] = str(value)
+                else:
+                    clean_ctx[key] = value
+            clean_error['ctx'] = clean_ctx
+
+        errors.append(clean_error)
+
+    logger.error(
+        f"Validation error on {request.method} {request.url}: {errors}",
+        extra={
+            "validation_errors": errors,
+            "body": exc.body if hasattr(exc, 'body') else None,
+        }
+    )
+
     return JSONResponse(
         status_code=422,
         content={
             "detail": "Validation error",
-            "errors": exc.errors()
+            "errors": errors
         }
     )
 
@@ -1071,7 +1090,7 @@ async def get_realtime_metrics(time_window_minutes: int = 5):
                     "metric_name": alert.metric_name,
                     "metric_value": alert.metric_value,
                     "threshold_value": alert.threshold_value,
-                    "triggered_at": alert.triggered_at.isoformat(),
+                    "triggered_at": to_json_compatible(alert.triggered_at),
                     "message": alert.message
                 }
                 for alert in active_alerts[:10]  # Last 10 alerts
@@ -1107,8 +1126,8 @@ async def get_alert_status():
                     "metric_name": alert.metric_name,
                     "metric_value": alert.metric_value,
                     "threshold_value": alert.threshold_value,
-                    "triggered_at": alert.triggered_at.isoformat(),
-                    "resolved_at": alert.resolved_at.isoformat() if alert.resolved_at else None,
+                    "triggered_at": to_json_compatible(alert.triggered_at),
+                    "resolved_at": to_json_compatible(alert.resolved_at) if alert.resolved_at else None,
                     "message": alert.message,
                     "notification_count": alert.notification_count
                 }

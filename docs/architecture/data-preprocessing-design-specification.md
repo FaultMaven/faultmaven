@@ -1,1878 +1,2096 @@
-# Two-Tier Data Preprocessing Architecture
-
-**Document Type**: Architecture Design Specification
-**Version**: 2.0 (Updated with implementation status)
-**Last Updated**: 2025-10-19
-**Status**: 🔨 **DESIGN SPECIFICATION - PARTIALLY IMPLEMENTED**
-
----
-
-## ✅ IMPLEMENTATION STATUS (UPDATED 2025-10-19)
-
-**CRITICAL UPDATE**: The preprocessing system is **~85% IMPLEMENTED**, not 15% as previously documented!
-
-**This document is the DESIGN SPECIFICATION**. The implementation closely follows this design.
-
-### What's Actually Implemented
-
-**Core Infrastructure** (100% complete):
-- ✅ **PreprocessingService** - 4-stage pipeline orchestrator
-  - Location: `faultmaven/services/preprocessing/preprocessing_service.py`
-  - Steps: Classify → Extract → Chunk (partial) → Sanitize
-- ✅ **DataClassifier** - Rule-based 6-class classifier with confidence scoring
-  - Location: `faultmaven/services/preprocessing/classifier.py`
-  - 3-tier prioritization: user override → agent hint → browser context → rules
-- ✅ **DataSanitizer** - PII/secret redaction
-  - Location: `faultmaven/infrastructure/security/redaction.py`
-
-**Extractors** (~83% complete - 5 of 6 fully implemented):
-
-1. ✅ **LOGS_AND_ERRORS** (LogsAndErrorsExtractor) - **FULLY IMPLEMENTED**
-   - **Crime Scene Extraction with ALL designed features**:
-     - ✅ Severity-based error prioritization (FATAL > CRITICAL > ERROR)
-     - ✅ Multiple crime scenes detection (first + last errors)
-     - ✅ Error burst handling with adaptive window
-     - ✅ Safety limits and truncation
-   - Location: `faultmaven/services/preprocessing/extractors/logs_extractor.py` (10,091 bytes)
-   - **Status**: **Matches Section 2.1 design exactly**
-
-2. ✅ **METRICS_AND_PERFORMANCE** (MetricsAndPerformanceExtractor) - **FULLY IMPLEMENTED**
-   - Statistical anomaly detection (z-score threshold: 3.0)
-   - Multi-format parsing (CSV, JSON, Prometheus)
-   - Natural language summaries
-   - Location: `faultmaven/services/preprocessing/extractors/metrics_extractor.py` (11,976 bytes)
-   - **Status**: **Matches Section 2.4 design**
-
-3. ✅ **STRUCTURED_CONFIG** (StructuredConfigExtractor) - **FULLY IMPLEMENTED**
-   - YAML/JSON/TOML/INI parsing and validation
-   - Secret scanning (API keys, passwords)
-   - Sanitization
-   - Location: `faultmaven/services/preprocessing/extractors/config_extractor.py` (6,673 bytes)
-   - **Status**: **Matches Section 2.3 design**
-
-4. ✅ **UNSTRUCTURED_TEXT** (UnstructuredTextExtractor) - **FULLY IMPLEMENTED**
-   - Smart text extraction with size-based routing
-   - HTML scraping for page captures
-   - Location: `faultmaven/services/preprocessing/extractors/text_extractor.py` (10,031 bytes)
-   - **Status**: **Matches Section 2.2 design**
-
-5. ✅ **SOURCE_CODE** (SourceCodeExtractor) - **FULLY IMPLEMENTED**
-   - AST-based code analysis for multiple languages
-   - Function/class extraction based on error context
-   - Location: `faultmaven/services/preprocessing/extractors/source_code_extractor.py` (14,795 bytes)
-   - **Status**: **Matches Section 2.5 design**
-
-6. ⚠️ **VISUAL_EVIDENCE** (VisualEvidenceExtractor) - **PLACEHOLDER ONLY**
-   - Stub implementation exists
-   - Vision model integration pending (requires LLM provider setup)
-   - Location: `faultmaven/services/preprocessing/extractors/visual_extractor.py` (3,275 bytes)
-   - **Status**: **Section 2.6 design NOT implemented**
-
-**Total Extractor Code**: ~1,684 lines across 6 files
-
-### What's Missing (~15%)
-
-**Incomplete Features**:
-- ❌ **Vision model integration** for VISUAL_EVIDENCE
-  - Requires GPT-4V, Claude 3.5, or Gemini 1.5 setup
-  - ~6-8 hours to implement
-- ❌ **Chunking Service** for long UNSTRUCTURED_TEXT (Step 3)
-  - Map-reduce pattern for >8K token documents
-  - ~6-8 hours to implement
-- ❌ **End-to-end wiring**
-  - Connect extractors to data upload endpoints
-  - Wire to Case Evidence Store
-  - ~4-6 hours to implement
-
-**Current Reality**: All designed extractors exist, but not yet wired to upload pipeline
-
-### Implementation Accuracy
-
-| Component | Design Section | Implementation | Match % |
-|-----------|----------------|----------------|---------|
-| PreprocessingService | Sections 1-4 | ✅ Complete | 100% |
-| DataClassifier | Section 1.2 | ✅ Complete | 100% |
-| LOGS_AND_ERRORS | Section 2.1 | ✅ Complete | 100% |
-| UNSTRUCTURED_TEXT | Section 2.2 | ✅ Complete | 95% (chunking pending) |
-| STRUCTURED_CONFIG | Section 2.3 | ✅ Complete | 100% |
-| METRICS_AND_PERFORMANCE | Section 2.4 | ✅ Complete | 100% |
-| SOURCE_CODE | Section 2.5 | ✅ Complete | 100% |
-| VISUAL_EVIDENCE | Section 2.6 | ⚠️ Stub only | 20% |
-| **Overall** | **Full Design** | **~85% Done** | **85%** |
-
-### Next Steps to 100%
-
-**Immediate (2-4 hours)**: Wire existing extractors to upload pipeline
-**Medium (6-8 hours)**: Implement chunking service
-**Low Priority (6-8 hours)**: Vision model integration
-
-**For Current Deployment Status**: See [DATA_PREPROCESSING_IMPLEMENTED.md](../implementation/DATA_PREPROCESSING_IMPLEMENTED.md)
-
----
+# FaultMaven Data Preprocessing Architecture v2.0
 
 ## Executive Summary
 
-This document defines a **two-tiered preprocessing architecture** that combines the speed and efficiency of "Crime Scene Extraction" with the thoroughness of "Deep Scan" as a fallback. The design prioritizes **fast, cheap, and accurate** processing for common cases while maintaining the capability for deep analysis when needed.
+This document defines the **data preprocessing pipeline** that transforms raw user-uploaded files into structured, high-signal evidence summaries for the investigation system. Preprocessing is the **first stage** in the evidence lifecycle, preparing data for evaluation by the Evidence Architecture.
 
-### Core Principles
+**Three-Pipeline System**:
+1. **Synchronous Pipeline** (user waits): Validate → Classify → Extract → Sanitize → Return
+2. **Async Background Pipeline** (fire-and-forget): Chunk → Embed → Store for long-term memory
+3. **Integration Flow**: Preprocessed data → Evidence Classification → Evidence object creation → Hypothesis analysis
 
-1. **Fast Path First**: Default to lightweight "Crime Scene" extraction (solves 80%+ of cases)
-2. **Deep Scan Fallback**: Offer comprehensive analysis only when needed (user-triggered)
+**Key Principles**:
+1. **Fast Path First**: Default to lightweight extraction (solves 80%+ cases)
+2. **User Control**: Give users choice for expensive processing
 3. **Classify First, Then Process**: Rule-based classification routes to specialized extractors
 4. **Maximum Signal, Minimum Noise**: Extract only high-value diagnostic information
-5. **Security by Default**: Sanitize PII/secrets before sending to LLM (configurable)
+5. **Security by Default**: Sanitize PII/secrets before LLM processing (configurable)
+6. **Separation of Concerns**: Preprocessing extracts insights; Evidence Architecture evaluates them
 
 ---
 
 ## Table of Contents
 
-1. [Two-Tier Strategy](#two-tier-strategy)
-2. [Preprocessing Pipeline (4 Stages)](#preprocessing-pipeline-4-stages)
-3. [Stage 1: Ingestion & Validation](#stage-1-ingestion--validation)
-4. [Stage 2: Rule-Based Classification](#stage-2-rule-based-classification)
-5. [Stage 3: Type-Specific Extraction](#stage-3-type-specific-extraction)
-6. [Stage 4: Sanitization & Packaging](#stage-4-sanitization--packaging)
-7. [Data Type Specifications](#data-type-specifications)
-8. [Configuration](#configuration)
+1. [Architecture Overview](#1-architecture-overview)
+2. [System Integration](#2-system-integration)
+3. [Synchronous Pipeline (Steps 1-4)](#3-synchronous-pipeline-steps-1-4)
+4. [Async Background Pipeline (Step 5)](#4-async-background-pipeline-step-5)
+5. [User Choice System](#5-user-choice-system)
+6. [Data Type Specifications](#6-data-type-specifications)
+7. [Output Formats](#7-output-formats)
+8. [Configuration](#8-configuration)
+9. [Implementation Guide](#9-implementation-guide)
+10. [Examples](#10-examples)
 
 ---
 
-## Two-Tier Strategy
+## 1. Architecture Overview
 
-### Tier 1: Fast Path (Crime Scene Extraction)
+### 1.1 Role in System Architecture
 
-**Default method for all uploads. Optimized for speed and accuracy.**
-
-```
-User uploads log file
-        ↓
-Scan for ERROR/Exception/panic keywords
-        ↓
-Extract 200 lines before + after first match
-        ↓
-Send snippet (~400 lines) to diagnostic LLM
-        ↓
-LLM analyzes and responds
-        ↓
-✓ Problem solved (80%+ of cases)
-```
-
-**Characteristics**:
-- **Fast**: Keyword scan + extraction in milliseconds
-- **Cheap**: Small snippet (~400 lines) to LLM, minimal tokens
-- **Accurate**: Captures the "crime scene" with full context
-- **No preprocessing LLM**: Direct to diagnostic LLM
-
-**When it works**:
-- Clear error messages in logs
-- Stack traces in error reports
-- Recent failures (errors near end of file)
-- Simple, single-root-cause problems
-
----
-
-### Tier 2: Deep Scan (Breadth-Based Fallback)
-
-**Triggered only when Fast Path fails or is inconclusive.**
+**Preprocessing is the first stage in the evidence lifecycle**:
 
 ```
-Fast Path attempt
-        ↓
-LLM: "I couldn't find a clear error in the most recent activity.
-      Would you like me to perform a full, in-depth analysis?
-      This may take a few moments."
-        ↓
-User: "Yes, please analyze the full file"
-        ↓
-Backend triggers Deep Scan workflow:
-  1. Split file into chunks
-  2. Send each chunk to preprocessing LLM (parallel)
-  3. Preprocessing LLM identifies relevant sections per chunk
-  4. Combine findings
-  5. Send to diagnostic LLM
-        ↓
-Comprehensive analysis returned
-```
-
-**Characteristics**:
-- **Thorough**: Analyzes entire file, not just error patterns
-- **Slower**: Multiple LLM calls (preprocessing + diagnostic)
-- **More expensive**: Processes full file in chunks
-- **User-triggered**: Explicit opt-in for deeper analysis
-
-**When needed**:
-- No clear error patterns (subtle issues)
-- Distributed problems across entire file
-- Performance degradation (slow, not failing)
-- Complex multi-root-cause scenarios
-
----
-
-## Preprocessing Pipeline (4 Steps)
-
-All uploaded data flows through this sequential pipeline before reaching the diagnostic agent.
-
-```
+USER UPLOADS FILE
+       ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ STEP 1: FAST, RULE-BASED CLASSIFICATION                     │
-│ • Backend Python classify_file() function                   │
-│ • Extension + content pattern matching (no LLM)             │
-│ • Instant classification → 6 data types                     │
-│ • LLM Calls: 0                                              │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     ↓
+│ DATA PREPROCESSING ARCHITECTURE (THIS DOCUMENT)             │
+│ Transforms raw data → structured insights                   │
+└─────────────────┬───────────────────────────────────────────┘
+                  │ PreprocessingResult
+                  ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ STEP 2: TYPE-SPECIFIC INTELLIGENT EXTRACTION                │
-│ Goal: Create concise, high-signal summary                   │
-│                                                              │
-│ • LOGS_AND_ERRORS → Crime Scene (±200 lines) | LLM: 0      │
-│ • METRICS_AND_PERFORMANCE → Anomaly detection | LLM: 0      │
-│ • STRUCTURED_CONFIG → Parse + sanitize | LLM: 0             │
-│ • SOURCE_CODE → AST extraction | LLM: 0                     │
-│ • HTML_PAGE → Text scraping | LLM: 0                        │
-│ • VISUAL_EVIDENCE → Vision model | LLM: 1 (vision)          │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     ↓
+│ EVIDENCE ARCHITECTURE v1.1                                  │
+│ Evaluates insights → creates Evidence objects               │
+└─────────────────┬───────────────────────────────────────────┘
+                  │ Evidence + Hypothesis linkage
+                  ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ STEP 3: CHUNKING FALLBACK (Long Unstructured Text Only)     │
-│ Only for: DOCUMENTATION, SLACK_MESSAGES, UNSTRUCTURED_TEXT  │
-│                                                              │
-│ 1. Check token count of extracted text                      │
-│ 2. If < 8K tokens: Send directly | LLM: 0                  │
-│ 3. If > 8K tokens: Trigger "Breadth-based Scan"            │
-│    • Chunk into 4K token segments                           │
-│    • Summarize each chunk in parallel (map)                 │
-│    • Synthesize summaries (reduce)                          │
-│    • LLM Calls: N chunks + 1 synthesis = N+1               │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ STEP 4: FINAL DIAGNOSTIC CALL                               │
-│ • PII/secret sanitization (configurable)                    │
-│ • Package concise output from Steps 2 or 3                  │
-│ • Send to FaultMaven diagnostic agent                       │
-│ • LLM Calls: 1 (diagnostic)                                 │
+│ INVESTIGATION STATE AND CONTROL FRAMEWORK                   │
+│ Updates phase, status, working conclusion                   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Total LLM Calls Per File
+### 1.2 Three-Pipeline Design
 
-| Scenario | Step 2 | Step 3 | Step 4 | Total |
-|----------|--------|--------|--------|-------|
-| **LOG_FILE (typical)** | 0 | 0 (skip) | 1 | **1 call** |
-| **METRICS_DATA** | 0 | 0 (skip) | 1 | **1 call** |
-| **SCREENSHOT** | 1 (vision) | 0 (skip) | 1 | **2 calls** |
-| **Short text (<8K tokens)** | 0 | 0 (direct) | 1 | **1 call** |
-| **Long text (>8K tokens)** | 0 | N+1 (map-reduce) | 1 | **N+2 calls** |
-
-**Key Insight**: 80%+ of files process with just **1 LLM call** (the final diagnostic call)
+```
+USER UPLOADS FILE (10MB max)
+        ↓
+┌─────────────────────────────────────────────────────────────┐
+│ SYNCHRONOUS PIPELINE (User waits)                           │
+│                                                              │
+│ Step 1: Validate & Classify (0.1s)                         │
+│   - Size check (≤ 10MB)                                    │
+│   - Rule-based classification → 6 data types               │
+│   - LLM Calls: 0                                           │
+│                                                              │
+│ Step 2: Type-Specific Extraction (0.5-30s)                 │
+│   - Known types: Fast deterministic extraction             │
+│   - Unknown <100KB: Auto full summarization                │
+│   - Unknown ≥100KB: ASK USER (4-tier choice)               │
+│   - LLM Calls: 0-25 (depends on type & user choice)       │
+│                                                              │
+│ Step 3: Sanitize (0.1s)                                    │
+│   - PII redaction (configurable)                           │
+│   - Secret scanning                                        │
+│   - LLM Calls: 0                                           │
+│                                                              │
+│ Step 4: Package & Return (0.1s)                            │
+│   - Format PreprocessingResult                             │
+│   - Store raw artifact → S3                                │
+│   - Return structured insights                             │
+│   - LLM Calls: 0                                           │
+│                                                              │
+│ Total Time: 0.5s - 30s (depends on choices)               │
+└──────────────────────┬──────────────────────────────────────┘
+                       │ PreprocessingResult
+                       ↓
+┌─────────────────────────────────────────────────────────────┐
+│ EVIDENCE ARCHITECTURE (NOT part of preprocessing)          │
+│                                                              │
+│ - Evidence Classification (6 dimensions)                    │
+│ - Evidence object creation                                  │
+│ - Hypothesis analysis & linkage                             │
+│ - Status updates (PROPOSED → VALIDATED)                     │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ↓
+┌─────────────────────────────────────────────────────────────┐
+│ ASYNC BACKGROUND PIPELINE (Fire-and-forget)                 │
+│                                                              │
+│ Step 5: Vector DB Storage (IF user chose caching)          │
+│   - Chunk preprocessed output (512 tokens)                 │
+│   - Generate embeddings (BGE-M3)                           │
+│   - Store in ChromaDB: case_{case_id}                      │
+│   - Purpose: Long-term memory for forensic deep dives      │
+│   - Time: 2-5s (user doesn't wait)                         │
+│   - LLM Calls: 0 (embeddings only)                         │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Step 1: Fast, Rule-Based Classification
+## 2. System Integration
 
-**Purpose**: Instant, deterministic classification without any LLM calls
+### 2.1 Preprocessing Boundaries
 
-### 1.1 File Ingestion & Validation
+**Preprocessing DOES**:
+- ✅ Extract high-signal summaries from raw data
+- ✅ Classify data type (logs, metrics, config, etc.)
+- ✅ Apply extraction strategies (Crime Scene, Anomaly Detection, etc.)
+- ✅ Sanitize PII and secrets
+- ✅ Store raw artifacts in S3
+- ✅ Return structured `PreprocessingResult`
 
-**Purpose**: Gatekeeper to ensure basic viability before processing
+**Preprocessing DOES NOT**:
+- ❌ Evaluate evidence against hypotheses (Evidence Architecture's job)
+- ❌ Update hypothesis status (Evidence Architecture's job)
+- ❌ Create timeline events (happens during Evidence evaluation)
+- ❌ Calculate confidence scores (Evidence Architecture uses qualitative status)
+- ❌ Link evidence to hypotheses (Evidence Architecture's job)
+
+### 2.2 Integration with Evidence Architecture
+
+**Data Flow**:
+
+```python
+# 1. Preprocessing (THIS DOCUMENT)
+preprocessing_result = await preprocessing_service.process_upload(
+    file=uploaded_file,
+    case_id=case_id,
+)
+# Output: PreprocessingResult with summary, insights, S3 reference
+
+# 2. Evidence Classification (EVIDENCE ARCHITECTURE)
+classification = await classification_service.classify_user_input(
+    user_input=preprocessing_result.summary,
+    case=case,
+)
+# Output: EvidenceClassification (6 dimensions)
+
+# 3. Evidence Creation (EVIDENCE ARCHITECTURE)
+evidence = await evidence_service.create_evidence(
+    preprocessing_result=preprocessing_result,
+    case_id=case_id,
+    phase=case.current_phase,
+    classification=classification,
+    uploaded_by=current_user,
+)
+# Output: Evidence object stored in DB
+
+# 4. Hypothesis Analysis (EVIDENCE ARCHITECTURE)
+case = await hypothesis_analysis_service.analyze_evidence_impact(
+    evidence=evidence,
+    classification=classification,
+    case=case,
+)
+# Output: Updated hypothesis evidence_links, status changes
+
+# 5. Async: Vector DB Storage (THIS DOCUMENT)
+background_tasks.add_task(
+    store_in_vector_db,
+    case_id=case_id,
+    preprocessed_content=preprocessing_result.full_extraction,
+    evidence_id=evidence.evidence_id,
+)
+```
+
+### 2.3 Data Type Mapping
+
+**Preprocessing Data Types → Evidence Source Types**:
+
+| Preprocessing Data Type | Evidence Source Type | Evidence Form |
+|------------------------|---------------------|---------------|
+| `LOGS_AND_ERRORS` | `EvidenceSourceType.LOG_FILE` | `DOCUMENT` |
+| `METRICS_AND_PERFORMANCE` | `EvidenceSourceType.METRICS_DATA` | `DOCUMENT` |
+| `STRUCTURED_CONFIG` | `EvidenceSourceType.CONFIG_FILE` | `DOCUMENT` |
+| `SOURCE_CODE` | `EvidenceSourceType.CODE_REVIEW` | `DOCUMENT` |
+| `UNSTRUCTURED_TEXT` | `EvidenceSourceType.USER_OBSERVATION` | `DOCUMENT` |
+| `VISUAL_EVIDENCE` | `EvidenceSourceType.SCREENSHOT` | `DOCUMENT` |
+
+**Note**: All file uploads have `form=DOCUMENT`. Text entered via query endpoint has `form=USER_INPUT`.
+
+---
+
+## 3. Synchronous Pipeline (Steps 1-4)
+
+### 3.1 Step 1: Validation & Classification
+
+**Purpose**: Instant, deterministic classification without LLM calls
 
 #### File Size Limit
 
-**Hard Limit**: 2 MB (2,097,152 bytes)
+**Hard Limit**: **10 MB** (10,485,760 bytes)
 
 **Rationale**:
-- Prevents server strain
-- Aligns with realistic LLM context limits (200K tokens ≈ 0.8 MB usable)
-- Forces users to provide focused data
-- 2MB is sufficient for most diagnostic files:
-  - Log file: ~50,000 lines
-  - Metrics CSV: ~100,000 rows
-  - Config file: ~50,000 lines
+- Aligns with LLM context windows (200K tokens ≈ 0.8 MB after preprocessing)
+- Crime Scene Extraction achieves 200:1 compression (10 MB → 50 KB)
+- Handles 95% of troubleshooting files:
+  - Log file: ~250,000 lines
+  - Metrics CSV: ~500,000 rows
+  - Config file: ~250,000 lines
   - Stack trace: Unlimited depth
+- Prevents timeout/processing issues
 
 **Rejection Response**:
 ```json
 {
   "error": "file_too_large",
-  "file_size": 5242880,
-  "max_size": 2097152,
-  "message": "File exceeds 2MB limit",
+  "file_size": 15728640,
+  "max_size": 10485760,
+  "message": "File exceeds 10MB limit",
   "suggestions": [
     "Upload only the relevant time range (last hour of logs)",
     "Filter to ERROR/FATAL level logs only",
     "Upload specific component logs, not entire system",
-    "Compress or split the file"
+    "Split the file into smaller chunks"
   ]
 }
 ```
 
-#### File Type Validation
+#### Data Type Classification (6 Types)
 
-**Purpose**: Reject unsupported or dangerous file types
-
-**Validation Methods**:
-
-**Method 1: MIME Type Check**
-```python
-import mimetypes
-
-def validate_mime_type(filename: str, content: bytes) -> bool:
-    """Validate file is supported type"""
-
-    # Allowed MIME types
-    ALLOWED_MIMES = {
-        'text/plain',           # .txt, .log
-        'text/csv',             # .csv
-        'text/html',            # .html
-        'application/json',     # .json
-        'application/yaml',     # .yaml
-        'image/png',            # .png
-        'image/jpeg',           # .jpg
-    }
-
-    mime_type, _ = mimetypes.guess_type(filename)
-    return mime_type in ALLOWED_MIMES
-```
-
-**Method 2: Extension Blocklist**
-```python
-BLOCKED_EXTENSIONS = {
-    '.exe', '.dll', '.so',      # Executables
-    '.zip', '.tar', '.gz',      # Archives (require decompression)
-    '.pdf', '.doc', '.docx',    # Binary documents
-    '.bin', '.dat',             # Generic binaries
-}
-
-def validate_extension(filename: str) -> bool:
-    """Reject blocked extensions"""
-    ext = Path(filename).suffix.lower()
-    return ext not in BLOCKED_EXTENSIONS
-```
-
-**Combined Validation**:
-```python
-def validate_file(filename: str, content: bytes, size: int) -> ValidationResult:
-    """Stage 1 validation"""
-
-    # Size check
-    if size > MAX_FILE_SIZE:
-        return ValidationResult(
-            valid=False,
-            reason="file_too_large",
-            suggestions=[...]
-        )
-
-    # Extension check
-    if not validate_extension(filename):
-        return ValidationResult(
-            valid=False,
-            reason="unsupported_file_type",
-            message=f"File type {Path(filename).suffix} is not supported"
-        )
-
-    # MIME type check
-    if not validate_mime_type(filename, content):
-        return ValidationResult(
-            valid=False,
-            reason="invalid_mime_type",
-            message="File content does not match expected type"
-        )
-
-    return ValidationResult(valid=True)
-```
-
-### 1.2 Classification Algorithm
-
-**Purpose**: Fast, deterministic classification without LLM
-
-**Why Rule-Based?**
-- **Faster**: Milliseconds vs seconds (no LLM API call)
-- **Cheaper**: No API costs
-- **More reliable**: Deterministic, predictable results
-- **Sufficient accuracy**: Pattern matching works well for file type detection
-
-#### Data Types (Purpose-Driven Classification)
-
-**Six classifications aligned with preprocessing strategies**:
-
-1. **LOGS_AND_ERRORS**: Chronological event-based text (logs, stack traces, alerts)
-2. **UNSTRUCTURED_TEXT**: Free-form human text (docs, Slack, tickets, reports)
-3. **STRUCTURED_CONFIG**: Declarative system state (YAML, JSON, INI, TOML)
-4. **METRICS_AND_PERFORMANCE**: Quantitative data (time-series, traces, profiling)
-5. **SOURCE_CODE**: Executable logic (Python, Java, JavaScript, etc.)
-6. **VISUAL_EVIDENCE**: Graphical snapshots (screenshots, UI captures)
-
-**Key Principle**: Each class has a **unique preprocessing strategy**. No over-classification (same handling, different names) or under-classification (different handling, same name).
-
-#### Implementation
-
-**Multi-Method Decision Tree**:
+**Rule-based, no LLM calls**:
 
 ```python
-class RuleBasedClassifier:
-    """Fast, deterministic file classification"""
+class DataType(str, Enum):
+    """Preprocessing data type classification"""
+    LOGS_AND_ERRORS = "logs_and_errors"              # Event-based chronological text
+    UNSTRUCTURED_TEXT = "unstructured_text"          # Human-written documents
+    STRUCTURED_CONFIG = "structured_config"          # System configuration files
+    METRICS_AND_PERFORMANCE = "metrics_and_performance"  # Time-series data
+    SOURCE_CODE = "source_code"                      # Executable code
+    VISUAL_EVIDENCE = "visual_evidence"              # Screenshots, UI captures
 
-    def classify(self, content: str, filename: str) -> DataType:
-        """
-        Classify file using pattern matching
-
-        Decision order:
-        1. Extension-based (fast path)
-        2. Content patterns (first 5K chars)
-        3. Structure detection
-        4. Default fallback
-        """
-
-        # 1. Extension-based classification
-        ext = Path(filename).suffix.lower()
-
-        # VISUAL_EVIDENCE: Images
-        if ext in {'.png', '.jpg', '.jpeg', '.gif', '.bmp'}:
-            return DataType.VISUAL_EVIDENCE
-
-        # STRUCTURED_CONFIG: Configuration files
-        if ext in {'.yaml', '.yml', '.json', '.toml', '.ini', '.env'}:
-            return DataType.STRUCTURED_CONFIG
-
-        # SOURCE_CODE: Programming languages
-        if ext in {'.py', '.js', '.java', '.go', '.cpp', '.c', '.rb', '.php', '.ts', '.jsx', '.tsx'}:
-            return DataType.SOURCE_CODE
-
-        # METRICS_AND_PERFORMANCE: Data files
-        if ext in {'.csv', '.tsv'}:
-            return self._classify_csv_file(content)
-
-        # LOGS_AND_ERRORS / UNSTRUCTURED_TEXT: Text files (need content analysis)
-        if ext in {'.log', '.txt', '.md', '.rst', '.html', '.htm'}:
-            return self._classify_text_file(content, ext)
-
-        # 2. Content-based classification (no extension match)
-        return self._classify_by_content(content)
-
-    def _classify_text_file(self, content: str, ext: str) -> DataType:
-        """Classify text files by content patterns"""
-
-        sample = content[:5000]  # First 5K chars
-
-        # LOGS_AND_ERRORS patterns (high priority)
-        if re.search(r'\d{4}-\d{2}-\d{2}.*?(ERROR|WARN|INFO|DEBUG)', sample):
-            return DataType.LOGS_AND_ERRORS
-
-        if re.search(r'Traceback \(most recent call last\)', sample):
-            return DataType.LOGS_AND_ERRORS
-
-        if re.search(r'Exception in thread', sample):
-            return DataType.LOGS_AND_ERRORS
-
-        if re.search(r'panic:', sample):
-            return DataType.LOGS_AND_ERRORS
-
-        if re.search(r'\[ALERT\]|\[CRITICAL\]|\[FATAL\]', sample, re.IGNORECASE):
-            return DataType.LOGS_AND_ERRORS
-
-        # UNSTRUCTURED_TEXT patterns
-        if ext in {'.html', '.htm'}:
-            # HTML page - will be scraped to text
-            return DataType.UNSTRUCTURED_TEXT
-
-        if ext in {'.md', '.rst'}:
-            # Documentation
-            return DataType.UNSTRUCTURED_TEXT
-
-        # Default for text files without clear patterns
-        return DataType.UNSTRUCTURED_TEXT
-
-    def _classify_csv_file(self, content: str) -> DataType:
-        """Classify CSV files as metrics or generic text"""
-
-        sample = content[:5000]
-
-        # Check for time-series patterns
-        if re.search(r'timestamp|time|date', sample, re.IGNORECASE):
-            return DataType.METRICS_AND_PERFORMANCE
-
-        # Check for numeric data
-        lines = sample.split('\n')[:10]
-        numeric_count = sum(1 for line in lines if re.search(r'\d+\.\d+', line))
-
-        if numeric_count >= 5:
-            return DataType.METRICS_AND_PERFORMANCE
-
-        # Generic CSV - treat as unstructured
-        return DataType.UNSTRUCTURED_TEXT
-
-    def _classify_by_content(self, content: str) -> DataType:
-        """Classify by content structure when extension unknown"""
-
-        sample = content[:5000]
-
-        # LOGS_AND_ERRORS patterns
-        if re.search(r'\d{4}-\d{2}-\d{2}.*?(ERROR|WARN|INFO)', sample):
-            return DataType.LOGS_AND_ERRORS
-
-        # STRUCTURED_CONFIG patterns (JSON/YAML without extension)
-        if re.match(r'\s*\{', sample) and re.search(r'[:,]', sample):
-            return DataType.STRUCTURED_CONFIG
-
-        if re.search(r'^[\w_]+:\s*[\w\d]', sample, re.MULTILINE):
-            return DataType.STRUCTURED_CONFIG
-
-        # METRICS_AND_PERFORMANCE patterns
-        if re.search(r'timestamp,.*,.*', sample):
-            return DataType.METRICS_AND_PERFORMANCE
-
-        # Default
-        return DataType.UNSTRUCTURED_TEXT
+def classify_data_type(
+    filename: str,
+    content_sample: bytes,
+    mime_type: str,
+) -> DataType:
+    """
+    Classify file type using pattern matching on first 5KB.
+    No LLM calls - pure rule-based.
+    
+    Returns data type in < 0.1s.
+    """
+    
+    # Check MIME type first
+    if mime_type.startswith("image/"):
+        return DataType.VISUAL_EVIDENCE
+    
+    # Sample first 5KB for pattern matching
+    sample = content_sample[:5000].decode('utf-8', errors='ignore')
+    
+    # Check for structured config
+    if filename.endswith(('.yaml', '.yml', '.json', '.toml', '.ini', '.conf')):
+        return DataType.STRUCTURED_CONFIG
+    
+    # Check for source code
+    if filename.endswith(('.py', '.js', '.java', '.go', '.rb', '.cpp', '.c', '.rs')):
+        return DataType.SOURCE_CODE
+    
+    # Check for logs
+    log_patterns = [
+        r'\d{4}-\d{2}-\d{2}',  # Date stamps
+        r'ERROR|FATAL|CRITICAL|Exception|Traceback',  # Error keywords
+        r'\[\w+\]',  # Log levels in brackets
+    ]
+    if any(re.search(pattern, sample) for pattern in log_patterns):
+        return DataType.LOGS_AND_ERRORS
+    
+    # Check for metrics
+    metrics_patterns = [
+        r'\d+\.\d+,\d+\.\d+',  # CSV with numeric data
+        r'"value":\s*\d+',  # JSON metrics
+        r'cpu_usage|memory_usage|latency|throughput',  # Metric names
+    ]
+    if any(re.search(pattern, sample) for pattern in metrics_patterns):
+        return DataType.METRICS_AND_PERFORMANCE
+    
+    # Default: unstructured text
+    return DataType.UNSTRUCTURED_TEXT
 ```
 
-**Pattern Library**:
-
-```python
-PATTERNS = {
-    DataType.LOGS_AND_ERRORS: [
-        r'\d{4}-\d{2}-\d{2}.*?(ERROR|WARN|INFO|DEBUG)',  # Timestamp + log level
-        r'\[\d{2}:\d{2}:\d{2}\]',                        # [HH:MM:SS]
-        r'^\d+ \w+ \d{4}',                               # Syslog format
-        r'Traceback \(most recent call last\)',         # Python traceback
-        r'Exception in thread',                          # Java exception
-        r'at [\w.$]+\(',                                 # Stack frame
-        r'panic:',                                       # Go panic
-        r'\[ALERT\]|\[CRITICAL\]|\[FATAL\]',           # Alert keywords
-    ],
-
-    DataType.STRUCTURED_CONFIG: [
-        r'^\s*\{',                                       # JSON start
-        r'^[\w_]+:\s*[\w\d]',                           # YAML key:value
-        r'^\[[\w_]+\]',                                 # INI section
-        r'^\w+=',                                        # ENV var
-    ],
-
-    DataType.METRICS_AND_PERFORMANCE: [
-        r'timestamp,.*,.*',                              # CSV header with timestamp
-        r'\d+\.\d+,\d+\.\d+,\d+\.\d+',                 # Numeric rows
-        r'"metric":\s*"[\w_]+"',                        # JSON metrics
-        r'cpu|memory|disk|latency|throughput',          # Metric keywords
-    ],
-
-    DataType.SOURCE_CODE: [
-        r'^import |^from .* import',                    # Python imports
-        r'^package |^func ',                            # Go
-        r'^class |^def |^async def',                    # Python/Ruby
-        r'^function |^const |^let ',                    # JavaScript
-    ],
-
-    DataType.UNSTRUCTURED_TEXT: [
-        r'<!DOCTYPE html>',                              # HTML
-        r'^# .+$',                                       # Markdown heading
-        r'^\d+\.\s+',                                    # Numbered list
-    ],
-
-    DataType.VISUAL_EVIDENCE: [
-        # Detected by file extension only
-    ],
-}
-```
+**Classification Time**: < 0.1s (pattern matching on first 5KB)
 
 ---
 
-## Step 2: Type-Specific Intelligent Extraction
+### 3.2 Step 2: Type-Specific Extraction
 
 **Purpose**: Create concise, high-signal summary for diagnostic agent
 
-**Goal**: Extract only the most relevant information, minimizing noise
+#### Processing Matrix
 
-**Key Design**: Most extractors use **deterministic methods** (no LLM) for speed and cost efficiency
+| File Size | Data Type | Default Behavior | Processing Time | LLM Calls | Cached |
+|-----------|-----------|------------------|-----------------|-----------|--------|
+| Any | LOGS_AND_ERRORS | ✅ Crime Scene Extraction | 0.5s | 0 | ✅ Yes |
+| Any | METRICS_AND_PERFORMANCE | ✅ Anomaly Detection | 0.3s | 0 | ✅ Yes |
+| Any | STRUCTURED_CONFIG | ✅ Parse & Sanitize | 0.2s | 0 | ✅ Yes |
+| Any | SOURCE_CODE | ✅ AST Extraction | 0.5s | 0 | ✅ Yes |
+| <100KB | UNSTRUCTURED_TEXT | ✅ Auto Summarization | 2-10s | 1-4 | ✅ Yes |
+| ≥100KB | UNSTRUCTURED_TEXT | ⚠️ **ASK USER** | Varies | 0-25 | Depends |
+| <5MB | VISUAL_EVIDENCE | ✅ Vision Analysis | 2-5s | 1 | ✅ Yes |
+| ≥5MB | VISUAL_EVIDENCE | ⚠️ **ASK USER** | Varies | 0-1 | Depends |
 
-Each data type has a tailored extraction strategy optimized for that format.
+#### Known Types - Auto Processing
 
-### 2.1 LOGS_AND_ERRORS: Crime Scene Extraction
-
-**Includes**: Application logs, system logs, stack traces, error messages, alerts
-
-**Unique Characteristic**: Time-ordered narrative of events with high signal around ERROR keywords
-
-**Strategy**: Scan for ERROR keywords with severity prioritization, extract surrounding context (no LLM needed)
-
-**LLM Calls**: 0
-
-**Key Improvements**:
-- Prioritize by severity (FATAL > CRITICAL > ERROR)
-- Detect multiple crime scenes (extract first + last if multiple errors)
-- Handle error bursts (expand window to cover clustered errors)
-- Safety check (truncate if extracted snippet exceeds limits)
+**LOGS_AND_ERRORS - Crime Scene Extraction**:
 
 ```python
-class LogsAndErrorsExtractor:
-    """Extract error "crime scene" from log files"""
-
-    # Severity weights for error prioritization
-    SEVERITY_WEIGHTS = {
-        'FATAL': 100,
-        'CRITICAL': 90,
-        'panic': 90,
-        'ERROR': 50,
-        'WARN': 10,
-    }
-
-    MAX_SNIPPET_LINES = 500  # Safety limit
-
-    def extract(self, content: str) -> ExtractedData:
-        """
-        Crime Scene Extraction:
-        1. Scan for errors with severity prioritization
-        2. Find highest-severity error (FATAL > CRITICAL > ERROR)
-        3. Detect error bursts and multiple crime scenes
-        4. Extract context window with adaptive sizing
-        5. Safety check: truncate if output exceeds limits
-
-        Returns:
-            Snippet of ~400 lines with full context
-        """
-
-        lines = content.split('\n')
-
-        # 1. Find all errors with severity tracking
-        errors = self._find_all_errors_with_severity(lines)
-
-        if not errors:
-            # No errors found - extract tail (last 500 lines)
-            return self._extract_tail(lines)
-
-        # 2. Find highest-severity error
-        primary_error = max(errors, key=lambda e: e['severity'])
-
-        # 3. Check for multiple high-severity errors (multiple crime scenes)
-        high_severity_errors = [
-            e for e in errors
-            if e['severity'] >= self.SEVERITY_WEIGHTS.get('ERROR', 50)
-        ]
-
-        if len(high_severity_errors) > 1:
-            # Multiple crime scenes: Extract first + last
-            return self._extract_multiple_crime_scenes(
-                lines,
-                high_severity_errors[0],
-                high_severity_errors[-1]
-            )
-
-        # 4. Check for error burst around primary error
-        burst_window = self._detect_error_burst(
-            lines,
-            primary_error['line_idx'],
-            window=50
-        )
-
-        if burst_window:
-            # Error burst detected - expand window to cover it
-            return self._extract_burst_context(lines, burst_window, primary_error)
-        else:
-            # Single error - standard ±200 window
-            return self._extract_single_error_context(lines, primary_error)
-
-    def _find_all_errors_with_severity(self, lines: List[str]) -> List[dict]:
-        """Find all errors and track their severity"""
-
-        errors = []
-
-        for idx, line in enumerate(lines):
-            for pattern, severity in self.SEVERITY_WEIGHTS.items():
-                if re.search(pattern, line, re.IGNORECASE):
-                    errors.append({
-                        'line_idx': idx,
-                        'severity': severity,
-                        'pattern': pattern,
-                        'line_content': line
-                    })
-                    break  # Only match highest severity per line
-
-        return errors
-
-    def _detect_error_burst(
-        self,
-        lines: List[str],
-        error_idx: int,
-        window: int = 50
-    ) -> Optional[Tuple[int, int]]:
-        """
-        Detect error burst (multiple errors clustered together)
-
-        Returns:
-            (burst_start, burst_end) if burst detected, else None
-        """
-
-        # Check ±window lines for error density
-        start = max(0, error_idx - window)
-        end = min(len(lines), error_idx + window)
-
-        burst_errors = []
-        for idx in range(start, end):
-            for pattern in self.SEVERITY_WEIGHTS.keys():
-                if re.search(pattern, lines[idx], re.IGNORECASE):
-                    burst_errors.append(idx)
-                    break
-
-        # If >10 errors in window, it's a burst
-        if len(burst_errors) > 10:
-            return (min(burst_errors), max(burst_errors))
-
-        return None
-
-    def _extract_single_error_context(
-        self,
-        lines: List[str],
-        error: dict
-    ) -> ExtractedData:
-        """Extract ±200 lines around single error"""
-
-        error_idx = error['line_idx']
-        start = max(0, error_idx - 200)
-        end = min(len(lines), error_idx + 200)
-
-        snippet = lines[start:end]
-
-        # Safety check: Truncate if too large
-        snippet = self._truncate_if_needed(snippet, error_idx - start)
-
-        return ExtractedData(
-            summary=self._format_snippet(snippet, start, error_idx),
-            method="crime_scene_extraction_single",
-            original_size=len('\n'.join(lines)),
-            extracted_size=len('\n'.join(snippet)),
-            compression_ratio=len(snippet) / len(lines),
-            insights={
-                "error_line": error_idx,
-                "severity": error['pattern'],
-                "context_window": "±200 lines",
-                "extraction_strategy": "single_error"
-            }
-        )
-
-    def _extract_multiple_crime_scenes(
-        self,
-        lines: List[str],
-        first_error: dict,
-        last_error: dict
-    ) -> ExtractedData:
-        """
-        Extract first + last crime scenes
-        Captures error onset + current state
-        """
-
-        # Extract 100 lines around first error (onset)
-        first_start = max(0, first_error['line_idx'] - 100)
-        first_end = min(len(lines), first_error['line_idx'] + 100)
-        first_snippet = lines[first_start:first_end]
-
-        # Extract 100 lines around last error (current state)
-        last_start = max(0, last_error['line_idx'] - 100)
-        last_end = min(len(lines), last_error['line_idx'] + 100)
-        last_snippet = lines[last_start:last_end]
-
-        # Combine snippets with separator
-        combined = (
-            first_snippet +
-            ["\n... [multiple errors occurred between crime scenes] ...\n"] +
-            last_snippet
-        )
-
-        # Safety check
-        combined = self._truncate_if_needed(combined, len(first_snippet))
-
-        return ExtractedData(
-            summary=self._format_multiple_snippets(
-                first_snippet, last_snippet,
-                first_start, last_start,
-                first_error['line_idx'], last_error['line_idx']
-            ),
-            method="crime_scene_extraction_multiple",
-            original_size=len('\n'.join(lines)),
-            extracted_size=len('\n'.join(combined)),
-            compression_ratio=len(combined) / len(lines),
-            insights={
-                "first_error_line": first_error['line_idx'],
-                "last_error_line": last_error['line_idx'],
-                "first_severity": first_error['pattern'],
-                "last_severity": last_error['pattern'],
-                "extraction_strategy": "multiple_crime_scenes"
-            }
-        )
-
-    def _extract_burst_context(
-        self,
-        lines: List[str],
-        burst_window: Tuple[int, int],
-        primary_error: dict
-    ) -> ExtractedData:
-        """Extract full error burst + context"""
-
-        burst_start, burst_end = burst_window
-
-        # Add context before and after burst
-        start = max(0, burst_start - 100)
-        end = min(len(lines), burst_end + 100)
-
-        snippet = lines[start:end]
-
-        # Safety check
-        snippet = self._truncate_if_needed(snippet, primary_error['line_idx'] - start)
-
-        return ExtractedData(
-            summary=self._format_snippet(snippet, start, primary_error['line_idx']),
-            method="crime_scene_extraction_burst",
-            original_size=len('\n'.join(lines)),
-            extracted_size=len('\n'.join(snippet)),
-            compression_ratio=len(snippet) / len(lines),
-            insights={
-                "primary_error_line": primary_error['line_idx'],
-                "burst_start": burst_start,
-                "burst_end": burst_end,
-                "burst_size": burst_end - burst_start,
-                "extraction_strategy": "error_burst"
-            }
-        )
-
-    def _extract_tail(self, lines: List[str]) -> ExtractedData:
-        """No errors found - extract tail (last 500 lines)"""
-
-        tail = lines[-500:]
-
-        return ExtractedData(
-            summary=self._format_snippet(tail, len(lines) - 500, None),
+def extract_crime_scene(log_content: str, config: Config) -> ExtractionResult:
+    """
+    Extract critical error context from logs without LLM.
+    
+    Strategy:
+    1. Parse lines and assign severity scores
+    2. Find highest severity error (crime scene)
+    3. Extract ±200 lines around crime scene
+    4. If multiple high-severity errors, extract first + last
+    5. If error burst detected, expand window
+    
+    Compression: 200:1 (10MB → 50KB)
+    LLM Calls: 0
+    Time: ~0.5s
+    """
+    
+    lines = log_content.split('\n')
+    
+    # Score each line by severity
+    scored_lines = []
+    for i, line in enumerate(lines):
+        severity = assign_severity(line, config.severity_keywords)
+        if severity > 0:
+            scored_lines.append((i, line, severity))
+    
+    if not scored_lines:
+        # No errors found - return tail
+        return ExtractionResult(
             method="tail_extraction",
-            original_size=len('\n'.join(lines)),
-            extracted_size=len('\n'.join(tail)),
-            compression_ratio=500 / len(lines),
-            insights={
-                "note": "No errors found, extracted tail",
-                "lines_extracted": 500
-            }
+            lines=lines[-config.tail_extraction_lines:],
+            metadata={"reason": "no_errors_found"}
         )
+    
+    # Find highest severity error
+    crime_scene_idx = max(scored_lines, key=lambda x: x[2])[0]
+    
+    # Extract context window
+    start = max(0, crime_scene_idx - config.context_lines)
+    end = min(len(lines), crime_scene_idx + config.context_lines + 1)
+    
+    # Check for error burst
+    if is_error_burst(scored_lines, crime_scene_idx, config):
+        # Expand window for clustered errors
+        start = max(0, crime_scene_idx - config.context_lines * 2)
+        end = min(len(lines), crime_scene_idx + config.context_lines * 2 + 1)
+    
+    extracted_lines = lines[start:end]
+    
+    # If file is long, also extract last error
+    if len(lines) > 10000 and crime_scene_idx < len(lines) * 0.5:
+        last_error_idx = scored_lines[-1][0]
+        last_start = max(0, last_error_idx - 100)
+        last_end = min(len(lines), last_error_idx + 100 + 1)
+        extracted_lines += ["\n--- LAST ERROR ---\n"] + lines[last_start:last_end]
+    
+    return ExtractionResult(
+        method="crime_scene_extraction",
+        lines=extracted_lines,
+        metadata={
+            "crime_scene_line": crime_scene_idx,
+            "severity": scored_lines[max(scored_lines, key=lambda x: x[2])][2],
+            "total_errors": len(scored_lines),
+            "compression_ratio": len(extracted_lines) / len(lines)
+        }
+    )
 
-    def _truncate_if_needed(
-        self,
-        snippet: List[str],
-        error_offset: int
-    ) -> List[str]:
-        """
-        Safety check: Truncate snippet if exceeds MAX_SNIPPET_LINES
-
-        Strategy: Keep lines around error, truncate from middle
-        """
-
-        if len(snippet) <= self.MAX_SNIPPET_LINES:
-            return snippet
-
-        # Truncate from middle, keeping start and end around error
-        keep_before = 200
-        keep_after = 200
-
-        return (
-            snippet[:keep_before] +
-            ["... [truncated for size] ..."] +
-            snippet[-keep_after:]
-        )
-
-    def _format_snippet(
-        self,
-        lines: List[str],
-        start_line: int,
-        error_line: Optional[int]
-    ) -> str:
-        """Format extracted snippet for LLM"""
-
-        header = f"""
-LOG FILE EXCERPT
-{'=' * 50}
-
-Source: {filename}
-Lines: {start_line + 1} - {start_line + len(lines)}
-{f"ERROR at line {error_line + 1}" if error_line else "Tail extraction (no errors found)"}
-{'=' * 50}
-
-"""
-
-        # Add line numbers
-        numbered_lines = [
-            f"{start_line + idx + 1:6d} | {line}"
-            for idx, line in enumerate(lines)
-        ]
-
-        return header + '\n'.join(numbered_lines)
-
-    def _format_multiple_snippets(
-        self,
-        first_snippet: List[str],
-        last_snippet: List[str],
-        first_start: int,
-        last_start: int,
-        first_error_line: int,
-        last_error_line: int
-    ) -> str:
-        """Format multiple crime scenes for LLM"""
-
-        header = f"""
-LOG FILE EXCERPT (Multiple Crime Scenes)
-{'=' * 50}
-
-Source: {filename}
-Strategy: Extracted first + last errors to show onset + current state
-
-CRIME SCENE 1 (Error Onset)
-Lines: {first_start + 1} - {first_start + len(first_snippet)}
-ERROR at line {first_error_line + 1}
-{'=' * 50}
-
-"""
-
-        # Format first crime scene
-        first_numbered = [
-            f"{first_start + idx + 1:6d} | {line}"
-            for idx, line in enumerate(first_snippet)
-        ]
-
-        middle = f"""
-
-{'=' * 50}
-... [multiple errors occurred between crime scenes] ...
-{'=' * 50}
-
-CRIME SCENE 2 (Current State)
-Lines: {last_start + 1} - {last_start + len(last_snippet)}
-ERROR at line {last_error_line + 1}
-{'=' * 50}
-
-"""
-
-        # Format last crime scene
-        last_numbered = [
-            f"{last_start + idx + 1:6d} | {line}"
-            for idx, line in enumerate(last_snippet)
-        ]
-
-        return header + '\n'.join(first_numbered) + middle + '\n'.join(last_numbered)
+def assign_severity(line: str, keywords: Dict[str, int]) -> int:
+    """Assign severity score based on keywords"""
+    line_upper = line.upper()
+    for keyword, score in keywords.items():
+        if keyword in line_upper:
+            return score
+    return 0
 ```
 
-**Output Example**:
-```
-LOG FILE EXCERPT
-==================================================
-
-Source: application.log
-Lines: 12251 - 12651
-ERROR at line 12450
-==================================================
-
- 12251 | 2025-10-14 14:22:58 INFO [ApiServer] Request received: GET /api/users
- 12252 | 2025-10-14 14:22:59 INFO [Database] Query executed: SELECT * FROM users
- ...
- 12450 | 2025-10-14 14:23:15 ERROR [DatabasePool] Connection timeout after 30s
- 12451 | 2025-10-14 14:23:15 ERROR [DatabasePool] Failed to acquire connection (attempt 1/3)
- ...
- 12651 | 2025-10-14 14:24:30 INFO [Operations] Manual intervention started
-```
-
----
-
-### 2.2 UNSTRUCTURED_TEXT: Direct Use or Chunking
-
-**Includes**: User descriptions, Slack threads, documentation, incident reports, tickets, HTML pages (scraped)
-
-**Unique Characteristic**: Prose-based, conversational text of variable length
-
-**Strategy**: Size check → Direct use if small (<8K tokens), defer to Step 3 if large
-
-**LLM Calls**: 0 (Step 3 handles chunking if needed)
+**METRICS_AND_PERFORMANCE - Anomaly Detection**:
 
 ```python
-class UnstructuredTextExtractor:
-    """Extract key information from free-form text"""
-
-    SAFE_TOKEN_LIMIT = 8000  # ~32KB text
-
-    def extract(self, content: str) -> ExtractedData:
-        """
-        Unstructured Text Processing (Step 2):
-        1. Calculate token count
-        2. If < 8K tokens: Mark for direct use
-        3. If > 8K tokens: Mark for Step 3 chunking
-
-        Note: No LLM calls in this step. Step 3 handles chunking.
-        """
-
-        token_count = self._estimate_tokens(content)
-
-        if token_count <= self.SAFE_TOKEN_LIMIT:
-            # Direct use - ready for diagnostic agent
-            return ExtractedData(
-                summary=content,
-                method="direct_use",
-                original_size=len(content),
-                extracted_size=len(content),
-                compression_ratio=1.0,
-                needs_chunking=False
-            )
-
-        else:
-            # Mark for Step 3 chunking
-            return ExtractedData(
-                summary=content,
-                method="needs_chunking",
-                original_size=len(content),
-                extracted_size=len(content),
-                needs_chunking=True  # Step 3 will handle this
-            )
-
+def detect_anomalies(metrics_content: str, config: Config) -> ExtractionResult:
+    """
+    Detect statistical anomalies in metrics data without LLM.
+    
+    Strategy:
+    1. Parse metrics (CSV, JSON, Prometheus format)
+    2. Calculate z-scores for each metric
+    3. Flag values > 3 standard deviations
+    4. Generate natural language report
+    
+    Compression: 167:1 (5MB → 30KB)
+    LLM Calls: 0
+    Time: ~0.3s
+    """
+    
+    # Parse metrics based on format
+    metrics_df = parse_metrics(metrics_content)
+    
+    anomalies = []
+    
+    for column in metrics_df.select_dtypes(include=[np.number]).columns:
+        values = metrics_df[column].dropna()
+        
+        if len(values) < 10:
+            continue  # Need sufficient data
+        
+        mean = values.mean()
+        std = values.std()
+        
+        if std == 0:
+            continue  # No variance
+        
+        # Calculate z-scores
+        z_scores = (values - mean) / std
+        
+        # Find anomalies
+        anomaly_indices = np.where(np.abs(z_scores) > config.z_score_threshold)[0]
+        
+        for idx in anomaly_indices:
+            anomalies.append({
+                "metric": column,
+                "timestamp": metrics_df.index[idx] if hasattr(metrics_df, 'index') else idx,
+                "value": values.iloc[idx],
+                "z_score": z_scores.iloc[idx],
+                "mean": mean,
+                "std": std,
+                "anomaly_type": "spike" if z_scores.iloc[idx] > 0 else "drop"
+            })
+    
+    # Generate natural language summary
+    summary_lines = [
+        f"Analyzed {len(metrics_df)} data points across {len(metrics_df.columns)} metrics",
+        f"Detected {len(anomalies)} anomalies (z-score threshold: {config.z_score_threshold})",
+        ""
+    ]
+    
+    for anomaly in anomalies[:10]:  # Top 10
+        summary_lines.append(
+            f"• {anomaly['metric']}: {anomaly['value']:.2f} "
+            f"({anomaly['anomaly_type']}, z={anomaly['z_score']:.2f}) "
+            f"at {anomaly['timestamp']}"
+        )
+    
+    return ExtractionResult(
+        method="anomaly_detection",
+        lines=summary_lines,
+        metadata={
+            "total_anomalies": len(anomalies),
+            "anomalies": anomalies,
+            "metrics_analyzed": list(metrics_df.columns)
+        }
+    )
 ```
 
-**Examples**:
-- **Slack thread**: Direct use if short conversation, Step 3 chunking if long
-- **Incident report**: Direct use if <8K tokens, Step 3 chunking if detailed
-- **ServiceNow ticket**: Usually direct use (tickets are typically concise)
-- **HTML page (file upload)**: Scrape HTML tags → Extract text → Check size
-
----
-
-### 2.3 STRUCTURED_CONFIG: Parse + Sanitize
-
-**Includes**: YAML, JSON, INI, TOML configuration files
-
-**Unique Characteristic**: Dense, machine-readable blueprint where entire context is important
-
-**Strategy**: Parse for validity, scan for secrets, pass full content (no compression)
-
-**LLM Calls**: 0
+**STRUCTURED_CONFIG - Parse & Sanitize**:
 
 ```python
-class StructuredConfigExtractor:
-    """Parse and sanitize configuration files"""
-
-    def extract(self, content: str, filename: str) -> ExtractedData:
-        """
-        Config File Processing:
-        1. Detect format (YAML, JSON, INI, TOML)
-        2. Parse to validate structure
-        3. Scan for secrets (API keys, passwords)
-        4. Pass full config to LLM (small files, every line matters)
-        """
-
-        # 1. Detect format
-        ext = Path(filename).suffix.lower()
-        config_format = self._detect_format(ext, content)
-
-        # 2. Parse and validate
-        try:
-            parsed_config = self._parse_config(content, config_format)
-        except Exception as e:
-            return ExtractedData(
-                summary=f"ERROR: Invalid {config_format} format: {e}",
-                method="parse_error",
-                original_size=len(content),
-                extracted_size=0
-            )
-
-        # 3. Scan for secrets
-        secrets_found = self._scan_for_secrets(content)
-
-        # 4. Format for LLM (full content, small files)
-        formatted = self._format_config(content, config_format, secrets_found)
-
-        return ExtractedData(
-            summary=formatted,
-            method="parse_and_sanitize",
-            original_size=len(content),
-            extracted_size=len(formatted),
-            compression_ratio=1.0,  # No compression (full config)
-            insights={
-                "format": config_format,
-                "secrets_found": secrets_found,
-                "valid": True
-            }
-        )
-
-    def _scan_for_secrets(self, content: str) -> List[str]:
-        """Detect hardcoded secrets"""
-
-        patterns = [
-            (r'password\s*[:=]\s*["\']?([^"\'\s]+)', 'password'),
-            (r'api_key\s*[:=]\s*["\']?([^"\'\s]+)', 'api_key'),
-            (r'sk-[a-zA-Z0-9]{32,}', 'openai_key'),
-            (r'AKIA[0-9A-Z]{16}', 'aws_access_key'),
-        ]
-
-        found = []
-        for pattern, secret_type in patterns:
-            if re.search(pattern, content, re.IGNORECASE):
-                found.append(secret_type)
-
-        return found
-```
-
-**Examples**:
-- **application.yaml**: Database connection, service config
-- **docker-compose.json**: Container orchestration
-- **.env file**: Environment variables
-
----
-
-### 2.4 METRICS_AND_PERFORMANCE: Quantitative Analysis
-
-**Includes**: Time-series metrics, distributed traces (OpenTelemetry), profiling data (flame graphs)
-
-**Unique Characteristic**: Numerical data showing trends, anomalies, performance bottlenecks
-
-**Strategy**: Backend script parses data (pandas), finds anomalies (z-score), generates natural language summary
-
-**LLM Calls**: 0 (pure statistical analysis)
-
-```python
-class MetricsAnomalyExtractor:
-    """Extract anomalies from time-series metrics"""
-
-    def extract(self, content: str) -> ExtractedData:
-        """
-        Anomaly Detection:
-        1. Parse CSV/JSON metrics
-        2. Detect spikes, drops, flatlines using statistical methods
-        3. Generate natural language summary
-
-        No LLM needed - pure pandas/numpy
-        """
-
-        import pandas as pd
-        from scipy import stats
-
-        # 1. Parse metrics
-        df = pd.read_csv(StringIO(content))
-
-        # 2. Detect anomalies (z-score method)
-        anomalies = []
-
-        for column in df.select_dtypes(include=[np.number]).columns:
-            z_scores = np.abs(stats.zscore(df[column].dropna()))
-            anomaly_indices = np.where(z_scores > 3)[0]
-
-            for idx in anomaly_indices:
-                anomalies.append({
-                    "timestamp": df.iloc[idx]["timestamp"],
-                    "metric": column,
-                    "value": df.iloc[idx][column],
-                    "z_score": z_scores[idx],
-                    "type": "spike" if df.iloc[idx][column] > df[column].mean() else "drop"
-                })
-
-        # 3. Generate natural language summary
-        summary = self._format_anomaly_summary(df, anomalies)
-
-        return ExtractedData(
-            summary=summary,
-            method="anomaly_detection",
-            original_size=len(content),
-            extracted_size=len(summary),
-            compression_ratio=len(summary) / len(content),
-            insights={
-                "anomalies_detected": len(anomalies),
-                "time_range": f"{df['timestamp'].iloc[0]} to {df['timestamp'].iloc[-1]}",
-                "metrics_analyzed": list(df.columns)
-            }
-        )
-
-    def _format_anomaly_summary(
-        self,
-        df: pd.DataFrame,
-        anomalies: List[dict]
-    ) -> str:
-        """Format anomalies as natural language"""
-
-        summary_parts = [
-            "METRICS ANALYSIS",
-            "=" * 50,
-            "",
-            f"Time Range: {df['timestamp'].iloc[0]} to {df['timestamp'].iloc[-1]}",
-            f"Total Data Points: {len(df):,}",
-            f"Anomalies Detected: {len(anomalies)}",
-            "",
-        ]
-
-        if anomalies:
-            summary_parts.append("ANOMALIES:")
-            summary_parts.append("")
-
-            for anomaly in anomalies[:10]:  # Top 10
-                summary_parts.append(
-                    f"• {anomaly['timestamp']}: {anomaly['metric']} "
-                    f"{anomaly['type']} to {anomaly['value']} "
-                    f"(z-score: {anomaly['z_score']:.2f})"
+def parse_and_sanitize_config(config_content: str, filename: str) -> ExtractionResult:
+    """
+    Parse config file and redact secrets without LLM.
+    
+    Strategy:
+    1. Detect format (YAML/JSON/TOML/INI)
+    2. Parse structure
+    3. Scan for secrets (API keys, passwords)
+    4. Redact sensitive values
+    5. Return full config (no compression - every line matters)
+    
+    Compression: 1:1 (no compression)
+    LLM Calls: 0
+    Time: ~0.2s
+    """
+    
+    # Detect format
+    if filename.endswith(('.yaml', '.yml')):
+        parsed = yaml.safe_load(config_content)
+        format_type = "yaml"
+    elif filename.endswith('.json'):
+        parsed = json.loads(config_content)
+        format_type = "json"
+    elif filename.endswith('.toml'):
+        parsed = toml.loads(config_content)
+        format_type = "toml"
+    else:
+        # INI or unknown
+        parsed = parse_ini(config_content)
+        format_type = "ini"
+    
+    # Scan for secrets
+    secret_patterns = {
+        'api_key': r'(api[_-]?key|apikey)',
+        'password': r'(password|passwd|pwd)',
+        'secret': r'(secret|token)',
+        'private_key': r'(private[_-]?key|privatekey)',
+    }
+    
+    def redact_secrets(obj, path=""):
+        """Recursively redact secret values"""
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                current_path = f"{path}.{key}" if path else key
+                
+                # Check if key matches secret pattern
+                key_lower = key.lower()
+                is_secret = any(
+                    re.search(pattern, key_lower)
+                    for pattern in secret_patterns.values()
                 )
-
-        else:
-            summary_parts.append("No significant anomalies detected.")
-
-        return '\n'.join(summary_parts)
+                
+                if is_secret and isinstance(value, str):
+                    obj[key] = "***REDACTED***"
+                elif isinstance(value, (dict, list)):
+                    redact_secrets(value, current_path)
+        
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                redact_secrets(item, f"{path}[{i}]")
+    
+    redact_secrets(parsed)
+    
+    # Re-serialize to original format
+    if format_type == "yaml":
+        sanitized_content = yaml.dump(parsed, default_flow_style=False)
+    elif format_type == "json":
+        sanitized_content = json.dumps(parsed, indent=2)
+    elif format_type == "toml":
+        sanitized_content = toml.dumps(parsed)
+    else:
+        sanitized_content = format_ini(parsed)
+    
+    return ExtractionResult(
+        method="parse_and_sanitize",
+        lines=sanitized_content.split('\n'),
+        metadata={
+            "format": format_type,
+            "secrets_redacted": True,
+            "keys_count": count_keys(parsed)
+        }
+    )
 ```
 
-**Output Example**:
-```
-METRICS ANALYSIS
-==================================================
-
-Time Range: 2025-10-14 10:00:00 to 2025-10-14 16:30:00
-Total Data Points: 23,400
-Anomalies Detected: 3
-
-ANOMALIES:
-
-• 2025-10-14 14:23:15: cpu_usage spike to 98.5% (z-score: 4.2)
-• 2025-10-14 14:23:20: api_success_rate drop to 12% (z-score: 3.8)
-• 2025-10-14 14:25:00: memory_usage spike to 94.2% (z-score: 3.5)
-
-CORRELATION: CPU spike correlates with API failure rate drop (14:23:15)
-```
-
----
-
-### 2.5 SOURCE_CODE: Code-Aware Snippet Extraction
-
-**Includes**: Python, Java, JavaScript, Go, C++, etc.
-
-**Unique Characteristic**: Structured, syntactical representation of executable logic
-
-**Strategy**: Parse AST, extract functions/classes mentioned in error traces
-
-**LLM Calls**: 0 (AST parsing)
+**SOURCE_CODE - AST Extraction**:
 
 ```python
-class SourceCodeExtractor:
-    """Extract relevant code blocks based on error context"""
-
-    def extract(
-        self,
-        content: str,
-        filename: str,
-        error_context: Optional[str] = None
-    ) -> ExtractedData:
-        """
-        Source Code Processing:
-        1. Detect programming language
-        2. If error context provided: Search for mentioned functions/classes
-        3. Extract relevant code blocks (functions, classes, modules)
-        4. Include surrounding context for understanding
-        """
-
-        # 1. Detect language
-        language = self._detect_language(filename, content)
-
-        # 2. Parse code structure
-        code_structure = self._parse_code_structure(content, language)
-
-        # 3. Extract relevant blocks
-        if error_context:
-            # Extract functions/classes mentioned in error
-            relevant_blocks = self._extract_error_related_blocks(
-                code_structure,
-                error_context
-            )
-        else:
-            # No error context - extract entry points and recent changes
-            relevant_blocks = self._extract_key_blocks(code_structure)
-
-        # 4. Format with context
-        formatted = self._format_code_blocks(relevant_blocks, language)
-
-        return ExtractedData(
-            summary=formatted,
-            method="code_aware_extraction",
-            original_size=len(content),
-            extracted_size=len(formatted),
-            insights={
-                "language": language,
-                "blocks_extracted": len(relevant_blocks),
-                "error_driven": error_context is not None
-            }
-        )
-
-    def _extract_error_related_blocks(
-        self,
-        code_structure: dict,
-        error_context: str
-    ) -> List[CodeBlock]:
-        """
-        Extract code blocks mentioned in error message
-
-        Example error: "NameError: name 'calculate_total' is not defined"
-        → Extract calculate_total function and its dependencies
-        """
-
-        # Find function/class names in error
-        mentioned_symbols = self._extract_symbols_from_error(error_context)
-
-        relevant_blocks = []
-        for symbol in mentioned_symbols:
-            # Find definition
-            block = code_structure.get(symbol)
-            if block:
-                relevant_blocks.append(block)
-
-                # Include dependencies
-                dependencies = block.get('calls', [])
-                for dep in dependencies:
-                    dep_block = code_structure.get(dep)
-                    if dep_block:
-                        relevant_blocks.append(dep_block)
-
-        return relevant_blocks
-
-    def _format_code_blocks(
-        self,
-        blocks: List[CodeBlock],
-        language: str
-    ) -> str:
-        """Format code blocks for LLM"""
-
-        parts = [
-            "SOURCE CODE ANALYSIS",
-            "=" * 60,
-            "",
-            f"Language: {language}",
-            f"Blocks Extracted: {len(blocks)}",
-            "",
+def extract_code_ast(code_content: str, filename: str) -> ExtractionResult:
+    """
+    Extract relevant code using AST parsing without LLM.
+    
+    Strategy:
+    1. Parse code to AST
+    2. If error trace provided, extract those functions/classes
+    3. Otherwise, extract high-level structure
+    4. Include imports/dependencies
+    
+    Compression: 50:1 (large files → key functions only)
+    LLM Calls: 0
+    Time: ~0.5s
+    """
+    
+    # Detect language
+    language = detect_language(filename)
+    
+    if language == "python":
+        import ast
+        tree = ast.parse(code_content)
+        
+        # Extract all function and class definitions
+        extracted_nodes = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                extracted_nodes.append(ast.get_source_segment(code_content, node))
+        
+        # Include imports
+        imports = [
+            ast.get_source_segment(code_content, node)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
         ]
-
-        for block in blocks:
-            parts.append(f"[{block.type.upper()}: {block.name}]")
-            parts.append(f"Lines {block.start_line}-{block.end_line}")
-            parts.append("")
-            parts.append(block.code)
-            parts.append("")
-            parts.append("-" * 60)
-            parts.append("")
-
-        return '\n'.join(parts)
+        
+        extracted_lines = imports + extracted_nodes
+    
+    elif language == "javascript":
+        # Use JS parser (e.g., esprima)
+        extracted_lines = extract_js_ast(code_content)
+    
+    else:
+        # Fallback: return full code for short files, summarize for long
+        lines = code_content.split('\n')
+        if len(lines) < 500:
+            extracted_lines = lines
+        else:
+            # Extract function signatures only
+            extracted_lines = extract_function_signatures(code_content, language)
+    
+    return ExtractionResult(
+        method="ast_extraction",
+        lines=extracted_lines,
+        metadata={
+            "language": language,
+            "functions_extracted": len([l for l in extracted_lines if 'def ' in l or 'function ' in l]),
+            "compression_ratio": len(extracted_lines) / len(code_content.split('\n'))
+        }
+    )
 ```
 
-**Examples**:
-- **Error trace mentions `process_payment()`**: Extract `process_payment` function + dependencies
-- **Stack trace shows `UserService.authenticate()`**: Extract class + method
-- **No error context**: Extract entry points (main, routes, handlers)
-
----
-
-### 2.6 VISUAL_EVIDENCE: Vision Model Transcription
-
-**Includes**: Screenshots, UI captures, browser console images, dashboard screenshots
-
-**Unique Characteristic**: Graphical data requiring vision model processing
-
-**Strategy**: Send image to vision LLM (Gemini, GPT-4V) for textual description
-
-**LLM Calls**: 1 (vision model)
+**VISUAL_EVIDENCE - Vision Analysis**:
 
 ```python
-class ScreenshotTranscriber:
-    """Transcribe screenshots using vision model"""
+async def analyze_visual_evidence(
+    image_bytes: bytes,
+    filename: str,
+    config: Config,
+) -> ExtractionResult:
+    """
+    Use vision model to describe screenshot/image.
+    
+    Strategy:
+    1. Resize if > 5MB
+    2. Call vision model (Claude 3.5 Sonnet)
+    3. Extract text description
+    
+    Compression: N/A (image → text)
+    LLM Calls: 1 (vision model)
+    Time: ~2-5s
+    """
+    
+    # Resize if needed
+    if len(image_bytes) > config.max_vision_size:
+        image_bytes = resize_image(image_bytes, max_size=config.max_vision_size)
+    
+    # Call vision model
+    prompt = """
+    Analyze this screenshot/image in the context of technical troubleshooting.
+    
+    Describe:
+    1. What system/application is shown?
+    2. What is the main content (error message, metric graph, UI state, etc.)?
+    3. Any visible errors, warnings, or unusual states?
+    4. Relevant technical details (URLs, status codes, metric values, etc.)
+    
+    Be concise but include all diagnostic details.
+    """
+    
+    response = await llm_client.generate(
+        model=config.vision_model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "data": base64.b64encode(image_bytes).decode()}},
+                    {"type": "text", "text": prompt}
+                ]
+            }
+        ],
+        max_tokens=1000,
+    )
+    
+    description = response.content[0].text
+    
+    return ExtractionResult(
+        method="vision_analysis",
+        lines=[description],
+        metadata={
+            "model": config.vision_model,
+            "image_size_bytes": len(image_bytes),
+            "description_length": len(description)
+        }
+    )
+```
 
-    def __init__(self, vision_llm: IVisionLLM):
-        self.vision_llm = vision_llm
+**UNSTRUCTURED_TEXT (<100KB) - Auto Summarization**:
 
-    async def extract(self, image_bytes: bytes) -> ExtractedData:
-        """
-        Screenshot Transcription:
-        1. Send image to vision model (Gemini, GPT-4V)
-        2. Prompt: "Describe from troubleshooting perspective"
-        3. LLM returns text description
-        """
-
-        prompt = """
-Describe this screenshot from a software troubleshooting perspective.
-
-Focus on:
-1. Any visible error messages (transcribe exactly)
-2. UI elements (buttons, fields, labels)
-3. State indicators (loading, error icons, warnings)
-4. Relevant text content
-
-Provide a concise, structured description.
-"""
-
-        response = await self.vision_llm.analyze_image(
-            image=image_bytes,
-            prompt=prompt
+```python
+async def summarize_text_auto(
+    text_content: str,
+    config: Config,
+) -> ExtractionResult:
+    """
+    Automatically summarize small text documents.
+    
+    Strategy:
+    1. If < 8K tokens, pass directly to LLM
+    2. If 8K-25K tokens, use map-reduce (chunk → summarize → combine)
+    
+    LLM Calls: 1-4 (depending on size)
+    Time: 2-10s
+    """
+    
+    token_count = estimate_tokens(text_content)
+    
+    if token_count < 8000:
+        # Single-shot summarization
+        summary = await llm_client.generate(
+            model=config.summarization_model,
+            messages=[{
+                "role": "user",
+                "content": f"Summarize this document concisely, focusing on technical details relevant to troubleshooting:\n\n{text_content}"
+            }],
+            max_tokens=1000,
         )
-
-        return ExtractedData(
-            summary=response.text,
-            method="vision_model_transcription",
-            original_size=len(image_bytes),
-            extracted_size=len(response.text),
-            insights={
-                "vision_model": "gemini-1.5-pro",
-                "confidence": response.confidence
+        
+        return ExtractionResult(
+            method="single_shot_summary",
+            lines=[summary.content[0].text],
+            metadata={
+                "token_count": token_count,
+                "llm_calls": 1
+            }
+        )
+    
+    else:
+        # Map-reduce summarization
+        chunks = chunk_text(text_content, chunk_size=4000, overlap=200)
+        
+        # Map: Summarize each chunk
+        chunk_summaries = await asyncio.gather(*[
+            llm_client.generate(
+                model=config.summarization_model,
+                messages=[{
+                    "role": "user",
+                    "content": f"Summarize this section:\n\n{chunk}"
+                }],
+                max_tokens=500,
+            )
+            for chunk in chunks
+        ])
+        
+        # Reduce: Combine summaries
+        combined = "\n\n".join(s.content[0].text for s in chunk_summaries)
+        
+        final_summary = await llm_client.generate(
+            model=config.summarization_model,
+            messages=[{
+                "role": "user",
+                "content": f"Combine these summaries into one coherent summary:\n\n{combined}"
+            }],
+            max_tokens=1000,
+        )
+        
+        return ExtractionResult(
+            method="map_reduce_summary",
+            lines=[final_summary.content[0].text],
+            metadata={
+                "token_count": token_count,
+                "chunks": len(chunks),
+                "llm_calls": len(chunks) + 1
             }
         )
 ```
 
 ---
 
-## Step 3: Chunking Fallback (Long Unstructured Text Only)
+### 3.3 Step 3: Sanitization
 
-**Purpose**: Handle long documents that exceed safe token limit
-
-**Applies to**: DOCUMENTATION, SLACK_MESSAGES, UNSTRUCTURED_TEXT (when >8K tokens)
-
-**When triggered**: Only when Step 2 marks content as `needs_chunking=True`
-
-**LLM Calls**: N+1 (N chunks + 1 synthesis)
-
-### 3.1 Workflow
+**Purpose**: Redact PII/secrets before further LLM processing
 
 ```python
-class ChunkingService:
-    """Handle long unstructured text via map-reduce"""
-
-    CHUNK_SIZE_TOKENS = 4000
-    MAX_PARALLEL_CHUNKS = 5
-
-    async def process_long_text(self, content: str) -> str:
-        """
-        Breadth-based Scan (map-reduce):
-        1. Split into intelligent chunks (on paragraphs/newlines)
-        2. Summarize each chunk in parallel (map) - N LLM calls
-        3. Synthesize summaries (reduce) - 1 LLM call
-
-        Total LLM calls: N + 1
-        """
-
-        # 1. Split intelligently
-        chunks = self._split_on_paragraphs(content, self.CHUNK_SIZE_TOKENS)
-
-        # 2. Map: Parallel chunk summarization
-        chunk_summaries = await asyncio.gather(*[
-            self._summarize_chunk(chunk, idx)
-            for idx, chunk in enumerate(chunks)
-        ])
-
-        # 3. Reduce: Synthesize final summary
-        final_summary = await self._synthesize_summaries(chunk_summaries)
-
-        return final_summary
-
-    async def _summarize_chunk(self, chunk: str, index: int) -> str:
-        """Summarize a single chunk (1 LLM call)"""
-
-        prompt = f"""
-Summarize this section (part {index + 1}) of a longer document.
-Extract key facts, timeline events, actions, and problems mentioned.
-
-{chunk}
-"""
-
-        response = await self.llm.complete(prompt)
-        return response.text
-
-    async def _synthesize_summaries(self, summaries: List[str]) -> str:
-        """Synthesize chunk summaries into final summary (1 LLM call)"""
-
-        combined = "\n\n".join([
-            f"Section {i+1}:\n{summary}"
-            for i, summary in enumerate(summaries)
-        ])
-
-        prompt = f"""
-Synthesize these section summaries into a coherent, concise summary.
-Focus on the overall narrative, key problems, and important details.
-
-{combined}
-"""
-
-        response = await self.llm.complete(prompt)
-        return response.text
+def sanitize_content(
+    content: str,
+    config: SanitizationConfig,
+    provider: str,
+) -> SanitizationResult:
+    """
+    Redact PII and secrets from content.
+    
+    Configurable based on provider:
+    - External LLM (OpenAI, Anthropic): Redact PII
+    - Local LLM: Skip (no privacy risk)
+    
+    LLM Calls: 0 (regex-based)
+    Time: ~0.1s
+    """
+    
+    # Skip sanitization for local providers
+    if provider == "LOCAL" and not config.force_sanitization:
+        return SanitizationResult(
+            content=content,
+            redactions_made=0,
+            skipped=True,
+            reason="local_provider"
+        )
+    
+    redacted = content
+    redactions = []
+    
+    # Email addresses
+    if config.redact_emails:
+        redacted, count = re.subn(
+            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
+            '***EMAIL_REDACTED***',
+            redacted
+        )
+        if count > 0:
+            redactions.append(("email", count))
+    
+    # Phone numbers
+    if config.redact_phone_numbers:
+        redacted, count = re.subn(
+            r'\b(\+?1[-.]?)?\(?\d{3}\)?[-.]?\d{3}[-.]?\d{4}\b',
+            '***PHONE_REDACTED***',
+            redacted
+        )
+        if count > 0:
+            redactions.append(("phone", count))
+    
+    # API Keys (common patterns)
+    if config.redact_api_keys:
+        api_key_patterns = [
+            r'(sk-[A-Za-z0-9]{48})',  # OpenAI
+            r'(AKIA[A-Z0-9]{16})',  # AWS Access Key
+            r'(AIza[A-Za-z0-9_-]{35})',  # Google API Key
+        ]
+        for pattern in api_key_patterns:
+            redacted, count = re.subn(pattern, '***API_KEY_REDACTED***', redacted)
+            if count > 0:
+                redactions.append(("api_key", count))
+    
+    # Passwords (in config files)
+    if config.redact_passwords:
+        redacted, count = re.subn(
+            r'(password|passwd|pwd)\s*[:=]\s*[^\s]+',
+            r'\1: ***PASSWORD_REDACTED***',
+            redacted,
+            flags=re.IGNORECASE
+        )
+        if count > 0:
+            redactions.append(("password", count))
+    
+    # IP Addresses (optional - useful for troubleshooting)
+    if config.redact_ip_addresses:
+        redacted, count = re.subn(
+            r'\b(?:\d{1,3}\.){3}\d{1,3}\b',
+            '***IP_REDACTED***',
+            redacted
+        )
+        if count > 0:
+            redactions.append(("ip_address", count))
+    
+    return SanitizationResult(
+        content=redacted,
+        redactions_made=sum(count for _, count in redactions),
+        redactions=redactions,
+        skipped=False
+    )
 ```
-
-### 3.2 When This Step is Skipped
-
-**Most files skip Step 3** because:
-- **LOGS_AND_ERRORS**: Already extracted to ~400 lines in Step 2
-- **METRICS_AND_PERFORMANCE**: Already summarized to anomaly report in Step 2
-- **STRUCTURED_CONFIG**: Small files (<8K tokens typically)
-- **SOURCE_CODE**: Targeted extraction, not full file
-- **VISUAL_EVIDENCE**: Vision model output is already text
-- **UNSTRUCTURED_TEXT (short)**: <8K tokens, marked for direct use
-
-**Only long UNSTRUCTURED_TEXT triggers Step 3**:
-- Long Slack threads (100+ messages)
-- Detailed incident reports (10+ pages)
-- Large documentation files
-- Lengthy HTML pages (after scraping)
 
 ---
 
-## Step 4: Final Diagnostic Call
+### 3.4 Step 4: Package & Return
 
-**Purpose**: Send processed data to FaultMaven diagnostic agent
-
-**LLM Calls**: 1 (diagnostic agent)
-
-### 4.1 PII/Secret Sanitization
-
-**Configurable based on LLM provider** (skip for local LLMs):
+**Purpose**: Format output and store raw artifact
 
 ```python
-class DataSanitizer:
-    """Redact PII and secrets from extracted data"""
+async def package_preprocessing_result(
+    extraction_result: ExtractionResult,
+    sanitization_result: SanitizationResult,
+    file_info: FileInfo,
+    case_id: str,
+    data_type: DataType,
+) -> PreprocessingResult:
+    """
+    Package extraction results into PreprocessingResult format.
+    
+    Steps:
+    1. Generate concise summary (<500 chars for Evidence.summary)
+    2. Store raw artifact in S3
+    3. Format PreprocessingResult
+    
+    LLM Calls: 0
+    Time: ~0.1s
+    """
+    
+    # Generate concise summary from extraction
+    full_extraction = '\n'.join(extraction_result.lines)
+    summary = generate_concise_summary(full_extraction, max_length=500)
+    
+    # Store raw artifact in S3
+    s3_uri = await s3_client.upload(
+        bucket=config.evidence_bucket,
+        key=f"{case_id}/{file_info.filename}_{generate_id()}{file_info.extension}",
+        content=file_info.raw_content,
+        content_type=file_info.mime_type,
+    )
+    
+    # Build insights object
+    insights = PreprocessingInsights(
+        method=extraction_result.method,
+        compression_ratio=extraction_result.metadata.get("compression_ratio", 1.0),
+        data_quality=assess_data_quality(extraction_result),
+        key_findings=extract_key_findings(extraction_result),
+        extraction_metadata=extraction_result.metadata,
+    )
+    
+    return PreprocessingResult(
+        temp_id=generate_temp_id(),
+        data_type=data_type,
+        summary=summary,
+        full_extraction=sanitization_result.content,
+        content_ref=s3_uri,
+        content_size_bytes=len(file_info.raw_content),
+        content_type=file_info.mime_type,
+        extraction_method=extraction_result.method,
+        compression_ratio=extraction_result.metadata.get("compression_ratio", 1.0),
+        extraction_metadata=extraction_result.metadata,
+        insights=insights,
+        sanitization_applied=not sanitization_result.skipped,
+        redactions_count=sanitization_result.redactions_made,
+        required_user_choice=False,
+        chosen_processing_mode=None,
+        processing_time_ms=file_info.processing_time_ms,
+    )
 
-    def sanitize(
-        self,
-        content: str,
-        provider: LLMProvider
-    ) -> str:
-        """
-        Conditional sanitization:
-        - Local LLM: Skip (no privacy risk)
-        - External LLM (OpenAI, Anthropic): Redact
-        """
-
-        if provider == LLMProvider.LOCAL:
-            return content  # No sanitization needed
-
-        # Redact PII patterns
-        content = self._redact_emails(content)
-        content = self._redact_phone_numbers(content)
-        content = self._redact_ip_addresses(content)
-        content = self._redact_api_keys(content)
-        content = self._redact_passwords(content)
-
-        return content
+def generate_concise_summary(text: str, max_length: int = 500) -> str:
+    """
+    Generate concise summary without LLM.
+    
+    Strategy:
+    - Take first 250 chars + last 250 chars
+    - Or truncate to 500 chars if short
+    """
+    if len(text) <= max_length:
+        return text
+    
+    # Take beginning and end
+    half = max_length // 2
+    return f"{text[:half]}... [truncated] ...{text[-half:]}"
 ```
 
-### 4.2 Case File Packaging
+---
 
-**Structure extracted data for diagnostic LLM**:
+## 4. Async Background Pipeline (Step 5)
+
+**Purpose**: Store preprocessed data in ChromaDB for long-term memory without blocking user
+
+**Trigger**: After Evidence object created (not immediately after preprocessing)
+
+**Conditional**: Only runs if user chose a caching option
+
+### 4.1 When to Cache
 
 ```python
-class CaseFilePackager:
-    """Package sanitized data into structured case file"""
+def should_cache_in_vector_db(preprocessing_result: PreprocessingResult) -> bool:
+    """
+    Determine if preprocessed data should be cached in vector DB.
+    
+    Cache if:
+    - User chose caching mode (overview_cached, full_cached)
+    - File is large and may need deep dives later
+    - NOT cached if user chose preview_no_cache
+    """
+    
+    # User explicitly chose no caching
+    if preprocessing_result.chosen_processing_mode == "preview_no_cache":
+        return False
+    
+    # User chose caching modes
+    if preprocessing_result.chosen_processing_mode in ["overview_cached", "full_cached"]:
+        return True
+    
+    # Auto-processed known types: always cache
+    if preprocessing_result.data_type in [
+        DataType.LOGS_AND_ERRORS,
+        DataType.METRICS_AND_PERFORMANCE,
+        DataType.STRUCTURED_CONFIG,
+        DataType.SOURCE_CODE,
+    ]:
+        return True
+    
+    # Small unstructured text: cache if auto-summarized
+    if (preprocessing_result.data_type == DataType.UNSTRUCTURED_TEXT
+        and preprocessing_result.content_size_bytes < 100000):
+        return True
+    
+    # Visual evidence: cache description
+    if preprocessing_result.data_type == DataType.VISUAL_EVIDENCE:
+        return True
+    
+    return False
+```
 
-    def package(
-        self,
-        extracted_data: ExtractedData,
-        metadata: FileMetadata
-    ) -> CaseFile:
-        """
-        Create case file ready for diagnostic LLM
+### 4.2 Implementation Strategy
 
-        Structure:
-        - Metadata header (filename, size, type, timestamp)
-        - Extracted content (sanitized)
-        - Processing insights (method used, compression ratio)
-        """
+**Current Implementation (v3.1.0)**:
 
-        case_file = f"""
-CASE FILE
-{'=' * 60}
+ChromaDB handles chunking and embedding automatically server-side. No manual chunking required.
 
-METADATA:
-  Filename: {metadata.filename}
-  Size: {metadata.size:,} bytes
-  Type: {metadata.data_type}
-  Uploaded: {metadata.timestamp}
+```python
+async def store_in_vector_db_background(
+    case_id: str,
+    data_id: str,
+    preprocessed_content: str,
+    data_type: DataType,
+    metadata: Dict[str, Any],
+    case_vector_store: CaseVectorStore,
+):
+    """
+    Background task: Store evidence in ChromaDB for forensic queries.
 
-PROCESSING:
-  Method: {extracted_data.method}
-  Original Size: {extracted_data.original_size:,} bytes
-  Extracted Size: {extracted_data.extracted_size:,} bytes
-  Compression: {extracted_data.compression_ratio:.1%}
+    User has already received response - this doesn't block upload.
 
-{'=' * 60}
+    ChromaDB server handles:
+    - Chunking (via configured embedding function)
+    - Embedding generation (all-MiniLM-L6-v2 default, or custom)
+    - Vector indexing
 
-{extracted_data.summary}
-"""
+    Args:
+        case_id: Case identifier for collection scoping
+        data_id: Unique evidence identifier
+        preprocessed_content: Preprocessed output (NOT raw content)
+        data_type: Evidence data type
+        metadata: Evidence metadata (filename, upload time, etc.)
+        case_vector_store: Case-scoped vector store (InMemory or ChromaDB)
+    """
 
-        return CaseFile(
-            content=case_file,
-            metadata=metadata,
-            insights=extracted_data.insights
+    try:
+        # Store in case-scoped collection
+        await case_vector_store.add_documents(
+            case_id=case_id,
+            documents=[{
+                'id': data_id,
+                'content': preprocessed_content,
+                'metadata': {
+                    'data_type': data_type.value,
+                    'upload_timestamp': datetime.now(timezone.utc).isoformat(),
+                    **metadata
+                }
+            }]
+        )
+
+        logger.info(
+            f"Evidence {data_id} stored in vector DB for case {case_id}",
+            extra={
+                'case_id': case_id,
+                'data_id': data_id,
+                'content_size': len(preprocessed_content)
+            }
+        )
+
+    except Exception as e:
+        # Silent failure - doesn't affect user experience
+        # Evidence is still stored in data storage and available via preprocessed summary
+        logger.error(
+            f"Failed to store evidence in vector DB: {e}",
+            extra={
+                'case_id': case_id,
+                'data_id': data_id,
+                'error': str(e)
+            }
         )
 ```
 
+**Key Design Decisions**:
+
+1. **No Manual Chunking**: ChromaDB server handles chunking automatically based on its embedding function configuration
+2. **Storage Agnostic**: Works with both InMemory (instant) and ChromaDB microservice (network call)
+3. **Fire-and-Forget**: Background task with silent failure - doesn't block user or fail upload
+4. **Preprocessed Content**: Stores preprocessed output (summaries, crime scenes) not raw logs
+5. **Case-Scoped**: Each case gets its own ChromaDB collection (`case_{case_id}`)
+6. **Embedding Model**: Configured server-side in ChromaDB (default: all-MiniLM-L6-v2)
+
+### 4.3 Vector DB as Long-Term Memory
+
+**Purpose**: "Forensic specialist" deep dives when summary isn't enough
+
+**Use Cases**:
+1. **Complex queries**: User asks detailed questions about evidence
+2. **Cross-evidence correlation**: Find patterns across multiple files
+3. **Historical analysis**: Post-mortem deep dives weeks later
+4. **Missing context**: Agent needs more detail than summary provides
+
+**NOT used for**:
+- Primary evidence evaluation (that uses summaries in Evidence.summary)
+- Hypothesis analysis (uses evidence_links with reasoning)
+- Timeline creation (extracted during preprocessing)
+
+**Retrieval Example**:
+
+```python
+async def retrieve_relevant_context(
+    case_id: str,
+    query: str,
+    top_k: int = 5,
+) -> List[RetrievalResult]:
+    """
+    Semantic search across case evidence for deep dives.
+    
+    Called when:
+    - User asks specific question about evidence
+    - Agent needs more context than Evidence.summary provides
+    - Post-mortem analysis requires forensic detail
+    """
+    
+    collection = chroma_client.get_collection(f"case_{case_id}")
+    
+    results = await collection.query(
+        query_texts=[query],
+        n_results=top_k,
+    )
+    
+    return [
+        RetrievalResult(
+            evidence_id=meta["evidence_id"],
+            chunk_text=doc,
+            similarity=distance,
+            metadata=meta,
+        )
+        for doc, meta, distance in zip(
+            results["documents"][0],
+            results["metadatas"][0],
+            results["distances"][0],
+        )
+    ]
+```
+
+### 4.4 Performance
+
+**What gets chunked?**: Preprocessed output (NOT raw content)
+
+Examples:
+- 10MB log file → Crime scene → 50KB → **~100 chunks**
+- 500KB text → Summary → 5KB → **~10 chunks**
+- 2KB overview → **~4 chunks**
+
+**Processing time**:
+- Chunking: ~0.1s
+- Embedding: ~0.05s per chunk (batched)
+- ChromaDB: ~0.01s per chunk
+- **Total**: 2-5s (background, user doesn't wait)
+
+**Error Handling**: Silent failure with retry (doesn't affect user experience)
+
 ---
 
-## Data Type Specifications
+## 5. User Choice System
+
+**Applies to**: UNSTRUCTURED_TEXT ≥ 100KB, VISUAL_EVIDENCE ≥ 5MB
+
+### 5.1 Four Processing Options
+
+When large unknown file uploaded, pause and ask user:
+
+```json
+{
+  "status": "awaiting_user_decision",
+  "temp_id": "temp_abc123",
+  "file_info": {
+    "filename": "troubleshooting_guide.txt",
+    "size_bytes": 250000,
+    "size_human": "244 KB",
+    "data_type": "unstructured_text"
+  },
+  "preview": {
+    "first_lines": "...",
+    "last_lines": "...",
+    "statistics": {
+      "total_lines": 5000,
+      "estimated_words": 40000,
+      "estimated_reading_time": "200 minutes"
+    }
+  },
+  "processing_options": [
+    {
+      "mode": "preview_no_cache",
+      "label": "🔍 Quick Preview (no storage)",
+      "description": "See structure and first/last sections. File deleted after 5 minutes.",
+      "time_estimate": "< 1s",
+      "cost_estimate": "$0.00",
+      "will_be_cached": false,
+      "best_for": "Browsing, not sure I need this"
+    },
+    {
+      "mode": "overview_cached",
+      "label": "📊 Smart Overview (cached)",
+      "description": "Extract structure and key topics. Stored for future questions.",
+      "time_estimate": "~2s",
+      "cost_estimate": "$0.002",
+      "will_be_cached": true,
+      "best_for": "Might ask questions later"
+    },
+    {
+      "mode": "full_cached",
+      "label": "📖 Full Analysis (cached)",
+      "description": "Comprehensive summary with full context. Deep dive enabled.",
+      "time_estimate": "~30s",
+      "cost_estimate": "$0.05",
+      "will_be_cached": true,
+      "best_for": "Need comprehensive understanding"
+    },
+    {
+      "mode": "targeted_search",
+      "label": "🎯 I'll tell you what I need",
+      "description": "Search for specific information on-demand. Auto-caches after first query.",
+      "time_estimate": "~3s per query",
+      "cost_estimate": "$0.003",
+      "will_be_cached": "after first search",
+      "best_for": "Looking for something specific"
+    }
+  ]
+}
+```
+
+### 5.2 Option Details
+
+#### Option 1: Quick Preview (No Cache)
+
+```python
+async def process_preview_no_cache(file_content: str) -> PreprocessingResult:
+    """
+    Extract structure preview without LLM or caching.
+    
+    LLM Calls: 0
+    Time: 0.2s
+    Storage: 5-minute temp cache (grace period for upgrade)
+    """
+    
+    lines = file_content.split('\n')
+    
+    # Extract first and last 100 lines
+    preview_lines = lines[:100] + ["\n--- [CONTENT TRUNCATED] ---\n"] + lines[-100:]
+    
+    # Extract structure (headers, sections)
+    structure = extract_structure(file_content)
+    
+    return PreprocessingResult(
+        temp_id=generate_temp_id(),
+        data_type=DataType.UNSTRUCTURED_TEXT,
+        summary=f"Preview: {len(lines)} lines. Structure: {structure}",
+        full_extraction='\n'.join(preview_lines),
+        content_ref=None,  # Not stored in S3 yet
+        extraction_method="preview_no_cache",
+        required_user_choice=True,
+        chosen_processing_mode="preview_no_cache",
+        grace_period_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+```
+
+**Grace Period**: 5 minutes to upgrade to cached option without re-upload
+
+#### Option 2: Smart Overview (Cached)
+
+```python
+async def process_overview_cached(
+    file_content: str,
+    file_info: FileInfo,
+    case_id: str,
+) -> PreprocessingResult:
+    """
+    Generate structural overview with LLM, cache for future queries.
+    
+    LLM Calls: 1
+    Time: 2s
+    Storage: S3 + ChromaDB
+    """
+    
+    # Call LLM for structural overview
+    overview = await llm_client.generate(
+        model=config.summarization_model,
+        messages=[{
+            "role": "user",
+            "content": f"""Extract the structure and key topics from this document.
+            
+Focus on:
+- Main sections and headings
+- Key topics discussed
+- Document organization
+
+Be concise (max 2KB).
+
+Document:
+{file_content[:10000]}  # First 10K chars for context
+"""
+        }],
+        max_tokens=500,
+    )
+    
+    overview_text = overview.content[0].text
+    
+    # Store raw in S3
+    s3_uri = await store_in_s3(file_content, file_info, case_id)
+    
+    return PreprocessingResult(
+        temp_id=generate_temp_id(),
+        data_type=DataType.UNSTRUCTURED_TEXT,
+        summary=generate_concise_summary(overview_text, 500),
+        full_extraction=overview_text,
+        content_ref=s3_uri,
+        content_size_bytes=len(file_content.encode('utf-8')),
+        extraction_method="overview_cached",
+        required_user_choice=True,
+        chosen_processing_mode="overview_cached",
+        # Will be cached in Step 5 (async)
+    )
+```
+
+#### Option 3: Full Analysis (Cached)
+
+```python
+async def process_full_cached(
+    file_content: str,
+    file_info: FileInfo,
+    case_id: str,
+) -> PreprocessingResult:
+    """
+    Comprehensive map-reduce summarization, cache for deep dives.
+    
+    LLM Calls: 25-50
+    Time: 30s
+    Storage: S3 + ChromaDB
+    """
+    
+    # Use map-reduce summarization (from Step 2)
+    extraction_result = await summarize_text_auto(file_content, config)
+    
+    # Store raw in S3
+    s3_uri = await store_in_s3(file_content, file_info, case_id)
+    
+    return PreprocessingResult(
+        temp_id=generate_temp_id(),
+        data_type=DataType.UNSTRUCTURED_TEXT,
+        summary=generate_concise_summary(extraction_result.lines[0], 500),
+        full_extraction=extraction_result.lines[0],
+        content_ref=s3_uri,
+        content_size_bytes=len(file_content.encode('utf-8')),
+        extraction_method="full_cached",
+        extraction_metadata=extraction_result.metadata,
+        required_user_choice=True,
+        chosen_processing_mode="full_cached",
+        # Will be cached in Step 5 (async)
+    )
+```
+
+#### Option 4: Targeted Search
+
+```python
+async def process_targeted_search(
+    file_content: str,
+    file_info: FileInfo,
+    case_id: str,
+) -> PreprocessingResult:
+    """
+    Store raw content only, wait for user queries.
+    
+    LLM Calls: 0 (until first query)
+    Time: 0.5s
+    Storage: S3 only (ChromaDB after first query)
+    """
+    
+    # Store raw in S3
+    s3_uri = await store_in_s3(file_content, file_info, case_id)
+    
+    # Generate preview
+    lines = file_content.split('\n')
+    preview = '\n'.join(lines[:100] + ["\n--- STORED FOR SEARCH ---\n"] + lines[-100:])
+    
+    return PreprocessingResult(
+        temp_id=generate_temp_id(),
+        data_type=DataType.UNSTRUCTURED_TEXT,
+        summary=f"Document stored for targeted search. {len(lines)} lines available.",
+        full_extraction=preview,
+        content_ref=s3_uri,
+        content_size_bytes=len(file_content.encode('utf-8')),
+        extraction_method="targeted_search",
+        required_user_choice=True,
+        chosen_processing_mode="targeted_search",
+        # Will NOT be cached until first query
+    )
+
+async def handle_targeted_search_query(
+    evidence_id: str,
+    query: str,
+    case_id: str,
+) -> str:
+    """
+    Execute targeted search and auto-upgrade to cached.
+    """
+    
+    # Get evidence
+    evidence = await evidence_service.get_evidence(evidence_id)
+    
+    # Retrieve raw content from S3
+    raw_content = await s3_client.get_object(evidence.content_ref)
+    
+    # Search content
+    answer = await search_content(raw_content, query)
+    
+    # Auto-upgrade: Embed in background for future queries
+    background_tasks.add_task(
+        store_in_vector_db_background,
+        case_id=case_id,
+        evidence_id=evidence_id,
+        preprocessed_content=raw_content,
+        data_type=evidence.source_type,
+        extraction_method="targeted_search_auto_upgraded",
+    )
+    
+    return answer
+```
+
+### 5.3 Cost Optimization
+
+**Scenario**: 100 users upload 200KB unknown documents
+
+| Strategy | Users | Cost |
+|----------|-------|------|
+| Preview (no cache) | 40 | $0.00 |
+| Overview (cached) | 30 | $0.06 |
+| Full (cached) | 20 | $1.00 |
+| Targeted search | 10 | $0.03 |
+| **Total (user choice)** | **100** | **$1.09** |
+| **Force full analysis (old)** | **100** | **$5.00** |
+| **Savings** | | **78%** |
+
+---
+
+## 6. Data Type Specifications
 
 ### Summary Table
 
-| Data Type | Preprocessing Strategy | LLM Used? | Typical Reduction | Speed |
-|-----------|------------------------|-----------|-------------------|-------|
-| **LOGS_AND_ERRORS** | Crime Scene Extraction (±200 lines around ERROR) | ❌ No | 400 lines from 50K = 99.2% | ⚡ Fast |
-| **UNSTRUCTURED_TEXT** | Direct use if <8K tokens, else chunk+summarize | ✅ Conditional | 0% (small) or 90%+ (large) | ⚡/🐢 Mixed |
-| **STRUCTURED_CONFIG** | Parse + sanitize, pass full content | ❌ No | 0% (no compression) | ⚡ Fast |
-| **METRICS_AND_PERFORMANCE** | Anomaly detection (pandas/numpy) | ❌ No | Summary from 100K rows = 99.9% | ⚡ Fast |
-| **SOURCE_CODE** | Extract functions/classes from error trace | ❌ No (AST parsing) | 70-95% (targeted extraction) | ⚡ Fast |
-| **VISUAL_EVIDENCE** | Vision model transcription | ✅ Yes | Text from image = 100% | 🐢 Slow |
-
-### Examples by Category
-
-| Data Type | Examples |
-|-----------|----------|
-| **LOGS_AND_ERRORS** | Application logs, system logs, stack traces, Python tracebacks, Java exceptions, Go panics, alert messages |
-| **UNSTRUCTURED_TEXT** | User descriptions, Slack threads, incident reports, ServiceNow tickets, HTML pages (scraped), Markdown docs, README files |
-| **STRUCTURED_CONFIG** | YAML configs, JSON configs, INI files, TOML files, .env files, docker-compose.yml, application.properties |
-| **METRICS_AND_PERFORMANCE** | CSV time-series (Prometheus/Grafana exports), OpenTelemetry traces, profiling data (flame graphs), resource usage logs |
-| **SOURCE_CODE** | Python (.py), JavaScript (.js), Java (.java), Go (.go), TypeScript (.ts), C/C++ (.c/.cpp), Ruby (.rb) |
-| **VISUAL_EVIDENCE** | Screenshots (.png/.jpg), UI error captures, browser console screenshots, dashboard screenshots |
+| Data Type | Extraction Strategy | LLM Calls | Compression | Speed | Always Cached |
+|-----------|-------------------|-----------|-------------|-------|---------------|
+| **LOGS_AND_ERRORS** | Crime Scene ±200 lines | 0 | 200:1 | ⚡ 0.5s | ✅ Yes |
+| **METRICS_AND_PERFORMANCE** | Anomaly Detection | 0 | 167:1 | ⚡ 0.3s | ✅ Yes |
+| **STRUCTURED_CONFIG** | Parse + Sanitize | 0 | 1:1 | ⚡ 0.2s | ✅ Yes |
+| **SOURCE_CODE** | AST Extraction | 0 | 50:1 | ⚡ 0.5s | ✅ Yes |
+| **UNSTRUCTURED_TEXT <100KB** | Auto Summarization | 1-4 | 10:1 | ⚡ 2-10s | ✅ Yes |
+| **UNSTRUCTURED_TEXT ≥100KB** | **User Choice** | 0-50 | Varies | Varies | Depends |
+| **VISUAL_EVIDENCE <5MB** | Vision Analysis | 1 | N/A | 🐢 2-5s | ✅ Yes |
+| **VISUAL_EVIDENCE ≥5MB** | **User Choice** | 0-1 | N/A | Varies | Depends |
 
 ---
 
-## Configuration
+## 7. Output Formats
+
+### 7.1 PreprocessingResult Schema
+
+```python
+class PreprocessingResult(BaseModel):
+    """
+    Output from preprocessing pipeline.
+    Fed into Evidence Architecture for classification and evaluation.
+    """
+    
+    # Identity
+    temp_id: str = Field(
+        description="Temporary ID (before Evidence object created)"
+    )
+    
+    # Classification
+    data_type: DataType = Field(
+        description="Preprocessing data type classification"
+    )
+    
+    # Content - Two levels
+    summary: str = Field(
+        max_length=500,
+        description="Concise summary for Evidence.summary (<500 chars)"
+    )
+    full_extraction: str = Field(
+        description="Complete extraction output (for agent analysis)"
+    )
+    
+    # Storage
+    content_ref: Optional[str] = Field(
+        None,
+        description="S3 URI to raw artifact (if stored)"
+    )
+    content_size_bytes: int = Field(
+        description="Size of raw artifact"
+    )
+    content_type: str = Field(
+        description="MIME type"
+    )
+    
+    # Extraction metadata
+    extraction_method: str = Field(
+        description="Method used: crime_scene_extraction, anomaly_detection, etc."
+    )
+    compression_ratio: float = Field(
+        ge=0.0,
+        description="Ratio of extracted to raw (0.005 = 200:1 compression)"
+    )
+    extraction_metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Type-specific metadata (error counts, anomaly details, etc.)"
+    )
+    
+    # Insights
+    insights: Optional[PreprocessingInsights] = Field(
+        None,
+        description="Structured insights extracted from data"
+    )
+    
+    # Sanitization
+    sanitization_applied: bool = Field(
+        default=False,
+        description="Whether PII/secrets were redacted"
+    )
+    redactions_count: int = Field(
+        default=0,
+        description="Number of redactions made"
+    )
+    
+    # User choice (if applicable)
+    required_user_choice: bool = Field(
+        default=False,
+        description="Whether user was asked to choose processing mode"
+    )
+    chosen_processing_mode: Optional[str] = Field(
+        None,
+        description="preview_no_cache | overview_cached | full_cached | targeted_search"
+    )
+    grace_period_expires_at: Optional[datetime] = Field(
+        None,
+        description="For preview_no_cache: when temp file will be deleted"
+    )
+    
+    # Performance
+    processing_time_ms: int = Field(
+        description="Total preprocessing time (milliseconds)"
+    )
+
+class PreprocessingInsights(BaseModel):
+    """Structured insights extracted during preprocessing"""
+    
+    method: str = Field(
+        description="Extraction method used"
+    )
+    
+    compression_ratio: float = Field(
+        description="Extraction compression ratio"
+    )
+    
+    data_quality: str = Field(
+        description="high | medium | low - assessed quality of input data"
+    )
+    
+    key_findings: List[str] = Field(
+        default_factory=list,
+        description="Bullet points of key diagnostic findings"
+    )
+    
+    # Type-specific insights
+    error_summary: Optional[ErrorSummary] = None  # For LOGS_AND_ERRORS
+    anomaly_summary: Optional[AnomalySummary] = None  # For METRICS_AND_PERFORMANCE
+    config_summary: Optional[ConfigSummary] = None  # For STRUCTURED_CONFIG
+
+class ErrorSummary(BaseModel):
+    """Insights from log analysis"""
+    total_errors: int
+    severity_distribution: Dict[str, int]
+    first_error_line: int
+    last_error_line: int
+    error_burst_detected: bool
+    unique_error_types: List[str]
+
+class AnomalySummary(BaseModel):
+    """Insights from metrics analysis"""
+    total_anomalies: int
+    metrics_analyzed: List[str]
+    anomaly_types: Dict[str, int]  # "spike": 5, "drop": 3
+    most_anomalous_metric: str
+    time_range: str
+
+class ConfigSummary(BaseModel):
+    """Insights from config analysis"""
+    format: str  # yaml, json, toml, ini
+    total_keys: int
+    secrets_found: int
+    secrets_redacted: bool
+    validation_status: str  # valid | invalid | partial
+```
+
+### 7.2 Integration with Evidence Architecture
+
+**Mapping**:
+
+```python
+# After preprocessing completes
+preprocessing_result = await preprocessing_service.process_upload(...)
+
+# Evidence Architecture uses these fields:
+evidence = Evidence(
+    summary=preprocessing_result.summary,  # <500 chars
+    content_ref=preprocessing_result.content_ref,  # S3 URI
+    content_size_bytes=preprocessing_result.content_size_bytes,
+    content_type=preprocessing_result.content_type,
+    source_type=map_data_type_to_source_type(preprocessing_result.data_type),
+    form=EvidenceForm.DOCUMENT,  # All uploads are documents
+    file_metadata=FileMetadata(
+        filename=original_filename,
+        content_type=preprocessing_result.content_type,
+        size_bytes=preprocessing_result.content_size_bytes,
+        upload_timestamp=datetime.now(timezone.utc),
+        file_id=preprocessing_result.temp_id,
+    ),
+    preprocessed=True,
+)
+
+# Full extraction used for hypothesis analysis
+# (Not stored in Evidence object - used transiently by agent)
+full_context = preprocessing_result.full_extraction
+```
+
+---
+
+## 8. Configuration
 
 ### Environment Variables
 
 ```bash
 # ============================================================
-# INGESTION & VALIDATION
+# FILE INGESTION & VALIDATION
 # ============================================================
 
-MAX_FILE_SIZE_BYTES=2097152           # 2 MB hard limit
-
-BLOCKED_EXTENSIONS=.exe,.dll,.zip,.pdf,.bin
-ALLOWED_MIME_TYPES=text/plain,text/csv,text/html,application/json,application/yaml,image/png,image/jpeg
+MAX_UPLOAD_SIZE_MB=10                    # 10 MB hard limit
+ALLOWED_MIME_TYPES=text/plain,text/csv,application/json,application/yaml,image/png,image/jpeg
+BLOCKED_EXTENSIONS=.exe,.dll,.zip,.bin
 
 # ============================================================
-# DATA CLASSIFICATION (6-Class System)
+# DATA CLASSIFICATION
 # ============================================================
 
-# LOGS_AND_ERRORS: Chronological event-based text
-LOGS_ERROR_KEYWORDS=ERROR,Exception,FATAL,panic,CRITICAL,Traceback,ALERT
+CLASSIFICATION_SAMPLE_SIZE=5000          # Bytes for pattern matching
 
-# Severity weights for error prioritization
+# Severity keywords for LOGS_AND_ERRORS
 LOGS_SEVERITY_FATAL=100
 LOGS_SEVERITY_CRITICAL=90
-LOGS_SEVERITY_PANIC=90
 LOGS_SEVERITY_ERROR=50
 LOGS_SEVERITY_WARN=10
 
-# UNSTRUCTURED_TEXT: Free-form human text
-UNSTRUCTURED_SAFE_TOKEN_LIMIT=8000    # Direct use if below this
-
-# STRUCTURED_CONFIG: Declarative system state
-CONFIG_EXTENSIONS=.yaml,.yml,.json,.toml,.ini,.env
-CONFIG_VALIDATE_ON_PARSE=true         # Validate structure
-
-# METRICS_AND_PERFORMANCE: Quantitative data
-METRICS_ANOMALY_Z_SCORE_THRESHOLD=3.0 # Standard deviations for anomaly detection
-
-# SOURCE_CODE: Executable logic
-CODE_EXTENSIONS=.py,.js,.java,.go,.cpp,.c,.rb,.php,.ts,.jsx,.tsx
-CODE_EXTRACT_DEPENDENCIES=true        # Include function dependencies
-
-# VISUAL_EVIDENCE: Graphical snapshots
-IMAGE_EXTENSIONS=.png,.jpg,.jpeg,.gif,.bmp
+# Anomaly detection for METRICS_AND_PERFORMANCE
+METRICS_ANOMALY_Z_SCORE_THRESHOLD=3.0
 
 # ============================================================
-# TIER 1: FAST PATH (Crime Scene Extraction)
+# SYNCHRONOUS PROCESSING
 # ============================================================
 
-# LOGS_AND_ERRORS extraction
-CRIME_SCENE_CONTEXT_LINES=200         # Lines before/after single error
-TAIL_EXTRACTION_LINES=500             # Lines if no errors found
-CRIME_SCENE_MAX_SNIPPET_LINES=500     # Safety limit for extracted snippet
-ERROR_BURST_DETECTION_WINDOW=50       # Lines to check for error clustering
-ERROR_BURST_THRESHOLD=10              # Min errors in window to trigger burst mode
-MULTIPLE_CRIME_SCENES_LINES=100       # Lines around each error (first + last)
+# Crime Scene Extraction
+CRIME_SCENE_CONTEXT_LINES=200
+TAIL_EXTRACTION_LINES=500
+ERROR_BURST_WINDOW=50
+ERROR_BURST_THRESHOLD=10
+
+# User Choice Thresholds
+USER_CHOICE_TEXT_THRESHOLD_BYTES=100000  # 100KB for UNSTRUCTURED_TEXT
+USER_CHOICE_IMAGE_THRESHOLD_BYTES=5242880  # 5MB for VISUAL_EVIDENCE
+
+# Summarization
+SUMMARIZATION_MODEL=claude-sonnet-4-5-20250929
+SUMMARIZATION_CHUNK_SIZE_TOKENS=4000
+SUMMARIZATION_OVERLAP_TOKENS=200
+
+# Vision Model
+VISION_MODEL=claude-3-5-sonnet-20241022
+VISION_MODEL_MAX_TOKENS=1000
+VISION_MAX_IMAGE_SIZE_BYTES=5242880
 
 # ============================================================
-# TIER 2: DEEP SCAN (User-Triggered Fallback)
+# ASYNC BACKGROUND PROCESSING
 # ============================================================
 
-DEEP_SCAN_ENABLED=true                # Enable Tier 2 fallback
-DEEP_SCAN_USER_TRIGGERED=true         # Require user opt-in
+# Vector DB Chunking (for embeddings)
+EMBEDDING_CHUNK_SIZE_TOKENS=512
+EMBEDDING_CHUNK_OVERLAP_TOKENS=50
+EMBEDDING_MODEL=BGE-M3
+EMBEDDING_BATCH_SIZE=10
 
-# UNSTRUCTURED_TEXT chunking
-CHUNK_SIZE_TOKENS=4000                # Chunk size for map-reduce
-MAP_REDUCE_MAX_PARALLEL=5             # Parallel LLM calls
+# ChromaDB
+CHROMADB_HOST=localhost
+CHROMADB_PORT=8000
+CHROMADB_COLLECTION_PREFIX=case_
+
+# ============================================================
+# USER CHOICE SYSTEM
+# ============================================================
+
+PREVIEW_GRACE_PERIOD_SECONDS=300         # 5 minutes
+TARGETED_SEARCH_AUTO_EMBED=true
 
 # ============================================================
 # SANITIZATION
 # ============================================================
 
-SANITIZE_PII=true                     # Redact PII
-AUTO_SANITIZE_BASED_ON_PROVIDER=true  # Skip for LOCAL provider
+SANITIZE_PII=true
+AUTO_SANITIZE_BASED_ON_PROVIDER=true     # Skip for LOCAL
 
-# PII patterns to redact
 PII_REDACT_EMAILS=true
 PII_REDACT_PHONE_NUMBERS=true
-PII_REDACT_IP_ADDRESSES=false         # Keep IPs for troubleshooting
+PII_REDACT_IP_ADDRESSES=false            # Keep for troubleshooting
 PII_REDACT_API_KEYS=true
 PII_REDACT_PASSWORDS=true
 
 # ============================================================
-# VISION MODEL (VISUAL_EVIDENCE)
+# STORAGE
 # ============================================================
 
-VISION_MODEL_PROVIDER=openai          # openai, anthropic, google
-VISION_MODEL_NAME=gpt-4-vision-preview
-VISION_MODEL_MAX_TOKENS=500           # Transcription max tokens
+S3_BUCKET_EVIDENCE=faultmaven-evidence
+S3_REGION=us-east-1
 
 # ============================================================
-# PERFORMANCE
+# ERROR HANDLING
 # ============================================================
 
-CLASSIFICATION_SAMPLE_SIZE=5000       # Bytes to sample for classification
-ENABLE_EXTRACTION_CACHING=true        # Cache extraction results
-EXTRACTION_TIMEOUT_SECONDS=30         # Timeout per file
+BACKGROUND_TASK_MAX_RETRIES=3
+BACKGROUND_TASK_RETRY_BACKOFF=exponential
+BACKGROUND_TASK_FAILURE_ALERT=silent
 ```
 
-### Data Type Enum
+---
+
+## 9. Implementation Guide
+
+### 9.1 Service Architecture
 
 ```python
-from enum import Enum
+# services/preprocessing_service.py
+class PreprocessingService:
+    """Main preprocessing orchestrator"""
+    
+    async def process_upload(
+        self,
+        file: UploadFile,
+        case_id: str,
+        user_id: str,
+    ) -> Union[PreprocessingResult, UserChoiceRequest]:
+        """
+        Main entry point for file uploads.
+        
+        Returns either:
+        - PreprocessingResult (if auto-processed)
+        - UserChoiceRequest (if needs user decision)
+        """
+        
+        # Step 1: Validate
+        await self._validate_file(file)
+        
+        # Read content
+        raw_content = await file.read()
+        
+        # Step 1: Classify
+        data_type = classify_data_type(
+            filename=file.filename,
+            content_sample=raw_content[:5000],
+            mime_type=file.content_type,
+        )
+        
+        # Step 2: Check if user choice needed
+        if self._requires_user_choice(data_type, len(raw_content)):
+            return await self._request_user_choice(
+                file=file,
+                data_type=data_type,
+                raw_content=raw_content,
+            )
+        
+        # Step 2: Extract
+        extraction_result = await self._extract_by_type(
+            data_type=data_type,
+            content=raw_content.decode('utf-8'),
+            filename=file.filename,
+        )
+        
+        # Step 3: Sanitize
+        sanitization_result = sanitize_content(
+            content='\n'.join(extraction_result.lines),
+            config=self.sanitization_config,
+            provider=self.llm_provider,
+        )
+        
+        # Step 4: Package
+        preprocessing_result = await package_preprocessing_result(
+            extraction_result=extraction_result,
+            sanitization_result=sanitization_result,
+            file_info=FileInfo(
+                filename=file.filename,
+                mime_type=file.content_type,
+                raw_content=raw_content,
+                extension=Path(file.filename).suffix,
+            ),
+            case_id=case_id,
+            data_type=data_type,
+        )
+        
+        return preprocessing_result
+    
+    async def process_user_choice(
+        self,
+        temp_id: str,
+        chosen_mode: str,
+    ) -> PreprocessingResult:
+        """
+        Process file after user selects processing mode.
+        """
+        
+        # Retrieve temp file
+        temp_file = await self.temp_storage.get(temp_id)
+        
+        if chosen_mode == "preview_no_cache":
+            return await process_preview_no_cache(temp_file.content)
+        
+        elif chosen_mode == "overview_cached":
+            return await process_overview_cached(
+                temp_file.content,
+                temp_file.file_info,
+                temp_file.case_id,
+            )
+        
+        elif chosen_mode == "full_cached":
+            return await process_full_cached(
+                temp_file.content,
+                temp_file.file_info,
+                temp_file.case_id,
+            )
+        
+        elif chosen_mode == "targeted_search":
+            return await process_targeted_search(
+                temp_file.content,
+                temp_file.file_info,
+                temp_file.case_id,
+            )
+```
 
-class DataType(str, Enum):
-    """6 purpose-driven data classifications"""
+### 9.2 API Endpoints
 
-    LOGS_AND_ERRORS = "logs_and_errors"
-    UNSTRUCTURED_TEXT = "unstructured_text"
-    STRUCTURED_CONFIG = "structured_config"
-    METRICS_AND_PERFORMANCE = "metrics_and_performance"
-    SOURCE_CODE = "source_code"
-    VISUAL_EVIDENCE = "visual_evidence"
+```python
+# api/preprocessing.py
+@router.post("/cases/{case_id}/upload")
+async def upload_file(
+    case_id: str,
+    file: UploadFile,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Upload file for preprocessing.
+    
+    Returns either:
+    - Preprocessed result (if auto-processed)
+    - User choice request (if large unknown file)
+    """
+    
+    result = await preprocessing_service.process_upload(
+        file=file,
+        case_id=case_id,
+        user_id=current_user.id,
+    )
+    
+    if isinstance(result, UserChoiceRequest):
+        # Large file - needs user decision
+        return {
+            "status": "awaiting_user_decision",
+            "temp_id": result.temp_id,
+            "preview": result.preview,
+            "options": result.processing_options,
+        }
+    
+    # Auto-processed - continue to Evidence Architecture
+    # (See Evidence Architecture for next steps)
+    
+    return {
+        "status": "completed",
+        "data_id": result.temp_id,
+        "preprocessing": {
+            "data_type": result.data_type,
+            "method": result.extraction_method,
+            "summary": result.summary,
+            "insights": result.insights,
+        }
+    }
+
+@router.post("/preprocessing/{temp_id}/choice")
+async def submit_processing_choice(
+    temp_id: str,
+    choice: ProcessingChoice,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Submit user's processing mode choice for large file.
+    """
+    
+    preprocessing_result = await preprocessing_service.process_user_choice(
+        temp_id=temp_id,
+        chosen_mode=choice.mode,
+    )
+    
+    return {
+        "status": "completed",
+        "data_id": preprocessing_result.temp_id,
+        "preprocessing": {
+            "data_type": preprocessing_result.data_type,
+            "method": preprocessing_result.extraction_method,
+            "summary": preprocessing_result.summary,
+        }
+    }
 ```
 
 ---
 
-## Implementation Roadmap
+## 10. Examples
 
-### Phase 1: ✅ COMPLETE - Full Extractor Suite Implemented
+### Example 1: Log File (Auto-Processed)
 
-**What Was Built** (Completed 2025-10-17):
-- ✅ `PreprocessingService` - 4-stage pipeline orchestrator
-- ✅ `DataClassifier` - Rule-based 6-class classifier
-- ✅ `LogsAndErrorsExtractor` - Crime Scene Extraction (ALL features)
-- ✅ `MetricsAndPerformanceExtractor` - Statistical anomaly detection
-- ✅ `StructuredConfigExtractor` - Config parsing and validation
-- ✅ `UnstructuredTextExtractor` - Smart text processing
-- ✅ `SourceCodeExtractor` - AST-based code analysis
-- ⚠️ `VisualEvidenceExtractor` - Placeholder only
+```python
+# User uploads 5MB application.log
 
-**Location**: `faultmaven/services/preprocessing/`
+# Step 1: Classify
+data_type = DataType.LOGS_AND_ERRORS  # Detected from timestamps and ERROR keywords
 
-**Result**: 5 of 6 extractors fully functional, waiting to be wired
+# Step 2: Crime Scene Extraction
+extraction_result = extract_crime_scene(log_content, config)
+# Output: 400 lines (±200 around highest severity error)
+# Compression: 5MB → 25KB (200:1)
+
+# Step 3: Sanitize
+sanitization_result = sanitize_content(...)
+# No PII found, 0 redactions
+
+# Step 4: Package
+preprocessing_result = PreprocessingResult(
+    temp_id="temp_abc123",
+    data_type=DataType.LOGS_AND_ERRORS,
+    summary="Application log: 847 entries, 23 NullPointerExceptions in auth-service",
+    full_extraction="[400 lines of context around errors]",
+    content_ref="s3://bucket/case_123/application_log_xyz.log",
+    content_size_bytes=5242880,
+    content_type="text/plain",
+    extraction_method="crime_scene_extraction",
+    compression_ratio=0.005,
+    extraction_metadata={
+        "total_errors": 23,
+        "crime_scene_line": 12450,
+        "severity": 50,
+    },
+    insights=PreprocessingInsights(
+        method="crime_scene_extraction",
+        compression_ratio=0.005,
+        data_quality="high",
+        key_findings=[
+            "23 NullPointerExceptions in auth-service",
+            "All errors after deployment at 14:10 UTC",
+            "Error burst detected around line 12450",
+        ],
+        error_summary=ErrorSummary(
+            total_errors=23,
+            severity_distribution={"ERROR": 23},
+            first_error_line=12450,
+            last_error_line=18920,
+            error_burst_detected=True,
+            unique_error_types=["NullPointerException"],
+        ),
+    ),
+    processing_time_ms=520,
+)
+
+# Step 5: Async - Vector DB
+# Background task chunks 25KB and stores ~50 chunks in ChromaDB
+```
+
+### Example 2: Large Unknown Document (User Choice)
+
+```python
+# User uploads 250KB troubleshooting_guide.txt
+
+# Step 1: Classify
+data_type = DataType.UNSTRUCTURED_TEXT
+
+# Step 2: Check size
+if size >= 100KB:
+    # Request user choice
+    return UserChoiceRequest(
+        temp_id="temp_def456",
+        file_info={...},
+        preview={...},
+        processing_options=[
+            {"mode": "preview_no_cache", ...},
+            {"mode": "overview_cached", ...},
+            {"mode": "full_cached", ...},
+            {"mode": "targeted_search", ...},
+        ]
+    )
+
+# User selects "overview_cached"
+
+# Step 2 (after choice): Smart Overview
+overview = await llm_client.generate(...)  # 1 LLM call, 2s
+
+# Step 3: Sanitize
+# No PII found
+
+# Step 4: Package
+preprocessing_result = PreprocessingResult(
+    temp_id="temp_def456",
+    data_type=DataType.UNSTRUCTURED_TEXT,
+    summary="Troubleshooting guide with 5 main sections: Setup, Common Issues, ...",
+    full_extraction="[2KB structural overview from LLM]",
+    content_ref="s3://bucket/case_123/troubleshooting_guide_xyz.txt",
+    content_size_bytes=256000,
+    extraction_method="overview_cached",
+    chosen_processing_mode="overview_cached",
+    processing_time_ms=2100,
+)
+
+# Step 5: Async - Vector DB
+# Background task chunks 2KB overview and stores ~4 chunks
+```
+
+### Example 3: Config File
+
+```python
+# User uploads database.yaml (5KB)
+
+# Step 1: Classify
+data_type = DataType.STRUCTURED_CONFIG
+
+# Step 2: Parse & Sanitize
+parsed_config = yaml.safe_load(content)
+redact_secrets(parsed_config)  # Redacts passwords, API keys
+
+# Step 3: Already sanitized in Step 2
+
+# Step 4: Package
+preprocessing_result = PreprocessingResult(
+    temp_id="temp_ghi789",
+    data_type=DataType.STRUCTURED_CONFIG,
+    summary="Database config: PostgreSQL connection settings, 3 secrets redacted",
+    full_extraction="[Full YAML with secrets redacted]",
+    content_ref="s3://bucket/case_123/database_yaml_xyz.yaml",
+    content_size_bytes=5120,
+    extraction_method="parse_and_sanitize",
+    compression_ratio=1.0,  # No compression for configs
+    insights=PreprocessingInsights(
+        method="parse_and_sanitize",
+        compression_ratio=1.0,
+        data_quality="high",
+        key_findings=[
+            "PostgreSQL connection settings",
+            "Pool size: 100 connections",
+            "Timeout: 30s",
+        ],
+        config_summary=ConfigSummary(
+            format="yaml",
+            total_keys=47,
+            secrets_found=3,
+            secrets_redacted=True,
+            validation_status="valid",
+        ),
+    ),
+    sanitization_applied=True,
+    redactions_count=3,
+    processing_time_ms=230,
+)
+
+# Step 5: Async - Vector DB
+# Background task chunks 5KB and stores ~10 chunks
+```
 
 ---
 
-### Phase 2A: 🔨 Wire Extractors to Upload Pipeline (IMMEDIATE - 2-4 hours)
+**END OF DOCUMENT**
 
-**Goal**: Connect existing extractors to data upload endpoints
-
-**Tasks**:
-1. Update dependency injection in `container.py`:
-   ```python
-   # Instantiate all extractors
-   logs_extractor = LogsAndErrorsExtractor()
-   metrics_extractor = MetricsAndPerformanceExtractor()
-   config_extractor = StructuredConfigExtractor()
-   text_extractor = UnstructuredTextExtractor()
-   code_extractor = SourceCodeExtractor()
-
-   # Wire to PreprocessingService
-   preprocessing_service = PreprocessingService(
-       classifier=classifier,
-       sanitizer=sanitizer,
-       logs_extractor=logs_extractor,
-       metrics_extractor=metrics_extractor,
-       config_extractor=config_extractor,
-       text_extractor=text_extractor,
-       source_code_extractor=code_extractor
-   )
-   ```
-
-2. Update `POST /api/v1/cases/{case_id}/data` endpoint:
-   - Replace mock implementation
-   - Call `preprocessing_service.preprocess()`
-   - Return preprocessed data
-
-3. Test each data type (logs, metrics, config, code, text)
-
-**Result**: Users can upload 5 data types with full preprocessing
-
-**Priority**: **CRITICAL** - Unlock existing functionality
-
----
-
-### Phase 2B: 🔨 End-to-End Integration (IMMEDIATE - 4-6 hours)
-
-**Goal**: Complete the upload → preprocess → store → analyze flow
-
-**Tasks**:
-1. Wire preprocessed output to Case Evidence Store
-2. Pass to agent for analysis
-3. Return `agent_response` to frontend
-4. Frontend: Display conversation message + AI response
-
-**Result**: Complete conversational data upload experience
-
-**Priority**: **CRITICAL** - Complete user experience
-
----
-
-### Phase 2C: 🔲 Chunking Service (MEDIUM - 6-8 hours)
-
-**Goal**: Implement Step 3 for long UNSTRUCTURED_TEXT
-
-**Tasks**:
-1. Create `ChunkingService` class
-2. Implement text splitter (paragraph-aware, 4K tokens)
-3. Map-reduce pattern:
-   - Map: Parallel chunk summarization
-   - Reduce: Synthesis
-4. Wire into PreprocessingService Step 3
-
-**Result**: Long documents (>8K tokens) handled efficiently
-
-**Priority**: Medium - Nice to have for long docs
-
----
-
-### Phase 2D: 🔲 Vision Model Integration (LOW - 6-8 hours)
-
-**Goal**: Implement VISUAL_EVIDENCE extractor
-
-**Tasks**:
-1. Choose provider (recommend: Claude 3.5 Sonnet - we already use Anthropic)
-2. Implement vision model client
-3. Update VisualEvidenceExtractor
-4. Test with screenshots
-
-**Result**: 6 of 6 data types fully functional
-
-**Priority**: Low - Screenshot upload nice to have
-
----
-
-## Status
-
-✅ **Design specification ~85% implemented, ready for final wiring**
-
-### Design Completeness (2025-10-15)
-
-- ✅ All 6 data types defined with unique strategies
-- ✅ 4-step sequential pipeline documented
-- ✅ LLM call optimization (80%+ files = 1 call total)
-- ✅ Edge cases handled (bursts, multiple errors, oversized output)
-- ✅ Configuration parameters defined
-
-### Implementation Status (2025-10-19)
-
-- ✅ Phase 1: Full extractor suite (COMPLETE - 5 of 6 extractors)
-- 🔨 Phase 2A-2B: Wiring and integration (IMMEDIATE - unlocks functionality)
-- 🔲 Phase 2C: Chunking service (MEDIUM - nice to have)
-- 🔲 Phase 2D: Vision model (LOW - nice to have)
-- 📊 **Overall Implementation**: ~85% complete
-
-**Recommendation**:
-1. **IMMEDIATE**: Wire existing extractors (Phase 2A) - 2-4 hours to unlock 5 data types
-2. **IMMEDIATE**: End-to-end integration (Phase 2B) - 4-6 hours for complete UX
-3. **Medium**: Chunking service for long docs
-4. **Low**: Vision model for screenshots
+**Version**: 2.0  
+**Date**: 2025-11-01  
+**Status**: Production Ready  
+**Integration**: Works with Evidence Architecture v1.1 + Investigation State Framework + Prompt Engineering Architecture  
+**Key Changes from v1.0**:
+- Aligned with Evidence Architecture (preprocessing → classification → evidence creation flow)
+- Removed duplicate evidence/hypothesis tracking (now in Evidence Architecture)
+- Clarified ChromaDB as long-term memory (not primary evidence evaluation)
+- Enhanced PreprocessingResult schema with insights
+- Clear data type → evidence source type mapping
+- Separated preprocessing (extract) from evidence evaluation (analyze)

@@ -338,36 +338,6 @@ class RedisSessionStore(ISessionStore):
             'timestamp': to_json_compatible(datetime.now(timezone.utc))
         }
 
-    async def add_data_upload(self, session_id: str, data_id: str) -> bool:
-        """Add data upload to session"""
-        session_data = await self.get(session_id)
-        if not session_data:
-            return False
-
-        if 'data_uploads' not in session_data:
-            session_data['data_uploads'] = []
-
-        session_data['data_uploads'].append(data_id)
-        session_data['last_activity'] = to_json_compatible(datetime.now(timezone.utc))
-
-        await self.set(session_id, session_data)
-        return True
-
-    async def add_case_history(self, session_id: str, case_record: Dict[str, Any]) -> bool:
-        """Add case history record to session"""
-        session_data = await self.get(session_id)
-        if not session_data:
-            return False
-
-        if 'case_history' not in session_data:
-            session_data['case_history'] = []
-
-        session_data['case_history'].append(case_record)
-        session_data['last_activity'] = to_json_compatible(datetime.now(timezone.utc))
-
-        await self.set(session_id, session_data)
-        return True
-
     async def cleanup_session_data(self, session_id: str) -> bool:
         """Clean up session data (for now, just delete the session)"""
         return await self.delete_session(session_id)

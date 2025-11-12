@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from datetime import datetime, timezone
+from faultmaven.utils.serialization import to_json_compatible
 
 from ...infrastructure.monitoring.metrics_collector import metrics_collector
 from ...infrastructure.monitoring.apm_integration import apm_integration
@@ -390,7 +391,7 @@ class PerformanceMetricsEndpoint:
             alert_stats = alert_manager.get_alert_statistics()
             
             return {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "middleware": middleware_stats,
                 "metrics_collector": metrics_summary,
                 "dashboard": dashboard_data,
@@ -402,7 +403,7 @@ class PerformanceMetricsEndpoint:
             self.logger.error(f"Failed to get performance metrics: {e}")
             return {
                 "error": f"Failed to get performance metrics: {e}",
-                "timestamp": datetime.now(timezone.utc).isoformat()
+                "timestamp": to_json_compatible(datetime.now(timezone.utc))
             }
     
     async def get_real_time_metrics(self, time_window_minutes: int = 5) -> Dict[str, Any]:
@@ -419,7 +420,7 @@ class PerformanceMetricsEndpoint:
             active_alerts = alert_manager.get_active_alerts()
             
             return {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
                 "time_window_minutes": time_window_minutes,
                 "dashboard": dashboard_data,
                 "active_alerts": [
@@ -429,7 +430,7 @@ class PerformanceMetricsEndpoint:
                         "metric_name": alert.metric_name,
                         "metric_value": alert.metric_value,
                         "threshold_value": alert.threshold_value,
-                        "triggered_at": alert.triggered_at.isoformat(),
+                        "triggered_at": alert.to_json_compatible(triggered_at),
                         "message": alert.message
                     }
                     for alert in active_alerts[:10]  # Last 10 alerts
@@ -440,5 +441,5 @@ class PerformanceMetricsEndpoint:
             self.logger.error(f"Failed to get real-time metrics: {e}")
             return {
                 "error": f"Failed to get real-time metrics: {e}",
-                "timestamp": datetime.now(timezone.utc).isoformat()
+                "timestamp": to_json_compatible(datetime.now(timezone.utc))
             }

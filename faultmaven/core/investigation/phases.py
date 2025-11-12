@@ -25,7 +25,6 @@ from faultmaven.models.investigation import (
     OODAStep,
     EngagementMode,
     InvestigationStrategy,
-    PhaseOODAMapping,
 )
 
 
@@ -437,34 +436,25 @@ def detect_entry_phase(
 ) -> InvestigationPhase:
     """Detect which phase investigation should start at
 
-    Most cases start at Phase 0 (Intake), but can start later if:
-    - Problem already confirmed
-    - Critical urgency (skip to later phases)
+    NOTE: Phase routing based on urgency is now deferred until after Phase 1 OODA.
+    This function primarily handles the Phase 0 → Phase 1 transition.
 
     Args:
         problem_confirmation: Existing ProblemConfirmation if any
-        urgency_level: low, medium, high, critical
-        investigation_strategy: Active incident or post-mortem
+        urgency_level: low, medium, high, critical (Phase 0 approximation)
+        investigation_strategy: Active incident or post-mortem (may be None)
 
     Returns:
-        Starting investigation phase
+        Starting investigation phase (typically BLAST_RADIUS after consent)
     """
-    # Default: Start at Intake
+    # Default: Start at Intake if no problem confirmed
     if problem_confirmation is None:
         return InvestigationPhase.INTAKE
 
-    # Problem already confirmed, can start at Blast Radius
-    if urgency_level == "critical":
-        # Critical incidents: Skip hypothesis, go straight to solution after timeline
-        logger.info("Critical urgency: Starting investigation at Timeline phase")
-        return InvestigationPhase.TIMELINE
-
-    if urgency_level == "high":
-        # High urgency: Start at blast radius, may skip hypothesis later
-        logger.info("High urgency: Starting investigation at Blast Radius phase")
-        return InvestigationPhase.BLAST_RADIUS
-
-    # Normal flow: Start at Blast Radius (problem already confirmed)
+    # Problem confirmed and user consented → always start at Blast Radius
+    # Phase routing (Timeline vs Solution) happens after Phase 1 OODA completes
+    # based on OODA-refined urgency assessment
+    logger.info("Problem confirmed: Starting investigation at Blast Radius phase for OODA assessment")
     return InvestigationPhase.BLAST_RADIUS
 
 
@@ -502,7 +492,7 @@ def should_advance_phase(
     investigation_state: Any,
     max_stall_turns: int = 5,
 ) -> tuple[bool, str]:
-    """Determine if phase should advance (stall detection)
+    """Determine if phase should advance (v3.0 - progress tracking)
 
     Args:
         phase: Current investigation phase
@@ -520,10 +510,10 @@ def should_advance_phase(
     if is_complete:
         return True, "Phase completion criteria met"
 
-    # Check for stall (too many turns without progress)
+    # Check for too many turns without progress (enter degraded mode in v3.0)
     if investigation_state.lifecycle.turns_in_current_phase >= max_stall_turns:
         definition = get_phase_definition(phase)
         if definition.can_skip:
-            return True, f"Phase stalled after {max_stall_turns} turns, advancing"
+            return True, f"Phase blocked after {max_stall_turns} turns, advancing"
 
     return False, "Phase still in progress"

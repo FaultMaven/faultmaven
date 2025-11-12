@@ -45,8 +45,15 @@ class AgentState(TypedDict):
 class SessionContext(BaseModel):
     """Session context for maintaining state across requests"""
 
+    # Core session fields (spec-compliant: authentication only)
     session_id: str = Field(..., description="Unique session identifier")
-    user_id: Optional[str] = Field(None, description="User identifier if authenticated")
+    user_id: str = Field(..., description="User identifier - REQUIRED for authorization")
+
+    # Multi-device support fields (spec lines 263-269)
+    client_id: Optional[str] = Field(None, description="Client/device identifier for session resumption")
+    session_resumed: bool = Field(False, description="Whether this session was resumed from existing")
+
+    # Timestamps
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc), description="Session creation timestamp"
     )
@@ -56,14 +63,9 @@ class SessionContext(BaseModel):
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc), description="Last update timestamp"
     )
-    data_uploads: List[str] = Field(
-        default_factory=list, description="List of uploaded data IDs"
-    )
-    case_history: List[Dict[str, Any]] = Field(
-        default_factory=list, description="History of cases (conversation threads)"
-    )
-    current_case_id: Optional[str] = Field(None, description="Current active case/conversation thread ID")
-    agent_state: Optional[Dict[str, Any]] = Field(None, description="Current agent state and context")
+    expires_at: Optional[datetime] = Field(None, description="Session expiration time (TTL-based)")
+
+    # Session metadata (authentication context only)
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional session metadata")
 
     @property

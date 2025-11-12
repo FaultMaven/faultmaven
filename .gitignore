@@ -208,3 +208,10 @@ frontend/.npmrc
 
 # Cleanup and archived files
 recycle/
+
+# Temporary documentation patterns (added 2025-11-09)
+*_REPORT.md
+*_SUMMARY.md
+*_STATUS.md
+TEST_COVERAGE*.md
+CLEANUP_*.md

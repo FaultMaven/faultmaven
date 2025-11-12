@@ -1,13 +1,31 @@
 # FaultMaven System Architecture Overview v2.0
 
+> **📝 Critical Update (2025-11-04)**
+>
+> **Investigation Architecture Redesigned** - Milestone-Based Framework v2.0:
+> - **OLD**: 7-phase OODA investigation lifecycle (ARCHIVED)
+> - **NEW**: Milestone-based opportunistic completion (see [Investigation Architecture v2.0](./milestone-based-investigation-framework.md))
+> - **Case Status**: CONSULTING → INVESTIGATING → RESOLVED/CLOSED (4 states)
+> - **Investigation Stages**: UNDERSTANDING, DIAGNOSING, RESOLVING (computed from milestones)
+> - **Canonical Docs**: milestone-based-investigation-framework.md, case-data-model-design.md, prompt-engineering-guide.md
+>
+> ⚠️ **This document needs comprehensive v2.0 update** - some sections still reference old 7-phase design.
+> **For current design**: Refer to [Investigation Architecture v2.0](./milestone-based-investigation-framework.md)
+
+> **Session-Case Architecture (2025-10-24)**:
+> - Sessions are **authentication-only** (no case/investigation state)
+> - Cases are **independent resources** owned directly by users
+> - Multi-device support via `client_id` and session resumption
+> - Implementation: ✅ **100% COMPLIANT**
+
 ## Overview
 
 FaultMaven implements a sophisticated clean architecture pattern with dependency injection, interface-based design, and comprehensive observability. The system features a modern v3.1.0 schema-driven API that provides intent-driven responses, evidence-based troubleshooting, and structured state management. Designed as a privacy-first, AI-powered troubleshooting assistant that scales horizontally and integrates seamlessly with existing DevOps toolchains.
 
 **Key Architectural Principles:**
-- **OODA Investigation Framework (v3.2.0)**: 7-phase investigation lifecycle with flexible Observe-Orient-Decide-Act cycles (see [Investigation Phases and OODA Integration](./investigation-phases-and-ooda-integration.md))
-- **Dual Engagement Modes**: Consultant (Phase 0) and Lead Investigator (Phases 1-6) for natural user interaction
-- **Adaptive OODA Intensity**: Light, Medium, Full iteration cycles matched to phase complexity
+- **Milestone-Based Investigation (v2.0)**: Opportunistic task completion based on data availability, not rigid phases (see [Investigation Architecture](./milestone-based-investigation-framework.md))
+- **Dual Engagement Modes**: Consultant Mode (CONSULTING status) and Lead Investigator (INVESTIGATING status) for natural user interaction
+- **Turn-Based Progress Tracking**: Replaces OODA iterations with turn-by-turn milestone completion
 - **Hierarchical Memory System**: 64% token reduction with Hot/Warm/Cold/Persistent tiers
 - **Hypothesis Confidence Management**: Automatic decay (0.85^n) prevents anchoring bias
 - **Evidence-Centric Troubleshooting**: Structured evidence collection with 5-dimensional classification
@@ -192,10 +210,11 @@ FaultMaven implements a sophisticated **investigation process framework** for sy
 
 **Evidence Collection**: See [Evidence Collection and Tracking Design v2.1](./evidence-collection-and-tracking-design.md) for complete evidence schemas, classification system, and agent behaviors
 
-**Known Issues:**
-- 🚨 Prompt system uses legacy 5-phase prompts (needs update to 7-phase OODA)
-- 🚨 Test coverage limited (~3 tests vs documented 32+)
-- 🟡 Legacy doctor/patient system coexists with OODA (migration in progress)
+**Implementation Status (as of 2025-10-24):**
+- ✅ 7-phase prompts implemented (`prompts/phase_prompts.py`)
+- ✅ Test coverage significantly improved (56+ investigation tests, 18x increase)
+- ✅ All critical components operational (phase handlers, memory compression, planning service)
+- 🟡 Documentation consolidation ongoing (implementation-module-mapping.md, data-models-reference.md created)
 
 ### 2. Typed Context System
 
@@ -859,7 +878,7 @@ See [Investigation Phases Framework - User Journeys](./investigation-phases-and-
 
 ## v3.1.0 Schema Architecture
 
-> **Detailed Design**: See [Schema v3.1.0 Design](./schema-v3-design.md) for complete API contracts and integration examples
+> **Note**: Complete API schema specification is documented in this section below. All schema contracts, data models, and integration examples are included here.
 
 ### Schema-Driven API Design
 
