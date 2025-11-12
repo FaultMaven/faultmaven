@@ -54,7 +54,6 @@ from faultmaven.models.api_models import (
 )
 from faultmaven.models.case_ui import CaseUIResponse
 from faultmaven.services.adapters.case_ui_adapter import transform_case_for_ui
-from faultmaven.models.interfaces_case import ParticipantRole  # Deprecated stub
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.models.interfaces_report import IReportStore
 from faultmaven.models.api import (

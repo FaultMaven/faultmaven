@@ -26,8 +26,7 @@ from faultmaven.models.case import (
     CaseSummary,
     CaseStatus,
     CasePriority,
-    MessageType,
-    ParticipantRole
+    MessageType
 )
 from faultmaven.models.interfaces_case import ICaseStore
 from faultmaven.models.interfaces import ISessionStore
@@ -422,112 +421,6 @@ class TestCaseUpdate:
         result = await case_service.update_case("case-123", updates, user_id="user-456")
         
         assert result is False
-
-
-class TestCaseSharing:
-    """Test case sharing functionality"""
-    
-    @pytest.mark.asyncio
-    async def test_share_case_success(self, case_service, mock_case_store, sample_case):
-        """Test successful case sharing"""
-        mock_case_store.get_case.return_value = sample_case
-        mock_case_store.add_case_participant.return_value = True
-        mock_case_store.update_case.return_value = True
-        
-        result = await case_service.share_case(
-            case_id="case-123",
-            target_user_id="user-789",
-            role=ParticipantRole.COLLABORATOR,
-            sharer_user_id="user-456"
-        )
-        
-        assert result is True
-        mock_case_store.add_case_participant.assert_called_once_with(
-            "case-123", "user-789", ParticipantRole.COLLABORATOR, "user-456"
-        )
-        mock_case_store.update_case.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_share_case_update_existing_participant(self, case_service, mock_case_store, sample_case):
-        """Test sharing case with existing participant (role update)"""
-        # Add existing participant with different role
-        sample_case.add_participant("user-789", ParticipantRole.VIEWER)
-        mock_case_store.get_case.return_value = sample_case
-        mock_case_store.update_case.return_value = True
-        
-        result = await case_service.share_case(
-            case_id="case-123",
-            target_user_id="user-789",
-            role=ParticipantRole.COLLABORATOR,
-            sharer_user_id="user-456"
-        )
-        
-        assert result is True
-        mock_case_store.add_case_participant.assert_not_called()
-        mock_case_store.update_case.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_share_case_same_role_no_change(self, case_service, mock_case_store, sample_case):
-        """Test sharing case with participant who already has same role"""
-        # Add existing participant with same role
-        sample_case.add_participant("user-789", ParticipantRole.COLLABORATOR)
-        mock_case_store.get_case.return_value = sample_case
-        
-        result = await case_service.share_case(
-            case_id="case-123",
-            target_user_id="user-789",
-            role=ParticipantRole.COLLABORATOR,
-            sharer_user_id="user-456"
-        )
-        
-        assert result is True
-        mock_case_store.add_case_participant.assert_not_called()
-        mock_case_store.update_case.assert_not_called()
-    
-    @pytest.mark.asyncio
-    async def test_share_case_access_denied(self, case_service, mock_case_store, sample_case):
-        """Test case sharing with access denied"""
-        # Add a viewer who can't share
-        sample_case.add_participant("user-999", ParticipantRole.VIEWER)
-        mock_case_store.get_case.return_value = sample_case
-        
-        result = await case_service.share_case(
-            case_id="case-123",
-            target_user_id="user-789",
-            role=ParticipantRole.COLLABORATOR,
-            sharer_user_id="user-999"
-        )
-        
-        assert result is False
-        mock_case_store.add_case_participant.assert_not_called()
-    
-    @pytest.mark.asyncio
-    async def test_share_case_owner_role_error(self, case_service):
-        """Test sharing case with owner role raises ValidationException"""
-        with pytest.raises(ValidationException, match="Cannot assign owner role through sharing"):
-            await case_service.share_case(
-                case_id="case-123",
-                target_user_id="user-789",
-                role=ParticipantRole.OWNER,
-                sharer_user_id="user-456"
-            )
-    
-    @pytest.mark.asyncio
-    async def test_share_case_empty_parameters_error(self, case_service):
-        """Test case sharing with empty parameters"""
-        with pytest.raises(ValidationException, match="Case ID and target user ID are required"):
-            await case_service.share_case(
-                case_id="",
-                target_user_id="user-789",
-                role=ParticipantRole.COLLABORATOR
-            )
-        
-        with pytest.raises(ValidationException, match="Case ID and target user ID are required"):
-            await case_service.share_case(
-                case_id="case-123",
-                target_user_id="",
-                role=ParticipantRole.COLLABORATOR
-            )
 
 
 class TestCaseMessages:

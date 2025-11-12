@@ -280,25 +280,6 @@ def format_pattern_prompt(
     return "\n\n".join(parts)
 
 
-# Legacy function compatibility (deprecated - use format_pattern_prompt instead)
-def get_few_shot_examples(category: str = "all", limit: int = 3) -> List[Dict]:
-    """
-    DEPRECATED: Returns empty list. Use format_pattern_prompt() instead.
-
-    Pattern templates have replaced verbose examples for 87% token reduction.
-    """
-    return []
-
-
-def format_few_shot_prompt(examples: List[Dict]) -> str:
-    """
-    DEPRECATED: Returns empty string. Use format_pattern_prompt() instead.
-
-    Pattern templates have replaced verbose examples for 87% token reduction.
-    """
-    return ""
-
-
 def get_examples_for_context(user_query: str, limit: int = 2) -> str:
     """
     Get relevant pattern based on user query content.
@@ -335,15 +316,6 @@ def get_examples_for_context(user_query: str, limit: int = 2) -> str:
             return get_pattern(category)
 
     # Default: no pattern
-    return ""
-
-
-def get_complete_few_shot_section(category: str = "all") -> str:
-    """
-    DEPRECATED: Returns empty string. Use format_pattern_prompt() instead.
-
-    Pattern templates have replaced verbose examples for 87% token reduction.
-    """
     return ""
 
 
