@@ -23,9 +23,7 @@ from ...models.interfaces_report import IReportStore
 from ...models.interfaces import IJobService
 from ...services import DataService, KnowledgeService, SessionService
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
-from faultmaven.services.agentic_stub import AgentService  # Type hint only
 from ...services.preprocessing import PreprocessingService
-from .dependencies_stub import get_agent_service  # Stub for old OODA endpoints
 
 
 # Service Dependencies
