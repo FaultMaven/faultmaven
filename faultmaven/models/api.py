@@ -14,9 +14,9 @@ if TYPE_CHECKING:
 # Import evidence-centric models
 from faultmaven.models.evidence import (
     EvidenceRequest,
-    InvestigationMode,
     CaseStatus as EvidenceCaseStatus,
 )
+from faultmaven.models.investigation import InvestigationStrategy
 
 # --- Enumerations for Explicit Contracts ---
 
@@ -174,20 +174,13 @@ class AgentResponse(BaseModel):
         default_factory=list,
         description="Active evidence requests for this turn"
     )
-    investigation_mode: InvestigationMode = Field(
-        default=InvestigationMode.ACTIVE_INCIDENT,
+    investigation_mode: InvestigationStrategy = Field(
+        default=InvestigationStrategy.ACTIVE_INCIDENT,
         description="Current investigation approach (speed vs depth)"
     )
     case_status: EvidenceCaseStatus = Field(
         default=EvidenceCaseStatus.CONSULTING,
         description="Current case investigation state"
-    )
-
-    # DEPRECATED (backward compatibility)
-    suggested_actions: Optional[List[Dict[str, Any]]] = Field(
-        default=None,
-        deprecated=True,
-        description="DEPRECATED in v3.1.0 - Use evidence_requests instead. Always null in new responses."
     )
 
     @model_validator(mode='before')
