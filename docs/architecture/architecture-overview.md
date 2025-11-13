@@ -1,26 +1,21 @@
 # FaultMaven System Architecture Overview v3.0
 
-> **✅ Architecture Migration Complete (2025-11-12)**
+> **System Overview**
 >
-> **Major Migration**: Redis-to-PostgreSQL Storage + Milestone-Based Investigation
-> - **Storage Layer**: PostgreSQL hybrid (10-table normalized schema) + Redis (sessions/cache)
-> - **Investigation Model**: Milestone-based opportunistic completion (7-phase system archived)
-> - **Code Simplification**: 8,000+ lines of agentic services removed, replaced with streamlined MilestoneEngine
-> - **Case Ownership**: User-owned cases (decoupled from sessions)
-> - **Message Schema**: Standardized to industry conventions (`created_at`, `author_id`, metadata)
-> - **Migration Status**: ✅ Code complete, ⏸️ Alembic migrations pending
+> FaultMaven is an AI-powered troubleshooting copilot with milestone-based investigation, PostgreSQL persistence, and multi-LLM support.
 >
-> **Authoritative Design Documents**:
-> - [Milestone-Based Investigation Framework v2.0](./milestone-based-investigation-framework.md) - Investigation architecture
-> - [Case Storage Design](./case-storage-design.md) - PostgreSQL schema specification
-> - [Redis Usage Design](./redis-usage-design.md) - Redis vs PostgreSQL roles
-> - [Prompt Engineering Guide](./prompt-engineering-guide.md) - Current prompting system
-
-> **Session-Case Architecture**:
-> - Sessions: **Authentication + ephemeral state** (Redis storage)
-> - Cases: **Independent user-owned resources** (PostgreSQL storage)
-> - Multi-device support via `client_id` and session resumption
-> - Implementation: ✅ **100% COMPLIANT**
+> **Core Architecture**:
+> - **Storage**: PostgreSQL (persistent cases/users) + Redis (ephemeral sessions) + ChromaDB (vectors)
+> - **Investigation**: Milestone-based opportunistic completion with MilestoneEngine
+> - **Case Model**: User-owned cases with multi-session continuity
+> - **LLM Support**: OpenAI, Anthropic, Fireworks AI, Groq with automatic failover
+> - **Security**: PII redaction (Presidio) + RBAC authorization + guardrails
+>
+> **Key Design Documents**:
+> - [Milestone-Based Investigation Framework](./milestone-based-investigation-framework.md) - Investigation engine design
+> - [Case Storage Design](./case-storage-design.md) - PostgreSQL schema (10 tables)
+> - [Prompt Engineering Guide](./prompt-engineering-guide.md) - Prompting system
+> - [Knowledge Base Architecture](./knowledge-base-architecture.md) - RAG system (3 vector stores)
 
 ## Overview
 
@@ -185,139 +180,6 @@ flowchart TB
     classDef storage fill:#f1f8e9
 ```
 
-## Major Architecture Migration (November 2025)
-
-### 1. PostgreSQL Hybrid Storage Migration
-
-**Status**: ✅ **CODE COMPLETE** - Alembic migrations pending
-
-FaultMaven completed a major storage layer migration from Redis-only to PostgreSQL hybrid architecture:
-
-**Migration Overview**:
-- **From**: Redis-based case storage (RedisCaseStore - 1,170 lines deleted)
-- **To**: PostgreSQL normalized schema (10 tables) + Redis for ephemeral data
-- **Net Impact**: -33,928 lines (42% code reduction through simplification)
-
-**PostgreSQL Schema** (10 normalized tables):
-- **cases** - Case metadata, status, ownership
-- **case_messages** - Conversation turns with `created_at`, `author_id`, metadata
-- **case_evidence** - Evidence items with lifecycle tracking
-- **case_hypotheses** - Hypothesis tracking with confidence scores
-- **case_milestones** - Milestone completion tracking
-- **case_uploaded_files** - File metadata and linkage
-- **users** - User profiles and authentication
-- **user_sessions** - Session management with client_id support
-- **auth_tokens** - Token-based authentication
-- **vector_metadata** - ChromaDB collection tracking
-
-**Redis Role** (Ephemeral data only):
-- Session state and resumption
-- Cache layer for performance
-- Temporary working memory
-
-**Key Benefits**:
-- Proper relational data integrity
-- Efficient queries with indexing
-- Long-term case persistence
-- Industry-standard message schema (`created_at` vs `timestamp`)
-- Audit trail and compliance support
-
-**Authoritative Documentation**: [Case Storage Design](./case-storage-design.md), [Redis Usage Design](./redis-usage-design.md)
-
-### 2. Milestone-Based Investigation Framework
-
-**Status**: ✅ **CODE COMPLETE**
-
-Replaced complex 7-phase handler system with streamlined milestone-based investigation:
-
-**Migration Overview**:
-- **Deleted**: 7-phase handler system (4,000+ lines) + Agentic services layer (8,000+ lines)
-- **Replaced With**: MilestoneEngine + simplified investigation components
-- **Philosophy**: Opportunistic completion based on data availability vs rigid phase progression
-
-**Core Components** (in `core/investigation/`):
-- **MilestoneEngine** - State-driven investigation workflow with opportunistic task completion
-- **HypothesisManager** - Opportunistic capture + systematic generation with confidence tracking
-- **InvestigationCoordinator** - Orchestrates milestone-based workflows
-- **WorkflowProgressionDetector** - Detects forward progress vs circular conversations
-- **OODAEngine** - Simplified OODA integration (no phase coupling)
-- **WorkingConclusionGenerator** - Synthesizes conclusions from completed milestones
-
-**Investigation Model**:
-- **Case Status**: CONSULTING → INVESTIGATING → RESOLVED/CLOSED (user-facing lifecycle)
-- **Investigation Stages**: Understanding → Diagnosing → Resolving (computed from milestones)
-- **Milestone Tracking**: Agent completes multiple milestones per turn when data available
-- **Turn-Based Progress**: Track progress by turn, not OODA iterations
-
-**Key Benefits**:
-- Simpler mental model - complete tasks as data becomes available
-- Faster resolution - no artificial phase barriers
-- Easier to understand and debug
-- More maintainable codebase
-
-**Authoritative Documentation**: [Milestone-Based Investigation Framework v2.0](./milestone-based-investigation-framework.md)
-
-### 3. Case Ownership Model Change
-
-**Status**: ✅ **CODE COMPLETE**
-
-Cases transitioned from session-coupled to user-owned:
-
-**Old Model**:
-- Cases belonged to sessions
-- Session expiry = case data loss
-- Cross-device continuation problematic
-
-**New Model**:
-- Cases owned directly by users
-- Persistent across sessions
-- Multi-device support via session resumption
-- Architecture: Session → User → Cases (indirect relationship)
-
-**Implementation**:
-- `user_id` field on cases table (foreign key to users)
-- Case queries independent of session lifecycle
-- Session provides authentication context only
-
-### 4. Message Schema Standardization
-
-**Status**: ✅ **CODE COMPLETE**
-
-Aligned message schema with industry conventions (Rails/Django/GitHub):
-
-**Changes**:
-- **Renamed**: `timestamp` → `created_at` (industry standard)
-- **Added**: `turn_number` - Explicit turn tracking for milestone progress
-- **Added**: `author_id` - User attribution for multi-participant cases
-- **Added**: `token_count` - Per-message token tracking for optimization
-- **Added**: `metadata` - Extensible JSON field for platform-specific data
-- **Fixed**: AttributeError on `CaseMessage.message_type` (use `.role` instead)
-
-**Benefits**:
-- Familiar to developers from other platforms
-- Better tooling support (ORMs, migrations)
-- Future-proof for multi-user collaboration
-- Detailed audit trails
-
-### 5. Prompt Engineering Reorganization
-
-**Status**: ✅ **CODE COMPLETE**
-
-Reorganized prompts to support milestone-based investigation:
-
-**New Structure** (`prompts/investigation/`):
-- **consultant_mode.py** - Consultant engagement mode prompts
-- **lead_investigator.py** - Lead investigator engagement mode
-- **degraded_mode_prompts.py** - Fallback prompts for service degradation
-- **loopback_prompts.py** - Circular conversation detection and recovery
-- **ooda_guidance.py** - OODA framework integration
-- **workflow_progression_prompts.py** - Milestone completion detection
-- **phase1_routing_prompts.py** - Initial routing logic
-- **phase3_structured_output.py** - Structured hypothesis generation
-- **phase5_entry_modes.py** - Solution phase entry points
-
-**Authoritative Documentation**: [Prompt Engineering Guide](./prompt-engineering-guide.md)
-
 ## Layer Responsibilities
 
 ### API Layer
@@ -452,178 +314,6 @@ The knowledge base uses a **KB-neutral Strategy Pattern** where one core Documen
 - **PostgreSQL** (Persistent): Cases, messages, evidence, hypotheses, milestones, users, auth
 - **Redis** (Ephemeral): Sessions, cache, temporary working state
 - **ChromaDB** (Vectors): Knowledge base embeddings (3 separate collections)
-
-## Advanced Communication Architecture
-
-> **Detailed Design**: See [Memory Management Architecture](./memory-management-architecture.md) for complete system design
-
-### Memory Management System
-
-```mermaid
-graph TB
-    subgraph "Memory Hierarchy"
-        WM[Working Memory<br/>Current Context]
-        SM[Session Memory<br/>Session Insights]
-        UM[User Memory<br/>Preferences & Patterns]
-        EM[Episodic Memory<br/>Case History]
-    end
-    
-    subgraph "Memory Operations"
-        CONSOLIDATE[Memory Consolidation]
-        RETRIEVAL[Context-Aware Retrieval]
-        LEARNING[Insight Extraction]
-        OPTIMIZATION[Memory Optimization]
-    end
-    
-    subgraph "Integration Points"
-        AGENT[AI Agent]
-        PLANNER[Planning Engine]
-        PROMPT[Prompt Engine]
-        SESSION[Session Service]
-    end
-    
-    WM --> CONSOLIDATE
-    SM --> CONSOLIDATE
-    UM --> CONSOLIDATE
-    EM --> CONSOLIDATE
-    
-    CONSOLIDATE --> LEARNING
-    LEARNING --> OPTIMIZATION
-    
-    OPTIMIZATION --> RETRIEVAL
-    RETRIEVAL --> AGENT
-    RETRIEVAL --> PLANNER
-    RETRIEVAL --> PROMPT
-    
-    AGENT --> WM
-    PLANNER --> WM
-    PROMPT --> WM
-    SESSION --> SM
-```
-
-**Memory Types**:
-- **Working Memory**: Current conversation context (sliding window)
-- **Session Memory**: Session-specific insights and learnings
-- **User Memory**: Long-term user preferences and expertise patterns
-- **Episodic Memory**: Past troubleshooting cases and resolutions
-
-**Key Features**:
-- **Semantic Embeddings**: Context-aware memory retrieval
-- **Memory Consolidation**: LLM-powered insight extraction
-- **Decay Mechanisms**: Time-based relevance scoring
-- **Cross-Session Learning**: Persistent user understanding
-
-**Memory Optimization**: For investigation state management, FaultMaven uses a **hot/warm/cold tiered compression** strategy that reduces token usage from 4,500+ to ~1,600 tokens (64% reduction). See [Investigation Phases Framework - State Management](./investigation-phases-and-ooda-integration.md#state-management-architecture) for details.
-
-### Advanced Prompting System
-
-> **Detailed Design**: See [Prompt Engineering Architecture](./prompt-engineering-architecture.md) for complete system design
-
-```mermaid
-graph TB
-    subgraph "Prompt Layers"
-        SYSTEM[System Layer<br/>Core Personality]
-        CONTEXT[Context Layer<br/>Conversation State]
-        DOMAIN[Domain Layer<br/>Technical Expertise]
-        TASK[Task Layer<br/>Response Requirements]
-        SAFETY[Safety Layer<br/>Risk Constraints]
-        ADAPTATION[Adaptation Layer<br/>User Preferences]
-    end
-    
-    subgraph "Prompt Operations"
-        ASSEMBLY[Dynamic Assembly]
-        OPTIMIZATION[Quality Optimization]
-        VERSIONING[Version Management]
-        PERFORMANCE[Performance Tracking]
-    end
-    
-    subgraph "Integration"
-        LLM[LLM Provider]
-        MEMORY[Memory System]
-        PLANNING[Planning Engine]
-        QUALITY[Quality Metrics]
-    end
-    
-    SYSTEM --> ASSEMBLY
-    CONTEXT --> ASSEMBLY
-    DOMAIN --> ASSEMBLY
-    TASK --> ASSEMBLY
-    SAFETY --> ASSEMBLY
-    ADAPTATION --> ASSEMBLY
-    
-    ASSEMBLY --> OPTIMIZATION
-    OPTIMIZATION --> VERSIONING
-    VERSIONING --> PERFORMANCE
-    
-    PERFORMANCE --> QUALITY
-    QUALITY --> OPTIMIZATION
-    
-    ASSEMBLY --> LLM
-    MEMORY --> CONTEXT
-    PLANNING --> TASK
-```
-
-**Prompt Features**:
-- **Multi-Layer Architecture**: System, context, domain, task, safety, and adaptation layers
-- **Dynamic Optimization**: Quality-based prompt improvement
-- **Version Management**: A/B testing and performance tracking
-- **Context Injection**: Memory-aware prompt enhancement
-- **Phase-Aware Prompts**: Different prompts for different investigation phases
-- **Token Optimization**: Tiered prompts achieve 81% token reduction
-
-### Strategic Planning System
-
-> **Detailed Design**: See [Planning System Architecture](./planning-system-architecture.md) for complete system design
-
-```mermaid
-graph TB
-    subgraph "Planning Phases"
-        ANALYSIS[Problem Analysis]
-        STRATEGY[Solution Strategy]
-        IMPLEMENTATION[Implementation Plan]
-        RISK[Risk Assessment]
-        SUCCESS[Success Criteria]
-        RESOURCES[Resource Planning]
-    end
-    
-    subgraph "Planning Operations"
-        DECOMPOSITION[Problem Decomposition]
-        PRIORITIZATION[Component Prioritization]
-        ALTERNATIVES[Alternative Solutions]
-        CONTINGENCIES[Contingency Planning]
-    end
-    
-    subgraph "Integration"
-        AGENT[AI Agent]
-        MEMORY[Memory System]
-        TOOLS[Agent Tools]
-        QUALITY[Quality Assessment]
-    end
-    
-    ANALYSIS --> DECOMPOSITION
-    DECOMPOSITION --> PRIORITIZATION
-    PRIORITIZATION --> STRATEGY
-    
-    STRATEGY --> IMPLEMENTATION
-    IMPLEMENTATION --> RISK
-    RISK --> SUCCESS
-    SUCCESS --> RESOURCES
-    
-    STRATEGY --> ALTERNATIVES
-    IMPLEMENTATION --> CONTINGENCIES
-    
-    DECOMPOSITION --> AGENT
-    PRIORITIZATION --> MEMORY
-    ALTERNATIVES --> TOOLS
-    SUCCESS --> QUALITY
-```
-
-**Planning Features**:
-- **Problem Decomposition**: LLM-powered problem breakdown
-- **Strategic Planning**: Multi-phase solution development
-- **Risk Assessment**: Comprehensive risk analysis and mitigation
-- **Alternative Solutions**: Multiple approach evaluation
-- **Adaptive Execution**: Planning adjusts based on investigation progress
 
 ## Dependency Injection Architecture
 
@@ -1455,30 +1145,6 @@ See [Authentication Design](./authentication-design.md#role-based-access-control
 - **Circuit Breakers**: Automatic failover for external service outages
 - **Memory Redundancy**: Distributed memory storage for high availability
 
-## Session Architecture Evolution
-
-### Multi-Session Per User Design
-
-FaultMaven implements **client-based session management** enabling multiple concurrent sessions per user:
-
-**Key Features**:
-- Multiple concurrent sessions per user (one per client/device)
-- Session resumption across browser restarts (same client_id)
-- Multi-device support (independent sessions per device)
-- Multi-tab sharing (same client_id across tabs)
-
-**Technical Implementation**:
-- Optional `client_id` field in SessionCreateRequest
-- Redis multi-index: (user_id, client_id) → session_id mapping
-- Enhanced SessionService with client-based lookup
-- API responses include `session_resumed` flag
-
-**Frontend Integration**:
-- Generate persistent `client_id` using `crypto.randomUUID()` stored in `localStorage`
-- Include `client_id` in all session creation requests
-- Handle both new session creation and existing session resumption
-- Support collaborative multi-tab experience with shared session state
-
 ## Implementation Module Mapping
 
 > **Detailed Reference**: See [Implementation Module Mapping](./implementation-module-mapping.md) for complete file-by-file breakdown
@@ -1627,15 +1293,6 @@ Milestone-based investigation engine (replaces old agentic framework):
 
 - [`Milestone-Based Investigation Framework v2.0`](./milestone-based-investigation-framework.md) - Complete design document covering MilestoneEngine, HypothesisManager, WorkflowProgressionDetector, and all investigation components
 
-#### Archived Documentation
-
-Old architecture (moved to `archive/`):
-
-- `archive/investigation-phases-and-ooda-integration.md` - 🗄️ OLD 7-phase system (superseded by milestone-based framework)
-- `archive/evidence-collection-and-tracking-design.md` - 🗄️ OLD evidence design
-- `archive/prompt-engineering-architecture.md` - 🗄️ OLD prompting (superseded by prompt-engineering-guide.md)
-- `archive/agentic_services_old/` - 🗄️ OLD agentic services code (8,000+ lines)
-
 #### Supporting Services
 
 - [`Error Handling and Recovery`](./error-handling-and-recovery.md) - Error patterns: LLM errors, state corruption, infinite loops, recovery strategies
@@ -1667,10 +1324,9 @@ Old architecture (moved to `archive/`):
 **Code Location**: `faultmaven/core/`  
 **Update Frequency**: 🔶 MEDIUM (stable domain logic)
 
-#### Agent and Reasoning
+#### Investigation Engine
 
-- Investigation Phases Framework (Section 2) covers core agent reasoning
-- [`Agent Doctrine and Reasoning`](./agent-doctrine-and-reasoning.md) - 📝 *To create* - SRE methodology (core/agent/): 7-phase investigation doctrine (Phases 0-6), OODA reasoning workflows
+- [`Milestone-Based Investigation Framework v2.0`](./milestone-based-investigation-framework.md) - Core investigation engine (core/investigation/): MilestoneEngine, HypothesisManager, WorkflowProgressionDetector, opportunistic task completion
 
 #### Data Processing and Analysis
 
@@ -1818,6 +1474,5 @@ faultmaven/config/              → Section 7 (Configuration)
 
 **Document Version**: 3.0
 **Last Updated**: 2025-11-12
-**Migration**: PostgreSQL Hybrid Storage + Milestone-Based Investigation (November 2025)
-**Status**: Master Architecture Document - Reflects completed major architecture migration (-33,928 lines, 42% code reduction)
+**Status**: Master Architecture Document - System Specification
 
