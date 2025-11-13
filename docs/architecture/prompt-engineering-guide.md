@@ -133,33 +133,31 @@ Why: Faster, cheaper, more coherent. Single LLM maintains conversation context.
 **Core Insight**: Investigation is **data-driven and opportunistic**, not phase-constrained.
 
 ```
-OLD PHASE MODEL:
-Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
-(Must complete each before advancing, even if data available for later phases)
-
-NEW MILESTONE MODEL:
+MILESTONE-BASED MODEL:
 Agent completes ALL tasks for which sufficient data exists IN ONE TURN
 
 Example:
 User uploads comprehensive log containing:
   - Error messages (symptom data)
-  - Timestamps (timeline data)  
+  - Timestamps (timeline data)
   - Stack trace (root cause data)
-  
+
 Agent in ONE turn:
   ✅ symptom_verified
   ✅ timeline_established
   ✅ root_cause_identified
   ✅ solution_proposed
-  
-No sequential phase transitions. Just complete what you can.
+
+Just complete what you can based on available data.
 ```
+
+**Design Philosophy**: The agent checks "what data is available?" and "what's been completed?" rather than following sequential phase transitions. This enables opportunistic task completion.
 
 **Prompting Implications**:
 - ✅ Show milestone status (what's done)
 - ✅ Emphasize current stage (what to focus on)
-- ✅ BUT allow jumping ahead ("If data allows, complete multiple milestones")
-- ❌ Never constrain LLM artificially ("You must complete verification before diagnosis")
+- ✅ Allow jumping ahead ("If data allows, complete multiple milestones")
+- ✅ Focus on data availability, not artificial constraints
 
 ### 1.4 LLM as Form-Filler + Conversationalist
 
