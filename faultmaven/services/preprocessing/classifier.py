@@ -287,7 +287,63 @@ class DataClassifier:
                 classification_failed=False
             )
 
-        # 2. Check for LOGS_AND_ERRORS (systematic approach)
+        # 2. Check for TRACE_DATA (distributed traces - very specific patterns)
+        trace_patterns = [
+            r'(traceId|trace_id)["\s:]+[a-f0-9]{32}',  # OpenTelemetry trace IDs (32-char hex)
+            r'(spanId|span_id|parentId)["\s:]+[a-f0-9]{16,}',  # Span IDs
+            r'"(serviceName|service\.name)"',  # Service mesh indicators
+            r'"operationName".*"spans":\s*\[',  # Jaeger trace structure
+        ]
+
+        trace_score = sum(1 for p in trace_patterns if re.search(p, sample, re.IGNORECASE))
+
+        if trace_score >= 2:
+            return ClassificationResult(
+                data_type=DataType.TRACE_DATA,
+                confidence=min(0.95 + confidence_boost, 0.99),
+                source="rule_based",
+                classification_failed=False
+            )
+
+        # 3. Check for PROFILING_DATA (performance profiling - specific headers)
+        profiling_patterns = [
+            r'\bncalls\s+tottime\s+percall\s+cumtime',  # cProfile header
+            r'[\w\.]+(?:;[\w\.]+)+\s+\d+',  # Flame graph format: foo;bar;baz 123
+            r'\d+\s+calls?\s+in\s+[\d\.]+\s+seconds',  # Profiling summary
+            r'filename:lineno\(function\)',  # cProfile format
+        ]
+
+        profiling_score = sum(1 for p in profiling_patterns if re.search(p, sample, re.IGNORECASE))
+
+        if profiling_score >= 1:
+            return ClassificationResult(
+                data_type=DataType.PROFILING_DATA,
+                confidence=min(0.92 + confidence_boost, 0.98),
+                source="rule_based",
+                classification_failed=False
+            )
+
+        # 4. Check for COMMAND_OUTPUT (shell command results - specific formats)
+        command_patterns = [
+            (r'(top\s+-|Tasks:|%Cpu\(s\)|KiB Mem)', 'top'),
+            (r'PID\s+USER\s+%CPU\s+%MEM\s+VSZ\s+RSS', 'ps'),
+            (r'avg-cpu:\s+%user\s+%nice\s+%system', 'iostat'),
+            (r'Device.*tps.*kB_read/s.*kB_wrtn/s', 'iostat'),
+            (r'Proto\s+Recv-Q\s+Send-Q\s+Local Address\s+Foreign Address', 'netstat'),
+            (r'total\s+used\s+free\s+shared\s+buff/cache\s+available', 'free'),
+            (r'Filesystem\s+1K-blocks\s+Used\s+Available\s+Use%', 'df'),
+        ]
+
+        for pattern, cmd in command_patterns:
+            if re.search(pattern, sample, re.IGNORECASE):
+                return ClassificationResult(
+                    data_type=DataType.COMMAND_OUTPUT,
+                    confidence=min(0.95 + confidence_boost, 0.98),
+                    source="rule_based",
+                    classification_failed=False
+                )
+
+        # 5. Check for ERROR_REPORT vs LOGS_AND_ERRORS (systematic approach)
 
         # Text-based log patterns
         text_log_patterns = [
@@ -310,6 +366,32 @@ class DataClassifier:
         text_score = sum(1 for p in text_log_patterns if re.search(p, sample, re.IGNORECASE))
         structured_score = sum(1 for p in structured_log_patterns if re.search(p, sample, re.IGNORECASE))
 
+        # Check for timestamps to differentiate ERROR_REPORT from LOGS_AND_ERRORS
+        timestamp_patterns = [
+            r'\[\d{4}-\d{2}-\d{2}',  # [2025-10-15
+            r'\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}',  # ISO timestamp
+            r'"timestamp":\s*"\d{4}-\d{2}-\d{2}',  # JSON timestamp
+        ]
+        has_timestamps = any(re.search(p, sample, re.IGNORECASE) for p in timestamp_patterns)
+
+        # Check for stack trace structure
+        stack_trace_patterns = [
+            r'at\s+[\w\.]+\(\w+\.java:\d+\)',  # Java stack trace
+            r'File\s+"[^"]+",\s+line\s+\d+',  # Python stack trace
+            r'Traceback \(most recent call last\)',  # Python traceback header
+        ]
+        has_stack_trace = any(re.search(p, sample, re.IGNORECASE) for p in stack_trace_patterns)
+
+        # ERROR_REPORT: Has stack trace but NO timestamps (standalone exception)
+        if has_stack_trace and not has_timestamps and text_score >= 1:
+            return ClassificationResult(
+                data_type=DataType.ERROR_REPORT,
+                confidence=min(0.92 + confidence_boost, 0.98),
+                source="rule_based",
+                classification_failed=False
+            )
+
+        # LOGS_AND_ERRORS: Has timestamps AND log patterns (log file)
         # Strong indicator: .log file with any log patterns
         if ext in ['.log', '.txt'] and (text_score >= 2 or structured_score >= 2):
             base_confidence = 0.85 + min(text_score + structured_score, 3) * 0.03  # 0.85-0.94
@@ -417,25 +499,39 @@ class DataClassifier:
                 classification_failed=False
             )
 
-        # 6. Check for UNSTRUCTURED_TEXT (markdown, documentation)
-        text_exts = ['.md', '.txt', '.rst', '.adoc']
-        text_patterns = [
+        # 6. Check for DOCUMENTATION vs UNSTRUCTURED_TEXT
+        doc_exts = ['.md', '.rst', '.adoc']
+        text_exts = ['.txt']
+
+        markdown_patterns = [
             r'^#{1,6}\s+\w+',  # Markdown headers
             r'^\*\*\w+\*\*',  # Bold text
             r'^\-\s+\w+',  # List items
+            r'```[\w]*\n',  # Code blocks
         ]
 
-        text_score = sum(1 for p in text_patterns if re.search(p, sample, re.MULTILINE))
+        # Prose patterns (indicate documentation)
+        prose_patterns = [
+            r'\b(the|and|for|with|that|this|from|which)\b',  # Common prose words
+            r'[A-Z][a-z]+\s+[a-z]+\s+[a-z]+',  # Sentence structure
+            r'\.\s+[A-Z]',  # Sentence boundaries
+        ]
 
-        if ext in text_exts:
+        markdown_score = sum(1 for p in markdown_patterns if re.search(p, sample, re.MULTILINE))
+        prose_count = sum(len(re.findall(p, sample, re.IGNORECASE)) for p in prose_patterns)
+        prose_density = prose_count / max(len(sample), 1)
+
+        # DOCUMENTATION: Markdown files or high prose density with structure
+        if ext in doc_exts or (markdown_score >= 2 and prose_density > 0.1):
             return ClassificationResult(
-                data_type=DataType.UNSTRUCTURED_TEXT,
-                confidence=0.88,
+                data_type=DataType.DOCUMENTATION,
+                confidence=min(0.88 + confidence_boost, 0.95),
                 source="rule_based",
                 classification_failed=False
             )
 
-        if text_score >= 2:
+        # UNSTRUCTURED_TEXT: Generic text without clear structure
+        if ext in text_exts or markdown_score >= 1:
             return ClassificationResult(
                 data_type=DataType.UNSTRUCTURED_TEXT,
                 confidence=0.72,

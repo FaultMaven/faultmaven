@@ -9,7 +9,12 @@ from faultmaven.services.preprocessing.extractors import (
     MetricsAndPerformanceExtractor,
     UnstructuredTextExtractor,
     SourceCodeExtractor,
-    VisualEvidenceExtractor
+    VisualEvidenceExtractor,
+    TraceDataExtractor,
+    ProfilingDataExtractor,
+    ErrorReportExtractor,
+    DocumentationExtractor,
+    CommandOutputExtractor,
 )
 
 
@@ -398,6 +403,251 @@ class TestVisualEvidenceExtractor:
         assert extractor.llm_calls_used == 0
 
 
+class TestTraceDataExtractor:
+    """Test distributed trace analysis"""
+
+    def test_opentelemetry_trace_parsing(self):
+        """Test parsing OpenTelemetry trace JSON"""
+        extractor = TraceDataExtractor()
+        content = """{
+    "traceId": "abc123def456789012345678901234567890abcd",
+    "spans": [
+        {"spanId": "1234", "serviceName": "api", "duration": 245000000, "name": "GET /users", "status": {"code": 1}},
+        {"spanId": "5678", "serviceName": "db", "duration": 180000000, "name": "query", "status": {"code": 1}}
+    ]
+}"""
+        result = extractor.extract(content)
+
+        assert "Trace Analysis" in result
+        assert "abc123de" in result  # First 8 chars of trace ID
+        assert extractor.llm_calls_used == 0
+
+    def test_slow_span_detection(self):
+        """Test identifying slow spans"""
+        extractor = TraceDataExtractor()
+        content = """{
+    "traceId": "test123",
+    "spans": [
+        {"spanId": "1", "serviceName": "api", "duration": 500000000, "name": "slow-operation"},
+        {"spanId": "2", "serviceName": "db", "duration": 50000000, "name": "fast-query"}
+    ]
+}"""
+        result = extractor.extract(content)
+
+        assert "Bottleneck" in result or "slow" in result.lower()
+        assert extractor.llm_calls_used == 0
+
+    def test_invalid_json_fallback(self):
+        """Test fallback for invalid JSON"""
+        extractor = TraceDataExtractor()
+        content = "Not valid JSON trace data"
+
+        result = extractor.extract(content)
+
+        assert "Trace" in result
+        assert "invalid" in result.lower() or "unable" in result.lower()
+        assert extractor.llm_calls_used == 0
+
+
+class TestProfilingDataExtractor:
+    """Test performance profiling analysis"""
+
+    def test_cprofile_parsing(self):
+        """Test parsing Python cProfile output"""
+        extractor = ProfilingDataExtractor()
+        content = """   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000    5.234    5.234 app.py:42(process_request)
+   142856    0.512    0.000    2.348    0.000 {method 'read' of '_io.FileIO'}
+     5000    0.234    0.000    1.123    0.000 db.py:15(query)
+"""
+        result = extractor.extract(content)
+
+        assert "Profiling Analysis" in result
+        assert "hotspot" in result.lower() or "function" in result.lower()
+        assert extractor.llm_calls_used == 0
+
+    def test_hotspot_identification(self):
+        """Test identifying performance hotspots"""
+        extractor = ProfilingDataExtractor()
+        content = """   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000   10.000   10.000 main.py:1(main)
+        1    3.500    3.500    8.500    8.500 slow_func.py:10(slow_operation)
+        1    0.100    0.100    0.100    0.100 fast_func.py:5(fast_operation)
+"""
+        result = extractor.extract(content)
+
+        assert "slow_operation" in result or "slow_func" in result
+        assert extractor.llm_calls_used == 0
+
+    def test_unknown_format_fallback(self):
+        """Test fallback for unknown profiling format"""
+        extractor = ProfilingDataExtractor()
+        content = "Unknown profiling data format"
+
+        result = extractor.extract(content)
+
+        assert "Profiling" in result
+        assert "unknown" in result.lower() or "unable" in result.lower()
+        assert extractor.llm_calls_used == 0
+
+
+class TestErrorReportExtractor:
+    """Test standalone exception analysis"""
+
+    def test_python_exception_parsing(self):
+        """Test parsing Python exception"""
+        extractor = ErrorReportExtractor()
+        content = """Traceback (most recent call last):
+  File "app.py", line 42, in process_request
+    result = database.query(sql)
+  File "db.py", line 123, in query
+    return self.connection.execute(sql)
+AttributeError: 'NoneType' object has no attribute 'execute'
+"""
+        result = extractor.extract(content)
+
+        assert "Exception Analysis" in result
+        assert "AttributeError" in result
+        assert "NoneType" in result
+        assert extractor.llm_calls_used == 0
+
+    def test_java_exception_parsing(self):
+        """Test parsing Java exception"""
+        extractor = ErrorReportExtractor()
+        content = """java.lang.NullPointerException: Cannot invoke method on null object
+    at com.example.MyClass.doSomething(MyClass.java:42)
+    at com.example.Main.main(Main.java:15)
+"""
+        result = extractor.extract(content)
+
+        assert "Exception" in result or "Error" in result
+        assert "NullPointer" in result
+        assert extractor.llm_calls_used == 0
+
+    def test_fix_suggestions(self):
+        """Test that fix suggestions are provided"""
+        extractor = ErrorReportExtractor()
+        content = """Traceback (most recent call last):
+  File "test.py", line 5, in <module>
+    print(obj.value)
+AttributeError: 'NoneType' object has no attribute 'value'
+"""
+        result = extractor.extract(content)
+
+        assert "Fix" in result or "suggestion" in result.lower()
+        assert extractor.llm_calls_used == 0
+
+
+class TestDocumentationExtractor:
+    """Test documentation structure extraction"""
+
+    def test_markdown_parsing(self):
+        """Test parsing markdown documentation"""
+        extractor = DocumentationExtractor()
+        content = """# Troubleshooting Guide
+
+## Database Connection Issues
+
+If you see connection errors:
+
+1. Check database is running
+2. Verify credentials
+3. Test network connectivity
+
+```bash
+kubectl get pods
+```
+"""
+        result = extractor.extract(content)
+
+        assert "Documentation" in result
+        assert "Troubleshooting" in result
+        assert extractor.llm_calls_used == 0
+
+    def test_troubleshooting_section_detection(self):
+        """Test identifying troubleshooting sections"""
+        extractor = DocumentationExtractor()
+        content = """# System Guide
+
+## How to Debug Issues
+
+Check logs and restart service.
+
+## Configuration
+
+Set environment variables.
+"""
+        result = extractor.extract(content)
+
+        assert "Debug" in result or "Troubleshoot" in result
+        assert extractor.llm_calls_used == 0
+
+    def test_command_extraction(self):
+        """Test extracting commands from documentation"""
+        extractor = DocumentationExtractor()
+        content = """# Quick Start
+
+Run these commands:
+
+`kubectl apply -f deployment.yaml`
+`docker logs app`
+"""
+        result = extractor.extract(content)
+
+        assert "Command" in result or "kubectl" in result or "docker" in result
+        assert extractor.llm_calls_used == 0
+
+
+class TestCommandOutputExtractor:
+    """Test shell command output parsing"""
+
+    def test_top_command_parsing(self):
+        """Test parsing top command output"""
+        extractor = CommandOutputExtractor()
+        content = """top - 14:32:01 up 5 days
+Tasks: 247 total,   2 running, 245 sleeping
+%Cpu(s):  5.2 us,  2.1 sy,  0.0 ni, 92.5 id
+KiB Mem : 16384000 total,  8192000 free,  7000000 used
+
+  PID USER      PR  NI    VIRT    RES    SHR S  %CPU %MEM     TIME+ COMMAND
+ 1234 root      20   0  987654  45678   1234 R  87.5  45.2   12:34.56 python
+ 5678 user      20   0  123456  12345   6789 S  12.3   8.1    1:23.45 node
+"""
+        result = extractor.extract(content)
+
+        assert "System State" in result or "top" in result
+        assert "CPU" in result or "Memory" in result
+        assert extractor.llm_calls_used == 0
+
+    def test_resource_hog_detection(self):
+        """Test identifying resource-intensive processes"""
+        extractor = CommandOutputExtractor()
+        content = """top - 14:32:01
+%Cpu(s):  5.2 us
+KiB Mem : 16384000 total
+
+  PID USER      %CPU %MEM     COMMAND
+ 1234 root      95.5  85.2    cpu_hog_process
+"""
+        result = extractor.extract(content)
+
+        assert "hog" in result.lower() or "95" in result or "85" in result
+        assert extractor.llm_calls_used == 0
+
+    def test_df_command_parsing(self):
+        """Test parsing df (disk free) output"""
+        extractor = CommandOutputExtractor()
+        content = """Filesystem     1K-blocks    Used Available Use% Mounted on
+/dev/sda1       10485760 9437184   1048576  91% /
+/dev/sdb1       20971520 4194304  16777216  20% /data
+"""
+        result = extractor.extract(content)
+
+        assert "Disk" in result
+        assert "91%" in result  # Should detect high disk usage
+        assert extractor.llm_calls_used == 0
+
+
 class TestExtractorIntegration:
     """Integration tests for extractor consistency"""
 
@@ -409,7 +659,12 @@ class TestExtractorIntegration:
             MetricsAndPerformanceExtractor(),
             UnstructuredTextExtractor(),
             SourceCodeExtractor(),
-            VisualEvidenceExtractor()
+            VisualEvidenceExtractor(),
+            TraceDataExtractor(),
+            ProfilingDataExtractor(),
+            ErrorReportExtractor(),
+            DocumentationExtractor(),
+            CommandOutputExtractor(),
         ]
 
         for extractor in extractors:
@@ -425,12 +680,17 @@ class TestExtractorIntegration:
             MetricsAndPerformanceExtractor(),
             UnstructuredTextExtractor(),
             SourceCodeExtractor(),
-            VisualEvidenceExtractor()
+            VisualEvidenceExtractor(),
+            TraceDataExtractor(),
+            ProfilingDataExtractor(),
+            ErrorReportExtractor(),
+            DocumentationExtractor(),
+            CommandOutputExtractor(),
         ]
 
         for extractor in extractors:
             assert hasattr(extractor, 'llm_calls_used')
-            # Phase 2: All extractors should use 0 LLM calls
+            # All extractors should use 0 LLM calls
             assert extractor.llm_calls_used == 0
 
     def test_all_extractors_return_string(self):
@@ -443,7 +703,12 @@ class TestExtractorIntegration:
             MetricsAndPerformanceExtractor(),
             UnstructuredTextExtractor(),
             SourceCodeExtractor(),
-            VisualEvidenceExtractor()
+            VisualEvidenceExtractor(),
+            TraceDataExtractor(),
+            ProfilingDataExtractor(),
+            ErrorReportExtractor(),
+            DocumentationExtractor(),
+            CommandOutputExtractor(),
         ]
 
         for extractor in extractors:

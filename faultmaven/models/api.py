@@ -49,14 +49,21 @@ class SourceType(str, Enum):
     USER_PROVIDED = "user_provided"
 
 class DataType(str, Enum):
-    """7 purpose-driven data classifications for preprocessing pipeline."""
-    # Processable types (6)
+    """12 purpose-driven data classifications for preprocessing pipeline."""
+    # Processable types (11)
     LOGS_AND_ERRORS = "logs_and_errors"
     UNSTRUCTURED_TEXT = "unstructured_text"
     STRUCTURED_CONFIG = "structured_config"
     METRICS_AND_PERFORMANCE = "metrics_and_performance"
     SOURCE_CODE = "source_code"
     VISUAL_EVIDENCE = "visual_evidence"
+
+    # New diagnostic data types (5) - aligned with data-classification-strategy.md
+    TRACE_DATA = "trace_data"              # Distributed traces (OpenTelemetry, Jaeger, Zipkin)
+    PROFILING_DATA = "profiling_data"      # Performance profiling (cProfile, flame graphs, perf)
+    ERROR_REPORT = "error_report"          # Standalone exception dumps (Sentry, Bugsnag)
+    DOCUMENTATION = "documentation"         # Runbooks, wikis, technical docs
+    COMMAND_OUTPUT = "command_output"      # Shell command results (top, ps, iostat, netstat)
 
     # Reference-only type (1)
     UNANALYZABLE = "unanalyzable"
@@ -519,7 +526,10 @@ class ExtractionMetadata(BaseModel):
     and performance metrics for the extraction operation.
     """
     data_type: DataType = Field(..., description="Data type being extracted")
-    extraction_strategy: Literal["crime_scene", "map_reduce", "direct", "vision", "statistical", "ast_parse", "none", "classification_failed"] = Field(
+    extraction_strategy: Literal[
+        "crime_scene", "map_reduce", "direct", "vision", "statistical", "ast_parse", "none", "classification_failed",
+        "trace_correlation", "profiling_hotspot", "exception_context", "documentation_structure", "command_parsing"
+    ] = Field(
         ...,
         description="Strategy used for extraction"
     )
