@@ -277,7 +277,7 @@ flowchart TB
 - **Global Knowledge Base** (system-wide permanent storage) - Admin-managed troubleshooting reference
 - **Case Evidence Store** (ephemeral case-specific storage) - Temporary evidence uploaded during active investigations
 
-The knowledge base uses a **KB-neutral Strategy Pattern** where one core DocumentQATool class works with all three KB types through injected KBConfig strategies. This enables adding new KB types without modifying core code. See [Knowledge Base Architecture](./knowledge-base-architecture.md) for storage layer details (ChromaDB collections, Strategy Pattern, lifecycle management), [Q&A Sub-Agent Design](./qa-subagent-design.md) for access layer details (stateless document librarian philosophy, prompt engineering, tool wrappers), and [Vector Database Operations](./vector-database-operations.md) for operational procedures (ingestion pipelines, query flows, admin workflows).
+The knowledge base uses a **KB-neutral Strategy Pattern** where one core DocumentQATool class works with all three KB types through injected KBConfig strategies. This enables adding new KB types without modifying core code. See [Knowledge Base Architecture](./knowledge-base-architecture.md) for storage layer details (ChromaDB collections, Strategy Pattern, lifecycle management), [Q&A Tools Design](./qa-tools-design.md) for access layer details (KB-neutral RAG retrieval, tool wrappers, DocumentQATool implementation), and [Vector Database Operations](./vector-database-operations.md) for operational procedures (ingestion pipelines, query flows, admin workflows).
 
 ### Infrastructure Layer
 **Purpose**: External service integrations and cross-cutting concerns
@@ -1280,7 +1280,7 @@ Core business services implementing case, data, knowledge, investigation, and se
 - [`Session Management Specification v1.0`](./specifications/session-management-spec.md) - Multi-session architecture (session_service.py): Client-based resumption, user-owned cases, Redis storage
 - [`Data Preprocessing Design v4.0`](./data-preprocessing-design.md) - Complete preprocessing system (data_service.py): 3-step pipeline, 8 data types, platform-specific extractors, LLM integration
 - [`Knowledge Base Architecture v4.0`](./knowledge-base-architecture.md) - 🟢 **PRODUCTION READY** - Storage layer (knowledge_service.py): Three distinct vector stores (User KB, Global KB, Case Evidence), KB-neutral Strategy Pattern with KBConfig, ChromaDB collections, lifecycle management
-- [`Q&A Sub-Agent Design v1.0`](./qa-subagent-design.md) - 🟢 **PRODUCTION READY** - Access layer (core/tools/): Stateless document librarian, three tool wrappers (AnswerFromCaseEvidence, AnswerFromUserKB, AnswerFromGlobalKB), prompt engineering, system prompts
+- [`Q&A Tools Design v3.1`](./qa-tools-design.md) - 🟢 **PRODUCTION READY** - Access layer (core/tools/): KB-neutral RAG retrieval, three tool wrappers (AnswerFromCaseEvidence, AnswerFromUserKB, AnswerFromGlobalKB), DocumentQATool implementation
 - [`Prompt Engineering Guide`](./prompt-engineering-guide.md) - ✅ **IMPLEMENTED** - Current prompting system: Investigation prompts, engagement modes, OODA guidance, loopback detection
 
 #### Core Investigation (`core/investigation/`)
@@ -1332,7 +1332,7 @@ Milestone-based investigation engine:
 #### Knowledge Management
 
 - [`Knowledge Base Architecture v4.0`](./knowledge-base-architecture.md) - Storage layer (core/knowledge/): Three distinct vector stores, Strategy Pattern, ChromaDB collections
-- [`Q&A Sub-Agent Design v1.0`](./qa-subagent-design.md) - Access layer (core/tools/): Stateless document librarian, KB-neutral tool wrappers, prompt engineering
+- [`Q&A Tools Design v3.1`](./qa-tools-design.md) - Access layer (core/tools/): KB-neutral RAG retrieval, three tool wrappers, DocumentQATool implementation
 
 ---
 
