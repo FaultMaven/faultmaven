@@ -40,6 +40,11 @@ class PreprocessingService:
         text_extractor: Optional['UnstructuredTextExtractor'] = None,
         source_code_extractor: Optional['SourceCodeExtractor'] = None,
         visual_extractor: Optional['VisualEvidenceExtractor'] = None,
+        trace_extractor: Optional['TraceDataExtractor'] = None,
+        profiling_extractor: Optional['ProfilingDataExtractor'] = None,
+        error_report_extractor: Optional['ErrorReportExtractor'] = None,
+        documentation_extractor: Optional['DocumentationExtractor'] = None,
+        command_output_extractor: Optional['CommandOutputExtractor'] = None,
         chunking_service: Optional['ChunkingService'] = None,
         chunk_trigger_tokens: int = 8000
     ):
@@ -49,13 +54,18 @@ class PreprocessingService:
         Args:
             classifier: Data classification service
             sanitizer: PII/secret redaction service
-            logs_extractor: LOGS_AND_ERRORS extractor (Phase 1)
-            config_extractor: STRUCTURED_CONFIG extractor (Phase 2, optional)
-            metrics_extractor: METRICS_AND_PERFORMANCE extractor (Phase 2, optional)
-            text_extractor: UNSTRUCTURED_TEXT extractor (Phase 2, optional)
-            source_code_extractor: SOURCE_CODE extractor (Phase 2, optional)
-            visual_extractor: VISUAL_EVIDENCE extractor (Phase 2 placeholder, Phase 3 full implementation)
-            chunking_service: ChunkingService for large documents (Phase 4, optional)
+            logs_extractor: LOGS_AND_ERRORS extractor
+            config_extractor: STRUCTURED_CONFIG extractor (optional)
+            metrics_extractor: METRICS_AND_PERFORMANCE extractor (optional)
+            text_extractor: UNSTRUCTURED_TEXT extractor (optional)
+            source_code_extractor: SOURCE_CODE extractor (optional)
+            visual_extractor: VISUAL_EVIDENCE extractor (optional)
+            trace_extractor: TRACE_DATA extractor (optional)
+            profiling_extractor: PROFILING_DATA extractor (optional)
+            error_report_extractor: ERROR_REPORT extractor (optional)
+            documentation_extractor: DOCUMENTATION extractor (optional)
+            command_output_extractor: COMMAND_OUTPUT extractor (optional)
+            chunking_service: ChunkingService for large documents (optional)
             chunk_trigger_tokens: Token threshold to trigger chunking (default 8000)
         """
         self.classifier = classifier
@@ -63,7 +73,7 @@ class PreprocessingService:
         self.chunking_service = chunking_service
         self.chunk_trigger_tokens = chunk_trigger_tokens
 
-        # Extractor registry (Phase 1-2: All extractors available)
+        # Extractor registry - all 11 data types
         self.extractors = {
             DataType.LOGS_AND_ERRORS: logs_extractor,
         }
@@ -82,6 +92,22 @@ class PreprocessingService:
 
         if visual_extractor:
             self.extractors[DataType.VISUAL_EVIDENCE] = visual_extractor
+
+        # New extractors
+        if trace_extractor:
+            self.extractors[DataType.TRACE_DATA] = trace_extractor
+
+        if profiling_extractor:
+            self.extractors[DataType.PROFILING_DATA] = profiling_extractor
+
+        if error_report_extractor:
+            self.extractors[DataType.ERROR_REPORT] = error_report_extractor
+
+        if documentation_extractor:
+            self.extractors[DataType.DOCUMENTATION] = documentation_extractor
+
+        if command_output_extractor:
+            self.extractors[DataType.COMMAND_OUTPUT] = command_output_extractor
 
     async def preprocess(
         self,

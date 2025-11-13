@@ -201,20 +201,42 @@ class DIContainer:
         from faultmaven.core.processing.log_analyzer import LogProcessor
         self.log_processor = LogProcessor()
 
-        # New preprocessing pipeline (Phase 1-4)
+        # New preprocessing pipeline (Phase 1-4) - All 11 data types
         from faultmaven.services.preprocessing.classifier import DataClassifier
-        from faultmaven.services.preprocessing.extractors import LogsAndErrorsExtractor, StructuredConfigExtractor, MetricsAndPerformanceExtractor, UnstructuredTextExtractor, SourceCodeExtractor, VisualEvidenceExtractor
+        from faultmaven.services.preprocessing.extractors import (
+            LogsAndErrorsExtractor,
+            StructuredConfigExtractor,
+            MetricsAndPerformanceExtractor,
+            UnstructuredTextExtractor,
+            SourceCodeExtractor,
+            VisualEvidenceExtractor,
+            TraceDataExtractor,
+            ProfilingDataExtractor,
+            ErrorReportExtractor,
+            DocumentationExtractor,
+            CommandOutputExtractor,
+        )
         from faultmaven.services.preprocessing.chunking_service import ChunkingService
         from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
         from faultmaven.infrastructure.security.redaction import DataSanitizer
 
         self.data_classifier = DataClassifier()
+
+        # Original 6 extractors
         self.logs_extractor = LogsAndErrorsExtractor()
         self.config_extractor = StructuredConfigExtractor()
         self.metrics_extractor = MetricsAndPerformanceExtractor()
         self.text_extractor = UnstructuredTextExtractor()
         self.source_code_extractor = SourceCodeExtractor()
         self.visual_extractor = VisualEvidenceExtractor()
+
+        # New 5 extractors
+        self.trace_extractor = TraceDataExtractor()
+        self.profiling_extractor = ProfilingDataExtractor()
+        self.error_report_extractor = ErrorReportExtractor()
+        self.documentation_extractor = DocumentationExtractor()
+        self.command_output_extractor = CommandOutputExtractor()
+
         self.data_sanitizer = DataSanitizer()
 
         # ChunkingService for large documents (Phase 4)
@@ -234,6 +256,11 @@ class DIContainer:
             text_extractor=self.text_extractor,
             source_code_extractor=self.source_code_extractor,
             visual_extractor=self.visual_extractor,
+            trace_extractor=self.trace_extractor,
+            profiling_extractor=self.profiling_extractor,
+            error_report_extractor=self.error_report_extractor,
+            documentation_extractor=self.documentation_extractor,
+            command_output_extractor=self.command_output_extractor,
             chunking_service=self.chunking_service,
             chunk_trigger_tokens=self.settings.preprocessing.chunk_trigger_tokens
         )
