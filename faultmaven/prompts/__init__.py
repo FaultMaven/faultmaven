@@ -27,7 +27,6 @@ from faultmaven.prompts.system_prompts import (
     get_tiered_prompt,  # Phase 2: Tiered prompt loading
     PRIMARY_SYSTEM_PROMPT,
     CONCISE_SYSTEM_PROMPT,
-    DETAILED_SYSTEM_PROMPT,
     # Tiered prompts (Phase 2)
     NEUTRAL_IDENTITY,
     MINIMAL_PROMPT,
@@ -54,9 +53,6 @@ from faultmaven.prompts.few_shot_examples import (
     get_examples_by_intent,
     select_intelligent_examples,
     format_intelligent_few_shot_prompt,
-    # Legacy compatibility (deprecated)
-    get_few_shot_examples,  # Now returns empty - use format_pattern_prompt
-    format_few_shot_prompt,  # Now returns empty - use format_pattern_prompt
 )
 
 from faultmaven.prompts.response_prompts import (
@@ -83,7 +79,6 @@ __all__ = [
     "get_tiered_prompt",
     "PRIMARY_SYSTEM_PROMPT",
     "CONCISE_SYSTEM_PROMPT",
-    "DETAILED_SYSTEM_PROMPT",
     "NEUTRAL_IDENTITY",
     "MINIMAL_PROMPT",
     "BRIEF_PROMPT",
@@ -104,9 +99,6 @@ __all__ = [
     "get_examples_by_intent",
     "select_intelligent_examples",
     "format_intelligent_few_shot_prompt",
-    # Legacy compatibility (deprecated)
-    "get_few_shot_examples",
-    "format_few_shot_prompt",
     # Response-type prompts
     "get_response_type_prompt",
     "assemble_intelligent_prompt",

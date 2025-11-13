@@ -72,20 +72,6 @@ class UserIntent(str, Enum):
     OFF_TOPIC = "off_topic"                        # Unrelated to investigation
 
 
-class InvestigationMode(str, Enum):
-    """Investigation approach - speed vs depth
-
-    DEPRECATED: Use InvestigationStrategy from investigation.py instead
-    Kept for backwards compatibility
-    """
-    ACTIVE_INCIDENT = "active_incident"  # Speed over certainty, mitigation first
-    POST_MORTEM = "post_mortem"          # Depth over speed, high confidence required
-
-
-# Alias for new terminology (v3.2.0)
-InvestigationStrategy = InvestigationMode
-
-
 class CaseStatus(str, Enum):
     """Case lifecycle status - matches faultmaven.models.case.CaseStatus
 

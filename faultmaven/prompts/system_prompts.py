@@ -35,10 +35,6 @@ BRIEF_PROMPT = CORE_IDENTITY + "\n\n" + BRIEF_METHODOLOGY
 # Tier 2: Standard (for moderate troubleshooting - 210 tokens)
 STANDARD_PROMPT = CORE_IDENTITY + "\n\n" + DETAILED_METHODOLOGY
 
-# Tier 3: Detailed (for complex cases with explanations - used rarely)
-# Kept for backward compatibility but should be rarely used
-DETAILED_SYSTEM_PROMPT = STANDARD_PROMPT  # Deprecated, use STANDARD_PROMPT
-
 # PRIMARY_SYSTEM_PROMPT - default (Tier 2 for backward compatibility)
 PRIMARY_SYSTEM_PROMPT = STANDARD_PROMPT
 CONCISE_SYSTEM_PROMPT = BRIEF_PROMPT  # Tier 1
@@ -49,7 +45,7 @@ SYSTEM_PROMPT_VARIANTS: Dict[str, str] = {
     "default": PRIMARY_SYSTEM_PROMPT,
     "primary": PRIMARY_SYSTEM_PROMPT,
     "concise": CONCISE_SYSTEM_PROMPT,
-    "detailed": DETAILED_SYSTEM_PROMPT,
+    "detailed": STANDARD_PROMPT,  # Use STANDARD_PROMPT for detailed
     # New tiered variants
     "minimal": MINIMAL_PROMPT,
     "brief": BRIEF_PROMPT,

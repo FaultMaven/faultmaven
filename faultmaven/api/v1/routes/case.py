@@ -54,7 +54,6 @@ from faultmaven.models.api_models import (
 )
 from faultmaven.models.case_ui import CaseUIResponse
 from faultmaven.services.adapters.case_ui_adapter import transform_case_for_ui
-from faultmaven.models.interfaces_case import ParticipantRole  # Deprecated stub
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.models.interfaces_report import IReportStore
 from faultmaven.models.api import (
@@ -65,7 +64,7 @@ from faultmaven.models.api import (
 )
 from faultmaven.api.v1.dependencies import (
     get_case_service, get_session_id, get_session_service,
-    get_agent_service, get_preprocessing_service, get_report_store,
+    get_preprocessing_service, get_report_store,
     get_investigation_service,  # V2.0 milestone-based
     get_data_service,
     get_case_vector_store
@@ -99,9 +98,6 @@ def _safe_enum_value(value):
     if hasattr(value, 'value'):
         return value.value
     return str(value)
-
-# In-memory storage for async query results (in production, use Redis)
-_async_query_results = {}
 
 
 async def _store_evidence_in_vector_db(
@@ -158,45 +154,6 @@ async def _store_evidence_in_vector_db(
             extra={'case_id': case_id, 'data_id': data_id, 'error': str(e)},
             exc_info=True
         )
-
-
-async def _process_async_query(job_id: str, case_id: str, query_request, agent_service, user_id: Optional[str] = None):
-    """Process query asynchronously and store result."""
-    try:
-        logger.info(f"Starting async processing for job {job_id}")
-        _async_query_results[job_id] = {"status": "processing", "started_at": to_json_compatible(datetime.now(timezone.utc))}
-        
-        # Create a copy of the query_request to avoid modifying the original
-        from copy import deepcopy
-        query_copy = deepcopy(query_request)
-
-        # Add case context
-        if not query_copy.context:
-            query_copy.context = {}
-        query_copy.context.update({"case_id": case_id, "user_id": user_id})
-        
-        # Process the query using AgentService
-        logger.info(f"Calling agent_service.process_query_for_case for job {job_id}")
-        agent_response = await agent_service.process_query_for_case(case_id, query_copy)
-        
-        # Store the completed result
-        _async_query_results[job_id] = {
-            "status": "completed",
-            "result": agent_response,
-            "completed_at": to_json_compatible(datetime.now(timezone.utc))
-        }
-        logger.info(f"Async processing completed successfully for job {job_id}")
-        
-    except Exception as e:
-        import traceback
-        error_details = f"{str(e)}\n{traceback.format_exc()}"
-        logger.error(f"Async processing failed for job {job_id}: {error_details}")
-        _async_query_results[job_id] = {
-            "status": "failed", 
-            "error": str(e),
-            "error_details": error_details,
-            "failed_at": to_json_compatible(datetime.now(timezone.utc))
-        }
 
 
 # Configurable banned words list - minimal but extensible

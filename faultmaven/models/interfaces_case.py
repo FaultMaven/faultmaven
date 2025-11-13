@@ -20,14 +20,6 @@ from .api_models import (
 from .api import CaseMessagesResponse
 
 
-# Stub for deprecated participant feature (will be removed)
-class ParticipantRole(str, Enum):
-    """Deprecated: Participant roles from old model"""
-    OWNER = "owner"
-    COLLABORATOR = "collaborator"
-    VIEWER = "viewer"
-
-
 class ICaseStore(ABC):
     """Interface for case data persistence operations.
     
@@ -311,28 +303,7 @@ class ICaseService(ABC):
             True if update was successful
         """
         pass
-    
-    @abstractmethod
-    async def share_case(
-        self, 
-        case_id: str, 
-        target_user_id: str, 
-        role: ParticipantRole,
-        sharer_user_id: Optional[str] = None
-    ) -> bool:
-        """Share a case with another user.
-        
-        Args:
-            case_id: Case identifier
-            target_user_id: User to share with
-            role: Role to assign to the user
-            sharer_user_id: User performing the share action
-            
-        Returns:
-            True if case was shared successfully
-        """
-        pass
-    
+
     @abstractmethod
     async def add_message_to_case(
         self, 

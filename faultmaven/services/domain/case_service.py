@@ -31,7 +31,7 @@ from faultmaven.models.api_models import (
     CaseMessage,
     CaseParticipant,
 )
-from faultmaven.models.interfaces_case import ICaseService, ParticipantRole  # ParticipantRole is deprecated
+from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.models.interfaces_report import IReportStore
 from faultmaven.models.interfaces import ISessionStore
@@ -266,36 +266,6 @@ class CaseService(BaseService, ICaseService):
         except Exception as e:
             self.logger.error(f"Failed to update case {case_id}: {e}")
             raise ServiceException(f"Case update failed: {str(e)}") from e
-
-    @trace("case_service_share_case")
-    async def share_case(
-        self,
-        case_id: str,
-        target_user_id: str,
-        role: ParticipantRole,
-        sharer_user_id: Optional[str] = None
-    ) -> bool:
-        """
-        Share a case with another user
-
-        Args:
-            case_id: Case identifier
-            target_user_id: User to share with
-            role: Role to assign to the user
-            sharer_user_id: User performing the share action
-
-        Returns:
-            True if case was shared successfully
-        """
-        # NOTE: Case sharing feature is deprecated
-        # The Case model no longer supports participants - only single owner (user_id)
-        # This method is kept for backward compatibility but returns False (not implemented)
-        self.logger.warning(
-            f"share_case called but feature is deprecated. "
-            f"Case model only supports single owner, not participants. "
-            f"case_id={case_id}, target_user={target_user_id}"
-        )
-        return False
 
     @trace("case_service_add_message")
     async def add_message_to_case(
