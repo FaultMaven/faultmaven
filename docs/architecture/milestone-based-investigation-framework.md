@@ -62,15 +62,13 @@ No sequential phase transitions required.
 **1. Milestones Track Completion, Not Position**
 
 ```python
-# OLD: "What phase am I in?"
-if case.current_phase == 3:
-    can_collect_evidence()
-
-# NEW: "What data is available? What's been completed?"
+# Milestone-based approach: Check data availability and completion status
 if has_diagnostic_data(case) and not case.progress.root_cause_identified:
     identify_root_cause()
     case.progress.root_cause_identified = True
 ```
+
+**Key Insight**: Instead of tracking "what phase am I in?", the system checks "what data is available?" and "what's been completed?" This enables opportunistic task completion.
 
 **2. Status is User-Facing Lifecycle State**
 
@@ -587,8 +585,8 @@ class CaseStatusTransition(BaseModel):
 class ProblemVerification(BaseModel):
     """
     Consolidated problem verification data.
-    Replaces old AnomalyFrame + Timeline split.
     Created when investigation starts (CONSULTING → INVESTIGATING).
+    Combines symptom verification, timeline analysis, and affected components.
     """
     
     # ============================================================
