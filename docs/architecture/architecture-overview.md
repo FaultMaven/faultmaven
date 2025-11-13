@@ -25,7 +25,7 @@ FaultMaven implements a sophisticated clean architecture pattern with dependency
 - **PostgreSQL Hybrid Storage**: Normalized 10-table schema for persistent case data + Redis for ephemeral sessions/cache
 - **Milestone-Based Investigation**: Opportunistic task completion based on data availability, not rigid phases (see [Investigation Architecture](./milestone-based-investigation-framework.md))
 - **User-Owned Cases**: Cases owned by users, not sessions - enables long-term tracking and multi-session continuity
-- **Streamlined Investigation Engine**: MilestoneEngine replaces complex 7-phase handler system (8,000+ lines simplified)
+- **MilestoneEngine**: Core investigation orchestrator with opportunistic task completion
 - **Turn-Based Progress Tracking**: Milestone completions with workflow progression detection and loopback prevention
 - **Dual Engagement Modes**: Consultant Mode (CONSULTING status) and Lead Investigator (INVESTIGATING status) for natural interaction
 - **Hypothesis Management**: Opportunistic capture + systematic generation with confidence tracking
@@ -212,47 +212,45 @@ flowchart TB
 - **Case Status Manager**: Case status state machine with transition validation
 - **Data Service**: File upload and data processing coordination with platform-specific extractors
 - **Knowledge Service**: Document ingestion and retrieval management across three KB types
-- **Session Service**: Multi-session per user with client-based resumption (decoupled from cases, 2,004 lines simplified)
+- **Session Service**: Multi-session per user with client-based resumption, decoupled from cases
 
 **Key Files**:
-- `faultmaven/services/domain/case_service.py` - Case management (706 lines changed)
-- `faultmaven/services/domain/investigation_service.py` - Investigation workflows (new)
-- `faultmaven/services/domain/case_status_manager.py` - Status management (new)
+- `faultmaven/services/domain/case_service.py` - Case management
+- `faultmaven/services/domain/investigation_service.py` - Investigation workflows
+- `faultmaven/services/domain/case_status_manager.py` - Status management
 - `faultmaven/services/domain/data_service.py` - Data processing
 - `faultmaven/services/domain/knowledge_service.py` - KB operations
-- `faultmaven/services/domain/session_service.py` - Session lifecycle (streamlined)
+- `faultmaven/services/domain/session_service.py` - Session lifecycle
 
 **Design Note**: Investigation Service orchestrates milestone-based workflows through MilestoneEngine. Cases are user-owned resources, independent of session lifecycle. See [Milestone-Based Investigation Framework](./milestone-based-investigation-framework.md) for complete design.
 
 ### Core Investigation
 **Purpose**: Milestone-based investigation engine with opportunistic task completion
 
-**Status**: ✅ Replaces old 7-phase handler system (8,000+ lines archived to `archive/agentic_services_old/`)
-
 **Components**:
 - **MilestoneEngine**: State-driven investigation workflow completing tasks based on data availability
 - **HypothesisManager**: Dual-mode hypothesis handling (opportunistic capture + systematic generation)
 - **InvestigationCoordinator**: Orchestrates milestone-based workflows and OODA integration
 - **WorkflowProgressionDetector**: Detects forward progress vs circular conversations (loopback detection)
-- **OODAEngine**: Simplified OODA integration without phase coupling
+- **OODAEngine**: OODA integration for adaptive reasoning cycles
 - **WorkingConclusionGenerator**: Synthesizes conclusions from completed milestones
 - **Phase Loopback Detector**: Prevents infinite loops within investigation stages
 
 **Key Files**:
-- `faultmaven/core/investigation/milestone_engine.py` - Main investigation engine (785 lines)
-- `faultmaven/core/investigation/hypothesis_manager.py` - Hypothesis tracking (367 lines)
-- `faultmaven/core/investigation/investigation_coordinator.py` - Workflow orchestration (194 lines)
-- `faultmaven/core/investigation/workflow_progression_detector.py` - Progress detection (258 lines)
-- `faultmaven/core/investigation/ooda_engine.py` - OODA integration (simplified)
-- `faultmaven/core/investigation/working_conclusion_generator.py` - Conclusion synthesis (494 lines)
-- `faultmaven/core/investigation/phase_loopback.py` - Loop prevention (424 lines)
+- `faultmaven/core/investigation/milestone_engine.py` - Main investigation engine
+- `faultmaven/core/investigation/hypothesis_manager.py` - Hypothesis tracking
+- `faultmaven/core/investigation/investigation_coordinator.py` - Workflow orchestration
+- `faultmaven/core/investigation/workflow_progression_detector.py` - Progress detection
+- `faultmaven/core/investigation/ooda_engine.py` - OODA integration
+- `faultmaven/core/investigation/working_conclusion_generator.py` - Conclusion synthesis
+- `faultmaven/core/investigation/phase_loopback.py` - Loop prevention
 
 **Design Principles**:
 - Opportunistic completion - complete tasks when data available
 - No artificial phase barriers
 - Turn-based progress tracking
 - Milestone-driven state transitions
-- Simplified mental model
+- Data-driven task selection
 
 ### Core Domain
 **Purpose**: Core business logic and domain models
@@ -266,7 +264,7 @@ flowchart TB
 - **Prompt Manager**: Centralized prompt assembly and optimization
 
 **Key Files**:
-- `faultmaven/core/investigation/` - Milestone-based investigation engine (replaces old agent/)
+- `faultmaven/core/investigation/` - Milestone-based investigation engine
 - `faultmaven/core/processing/` - Data analysis algorithms
 - `faultmaven/core/knowledge/` - Knowledge management
 - `faultmaven/tools/` - Agent tool implementations (KB-neutral Q&A tools with Strategy Pattern)
@@ -301,10 +299,10 @@ The knowledge base uses a **KB-neutral Strategy Pattern** where one core Documen
 - `faultmaven/infrastructure/security/` - PII redaction and RBAC authorization
 - `faultmaven/infrastructure/observability/` - Tracing and metrics
 - `faultmaven/infrastructure/persistence/` - Storage layer implementations
-  - `postgresql_hybrid_case_repository.py` - PostgreSQL case storage (945 lines)
-  - `case_repository.py` - Repository interface (967 lines)
-  - `user_repository.py` - User storage (506 lines)
-  - `redis_session_store.py` - Session management (ephemeral)
+  - `postgresql_hybrid_case_repository.py` - PostgreSQL case storage
+  - `case_repository.py` - Repository interface
+  - `user_repository.py` - User storage
+  - `redis_session_store.py` - Session management
   - `inmemory_*_store.py` - Testing implementations
 - `faultmaven/infrastructure/health/` - Health monitoring
 - `faultmaven/infrastructure/monitoring/` - Performance monitoring
@@ -1158,25 +1156,23 @@ This section provides a high-level mapping of architectural components to Python
 - `api/v1/dependencies.py` - DI configuration
 
 ### Service Layer
-- `services/domain/case_service.py` - Case management (706 lines changed)
-- `services/domain/investigation_service.py` - Investigation orchestration (new)
-- `services/domain/case_status_manager.py` - Status state machine (new)
+- `services/domain/case_service.py` - Case management
+- `services/domain/investigation_service.py` - Investigation orchestration
+- `services/domain/case_status_manager.py` - Status state machine
 - `services/domain/data_service.py` - File processing
 - `services/domain/knowledge_service.py` - Document management
-- `services/domain/session_service.py` - Session lifecycle (streamlined, 2,004 lines simplified)
-- `services/adapters/case_ui_adapter.py` - UI data transformation (new, 425 lines)
+- `services/domain/session_service.py` - Session lifecycle
+- `services/adapters/case_ui_adapter.py` - UI data transformation
 - `services/converters/case_converter.py` - Case data mapping
 
-### Core Investigation (replaces Agentic Framework)
-**Status**: ✅ Replaces 8,000+ lines from `archive/agentic_services_old/`
-
-- `core/investigation/milestone_engine.py` - Main investigation engine (785 lines)
-- `core/investigation/hypothesis_manager.py` - Hypothesis tracking (367 lines)
-- `core/investigation/investigation_coordinator.py` - Workflow orchestration (194 lines)
-- `core/investigation/workflow_progression_detector.py` - Progress detection (258 lines)
-- `core/investigation/ooda_engine.py` - OODA integration (simplified)
-- `core/investigation/working_conclusion_generator.py` - Conclusion synthesis (494 lines)
-- `core/investigation/phase_loopback.py` - Loop prevention (424 lines)
+### Core Investigation
+- `core/investigation/milestone_engine.py` - Main investigation engine
+- `core/investigation/hypothesis_manager.py` - Hypothesis tracking
+- `core/investigation/investigation_coordinator.py` - Workflow orchestration
+- `core/investigation/workflow_progression_detector.py` - Progress detection
+- `core/investigation/ooda_engine.py` - OODA integration
+- `core/investigation/working_conclusion_generator.py` - Conclusion synthesis
+- `core/investigation/phase_loopback.py` - Loop prevention
 - `core/investigation/engagement_modes.py` - Mode switching
 - `core/investigation/phases.py` - Phase definitions
 - `core/investigation/strategy_selector.py` - Strategy selection
@@ -1194,9 +1190,9 @@ This section provides a high-level mapping of architectural components to Python
 - `infrastructure/security/` - PII protection + RBAC
 - `infrastructure/observability/` - Tracing and metrics
 - `infrastructure/persistence/` - Hybrid storage layer
-  - `postgresql_hybrid_case_repository.py` - PostgreSQL storage (945 lines)
-  - `case_repository.py` - Repository interface (967 lines)
-  - `user_repository.py` - User storage (506 lines)
+  - `postgresql_hybrid_case_repository.py` - PostgreSQL storage
+  - `case_repository.py` - Repository interface
+  - `user_repository.py` - User storage
   - `redis_session_store.py` - Session management
   - `inmemory_*_store.py` - Testing implementations
 - `infrastructure/health/` - Health monitoring
@@ -1205,12 +1201,12 @@ This section provides a high-level mapping of architectural components to Python
 ### Data Models
 - `models/interfaces.py` - Service interfaces
 - `models/interfaces_case.py` - Case repository interface
-- `models/case.py` - Case models (3,723 lines, extensive expansion)
-- `models/case_ui.py` - UI models (838 lines, new)
+- `models/case.py` - Case models
+- `models/case_ui.py` - UI models
 - `models/api.py` - v3.1.0 schema models
-- `models/api_models.py` - Additional API models (709 lines, new)
-- `models/investigation.py` - Investigation models (630 lines, expanded)
-- `models/llm_schemas.py` - LLM structured output (457 lines, new)
+- `models/api_models.py` - Additional API models
+- `models/investigation.py` - Investigation models
+- `models/llm_schemas.py` - LLM structured output
 - `models/evidence.py` - Evidence tracking
 - `models/common.py` - Shared models
 
@@ -1289,7 +1285,7 @@ Core business services implementing case, data, knowledge, investigation, and se
 
 #### Core Investigation (`core/investigation/`)
 
-Milestone-based investigation engine (replaces old agentic framework):
+Milestone-based investigation engine:
 
 - [`Milestone-Based Investigation Framework v2.0`](./milestone-based-investigation-framework.md) - Complete design document covering MilestoneEngine, HypothesisManager, WorkflowProgressionDetector, and all investigation components
 
