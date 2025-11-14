@@ -1,26 +1,40 @@
 # User Storage Design - Enterprise SaaS
 
-**Version**: 1.0
-**Status**: Design Proposal (Not Yet Implemented)
-**Last Updated**: 2025-01-09
-**Target**: Production PostgreSQL Deployment
+**Version**: 2.0
+**Status**: Schema Implemented - Python Code Pending
+**Last Updated**: 2025-01-14
+**Implementation**: See `migrations/003_enterprise_user_schema.sql`
 
 ---
 
 ## Implementation Status
 
-**Current State** (as of 2025-01-09):
+**Current State** (as of 2025-01-14):
 
 | Component | Status | Location |
 |-----------|--------|----------|
 | ✅ Design | Approved | This document |
-| ⚠️ Current Implementation | Development-only | Redis (DevUserStore) + InMemory |
-| ⚠️ PostgreSQL Schema | Partial | Single `users` table (basic fields) |
-| ❌ Production Schema | Not Implemented | Enterprise SaaS schema needed |
-| ❌ Migration Script | Not Created | Needed for production deployment |
+| ✅ Production Schema | **IMPLEMENTED** | `migrations/003_enterprise_user_schema.sql` |
+| ✅ Migration Script | **CREATED** | 8 tables, RLS policies, RBAC, audit logging |
+| ⚠️ Current Runtime | Development-only | Redis (DevUserStore) + InMemory |
+| ⏳ Repository Layer | Pending | Python PostgreSQL implementation needed |
+| ⏳ Service Layer | Pending | Team/org management services needed |
+| ⏳ API Endpoints | Pending | Team/org/role management endpoints needed |
 
-**Reality Check**:
-This document defines the **production-ready enterprise SaaS user schema**. Current implementation uses simple Redis storage for development. PostgreSQL implementation exists but uses basic single-table schema, not the full enterprise design below.
+**Implementation Progress**:
+- ✅ **Schema Design Complete** (v2.0): Full enterprise SaaS schema with organizations, teams, roles, permissions
+- ✅ **SQL Migration Created**: `migrations/003_enterprise_user_schema.sql` (494 lines, production-ready)
+  - 8 tables: organizations, organization_members, teams, team_members, roles, permissions, role_permissions, user_audit_log
+  - Row-Level Security (RLS) policies for multi-tenant isolation
+  - 7 system roles with permission mappings
+  - 19 core permissions across 5 resources
+  - Audit logging for compliance
+- ⏳ **Code Implementation Pending**: Python repository, service, and API layers (Phase 2)
+
+**Schema Extensions Created**:
+- `migrations/002_add_case_sharing.sql` - Case collaboration (case_participants table)
+- `migrations/003_enterprise_user_schema.sql` - **THIS SCHEMA** - Teams, orgs, RBAC
+- `migrations/004_kb_sharing_infrastructure.sql` - KB document sharing
 
 ---
 

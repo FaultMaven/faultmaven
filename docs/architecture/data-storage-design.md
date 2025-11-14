@@ -371,14 +371,133 @@ CREATE INDEX idx_solutions_hypothesis ON solutions (linked_hypothesis_id);
 
 **4-10. Additional Tables**: See full schema in Appendix A
 
-### 3.3 Performance Characteristics
+### 3.3 Case Sharing
+
+**Purpose**: Enable collaboration by sharing cases with specific users or teams
+
+**Implementation**: See `migrations/002_add_case_sharing.sql`
+
+#### 3.3.1 Case Participants Table
+
+**Storage**: PostgreSQL (`case_participants` table)
+
+```sql
+CREATE TABLE case_participants (
+    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    user_id VARCHAR(20) NOT NULL,
+    role participant_role NOT NULL DEFAULT 'viewer',  -- owner, collaborator, viewer
+    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    added_by VARCHAR(20),
+    last_accessed_at TIMESTAMPTZ,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    PRIMARY KEY (case_id, user_id)
+);
+```
+
+#### 3.3.2 Access Control Model
+
+| Role | Permissions |
+|------|-------------|
+| **owner** | Full control: read, write, delete, share, transfer ownership |
+| **collaborator** | Read and write: view case, add evidence, propose hypotheses/solutions |
+| **viewer** | Read-only: view case details, cannot modify |
+
+#### 3.3.3 Sharing Mechanisms
+
+**Individual User Sharing**:
+```python
+# Share case with specific user
+await case_repository.share_case(
+    case_id="case_abc123",
+    target_user_id="user_bob",
+    role=ParticipantRole.COLLABORATOR,
+    sharer_user_id="user_alice"
+)
+```
+
+**Team-Based Sharing** (requires `migrations/003_enterprise_user_schema.sql`):
+```sql
+-- Assign case to team for automatic team member access
+UPDATE cases
+SET team_id = 'team_sre_oncall'
+WHERE case_id = 'case_abc123';
+
+-- All team members automatically get access
+-- Access level determined by team role and org permissions
+```
+
+**Organization-Wide Visibility**:
+```sql
+-- Cases belong to organization for tenant isolation
+SELECT * FROM cases WHERE org_id = 'org_acme_corp';
+
+-- Org members can view cases based on org role permissions
+```
+
+#### 3.3.4 Access Resolution Hierarchy
+
+```
+User access to case is granted if ANY of:
+1. User is case owner (cases.user_id = user_id)
+2. User is explicit participant (case_participants)
+3. User is team member (cases.team_id → team_members)
+4. User has org-level permissions (organization_members.role_id → permissions)
+```
+
+**SQL Function**:
+```sql
+-- Check if user can access case
+SELECT user_can_access_case('user_alice', 'case_abc123');
+
+-- Get user's role for case
+SELECT get_user_case_role('user_alice', 'case_abc123');
+-- Returns: 'owner' | 'collaborator' | 'viewer' | NULL
+```
+
+#### 3.3.5 Audit Trail
+
+**Table**: `case_sharing_audit`
+
+Tracks all sharing actions for compliance:
+- Who shared the case (`action_by`)
+- With whom (`target_user_id`)
+- What role assigned (`new_role`)
+- When (`action_at`)
+- Action type (`shared`, `unshared`, `role_changed`)
+
+```sql
+SELECT * FROM case_sharing_audit
+WHERE case_id = 'case_abc123'
+ORDER BY action_at DESC;
+```
+
+#### 3.3.6 Views
+
+**user_shared_cases**: All cases shared with each user
+```sql
+SELECT * FROM user_shared_cases
+WHERE user_id = 'user_bob'
+ORDER BY shared_at DESC;
+```
+
+**case_collaboration_summary**: Collaboration statistics per case
+```sql
+SELECT
+    case_id,
+    participant_count,
+    collaborator_count,
+    viewer_count
+FROM case_collaboration_summary;
+```
+
+### 3.4 Performance Characteristics
 
 - **Case Load**: ~10ms (single query with LEFT JOINs)
 - **Evidence Filtering**: ~5ms (indexed queries)
 - **Hypothesis Tracking**: ~3ms (status index lookup)
 - **Message Thread**: ~8ms (chronological ordering)
 
-### 3.4 Session State (Redis)
+### 3.5 Session State (Redis)
 
 **Purpose**: Fast session state with TTL expiration
 
@@ -695,6 +814,267 @@ documents = await user_kb_store.list_documents(user_id)
 
 # Delete document
 await user_kb_store.delete_document(user_id, document_id)
+```
+
+### 5.5 Knowledge Base Sharing
+
+**Purpose**: Enable collaboration by sharing runbooks and documentation with users, teams, and organizations
+
+**Implementation**: See `migrations/004_kb_sharing_infrastructure.sql`
+
+#### 5.5.1 Architecture Change
+
+**From**: Per-user collections (`user_kb_{user_id}`)
+```
+user_kb_alice  → Alice's private documents only
+user_kb_bob    → Bob's private documents only
+```
+
+**To**: Hybrid model with visibility control
+```
+kb_private_alice  → Alice's private documents (backward compatible)
+kb_private_bob    → Bob's private documents
+kb_shared         → All shared documents with metadata filtering
+```
+
+**Metadata Filtering**: Each document in `kb_shared` includes:
+- `owner_user_id`: Document owner
+- `visibility`: private, shared, team, organization
+- `allowed_users`: Array of user IDs with access
+- `allowed_teams`: Array of team IDs with access
+- `org_id`: Organization ID (for org-wide documents)
+
+#### 5.5.2 Document Metadata Table
+
+**Storage**: PostgreSQL (`kb_documents` table) + ChromaDB (document chunks)
+
+```sql
+CREATE TABLE kb_documents (
+    doc_id VARCHAR(20) PRIMARY KEY,
+    owner_user_id VARCHAR(20) NOT NULL,
+    org_id VARCHAR(20) REFERENCES organizations(org_id),
+
+    title VARCHAR(500) NOT NULL,
+    description TEXT,
+    document_type kb_document_type NOT NULL,  -- runbook, procedure, etc.
+
+    chromadb_collection VARCHAR(100) NOT NULL,  -- Which collection stores this
+    chromadb_doc_count INTEGER DEFAULT 0,       -- Number of chunks
+
+    visibility kb_visibility NOT NULL DEFAULT 'private',  -- private, shared, team, organization
+    tags TEXT[],
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deleted_at TIMESTAMPTZ
+);
+```
+
+#### 5.5.3 Sharing Mechanisms
+
+**Individual User Sharing**:
+```sql
+-- kb_document_shares table
+CREATE TABLE kb_document_shares (
+    doc_id VARCHAR(20) REFERENCES kb_documents(doc_id),
+    shared_with_user_id VARCHAR(20) NOT NULL,
+    permission kb_share_permission NOT NULL DEFAULT 'read',  -- read, write
+    shared_by VARCHAR(20) NOT NULL,
+    shared_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (doc_id, shared_with_user_id)
+);
+```
+
+**Python API**:
+```python
+# Share runbook with specific user
+await kb_service.share_document(
+    doc_id="kbdoc_123",
+    shared_with_user_id="user_bob",
+    permission="read",
+    shared_by="user_alice"
+)
+```
+
+**Team-Based Sharing**:
+```sql
+-- kb_document_team_shares table
+CREATE TABLE kb_document_team_shares (
+    doc_id VARCHAR(20) REFERENCES kb_documents(doc_id),
+    team_id VARCHAR(20) REFERENCES teams(team_id),
+    permission kb_share_permission NOT NULL DEFAULT 'read',
+    shared_by VARCHAR(20) NOT NULL,
+    shared_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (doc_id, team_id)
+);
+```
+
+**Python API**:
+```python
+# Share runbook with entire SRE team
+await kb_service.share_document_with_team(
+    doc_id="kbdoc_123",
+    team_id="team_sre_oncall",
+    permission="read",
+    shared_by="user_alice"
+)
+```
+
+**Organization-Wide Sharing**:
+```sql
+-- kb_document_org_shares table
+CREATE TABLE kb_document_org_shares (
+    doc_id VARCHAR(20) REFERENCES kb_documents(doc_id),
+    org_id VARCHAR(20) REFERENCES organizations(org_id),
+    permission kb_share_permission NOT NULL DEFAULT 'read',
+    shared_by VARCHAR(20) NOT NULL,
+    shared_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (doc_id, org_id)
+);
+```
+
+**Python API**:
+```python
+# Share runbook with entire organization
+await kb_service.share_document_with_org(
+    doc_id="kbdoc_123",
+    org_id="org_acme_corp",
+    permission="read",
+    shared_by="user_alice"
+)
+```
+
+#### 5.5.4 Access Control Model
+
+| Permission | Capabilities |
+|-----------|--------------|
+| **read** | View document content, search, download |
+| **write** | Read + edit content, update metadata, delete (if owner) |
+
+**Owner Always Has Write**: Document owner always has write permission regardless of sharing settings.
+
+#### 5.5.5 Access Resolution for Search
+
+```python
+# When user searches KB, return documents where user has access
+def get_accessible_documents(user_id: str) -> List[str]:
+    """Return doc_ids user can access"""
+    return documents where:
+        1. owner_user_id = user_id  (user's own documents)
+        OR
+        2. doc_id IN kb_document_shares WHERE shared_with_user_id = user_id
+        OR
+        3. doc_id IN kb_document_team_shares
+           WHERE team_id IN (user's teams)
+        OR
+        4. doc_id IN kb_document_org_shares
+           WHERE org_id IN (user's organizations)
+```
+
+**SQL Function**:
+```sql
+-- Check if user can access KB document
+SELECT user_can_access_kb_document('user_alice', 'kbdoc_123');
+-- Returns: true/false
+
+-- Get user's permission level for document
+SELECT get_user_kb_document_permission('user_alice', 'kbdoc_123');
+-- Returns: 'read' | 'write' | NULL
+```
+
+#### 5.5.6 Audit Trail
+
+**Table**: `kb_sharing_audit`
+
+Tracks all KB sharing actions:
+- Document shared/unshared
+- Permission changes
+- Visibility changes
+- Who performed action
+- When action occurred
+
+```sql
+SELECT * FROM kb_sharing_audit
+WHERE doc_id = 'kbdoc_123'
+ORDER BY action_at DESC;
+```
+
+#### 5.5.7 Views
+
+**user_accessible_kb_documents**: All KB documents user can access
+```sql
+SELECT
+    doc_id,
+    title,
+    document_type,
+    visibility,
+    user_permission  -- 'owner', 'read', 'write'
+FROM user_accessible_kb_documents
+WHERE 'user_alice' IN (owner_user_id, allowed_users);
+```
+
+**kb_document_sharing_summary**: Sharing statistics per document
+```sql
+SELECT
+    doc_id,
+    title,
+    visibility,
+    user_share_count,    -- How many users it's shared with
+    team_share_count,    -- How many teams
+    org_share_count      -- How many organizations
+FROM kb_document_sharing_summary;
+```
+
+#### 5.5.8 ChromaDB Collection Strategy
+
+**Private Documents**:
+- Collection: `kb_private_{user_id}`
+- Metadata: `{"visibility": "private", "owner_user_id": "user_alice"}`
+- Access: Owner only
+
+**Shared Documents**:
+- Collection: `kb_shared`
+- Metadata includes access control:
+  ```json
+  {
+    "doc_id": "kbdoc_123",
+    "owner_user_id": "user_alice",
+    "visibility": "shared",  // or "team" or "organization"
+    "allowed_users": ["user_bob", "user_charlie"],
+    "allowed_teams": ["team_sre"],
+    "org_id": "org_acme_corp"
+  }
+  ```
+- Access: Filtered by metadata during search
+
+**Search Implementation**:
+```python
+# Search both private and shared collections
+async def search_kb(user_id: str, query: str) -> List[Document]:
+    results = []
+
+    # Search user's private collection
+    private_results = await chromadb.query(
+        collection=f"kb_private_{user_id}",
+        query_texts=[query]
+    )
+    results.extend(private_results)
+
+    # Search shared collection with metadata filter
+    shared_results = await chromadb.query(
+        collection="kb_shared",
+        query_texts=[query],
+        where={
+            "$or": [
+                {"allowed_users": {"$contains": user_id}},
+                {"allowed_teams": {"$in": get_user_teams(user_id)}},
+                {"org_id": {"$in": get_user_orgs(user_id)}}
+            ]
+        }
+    )
+    results.extend(shared_results)
+
+    return sorted(results, key=lambda x: x.score, reverse=True)
 ```
 
 ---
