@@ -287,8 +287,14 @@ The knowledge base uses a **KB-neutral Strategy Pattern** where one core Documen
 - **Security/PII**: Data sanitization and privacy protection with Presidio integration + RBAC
 - **Observability**: Comprehensive tracing and metrics collection with Opik integration
 - **Persistence**: PostgreSQL hybrid storage + Redis ephemeral + ChromaDB vectors
-- **Case Repository**: PostgreSQLHybridCaseRepository (10-table normalized schema)
+  - **PostgreSQL**: Primary relational database for cases, evidence, organizations, teams, and sharing infrastructure
+  - **Redis**: Session storage, caching, and memory management
+  - **ChromaDB**: Vector database for knowledge base and document embeddings
+- **Case Repository**: PostgreSQLHybridCaseRepository (10-table normalized schema with sharing support)
 - **User Repository**: User and authentication storage in PostgreSQL
+- **Organization Repository**: Organization and RBAC management
+- **Team Repository**: Team collaboration management
+- **KB Document Repository**: Knowledge base document sharing
 - **Health Monitor**: Component health checking and SLA tracking
 - **Metrics Collector**: Performance metrics aggregation
 - **Alert Manager**: Real-time alerting and notification
@@ -299,7 +305,10 @@ The knowledge base uses a **KB-neutral Strategy Pattern** where one core Documen
 - `faultmaven/infrastructure/security/` - PII redaction and RBAC authorization
 - `faultmaven/infrastructure/observability/` - Tracing and metrics
 - `faultmaven/infrastructure/persistence/` - Storage layer implementations
-  - `postgresql_hybrid_case_repository.py` - PostgreSQL case storage
+  - `postgresql_hybrid_case_repository.py` - PostgreSQL case storage with sharing support
+  - `organization_repository.py` - Organization and RBAC management
+  - `team_repository.py` - Team collaboration management
+  - `kb_document_repository.py` - Knowledge base document sharing
   - `case_repository.py` - Repository interface
   - `user_repository.py` - User storage
   - `redis_session_store.py` - Session management
@@ -308,8 +317,14 @@ The knowledge base uses a **KB-neutral Strategy Pattern** where one core Documen
 - `faultmaven/infrastructure/monitoring/` - Performance monitoring
 - `faultmaven/infrastructure/redis_client.py` - Lightweight Redis client factory
 
+**Database Schema**: Production-ready PostgreSQL schema definitions in `docs/schema/`:
+- `001_initial_hybrid_schema.sql` - Base schema (10 normalized tables)
+- `002_add_case_sharing.sql` - Case sharing infrastructure (case_participants table)
+- `003_enterprise_user_schema.sql` - Organizations, teams, RBAC (8 tables, 7 roles, 19 permissions)
+- `004_kb_sharing_infrastructure.sql` - Knowledge base sharing (5 tables with visibility levels)
+
 **Architecture Principle**: Hybrid storage strategy with clear separation:
-- **PostgreSQL** (Persistent): Cases, messages, evidence, hypotheses, milestones, users, auth
+- **PostgreSQL** (Persistent): Cases, messages, evidence, hypotheses, milestones, users, auth, organizations, teams, sharing
 - **Redis** (Ephemeral): Sessions, cache, temporary working state
 - **ChromaDB** (Vectors): Knowledge base embeddings (3 separate collections)
 
@@ -641,11 +656,17 @@ graph LR
 - **Multi-Device Support**: Independent sessions per device for same user
 
 **Case Management**:
-- **Purpose**: Persistent investigation tracking
+- **Purpose**: Persistent investigation tracking with collaboration support
 - **Lifecycle**: Long-lived, persists for audit and follow-up
 - **Scope**: Single investigation from query to resolution
-- **Storage**: Database-backed for persistence
+- **Storage**: PostgreSQL database-backed for persistence (see `docs/schema/` for schema definitions)
+- **Sharing Capabilities**:
+  - Individual user sharing with role-based access (owner, collaborator, viewer)
+  - Team-based sharing for organizational collaboration
+  - Organization-wide visibility with RBAC permissions
+  - Audit trail for all sharing actions
 - **Memory Integration**: Episodic memory for future reference
+- **Multi-Tenancy**: Organizations and teams with Row-Level Security (RLS)
 
 #### 2. Response Type Architecture
 
@@ -997,6 +1018,57 @@ except ServiceException as e:
     raise
 ```
 
+### 6. Multi-Tenancy and Collaboration
+
+**Enterprise SaaS Architecture** with organizations, teams, and role-based access control:
+
+**Organizations**: Workspace-level isolation with Row-Level Security (RLS)
+- Multi-tenant data isolation using PostgreSQL RLS policies
+- Subscription tiers: FREE (5 members), PRO (50 members), ENTERPRISE (unlimited)
+- Organization-wide permissions and resource quotas
+
+**Teams**: Sub-organization collaboration groups
+- Team-based case sharing and collaboration
+- Team-specific knowledge base access
+- Flexible team membership and roles
+
+**Role-Based Access Control (RBAC)**:
+- 7 system roles: owner, admin, member, viewer, team lead
+- 19 permissions across 5 resources (cases, knowledge_base, organization, users, teams)
+- SQL-function based permission checks for performance
+- Hierarchical permission inheritance
+
+**Sharing Infrastructure**:
+- **Case Sharing**: Individual user (owner/collaborator/viewer), team, organization-wide
+- **KB Sharing**: Private, shared, team-scoped, organization-scoped with read/write permissions
+- **Audit Trail**: Complete audit logging for all sharing actions and permission changes
+
+**Implementation**:
+```python
+# Organization service with RBAC enforcement
+class OrganizationService:
+    async def add_member(self, org_id: str, user_id: str, role_id: str, added_by: str):
+        # Check permission
+        has_permission = await self.repository.user_has_permission(
+            added_by, org_id, "users.write"
+        )
+        if not has_permission:
+            raise ValidationException("User lacks permission to add members")
+
+        # Check capacity against org plan
+        org = await self.repository.get_organization(org_id)
+        if len(members) >= org.max_members:
+            raise ValidationException(f"Organization at capacity")
+
+        # Add member with audit logging
+        return await self.repository.add_member(org_id, user_id, role_id)
+```
+
+**Database Schema**: See `docs/schema/` for complete PostgreSQL schema definitions:
+- `002_add_case_sharing.sql` - Case collaboration infrastructure
+- `003_enterprise_user_schema.sql` - Organizations, teams, RBAC
+- `004_kb_sharing_infrastructure.sql` - Knowledge base sharing
+
 ## Performance Characteristics
 
 > **Detailed Specification**: See [Performance and Scalability](./performance-and-scalability.md) for complete benchmarks and optimization strategies
@@ -1122,6 +1194,10 @@ See [Authentication Design](./authentication-design.md#role-based-access-control
 - **Graceful Shutdown**: Proper signal handling for zero-downtime deployments
 
 ### External Dependencies
+- **PostgreSQL**: Primary relational database for persistent storage (required)
+  - **Case Storage**: Cases, messages, evidence, hypotheses, milestones
+  - **User Management**: Users, authentication, organizations, teams
+  - **Sharing Infrastructure**: Case participants, team members, KB permissions
 - **Redis**: Session storage, caching, and memory management (required)
   - **Session Storage**: Uses lightweight Redis client for high-frequency session operations
   - **Memory Cache**: Optimized for minimal logging overhead on internal operations
@@ -1153,7 +1229,13 @@ This section provides a high-level mapping of architectural components to Python
 - `main.py` - FastAPI application
 - `api/middleware/` - Request processing middleware
 - `api/v1/routes/` - RESTful endpoints
+  - `case.py` - Case management endpoints
+  - `organizations.py` - Organization management endpoints (15 endpoints)
+  - `teams.py` - Team collaboration endpoints (11 endpoints)
+  - `auth.py` - Authentication endpoints
+  - `data.py`, `knowledge.py`, `session.py` - Core functionality
 - `api/v1/dependencies.py` - DI configuration
+- `api/v1/auth_dependencies.py` - Authentication dependencies
 
 ### Service Layer
 - `services/domain/case_service.py` - Case management
@@ -1162,6 +1244,8 @@ This section provides a high-level mapping of architectural components to Python
 - `services/domain/data_service.py` - File processing
 - `services/domain/knowledge_service.py` - Document management
 - `services/domain/session_service.py` - Session lifecycle
+- `services/domain/organization_service.py` - Organization and RBAC management
+- `services/domain/team_service.py` - Team collaboration management
 - `services/adapters/case_ui_adapter.py` - UI data transformation
 - `services/converters/case_converter.py` - Case data mapping
 
@@ -1190,9 +1274,12 @@ This section provides a high-level mapping of architectural components to Python
 - `infrastructure/security/` - PII protection + RBAC
 - `infrastructure/observability/` - Tracing and metrics
 - `infrastructure/persistence/` - Hybrid storage layer
-  - `postgresql_hybrid_case_repository.py` - PostgreSQL storage
+  - `postgresql_hybrid_case_repository.py` - PostgreSQL storage with sharing support
   - `case_repository.py` - Repository interface
   - `user_repository.py` - User storage
+  - `organization_repository.py` - Organization and RBAC management
+  - `team_repository.py` - Team collaboration management
+  - `kb_document_repository.py` - Knowledge base document sharing
   - `redis_session_store.py` - Session management
   - `inmemory_*_store.py` - Testing implementations
 - `infrastructure/health/` - Health monitoring
@@ -1201,6 +1288,8 @@ This section provides a high-level mapping of architectural components to Python
 ### Data Models
 - `models/interfaces.py` - Service interfaces
 - `models/interfaces_case.py` - Case repository interface
+- `models/interfaces_user.py` - Organization and team interfaces
+- `models/interfaces_kb.py` - Knowledge base sharing interfaces
 - `models/case.py` - Case models
 - `models/case_ui.py` - UI models
 - `models/api.py` - v3.1.0 schema models
