@@ -1415,3 +1415,166 @@ class CaseService(BaseService, ICaseService):
                 has_more=False,
                 debug_info=debug_info
             )
+
+    # ============================================================
+    # Case Sharing Operations
+    # ============================================================
+
+    @trace("case_service_share_case")
+    async def share_case(
+        self,
+        case_id: str,
+        target_user_id: str,
+        role: str,  # 'owner', 'collaborator', 'viewer'
+        sharer_user_id: str
+    ) -> bool:
+        """
+        Share a case with another user.
+
+        Args:
+            case_id: Case identifier
+            target_user_id: User to share with
+            role: Role to assign (owner, collaborator, viewer)
+            sharer_user_id: User performing the share action
+
+        Returns:
+            True if case was shared successfully
+
+        Raises:
+            ValidationException: If user lacks permission to share
+        """
+        # Verify case exists
+        case = await self.repository.get(case_id)
+        if not case:
+            raise ValidationException(f"Case {case_id} not found")
+
+        # Verify sharer has permission (must be owner or existing collaborator)
+        if case.user_id != sharer_user_id:
+            # Check if sharer is a participant with appropriate permissions
+            participants = await self.repository.get_case_participants(case_id)
+            sharer_participant = next(
+                (p for p in participants if p["user_id"] == sharer_user_id),
+                None
+            )
+            if not sharer_participant or sharer_participant["role"] == "viewer":
+                raise ValidationException(
+                    "User lacks permission to share this case"
+                )
+
+        # Share the case
+        success = await self.repository.share_case(
+            case_id, target_user_id, role, sharer_user_id
+        )
+
+        if success:
+            self.logger.info(
+                f"Case {case_id} shared with user {target_user_id} as {role} "
+                f"by {sharer_user_id}"
+            )
+
+        return success
+
+    @trace("case_service_unshare_case")
+    async def unshare_case(
+        self,
+        case_id: str,
+        target_user_id: str,
+        unsharer_user_id: str
+    ) -> bool:
+        """
+        Unshare a case from a user.
+
+        Args:
+            case_id: Case identifier
+            target_user_id: User to unshare from
+            unsharer_user_id: User performing the unshare action
+
+        Returns:
+            True if case was unshared successfully
+
+        Raises:
+            ValidationException: If user lacks permission or trying to unshare owner
+        """
+        # Verify case exists
+        case = await self.repository.get(case_id)
+        if not case:
+            raise ValidationException(f"Case {case_id} not found")
+
+        # Prevent unsharing the case owner
+        if case.user_id == target_user_id:
+            raise ValidationException("Cannot unshare the case owner")
+
+        # Verify unsharer has permission
+        if case.user_id != unsharer_user_id:
+            participants = await self.repository.get_case_participants(case_id)
+            unsharer_participant = next(
+                (p for p in participants if p["user_id"] == unsharer_user_id),
+                None
+            )
+            if not unsharer_participant or unsharer_participant["role"] != "owner":
+                raise ValidationException(
+                    "User lacks permission to unshare this case"
+                )
+
+        # Unshare the case
+        success = await self.repository.unshare_case(
+            case_id, target_user_id, unsharer_user_id
+        )
+
+        if success:
+            self.logger.info(
+                f"Case {case_id} unshared from user {target_user_id} "
+                f"by {unsharer_user_id}"
+            )
+
+        return success
+
+    @trace("case_service_get_case_participants")
+    async def get_case_participants(self, case_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all participants for a case.
+
+        Args:
+            case_id: Case identifier
+
+        Returns:
+            List of participants with their roles and metadata
+        """
+        return await self.repository.get_case_participants(case_id)
+
+    @trace("case_service_user_can_access_case")
+    async def user_can_access_case(self, case_id: str, user_id: str) -> bool:
+        """
+        Check if a user can access a case.
+
+        Checks:
+        1. User is the case owner
+        2. User is a participant
+        3. User is a team member (if case has team_id)
+        4. User has org-level access (if case has org_id)
+
+        Args:
+            case_id: Case identifier
+            user_id: User identifier
+
+        Returns:
+            True if user can access the case
+        """
+        # Get case
+        case = await self.repository.get(case_id)
+        if not case:
+            return False
+
+        # Check if user is owner
+        if case.user_id == user_id:
+            return True
+
+        # Check if user is participant
+        participants = await self.repository.get_case_participants(case_id)
+        if any(p["user_id"] == user_id for p in participants):
+            return True
+
+        # TODO: Check team/org membership when those services are integrated
+        # For now, return False if not owner or explicit participant
+
+        return False
