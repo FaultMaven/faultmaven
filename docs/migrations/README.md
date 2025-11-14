@@ -100,10 +100,10 @@ This directory contains PostgreSQL migration scripts for the FaultMaven database
 psql -h localhost -U faultmaven -d faultmaven_cases
 
 # Apply migrations in order
-\i docs/database/docs/database/migrations/001_initial_hybrid_schema.sql
-\i docs/database/docs/database/migrations/002_add_case_sharing.sql
-\i docs/database/docs/database/migrations/003_enterprise_user_schema.sql
-\i docs/database/docs/database/migrations/004_kb_sharing_infrastructure.sql
+\i docs/database/docs/migrations/001_initial_hybrid_schema.sql
+\i docs/database/docs/migrations/002_add_case_sharing.sql
+\i docs/database/docs/migrations/003_enterprise_user_schema.sql
+\i docs/database/docs/migrations/004_kb_sharing_infrastructure.sql
 
 # Verify tables created
 \dt
@@ -131,10 +131,10 @@ docker run -d \
 sleep 5
 
 # Apply migrations in order
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/database/migrations/001_initial_hybrid_schema.sql
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/database/migrations/002_add_case_sharing.sql
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/database/migrations/003_enterprise_user_schema.sql
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/database/migrations/004_kb_sharing_infrastructure.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/migrations/001_initial_hybrid_schema.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/migrations/002_add_case_sharing.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/migrations/003_enterprise_user_schema.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/migrations/004_kb_sharing_infrastructure.sql
 
 # Verify
 docker exec -it faultmaven-postgres psql -U faultmaven -d faultmaven_cases -c "\dt"
@@ -145,7 +145,7 @@ docker exec -it faultmaven-postgres psql -U faultmaven -d faultmaven_cases -c "\
 ```bash
 # Create ConfigMap from migration files
 kubectl create configmap case-db-migrations \
-  --from-file=docs/database/docs/database/migrations/ \
+  --from-file=docs/database/docs/migrations/ \
   -n faultmaven
 
 # Create migration Job
@@ -170,7 +170,7 @@ spec:
         - -d
         - faultmaven_cases
         - -f
-        - /docs/database/migrations/001_initial_hybrid_schema.sql
+        - /docs/migrations/001_initial_hybrid_schema.sql
         volumeMounts:
         - name: migration
           mountPath: /migrations
@@ -325,7 +325,7 @@ DROP TYPE IF EXISTS message_role CASCADE;
 DROP TYPE IF EXISTS file_processing_status CASCADE;
 
 -- Reapply migration
-\i docs/database/migrations/001_initial_hybrid_schema.sql
+\i docs/migrations/001_initial_hybrid_schema.sql
 ```
 
 ### Production: Export and Reimport
@@ -335,10 +335,10 @@ DROP TYPE IF EXISTS file_processing_status CASCADE;
 pg_dump -U faultmaven -d faultmaven_cases --data-only --table=cases > backup.sql
 
 # 2. Drop schema
-psql -U faultmaven -d faultmaven_cases < docs/database/migrations/rollback_001.sql
+psql -U faultmaven -d faultmaven_cases < docs/migrations/rollback_001.sql
 
 # 3. Revert to legacy single-table schema
-psql -U faultmaven -d faultmaven_cases < docs/database/migrations/legacy_single_table.sql
+psql -U faultmaven -d faultmaven_cases < docs/migrations/legacy_single_table.sql
 
 # 4. Reimport data
 psql -U faultmaven -d faultmaven_cases < backup.sql
@@ -415,7 +415,7 @@ DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 
 -- Reapply migration
-\i docs/database/migrations/001_initial_hybrid_schema.sql
+\i docs/migrations/001_initial_hybrid_schema.sql
 ```
 
 ### Issue: FaultMaven fails to connect with "connection refused"
@@ -441,7 +441,7 @@ echo $CASES_DB_URL
 **Fix**:
 ```bash
 # Apply migration
-psql -U faultmaven -d faultmaven_cases < docs/database/migrations/001_initial_hybrid_schema.sql
+psql -U faultmaven -d faultmaven_cases < docs/migrations/001_initial_hybrid_schema.sql
 
 # Verify tables exist
 psql -U faultmaven -d faultmaven_cases -c "\dt"

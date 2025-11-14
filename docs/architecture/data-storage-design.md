@@ -375,7 +375,7 @@ CREATE INDEX idx_solutions_hypothesis ON solutions (linked_hypothesis_id);
 
 **Purpose**: Enable collaboration by sharing cases with specific users or teams
 
-**Implementation**: See `docs/database/migrations/002_add_case_sharing.sql`
+**Implementation**: See `docs/migrations/002_add_case_sharing.sql`
 
 #### 3.3.1 Case Participants Table
 
@@ -415,7 +415,7 @@ await case_repository.share_case(
 )
 ```
 
-**Team-Based Sharing** (requires `docs/database/migrations/003_enterprise_user_schema.sql`):
+**Team-Based Sharing** (requires `docs/migrations/003_enterprise_user_schema.sql`):
 ```sql
 -- Assign case to team for automatic team member access
 UPDATE cases
@@ -820,7 +820,7 @@ await user_kb_store.delete_document(user_id, document_id)
 
 **Purpose**: Enable collaboration by sharing runbooks and documentation with users, teams, and organizations
 
-**Implementation**: See `docs/database/migrations/004_kb_sharing_infrastructure.sql`
+**Implementation**: See `docs/migrations/004_kb_sharing_infrastructure.sql`
 
 #### 5.5.1 Architecture Change
 
