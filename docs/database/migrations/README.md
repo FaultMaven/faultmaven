@@ -1,22 +1,22 @@
 # Database Migrations
 
-This directory contains PostgreSQL migration scripts for the FaultMaven case storage system.
+This directory contains PostgreSQL migration scripts for the FaultMaven database schema.
 
 ## Migration Strategy
 
 **Current State**: InMemory storage (development) or legacy single-table PostgreSQL (deprecated)
 
-**Target State**: Hybrid normalized PostgreSQL schema (10 tables, production-ready)
+**Target State**: Enterprise-ready normalized PostgreSQL schema with multi-tenancy and sharing
 
 ---
 
 ## Available Migrations
 
-### 001_initial_hybrid_schema.sql
+### 001_initial_hybrid_schema.sql (19KB)
 
-**Status**: ✅ Ready for production deployment
+**Status**: ✅ Production-ready
 
-**Description**: Creates the complete hybrid normalized schema with:
+**Description**: Creates the base hybrid normalized schema with:
 - 10 normalized tables (cases, evidence, hypotheses, solutions, case_messages, uploaded_files, case_status_transitions, case_tags, agent_tool_calls)
 - JSONB columns for flexible low-cardinality data
 - Full-text search indexes (GIN)
@@ -24,13 +24,74 @@ This directory contains PostgreSQL migration scripts for the FaultMaven case sto
 - Auto-update triggers for timestamps
 - Utility views (case_overview, active_hypotheses, recent_evidence)
 
-**Reference**: `/home/swhouse/projects/FaultMaven/docs/architecture/case-storage-design.md`
+**Reference**: `docs/architecture/case-storage-design.md`
 
-**When to use**: Fresh PostgreSQL database deployment (recommended for K8s production)
+**When to use**: Fresh PostgreSQL database deployment (foundational schema)
+
+### 002_add_case_sharing.sql (12KB)
+
+**Status**: ✅ Production-ready (Implemented 2025-01-14)
+
+**Description**: Adds case sharing and collaboration features:
+- `case_participants` table for individual user sharing
+- Participant roles: owner, collaborator, viewer
+- SQL functions: `upsert_case_participant()`, `remove_case_participant()`, `get_user_case_role()`
+- Audit trail for sharing actions (`case_sharing_audit` table)
+
+**Reference**: `docs/architecture/data-storage-design.md` (Section 3.3 - Case Sharing)
+
+**When to use**: After 001, enables Feature 1 (share cases with specific users)
+
+### 003_enterprise_user_schema.sql (24KB)
+
+**Status**: ✅ Production-ready (Implemented 2025-01-14)
+
+**Description**: Implements enterprise SaaS multi-tenancy with teams and RBAC:
+- 8 tables: `organizations`, `organization_members`, `teams`, `team_members`, `roles`, `permissions`, `role_permissions`, `user_audit_log`
+- 7 system roles: owner, admin, member, viewer, team lead
+- 19 permissions across 5 resources (cases, knowledge_base, organization, users, teams)
+- Row-Level Security (RLS) policies for multi-tenant isolation
+- SQL functions: `user_has_org_permission()`, `user_is_team_member()`, `get_user_teams()`
+- Adds `org_id` and `team_id` columns to `cases` table for team-based sharing
+
+**Reference**: `docs/architecture/user-storage-design.md`
+
+**When to use**: After 002, enables Features 2-4 prerequisites (organizations, teams, RBAC)
+
+### 004_kb_sharing_infrastructure.sql (23KB)
+
+**Status**: ✅ Production-ready (Implemented 2025-01-14)
+
+**Description**: Adds knowledge base document sharing capabilities:
+- 5 tables: `kb_documents`, `kb_document_shares`, `kb_document_team_shares`, `kb_document_org_shares`, `kb_sharing_audit`
+- Visibility levels: private, shared, team, organization
+- Share permissions: read, write
+- SQL functions: `share_kb_document_with_user()`, `share_kb_document_with_team()`, `user_can_access_kb_document()`
+- ChromaDB integration metadata (collection references)
+
+**Reference**: `docs/architecture/data-storage-design.md` (Section 5.5 - KB Sharing)
+
+**When to use**: After 003, enables Features 3-4 (share KB documents with users/teams)
+
+### add_uploaded_files_column.sql (2.1KB)
+
+**Status**: ✅ Applied (Legacy)
+
+**Description**: Adds uploaded files support to cases table
+
+**When to use**: Already applied (legacy migration)
 
 ---
 
 ## How to Apply Migrations
+
+### Migration Order
+
+**IMPORTANT**: Apply migrations in sequential order:
+1. `001_initial_hybrid_schema.sql` - Base schema (required)
+2. `002_add_case_sharing.sql` - Case sharing (depends on 001)
+3. `003_enterprise_user_schema.sql` - Organizations & teams (depends on 001, 002)
+4. `004_kb_sharing_infrastructure.sql` - KB sharing (depends on 003)
 
 ### Option 1: Manual Application (PostgreSQL CLI)
 
@@ -38,8 +99,11 @@ This directory contains PostgreSQL migration scripts for the FaultMaven case sto
 # Connect to PostgreSQL database
 psql -h localhost -U faultmaven -d faultmaven_cases
 
-# Apply migration
-\i migrations/001_initial_hybrid_schema.sql
+# Apply migrations in order
+\i docs/database/docs/database/migrations/001_initial_hybrid_schema.sql
+\i docs/database/docs/database/migrations/002_add_case_sharing.sql
+\i docs/database/docs/database/migrations/003_enterprise_user_schema.sql
+\i docs/database/docs/database/migrations/004_kb_sharing_infrastructure.sql
 
 # Verify tables created
 \dt
@@ -66,8 +130,11 @@ docker run -d \
 # Wait for PostgreSQL to be ready
 sleep 5
 
-# Apply migration
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < migrations/001_initial_hybrid_schema.sql
+# Apply migrations in order
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/database/migrations/001_initial_hybrid_schema.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/database/migrations/002_add_case_sharing.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/database/migrations/003_enterprise_user_schema.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/database/migrations/004_kb_sharing_infrastructure.sql
 
 # Verify
 docker exec -it faultmaven-postgres psql -U faultmaven -d faultmaven_cases -c "\dt"
@@ -76,9 +143,9 @@ docker exec -it faultmaven-postgres psql -U faultmaven -d faultmaven_cases -c "\
 ### Option 3: Kubernetes Deployment (Production)
 
 ```bash
-# Create ConfigMap from migration file
-kubectl create configmap case-db-migration \
-  --from-file=001_initial_hybrid_schema.sql=migrations/001_initial_hybrid_schema.sql \
+# Create ConfigMap from migration files
+kubectl create configmap case-db-migrations \
+  --from-file=docs/database/docs/database/migrations/ \
   -n faultmaven
 
 # Create migration Job
@@ -103,7 +170,7 @@ spec:
         - -d
         - faultmaven_cases
         - -f
-        - /migrations/001_initial_hybrid_schema.sql
+        - /docs/database/migrations/001_initial_hybrid_schema.sql
         volumeMounts:
         - name: migration
           mountPath: /migrations
@@ -258,7 +325,7 @@ DROP TYPE IF EXISTS message_role CASCADE;
 DROP TYPE IF EXISTS file_processing_status CASCADE;
 
 -- Reapply migration
-\i migrations/001_initial_hybrid_schema.sql
+\i docs/database/migrations/001_initial_hybrid_schema.sql
 ```
 
 ### Production: Export and Reimport
@@ -268,10 +335,10 @@ DROP TYPE IF EXISTS file_processing_status CASCADE;
 pg_dump -U faultmaven -d faultmaven_cases --data-only --table=cases > backup.sql
 
 # 2. Drop schema
-psql -U faultmaven -d faultmaven_cases < migrations/rollback_001.sql
+psql -U faultmaven -d faultmaven_cases < docs/database/migrations/rollback_001.sql
 
 # 3. Revert to legacy single-table schema
-psql -U faultmaven -d faultmaven_cases < migrations/legacy_single_table.sql
+psql -U faultmaven -d faultmaven_cases < docs/database/migrations/legacy_single_table.sql
 
 # 4. Reimport data
 psql -U faultmaven -d faultmaven_cases < backup.sql
@@ -348,7 +415,7 @@ DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 
 -- Reapply migration
-\i migrations/001_initial_hybrid_schema.sql
+\i docs/database/migrations/001_initial_hybrid_schema.sql
 ```
 
 ### Issue: FaultMaven fails to connect with "connection refused"
@@ -374,7 +441,7 @@ echo $CASES_DB_URL
 **Fix**:
 ```bash
 # Apply migration
-psql -U faultmaven -d faultmaven_cases < migrations/001_initial_hybrid_schema.sql
+psql -U faultmaven -d faultmaven_cases < docs/database/migrations/001_initial_hybrid_schema.sql
 
 # Verify tables exist
 psql -U faultmaven -d faultmaven_cases -c "\dt"
