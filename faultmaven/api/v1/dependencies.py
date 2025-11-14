@@ -448,3 +448,27 @@ async def get_classification_engine():
     return container.get_query_classification_engine()
 
 
+async def get_organization_service():
+    """Get OrganizationService instance from container"""
+    service = container.get_organization_service()
+    if service is None:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=503,
+            detail="Organization service not available"
+        )
+    return service
+
+
+async def get_team_service():
+    """Get TeamService instance from container"""
+    service = container.get_team_service()
+    if service is None:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=503,
+            detail="Team service not available"
+        )
+    return service
+
+
