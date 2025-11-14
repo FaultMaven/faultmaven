@@ -326,6 +326,133 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             await self.db.rollback()
             raise RepositoryException(f"Failed to delete case {case_id}: {e}") from e
 
+    async def share_case(
+        self,
+        case_id: str,
+        target_user_id: str,
+        role: str,  # ParticipantRole: owner, collaborator, viewer
+        sharer_user_id: Optional[str] = None
+    ) -> bool:
+        """
+        Share a case with another user.
+
+        Uses the SQL function created in migration 002.
+
+        Args:
+            case_id: Case identifier
+            target_user_id: User to share with
+            role: Role to assign (owner, collaborator, viewer)
+            sharer_user_id: User performing the share action
+
+        Returns:
+            True if case was shared successfully
+        """
+        try:
+            # Use the upsert_case_participant function from migration 002
+            query = text("""
+                SELECT upsert_case_participant(
+                    :case_id,
+                    :user_id,
+                    :role::participant_role,
+                    :added_by
+                )
+            """)
+
+            await self.db.execute(query, {
+                "case_id": case_id,
+                "user_id": target_user_id,
+                "role": role,
+                "added_by": sharer_user_id or target_user_id
+            })
+            await self.db.commit()
+
+            self.logger.info(
+                f"Shared case {case_id} with user {target_user_id} as {role}"
+            )
+            return True
+
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(f"Failed to share case {case_id}: {e}") from e
+
+    async def unshare_case(
+        self,
+        case_id: str,
+        user_id: str,
+        unsharer_user_id: Optional[str] = None
+    ) -> bool:
+        """
+        Unshare a case from a user.
+
+        Args:
+            case_id: Case identifier
+            user_id: User to unshare from
+            unsharer_user_id: User performing the unshare action
+
+        Returns:
+            True if case was unshared successfully
+        """
+        try:
+            # Use the remove_case_participant function from migration 002
+            query = text("""
+                SELECT remove_case_participant(
+                    :case_id,
+                    :user_id,
+                    :removed_by
+                )
+            """)
+
+            await self.db.execute(query, {
+                "case_id": case_id,
+                "user_id": user_id,
+                "removed_by": unsharer_user_id or user_id
+            })
+            await self.db.commit()
+
+            self.logger.info(
+                f"Unshared case {case_id} from user {user_id}"
+            )
+            return True
+
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(f"Failed to unshare case {case_id}: {e}") from e
+
+    async def get_case_participants(self, case_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all participants for a case.
+
+        Args:
+            case_id: Case identifier
+
+        Returns:
+            List of participants with their roles
+        """
+        try:
+            query = text("""
+                SELECT user_id, role, added_at, added_by, last_accessed_at
+                FROM case_participants
+                WHERE case_id = :case_id
+                ORDER BY added_at DESC
+            """)
+
+            result = await self.db.execute(query, {"case_id": case_id})
+            rows = result.fetchall()
+
+            return [
+                {
+                    "user_id": row.user_id,
+                    "role": row.role,
+                    "added_at": row.added_at,
+                    "added_by": row.added_by,
+                    "last_accessed_at": row.last_accessed_at
+                }
+                for row in rows
+            ]
+
+        except Exception as e:
+            raise RepositoryException(f"Failed to get participants for case {case_id}: {e}") from e
+
     async def search(
         self,
         query: str,

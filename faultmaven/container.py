@@ -657,6 +657,45 @@ class DIContainer:
             logger.warning(f"InvestigationService initialization failed: {e}")
             self.investigation_service = None
 
+        # Organization Service - Enterprise organization management
+        try:
+            from faultmaven.services.domain.organization_service import OrganizationService
+            from faultmaven.infrastructure.persistence.organization_repository import PostgreSQLOrganizationRepository
+            if hasattr(self, 'db_session') and self.db_session:
+                organization_repository = PostgreSQLOrganizationRepository(self.db_session)
+                self.organization_service = OrganizationService(
+                    organization_repository=organization_repository,
+                    audit_repository=None,  # TODO: Add audit repository when available
+                    settings=self.settings
+                )
+                logger.debug("OrganizationService initialized")
+            else:
+                self.organization_service = None
+                logger.debug("OrganizationService not available - database session missing")
+        except Exception as e:
+            logger.warning(f"OrganizationService initialization failed: {e}")
+            self.organization_service = None
+
+        # Team Service - Team collaboration management
+        try:
+            from faultmaven.services.domain.team_service import TeamService
+            from faultmaven.infrastructure.persistence.team_repository import PostgreSQLTeamRepository
+            if hasattr(self, 'db_session') and self.db_session and hasattr(self, 'organization_service') and self.organization_service:
+                team_repository = PostgreSQLTeamRepository(self.db_session)
+                self.team_service = TeamService(
+                    team_repository=team_repository,
+                    organization_repository=self.organization_service.repository,
+                    audit_repository=None,  # TODO: Add audit repository when available
+                    settings=self.settings
+                )
+                logger.debug("TeamService initialized")
+            else:
+                self.team_service = None
+                logger.debug("TeamService not available - database session or organization service missing")
+        except Exception as e:
+            logger.warning(f"TeamService initialization failed: {e}")
+            self.team_service = None
+
         # Session Service - Session management and validation
         try:
             # If no real session store is available, use minimal in-memory service
@@ -1634,6 +1673,24 @@ class DIContainer:
             if not getattr(self, '_initializing', False):
                 self.initialize()
         return getattr(self, 'investigation_service', None)
+
+    def get_organization_service(self):
+        """Get the organization service implementation (optional feature)"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Organization service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'organization_service', None)
+
+    def get_team_service(self):
+        """Get the team service implementation (optional feature)"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Team service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'team_service', None)
 
     def get_milestone_engine(self):
         """Get the milestone engine implementation (v2.0 core investigation)"""

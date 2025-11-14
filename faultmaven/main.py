@@ -83,6 +83,9 @@ from .api.v1.routes import user_kb
 # Import jobs routes
 from .api.v1.routes import jobs
 
+# Import organization and team routes
+from .api.v1.routes import organizations, teams
+
 from .infrastructure.observability.tracing import init_opik_tracing
 from .api.middleware.logging import LoggingMiddleware
 # SessionManager now handled via DI container - services.session.SessionService
@@ -529,6 +532,14 @@ logger.info("✅ User KB endpoints added")
 # Jobs management routes
 app.include_router(jobs.router, prefix="/api/v1", tags=["job_management"])
 logger.info("✅ Job management endpoints added")
+
+# Organization management routes
+app.include_router(organizations.router, prefix="/api/v1", tags=["organizations"])
+logger.info("✅ Organization management endpoints added")
+
+# Team management routes
+app.include_router(teams.router, prefix="/api/v1", tags=["teams"])
+logger.info("✅ Team management endpoints added")
 
 # Debug endpoints (present in locked API spec)
 @app.get("/debug/routes")
