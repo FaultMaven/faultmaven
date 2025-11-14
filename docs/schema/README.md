@@ -1,22 +1,22 @@
-# Database Migrations
+# Database Schema
 
-This directory contains PostgreSQL migration scripts for the FaultMaven database schema.
+This directory contains PostgreSQL schema definition scripts for the FaultMaven database.
 
-## Migration Strategy
+## Schema Structure
 
-**Current State**: InMemory storage (development) or legacy single-table PostgreSQL (deprecated)
+**Purpose**: These SQL scripts create the complete database schema from scratch for fresh deployments.
 
 **Target State**: Enterprise-ready normalized PostgreSQL schema with multi-tenancy and sharing
 
 ---
 
-## Available Migrations
+## Schema Files
 
 ### 001_initial_hybrid_schema.sql (19KB)
 
 **Status**: ✅ Production-ready
 
-**Description**: Creates the base hybrid normalized schema with:
+**Description**: Creates the foundational hybrid normalized schema with:
 - 10 normalized tables (cases, evidence, hypotheses, solutions, case_messages, uploaded_files, case_status_transitions, case_tags, agent_tool_calls)
 - JSONB columns for flexible low-cardinality data
 - Full-text search indexes (GIN)
@@ -26,7 +26,7 @@ This directory contains PostgreSQL migration scripts for the FaultMaven database
 
 **Reference**: `docs/architecture/case-storage-design.md`
 
-**When to use**: Fresh PostgreSQL database deployment (foundational schema)
+**When to use**: Base schema required for all deployments
 
 ### 002_add_case_sharing.sql (12KB)
 
@@ -73,21 +73,13 @@ This directory contains PostgreSQL migration scripts for the FaultMaven database
 
 **When to use**: After 003, enables Features 3-4 (share KB documents with users/teams)
 
-### add_uploaded_files_column.sql (2.1KB)
-
-**Status**: ✅ Applied (Legacy)
-
-**Description**: Adds uploaded files support to cases table
-
-**When to use**: Already applied (legacy migration)
-
 ---
 
-## How to Apply Migrations
+## How to Apply Schema
 
-### Migration Order
+### Application Order
 
-**IMPORTANT**: Apply migrations in sequential order:
+**IMPORTANT**: Apply schema files in sequential order:
 1. `001_initial_hybrid_schema.sql` - Base schema (required)
 2. `002_add_case_sharing.sql` - Case sharing (depends on 001)
 3. `003_enterprise_user_schema.sql` - Organizations & teams (depends on 001, 002)
@@ -100,10 +92,10 @@ This directory contains PostgreSQL migration scripts for the FaultMaven database
 psql -h localhost -U faultmaven -d faultmaven_cases
 
 # Apply migrations in order
-\i docs/database/docs/migrations/001_initial_hybrid_schema.sql
-\i docs/database/docs/migrations/002_add_case_sharing.sql
-\i docs/database/docs/migrations/003_enterprise_user_schema.sql
-\i docs/database/docs/migrations/004_kb_sharing_infrastructure.sql
+\i docs/database/docs/schema/001_initial_hybrid_schema.sql
+\i docs/database/docs/schema/002_add_case_sharing.sql
+\i docs/database/docs/schema/003_enterprise_user_schema.sql
+\i docs/database/docs/schema/004_kb_sharing_infrastructure.sql
 
 # Verify tables created
 \dt
@@ -131,10 +123,10 @@ docker run -d \
 sleep 5
 
 # Apply migrations in order
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/migrations/001_initial_hybrid_schema.sql
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/migrations/002_add_case_sharing.sql
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/migrations/003_enterprise_user_schema.sql
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/migrations/004_kb_sharing_infrastructure.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/schema/001_initial_hybrid_schema.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/schema/002_add_case_sharing.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/schema/003_enterprise_user_schema.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/schema/004_kb_sharing_infrastructure.sql
 
 # Verify
 docker exec -it faultmaven-postgres psql -U faultmaven -d faultmaven_cases -c "\dt"
@@ -145,7 +137,7 @@ docker exec -it faultmaven-postgres psql -U faultmaven -d faultmaven_cases -c "\
 ```bash
 # Create ConfigMap from migration files
 kubectl create configmap case-db-migrations \
-  --from-file=docs/database/docs/migrations/ \
+  --from-file=docs/database/docs/schema/ \
   -n faultmaven
 
 # Create migration Job
@@ -170,7 +162,7 @@ spec:
         - -d
         - faultmaven_cases
         - -f
-        - /docs/migrations/001_initial_hybrid_schema.sql
+        - /docs/schema/001_initial_hybrid_schema.sql
         volumeMounts:
         - name: migration
           mountPath: /migrations
@@ -325,7 +317,7 @@ DROP TYPE IF EXISTS message_role CASCADE;
 DROP TYPE IF EXISTS file_processing_status CASCADE;
 
 -- Reapply migration
-\i docs/migrations/001_initial_hybrid_schema.sql
+\i docs/schema/001_initial_hybrid_schema.sql
 ```
 
 ### Production: Export and Reimport
@@ -335,10 +327,10 @@ DROP TYPE IF EXISTS file_processing_status CASCADE;
 pg_dump -U faultmaven -d faultmaven_cases --data-only --table=cases > backup.sql
 
 # 2. Drop schema
-psql -U faultmaven -d faultmaven_cases < docs/migrations/rollback_001.sql
+psql -U faultmaven -d faultmaven_cases < docs/schema/rollback_001.sql
 
 # 3. Revert to legacy single-table schema
-psql -U faultmaven -d faultmaven_cases < docs/migrations/legacy_single_table.sql
+psql -U faultmaven -d faultmaven_cases < docs/schema/legacy_single_table.sql
 
 # 4. Reimport data
 psql -U faultmaven -d faultmaven_cases < backup.sql
@@ -415,7 +407,7 @@ DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 
 -- Reapply migration
-\i docs/migrations/001_initial_hybrid_schema.sql
+\i docs/schema/001_initial_hybrid_schema.sql
 ```
 
 ### Issue: FaultMaven fails to connect with "connection refused"
@@ -441,7 +433,7 @@ echo $CASES_DB_URL
 **Fix**:
 ```bash
 # Apply migration
-psql -U faultmaven -d faultmaven_cases < docs/migrations/001_initial_hybrid_schema.sql
+psql -U faultmaven -d faultmaven_cases < docs/schema/001_initial_hybrid_schema.sql
 
 # Verify tables exist
 psql -U faultmaven -d faultmaven_cases -c "\dt"
@@ -470,7 +462,7 @@ ORDER BY idx_scan ASC;
 
 ---
 
-## Future Migrations
+## Schema Evolution
 
 ### Naming Convention
 
@@ -483,10 +475,10 @@ Examples:
 - `003_add_evidence_s3_ref.sql`
 - `004_add_agent_tool_calls_performance_indexes.sql`
 
-### Migration Template
+### Schema Extension Template
 
 ```sql
--- Migration: {number} - {description}
+-- Schema Extension: {number} - {description}
 -- Date: {YYYY-MM-DD}
 -- Description: {detailed description}
 
