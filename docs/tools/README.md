@@ -96,7 +96,7 @@ Tools for connecting to external systems and protocols.
 - **[When Tools Are Used](./tool-usage-by-phase.md)** - Which tools are invoked in each investigation phase
 
 ### For Developers
-- **[Developer Guide](./developer-guide.md)** - How to create new tools
+- **[Contributing Guidelines](../CONTRIBUTING.md)** - How to create new tools
 - **[Tool Interface Specification](./architecture/tool-interface-spec.md)** - BaseTool interface details
 - **[Tool Registry Design](./architecture/tool-registry-design.md)** - Registry pattern and discovery
 - **[Tool Integration Patterns](./architecture/tool-integration-guide.md)** - Integration best practices
@@ -289,7 +289,7 @@ These tools require explicit user confirmation before execution.
 
 ## Contributing
 
-See **[Developer Guide](./developer-guide.md)** for:
+See **[Contributing Guidelines](../CONTRIBUTING.md)** for:
 - Tool development standards
 - Testing requirements
 - Documentation templates

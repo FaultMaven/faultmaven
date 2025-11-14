@@ -56,7 +56,6 @@ Master index for all architecture documentation.
 
 | Document | Purpose |
 |----------|---------|
-| **[Developer Guide](./developer-guide.md)** | Development workflow and setup |
 | **[Container Usage Guide](./container-usage-guide.md)** | DI container practical guide |
 | **[Testing Guide](./testing-guide.md)** | Testing strategies |
 | **[Service Patterns](./service-patterns.md)** | Service layer patterns |

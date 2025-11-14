@@ -44,7 +44,7 @@ Welcome to FaultMaven! This guide will help you get started with the AI-powered 
 
 ### Option B: Local Development Setup
 
-See the [Developer Guide](../architecture/developer-guide.md) for detailed development setup.
+See the **[Development Docs](../development/)** for detailed development setup.
 
 ## 3. Core Concepts
 
@@ -312,7 +312,7 @@ curl http://localhost:8000/health/dependencies
 
 - **[API Documentation](../api/README.md)** - Complete API reference
 - **[Architecture Overview](../architecture/architecture-overview.md)** - System design
-- **[Developer Guide](../architecture/developer-guide.md)** - Contributing to FaultMaven
+- **[Contributing Guidelines](../CONTRIBUTING.md)** - Contributing to FaultMaven
 - **[Security Guide](../security/)** - Security and privacy features
 
 ## 12. Support

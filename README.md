@@ -492,7 +492,7 @@ See **[docs/README.md](./docs/README.md)** for complete documentation index.
 - **[Architecture Diagrams](./docs/architecture/diagrams/)** - Visual system representations
 
 #### For Backend Developers
-- **[Developer Guide](./docs/architecture/developer-guide.md)** - Development workflow and best practices
+- **[Development Docs](./docs/development/)** - Environment setup, provider integration, context system
 - **[Dependency Injection System](./docs/architecture/dependency-injection-system.md)** - DI container and patterns
 - **[Service Patterns](./docs/architecture/service-patterns.md)** - Service layer implementation
 - **[Context Management](./docs/development/CONTEXT_MANAGEMENT.md)** - Typed QueryContext usage

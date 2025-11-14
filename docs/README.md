@@ -59,7 +59,7 @@ Master index for all FaultMaven documentation.
 
 Start here:
 1. **[Getting Started Guide](./getting-started/user-guide.md)** - User perspective
-2. **[Developer Guide](./architecture/developer-guide.md)** - Development setup
+2. **[Development Docs](./development/)** - Environment setup and developer configuration
 3. **[Contributing Guidelines](./CONTRIBUTING.md)** - How to contribute
 4. **[Code of Conduct](./CODE_OF_CONDUCT.md)** - Community standards
 
