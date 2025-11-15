@@ -18,17 +18,20 @@ This document provides a comprehensive execution plan for transforming FaultMave
 
 1. **Public Open-Source (Monolithic)**
    - Single deployable application
-   - Local/on-premise deployment
-   - Core investigation features
+   - Local deployment (`pip install faultmaven` → `faultmaven serve`)
+   - Accessible at `http://localhost:8000` (configurable port)
+   - Core investigation features (Chat API + Knowledge Base API)
+   - Simplified storage (SQLite/in-memory, no PostgreSQL/Redis/ChromaDB)
    - No enterprise multi-tenancy
    - Apache 2.0 license
 
 2. **Private Enterprise (Microservices)**
-   - Independently deployable services
-   - Kubernetes-based SaaS platform
-   - Multi-tenant architecture
-   - Horizontal scalability
+   - 8 independently deployable services
+   - Kubernetes-based SaaS platform at `https://app.faultmaven.ai`
+   - Multi-tenant architecture (organizations, teams, RBAC)
+   - Horizontal scalability with service-specific databases
    - Advanced security and compliance
+   - PostgreSQL per service + Redis cluster + ChromaDB cluster
    - Proprietary license
 
 **Key Objectives**:
@@ -3946,67 +3949,771 @@ jobs:
 
 ## 8. Phase-by-Phase Execution Plan
 
-### Phase 0: Preparation (Week 1)
+### Phase 0: Foundation & Dual-Track Setup (Week 1)
 
-**Objective**: Setup infrastructure and tooling for migration
+**Objective**: Establish dual-track codebase (PUBLIC monolithic + PRIVATE microservices) and define service boundaries
 
-**Tasks**:
+**IMPORTANT**: This phase creates TWO distinct versions from the current FaultMaven monolith:
 
-**Day 1-2: API Gateway Setup**
-- [ ] Deploy Kong or NGINX Ingress to Kubernetes
-- [ ] Configure SSL/TLS certificates
-- [ ] Setup basic routing (all to monolith initially)
-- [ ] Configure rate limiting plugins
-- [ ] Test gateway with monolith
+1. **PUBLIC Track**: Open-source monolithic version (simplified, local, `http://localhost:8000`)
+2. **PRIVATE Track**: Enterprise microservices version (8 services, K8s-ready, `https://app.faultmaven.ai`)
 
-**Day 3-4: Observability Stack**
-- [ ] Deploy Jaeger or Tempo for distributed tracing
-- [ ] Configure correlation ID generation in gateway
-- [ ] Setup Grafana dashboards for service metrics
-- [ ] Configure Prometheus scraping for new services
-- [ ] Test end-to-end tracing through monolith
+---
 
-**Day 5: Repository Setup**
-- [ ] Create GitHub organization `FaultMaven`
-- [ ] Create service repositories:
-  ```bash
-  gh repo create FaultMaven/fm-auth-service --private
-  gh repo create FaultMaven/fm-session-service --private
-  gh repo create FaultMaven/fm-case-service --private
-  gh repo create FaultMaven/fm-evidence-service --private
-  gh repo create FaultMaven/fm-investigation-service --private
-  gh repo create FaultMaven/fm-knowledge-service --private
-  gh repo create FaultMaven/fm-agent-service --private
-  gh repo create FaultMaven/fm-contracts --private
-  gh repo create FaultMaven/fm-charts --private
-  ```
+**Day 1-2: Feature Classification**
 
-**Day 6-7: Contracts Repository**
-- [ ] Create `fm-contracts` repository structure
-  ```
-  fm-contracts/
-  ├── openapi/
-  │   ├── auth-api.yaml
-  │   ├── case-api.yaml
-  │   ├── session-api.yaml
-  │   └── ...
-  ├── asyncapi/
-  │   ├── case-events.yaml
-  │   ├── auth-events.yaml
-  │   └── ...
-  └── schemas/
-      └── common/
-          ├── error.yaml
-          └── pagination.yaml
-  ```
-- [ ] Write initial OpenAPI specs for Auth, Session, Case services
-- [ ] Setup contract testing framework (Pact or Spring Cloud Contract)
+Create `FEATURE_CLASSIFICATION.md` documenting which code belongs to PUBLIC vs PRIVATE:
 
-**Deliverables**:
-- ✅ API Gateway deployed and routing to monolith
-- ✅ Distributed tracing operational
-- ✅ Service repositories created
-- ✅ Contract repository with initial specs
+```markdown
+# Feature Classification Matrix
+
+## PUBLIC Features (open-source monolith)
+- core/investigation/ (milestone-based engine)
+- core/agent/ (LangGraph agent)
+- tools/ (KB query, web search)
+- infrastructure/llm/ (multi-provider routing)
+- infrastructure/security/pii_redaction.py
+- api/v1/routes/agent.py (Chat API) ✅ REQUIRED
+- api/v1/routes/knowledge.py (Knowledge Base API) ✅ REQUIRED
+- models/case.py (simplified version - no org_id)
+- models/message.py
+- models/evidence.py
+
+## PRIVATE Features (enterprise microservices)
+- api/v1/routes/organizations.py
+- api/v1/routes/teams.py
+- api/v1/routes/users.py (multi-user auth)
+- models/organization.py
+- models/team.py
+- models/user.py (enterprise user model)
+- infrastructure/persistence/postgres_repository.py
+- infrastructure/persistence/redis_store.py
+- infrastructure/persistence/chromadb_store.py
+- services/domain/organization_service.py
+- services/domain/team_service.py
+
+## SHARED Features (different implementations)
+- models/case.py → PUBLIC: simplified (single-user), PRIVATE: full (multi-tenant)
+- persistence/ → PUBLIC: SQLite/in-memory, PRIVATE: PostgreSQL
+- session/ → PUBLIC: in-memory dict, PRIVATE: Redis cluster
+- knowledge/ → PUBLIC: simple vector store, PRIVATE: ChromaDB cluster
+```
+
+**Checklist**:
+- [ ] Document all PUBLIC features (core investigation engine)
+- [ ] Document all PRIVATE features (enterprise/multi-tenancy)
+- [ ] Document all SHARED features (different implementations)
+- [ ] Review with team for completeness
+
+---
+
+**Day 3: Public Repository Branch Creation**
+
+In `/home/swhouse/projects/FaultMaven`:
+
+```bash
+# Create public branch
+git checkout -b public-opensource
+
+# Remove enterprise files
+rm -rf faultmaven/api/v1/routes/organizations.py
+rm -rf faultmaven/api/v1/routes/teams.py
+rm -rf faultmaven/models/organization.py
+rm -rf faultmaven/models/team.py
+# ... remove all PRIVATE files from classification
+
+# Create simplified implementations
+mkdir -p faultmaven/infrastructure/persistence/inmemory/
+
+# Files to create:
+# - inmemory_case_repository.py (replace PostgreSQL)
+# - inmemory_session_store.py (replace Redis)
+# - inmemory_knowledge_store.py (replace ChromaDB)
+
+# Update container.py to use in-memory dependencies
+# Update environment.py to remove PostgreSQL/Redis/ChromaDB config
+
+# Create pip installable setup
+# File: setup.py with entry_points = {"console_scripts": ["faultmaven=faultmaven.cli:main"]}
+# File: faultmaven/cli.py with click commands (serve, init, etc.)
+
+# Update README.md for public version
+cat > README.md << 'EOF'
+# FaultMaven - AI-Powered Troubleshooting Copilot
+
+Open-source AI assistant for technical troubleshooting.
+
+## Installation
+
+pip install faultmaven
+
+## Usage
+
+faultmaven serve --port 8000
+
+## Access
+
+- Chat API: http://localhost:8000/api/v1/chat
+- Knowledge Base API: http://localhost:8000/api/v1/knowledge
+- Interactive docs: http://localhost:8000/docs
+
+## Features
+
+✅ AI-powered troubleshooting conversations
+✅ Knowledge base search and retrieval
+✅ Multi-LLM support (OpenAI, Anthropic, Fireworks AI)
+✅ PII redaction for privacy
+✅ Local-first (no external database required)
+
+## License
+
+Apache 2.0
+EOF
+
+# Create LICENSE file (Apache 2.0)
+curl -L https://www.apache.org/licenses/LICENSE-2.0.txt > LICENSE
+
+git add .
+git commit -m "feat: create public open-source monolithic version
+
+- Remove enterprise features (organizations, teams, multi-user auth)
+- Add in-memory storage implementations (SQLite/in-memory)
+- Create CLI with 'faultmaven serve' command
+- Include Chat API + Knowledge Base API
+- Simplify to single-user local deployment
+- Add Apache 2.0 license"
+```
+
+**Public Version Verification Checklist**:
+- [ ] Chat API functional at `/api/v1/chat`
+- [ ] Knowledge Base API functional at `/api/v1/knowledge`
+- [ ] No PostgreSQL dependency (SQLite or in-memory only)
+- [ ] No Redis dependency (in-memory dict)
+- [ ] No ChromaDB dependency (simple vector store)
+- [ ] No organization/team models
+- [ ] Works with: `pip install -e .` → `faultmaven serve`
+- [ ] Accessible at `http://localhost:8000`
+- [ ] Apache 2.0 LICENSE file exists
+- [ ] README.md updated for public use
+
+---
+
+**Day 4-5: Private Service Repositories Initialization**
+
+Clone all 9 FaultMaven org repos and initialize structure:
+
+```bash
+cd /home/swhouse/projects/
+
+# Clone all repos (already created via setup-org-repos.sh)
+for repo in fm-auth-service fm-session-service fm-case-service fm-evidence-service \
+            fm-investigation-service fm-knowledge-service fm-agent-service \
+            fm-contracts fm-charts; do
+  gh repo clone FaultMaven/$repo
+done
+
+# Initialize each service repo with standard structure
+# Example for fm-case-service:
+cd fm-case-service
+
+mkdir -p src/case_service/{api,domain,infrastructure}
+mkdir -p src/case_service/api/routes
+mkdir -p src/case_service/domain/{models,services}
+mkdir -p src/case_service/infrastructure/{persistence,events}
+mkdir -p tests/{unit,integration,contract}
+
+# Create pyproject.toml
+cat > pyproject.toml << 'EOF'
+[tool.poetry]
+name = "fm-case-service"
+version = "0.1.0"
+description = "FaultMaven Case Management Service"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.104.0"
+uvicorn = {extras = ["standard"], version = "^0.24.0"}
+asyncpg = "^0.29.0"
+pydantic = "^2.4.0"
+pydantic-settings = "^2.0.0"
+redis = "^5.0.0"
+httpx = "^0.25.0"
+opentelemetry-api = "^1.20.0"
+opentelemetry-sdk = "^1.20.0"
+prometheus-client = "^0.18.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+pytest-cov = "^4.1.0"
+black = "^23.10.0"
+flake8 = "^6.1.0"
+mypy = "^1.6.0"
+EOF
+
+# Create Dockerfile (multi-stage)
+cat > Dockerfile << 'EOF'
+# Stage 1: Build
+FROM python:3.11-slim as builder
+WORKDIR /app
+RUN pip install poetry
+COPY pyproject.toml poetry.lock ./
+RUN poetry export -f requirements.txt --output requirements.txt --without-hashes
+
+# Stage 2: Runtime
+FROM gcr.io/distroless/python3-debian12
+COPY --from=builder /app/requirements.txt /app/
+COPY src/ /app/src/
+WORKDIR /app
+CMD ["python", "-m", "src.case_service.main"]
+EOF
+
+# Create docker-compose.yml
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+services:
+  case-service:
+    build: .
+    ports:
+      - "8001:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/fm_case
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: fm_case
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
+EOF
+
+# Create .env.example
+cat > .env.example << 'EOF'
+DATABASE_URL=postgresql://postgres:password@localhost:5432/fm_case
+REDIS_URL=redis://localhost:6379
+LOG_LEVEL=INFO
+ENVIRONMENT=development
+EOF
+
+# Create README.md
+cat > README.md << 'EOF'
+# FM Case Service
+
+FaultMaven microservice for case management.
+
+## Local Development
+
+docker-compose up --build
+
+## Testing
+
+pytest tests/ --cov=src
+EOF
+
+git add .
+git commit -m "chore: initialize service structure"
+git push origin main
+```
+
+**Repeat for all 8 services**: auth, session, case, evidence, investigation, knowledge, agent, analytics
+
+**Checklist**:
+- [ ] All 8 service repos cloned
+- [ ] Standard structure created (src/, tests/, Dockerfile, docker-compose.yml)
+- [ ] pyproject.toml with dependencies
+- [ ] Multi-stage Dockerfile (builder + distroless)
+- [ ] docker-compose.yml with service + PostgreSQL + Redis
+- [ ] .env.example with configuration
+- [ ] README.md with setup instructions
+
+---
+
+**Day 6: Service Boundary Mapping**
+
+Create `SERVICE_EXTRACTION_MAP.md` in each service repo documenting extraction plan:
+
+**Example: fm-case-service/SERVICE_EXTRACTION_MAP.md**
+
+```markdown
+# Case Service Extraction Map
+
+## Source Files (from FaultMaven monolith)
+
+| Monolith File | Destination | Action |
+|---------------|-------------|--------|
+| faultmaven/models/case.py | src/case_service/domain/models/case.py | Extract + enhance (add org_id, team_id) |
+| faultmaven/services/domain/case_service.py | src/case_service/domain/services/case_service.py | Extract business logic |
+| faultmaven/api/v1/routes/cases.py | src/case_service/api/routes/cases.py | Extract API endpoints |
+| faultmaven/infrastructure/persistence/case_repository.py | src/case_service/infrastructure/persistence/repository.py | Extract data access |
+
+## Database Tables (exclusive ownership)
+
+| Table Name | Source Schema | Action |
+|------------|---------------|--------|
+| cases | 001_initial_hybrid_schema.sql | MIGRATE to fm_case database |
+| case_messages | 001_initial_hybrid_schema.sql | MIGRATE to fm_case database |
+| case_status_transitions | 001_initial_hybrid_schema.sql | MIGRATE to fm_case database |
+| case_tags | 001_initial_hybrid_schema.sql | MIGRATE to fm_case database |
+
+## Events Published
+
+| Event Name | AsyncAPI Schema | Trigger |
+|------------|-----------------|---------|
+| case.created.v1 | contracts/asyncapi/case-events.yaml | POST /cases |
+| case.updated.v1 | contracts/asyncapi/case-events.yaml | PUT /cases/{id} |
+| case.status_changed.v1 | contracts/asyncapi/case-events.yaml | POST /cases/{id}/status |
+| case.closed.v1 | contracts/asyncapi/case-events.yaml | POST /cases/{id}/close |
+
+## Events Consumed
+
+| Event Name | Source Service | Action |
+|------------|----------------|--------|
+| evidence.uploaded.v1 | Evidence Service | Link evidence to case |
+| hypothesis.validated.v1 | Investigation Service | Update case status |
+
+## API Dependencies
+
+| Dependency | Purpose | Fallback Strategy |
+|------------|---------|-------------------|
+| Auth Service | Validate user tokens | Circuit breaker (deny if down) |
+| Session Service | Get active session | Circuit breaker (return 503) |
+
+## Migration Checklist
+
+- [ ] Extract domain models (Case, CaseMessage, CaseStatusTransition)
+- [ ] Extract business logic (CaseService with validation rules)
+- [ ] Extract API routes (CRUD + status transitions)
+- [ ] Extract repository (PostgreSQL data access)
+- [ ] Create database migration scripts (001_initial_schema.sql)
+- [ ] Implement event publishing (outbox pattern)
+- [ ] Implement event consumption (inbox pattern)
+- [ ] Add circuit breakers for auth/session dependencies
+- [ ] Write unit tests (80%+ coverage)
+- [ ] Write integration tests (DB + events)
+- [ ] Write contract tests (provider verification)
+```
+
+**Repeat for all 8 services**
+
+**Checklist**:
+- [ ] SERVICE_EXTRACTION_MAP.md in all 8 service repos
+- [ ] Source file mapping complete
+- [ ] Database table ownership documented
+- [ ] Events published/consumed documented
+- [ ] API dependencies documented
+
+---
+
+**Day 7: Contract Definitions**
+
+In `fm-contracts` repo, create OpenAPI and AsyncAPI specifications:
+
+```bash
+cd /home/swhouse/projects/fm-contracts
+
+mkdir -p contracts/openapi
+mkdir -p contracts/asyncapi
+mkdir -p contracts/schemas/common
+
+# Create OpenAPI spec for Case Service
+cat > contracts/openapi/case-service.yaml << 'EOF'
+openapi: 3.1.0
+info:
+  title: Case Service API
+  version: 1.0.0
+  description: FaultMaven case management microservice
+
+servers:
+  - url: https://app.faultmaven.ai/api/v1
+    description: Production
+  - url: http://localhost:8001/api/v1
+    description: Local development
+
+paths:
+  /cases:
+    post:
+      summary: Create a new case
+      operationId: createCase
+      tags: [Cases]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCaseRequest'
+      responses:
+        '201':
+          description: Case created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseResponse'
+        '400':
+          $ref: '../schemas/common/error.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '../schemas/common/error.yaml#/components/responses/Unauthorized'
+
+    get:
+      summary: List cases for user
+      operationId: listCases
+      tags: [Cases]
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [consulting, problem_verification, in_progress, resolved, closed]
+        - $ref: '../schemas/common/pagination.yaml#/components/parameters/Page'
+        - $ref: '../schemas/common/pagination.yaml#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: List of cases
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cases:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CaseResponse'
+                  pagination:
+                    $ref: '../schemas/common/pagination.yaml#/components/schemas/PaginationMetadata'
+
+components:
+  schemas:
+    CreateCaseRequest:
+      type: object
+      required: [user_id, title, initial_description]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        initial_description:
+          type: string
+          minLength: 10
+        org_id:
+          type: string
+          format: uuid
+        team_id:
+          type: string
+          format: uuid
+
+    CaseResponse:
+      type: object
+      properties:
+        case_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        status:
+          type: string
+          enum: [consulting, problem_verification, investigating, root_cause_analysis, solution_planning, solution_validation, resolved, closed]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+EOF
+
+# Create AsyncAPI spec for Case Events
+cat > contracts/asyncapi/case-events.yaml << 'EOF'
+asyncapi: 2.6.0
+info:
+  title: Case Service Events
+  version: 1.0.0
+  description: Events published by the Case Service
+
+channels:
+  case.created.v1:
+    description: Fired when a new case is created
+    publish:
+      message:
+        $ref: '#/components/messages/CaseCreated'
+
+  case.updated.v1:
+    description: Fired when case details are updated
+    publish:
+      message:
+        $ref: '#/components/messages/CaseUpdated'
+
+  case.status_changed.v1:
+    description: Fired when case status transitions
+    publish:
+      message:
+        $ref: '#/components/messages/CaseStatusChanged'
+
+components:
+  messages:
+    CaseCreated:
+      name: CaseCreated
+      contentType: application/json
+      payload:
+        type: object
+        required: [event_id, event_type, aggregate_id, aggregate_type, case_id, user_id, title, created_at]
+        properties:
+          event_id:
+            type: string
+            format: uuid
+          event_type:
+            type: string
+            const: case.created.v1
+          aggregate_id:
+            type: string
+            format: uuid
+          aggregate_type:
+            type: string
+            const: case
+          case_id:
+            type: string
+            format: uuid
+          user_id:
+            type: string
+            format: uuid
+          org_id:
+            type: string
+            format: uuid
+          title:
+            type: string
+          status:
+            type: string
+          created_at:
+            type: string
+            format: date-time
+
+    CaseUpdated:
+      name: CaseUpdated
+      contentType: application/json
+      payload:
+        type: object
+        required: [event_id, event_type, case_id, updated_at, changes]
+        properties:
+          event_id:
+            type: string
+            format: uuid
+          event_type:
+            type: string
+            const: case.updated.v1
+          case_id:
+            type: string
+            format: uuid
+          updated_at:
+            type: string
+            format: date-time
+          changes:
+            type: object
+            description: Fields that were changed
+
+    CaseStatusChanged:
+      name: CaseStatusChanged
+      contentType: application/json
+      payload:
+        type: object
+        required: [event_id, case_id, old_status, new_status, changed_at]
+        properties:
+          event_id:
+            type: string
+            format: uuid
+          event_type:
+            type: string
+            const: case.status_changed.v1
+          case_id:
+            type: string
+            format: uuid
+          old_status:
+            type: string
+          new_status:
+            type: string
+          changed_at:
+            type: string
+            format: date-time
+EOF
+
+git add .
+git commit -m "feat: add OpenAPI and AsyncAPI contracts for Case Service"
+git push origin main
+```
+
+**Create contracts for all 7 API services** (auth, session, case, evidence, investigation, knowledge, agent)
+
+**Checklist**:
+- [ ] OpenAPI 3.1 specs for all 7 services
+- [ ] AsyncAPI 2.6 specs for all event-driven services
+- [ ] Common error schemas (error.yaml)
+- [ ] Common pagination schemas (pagination.yaml)
+- [ ] All contracts committed to fm-contracts repo
+
+---
+
+**Day 7: Comparison Matrix Documentation**
+
+Create `PUBLIC_VS_PRIVATE_COMPARISON.md` in FaultMaven root:
+
+```markdown
+# Public vs Private Version Comparison
+
+| Feature | PUBLIC (Open-Source) | PRIVATE (Enterprise) |
+|---------|---------------------|---------------------|
+| **Chat API** | ✅ Included (`/api/v1/chat`) | ✅ Included (`/api/v1/chat`) |
+| **Knowledge Base API** | ✅ Included (`/api/v1/knowledge`) | ✅ Included (`/api/v1/knowledge`) |
+| **Access URL** | `http://localhost:8000` (local) | `https://app.faultmaven.ai` (production) |
+| **Installation** | `pip install faultmaven` | Docker Compose / Kubernetes |
+| **Architecture** | Monolithic (single process) | 8 Microservices (distributed) |
+| **Database** | SQLite / In-Memory | PostgreSQL (per service) |
+| **Session Storage** | In-Memory (Python dict) | Redis Cluster (distributed) |
+| **Vector Store** | Simple in-memory | ChromaDB Cluster |
+| **Multi-Tenancy** | ❌ Single user only | ✅ Organizations + Teams |
+| **Authentication** | ❌ None / Simple token | ✅ OAuth2 + SSO + RBAC |
+| **Authorization** | ❌ N/A | ✅ Role-based access control |
+| **User Management** | ❌ Single user | ✅ Multi-user with invitations |
+| **Collaboration** | ❌ None | ✅ Team case sharing |
+| **Audit Logging** | ❌ Basic logs | ✅ Full audit trail |
+| **Scalability** | Vertical (single machine) | Horizontal (K8s auto-scaling) |
+| **High Availability** | ❌ Single point of failure | ✅ Multi-replica services |
+| **Deployment** | Local (`faultmaven serve`) | Kubernetes with Helm charts |
+| **License** | Apache 2.0 (open-source) | Proprietary (enterprise) |
+| **Target Users** | Individual developers, hobbyists | Enterprise teams, SaaS customers |
+| **Pricing** | Free | Subscription-based |
+| **Support** | Community (GitHub issues) | Commercial support SLA |
+| **Compliance** | N/A | SOC2, GDPR, HIPAA ready |
+
+## Codebase Structure
+
+### PUBLIC Version (`public-opensource` branch)
+```
+FaultMaven/
+├── faultmaven/
+│   ├── core/                   # Investigation engine
+│   ├── tools/                  # AI agent tools
+│   ├── infrastructure/
+│   │   ├── llm/               # LLM routing
+│   │   └── persistence/
+│   │       └── inmemory/      # SQLite/in-memory stores
+│   ├── api/v1/routes/
+│   │   ├── agent.py           # Chat API ✅
+│   │   └── knowledge.py       # KB API ✅
+│   └── cli.py                 # CLI entry point
+├── setup.py                    # Pip package
+├── LICENSE                     # Apache 2.0
+└── README.md                   # User guide
+```
+
+### PRIVATE Version (8 service repos)
+```
+fm-auth-service/              # User authentication + RBAC
+fm-session-service/           # Session management (Redis)
+fm-case-service/              # Case CRUD + workflow
+fm-evidence-service/          # Evidence storage
+fm-investigation-service/     # Investigation orchestration
+fm-knowledge-service/         # Vector search (ChromaDB)
+fm-agent-service/             # AI agent orchestration
+fm-analytics-service/         # Usage analytics + metrics
+fm-contracts/                 # OpenAPI + AsyncAPI specs
+fm-charts/                    # Helm charts for K8s deployment
+```
+
+## Migration Strategy
+
+1. **Phase 0 (Week 1)**: Create both versions simultaneously
+   - PUBLIC: Strip enterprise features, add in-memory storage
+   - PRIVATE: Initialize 8 service repos with contracts
+
+2. **Phase 1-6 (Week 2-12)**: Extract PRIVATE services incrementally
+   - Week 2-3: Auth Service
+   - Week 4-5: Session + Case Services
+   - Week 6-8: Evidence + Investigation Services
+   - Week 9-10: Knowledge + Agent Services
+   - Week 11-12: Analytics + final cleanup
+
+3. **Parallel Maintenance**: Both versions maintained going forward
+   - PUBLIC: Security fixes + core feature improvements
+   - PRIVATE: Enterprise features + scalability enhancements
+```
+
+**Checklist**:
+- [ ] PUBLIC_VS_PRIVATE_COMPARISON.md created
+- [ ] All feature differences documented
+- [ ] Codebase structure comparison included
+- [ ] Migration strategy timeline included
+
+---
+
+### Phase 0 Deliverables Checklist
+
+**PUBLIC Track**:
+- [ ] `public-opensource` branch created
+- [ ] All enterprise features removed (organizations, teams, multi-user auth)
+- [ ] In-memory storage implementations created (SQLite, dict, simple vector)
+- [ ] Chat API functional at `/api/v1/chat`
+- [ ] Knowledge Base API functional at `/api/v1/knowledge`
+- [ ] `pip install -e .` works
+- [ ] `faultmaven serve` command works (accessible at `http://localhost:8000`)
+- [ ] Apache 2.0 LICENSE file exists
+- [ ] README.md updated for public use
+- [ ] No PostgreSQL dependency
+- [ ] No Redis dependency
+- [ ] No ChromaDB dependency
+
+**PRIVATE Track**:
+- [ ] All 9 repos cloned and initialized (auth, session, case, evidence, investigation, knowledge, agent, analytics, contracts, charts)
+- [ ] Standard service structure in each repo (src/, tests/, Dockerfile, docker-compose.yml)
+- [ ] SERVICE_EXTRACTION_MAP.md in each service repo
+- [ ] OpenAPI 3.1 contracts for all 7 API services (in fm-contracts)
+- [ ] AsyncAPI 2.6 event schemas for all event-driven services (in fm-contracts)
+- [ ] Dockerfile (multi-stage, distroless) in each service
+- [ ] docker-compose.yml (service + PostgreSQL + Redis) in each service
+- [ ] pyproject.toml with dependencies in each service
+- [ ] README.md with setup instructions in each service
+
+**Documentation**:
+- [ ] FEATURE_CLASSIFICATION.md complete (PUBLIC vs PRIVATE vs SHARED)
+- [ ] PUBLIC_VS_PRIVATE_COMPARISON.md complete (feature matrix)
+
+**Verification Before Phase 1**:
+- [ ] PUBLIC version runs locally: `cd FaultMaven && git checkout public-opensource && pip install -e . && faultmaven serve`
+- [ ] PUBLIC version accessible at: `http://localhost:8000/docs`
+- [ ] PRIVATE service repos all have valid structure and can build: `docker-compose build`
+- [ ] All contracts validated with tools: `npx @stoplight/spectral-cli lint contracts/openapi/*.yaml`
+
+---
+
+**Notes**:
+- Phase 0 focuses on CODE ORGANIZATION, not K8s deployment
+- Services will be built and tested locally with Docker Compose
+- K8s deployment comes later (Phase 7+)
+- Both tracks evolve in parallel throughout migration
 
 ---
 
