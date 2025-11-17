@@ -1,6 +1,8 @@
 # FaultMaven
 
-**AI-Powered Troubleshooting Copilot for DevOps and SRE Teams**
+**The AI-Powered Troubleshooting Copilot for Modern Engineering**
+
+*Empower software and operations engineers to diagnose incidents faster with privacy-first AI and a local knowledge base.*
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Docker Hub](https://img.shields.io/badge/docker-ready-blue.svg)](https://hub.docker.com/u/faultmaven)
@@ -10,7 +12,9 @@
 
 ## Overview
 
-FaultMaven is an open-source troubleshooting copilot that helps DevOps and SRE teams diagnose, document, and resolve production incidents faster. It combines AI-powered analysis with structured troubleshooting workflows to reduce MTTR and build institutional knowledge.
+FaultMaven is an open-source AI troubleshooting assistant that helps Developers, SREs, and DevOps engineers diagnose complex issues and capture distinct troubleshooting context. It combines privacy-first AI analysis with a local knowledge base to reduce personal toil and accelerate resolution.
+
+This repository contains the core microservices that power the FaultMaven platform.
 
 **Key Features:**
 - 🤖 **AI-Powered Root Cause Analysis** - Structured 5-phase SRE troubleshooting doctrine
