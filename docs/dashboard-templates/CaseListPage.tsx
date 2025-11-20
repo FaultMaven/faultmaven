@@ -33,6 +33,12 @@ export function CaseListPage({ apiUrl = import.meta.env.VITE_API_URL || 'http://
 
     try {
       const token = localStorage.getItem('auth_token');
+      if (!token) {
+        setError('Authentication required. Please log in.');
+        setLoading(false);
+        return;
+      }
+
       const response = await fetch(`${apiUrl}/v1/cases`, {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -41,7 +47,14 @@ export function CaseListPage({ apiUrl = import.meta.env.VITE_API_URL || 'http://
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to fetch cases: ${response.statusText}`);
+        if (response.status === 401) {
+          setError('Authentication failed. Please log in again.');
+        } else if (response.status === 403) {
+          setError('You do not have permission to access cases.');
+        } else {
+          setError('Failed to fetch cases. Please try again later.');
+        }
+        return;
       }
 
       const data = await response.json();
@@ -130,9 +143,10 @@ export function CaseListPage({ apiUrl = import.meta.env.VITE_API_URL || 'http://
             </div>
             <button
               onClick={fetchCases}
+              aria-label="Refresh case list"
               className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             >
-              <svg className="h-5 w-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="h-5 w-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
               </svg>
               Refresh
@@ -152,7 +166,10 @@ export function CaseListPage({ apiUrl = import.meta.env.VITE_API_URL || 'http://
               </label>
               <select
                 value={filter}
-                onChange={(e) => setFilter(e.target.value as any)}
+                onChange={(e) => {
+                  const value = e.target.value as 'all' | 'open' | 'in_progress' | 'resolved' | 'closed';
+                  setFilter(value);
+                }}
                 className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
               >
                 <option value="all">All</option>
@@ -170,7 +187,10 @@ export function CaseListPage({ apiUrl = import.meta.env.VITE_API_URL || 'http://
               </label>
               <select
                 value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as any)}
+                onChange={(e) => {
+                  const value = e.target.value as 'created' | 'updated' | 'priority';
+                  setSortBy(value);
+                }}
                 className="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
               >
                 <option value="updated">Last Updated</option>

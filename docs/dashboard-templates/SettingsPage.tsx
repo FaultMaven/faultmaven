@@ -54,7 +54,7 @@ export function SettingsPage() {
       const token = localStorage.getItem('auth_token');
       if (token) {
         try {
-          await fetch(`${settings.apiUrl}/v1/settings`, {
+          const response = await fetch(`${settings.apiUrl}/v1/settings`, {
             method: 'PUT',
             headers: {
               'Authorization': `Bearer ${token}`,
@@ -62,6 +62,9 @@ export function SettingsPage() {
             },
             body: JSON.stringify(settings),
           });
+          if (!response.ok && response.status !== 404) {
+            console.warn('Could not sync settings with backend:', response.statusText);
+          }
         } catch (err) {
           console.warn('Could not sync settings with backend:', err);
         }
@@ -217,14 +220,17 @@ export function SettingsPage() {
               <select
                 id="provider"
                 value={settings.llm.provider}
-                onChange={(e) => setSettings({
-                  ...settings,
-                  llm: {
-                    ...settings.llm,
-                    provider: e.target.value as any,
-                    model: modelOptions[e.target.value as keyof typeof modelOptions][0].value,
-                  },
-                })}
+                onChange={(e) => {
+                  const provider = e.target.value as 'openai' | 'anthropic' | 'fireworks';
+                  setSettings({
+                    ...settings,
+                    llm: {
+                      ...settings.llm,
+                      provider,
+                      model: modelOptions[provider][0].value,
+                    },
+                  });
+                }}
                 className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
               >
                 <option value="openai">OpenAI (GPT-4, GPT-3.5)</option>
@@ -267,10 +273,15 @@ export function SettingsPage() {
                 max="1"
                 step="0.05"
                 value={settings.llm.temperature}
-                onChange={(e) => setSettings({
-                  ...settings,
-                  llm: { ...settings.llm, temperature: parseFloat(e.target.value) },
-                })}
+                onChange={(e) => {
+                  const temp = parseFloat(e.target.value);
+                  if (!isNaN(temp) && temp >= 0 && temp <= 1) {
+                    setSettings({
+                      ...settings,
+                      llm: { ...settings.llm, temperature: temp },
+                    });
+                  }
+                }}
                 className="mt-1 block w-full"
               />
               <div className="flex justify-between text-xs text-gray-500 mt-1">
@@ -294,10 +305,15 @@ export function SettingsPage() {
                 max="8000"
                 step="100"
                 value={settings.llm.max_tokens}
-                onChange={(e) => setSettings({
-                  ...settings,
-                  llm: { ...settings.llm, max_tokens: parseInt(e.target.value) },
-                })}
+                onChange={(e) => {
+                  const tokens = parseInt(e.target.value);
+                  if (!isNaN(tokens) && tokens >= 100 && tokens <= 8000) {
+                    setSettings({
+                      ...settings,
+                      llm: { ...settings.llm, max_tokens: tokens },
+                    });
+                  }
+                }}
                 className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
               />
               <p className="mt-2 text-sm text-gray-500">

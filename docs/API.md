@@ -4,7 +4,7 @@ This document provides an overview of FaultMaven's REST APIs. For detailed OpenA
 
 ## API Gateway
 
-**Base URL:** `http://localhost:8090`
+**Base URL:** `http://localhost:8000`
 
 The API Gateway is the single entry point for all client requests. All endpoints below are accessed through the gateway.
 
@@ -355,7 +355,7 @@ Authorization: Bearer <access_token>
   },
   "auth": {
     "type": "jwt",
-    "loginUrl": "http://localhost:8090/v1/auth/login"
+    "loginUrl": "http://localhost:8000/v1/auth/login"
   },
   "dashboardUrl": "http://localhost:3000"
 }
@@ -442,7 +442,7 @@ X-RateLimit-Reset: 1732104000
 
 Each service provides interactive API documentation:
 
-- **API Gateway:** http://localhost:8090/docs
+- **API Gateway:** http://localhost:8000/docs
 - **Auth Service:** http://localhost:8001/docs
 - **Case Service:** http://localhost:8003/docs
 - **Knowledge Service:** http://localhost:8004/docs
@@ -461,35 +461,41 @@ import requests
 
 # Login
 response = requests.post(
-    "http://localhost:8090/v1/auth/login",
+    "http://localhost:8000/v1/auth/login",
     json={
         "email": "user@example.com",
         "password": "secure_password"
     }
 )
+if response.status_code != 200:
+    raise Exception(f"Login failed: {response.text}")
 token = response.json()["access_token"]
 
 # Create case
 headers = {"Authorization": f"Bearer {token}"}
 response = requests.post(
-    "http://localhost:8090/v1/cases",
+    "http://localhost:8000/v1/cases",
     headers=headers,
     json={
         "title": "Database timeout",
         "description": "Timeouts during peak hours"
     }
 )
+if response.status_code not in [200, 201]:
+    raise Exception(f"Failed to create case: {response.text}")
 case_id = response.json()["case_id"]
 
 # Chat with agent
 response = requests.post(
-    "http://localhost:8090/v1/agent/chat",
+    "http://localhost:8000/v1/agent/chat",
     headers=headers,
     json={
         "case_id": case_id,
         "message": "Database is timing out"
     }
 )
+if response.status_code != 200:
+    raise Exception(f"Chat failed: {response.text}")
 print(response.json()["content"])
 ```
 
@@ -497,18 +503,18 @@ print(response.json()["content"])
 
 ```bash
 # Login
-curl -X POST http://localhost:8090/v1/auth/login \
+curl -X POST http://localhost:8000/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","password":"secure_password"}'
 
 # Create case
-curl -X POST http://localhost:8090/v1/cases \
+curl -X POST http://localhost:8000/v1/cases \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"title":"Database timeout","description":"Timeouts during peak"}'
 
 # Chat with agent
-curl -X POST http://localhost:8090/v1/agent/chat \
+curl -X POST http://localhost:8000/v1/agent/chat \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"case_id":"case_xyz789","message":"Database is timing out"}'

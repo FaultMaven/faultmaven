@@ -19,7 +19,7 @@ We take security seriously and provide security updates for the following versio
 
 Please report security vulnerabilities by emailing:
 
-**security@faultmaven.ai**
+**engineering@faultmaven.ai**
 
 Include the following information:
 
@@ -265,7 +265,7 @@ services:
 
 We follow **responsible disclosure** principles:
 
-1. **Report privately** via security@faultmaven.ai
+1. **Report privately** via engineering@faultmaven.ai
 2. **Allow time** for us to develop and release a fix (typically 90 days)
 3. **Coordinate disclosure** timing
 4. **Receive credit** in our security advisories (if desired)
@@ -284,10 +284,10 @@ We thank the following researchers for responsibly disclosing vulnerabilities:
 
 ## Contact
 
-For security issues: **security@faultmaven.ai**
+For security issues: **engineering@faultmaven.ai**
 
 For general support: See [README.md](README.md)
 
 ---
 
-**Last Updated:** 2024-11-16
+**Last Updated:** 2025-11-20

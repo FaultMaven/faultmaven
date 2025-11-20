@@ -13,7 +13,7 @@ FaultMaven uses a **microservices architecture** where each service handles a sp
                      │ HTTPS
                      ▼
 ┌─────────────────────────────────────────────────────┐
-│                  API Gateway (8090)                  │
+│                  API Gateway (8000)                  │
 │          Routes requests + Authentication            │
 └─────┬───────┬──────┬───────┬────────┬───────┬───────┘
       │       │      │       │        │       │
@@ -32,7 +32,7 @@ FaultMaven uses a **microservices architecture** where each service handles a sp
 
 ## Service Responsibilities
 
-### API Gateway (Port 8090)
+### API Gateway (Port 8000)
 **Purpose:** Single entry point for all client requests
 
 **Responsibilities:**
