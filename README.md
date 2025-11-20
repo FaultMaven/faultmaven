@@ -29,38 +29,64 @@ This repository contains the core microservices that power the FaultMaven platfo
 
 ## 🏗️ Deployment Options
 
-FaultMaven gives you flexibility in how you deploy:
+### Self-Hosted (Open Source)
+**Perfect for developers, tinkerers, and privacy-conscious users.**
 
-### Self-Hosted (Recommended)
-Perfect for individuals, small teams, or organizations with data privacy requirements.
+The self-hosted version is designed for individual use - learning AI troubleshooting, experimenting with RAG architectures, or running in air-gapped environments.
+
+**⚡ 2-Minute Setup:**
+```bash
+git clone https://github.com/FaultMaven/faultmaven-deploy.git
+cd faultmaven-deploy
+echo "OPENAI_API_KEY=sk-..." > .env
+docker-compose up -d
+```
 
 **What You Get:**
-- ✅ Full AI troubleshooting capabilities
-- ✅ Complete knowledge base with semantic search
-- ✅ SQLite database (zero configuration)
-- ✅ Local file storage
-- ✅ JWT authentication
-- ✅ One-command Docker deployment
-- ✅ **100% free and open source (Apache 2.0)**
+- ✅ **Complete AI agent** - Full LangGraph agent with all 8 milestones
+- ✅ **All 8 data types** - Logs, traces, profiles, metrics, config, code, text, visual
+- ✅ **3-tier RAG system** - Personal KB + Global KB + Case Working Memory
+- ✅ **SQLite database** - Zero configuration, single file, portable
+- ✅ **Local file storage** - All data stays on your machine
+- ✅ **ChromaDB vector search** - Semantic knowledge base retrieval
+- ✅ **Background job processing** - Celery + Redis for async tasks
+- ✅ **9 Docker containers** - Complete microservices architecture
+- ✅ **100% free and open source** - Apache 2.0 license
 
 **Best For:**
-- Privacy-conscious users
-- Self-hosting enthusiasts
-- Small teams (< 10 users)
-- Organizations with data residency requirements
+- 👨‍💻 **Developers** - Study the architecture, contribute code, learn AI troubleshooting
+- 🔬 **Tinkerers** - Experiment with LLMs, RAG, and agentic workflows
+- 🔐 **Privacy-conscious** - Keep sensitive data on-premises (air-gapped environments)
+- 🌍 **Open-source contributors** - Improve the product, add features
 
-### Enterprise (Coming Soon)
-For organizations needing managed infrastructure and team collaboration.
+**Not For:**
+- ❌ Production team use (single-user architecture)
+- ❌ Collaboration workflows (no case/knowledge sharing)
+- ❌ Enterprise compliance needs (no SSO/RBAC)
 
-**Additional Features:**
-- PostgreSQL for larger scale
-- SSO/SAML authentication
-- Multi-tenant organizations and teams
-- Cloud object storage (S3/MinIO)
-- Kubernetes deployment
-- Professional support
+### Enterprise SaaS (Managed Platform)
+**For engineering teams and organizations.**
 
-**Upgrade Path:** Seamlessly migrate your data when you're ready to scale.
+The Enterprise SaaS edition provides managed infrastructure, team collaboration, and professional support.
+
+**🎁 Free Tier Available** - Try before you buy:
+- 1 user
+- 5 active cases
+- 500MB storage
+- Community support
+
+**Pro & Enterprise Tiers Include:**
+- 👥 **Team collaboration** - Case sharing, shared knowledge bases
+- 🔐 **Enterprise auth** - SSO (Google, Okta, Azure AD), SAML, MFA
+- 🏢 **Multi-tenancy** - Organizations, teams, role-based access control
+- ☁️ **Cloud infrastructure** - Managed PostgreSQL, Redis Cluster, S3 storage
+- 📊 **Advanced analytics** - Dashboards, trend analysis, pattern detection
+- 🚀 **Kubernetes deployment** - High availability, horizontal scaling
+- 📞 **Professional support** - Priority support, SLA guarantees
+
+**Seamless Migration:** Self-hosted data migrates to Enterprise when you're ready to scale.
+
+**Sign up:** [https://faultmaven.ai/signup](https://faultmaven.ai/signup) *(coming soon)*
 
 ---
 
@@ -330,8 +356,8 @@ The AI agent helps you work through problems systematically:
 - Recommend solutions based on similar past cases
 - Help document the resolution for future reference
 
-### 4. Team Collaboration
-Share troubleshooting sessions and build institutional knowledge.
+### 4. Team Collaboration (Enterprise Only)
+Share troubleshooting sessions and build institutional knowledge across your organization.
 
 ---
 
@@ -403,9 +429,9 @@ FaultMaven is a **complete, production-ready AI troubleshooting platform**:
 
 **Perfect For:**
 - Individual developers and SREs
-- Small engineering teams
-- Organizations prioritizing data privacy
-- Anyone wanting AI troubleshooting without SaaS dependencies
+- Learning AI troubleshooting architectures
+- Privacy-first environments (air-gapped, on-premises)
+- Open-source experimentation and contribution
 
 ---
 
@@ -424,15 +450,20 @@ We're planning these improvements to the open-source version:
 
 ---
 
-### 🏢 Enterprise Edition
-**For Larger Organizations**
+### 🏢 Enterprise SaaS Edition
+**For Engineering Teams & Organizations**
 
-Coming soon for teams needing:
-- Team collaboration and role-based access
-- SSO/SAML authentication
-- Managed cloud hosting
-- Enhanced compliance features
-- Professional support
+**🎁 Free Tier Available Now**
+
+Enterprise features include:
+- 👥 **Team collaboration** - Case sharing, shared knowledge bases, role-based access
+- 🔐 **Enterprise auth** - SSO (Google, Okta, Azure AD), SAML, MFA, directory sync
+- 🏢 **Multi-tenancy** - Organizations, teams, workspaces
+- ☁️ **Managed infrastructure** - No DevOps, automatic scaling, 99.9% uptime
+- 📊 **Advanced analytics** - Dashboards, trend analysis, pattern detection
+- 📞 **Professional support** - Priority support, SLA guarantees
+
+**Try the free tier:** [https://faultmaven.ai/signup](https://faultmaven.ai/signup) *(coming soon)*
 
 **Seamless Migration:** Your self-hosted data moves with you when you're ready to scale.
 
