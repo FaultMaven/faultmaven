@@ -2,22 +2,27 @@
 
 **The AI-Powered Troubleshooting Copilot for Modern Engineering**
 
-> 🎉 **Public Beta Now Open** — Help us build FaultMaven
->
-> Try it free (self-hosted or Enterprise SaaS), break things, and tell us what you think. Your feedback shapes the product.
-
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-public%20beta-orange.svg)]()
-[![Feedback Welcome](https://img.shields.io/badge/feedback-welcome-brightgreen.svg)](https://github.com/FaultMaven/FaultMaven/discussions)
 [![Docker Hub](https://img.shields.io/badge/docker-ready-blue.svg)](https://hub.docker.com/u/faultmaven)
 
-**[Try Enterprise SaaS (Free Beta) →](https://faultmaven.ai/signup)** | **[Deploy Self-Hosted (Free Forever) →](#quick-start)**
+---
+
+## 🎉 Public Beta Now Open: Help us Build FaultMaven
+
+Try it free (self-hosted or Enterprise SaaS), break things, and tell us what you think. Your feedback shapes the product.
+
+| **Enterprise SaaS (Free Beta)** | **Self-Hosted (Free Forever)** |
+|:---|:---|
+| [Start Your Managed Trial →](https://faultmaven.ai/signup) | [See Quick Start Guide →](#quick-start) |
+
+[![Feedback Welcome](https://img.shields.io/badge/feedback-welcome-brightgreen.svg)](https://github.com/FaultMaven/FaultMaven/discussions)
 
 ---
 
 ## 🧪 Public Beta Program
 
-**FaultMaven is being built WITH the community, not just FOR it.** We're opening both deployment options for public testing to validate features, gather feedback, and refine the product before commercial launch.
+**FaultMaven is being built WITH the community, not just FOR it.** We're opening both deployment options for public testing to validate features, gather feedback, and refine the product together.
 
 ### The Value Exchange
 
@@ -26,23 +31,23 @@
 <td width="50%" valign="top">
 
 **🎁 What You Get**
-- Free access to all features during beta
-- Direct influence on roadmap and pricing
-- Recognition as a founding user/contributor
+- Free access to all features during the Public Beta
+- Direct influence on roadmap and feature priorities
+- Recognition as a founding contributor
 - Direct line to the engineering team
-- Preferential rates when we commercialize
-- Self-hosted version stays free forever
+- Early access to new capabilities as we build them
+- Self-hosted version stays free forever (Apache 2.0)
 
 </td>
 <td width="50%" valign="top">
 
 **🔍 What We Need**
 - Bug reports and edge cases
-- Feature requests and use cases
-- Real-world usage patterns
-- Honest feedback on what works (and doesn't)
+- Feature requests and real-world use cases
+- Usage patterns and workflow insights
+- Honest feedback on what works (and what doesn't)
 - Help validating team collaboration features
-- Input on future pricing models
+- Input on the long-term sustainability and roadmap
 
 </td>
 </tr>
@@ -85,7 +90,7 @@ Choose how you want to test FaultMaven:
 | **Infrastructure** | You manage (Docker) | Fully managed |
 | **Storage** | SQLite, local files | PostgreSQL, S3 |
 | **Support** | Community (GitHub) | Direct engineering access |
-| **Future** | **Always free** (Apache 2.0) | **Paid plans** after beta |
+| **Future** | **Always free** (Apache 2.0) | **Team plans** available after beta |
 | | **[Quick Start →](#quick-start)** | **[Sign Up →](https://faultmaven.ai/signup)** |
 
 ---
@@ -94,7 +99,7 @@ Choose how you want to test FaultMaven:
 
 **Zero-Setup Team Collaboration Testbed**
 
-Test team collaboration features with zero infrastructure. Currently free while we validate product-market fit and finalize commercial plans.
+Test team collaboration features with zero infrastructure. We're validating whether these features truly solve team troubleshooting challenges.
 
 ### What You're Testing
 
@@ -106,14 +111,13 @@ This is the managed platform designed for teams:
 - 📊 **Advanced analytics** — Dashboards, trend analysis, pattern detection
 - 📞 **Beta support** — Direct line to engineering team via in-app chat
 
-### Beta Terms
+### How Beta Works
 
-- ✅ **Currently:** Free for all users (no credit card required)
-- ⏰ **After beta:** Paid plans based on team size (pricing TBD with community input)
-- 🏆 **Beta participants:** Lifetime discount + preferential rates as founding customers
-- 📅 **Transparency pledge:** 60-day advance notice before any pricing takes effect
-- 🆓 **Free tier:** We plan to maintain a generous free tier for individuals after launch
-- 💾 **Data portability:** Export your data anytime
+- ✅ **Free for everyone** — No credit card required, no hidden costs during beta
+- 🧪 **Help us validate** — Does this solve real team troubleshooting problems?
+- 🏆 **Beta participants** — Recognition as Founding Contributors + special access to new features
+- 💾 **Your data** — Export anytime, we'll never hold it hostage
+- 🗳️ **Your input matters** — Directly shape the Enterprise feature set and roadmap
 
 ### Perfect For Testing
 
@@ -188,9 +192,9 @@ This is the full-featured self-hosted version:
 - Browser extension in active development (4-6 weeks)
 
 🤝 **Community-driven:**
-- Your feedback directly shapes priorities
+- Your feedback directly shapes feature priorities
 - We'll be transparent about bugs, roadmap, and timelines
-- Beta participants influence future pricing (Enterprise)
+- Beta participants directly influence the Enterprise feature set and roadmap
 - Recognition for contributors and active testers
 
 ---
@@ -243,30 +247,34 @@ docker compose up -d
 
 All images will be automatically pulled from Docker Hub. No manual builds required!
 
-### Step 4: Access FaultMaven
+### Step 4: Access and Start Using FaultMaven
 
-- **API Gateway:** http://localhost:8000
-- **Dashboard:** http://localhost:3000
-- **API Docs:** http://localhost:8000/docs
-- **Capabilities Endpoint:** http://localhost:8000/v1/meta/capabilities
+**Dashboard:** [http://localhost:3000](http://localhost:3000)
+- Access the knowledge base manager
+- Upload documents, runbooks, and troubleshooting guides
+- Create and manage your first troubleshooting case
 
-### Step 5: Install Browser Extension
+**API Gateway:** [http://localhost:8000](http://localhost:8000)
+- API Docs: [http://localhost:8000/docs](http://localhost:8000/docs)
+- Health Check: [http://localhost:8000/health](http://localhost:8000/health)
+- Capabilities: [http://localhost:8000/v1/meta/capabilities](http://localhost:8000/v1/meta/capabilities)
 
-*Coming in 4-6 weeks*
-
-1. Download `faultmaven-copilot` from Chrome Web Store / Firefox Add-ons
-2. Configure extension settings:
-   - API Endpoint: `http://localhost:8000`
-3. Start troubleshooting!
-
-### Step 6: Verify Health
+### Step 5: Verify Everything Works
 
 ```bash
 curl http://localhost:8000/health
 curl http://localhost:8000/v1/meta/capabilities
 ```
 
-**Next Steps:** Upload documents to the knowledge base via the dashboard at http://localhost:3000
+### Step 6: Install Browser Extension (Coming Soon)
+
+*Browser extension expected in 4-6 weeks*
+
+Once available:
+1. Download `faultmaven-copilot` from Chrome Web Store / Firefox Add-ons
+2. Configure extension settings:
+   - API Endpoint: `http://localhost:8000`
+3. Start troubleshooting with the AI copilot!
 
 ---
 
@@ -342,41 +350,6 @@ If you're testing Enterprise SaaS:
 **Timeline:** v1.0 production release expected Q2 2025 (subject to beta feedback)
 
 **Your input shapes the roadmap.** Vote on features and suggest priorities in [GitHub Discussions](https://github.com/FaultMaven/FaultMaven/discussions).
-
----
-
-## 💰 Future Pricing Transparency
-
-We believe in honest, transparent communication about our business model.
-
-### Self-Hosted (Open Source)
-- ✅ **Free forever** (Apache 2.0 license)
-- ✅ No feature restrictions
-- ✅ No usage limits
-- ✅ Community support via GitHub
-
-### Enterprise SaaS
-
-**During Beta (Now):**
-- ✅ Free for all users
-- ✅ All features unlocked
-- ✅ No credit card required
-- ✅ No usage limits
-
-**After Beta (Expected Q2 2025):**
-- 💵 Paid plans based on team size (pricing TBD)
-- 🆓 Generous free tier for individuals (always available)
-- 🏆 Beta participants receive lifetime discount
-- 📅 **60-day advance notice** before any pricing takes effect
-- 💾 Data export available anytime
-
-**Beta Participant Benefits:**
-- Get advance preview of pricing plans
-- Provide input on pricing structure
-- Receive preferential rates as founding customers
-- Never surprised by sudden charges
-
-**Questions about pricing?** [Let's discuss →](https://github.com/FaultMaven/FaultMaven/discussions)
 
 ---
 
