@@ -112,7 +112,7 @@ Multi-user accounts with team collaboration, SSO, and enterprise features.
 
 **Cost:** TBD
 
-**Status:** 🔨 Under development | Expected Q2 2025
+**Status:** 🔨 Planned
 
 ---
 
