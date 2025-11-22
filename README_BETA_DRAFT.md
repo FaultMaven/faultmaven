@@ -328,7 +328,7 @@ If you're testing Enterprise SaaS:
 - ✅ Knowledge base with semantic search (ChromaDB)
 - ✅ Case tracking and investigation history
 - ✅ Docker Compose deployment
-- ✅ Multiple LLM providers (OpenAI, Anthropic, Fireworks)
+- ✅ Multiple LLM providers (OpenAI, Anthropic, Fireworks, and more)
 - ✅ Team collaboration (Enterprise only)
 - ✅ SSO authentication (Enterprise only)
 - ✅ Web dashboard for KB management
