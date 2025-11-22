@@ -1,0 +1,136 @@
+## Summary
+
+This PR introduces a comprehensive README rewrite (`README_BETA_DRAFT.md`) that focuses entirely on **community collaboration and genuine feedback-seeking** during the public beta phase, with zero commercial messaging.
+
+**Core Philosophy:** "Help us build FaultMaven" — focusing solely on feedback and utility as the most authentic and effective strategy for community validation.
+
+## Key Changes
+
+### 1. Product Characterization
+- **New tagline:** "The AI-Powered Troubleshooting and Knowledge Base Platform"
+  - **FaultMaven**: The brand name
+  - **AI-Powered Troubleshooting**: The core function (what it does)
+  - **Knowledge Base Platform**: The core technology (how it does it)
+- Updated Overview section to emphasize platform architecture
+- Better reflects the dual nature: intelligent AI + institutional knowledge capture
+
+### 2. Pure Feedback-Focused Messaging
+Completely eliminated commercial/monetization language:
+
+**Removed:**
+- ❌ Entire "Future Pricing Transparency" section (33 lines)
+- ❌ All mentions of "preferential rates" and "lifetime discounts"
+- ❌ "Input on future pricing models"
+- ❌ "Paid plans after beta"
+- ❌ "60-day advance notice before pricing"
+- ❌ "Enterprise pricing & billing system" (roadmap)
+
+**Replaced with:**
+- ✅ "Recognition as a founding contributor"
+- ✅ "Early access to new capabilities as we build them"
+- ✅ "Input on long-term sustainability and roadmap"
+- ✅ "Directly shape the Enterprise feature set and roadmap"
+- ✅ "Team plans available after beta" (factual, not promotional)
+- ✅ "Enhanced team collaboration features" (roadmap)
+
+### 3. Strategic Positioning
+
+**Both offerings positioned as testbeds for community validation:**
+
+| Element | Positioning |
+|---------|-------------|
+| **Enterprise SaaS** | "Zero-Setup Team Collaboration Testbed" — validating if features solve real problems |
+| **Self-Hosted OSS** | "Free Forever Testbed for Developers & Tinkerers" — Apache 2.0, always free |
+
+### 4. Value Exchange Framework
+
+Created a prominent side-by-side comparison showing:
+
+**What You Get:**
+- Free access to all features during the Public Beta
+- Direct influence on roadmap and feature priorities
+- Recognition as a founding contributor
+- Direct line to the engineering team
+- Early access to new capabilities
+- Self-hosted stays free forever (Apache 2.0)
+
+**What We Need:**
+- Bug reports and edge cases
+- Feature requests and real-world use cases
+- Usage patterns and workflow insights
+- Honest feedback on what works and what doesn't
+- Help validating team collaboration features
+- Input on long-term sustainability and roadmap
+
+### 5. Structural Improvements
+
+**Header & Badges:**
+- Badges grouped under title for professional layout
+- "Feedback Welcome" badge positioned near Public Beta section
+- Action links presented in clear table format
+
+**Beta Terms → How Beta Works:**
+- Reframed from pricing terms to validation goals
+- "Does this solve real team troubleshooting problems?" vs. commercial plans
+- Emphasizes trust: "Export anytime, we'll never hold it hostage"
+
+**Quick Start Improvements:**
+- Step 4 reorganized with action-oriented headers
+- Dashboard prioritized (user-facing first)
+- Specific next steps added: "Upload documents, create your first case"
+- Clearer browser extension timeline
+
+### 6. LLM Provider Extensibility
+
+Updated all LLM provider references to show it's not limited to just 3:
+- "OpenAI, Anthropic, Fireworks, **and more**"
+- "OpenAI, Anthropic, Fireworks, **etc.**"
+
+Makes clear the platform supports multiple LLM providers beyond examples listed.
+
+## What's Improved
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| **Tagline** | "AI-Powered Troubleshooting Copilot" | "AI-Powered Troubleshooting and Knowledge Base Platform" |
+| **Opening** | "Open-source AI troubleshooting assistant" | "Public Beta Now Open — Help us Build FaultMaven" |
+| **Value Prop** | Feature-focused lists | Value exchange (what you get / what we need) |
+| **Enterprise** | "Coming soon" with broken links | "Free Beta" with validation-focused messaging |
+| **Monetization** | ~15 references to pricing/rates/discounts | 0 references (purely feedback-focused) |
+| **Beta Terms** | Pricing-focused (discounts, advance notice) | Validation-focused (solve real problems?) |
+| **Expectations** | Implied production-ready | Explicit beta quality and limitations |
+| **CTAs** | Passive "coming soon" | Active "Try Enterprise Beta" / "Give Feedback" |
+| **Roadmap** | Included "Enterprise pricing & billing" | "Enhanced team collaboration features" |
+
+## Benefits
+
+- ✅ Sets clear expectations about beta quality
+- ✅ Frames both offerings as collaboration, not just free access
+- ✅ Removes ALL commercial messaging to focus purely on feedback
+- ✅ Builds trust through transparency (data portability, honest limitations)
+- ✅ Creates multiple participation paths (Enterprise, self-hosted, feedback, contributions)
+- ✅ Positions for authentic community building and validation
+- ✅ Better product characterization (platform vs. copilot)
+
+## File Changes
+
+- **Added:** `README_BETA_DRAFT.md` - Complete rewritten README with public beta positioning
+- **Preserved:** Original `README.md` for comparison
+
+## Messaging Philosophy
+
+This README embodies: **"Focusing solely on feedback and utility is the most authentic and effective strategy for a community validation phase."**
+
+The best way to get honest feedback is to remove the commercial question entirely. This approach:
+- Makes beta participation about **product improvement**, not commercial benefits
+- Rewards contributors with **recognition and influence**, not discounts
+- Asks for input on **sustainability and governance**, not pricing
+- Validates **real problem-solving**, not business model
+
+## Next Steps
+
+If approved, `README_BETA_DRAFT.md` should replace the current `README.md` to properly position FaultMaven for the public beta launch.
+
+## Related Context
+
+This work addresses the need for clear, authentic messaging during the community validation phase where both self-hosted and Enterprise SaaS versions are available for free testing. The goal is to build the right product through genuine feedback before any commercialization considerations.
