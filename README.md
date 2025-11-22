@@ -74,7 +74,7 @@ Deploy locally using Docker. All data stays on your machine.
 
 **Note:** Core features are functional and available for use. We're actively improving them based on user feedback.
 
-**Status:** ✅ Available now | **[Sign Up →](https://faultmaven.ai/signup)**
+**Status:** ✅ Available now | **[Learn More →](https://faultmaven.ai/)**
 
 ---
 
