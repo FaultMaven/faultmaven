@@ -425,7 +425,7 @@ All contributions are welcome - from bug fixes to new features!
 
 ---
 
-### 🔨 Under Active Development
+### 🔨 Development Pipeline
 
 **Advanced Features:**
 - Team collaboration (case sharing, shared knowledge bases)
