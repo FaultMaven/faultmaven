@@ -58,23 +58,44 @@ Deploy locally using Docker. All data stays on your machine.
 ---
 
 ### 2. Managed SaaS
-**Zero setup, managed infrastructure.**
+**Zero setup, production-ready infrastructure.**
+
+**Three key advantages over self-hosted:**
+
+**1. Elastic Resource Management**
+- Infrastructure automatically provisioned and scaled to meet demand
+- No manual capacity planning or resource tuning required
+- Auto-scaling for compute, storage, and database resources
+
+**2. Optimized Performance**
+- Centrally managed updates, monitoring, and performance tuning
+- Consistent reliability without operational overhead
+- High-availability PostgreSQL, Redis, and S3 storage
+- 99.9% SLA guarantees
+
+**3. Enterprise-Grade Features** *(adopt incrementally as needed)*
+- **Team Collaboration** - Share cases and knowledge bases across your organization
+- **Enterprise Authentication** - SSO/SAML (Google, Okta, Azure AD)
+- **Advanced Integrations** - Slack, PagerDuty, ServiceNow, webhooks
+- **Built-in Curated Knowledge Base** - Pre-loaded troubleshooting patterns
+- **Advanced Analytics** - Dashboards, trend analysis, ML model management
+- **Professional Support** - Dedicated assistance and priority bug fixes
 
 **What's Available Now:**
-- ✅ AI troubleshooting agent
+- ✅ AI troubleshooting agent with multi-provider LLM support
 - ✅ Browser extension (works with all deployment options)
 - ✅ Knowledge base with semantic search
-- ✅ Case tracking
+- ✅ Case tracking and investigation history
 - ✅ Managed infrastructure (PostgreSQL, Redis, S3)
 - ✅ Web dashboard
 
 **Current Limitations:**
-- Single user workspace (no case sharing or team knowledge bases)
-- Limited storage and active cases
+- Single user workspace (team features rolling out incrementally)
+- Limited storage and active cases (scalable plans available)
 
 **Note:** Core features are functional and available for use. We're actively improving them based on user feedback.
 
-**Status:** ✅ Available now | **[Learn More →](https://faultmaven.ai/)**
+**Status:** ✅ Available **for free** for individuals and teams | **[Get Started →](https://faultmaven.ai/signup)**
 
 ---
 
