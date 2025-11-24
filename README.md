@@ -16,6 +16,8 @@ FaultMaven is an open-source AI troubleshooting assistant that helps Developers,
 
 This repository contains the core microservices that power the FaultMaven platform.
 
+**🚀 Ready to deploy?** See the [faultmaven-deploy](https://github.com/FaultMaven/faultmaven-deploy) repository for complete self-hosted deployment instructions.
+
 **Key Features:**
 - 🤖 **AI-Powered Troubleshooting** - Get intelligent help diagnosing complex technical issues
 - 💬 **Interactive Chat Interface** - Talk through problems naturally via browser extension
@@ -39,7 +41,7 @@ Deploy locally using Docker. All data stays on your machine.
 **📦 Deployment:**
 - Complete Docker Compose setup with one command
 - Multiple LLM provider support with automatic fallback
-- 11 microservices + Dashboard + Browser Extension
+- 7 microservices + API Gateway + 2 background workers + Dashboard + Browser Extension
 - SQLite database, ChromaDB vector search, Redis cache
 - **100% free and open source** - Apache 2.0 license
 
@@ -154,7 +156,7 @@ FaultMaven uses a **microservices architecture** with the following components:
 | Interface | Port | Description | Repository | Docker Image |
 |-----------|------|-------------|------------|--------------|
 | **Browser Extension** | N/A | Chat interface for troubleshooting | [faultmaven-copilot](https://github.com/FaultMaven/faultmaven-copilot) | Chrome/Firefox Store |
-| **Dashboard** | 3000 | KB management UI (Vite + React) | [faultmaven-dashboard](https://github.com/FaultMaven/faultmaven-dashboard) | `faultmaven/faultmaven-dashboard` |
+| **Dashboard** | 3000 | Global KB management UI (Vite + React) | [faultmaven-dashboard](https://github.com/FaultMaven/faultmaven-dashboard) | `faultmaven/faultmaven-dashboard` |
 
 ### Deployment
 
@@ -248,7 +250,7 @@ FaultMaven uses a **two-interface model** for optimal workflows:
 - **Benefit:** Always available, context-aware
 
 **Web Dashboard (faultmaven-dashboard):**
-- **Purpose:** Knowledge base management
+- **Purpose:** Global Knowledge Base management
 - **Features:** Upload documents, search KB, review cases, configure settings
 - **Benefit:** Focused management tasks, advanced configurations
 
@@ -270,7 +272,7 @@ FaultMaven uses a **two-interface model** for optimal workflows:
 - React 19+ with TypeScript
 - WXT Framework (modern WebExtension toolkit)
 - Tailwind CSS (utility-first styling)
-- Next.js (dashboard)
+- Vite + React (dashboard)
 
 **Infrastructure:**
 - Docker & Docker Compose
@@ -283,7 +285,7 @@ FaultMaven uses a **two-interface model** for optimal workflows:
 
 ### Repository Structure
 
-FaultMaven is organized into **9 public repositories** in the `FaultMaven` GitHub organization:
+FaultMaven is organized into **13 public repositories** in the `FaultMaven` GitHub organization:
 
 #### Backend Services
 | Repository | What It Does |
