@@ -352,51 +352,8 @@ async def validate_content_size(
 
 
 # Composite Dependencies
-
-class TroubleshootingContext:
-    """Context for troubleshooting operations"""
-    
-    def __init__(
-        self,
-        session: SessionContext,
-        agent_service: AgentService,
-        data_service: DataService,
-        knowledge_service: KnowledgeService,
-        user: Optional[dict] = None,
-        metadata: Optional[dict] = None,
-    ):
-        self.session = session
-        self.agent_service = agent_service
-        self.data_service = data_service
-        self.knowledge_service = knowledge_service
-        self.user = user
-        self.metadata = metadata or {}
-
-
-async def get_troubleshooting_context(
-    session_id: str,
-    request: Request,
-    session: SessionContext = Depends(get_current_session),
-    agent_service: AgentService = Depends(get_agent_service),
-    data_service: DataService = Depends(get_data_service),
-    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    user: Optional[dict] = Depends(get_current_user),
-    metadata: dict = Depends(get_request_metadata),
-) -> TroubleshootingContext:
-    """
-    Get complete troubleshooting context
-    
-    Returns:
-        TroubleshootingContext with all services and context
-    """
-    return TroubleshootingContext(
-        session=session,
-        agent_service=agent_service,
-        data_service=data_service,
-        knowledge_service=knowledge_service,
-        user=user,
-        metadata=metadata,
-    )
+# NOTE: TroubleshootingContext and get_troubleshooting_context removed
+# They referenced the archived AgentService. Use InvestigationService instead if needed.
 
 
 # Health Check Dependencies

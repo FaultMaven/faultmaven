@@ -189,21 +189,21 @@ chroma_db/
 scripts/config/opik_remote.sh
 scripts/config/local_*.sh
 
-# Next.js frontend build artifacts and dependencies
-frontend/.next/
-frontend/node_modules/
-frontend/.env.local
-frontend/.env.development.local
-frontend/.env.test.local
-frontend/.env.production.local
-frontend/build/
-frontend/out/
-frontend/.eslintcache
-frontend/*.tsbuildinfo
-frontend/coverage/
-frontend/package-lock.json
-frontend/.vscode/
-frontend/.npmrc
+# Next.js website build artifacts and dependencies
+website/.next/
+website/node_modules/
+website/.env.local
+website/.env.development.local
+website/.env.test.local
+website/.env.production.local
+website/build/
+website/out/
+website/.eslintcache
+website/*.tsbuildinfo
+website/coverage/
+website/package-lock.json
+website/.vscode/
+website/.npmrc
 .DS_Store
 
 # Cleanup and archived files

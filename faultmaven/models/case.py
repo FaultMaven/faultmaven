@@ -182,6 +182,14 @@ class MessageType(str, Enum):
     STATUS_CHANGE = "status_change"
 
 
+class ParticipantRole(str, Enum):
+    """Participant roles in case collaboration"""
+    OWNER = "owner"
+    COLLABORATOR = "collaborator"
+    VIEWER = "viewer"
+    SUPPORT = "support"
+
+
 class InvestigationStrategy(str, Enum):
     """
     Investigation approach mode.

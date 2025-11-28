@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from enum import Enum
 
-from .case import Case
+from .case import Case, ParticipantRole
 from .api_models import (
     CaseListFilter,
     CaseMessage,
