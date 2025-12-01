@@ -134,14 +134,15 @@ Costs vary by provider:
 - Medium usage (100 requests/day): $50-150/month
 - Heavy usage (1000 requests/day): $500-1500/month
 
-### Can I use free LLM providers?
+### Can I use local LLMs?
 
-Not currently. FaultMaven requires API access to:
-- OpenAI (GPT models)
-- Anthropic (Claude models)
-- Fireworks AI (open models, cheapest option)
+Yes. FaultMaven supports local LLM providers:
+- Ollama
+- LM Studio
+- LocalAI
+- vLLM
 
-Local LLM support (Ollama, LM Studio) is planned for a future release.
+Local LLMs keep all data on your machine. See the deployment guide for configuration.
 
 ### What about the infrastructure costs?
 
@@ -158,10 +159,12 @@ Local LLM support (Ollama, LM Studio) is planned for a future release.
 
 ### What LLM providers are supported?
 
-- ✅ OpenAI (GPT-4, GPT-3.5)
+- ✅ OpenAI (GPT-4, GPT-4 Turbo, GPT-3.5)
 - ✅ Anthropic (Claude 3 Opus, Sonnet, Haiku)
-- ✅ Fireworks AI (Mixtral, Llama 2, etc.)
-- 🚧 Local LLMs (Ollama) - planned
+- ✅ Fireworks AI (Mixtral, Llama, etc.)
+- ✅ Google (Gemini)
+- ✅ Groq
+- ✅ Local LLMs (Ollama, LM Studio, LocalAI, vLLM)
 - 🚧 Azure OpenAI - planned
 
 ### Can I upload my own documentation?
