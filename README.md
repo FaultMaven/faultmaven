@@ -30,6 +30,13 @@ cp .env.example .env                      # Add your OPENAI_API_KEY
 
 > **Full deployment guide:** [faultmaven-deploy](https://github.com/FaultMaven/faultmaven-deploy)
 
+**Learn More:**
+
+- **[Product Overview](https://faultmaven.ai/product)** — See what FaultMaven can do
+- **[Use Cases](https://faultmaven.ai/use-cases)** — Real-world troubleshooting scenarios
+- **[Roadmap](https://faultmaven.ai/roadmap)** — What's coming next
+- **[Beta Founders Program](https://faultmaven.ai/founders)** — Get free Cloud access
+
 ---
 
 ## Why FaultMaven?
@@ -94,7 +101,7 @@ Same core platform, plus:
 
 **Best for:** Teams needing collaboration, compliance, or managed infrastructure.
 
-**[Try Enterprise Free →](https://faultmaven.ai)**
+**[Join Beta Founders Program →](https://faultmaven.ai/founders)** — Get free Cloud access during beta
 
 ---
 
@@ -244,6 +251,7 @@ cd faultmaven-deploy && docker compose up -d
 ## Documentation
 
 - **[Deployment Guide](https://github.com/FaultMaven/faultmaven-deploy)** — Self-hosting setup
+- **[FAQ](https://faultmaven.ai/faq)** — Frequently asked questions
 - **[Architecture](./docs/ARCHITECTURE.md)** — System design details
 - **[API Reference](./docs/API.md)** — REST endpoints
 - **[Development](./docs/DEVELOPMENT.md)** — Local dev setup
@@ -252,9 +260,10 @@ cd faultmaven-deploy && docker compose up -d
 
 ## Support
 
+- **Website**: [faultmaven.ai](https://faultmaven.ai) — Product overview, use cases, and roadmap
 - **Issues**: [GitHub Issues](https://github.com/FaultMaven/faultmaven/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/FaultMaven/faultmaven/discussions)
-- **Website**: *Coming soon*
+- **Email**: [support@faultmaven.ai](mailto:support@faultmaven.ai)
 
 ---
 
