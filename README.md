@@ -2,7 +2,7 @@
 
 **The AI-Powered Troubleshooting Copilot for Modern Engineering**
 
-Stop context-switching. FaultMaven connects your full stack—logs, metrics, and traces—to a unified knowledge engine. It combines global troubleshooting intelligence with your personal context to help you solve any problem faster, while automatically capturing the solution for the future.
+FaultMaven correlates your live telemetry with your runbooks, docs, and past fixes. It delivers answers grounded in your actual system—not generic guesses. Resolve incidents faster with an AI copilot that understands both your stack and your organization.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Docker Hub](https://img.shields.io/badge/docker-ready-blue.svg)](https://hub.docker.com/u/faultmaven)
@@ -12,15 +12,20 @@ Stop context-switching. FaultMaven connects your full stack—logs, metrics, and
 
 ## Quick Start
 
+> **Note:** This is the source code repository. To deploy FaultMaven, use our [deployment repository](https://github.com/FaultMaven/faultmaven-deploy) which orchestrates all services with Docker Compose.
+
 ```bash
 git clone https://github.com/FaultMaven/faultmaven-deploy.git && cd faultmaven-deploy
-cp .env.example .env                      # Add your OPENAI_API_KEY
+cp .env.example .env                      # Configure your LLM provider (see below)
 ./faultmaven start                        # Validates env, starts all services
 ```
 
 **Access Points:**
-- **Dashboard:** http://localhost:3000 (`admin` / `changeme123`)
+- **Dashboard:** http://localhost:3000
 - **API Gateway:** http://localhost:8090
+
+**Default Credentials:** `admin` / `changeme123`
+⚠️ **Security Warning:** Change these immediately in production. See [SECURITY.md](./docs/SECURITY.md) for setup instructions.
 
 ```bash
 ./faultmaven status   # Check service health
@@ -28,102 +33,63 @@ cp .env.example .env                      # Add your OPENAI_API_KEY
 ./faultmaven stop     # Stop services (preserves data)
 ```
 
-> **Full deployment guide:** [faultmaven-deploy](https://github.com/FaultMaven/faultmaven-deploy)
-
-**Learn More:**
-
+**New to FaultMaven?**
 - **[Product Overview](https://faultmaven.ai/product)** — See what FaultMaven can do
 - **[Use Cases](https://faultmaven.ai/use-cases)** — Real-world troubleshooting scenarios
-- **[Roadmap](https://faultmaven.ai/roadmap)** — What's coming next
-- **[Beta Founders Program](https://faultmaven.ai/founders)** — Get free Cloud access
+- **[Roadmap](https://faultmaven.ai/roadmap)** — What we're building next
+- **[Beta Founders Program](https://faultmaven.ai/founders)** — Get free Enterprise Cloud access
 
 ---
 
 ## Why FaultMaven?
 
-**The gap between "Monitoring" and "Fixing" is too wide.**
-
-Traditional observability tools tell you *what* is broken. Generic LLMs (like ChatGPT) guess *why* it's broken, but lack access to your data.
-
-FaultMaven bridges this gap by injecting **deep context** into the AI reasoning process.
+Traditional observability tools tell you **what** broke. Generic LLMs guess **why**, but can't see your infrastructure. FaultMaven bridges this gap.
 
 ### 1. Deep Context Awareness
-Generic chatbots are blind to your infrastructure. FaultMaven correlates your **full stack**—logs, metrics, traces, configuration, and source code—to understand not just the error, but the system state that caused it.
+Generic chatbots can't access your logs, configs, or deployments. FaultMaven auto-ingests your **full stack context**—correlating errors with recent changes, configuration drift, and system state.
 
-### 2. Institutional Memory (The Tiered Knowledge Engine)
-Most troubleshooting knowledge dies in Slack threads or forgotten wikis. FaultMaven's **Unified Knowledge Base** ensures you never solve the same problem twice:
-* **Global Intelligence:** Pre-loaded with knowledge of common tech stacks (K8s, Postgres, Redis).
-* **Team Knowledge (Enterprise):** Automatically indexes your runbooks and past case resolutions.
-* **Personal Context:** Remembers your specific environment and local configurations.
+**Example:** A Kubernetes pod is crashlooping. ChatGPT gives generic advice. FaultMaven ingests your pod logs, deployment YAML, and recent Git commits—then tells you the ConfigMap changed 2 hours ago.
 
-### 3. Zero-Context Switching
-Don't tab-switch between your dashboard and your AI. The **FaultMaven Copilot** browser extension overlays intelligence directly onto your existing tools (AWS Console, Datadog, Grafana, or localhost), bringing the fix to where the problem is.
+### 2. Institutional Memory
+Most troubleshooting knowledge dies in Slack threads. FaultMaven's **tiered knowledge base** ensures you never solve the same problem twice:
 
----
+- **Global Knowledge Base:** Pre-loaded troubleshooting patterns for common tech stacks (Kubernetes, PostgreSQL, Redis, AWS). Think of it as a curated library of runbooks and post-mortems from the community.
+- **Team Knowledge Base (Enterprise):** Automatically indexes your organization's runbooks, post-mortems, and past case resolutions.
+- **Personal Context:** Your local configurations, environment variables, and deployment history.
 
-### FaultMaven vs. Generic AI
+### 3. Zero Context-Switching
+Stop copying errors between browser tabs. The **[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** browser extension overlays AI troubleshooting directly onto your existing tools—AWS Console, Datadog, Grafana, or localhost.
 
-| Feature | Generic LLMs (ChatGPT/Claude) | FaultMaven |
-| :--- | :--- | :--- |
-| **Input** | Manual copy-paste of snippets | Auto-ingest logs, files, and context |
-| **Memory** | Forgets after the chat window closes | **Persistent Knowledge Base** (RAG) |
-| **Context** | None (Training data only) | **Full Stack** (Code + Config + Telemetry) |
-| **Security** | Data often trains public models | **Air-Gapped Capable** & Data Redaction |
+### 4. Continuous Learning
+Every resolved case becomes institutional knowledge. FaultMaven **automatically indexes your solutions**, building a searchable history of fixes specific to your architecture. The system gets smarter about your infrastructure with every problem you solve.
 
 ---
 
-## Open Core Model
+## Self-Hosted vs. Enterprise Cloud
 
-FaultMaven follows an **Open Box / Black Box** philosophy:
+FaultMaven is **open core**. Run it yourself for free, or let us manage it for you.
 
-### Open Source (This Repository)
-**The "Open Box"** — Full transparency and control.
+| | **Self-Hosted** | **Enterprise Cloud** |
+|---|---|---|
+| **Best for** | Individual engineers, air-gapped environments, total data sovereignty | Teams needing HA, shared context, zero maintenance |
+| **Pricing** | Free Forever (Apache 2.0) | Subscription-based SaaS |
+| **Scope** | Individual user | Organization / multi-team |
+| **Infrastructure** | Self-managed Docker Compose | Managed HA Kubernetes (AWS/GCP) |
+| **Data Storage** | SQLite (local disk), local ChromaDB | Managed PostgreSQL, Redis, S3 |
+| **Context Scope** | Personal knowledge base only | Global KB + Team KB + shared cases |
+| **Identity** | Basic auth (single user) | SSO/SAML (Okta, Azure AD, Google) |
+| **Integrations** | — | Slack, PagerDuty, ServiceNow |
+| **SLA** | — | 99.9% uptime |
 
-Everything you need for individual troubleshooting:
-- All 7 core microservices (Apache 2.0)
+**Self-Hosted includes:**
+- All 7 core microservices (Apache 2.0 license)
 - Browser extension + web dashboard
-- Multi-provider LLM support
-- Knowledge base with semantic search
+- Multi-provider LLM support (OpenAI, Anthropic, Google, Groq)
+- Local LLM support (Ollama, vLLM, LocalAI)
+- Knowledge base with semantic search (RAG)
 - Case tracking and evidence management
-- Docker Compose deployment
 
-**Best for:** Individual SREs, small teams, air-gapped environments, contributors.
-
-### Enterprise SaaS
-**The "Black Box"** — Zero ops, team-scale features.
-
-Same core platform, plus:
-- **Team Collaboration:** Shared cases and knowledge bases
-- **Enterprise Auth:** SSO/SAML (Okta, Azure AD, Google)
-- **Integrations:** Slack, PagerDuty, ServiceNow
-- **Managed Infrastructure:** HA PostgreSQL, Redis, S3
-- **SLA Guarantees:** 99.9% uptime
-
-**Best for:** Teams needing collaboration, compliance, or managed infrastructure.
-
-**[Join Beta Founders Program →](https://faultmaven.ai/founders)** — Get free Cloud access during beta
-
----
-
-## Feature Comparison
-
-| Capability | Open Source | Enterprise |
-|------------|:-----------:|:----------:|
-| AI Troubleshooting Chat | ✅ | ✅ |
-| Knowledge Base (Semantic Search) | ✅ | ✅ |
-| Case Tracking | ✅ | ✅ |
-| Evidence Management | ✅ | ✅ |
-| Multi-Provider LLM Support | ✅ | ✅ |
-| Local LLM Support (Ollama, vLLM) | ✅ | ✅ |
-| Browser Extension | ✅ | ✅ |
-| Web Dashboard | ✅ | ✅ |
-| Docker Self-Hosting | ✅ | — |
-| Team Workspaces | — | ✅ |
-| Shared Knowledge Bases | — | ✅ |
-| SSO / SAML | — | ✅ |
-| Slack / PagerDuty Integration | — | ✅ |
-| Managed Infrastructure | — | ✅ |
-| Priority Support | — | ✅ |
+**Want Enterprise Cloud?** [Join the Beta Founders Program](https://faultmaven.ai/founders) for free access during beta.
 
 ---
 
@@ -180,101 +146,187 @@ flowchart TB
     AGENT --> KB
 ```
 
-### How It Works
+**How it works:**
 
 1. **Browser Extension** captures context (errors, logs, stack traces) from your current page
 2. **API Gateway** routes requests and handles authentication
 3. **Agent Service** orchestrates AI conversations, pulling relevant context from the Knowledge Base
-4. **Knowledge Service** performs semantic search across your runbooks and past cases
-5. **Case Service** tracks investigations and links evidence to resolutions
+4. **Knowledge Service** performs semantic search across your runbooks, past cases, and the Global KB
+5. **Case Service** tracks investigations and automatically links evidence to resolutions
+
+For detailed architecture, see [ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+
+---
+
+## LLM Configuration
+
+FaultMaven works with your preferred AI provider. You can start **completely free** with local models.
+
+| Provider | Models | Best For | Cost |
+|----------|--------|----------|------|
+| **OpenAI** | GPT-4o, GPT-4 Turbo | Best overall quality | ~$0.01-0.03 per troubleshooting session |
+| **Anthropic** | Claude 3.5 Sonnet, Claude 3 Opus | Complex reasoning, long context | ~$0.02-0.04 per session |
+| **Google** | Gemini Pro | Good balance of speed/quality | ~$0.005-0.01 per session |
+| **Groq** | Llama 3, Mixtral | Very fast inference | Free tier available |
+| **Local (Ollama)** | Llama 3, Mistral, CodeLlama | **Air-gapped, zero cost** | Free (runs on your hardware) |
+
+### Start Without an API Key
+
+You can use FaultMaven **completely free** with local LLMs:
+
+```bash
+# Install Ollama (one-time setup)
+curl -fsSL https://ollama.ai/install.sh | sh
+ollama pull llama3        # Download model (~4GB)
+
+# Configure FaultMaven
+cat > .env <<EOF
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+OLLAMA_MODEL=llama3
+EOF
+
+./faultmaven start
+```
+
+### Use a Cloud Provider
+
+Get an API key from your preferred provider:
+- **OpenAI:** https://platform.openai.com/api-keys
+- **Anthropic:** https://console.anthropic.com/
+- **Google:** https://makersuite.google.com/app/apikey
+- **Groq:** https://console.groq.com/
+
+Configure in `.env`:
+```bash
+LLM_PROVIDER=openai          # or: anthropic, google, groq
+OPENAI_API_KEY=sk-...        # Your API key
+```
+
+**Privacy & Security:**
+- **Air-Gapped Deployments:** Use Ollama or vLLM for completely offline operation
+- **Data Redaction:** FaultMaven can automatically scrub PII, secrets, and sensitive data before sending to LLMs (see [SECURITY.md](./docs/SECURITY.md))
 
 ---
 
 ## Repositories
 
-This organization contains the microservices foundation:
+The FaultMaven ecosystem is organized into multiple repositories. Each is independently useful and can be contributed to separately.
 
-| Layer | Repository | Purpose |
-|-------|------------|---------|
-| **Gateway** | [fm-api-gateway](https://github.com/FaultMaven/fm-api-gateway) | Request routing, auth, capabilities API |
-| **Services** | [fm-agent-service](https://github.com/FaultMaven/fm-agent-service) | AI troubleshooting engine |
-| | [fm-knowledge-service](https://github.com/FaultMaven/fm-knowledge-service) | Semantic search, RAG |
-| | [fm-case-service](https://github.com/FaultMaven/fm-case-service) | Investigation tracking |
-| | [fm-evidence-service](https://github.com/FaultMaven/fm-evidence-service) | File/log uploads |
-| | [fm-auth-service](https://github.com/FaultMaven/fm-auth-service) | Authentication |
-| | [fm-session-service](https://github.com/FaultMaven/fm-session-service) | Session management |
-| **Workers** | [fm-job-worker](https://github.com/FaultMaven/fm-job-worker) | Background processing |
-| **Shared** | [fm-core-lib](https://github.com/FaultMaven/fm-core-lib) | Common utilities |
-| **Clients** | [faultmaven-copilot](https://github.com/FaultMaven/faultmaven-copilot) | Browser extension |
-| | [faultmaven-dashboard](https://github.com/FaultMaven/faultmaven-dashboard) | Web UI |
-| **Deploy** | [faultmaven-deploy](https://github.com/FaultMaven/faultmaven-deploy) | Docker Compose setup |
+### Core Services (Python/FastAPI Microservices)
 
----
+These form the backend engine. Built with Python, FastAPI, and follow a common architecture.
 
-## LLM Support
+| Repository | Purpose | Good First Contribution |
+|------------|---------|-------------------------|
+| [fm-agent-service](https://github.com/FaultMaven/fm-agent-service) | AI troubleshooting orchestration | Add new LLM provider support |
+| [fm-knowledge-service](https://github.com/FaultMaven/fm-knowledge-service) | Semantic search & RAG | Improve embedding models |
+| [fm-case-service](https://github.com/FaultMaven/fm-case-service) | Investigation tracking | Add export formats |
+| [fm-evidence-service](https://github.com/FaultMaven/fm-evidence-service) | File/log uploads | Add new file type parsers |
+| [fm-auth-service](https://github.com/FaultMaven/fm-auth-service) | Authentication | Improve session management |
+| [fm-session-service](https://github.com/FaultMaven/fm-session-service) | Session persistence | Add Redis clustering |
+| [fm-api-gateway](https://github.com/FaultMaven/fm-api-gateway) | Request routing, capabilities API | Add rate limiting |
+| [fm-job-worker](https://github.com/FaultMaven/fm-job-worker) | Background task processing | Add new job types |
 
-Works with your preferred provider:
+### Client Applications (TypeScript/React)
 
-| Provider | Models | Notes |
-|----------|--------|-------|
-| **OpenAI** | GPT-4o, GPT-4 Turbo | Recommended for best results |
-| **Anthropic** | Claude 3.5 Sonnet, Claude 3 Opus | Excellent for complex reasoning |
-| **Google** | Gemini Pro | Good balance of speed/quality |
-| **Groq** | Llama 3, Mixtral | Fast inference |
-| **Local** | Ollama, vLLM, LM Studio, LocalAI | Air-gapped / privacy-first |
+User-facing applications. Great for frontend contributors.
 
-Configure in `.env`:
-```bash
-LLM_PROVIDER=openai          # or: anthropic, google, groq, ollama
-OPENAI_API_KEY=sk-...        # Provider-specific key
-OLLAMA_BASE_URL=http://host.docker.internal:11434  # For local LLMs
-```
+| Repository | Purpose | Good First Contribution |
+|------------|---------|-------------------------|
+| [faultmaven-copilot](https://github.com/FaultMaven/faultmaven-copilot) | Browser extension (Chrome, Firefox, Edge) | Add new site integrations |
+| [faultmaven-dashboard](https://github.com/FaultMaven/faultmaven-dashboard) | Web UI for knowledge management | Improve KB search UI |
+
+### Deployment & Infrastructure
+
+| Repository | Purpose | Good First Contribution |
+|------------|---------|-------------------------|
+| [faultmaven-deploy](https://github.com/FaultMaven/faultmaven-deploy) | Docker Compose orchestration | Add Kubernetes Helm charts |
+| [fm-charts](https://github.com/FaultMaven/fm-charts) | Kubernetes Helm charts | Improve resource defaults |
+
+### Shared Libraries
+
+| Repository | Purpose | Good First Contribution |
+|------------|---------|-------------------------|
+| [fm-core-lib](https://github.com/FaultMaven/fm-core-lib) | Common utilities, models, clients | Add utility functions |
+
+**Want to contribute but not sure where to start?** Check out issues tagged with `good-first-issue` across all repos, or ask in [GitHub Discussions](https://github.com/FaultMaven/faultmaven/discussions).
 
 ---
 
 ## Contributing
 
-We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We're building FaultMaven in the open and welcome all contributions—code, documentation, bug reports, feature ideas, or just feedback.
+
+**Ways to Contribute:**
+
+- **Code:** Pick up a `good-first-issue` or propose a new feature
+- **Documentation:** Improve guides, add examples, fix typos
+- **Knowledge Base:** Contribute troubleshooting patterns for the Global KB
+- **Testing:** Report bugs, test edge cases, improve test coverage
+- **Community:** Answer questions in Discussions, help other users
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ```bash
-# Fork and clone a service repo
+# Example: Contributing to a service
 git clone https://github.com/YOUR_USERNAME/fm-agent-service.git
+cd fm-agent-service
 
-# Run the full stack locally
-cd faultmaven-deploy && docker compose up -d
+# Run the full stack locally for testing
+cd ../faultmaven-deploy && docker compose up -d
 
 # Make changes, test, submit PR
 ```
+
+**Not a developer?** You can still help:
+- Improve documentation
+- Report bugs with detailed reproduction steps
+- Share your use cases and feature ideas
+- Help answer questions in Discussions
 
 ---
 
 ## Documentation
 
-- **[Deployment Guide](https://github.com/FaultMaven/faultmaven-deploy)** — Self-hosting setup
+### Getting Started
+- **[Deployment Guide](https://github.com/FaultMaven/faultmaven-deploy)** — Complete self-hosting setup
+- **[Development Guide](./docs/DEVELOPMENT.md)** — Local development environment
 - **[FAQ](https://faultmaven.ai/faq)** — Frequently asked questions
-- **[Architecture](./docs/ARCHITECTURE.md)** — System design details
-- **[API Reference](./docs/API.md)** — REST endpoints
-- **[Development](./docs/DEVELOPMENT.md)** — Local dev setup
+
+### Configuration & Operations
+- **[Security Guide](./docs/SECURITY.md)** — Authentication, secrets, data redaction
+- **[Troubleshooting](./docs/TROUBLESHOOTING.md)** — Common issues and solutions
+- **[API Reference](./docs/API.md)** — REST endpoint documentation
+
+### Architecture & Design
+- **[Architecture Overview](./docs/ARCHITECTURE.md)** — System design and data flow
+- **[Roadmap](https://faultmaven.ai/roadmap)** — What we're building next
 
 ---
 
 ## Support
 
-- **Website**: [faultmaven.ai](https://faultmaven.ai) — Product overview, use cases, and roadmap
-- **Issues**: [GitHub Issues](https://github.com/FaultMaven/faultmaven/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/FaultMaven/faultmaven/discussions)
-- **Email**: [support@faultmaven.ai](mailto:support@faultmaven.ai)
+### Community Support (Free)
+- **[GitHub Discussions](https://github.com/FaultMaven/faultmaven/discussions)** — Ask questions, share tips
+- **[GitHub Issues](https://github.com/FaultMaven/faultmaven/issues)** — Report bugs, request features
+- **[Website](https://faultmaven.ai)** — Product info, use cases, guides
+
+### Enterprise Support
+- **Email:** [support@faultmaven.ai](mailto:support@faultmaven.ai)
+- **Enterprise SLA:** Included with Enterprise Cloud subscription
 
 ---
 
 ## License
 
-**Apache 2.0** — Use commercially, fork freely, no strings attached.
+**Apache 2.0** — Use commercially, fork freely, contribute back if you'd like.
 
-Same license as Kubernetes, TensorFlow, and Apache Kafka.
+Same license as Kubernetes, TensorFlow, and Apache Kafka. We believe in open infrastructure.
 
 ---
 
 <p align="center">
-  <strong>FaultMaven</strong> — Your AI copilot for troubleshooting.
+  <strong>FaultMaven</strong> — Your AI copilot for troubleshooting.<br>
+  Built on the same core analysis engine. Use Self-Hosted for personal context, or Enterprise for shared team intelligence.
 </p>
