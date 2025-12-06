@@ -268,7 +268,7 @@ We're building FaultMaven in the open and welcome all contributions—code, docu
 - **Testing:** Report bugs, test edge cases, improve test coverage
 - **Community:** Answer questions in Discussions, help other users
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+See our [Contributing Guide](https://github.com/FaultMaven/.github/blob/main/CONTRIBUTING.md) for detailed guidelines.
 
 ```bash
 # Example: Contributing to a service
@@ -317,6 +317,14 @@ cd ../faultmaven-deploy && docker compose up -d
 ### Enterprise Support
 - **Email:** [support@faultmaven.ai](mailto:support@faultmaven.ai)
 - **Enterprise SLA:** Included with Enterprise Cloud subscription
+
+---
+
+## Community
+
+- **[Code of Conduct](https://github.com/FaultMaven/.github/blob/main/CODE_OF_CONDUCT.md)** — Our community standards
+- **[Security Policy](https://github.com/FaultMaven/.github/blob/main/SECURITY.md)** — How to report vulnerabilities
+- **[Discussions](https://github.com/FaultMaven/faultmaven/discussions)** — Questions, ideas, show & tell
 
 ---
 
