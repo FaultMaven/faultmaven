@@ -45,6 +45,7 @@ redis[hiredis]>=5.0.0 # For distributed session storage
 # --- NEW: Database (PostgreSQL) ---
 sqlalchemy[asyncio]>=2.0.0 # For async ORM and database abstraction
 asyncpg>=0.29.0 # For async PostgreSQL driver
+alembic>=1.13.0 # For database migrations
 
 # --- NEW: Retry Logic ---
 tenacity>=8.3.0 # For robust retry mechanisms
