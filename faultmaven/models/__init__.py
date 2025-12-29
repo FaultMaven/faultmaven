@@ -113,6 +113,9 @@ except ImportError:
 from .agentic import SuggestedAction
 from .case import UrgencyLevel
 
+# Import session model
+from .session import Session
+
 # Utility functions are now imported from legacy.py
 
 # Re-export everything
@@ -189,6 +192,9 @@ __all__.extend([
     "SuggestedAction",
     "UrgencyLevel",
 ])
+
+# Add session model to exports
+__all__.append("Session")
 
 # Add report models to exports if available (FR-CM-006)
 if REPORT_MODELS_AVAILABLE:
