@@ -1283,6 +1283,59 @@ class PreprocessingSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+class EvidenceStorageSettings(BaseSettings):
+    """Evidence storage configuration for file uploads and management.
+
+    Controls the behavior of evidence artifact storage including:
+    - Storage location (local filesystem)
+    - File size limits
+    - Allowed MIME types for security
+    - Future: Cloud storage configuration (S3, Azure, GCS)
+
+    Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
+    """
+
+    # Storage root directory for evidence files
+    evidence_storage_root: str = Field(
+        default="./data/evidence",
+        env="EVIDENCE_STORAGE_ROOT",
+        description="Root directory for evidence file storage"
+    )
+
+    # Maximum file size (100MB default)
+    max_evidence_file_size: int = Field(
+        default=100 * 1024 * 1024,
+        env="MAX_EVIDENCE_FILE_SIZE",
+        ge=1024,  # Minimum 1KB
+        le=1024 * 1024 * 1024,  # Maximum 1GB
+        description="Maximum evidence file size in bytes (default 100MB)"
+    )
+
+    # Allowed MIME types (empty list = allow all)
+    allowed_evidence_mime_types: List[str] = Field(
+        default=[],
+        env="ALLOWED_EVIDENCE_MIME_TYPES",
+        description="Allowed MIME types for evidence files (empty = allow all)"
+    )
+
+    # Common evidence MIME types (for reference/documentation)
+    # Images: image/png, image/jpeg, image/gif, image/webp, image/svg+xml
+    # Logs: text/plain, application/json, application/xml, text/csv
+    # Archives: application/zip, application/gzip, application/x-tar
+    # Network: application/octet-stream (for HAR, pcap files)
+    # Videos: video/mp4, video/webm, video/quicktime
+    # Documents: application/pdf, text/html
+
+    # Future: Cloud storage configuration
+    # storage_backend: str = Field(default="local", env="EVIDENCE_STORAGE_BACKEND")
+    # s3_bucket: Optional[str] = Field(default=None, env="EVIDENCE_S3_BUCKET")
+    # s3_region: Optional[str] = Field(default=None, env="EVIDENCE_S3_REGION")
+    # azure_container: Optional[str] = Field(default=None, env="EVIDENCE_AZURE_CONTAINER")
+    # gcs_bucket: Optional[str] = Field(default=None, env="EVIDENCE_GCS_BUCKET")
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
 # =============================================================================
 # MAIN SETTINGS CLASS
 # =============================================================================
@@ -1335,7 +1388,26 @@ class FaultMavenSettings(BaseSettings):
     # enhanced_database merged into database above
     alerting: AlertingSettings = Field(default_factory=AlertingSettings)
     workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
-    
+
+    # Evidence storage configuration (TASK-013)
+    evidence_storage: EvidenceStorageSettings = Field(default_factory=EvidenceStorageSettings)
+
+    # Convenience properties for evidence storage (used by ServiceFactory)
+    @property
+    def evidence_storage_root(self) -> str:
+        """Get evidence storage root directory."""
+        return self.evidence_storage.evidence_storage_root
+
+    @property
+    def max_evidence_file_size(self) -> int:
+        """Get maximum evidence file size in bytes."""
+        return self.evidence_storage.max_evidence_file_size
+
+    @property
+    def allowed_evidence_mime_types(self) -> List[str]:
+        """Get allowed evidence MIME types."""
+        return self.evidence_storage.allowed_evidence_mime_types
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

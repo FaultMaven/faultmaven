@@ -1,4 +1,4 @@
-"""API Dependencies Module (TASK-011)
+"""API Dependencies Module (TASK-011, TASK-012, TASK-013)
 
 Purpose: FastAPI dependency injection functions for API service layer.
 
@@ -6,7 +6,7 @@ This module provides dependency injection functions for FastAPI endpoints,
 integrating with the service factory and database session management.
 
 Usage:
-    from faultmaven.api.dependencies import get_api_case_service
+    from faultmaven.api.dependencies import get_api_case_service, get_evidence_artifact_service
 
     @app.get("/cases/{case_id}")
     async def get_case(
@@ -14,6 +14,13 @@ Usage:
         case_service: APICaseService = Depends(get_api_case_service)
     ):
         return await case_service.get_case(case_id, org_id)
+
+    @app.post("/evidence")
+    async def upload_evidence(
+        file: UploadFile,
+        evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service)
+    ):
+        return await evidence_service.upload_evidence(...)
 """
 
 from typing import AsyncGenerator
@@ -25,6 +32,8 @@ from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.services.service_factory import ServiceFactory
 from faultmaven.services.case_service import APICaseService
 from faultmaven.services.investigation_session_service import APIInvestigationSessionService
+from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
+from faultmaven.services.file_storage_service import FileStorageService
 
 
 # ============================================================
@@ -144,10 +153,68 @@ async def get_investigation_session_service(
     return factory.create_investigation_session_service()
 
 
+async def get_file_storage_service(
+    factory: ServiceFactory = Depends(get_service_factory),
+) -> FileStorageService:
+    """Get file storage service for request.
+
+    Creates a FileStorageService with default settings from configuration.
+
+    Args:
+        factory: Service factory from get_service_factory
+
+    Returns:
+        FileStorageService instance
+
+    Example:
+        @app.get("/storage/stats")
+        async def get_storage_stats(
+            file_storage: FileStorageService = Depends(get_file_storage_service)
+        ):
+            return await file_storage.get_storage_stats()
+    """
+    return factory.create_file_storage_service()
+
+
+async def get_evidence_artifact_service(
+    factory: ServiceFactory = Depends(get_service_factory),
+) -> APIEvidenceArtifactService:
+    """Get evidence artifact service for request.
+
+    Creates an APIEvidenceArtifactService with all required dependencies
+    from the service factory.
+
+    Args:
+        factory: Service factory from get_service_factory
+
+    Returns:
+        APIEvidenceArtifactService instance
+
+    Example:
+        @app.post("/cases/{case_id}/evidence")
+        async def upload_evidence(
+            case_id: str,
+            file: UploadFile,
+            evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service)
+        ):
+            file_data = await file.read()
+            return await evidence_service.upload_evidence(
+                case_id=case_id,
+                organization_id=org_id,
+                user_id=user_id,
+                file_data=file_data,
+                original_filename=file.filename,
+                mime_type=file.content_type,
+                evidence_type=EvidenceArtifactType.OTHER,
+            )
+    """
+    return factory.create_evidence_artifact_service()
+
+
 # Future service dependencies:
 
-# async def get_evidence_service(
+# async def get_knowledge_service(
 #     factory: ServiceFactory = Depends(get_service_factory),
-# ) -> EvidenceService:
-#     """Get evidence service for request."""
-#     return factory.create_evidence_service()
+# ) -> KnowledgeService:
+#     """Get knowledge service for request."""
+#     return factory.create_knowledge_service()

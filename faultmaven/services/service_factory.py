@@ -1,4 +1,4 @@
-"""Service Factory for API Layer (TASK-011)
+"""Service Factory for API Layer (TASK-011, TASK-012, TASK-013)
 
 Purpose: Factory for creating service instances with proper dependencies.
 
@@ -10,13 +10,19 @@ Usage:
     async with get_db_session() as session:
         factory = ServiceFactory(session)
         case_service = factory.create_case_service()
-        # Use case_service for operations...
+        session_service = factory.create_investigation_session_service()
+        evidence_service = factory.create_evidence_artifact_service()
+        # Use services for operations...
 """
+
+from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.services.case_service import APICaseService
 from faultmaven.services.investigation_session_service import APIInvestigationSessionService
+from faultmaven.services.file_storage_service import FileStorageService
+from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.infrastructure.persistence.repository_factory import (
     get_case_repository,
     get_investigation_session_repository,
@@ -38,6 +44,7 @@ from faultmaven.infrastructure.persistence.agent_execution_repository import (
 from faultmaven.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
+from faultmaven.config.settings import get_settings
 
 
 class ServiceFactory:
@@ -120,14 +127,58 @@ class ServiceFactory:
             case_repo=self.case_repo,
         )
 
-    # Future service factory methods:
+    def create_file_storage_service(
+        self,
+        storage_root: Optional[str] = None,
+        max_file_size_bytes: Optional[int] = None,
+        allowed_mime_types: Optional[list] = None,
+    ) -> FileStorageService:
+        """Create file storage service.
 
-    # def create_evidence_service(self) -> EvidenceService:
-    #     """Create evidence service."""
-    #     return EvidenceService(
-    #         evidence_repo=self.evidence_repo,
-    #         case_repo=self.case_repo,
-    #     )
+        Args:
+            storage_root: Optional override for storage root directory
+            max_file_size_bytes: Optional override for max file size
+            allowed_mime_types: Optional override for allowed MIME types
+
+        Returns:
+            FileStorageService instance
+        """
+        settings = get_settings()
+
+        return FileStorageService(
+            storage_root=storage_root or getattr(
+                settings, 'evidence_storage_root', './data/evidence'
+            ),
+            max_file_size_bytes=max_file_size_bytes or getattr(
+                settings, 'max_evidence_file_size', 100 * 1024 * 1024
+            ),
+            allowed_mime_types=allowed_mime_types or getattr(
+                settings, 'allowed_evidence_mime_types', []
+            ),
+        )
+
+    def create_evidence_artifact_service(
+        self,
+        file_storage: Optional[FileStorageService] = None,
+    ) -> APIEvidenceArtifactService:
+        """Create evidence artifact service with dependencies.
+
+        Args:
+            file_storage: Optional file storage service (creates default if not provided)
+
+        Returns:
+            APIEvidenceArtifactService instance with injected dependencies
+        """
+        if file_storage is None:
+            file_storage = self.create_file_storage_service()
+
+        return APIEvidenceArtifactService(
+            evidence_repo=self.evidence_repo,
+            case_repo=self.case_repo,
+            file_storage=file_storage,
+        )
+
+    # Future service factory methods:
 
     # def create_knowledge_service(self) -> KnowledgeService:
     #     """Create knowledge service."""
