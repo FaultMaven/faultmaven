@@ -50,6 +50,11 @@ from faultmaven.infrastructure.persistence.agent_execution_repository import (
     DatabaseAgentExecutionRepository,
     InMemoryAgentExecutionRepository,
 )
+from faultmaven.infrastructure.persistence.investigation_session_repository import (
+    InvestigationSessionRepository,
+    DatabaseInvestigationSessionRepository,
+    InMemoryInvestigationSessionRepository,
+)
 from faultmaven.infrastructure.persistence.database import get_db_session
 
 logger = logging.getLogger(__name__)
@@ -64,6 +69,7 @@ _inmemory_repository: Optional[InMemoryCaseRepository] = None
 _inmemory_session_repository: Optional[InMemorySessionRepository] = None
 _inmemory_evidence_artifact_repository: Optional[InMemoryEvidenceArtifactRepository] = None
 _inmemory_agent_execution_repository: Optional[InMemoryAgentExecutionRepository] = None
+_inmemory_investigation_session_repository: Optional[InMemoryInvestigationSessionRepository] = None
 
 
 def get_storage_type() -> str:
@@ -735,4 +741,160 @@ async def get_agent_execution_repository_dependency() -> AsyncGenerator[AgentExe
         AgentExecutionRepository instance
     """
     async with get_agent_execution_repository_async() as repo:
+        yield repo
+
+
+# ============================================================
+# Investigation Session Repository Factory
+# ============================================================
+
+
+def get_investigation_session_storage_type() -> str:
+    """
+    Get configured investigation session storage type from environment.
+
+    Environment variable: INVESTIGATION_SESSION_STORAGE_TYPE
+    Default: Falls back to CASE_STORAGE_TYPE, then "database"
+
+    Returns:
+        Storage type string ("inmemory" or "database")
+    """
+    return os.getenv("INVESTIGATION_SESSION_STORAGE_TYPE", get_storage_type())
+
+
+def get_investigation_session_repository(
+    storage_type: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
+) -> InvestigationSessionRepository:
+    """
+    Get an investigation session repository instance based on configuration.
+
+    Args:
+        storage_type: Optional override for storage type.
+                     If None, uses INVESTIGATION_SESSION_STORAGE_TYPE env var.
+        session: Optional database session for database storage.
+                Required for database storage type.
+
+    Returns:
+        InvestigationSessionRepository implementation
+
+    Raises:
+        ValueError: If storage type is unknown
+        RuntimeError: If database session is required but not provided
+    """
+    global _inmemory_investigation_session_repository
+
+    effective_type = storage_type or get_investigation_session_storage_type()
+    logger.debug(f"Creating investigation session repository with storage type: {effective_type}")
+
+    if effective_type == STORAGE_TYPE_INMEMORY:
+        # Return singleton in-memory repository
+        if _inmemory_investigation_session_repository is None:
+            _inmemory_investigation_session_repository = InMemoryInvestigationSessionRepository()
+            logger.info("Created InMemoryInvestigationSessionRepository (singleton)")
+        return _inmemory_investigation_session_repository
+
+    elif effective_type == STORAGE_TYPE_DATABASE:
+        if session is None:
+            raise RuntimeError(
+                "Database session is required for database storage type. "
+                "Use get_investigation_session_repository_async() or provide a session."
+            )
+        logger.debug("Created DatabaseInvestigationSessionRepository")
+        return DatabaseInvestigationSessionRepository(session)
+
+    else:
+        raise ValueError(f"Unknown storage type: {effective_type}")
+
+
+@asynccontextmanager
+async def get_investigation_session_repository_async(
+    storage_type: Optional[str] = None,
+) -> AsyncGenerator[InvestigationSessionRepository, None]:
+    """
+    Get an investigation session repository with automatic session management.
+
+    This is the recommended way to obtain a repository in async contexts.
+    It automatically handles database session lifecycle.
+
+    Args:
+        storage_type: Optional override for storage type.
+                     If None, uses INVESTIGATION_SESSION_STORAGE_TYPE env var.
+
+    Yields:
+        InvestigationSessionRepository implementation
+
+    Raises:
+        ValueError: If storage type is unknown
+
+    Example:
+        async with get_investigation_session_repository_async() as repo:
+            session = await repo.get_by_id("sess_abc123def456")
+    """
+    global _inmemory_investigation_session_repository
+
+    effective_type = storage_type or get_investigation_session_storage_type()
+
+    if effective_type == STORAGE_TYPE_INMEMORY:
+        # Return singleton in-memory repository
+        if _inmemory_investigation_session_repository is None:
+            _inmemory_investigation_session_repository = InMemoryInvestigationSessionRepository()
+            logger.info("Created InMemoryInvestigationSessionRepository (singleton)")
+        yield _inmemory_investigation_session_repository
+
+    elif effective_type == STORAGE_TYPE_DATABASE:
+        # Create database repository with session
+        async with get_db_session() as db_session:
+            repo = DatabaseInvestigationSessionRepository(db_session)
+            yield repo
+
+    else:
+        raise ValueError(f"Unknown storage type: {effective_type}")
+
+
+def reset_inmemory_investigation_session_repository() -> None:
+    """
+    Reset the singleton in-memory investigation session repository.
+
+    Useful for testing to ensure clean state between tests.
+    """
+    global _inmemory_investigation_session_repository
+    if _inmemory_investigation_session_repository is not None:
+        _inmemory_investigation_session_repository.clear()
+        _inmemory_investigation_session_repository = None
+        logger.debug("Reset in-memory investigation session repository singleton")
+
+
+def get_inmemory_investigation_session_repository() -> InMemoryInvestigationSessionRepository:
+    """
+    Get or create the singleton in-memory investigation session repository.
+
+    Useful when you specifically need in-memory storage.
+
+    Returns:
+        InMemoryInvestigationSessionRepository singleton instance
+    """
+    global _inmemory_investigation_session_repository
+    if _inmemory_investigation_session_repository is None:
+        _inmemory_investigation_session_repository = InMemoryInvestigationSessionRepository()
+    return _inmemory_investigation_session_repository
+
+
+async def get_investigation_session_repository_dependency() -> AsyncGenerator[InvestigationSessionRepository, None]:
+    """
+    FastAPI dependency for obtaining an investigation session repository.
+
+    Use this in FastAPI route dependencies:
+
+        @app.get("/sessions/{session_id}")
+        async def get_session(
+            session_id: str,
+            repo: InvestigationSessionRepository = Depends(get_investigation_session_repository_dependency)
+        ):
+            return await repo.get_by_id(session_id)
+
+    Yields:
+        InvestigationSessionRepository instance
+    """
+    async with get_investigation_session_repository_async() as repo:
         yield repo
