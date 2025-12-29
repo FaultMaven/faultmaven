@@ -40,6 +40,11 @@ from faultmaven.infrastructure.persistence.session_repository import (
     DatabaseSessionRepository,
     InMemorySessionRepository,
 )
+from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
+    EvidenceArtifactRepository,
+    DatabaseEvidenceArtifactRepository,
+    InMemoryEvidenceArtifactRepository,
+)
 from faultmaven.infrastructure.persistence.database import get_db_session
 
 logger = logging.getLogger(__name__)
@@ -52,6 +57,7 @@ STORAGE_TYPE_DATABASE = "database"
 # Singleton in-memory repositories (for consistency across calls)
 _inmemory_repository: Optional[InMemoryCaseRepository] = None
 _inmemory_session_repository: Optional[InMemorySessionRepository] = None
+_inmemory_evidence_artifact_repository: Optional[InMemoryEvidenceArtifactRepository] = None
 
 
 def get_storage_type() -> str:
@@ -370,6 +376,142 @@ def get_inmemory_session_repository() -> InMemorySessionRepository:
 
 
 # ============================================================
+# Evidence Artifact Repository Factory
+# ============================================================
+
+
+def get_evidence_artifact_storage_type() -> str:
+    """
+    Get configured evidence artifact storage type from environment.
+
+    Environment variable: EVIDENCE_ARTIFACT_STORAGE_TYPE
+    Default: Falls back to CASE_STORAGE_TYPE, then "database"
+
+    Returns:
+        Storage type string ("inmemory" or "database")
+    """
+    return os.getenv("EVIDENCE_ARTIFACT_STORAGE_TYPE", get_storage_type())
+
+
+def get_evidence_artifact_repository(
+    storage_type: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
+) -> EvidenceArtifactRepository:
+    """
+    Get an evidence artifact repository instance based on configuration.
+
+    Args:
+        storage_type: Optional override for storage type.
+                     If None, uses EVIDENCE_ARTIFACT_STORAGE_TYPE env var.
+        session: Optional database session for database storage.
+                Required for database storage type.
+
+    Returns:
+        EvidenceArtifactRepository implementation
+
+    Raises:
+        ValueError: If storage type is unknown
+        RuntimeError: If database session is required but not provided
+    """
+    global _inmemory_evidence_artifact_repository
+
+    effective_type = storage_type or get_evidence_artifact_storage_type()
+    logger.debug(f"Creating evidence artifact repository with storage type: {effective_type}")
+
+    if effective_type == STORAGE_TYPE_INMEMORY:
+        # Return singleton in-memory repository
+        if _inmemory_evidence_artifact_repository is None:
+            _inmemory_evidence_artifact_repository = InMemoryEvidenceArtifactRepository()
+            logger.info("Created InMemoryEvidenceArtifactRepository (singleton)")
+        return _inmemory_evidence_artifact_repository
+
+    elif effective_type == STORAGE_TYPE_DATABASE:
+        if session is None:
+            raise RuntimeError(
+                "Database session is required for database storage type. "
+                "Use get_evidence_artifact_repository_async() or provide a session."
+            )
+        logger.debug("Created DatabaseEvidenceArtifactRepository")
+        return DatabaseEvidenceArtifactRepository(session)
+
+    else:
+        raise ValueError(f"Unknown storage type: {effective_type}")
+
+
+@asynccontextmanager
+async def get_evidence_artifact_repository_async(
+    storage_type: Optional[str] = None,
+) -> AsyncGenerator[EvidenceArtifactRepository, None]:
+    """
+    Get an evidence artifact repository with automatic session management.
+
+    This is the recommended way to obtain a repository in async contexts.
+    It automatically handles database session lifecycle.
+
+    Args:
+        storage_type: Optional override for storage type.
+                     If None, uses EVIDENCE_ARTIFACT_STORAGE_TYPE env var.
+
+    Yields:
+        EvidenceArtifactRepository implementation
+
+    Raises:
+        ValueError: If storage type is unknown
+
+    Example:
+        async with get_evidence_artifact_repository_async() as repo:
+            evidence = await repo.get_evidence("ev_abc123def456")
+    """
+    global _inmemory_evidence_artifact_repository
+
+    effective_type = storage_type or get_evidence_artifact_storage_type()
+
+    if effective_type == STORAGE_TYPE_INMEMORY:
+        # Return singleton in-memory repository
+        if _inmemory_evidence_artifact_repository is None:
+            _inmemory_evidence_artifact_repository = InMemoryEvidenceArtifactRepository()
+            logger.info("Created InMemoryEvidenceArtifactRepository (singleton)")
+        yield _inmemory_evidence_artifact_repository
+
+    elif effective_type == STORAGE_TYPE_DATABASE:
+        # Create database repository with session
+        async with get_db_session() as db_session:
+            repo = DatabaseEvidenceArtifactRepository(db_session)
+            yield repo
+
+    else:
+        raise ValueError(f"Unknown storage type: {effective_type}")
+
+
+def reset_inmemory_evidence_artifact_repository() -> None:
+    """
+    Reset the singleton in-memory evidence artifact repository.
+
+    Useful for testing to ensure clean state between tests.
+    """
+    global _inmemory_evidence_artifact_repository
+    if _inmemory_evidence_artifact_repository is not None:
+        _inmemory_evidence_artifact_repository.clear()
+        _inmemory_evidence_artifact_repository = None
+        logger.debug("Reset in-memory evidence artifact repository singleton")
+
+
+def get_inmemory_evidence_artifact_repository() -> InMemoryEvidenceArtifactRepository:
+    """
+    Get or create the singleton in-memory evidence artifact repository.
+
+    Useful when you specifically need in-memory storage.
+
+    Returns:
+        InMemoryEvidenceArtifactRepository singleton instance
+    """
+    global _inmemory_evidence_artifact_repository
+    if _inmemory_evidence_artifact_repository is None:
+        _inmemory_evidence_artifact_repository = InMemoryEvidenceArtifactRepository()
+    return _inmemory_evidence_artifact_repository
+
+
+# ============================================================
 # Dependency Injection Helpers
 # ============================================================
 
@@ -411,4 +553,24 @@ async def get_session_repository_dependency() -> AsyncGenerator[SessionRepositor
         SessionRepository instance
     """
     async with get_session_repository_async() as repo:
+        yield repo
+
+
+async def get_evidence_artifact_repository_dependency() -> AsyncGenerator[EvidenceArtifactRepository, None]:
+    """
+    FastAPI dependency for obtaining an evidence artifact repository.
+
+    Use this in FastAPI route dependencies:
+
+        @app.get("/evidence/{evidence_id}")
+        async def get_evidence(
+            evidence_id: str,
+            repo: EvidenceArtifactRepository = Depends(get_evidence_artifact_repository_dependency)
+        ):
+            return await repo.get_evidence(evidence_id)
+
+    Yields:
+        EvidenceArtifactRepository instance
+    """
+    async with get_evidence_artifact_repository_async() as repo:
         yield repo

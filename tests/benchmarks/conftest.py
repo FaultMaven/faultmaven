@@ -14,6 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
 from faultmaven.infrastructure.persistence.session_repository import DatabaseSessionRepository
+from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
+    DatabaseEvidenceArtifactRepository,
+)
 
 
 @pytest.fixture(scope="session")
@@ -76,6 +79,12 @@ async def case_repository(benchmark_session) -> DatabaseCaseRepository:
 async def session_repository(benchmark_session) -> DatabaseSessionRepository:
     """Create session repository for benchmarks."""
     return DatabaseSessionRepository(benchmark_session)
+
+
+@pytest.fixture
+async def evidence_artifact_repository(benchmark_session) -> DatabaseEvidenceArtifactRepository:
+    """Create evidence artifact repository for benchmarks."""
+    return DatabaseEvidenceArtifactRepository(benchmark_session)
 
 
 def generate_case_id() -> str:
