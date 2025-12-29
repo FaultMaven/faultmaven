@@ -1,10 +1,13 @@
-"""Unit tests for ServiceFactory class (TASK-011).
+"""Unit tests for ServiceFactory class (TASK-011, TASK-012, TASK-013).
 
 Tests the service factory functionality including:
 - Factory initialization with db_session
 - Repository creation
 - Service creation
 - Dependency injection
+- Investigation session service creation (TASK-012)
+- File storage service creation (TASK-013)
+- Evidence artifact service creation (TASK-013)
 """
 
 from typing import AsyncGenerator
@@ -21,6 +24,8 @@ from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.services.service_factory import ServiceFactory
 from faultmaven.services.case_service import APICaseService
 from faultmaven.services.investigation_session_service import APIInvestigationSessionService
+from faultmaven.services.file_storage_service import FileStorageService
+from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
@@ -328,3 +333,166 @@ class TestServiceFactoryIntegration:
         assert service.session_repo is not None
         assert service.execution_repo is not None
         assert service.case_repo is not None
+
+
+# ============================================================
+# File Storage Service Creation Tests (TASK-013)
+# ============================================================
+
+class TestFileStorageServiceCreation:
+    """Test file storage service creation methods."""
+
+    def test_create_file_storage_service_returns_service(self, mock_session):
+        """Test that create_file_storage_service returns FileStorageService."""
+        factory = ServiceFactory(mock_session)
+
+        service = factory.create_file_storage_service()
+
+        assert service is not None
+        assert isinstance(service, FileStorageService)
+
+    def test_create_file_storage_service_with_custom_root(self, mock_session):
+        """Test file storage service with custom storage root."""
+        factory = ServiceFactory(mock_session)
+
+        service = factory.create_file_storage_service(
+            storage_root="/custom/path/evidence"
+        )
+
+        assert service.storage_root == "/custom/path/evidence"
+
+    def test_create_file_storage_service_with_custom_max_size(self, mock_session):
+        """Test file storage service with custom max file size."""
+        factory = ServiceFactory(mock_session)
+        custom_size = 50 * 1024 * 1024  # 50MB
+
+        service = factory.create_file_storage_service(
+            max_file_size_bytes=custom_size
+        )
+
+        assert service.max_file_size_bytes == custom_size
+
+    def test_create_file_storage_service_with_mime_types(self, mock_session):
+        """Test file storage service with allowed MIME types."""
+        factory = ServiceFactory(mock_session)
+        mime_types = ["image/png", "image/jpeg"]
+
+        service = factory.create_file_storage_service(
+            allowed_mime_types=mime_types
+        )
+
+        assert service.allowed_mime_types == mime_types
+
+    def test_create_file_storage_service_multiple_instances(self, mock_session):
+        """Test that each call creates a new file storage instance."""
+        factory = ServiceFactory(mock_session)
+
+        service1 = factory.create_file_storage_service()
+        service2 = factory.create_file_storage_service()
+
+        assert service1 is not service2
+
+
+# ============================================================
+# Evidence Artifact Service Creation Tests (TASK-013)
+# ============================================================
+
+class TestEvidenceArtifactServiceCreation:
+    """Test evidence artifact service creation methods."""
+
+    def test_create_evidence_service_returns_service(self, mock_session):
+        """Test that create_evidence_artifact_service returns APIEvidenceArtifactService."""
+        factory = ServiceFactory(mock_session)
+
+        service = factory.create_evidence_artifact_service()
+
+        assert service is not None
+        assert isinstance(service, APIEvidenceArtifactService)
+
+    def test_create_evidence_service_injects_evidence_repo(self, mock_session):
+        """Test that evidence service has evidence_repo injected."""
+        factory = ServiceFactory(mock_session)
+
+        service = factory.create_evidence_artifact_service()
+
+        assert service.evidence_repo is not None
+        assert service.evidence_repo is factory.evidence_repo
+
+    def test_create_evidence_service_injects_case_repo(self, mock_session):
+        """Test that evidence service has case_repo injected."""
+        factory = ServiceFactory(mock_session)
+
+        service = factory.create_evidence_artifact_service()
+
+        assert service.case_repo is not None
+        assert service.case_repo is factory.case_repo
+
+    def test_create_evidence_service_injects_file_storage(self, mock_session):
+        """Test that evidence service has file_storage injected."""
+        factory = ServiceFactory(mock_session)
+
+        service = factory.create_evidence_artifact_service()
+
+        assert service.file_storage is not None
+        assert isinstance(service.file_storage, FileStorageService)
+
+    def test_create_evidence_service_with_custom_file_storage(self, mock_session):
+        """Test evidence service with custom file storage."""
+        factory = ServiceFactory(mock_session)
+        custom_storage = FileStorageService(
+            storage_root="/custom/path",
+            max_file_size_bytes=1024,
+        )
+
+        service = factory.create_evidence_artifact_service(
+            file_storage=custom_storage
+        )
+
+        assert service.file_storage is custom_storage
+
+    def test_create_evidence_service_multiple_instances(self, mock_session):
+        """Test that each call creates a new evidence service instance."""
+        factory = ServiceFactory(mock_session)
+
+        service1 = factory.create_evidence_artifact_service()
+        service2 = factory.create_evidence_artifact_service()
+
+        assert service1 is not service2
+
+    def test_create_evidence_service_shares_repos(self, mock_session):
+        """Test that multiple evidence services share the same repositories."""
+        factory = ServiceFactory(mock_session)
+
+        service1 = factory.create_evidence_artifact_service()
+        service2 = factory.create_evidence_artifact_service()
+
+        assert service1.evidence_repo is service2.evidence_repo
+        assert service1.case_repo is service2.case_repo
+
+
+# ============================================================
+# Integration Tests for Evidence Service (TASK-013)
+# ============================================================
+
+class TestEvidenceServiceIntegration:
+    """Test evidence service with real database session."""
+
+    @pytest.mark.asyncio
+    async def test_evidence_service_with_real_session(self, async_session):
+        """Test evidence service works with real async session."""
+        factory = ServiceFactory(async_session)
+        service = factory.create_evidence_artifact_service()
+
+        assert service is not None
+        assert service.service_name == "api_evidence_artifact_service"
+
+    @pytest.mark.asyncio
+    async def test_evidence_service_health_check(self, async_session):
+        """Test evidence service health check."""
+        factory = ServiceFactory(async_session)
+        service = factory.create_evidence_artifact_service()
+
+        health = await service.health_check()
+
+        assert health is not None
+        assert "status" in health
