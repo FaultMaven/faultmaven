@@ -35,6 +35,11 @@ from faultmaven.infrastructure.persistence.case_repository import (
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
+from faultmaven.infrastructure.persistence.session_repository import (
+    SessionRepository,
+    DatabaseSessionRepository,
+    InMemorySessionRepository,
+)
 from faultmaven.infrastructure.persistence.database import get_db_session
 
 logger = logging.getLogger(__name__)
@@ -44,8 +49,9 @@ logger = logging.getLogger(__name__)
 STORAGE_TYPE_INMEMORY = "inmemory"
 STORAGE_TYPE_DATABASE = "database"
 
-# Singleton in-memory repository (for consistency across calls)
+# Singleton in-memory repositories (for consistency across calls)
 _inmemory_repository: Optional[InMemoryCaseRepository] = None
+_inmemory_session_repository: Optional[InMemorySessionRepository] = None
 
 
 def get_storage_type() -> str:
@@ -59,6 +65,19 @@ def get_storage_type() -> str:
         Storage type string ("inmemory" or "database")
     """
     return os.getenv("CASE_STORAGE_TYPE", STORAGE_TYPE_DATABASE)
+
+
+def get_session_storage_type() -> str:
+    """
+    Get configured session storage type from environment.
+
+    Environment variable: SESSION_STORAGE_TYPE
+    Default: Falls back to CASE_STORAGE_TYPE, then "database"
+
+    Returns:
+        Storage type string ("inmemory" or "database")
+    """
+    return os.getenv("SESSION_STORAGE_TYPE", get_storage_type())
 
 
 def get_case_repository(
@@ -228,6 +247,129 @@ def get_inmemory_repository() -> InMemoryCaseRepository:
 
 
 # ============================================================
+# Session Repository Factory
+# ============================================================
+
+
+def get_session_repository(
+    storage_type: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
+) -> SessionRepository:
+    """
+    Get a session repository instance based on configuration.
+
+    Args:
+        storage_type: Optional override for storage type.
+                     If None, uses SESSION_STORAGE_TYPE env var.
+        session: Optional database session for database storage.
+                Required for database storage type.
+
+    Returns:
+        SessionRepository implementation
+
+    Raises:
+        ValueError: If storage type is unknown
+        RuntimeError: If database session is required but not provided
+    """
+    global _inmemory_session_repository
+
+    effective_type = storage_type or get_session_storage_type()
+    logger.debug(f"Creating session repository with storage type: {effective_type}")
+
+    if effective_type == STORAGE_TYPE_INMEMORY:
+        # Return singleton in-memory repository
+        if _inmemory_session_repository is None:
+            _inmemory_session_repository = InMemorySessionRepository()
+            logger.info("Created InMemorySessionRepository (singleton)")
+        return _inmemory_session_repository
+
+    elif effective_type == STORAGE_TYPE_DATABASE:
+        if session is None:
+            raise RuntimeError(
+                "Database session is required for database storage type. "
+                "Use get_session_repository_async() or provide a session."
+            )
+        logger.debug("Created DatabaseSessionRepository")
+        return DatabaseSessionRepository(session)
+
+    else:
+        raise ValueError(f"Unknown storage type: {effective_type}")
+
+
+@asynccontextmanager
+async def get_session_repository_async(
+    storage_type: Optional[str] = None,
+) -> AsyncGenerator[SessionRepository, None]:
+    """
+    Get a session repository with automatic session management.
+
+    This is the recommended way to obtain a session repository in async contexts.
+    It automatically handles database session lifecycle.
+
+    Args:
+        storage_type: Optional override for storage type.
+                     If None, uses SESSION_STORAGE_TYPE env var.
+
+    Yields:
+        SessionRepository implementation
+
+    Raises:
+        ValueError: If storage type is unknown
+
+    Example:
+        async with get_session_repository_async() as repo:
+            session = await repo.get_session("session_123")
+    """
+    global _inmemory_session_repository
+
+    effective_type = storage_type or get_session_storage_type()
+
+    if effective_type == STORAGE_TYPE_INMEMORY:
+        # Return singleton in-memory repository
+        if _inmemory_session_repository is None:
+            _inmemory_session_repository = InMemorySessionRepository()
+            logger.info("Created InMemorySessionRepository (singleton)")
+        yield _inmemory_session_repository
+
+    elif effective_type == STORAGE_TYPE_DATABASE:
+        # Create database repository with session
+        async with get_db_session() as db_session:
+            repo = DatabaseSessionRepository(db_session)
+            yield repo
+
+    else:
+        raise ValueError(f"Unknown storage type: {effective_type}")
+
+
+def reset_inmemory_session_repository() -> None:
+    """
+    Reset the singleton in-memory session repository.
+
+    Useful for testing to ensure clean state between tests.
+    """
+    global _inmemory_session_repository
+    if _inmemory_session_repository is not None:
+        _inmemory_session_repository.clear()
+        _inmemory_session_repository = None
+        logger.debug("Reset in-memory session repository singleton")
+
+
+def get_inmemory_session_repository() -> InMemorySessionRepository:
+    """
+    Get or create the singleton in-memory session repository.
+
+    Useful when you specifically need in-memory storage.
+
+    Returns:
+        InMemorySessionRepository singleton instance
+    """
+    global _inmemory_session_repository
+    if _inmemory_session_repository is None:
+        _inmemory_session_repository = InMemorySessionRepository()
+    return _inmemory_session_repository
+
+
+# ============================================================
 # Dependency Injection Helpers
 # ============================================================
 
@@ -249,4 +391,24 @@ async def get_repository_dependency() -> AsyncGenerator[CaseRepository, None]:
         CaseRepository instance
     """
     async with get_case_repository_async() as repo:
+        yield repo
+
+
+async def get_session_repository_dependency() -> AsyncGenerator[SessionRepository, None]:
+    """
+    FastAPI dependency for obtaining a session repository.
+
+    Use this in FastAPI route dependencies:
+
+        @app.get("/sessions/{session_id}")
+        async def get_session(
+            session_id: str,
+            repo: SessionRepository = Depends(get_session_repository_dependency)
+        ):
+            return await repo.get_session(session_id)
+
+    Yields:
+        SessionRepository instance
+    """
+    async with get_session_repository_async() as repo:
         yield repo

@@ -595,6 +595,207 @@ class DatabaseCaseRepository(CaseRepository):
             raise RepositoryException(f"Failed to cleanup expired cases: {e}") from e
 
     # ========================================================================
+    # Session-Aware Methods
+    # ========================================================================
+
+    async def get_cases_by_session(self, session_id: str) -> List[Case]:
+        """
+        Get all cases associated with a session.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            List of cases linked to the session
+
+        Raises:
+            RepositoryException: If query fails
+        """
+        try:
+            stmt = (
+                select(CaseModel)
+                .options(
+                    selectinload(CaseModel.evidence),
+                    selectinload(CaseModel.hypotheses),
+                    selectinload(CaseModel.solutions),
+                    selectinload(CaseModel.messages),
+                    selectinload(CaseModel.uploaded_files),
+                    selectinload(CaseModel.status_transitions),
+                )
+                .where(CaseModel.session_id == session_id)
+                .order_by(CaseModel.updated_at.desc())
+            )
+
+            result = await self.db.execute(stmt)
+            case_models = result.scalars().all()
+
+            return [self._model_to_case(m) for m in case_models]
+
+        except Exception as e:
+            logger.error(f"Failed to get cases for session {session_id}: {e}")
+            raise RepositoryException(
+                f"Failed to get cases for session {session_id}: {e}"
+            ) from e
+
+    async def get_orphaned_cases(
+        self,
+        user_id: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0
+    ) -> tuple[List[Case], int]:
+        """
+        Get cases with no session (session_id is NULL).
+
+        These are cases that were either created without a session
+        or whose session has been deleted.
+
+        Args:
+            user_id: Optional filter by user
+            limit: Maximum results
+            offset: Pagination offset
+
+        Returns:
+            Tuple of (cases, total_count)
+
+        Raises:
+            RepositoryException: If query fails
+        """
+        try:
+            # Build conditions
+            conditions = [CaseModel.session_id.is_(None)]
+            if user_id:
+                conditions.append(CaseModel.user_id == user_id)
+
+            # Count query
+            count_stmt = (
+                select(func.count())
+                .select_from(CaseModel)
+                .where(and_(*conditions))
+            )
+            count_result = await self.db.execute(count_stmt)
+            total_count = count_result.scalar()
+
+            # Data query
+            data_stmt = (
+                select(CaseModel)
+                .options(
+                    selectinload(CaseModel.evidence),
+                    selectinload(CaseModel.hypotheses),
+                    selectinload(CaseModel.solutions),
+                    selectinload(CaseModel.messages),
+                    selectinload(CaseModel.uploaded_files),
+                    selectinload(CaseModel.status_transitions),
+                )
+                .where(and_(*conditions))
+                .order_by(CaseModel.updated_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+
+            result = await self.db.execute(data_stmt)
+            case_models = result.scalars().all()
+
+            return [self._model_to_case(m) for m in case_models], total_count
+
+        except Exception as e:
+            logger.error(f"Failed to get orphaned cases: {e}")
+            raise RepositoryException(f"Failed to get orphaned cases: {e}") from e
+
+    async def link_case_to_session(
+        self,
+        case_id: str,
+        session_id: Optional[str]
+    ) -> bool:
+        """
+        Link or unlink a case to/from a session.
+
+        Args:
+            case_id: Case identifier
+            session_id: Session identifier, or None to unlink
+
+        Returns:
+            True if updated, False if case not found
+
+        Raises:
+            RepositoryException: If update fails
+        """
+        try:
+            stmt = (
+                update(CaseModel)
+                .where(CaseModel.case_id == case_id)
+                .values(
+                    session_id=session_id,
+                    updated_at=datetime.now(timezone.utc)
+                )
+            )
+
+            result = await self.db.execute(stmt)
+            await self.db.commit()
+
+            updated = result.rowcount > 0
+            if updated:
+                action = "linked to" if session_id else "unlinked from"
+                logger.debug(f"Case {case_id} {action} session {session_id}")
+            return updated
+
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"Failed to link case {case_id} to session: {e}")
+            raise RepositoryException(
+                f"Failed to link case {case_id} to session: {e}"
+            ) from e
+
+    async def save_with_session(
+        self,
+        case: Case,
+        session_id: Optional[str] = None
+    ) -> Case:
+        """
+        Save a case with optional session linkage.
+
+        This is a convenience method that combines save() with session linking.
+
+        Args:
+            case: Case domain object to save
+            session_id: Optional session ID to link the case to
+
+        Returns:
+            Saved case
+
+        Raises:
+            RepositoryException: If save fails
+        """
+        try:
+            # Update timestamp
+            case.updated_at = datetime.now(timezone.utc)
+
+            # Convert domain model to ORM model
+            case_model = self._case_to_model(case)
+
+            # Set session_id on the model
+            case_model.session_id = session_id
+
+            # Merge (upsert) the case
+            merged = await self.db.merge(case_model)
+            await self.db.flush()
+
+            # Handle related entities
+            await self._sync_messages(case.case_id, case.messages)
+            await self._sync_status_transitions(case.case_id, case.status_history)
+
+            await self.db.commit()
+
+            logger.debug(f"Saved case {case.case_id} with session {session_id}")
+            return case
+
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"Failed to save case {case.case_id} with session: {e}")
+            raise RepositoryException(
+                f"Failed to save case {case.case_id} with session: {e}"
+            ) from e
+
+    # ========================================================================
     # Helper: Sync Related Entities
     # ========================================================================
 

@@ -45,6 +45,48 @@ Base = declarative_base()
 
 
 # ============================================================
+# Session Model
+# ============================================================
+
+class SessionModel(Base):
+    """
+    User session entity for tracking session-case relationships.
+
+    Sessions enable context continuity across user interactions
+    and support session-based case creation and retrieval.
+    """
+    __tablename__ = "sessions"
+
+    # Primary Key - UUID format
+    session_id = Column(String(36), primary_key=True)
+
+    # Required Fields
+    user_id = Column(String(255), nullable=False, index=True)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_accessed = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Session context metadata (JSON)
+    session_metadata = Column("metadata", Text, nullable=True, default='{}')
+
+    # Relationship to cases
+    cases = relationship(
+        "CaseModel",
+        back_populates="session",
+        foreign_keys="CaseModel.session_id"
+    )
+
+    __table_args__ = (
+        CheckConstraint("LENGTH(TRIM(user_id)) > 0", name="sessions_user_id_not_empty"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<SessionModel(session_id={self.session_id}, user_id={self.user_id})>"
+
+
+# ============================================================
 # Enums (Python-side - maps to DB enums or VARCHAR)
 # ============================================================
 
@@ -161,7 +203,16 @@ class CaseModel(Base):
     org_id = Column(String(20), index=True)
     team_id = Column(String(20), index=True)
 
+    # Session link (optional - cases can exist without sessions)
+    session_id = Column(
+        String(36),
+        ForeignKey("sessions.session_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True
+    )
+
     # Relationships
+    session = relationship("SessionModel", back_populates="cases", foreign_keys=[session_id])
     evidence = relationship("EvidenceModel", back_populates="case", cascade="all, delete-orphan")
     hypotheses = relationship("HypothesisModel", back_populates="case", cascade="all, delete-orphan")
     solutions = relationship("SolutionModel", back_populates="case", cascade="all, delete-orphan")
