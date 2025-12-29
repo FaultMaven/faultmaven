@@ -17,6 +17,9 @@ from faultmaven.infrastructure.persistence.session_repository import DatabaseSes
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
 )
+from faultmaven.infrastructure.persistence.agent_execution_repository import (
+    DatabaseAgentExecutionRepository,
+)
 
 
 @pytest.fixture(scope="session")
@@ -85,6 +88,12 @@ async def session_repository(benchmark_session) -> DatabaseSessionRepository:
 async def evidence_artifact_repository(benchmark_session) -> DatabaseEvidenceArtifactRepository:
     """Create evidence artifact repository for benchmarks."""
     return DatabaseEvidenceArtifactRepository(benchmark_session)
+
+
+@pytest.fixture
+async def agent_execution_repository(benchmark_session) -> DatabaseAgentExecutionRepository:
+    """Create agent execution repository for benchmarks."""
+    return DatabaseAgentExecutionRepository(benchmark_session)
 
 
 def generate_case_id() -> str:
