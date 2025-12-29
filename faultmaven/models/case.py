@@ -108,6 +108,51 @@ class CaseStatus(str, Enum):
         return self in [CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]
 
 
+class CaseSeverity(str, Enum):
+    """
+    Case severity levels for prioritization and filtering.
+
+    Severity indicates the impact and urgency of the issue:
+    - LOW: Minor issue, minimal impact on operations
+    - MEDIUM: Moderate issue, some impact on operations
+    - HIGH: Significant issue, major impact on operations
+    - CRITICAL: Severe issue, complete service disruption
+
+    Used by API service layer for case filtering and prioritization.
+    """
+
+    LOW = "low"
+    """Minor issue with minimal operational impact."""
+
+    MEDIUM = "medium"
+    """Moderate issue with some operational impact."""
+
+    HIGH = "high"
+    """Significant issue with major operational impact."""
+
+    CRITICAL = "critical"
+    """Severe issue causing complete service disruption."""
+
+    @classmethod
+    def from_string(cls, value: str) -> "CaseSeverity":
+        """Convert string to CaseSeverity, case-insensitive.
+
+        Args:
+            value: String value to convert
+
+        Returns:
+            CaseSeverity enum value
+
+        Raises:
+            ValueError: If value is not a valid severity
+        """
+        value_lower = value.lower()
+        for severity in cls:
+            if severity.value == value_lower:
+                return severity
+        raise ValueError(f"Invalid severity: {value}. Must be one of: {[s.value for s in cls]}")
+
+
 class CaseStatusTransition(BaseModel):
     """
     Record of one status change.

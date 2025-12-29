@@ -146,3 +146,88 @@ class VectorStoreConnectionError(VectorStoreException):
 class VectorStoreOperationError(VectorStoreException):
     """Raised when a vector store operation fails."""
     pass
+
+
+# ============================================================
+# Service Layer Exceptions (TASK-011)
+# ============================================================
+
+
+class ServiceError(FaultMavenException):
+    """Base exception for service layer errors.
+
+    All service-layer exceptions inherit from this class,
+    providing a consistent hierarchy for error handling.
+    """
+    pass
+
+
+class NotFoundError(ServiceError):
+    """Resource not found.
+
+    Raised when a requested resource (case, session, etc.) does not exist.
+
+    Attributes:
+        resource_type: Type of the resource (e.g., "Case", "Session")
+        resource_id: ID of the resource that was not found
+    """
+
+    def __init__(self, resource_type: str, resource_id: str):
+        self.resource_type = resource_type
+        self.resource_id = resource_id
+        super().__init__(
+            f"{resource_type} not found: {resource_id}",
+            details={"resource_type": resource_type, "resource_id": resource_id}
+        )
+
+
+class AuthorizationError(ServiceError):
+    """Authorization check failed.
+
+    Raised when a user/organization does not have permission
+    to access or modify a resource.
+    """
+
+    def __init__(self, message: str = "Not authorized"):
+        super().__init__(message)
+
+
+class ConflictError(ServiceError):
+    """Resource conflict (duplicate, state violation, etc.).
+
+    Raised when an operation cannot be completed due to a conflict,
+    such as trying to close an already-closed case.
+
+    Attributes:
+        resource_type: Type of the resource
+        resource_id: ID of the resource
+        conflict_reason: Description of the conflict
+    """
+
+    def __init__(
+        self,
+        message: str,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        conflict_reason: Optional[str] = None
+    ):
+        self.resource_type = resource_type
+        self.resource_id = resource_id
+        self.conflict_reason = conflict_reason
+        super().__init__(
+            message,
+            details={
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "conflict_reason": conflict_reason
+            }
+        )
+
+
+class RepositoryError(ServiceError):
+    """Repository operation failed.
+
+    Raised when a repository operation (save, get, delete) fails
+    due to database or storage issues.
+    """
+    pass
