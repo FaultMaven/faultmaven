@@ -764,7 +764,7 @@ class KnowledgeSettings(BaseSettings):
     enable_web_search: bool = Field(default=True, env="ENABLE_WEB_SEARCH")
     serp_api_key: Optional[SecretStr] = Field(default=None, env="SERP_API_KEY")
     tavily_api_key: Optional[SecretStr] = Field(default=None, env="TAVILY_API_KEY")
-    
+
     # Search limits
     max_search_results: int = Field(default=5, env="KNOWLEDGE_MAX_SEARCH_RESULTS")
     search_timeout_seconds: int = Field(default=30, env="SEARCH_TIMEOUT_SECONDS")
@@ -772,7 +772,110 @@ class KnowledgeSettings(BaseSettings):
     # Document processing (size limit now in UploadSettings.max_upload_size_mb)
     chunk_size: int = Field(default=1000, env="DOCUMENT_CHUNK_SIZE")
     chunk_overlap: int = Field(default=100, env="DOCUMENT_CHUNK_OVERLAP")
-    
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
+class EmbeddingSettings(BaseSettings):
+    """Embedding and vector search configuration for RAG system."""
+
+    # OpenAI Embeddings
+    embedding_model: str = Field(
+        default="text-embedding-3-small",
+        env="EMBEDDING_MODEL",
+        description="OpenAI embedding model to use"
+    )
+    embedding_dimensions: int = Field(
+        default=1536,
+        env="EMBEDDING_DIMENSIONS",
+        description="Embedding vector dimensions (1536 for text-embedding-3-small)"
+    )
+
+    # Embedding API configuration
+    embedding_max_retries: int = Field(
+        default=3,
+        env="EMBEDDING_MAX_RETRIES",
+        ge=1,
+        le=10,
+        description="Maximum retry attempts for embedding API calls"
+    )
+    embedding_retry_delay: float = Field(
+        default=1.0,
+        env="EMBEDDING_RETRY_DELAY",
+        ge=0.1,
+        le=30.0,
+        description="Base delay between retries (exponential backoff)"
+    )
+    embedding_timeout: int = Field(
+        default=60,
+        env="EMBEDDING_TIMEOUT",
+        ge=10,
+        le=300,
+        description="Timeout for embedding API calls in seconds"
+    )
+    embedding_batch_size: int = Field(
+        default=100,
+        env="EMBEDDING_BATCH_SIZE",
+        ge=1,
+        le=2048,
+        description="Number of texts per batch for embedding generation"
+    )
+    embedding_max_text_length: int = Field(
+        default=8191,
+        env="EMBEDDING_MAX_TEXT_LENGTH",
+        description="Maximum text length for embedding (OpenAI limit)"
+    )
+
+    # ChromaDB Vector Store
+    chroma_persist_directory: str = Field(
+        default="./chroma_data",
+        env="CHROMA_PERSIST_DIRECTORY",
+        description="Directory for ChromaDB persistence"
+    )
+    chroma_collection_name: str = Field(
+        default="knowledge_items",
+        env="CHROMA_COLLECTION_NAME",
+        description="ChromaDB collection name for knowledge items"
+    )
+
+    # Hybrid Search
+    semantic_search_weight: float = Field(
+        default=0.7,
+        env="SEMANTIC_SEARCH_WEIGHT",
+        ge=0.0,
+        le=1.0,
+        description="Weight for semantic similarity in hybrid search"
+    )
+    text_search_weight: float = Field(
+        default=0.3,
+        env="TEXT_SEARCH_WEIGHT",
+        ge=0.0,
+        le=1.0,
+        description="Weight for text search in hybrid search"
+    )
+
+    # Indexing Job
+    indexing_batch_size: int = Field(
+        default=50,
+        env="INDEXING_BATCH_SIZE",
+        ge=1,
+        le=500,
+        description="Batch size for background indexing job"
+    )
+
+    @field_validator('text_search_weight')
+    @classmethod
+    def validate_weights(cls, v, info):
+        """Ensure semantic + text weights don't exceed 1.0"""
+        values = info.data
+        semantic_weight = values.get('semantic_search_weight', 0.7)
+        if semantic_weight + v > 1.0:
+            raise ValueError(
+                f"semantic_search_weight ({semantic_weight}) + text_search_weight ({v}) "
+                f"cannot exceed 1.0"
+            )
+        return v
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
@@ -1221,6 +1324,7 @@ class FaultMavenSettings(BaseSettings):
     }
     upload: UploadSettings = Field(default_factory=UploadSettings)
     knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
+    embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     features: FeatureSettings = Field(default_factory=FeatureSettings)
     tools: ToolsSettings = Field(default_factory=ToolsSettings)
     preprocessing: PreprocessingSettings = Field(default_factory=PreprocessingSettings)

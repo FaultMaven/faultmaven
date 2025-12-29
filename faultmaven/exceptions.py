@@ -111,3 +111,38 @@ class BudgetExceededException(FaultMavenException):
 class ServiceUnavailableException(FaultMavenException):
     """Raised when a required service is not available."""
     pass
+
+
+class EmbeddingException(KnowledgeBaseException):
+    """Base exception for embedding-related errors."""
+    pass
+
+
+class EmbeddingGenerationError(EmbeddingException):
+    """Raised when embedding generation fails."""
+    pass
+
+
+class EmbeddingRateLimitError(EmbeddingException):
+    """Raised when embedding API rate limit is exceeded."""
+    pass
+
+
+class EmbeddingInvalidInputError(EmbeddingException):
+    """Raised when input text is invalid for embedding generation."""
+    pass
+
+
+class VectorStoreException(KnowledgeBaseException):
+    """Base exception for vector store operations."""
+    pass
+
+
+class VectorStoreConnectionError(VectorStoreException):
+    """Raised when connection to vector store fails."""
+    pass
+
+
+class VectorStoreOperationError(VectorStoreException):
+    """Raised when a vector store operation fails."""
+    pass
