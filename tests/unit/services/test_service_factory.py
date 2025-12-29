@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import (
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.services.service_factory import ServiceFactory
 from faultmaven.services.case_service import APICaseService
+from faultmaven.services.investigation_session_service import APIInvestigationSessionService
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
@@ -177,6 +178,72 @@ class TestServiceCreation:
 
 
 # ============================================================
+# Investigation Session Service Creation Tests (TASK-012)
+# ============================================================
+
+class TestInvestigationSessionServiceCreation:
+    """Test investigation session service creation methods."""
+
+    def test_create_investigation_session_service_returns_service(self, mock_session):
+        """Test that create_investigation_session_service returns APIInvestigationSessionService."""
+        factory = ServiceFactory(mock_session)
+
+        service = factory.create_investigation_session_service()
+
+        assert service is not None
+        assert isinstance(service, APIInvestigationSessionService)
+
+    def test_create_investigation_session_service_injects_session_repo(self, mock_session):
+        """Test that session service has session_repo injected."""
+        factory = ServiceFactory(mock_session)
+
+        service = factory.create_investigation_session_service()
+
+        assert service.session_repo is not None
+        assert service.session_repo is factory.session_repo
+
+    def test_create_investigation_session_service_injects_execution_repo(self, mock_session):
+        """Test that session service has execution_repo injected."""
+        factory = ServiceFactory(mock_session)
+
+        service = factory.create_investigation_session_service()
+
+        assert service.execution_repo is not None
+        assert service.execution_repo is factory.execution_repo
+
+    def test_create_investigation_session_service_injects_case_repo(self, mock_session):
+        """Test that session service has case_repo injected."""
+        factory = ServiceFactory(mock_session)
+
+        service = factory.create_investigation_session_service()
+
+        assert service.case_repo is not None
+        assert service.case_repo is factory.case_repo
+
+    def test_multiple_investigation_session_service_instances(self, mock_session):
+        """Test creating multiple investigation session service instances."""
+        factory = ServiceFactory(mock_session)
+
+        service1 = factory.create_investigation_session_service()
+        service2 = factory.create_investigation_session_service()
+
+        # Each call creates a new instance
+        assert service1 is not service2
+
+    def test_investigation_session_services_share_repos(self, mock_session):
+        """Test that multiple session services share the same repositories."""
+        factory = ServiceFactory(mock_session)
+
+        service1 = factory.create_investigation_session_service()
+        service2 = factory.create_investigation_session_service()
+
+        # Repositories are shared
+        assert service1.session_repo is service2.session_repo
+        assert service1.execution_repo is service2.execution_repo
+        assert service1.case_repo is service2.case_repo
+
+
+# ============================================================
 # Multiple Service Creation Tests
 # ============================================================
 
@@ -241,3 +308,23 @@ class TestServiceFactoryIntegration:
         # Should not raise, returns empty list
         cases = await service.list_cases("test_org")
         assert cases == []
+
+    @pytest.mark.asyncio
+    async def test_investigation_session_service_with_real_session(self, async_session):
+        """Test investigation session service works with real session."""
+        factory = ServiceFactory(async_session)
+        service = factory.create_investigation_session_service()
+
+        # Service should be functional
+        assert service is not None
+        assert service.service_name == "api_investigation_session_service"
+
+    @pytest.mark.asyncio
+    async def test_investigation_session_service_has_all_repos(self, async_session):
+        """Test investigation session service has all required repositories."""
+        factory = ServiceFactory(async_session)
+        service = factory.create_investigation_session_service()
+
+        assert service.session_repo is not None
+        assert service.execution_repo is not None
+        assert service.case_repo is not None

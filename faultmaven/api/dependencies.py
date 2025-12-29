@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.services.service_factory import ServiceFactory
 from faultmaven.services.case_service import APICaseService
+from faultmaven.services.investigation_session_service import APIInvestigationSessionService
 
 
 # ============================================================
@@ -114,13 +115,36 @@ async def get_api_case_service(
     return factory.create_case_service()
 
 
-# Future service dependencies:
+async def get_investigation_session_service(
+    factory: ServiceFactory = Depends(get_service_factory),
+) -> APIInvestigationSessionService:
+    """Get investigation session service for request.
 
-# async def get_session_service(
-#     factory: ServiceFactory = Depends(get_service_factory),
-# ) -> SessionService:
-#     """Get investigation session service for request."""
-#     return factory.create_session_service()
+    Creates an APIInvestigationSessionService with all required repository
+    dependencies from the service factory.
+
+    Args:
+        factory: Service factory from get_service_factory
+
+    Returns:
+        APIInvestigationSessionService instance
+
+    Example:
+        @app.get("/sessions/{session_id}")
+        async def get_session(
+            session_id: str,
+            org_id: str,
+            session_service: APIInvestigationSessionService = Depends(get_investigation_session_service)
+        ):
+            session = await session_service.get_session(session_id, org_id)
+            if not session:
+                raise HTTPException(404, "Session not found")
+            return session
+    """
+    return factory.create_investigation_session_service()
+
+
+# Future service dependencies:
 
 # async def get_evidence_service(
 #     factory: ServiceFactory = Depends(get_service_factory),
