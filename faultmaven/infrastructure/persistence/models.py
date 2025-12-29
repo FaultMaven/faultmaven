@@ -568,3 +568,197 @@ class EvidenceArtifactModel(Base):
             f"original_filename={self.original_filename}, "
             f"evidence_type={self.evidence_type})>"
         )
+
+
+# ============================================================
+# Agent Execution Status Enum
+# ============================================================
+
+class ExecutionStatusEnum(str, enum.Enum):
+    """Agent execution status."""
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    TIMEOUT = "timeout"
+
+
+class AgentTypeEnum(str, enum.Enum):
+    """Types of AI agents."""
+    INVESTIGATOR = "investigator"
+    DEBUGGER = "debugger"
+    RESEARCHER = "researcher"
+    VALIDATOR = "validator"
+    REPORTER = "reporter"
+    CUSTOM = "custom"
+
+
+# ============================================================
+# Agent Execution Model
+# ============================================================
+
+class AgentExecutionModel(Base):
+    """Agent execution tracking for AI agent transparency.
+
+    Tracks the full lifecycle of an agent execution from queued to completion,
+    including prompt, response, token usage, and timing information.
+    """
+    __tablename__ = "agent_executions"
+
+    # Primary Key
+    execution_id = Column(String(64), primary_key=True)
+
+    # Foreign Key to cases
+    case_id = Column(
+        String(17),
+        ForeignKey("cases.case_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Agent identification
+    agent_type = Column(String(64), nullable=False, index=True)
+    agent_model = Column(String(128), nullable=False, index=True)
+
+    # Execution status
+    status = Column(String(32), nullable=False, default="queued", index=True)
+
+    # Timing
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    execution_duration_ms = Column(Integer, nullable=True)
+
+    # Prompt and response
+    prompt = Column(Text, nullable=True)
+    response = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    # Token usage (JSON)
+    token_usage = Column(Text, nullable=True)
+
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Metadata (JSON)
+    execution_metadata = Column("metadata", Text, default="{}")
+
+    # Relationships
+    case = relationship("CaseModel", backref="agent_executions")
+    tool_calls_v2 = relationship(
+        "AgentToolCallV2Model",
+        back_populates="execution",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled', 'timeout')",
+            name="agent_executions_status_check"
+        ),
+        CheckConstraint(
+            "agent_type IN ('investigator', 'debugger', 'researcher', 'validator', 'reporter', 'custom')",
+            name="agent_executions_agent_type_check"
+        ),
+        CheckConstraint(
+            "execution_duration_ms IS NULL OR execution_duration_ms >= 0",
+            name="agent_executions_duration_check"
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<AgentExecutionModel(execution_id={self.execution_id}, "
+            f"case_id={self.case_id}, "
+            f"agent_type={self.agent_type}, "
+            f"status={self.status})>"
+        )
+
+
+# ============================================================
+# Agent Tool Call V2 Model (Execution-level)
+# ============================================================
+
+class AgentToolCallV2Model(Base):
+    """Tool call tracking for agent executions.
+
+    Tracks individual tool invocations made during an agent execution,
+    including input, output, status, and timing information.
+
+    Note: This is separate from AgentToolCallModel which tracks
+    tool calls at the case level. This model tracks tool calls
+    within a specific agent execution context.
+    """
+    __tablename__ = "agent_tool_calls_v2"
+
+    # Primary Key
+    tool_call_id = Column(String(64), primary_key=True)
+
+    # Foreign Key to agent_executions
+    execution_id = Column(
+        String(64),
+        ForeignKey("agent_executions.execution_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Tool information
+    tool_name = Column(String(128), nullable=False, index=True)
+    tool_input = Column(Text, nullable=True)  # JSON as TEXT
+    tool_output = Column(Text, nullable=True)  # JSON as TEXT
+
+    # Status and error
+    status = Column(String(32), nullable=False, default="pending", index=True)
+    error_message = Column(Text, nullable=True)
+
+    # Timing
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Relationship to execution
+    execution = relationship("AgentExecutionModel", back_populates="tool_calls_v2")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'success', 'failed')",
+            name="agent_tool_calls_v2_status_check"
+        ),
+        CheckConstraint(
+            "duration_ms IS NULL OR duration_ms >= 0",
+            name="agent_tool_calls_v2_duration_check"
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<AgentToolCallV2Model(tool_call_id={self.tool_call_id}, "
+            f"execution_id={self.execution_id}, "
+            f"tool_name={self.tool_name}, "
+            f"status={self.status})>"
+        )

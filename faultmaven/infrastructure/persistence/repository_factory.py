@@ -45,6 +45,11 @@ from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
     InMemoryEvidenceArtifactRepository,
 )
+from faultmaven.infrastructure.persistence.agent_execution_repository import (
+    AgentExecutionRepository,
+    DatabaseAgentExecutionRepository,
+    InMemoryAgentExecutionRepository,
+)
 from faultmaven.infrastructure.persistence.database import get_db_session
 
 logger = logging.getLogger(__name__)
@@ -58,6 +63,7 @@ STORAGE_TYPE_DATABASE = "database"
 _inmemory_repository: Optional[InMemoryCaseRepository] = None
 _inmemory_session_repository: Optional[InMemorySessionRepository] = None
 _inmemory_evidence_artifact_repository: Optional[InMemoryEvidenceArtifactRepository] = None
+_inmemory_agent_execution_repository: Optional[InMemoryAgentExecutionRepository] = None
 
 
 def get_storage_type() -> str:
@@ -573,4 +579,160 @@ async def get_evidence_artifact_repository_dependency() -> AsyncGenerator[Eviden
         EvidenceArtifactRepository instance
     """
     async with get_evidence_artifact_repository_async() as repo:
+        yield repo
+
+
+# ============================================================
+# Agent Execution Repository Factory
+# ============================================================
+
+
+def get_agent_execution_storage_type() -> str:
+    """
+    Get configured agent execution storage type from environment.
+
+    Environment variable: AGENT_EXECUTION_STORAGE_TYPE
+    Default: Falls back to CASE_STORAGE_TYPE, then "database"
+
+    Returns:
+        Storage type string ("inmemory" or "database")
+    """
+    return os.getenv("AGENT_EXECUTION_STORAGE_TYPE", get_storage_type())
+
+
+def get_agent_execution_repository(
+    storage_type: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
+) -> AgentExecutionRepository:
+    """
+    Get an agent execution repository instance based on configuration.
+
+    Args:
+        storage_type: Optional override for storage type.
+                     If None, uses AGENT_EXECUTION_STORAGE_TYPE env var.
+        session: Optional database session for database storage.
+                Required for database storage type.
+
+    Returns:
+        AgentExecutionRepository implementation
+
+    Raises:
+        ValueError: If storage type is unknown
+        RuntimeError: If database session is required but not provided
+    """
+    global _inmemory_agent_execution_repository
+
+    effective_type = storage_type or get_agent_execution_storage_type()
+    logger.debug(f"Creating agent execution repository with storage type: {effective_type}")
+
+    if effective_type == STORAGE_TYPE_INMEMORY:
+        # Return singleton in-memory repository
+        if _inmemory_agent_execution_repository is None:
+            _inmemory_agent_execution_repository = InMemoryAgentExecutionRepository()
+            logger.info("Created InMemoryAgentExecutionRepository (singleton)")
+        return _inmemory_agent_execution_repository
+
+    elif effective_type == STORAGE_TYPE_DATABASE:
+        if session is None:
+            raise RuntimeError(
+                "Database session is required for database storage type. "
+                "Use get_agent_execution_repository_async() or provide a session."
+            )
+        logger.debug("Created DatabaseAgentExecutionRepository")
+        return DatabaseAgentExecutionRepository(session)
+
+    else:
+        raise ValueError(f"Unknown storage type: {effective_type}")
+
+
+@asynccontextmanager
+async def get_agent_execution_repository_async(
+    storage_type: Optional[str] = None,
+) -> AsyncGenerator[AgentExecutionRepository, None]:
+    """
+    Get an agent execution repository with automatic session management.
+
+    This is the recommended way to obtain a repository in async contexts.
+    It automatically handles database session lifecycle.
+
+    Args:
+        storage_type: Optional override for storage type.
+                     If None, uses AGENT_EXECUTION_STORAGE_TYPE env var.
+
+    Yields:
+        AgentExecutionRepository implementation
+
+    Raises:
+        ValueError: If storage type is unknown
+
+    Example:
+        async with get_agent_execution_repository_async() as repo:
+            execution = await repo.get_execution("exec_abc123def456")
+    """
+    global _inmemory_agent_execution_repository
+
+    effective_type = storage_type or get_agent_execution_storage_type()
+
+    if effective_type == STORAGE_TYPE_INMEMORY:
+        # Return singleton in-memory repository
+        if _inmemory_agent_execution_repository is None:
+            _inmemory_agent_execution_repository = InMemoryAgentExecutionRepository()
+            logger.info("Created InMemoryAgentExecutionRepository (singleton)")
+        yield _inmemory_agent_execution_repository
+
+    elif effective_type == STORAGE_TYPE_DATABASE:
+        # Create database repository with session
+        async with get_db_session() as db_session:
+            repo = DatabaseAgentExecutionRepository(db_session)
+            yield repo
+
+    else:
+        raise ValueError(f"Unknown storage type: {effective_type}")
+
+
+def reset_inmemory_agent_execution_repository() -> None:
+    """
+    Reset the singleton in-memory agent execution repository.
+
+    Useful for testing to ensure clean state between tests.
+    """
+    global _inmemory_agent_execution_repository
+    if _inmemory_agent_execution_repository is not None:
+        _inmemory_agent_execution_repository.clear()
+        _inmemory_agent_execution_repository = None
+        logger.debug("Reset in-memory agent execution repository singleton")
+
+
+def get_inmemory_agent_execution_repository() -> InMemoryAgentExecutionRepository:
+    """
+    Get or create the singleton in-memory agent execution repository.
+
+    Useful when you specifically need in-memory storage.
+
+    Returns:
+        InMemoryAgentExecutionRepository singleton instance
+    """
+    global _inmemory_agent_execution_repository
+    if _inmemory_agent_execution_repository is None:
+        _inmemory_agent_execution_repository = InMemoryAgentExecutionRepository()
+    return _inmemory_agent_execution_repository
+
+
+async def get_agent_execution_repository_dependency() -> AsyncGenerator[AgentExecutionRepository, None]:
+    """
+    FastAPI dependency for obtaining an agent execution repository.
+
+    Use this in FastAPI route dependencies:
+
+        @app.get("/executions/{execution_id}")
+        async def get_execution(
+            execution_id: str,
+            repo: AgentExecutionRepository = Depends(get_agent_execution_repository_dependency)
+        ):
+            return await repo.get_execution(execution_id)
+
+    Yields:
+        AgentExecutionRepository instance
+    """
+    async with get_agent_execution_repository_async() as repo:
         yield repo
