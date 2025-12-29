@@ -1,0 +1,131 @@
+"""Service Factory for API Layer (TASK-011)
+
+Purpose: Factory for creating service instances with proper dependencies.
+
+This factory provides a centralized point for creating service instances
+with their required repository dependencies. It integrates with the
+database session management to ensure proper transaction handling.
+
+Usage:
+    async with get_db_session() as session:
+        factory = ServiceFactory(session)
+        case_service = factory.create_case_service()
+        # Use case_service for operations...
+"""
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from faultmaven.services.case_service import APICaseService
+from faultmaven.infrastructure.persistence.repository_factory import (
+    get_case_repository,
+    get_investigation_session_repository,
+    get_evidence_artifact_repository,
+    get_agent_execution_repository,
+    get_knowledge_item_repository,
+    STORAGE_TYPE_DATABASE,
+)
+from faultmaven.infrastructure.persistence.case_repository import CaseRepository
+from faultmaven.infrastructure.persistence.investigation_session_repository import (
+    InvestigationSessionRepository,
+)
+from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
+    EvidenceArtifactRepository,
+)
+from faultmaven.infrastructure.persistence.agent_execution_repository import (
+    AgentExecutionRepository,
+)
+from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+    KnowledgeItemRepository,
+)
+
+
+class ServiceFactory:
+    """Factory for creating service instances with proper dependencies.
+
+    This factory creates services with injected repository dependencies,
+    ensuring proper database session handling and consistent service
+    configuration across the application.
+
+    The factory is designed to be request-scoped, meaning a new factory
+    should be created for each request with a fresh database session.
+
+    Attributes:
+        db_session: Database session for repositories
+        case_repo: Case repository instance
+        session_repo: Investigation session repository instance
+        evidence_repo: Evidence artifact repository instance
+        execution_repo: Agent execution repository instance
+        knowledge_repo: Knowledge item repository instance
+
+    Example:
+        async with get_db_session() as session:
+            factory = ServiceFactory(session)
+            case_service = factory.create_case_service()
+            case = await case_service.get_case(case_id, org_id)
+    """
+
+    def __init__(self, db_session: AsyncSession):
+        """Initialize service factory.
+
+        Args:
+            db_session: Database session for repositories
+        """
+        self.db_session = db_session
+
+        # Create repositories with the provided session
+        self.case_repo: CaseRepository = get_case_repository(
+            storage_type=STORAGE_TYPE_DATABASE,
+            session=db_session,
+        )
+        self.session_repo: InvestigationSessionRepository = get_investigation_session_repository(
+            storage_type=STORAGE_TYPE_DATABASE,
+            session=db_session,
+        )
+        self.evidence_repo: EvidenceArtifactRepository = get_evidence_artifact_repository(
+            storage_type=STORAGE_TYPE_DATABASE,
+            session=db_session,
+        )
+        self.execution_repo: AgentExecutionRepository = get_agent_execution_repository(
+            storage_type=STORAGE_TYPE_DATABASE,
+            session=db_session,
+        )
+        self.knowledge_repo: KnowledgeItemRepository = get_knowledge_item_repository(
+            storage_type=STORAGE_TYPE_DATABASE,
+            session=db_session,
+        )
+
+    def create_case_service(self) -> APICaseService:
+        """Create API case service with dependencies.
+
+        Returns:
+            APICaseService instance with injected repositories
+        """
+        return APICaseService(
+            case_repo=self.case_repo,
+            session_repo=self.session_repo,
+            evidence_repo=self.evidence_repo,
+            execution_repo=self.execution_repo,
+        )
+
+    # Future service factory methods:
+
+    # def create_session_service(self) -> SessionService:
+    #     """Create investigation session service."""
+    #     return SessionService(
+    #         session_repo=self.session_repo,
+    #         case_repo=self.case_repo,
+    #         execution_repo=self.execution_repo,
+    #     )
+
+    # def create_evidence_service(self) -> EvidenceService:
+    #     """Create evidence service."""
+    #     return EvidenceService(
+    #         evidence_repo=self.evidence_repo,
+    #         case_repo=self.case_repo,
+    #     )
+
+    # def create_knowledge_service(self) -> KnowledgeService:
+    #     """Create knowledge service."""
+    #     return KnowledgeService(
+    #         knowledge_repo=self.knowledge_repo,
+    #     )

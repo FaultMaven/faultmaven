@@ -567,7 +567,7 @@ class BaseService(ABC):
     ) -> None:
         """
         Log a business event with service context.
-        
+
         Args:
             event_name: Name of the business event
             severity: Event severity level
@@ -577,13 +577,59 @@ class BaseService(ABC):
         if data is None:
             data = {}
         data["service"] = self.service_name
-        
+
         self.logger.log_event(
             event_type="business",
             event_name=event_name,
             severity=severity,
             data=data,
             **extra_fields
+        )
+
+    def log_operation(self, operation: str, **kwargs) -> None:
+        """Log service operation with context.
+
+        Simple utility method for logging service operations.
+        Logs at INFO level with the service name and operation context.
+
+        Args:
+            operation: Name/description of the operation being performed
+            **kwargs: Additional context fields to log
+
+        Example:
+            >>> self.log_operation("create_case", user_id="user123", title="Test Case")
+        """
+        self.logger.info(
+            operation,
+            extra={"service": self.service_name, **kwargs}
+        )
+
+    def log_error(self, operation: str, error: Exception, **kwargs) -> None:
+        """Log service error with context.
+
+        Logs an error with exception information, service context,
+        and additional fields. Logs at ERROR level with exc_info=True.
+
+        Args:
+            operation: Name of the operation that failed
+            error: The exception that occurred
+            **kwargs: Additional context fields to log
+
+        Example:
+            >>> try:
+            ...     await self.case_repo.save(case)
+            ... except Exception as e:
+            ...     self.log_error("save_case", e, case_id=case.case_id)
+            ...     raise
+        """
+        self.logger.error(
+            f"{operation} failed: {error}",
+            extra={
+                "service": self.service_name,
+                "error_type": type(error).__name__,
+                **kwargs
+            },
+            exc_info=True
         )
     
     async def health_check(self) -> Dict[str, Any]:
