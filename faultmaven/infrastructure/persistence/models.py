@@ -221,6 +221,7 @@ class CaseModel(Base):
     status_transitions = relationship("CaseStatusTransitionModel", back_populates="case", cascade="all, delete-orphan")
     tags = relationship("CaseTagModel", back_populates="case", cascade="all, delete-orphan")
     tool_calls = relationship("AgentToolCallModel", back_populates="case", cascade="all, delete-orphan")
+    evidence_artifacts = relationship("EvidenceArtifactModel", back_populates="case", cascade="all, delete-orphan")
 
     __table_args__ = (
         CheckConstraint("LENGTH(TRIM(title)) > 0", name="cases_title_not_empty"),
@@ -470,3 +471,100 @@ class AgentToolCallModel(Base):
 
     def __repr__(self) -> str:
         return f"<AgentToolCallModel(call_id={self.call_id}, tool_name={self.tool_name}, status={self.status})>"
+
+
+# ============================================================
+# Evidence Artifact Model
+# ============================================================
+
+class EvidenceArtifactTypeEnum(str, enum.Enum):
+    """Evidence artifact type classification."""
+    SCREENSHOT = "screenshot"
+    LOG_FILE = "log_file"
+    NETWORK_TRACE = "network_trace"
+    CODE_SNIPPET = "code_snippet"
+    CONFIGURATION = "configuration"
+    VIDEO_RECORDING = "video_recording"
+    HAR_FILE = "har_file"
+    CRASH_DUMP = "crash_dump"
+    HEAP_DUMP = "heap_dump"
+    THREAD_DUMP = "thread_dump"
+    METRICS_EXPORT = "metrics_export"
+    OTHER = "other"
+
+
+class StorageBackendEnum(str, enum.Enum):
+    """Storage backend type."""
+    LOCAL_FILESYSTEM = "local_filesystem"
+    S3 = "s3"
+    AZURE_BLOB = "azure_blob"
+    GCS = "gcs"
+
+
+class EvidenceArtifactModel(Base):
+    """Evidence artifact file metadata linked to cases.
+
+    Represents files (screenshots, logs, traces, etc.) collected as
+    evidence during case investigation. Supports multiple storage backends.
+    """
+    __tablename__ = "evidence_artifacts"
+
+    # Primary Key
+    evidence_id = Column(String(64), primary_key=True)
+
+    # Foreign Key to cases
+    case_id = Column(
+        String(17),
+        ForeignKey("cases.case_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Ownership
+    user_id = Column(String(255), nullable=False, index=True)
+    organization_id = Column(String(64), nullable=False, index=True)
+
+    # File metadata
+    original_filename = Column(String(512), nullable=False)
+    stored_filename = Column(String(512), nullable=False)
+    file_path = Column(String(2048), nullable=False)
+    evidence_type = Column(String(64), nullable=False, index=True)
+    mime_type = Column(String(256), nullable=False)
+    file_size = Column(Integer, nullable=False)  # BigInteger in migration, Integer for ORM compat
+    storage_backend = Column(String(64), nullable=False, default="local_filesystem")
+
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Optional fields
+    artifact_metadata = Column("metadata", Text, default="{}")
+    description = Column(Text, nullable=True)
+    is_primary = Column(Boolean, nullable=False, default=False)
+
+    # Relationship to case
+    case = relationship("CaseModel", back_populates="evidence_artifacts")
+
+    __table_args__ = (
+        CheckConstraint("LENGTH(TRIM(original_filename)) > 0", name="evidence_artifacts_filename_not_empty"),
+        CheckConstraint("LENGTH(TRIM(file_path)) > 0", name="evidence_artifacts_file_path_not_empty"),
+        CheckConstraint("file_size >= 0", name="evidence_artifacts_file_size_non_negative"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<EvidenceArtifactModel(evidence_id={self.evidence_id}, "
+            f"case_id={self.case_id}, "
+            f"original_filename={self.original_filename}, "
+            f"evidence_type={self.evidence_type})>"
+        )
