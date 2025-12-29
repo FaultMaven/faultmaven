@@ -445,6 +445,25 @@ class DIContainer:
 
                 self.case_repository = PostgreSQLCaseRepository(cases_session_factory())
                 logger.info(f"✅ Case repository: PostgreSQL (legacy single-table) @ {self.settings.database.cases_db_host}:{self.settings.database.cases_db_port}/{self.settings.database.cases_db_name}")
+
+            elif case_storage_type == "database":
+                # Database adapter using SQLAlchemy ORM (TASK-002)
+                # Supports both SQLite (development) and PostgreSQL (production)
+                # Uses Alembic migration schema from TASK-001
+                from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
+                from faultmaven.infrastructure.persistence.database import get_session_factory
+                import os
+
+                # Get database URL from environment or settings
+                database_url = os.getenv("DATABASE_URL") or self.settings.database.cases_db_url
+
+                session_factory = get_session_factory(database_url)
+                # Create a session for the repository
+                async_session = session_factory()
+
+                self.case_repository = DatabaseCaseRepository(async_session)
+                logger.info(f"✅ Case repository: Database (SQLAlchemy ORM) - URL configured via DATABASE_URL")
+
             else:
                 # In-memory adapter for case data (default)
                 from faultmaven.infrastructure.persistence.case_repository import InMemoryCaseRepository
