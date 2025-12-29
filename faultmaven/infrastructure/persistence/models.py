@@ -892,3 +892,106 @@ class InvestigationSessionModel(Base):
             f"status={self.status}, "
             f"total_agent_executions={self.total_agent_executions})>"
         )
+
+
+# ============================================================
+# Knowledge Item Type Enum
+# ============================================================
+
+class KnowledgeItemTypeEnum(str, enum.Enum):
+    """Knowledge item type classification."""
+    TROUBLESHOOTING_GUIDE = "troubleshooting_guide"
+    ERROR_PATTERN = "error_pattern"
+    SOLUTION_TEMPLATE = "solution_template"
+    API_DOCUMENTATION = "api_documentation"
+    CONFIGURATION_GUIDE = "configuration_guide"
+    BEST_PRACTICE = "best_practice"
+    FAQ = "faq"
+    RUNBOOK = "runbook"
+
+
+# ============================================================
+# Knowledge Item Model
+# ============================================================
+
+class KnowledgeItemModel(Base):
+    """Knowledge base item for RAG system.
+
+    Represents an indexed document or knowledge snippet with embeddings
+    for semantic search and retrieval.
+
+    Note: This model does NOT have a foreign key to cases. Knowledge items
+    are organization-scoped and persist independently for compliance/audit.
+    """
+    __tablename__ = "knowledge_items"
+
+    # Primary Key
+    item_id = Column(String(64), primary_key=True)
+
+    # Organization scope (NO foreign key - items persist independently)
+    organization_id = Column(String(64), nullable=False, index=True)
+
+    # Content
+    title = Column(String(512), nullable=False)
+    content = Column(Text, nullable=False)
+    item_type = Column(String(64), nullable=False, index=True)
+
+    # Categorization
+    category = Column(String(128), nullable=True, index=True)
+    tags = Column(Text, nullable=False, default="[]")  # JSON array
+
+    # Vector search
+    embedding_model = Column(String(128), nullable=False, default="text-embedding-3-small")
+    embedding_vector = Column(Text, nullable=True)  # VECTOR(1536) for PostgreSQL+pgvector
+    embedding_version = Column(Integer, nullable=False, default=1)
+
+    # Source metadata
+    source_url = Column(String(2048), nullable=True)
+    author = Column(String(255), nullable=True)
+    language = Column(String(8), nullable=False, default="en")
+
+    # Usage tracking
+    view_count = Column(Integer, nullable=False, default=0)
+    helpful_count = Column(Integer, nullable=False, default=0)
+    not_helpful_count = Column(Integer, nullable=False, default=0)
+    last_retrieved_at = Column(DateTime(timezone=True), nullable=True, index=True)
+
+    # Lifecycle
+    is_published = Column(Boolean, nullable=False, default=True, index=True)
+
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Metadata (JSON)
+    knowledge_metadata = Column("metadata", Text, default="{}")
+
+    __table_args__ = (
+        CheckConstraint(
+            "item_type IN ('troubleshooting_guide', 'error_pattern', 'solution_template', "
+            "'api_documentation', 'configuration_guide', 'best_practice', 'faq', 'runbook')",
+            name="knowledge_items_item_type_check"
+        ),
+        CheckConstraint("view_count >= 0", name="knowledge_items_view_count_check"),
+        CheckConstraint("helpful_count >= 0", name="knowledge_items_helpful_count_check"),
+        CheckConstraint("not_helpful_count >= 0", name="knowledge_items_not_helpful_count_check"),
+        CheckConstraint("embedding_version >= 1", name="knowledge_items_embedding_version_check"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<KnowledgeItemModel(item_id={self.item_id}, "
+            f"title={self.title}, "
+            f"item_type={self.item_type}, "
+            f"is_published={self.is_published})>"
+        )
