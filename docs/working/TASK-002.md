@@ -3,10 +3,11 @@
 ## Task Metadata
 - **Phase**: Week 1, Day 2-3 (Foundation)
 - **Priority**: P0 (Required for session enhancement)
-- **Estimated Time**: 3-4 hours
+- **Estimated Time**: 3-4 hours implementation + tests
 - **Dependencies**: TASK-001 (Alembic setup) ✅ Complete
-- **Assignee**: Developer
-- **Reviewer**: Solutions Architect
+- **Assignee**: Developer (implementation + tests)
+- **Test Reviewer**: Test-Engineer (TASK-002-TEST-REVIEW)
+- **Architect Reviewer**: Solutions Architect (final approval)
 
 ## Objective
 
@@ -38,13 +39,15 @@ Currently, FaultMaven uses in-memory storage for cases (`InMemoryCaseRepository`
 - [ ] Repository factory pattern for dependency injection
 - [ ] Type hints on all methods
 
-### Testing Requirements (Mandatory)
-- [ ] Unit tests for repository methods (80%+ coverage)
-- [ ] Integration tests with SQLite database
+### Testing Requirements (Developer Must Implement)
+- [ ] Unit tests for repository methods (80%+ coverage) - **DEVELOPER WRITES THESE**
+- [ ] Integration tests with SQLite database - **DEVELOPER WRITES THESE**
 - [ ] Test case lifecycle (create → update → delete)
 - [ ] Test concurrent operations (async safety)
 - [ ] Test error handling (connection failures, constraint violations)
+- [ ] All tests pass locally before PR submission
 - [ ] All tests pass in CI/CD
+- [ ] Test code reviewed by test-engineer (TASK-002-TEST-REVIEW)
 
 ## Implementation Steps
 
@@ -281,21 +284,25 @@ This PR refactors case storage from in-memory to database-backed using SQLAlchem
 - Updated API routes to use repository factory
 
 **Testing:**
-- [x] All unit tests pass (12/12)
-- [x] All integration tests pass (4/4)
+- [x] All unit tests pass (12/12) - **DEVELOPER MUST WRITE**
+- [x] All integration tests pass (4/4) - **DEVELOPER MUST WRITE**
 - [x] Coverage: 91% for persistence layer
 - [x] CI/CD pipeline passes
 - [x] Manual testing: full case lifecycle verified
+- [x] Test-engineer reviewed tests (TASK-002-TEST-REVIEW)
 
 **Checklist:**
 - [ ] Repository implements full interface
 - [ ] Async/await used correctly
 - [ ] Transaction handling verified
-- [ ] Tests have 80%+ coverage
+- [ ] **Unit tests written by developer (80%+ coverage)**
+- [ ] **Integration tests written by developer**
 - [ ] Integration tests pass on SQLite
 - [ ] Error handling tested
 - [ ] Repository factory works
 - [ ] Environment variables documented
+- [ ] **Test-engineer approved test quality (TASK-002-TEST-REVIEW)**
+- [ ] Solutions architect approved implementation
 
 ## Risks & Mitigation
 
