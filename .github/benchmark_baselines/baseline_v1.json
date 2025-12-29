@@ -1,0 +1,90 @@
+{
+  "version": "1.0.0",
+  "created_at": "2025-12-29T00:00:00Z",
+  "description": "Initial performance baselines for FaultMaven - established before shim integration",
+  "environment": {
+    "python_version": "3.11",
+    "os": "ubuntu-latest",
+    "database": "sqlite-aiosqlite"
+  },
+  "baselines": {
+    "case_operations": {
+      "creation_latency_ms": {
+        "target_p95": 200,
+        "description": "p95 latency for single case creation"
+      },
+      "retrieval_latency_ms": {
+        "target_p95": 100,
+        "description": "p95 latency for single case retrieval"
+      },
+      "update_latency_ms": {
+        "target_p95": 150,
+        "description": "p95 latency for case update"
+      },
+      "list_latency_ms": {
+        "target_p95": 150,
+        "description": "p95 latency for listing 50 cases"
+      },
+      "search_latency_ms": {
+        "target_p95": 200,
+        "description": "p95 latency for text search"
+      },
+      "creation_throughput_per_sec": {
+        "target_min": 50,
+        "description": "Minimum throughput for batch case creation"
+      }
+    },
+    "session_operations": {
+      "creation_latency_ms": {
+        "target_p95": 50,
+        "description": "p95 latency for session creation"
+      },
+      "retrieval_latency_ms": {
+        "target_p95": 30,
+        "description": "p95 latency for session retrieval"
+      },
+      "update_latency_ms": {
+        "target_p95": 30,
+        "description": "p95 latency for updating last_accessed"
+      },
+      "delete_latency_ms": {
+        "target_p95": 30,
+        "description": "p95 latency for session deletion"
+      },
+      "cleanup_throughput_per_sec": {
+        "target_min": 500,
+        "description": "Minimum throughput for batch session cleanup"
+      }
+    },
+    "knowledge_search": {
+      "vector_search_latency_ms": {
+        "target_p95": 300,
+        "description": "p95 latency for vector similarity search (future)"
+      },
+      "embedding_latency_ms": {
+        "target_p95": 100,
+        "description": "p95 latency for embedding generation (future)"
+      },
+      "rag_pipeline_latency_ms": {
+        "target_p95": 500,
+        "description": "p95 latency for full RAG pipeline (future)"
+      }
+    },
+    "memory_usage": {
+      "baseline_mb": {
+        "target_max": 100,
+        "description": "Maximum RSS at startup"
+      },
+      "under_load_mb": {
+        "target_max": 512,
+        "description": "Maximum RSS with 10 concurrent cases"
+      }
+    }
+  },
+  "notes": [
+    "Baselines established before optional dependency integration",
+    "SQLite in-memory used for testing (production may vary)",
+    "Knowledge search baselines are placeholders for future implementation",
+    "Memory targets are soft limits - actual test process may have overhead"
+  ]
+}

@@ -1,0 +1,157 @@
+name: Performance Benchmarks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Run weekly on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      run_full_suite:
+        description: 'Run full benchmark suite including slow tests'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  benchmarks:
+    name: Run Performance Benchmarks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-test.txt
+
+      - name: Run benchmarks
+        run: |
+          pytest tests/benchmarks/ \
+            -m benchmark \
+            --tb=short \
+            -v \
+            --json-report \
+            --json-report-file=benchmark_results.json \
+            --no-cov \
+            2>&1 | tee benchmark_output.txt
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          SKIP_SERVICE_CHECKS: 'true'
+
+      - name: Parse benchmark results
+        if: always()
+        run: |
+          echo "## Performance Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | Status | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+
+          # Parse output for passed/failed tests
+          grep -E "PASSED|FAILED" benchmark_output.txt | while read line; do
+            if echo "$line" | grep -q "PASSED"; then
+              echo "| $line | :white_check_mark: | Passed |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| $line | :x: | Failed |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done || echo "| No benchmark results | :warning: | Check logs |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results
+          path: |
+            benchmark_results.json
+            benchmark_output.txt
+          retention-days: 90
+
+      - name: Comment on PR with results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            let summary = 'Performance benchmarks completed.\\n\\n';
+
+            try {
+              const output = fs.readFileSync('benchmark_output.txt', 'utf8');
+              const lines = output.split('\\n');
+
+              // Count passed/failed
+              const passed = lines.filter(l => l.includes('PASSED')).length;
+              const failed = lines.filter(l => l.includes('FAILED')).length;
+
+              summary += `**Results:** ${passed} passed, ${failed} failed\\n\\n`;
+
+              if (failed > 0) {
+                summary += '### Failed Benchmarks\\n';
+                lines.filter(l => l.includes('FAILED')).forEach(l => {
+                  summary += `- ${l}\\n`;
+                });
+              }
+
+              summary += '\\nSee artifacts for detailed results.';
+            } catch (error) {
+              summary += 'Unable to parse results. Check workflow logs.';
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+  memory-benchmarks:
+    name: Memory Usage Benchmarks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-test.txt
+
+      - name: Run memory benchmarks
+        run: |
+          pytest tests/benchmarks/test_memory_usage.py \
+            -m benchmark \
+            -v \
+            --tb=short \
+            --no-cov \
+            2>&1 | tee memory_benchmark_output.txt
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          SKIP_SERVICE_CHECKS: 'true'
+
+      - name: Upload memory benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: memory-benchmark-results
+          path: memory_benchmark_output.txt
+          retention-days: 90
