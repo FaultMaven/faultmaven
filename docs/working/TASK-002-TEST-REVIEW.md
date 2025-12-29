@@ -1,4 +1,4 @@
-# TASK-002-TEST-REVIEW: Test-Engineer Review of Case Repository Tests
+# TASK-002-TEST-REVIEW: Test-Engineer Review & Execution
 
 ## Task Metadata
 - **Phase**: Week 1, Day 2-3 (Foundation - Test Review)
@@ -10,12 +10,13 @@
 
 ## Objective
 
-Review the test implementation for TASK-002 (Case Repository Refactoring) to ensure:
-1. Test coverage meets 80% minimum requirement
-2. Test quality is high (edge cases, assertions, proper mocking)
-3. Tests follow best practices (isolation, clarity, maintainability)
-4. All tests pass locally and in CI/CD
-5. Missing test scenarios are identified and requested
+**Run tests, review test code quality, and verify coverage** for TASK-002 (Case Repository Refactoring):
+
+1. **RUN all tests** and verify they pass
+2. **RUN coverage analysis** and verify ≥80%
+3. **REVIEW test code quality** (edge cases, assertions, proper patterns)
+4. **IDENTIFY missing test scenarios**
+5. **SIGN OFF** when criteria met
 
 ## Context
 
@@ -252,57 +253,101 @@ See full review: docs/working/TASK-002-TEST-REVIEW-RESULTS.md
 
 ## Review Process
 
-### Step 1: Clone and Setup
+### Step 1: Checkout PR Branch
 ```bash
 cd /home/swhouse/product/faultmaven
 git fetch origin
-git checkout <pr-branch>
+git checkout pr-3  # or appropriate PR branch
 
-# Install dependencies if needed
+# Install dependencies
 pip install -e .
 pip install -r requirements-test.txt
 ```
 
-### Step 2: Run Tests Locally
+### Step 2: RUN TESTS (MANDATORY)
 ```bash
-# Run all tests
+# Run all tests and verify they pass
 pytest -v
 
-# Run with coverage
-pytest --cov=faultmaven/infrastructure/persistence \
+# Run unit tests only
+pytest tests/unit/infrastructure/persistence/ -v
+
+# Run integration tests only
+pytest tests/integration/test_case_repository_integration.py -v
+
+# Check test count
+pytest tests/unit/infrastructure/persistence/ --collect-only | grep "test session starts"
+pytest tests/integration/test_case_repository_integration.py --collect-only | grep "test session starts"
+```
+
+**Expected:** All tests PASS (no failures, no errors)
+
+### Step 3: RUN COVERAGE ANALYSIS (MANDATORY)
+```bash
+# Generate coverage report
+pytest tests/unit/infrastructure/persistence/ \
+       tests/integration/test_case_repository_integration.py \
+       --cov=faultmaven/infrastructure/persistence/database_case_repository \
+       --cov=faultmaven/infrastructure/persistence/database \
+       --cov=faultmaven/infrastructure/persistence/models \
+       --cov=faultmaven/infrastructure/persistence/repository_factory \
        --cov-report=term-missing \
        --cov-report=html
 
-# Open coverage report
-open htmlcov/index.html
+# Verify threshold
+pytest tests/unit/infrastructure/persistence/ \
+       tests/integration/test_case_repository_integration.py \
+       --cov=faultmaven/infrastructure/persistence \
+       --cov-fail-under=80
 ```
 
-### Step 3: Review Test Code
-- Read each test file
-- Check against review criteria above
-- Note issues and missing scenarios
-- Verify test quality patterns
+**Expected:** Coverage ≥80%
 
-### Step 4: Check CI/CD
+### Step 4: Open Coverage Report
 ```bash
-# Check CI/CD status
-gh pr checks <pr-number>
-
-# View CI/CD logs if needed
-gh run view <run-id> --log
+# View detailed coverage in browser
+open htmlcov/index.html  # macOS
+xdg-open htmlcov/index.html  # Linux
 ```
 
-### Step 5: Document Findings
+**Verify:** No critical code paths untested
+
+### Step 5: Review Test Code Quality
+- Read test files (see quality criteria below)
+- Check for anti-patterns
+- Note missing scenarios
+
+### Step 6: Document Findings
 - Create TASK-002-TEST-REVIEW-RESULTS.md
 - Document all findings
 - Provide specific line references
 - Give actionable recommendations
 
-### Step 6: Submit Review
-- Post PR comment with summary
-- Request changes if needed
-- Approve if tests meet all criteria
-- Notify solutions-architect of completion
+### Step 7: Submit Review
+Post to PR with test results:
+
+```markdown
+## Test-Engineer Review: TASK-002
+
+### Test Execution Results
+- ✅/❌ All tests pass: X passed, Y failed
+- ✅/❌ Coverage: X% (threshold: 80%)
+
+### Test Quality Assessment
+- Unit tests: X tests - Quality: Good/Fair/Poor
+- Integration tests: X tests - Quality: Good/Fair/Poor
+
+### Issues Found
+1. [issue]
+
+### Missing Tests
+1. [missing scenario]
+
+### Status
+✅ APPROVED / ⚠️ CHANGES REQUESTED
+
+See: docs/working/TASK-002-TEST-REVIEW-RESULTS.md
+```
 
 ---
 
