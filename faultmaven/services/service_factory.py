@@ -16,6 +16,7 @@ Usage:
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.services.case_service import APICaseService
+from faultmaven.services.investigation_session_service import APIInvestigationSessionService
 from faultmaven.infrastructure.persistence.repository_factory import (
     get_case_repository,
     get_investigation_session_repository,
@@ -107,15 +108,19 @@ class ServiceFactory:
             execution_repo=self.execution_repo,
         )
 
-    # Future service factory methods:
+    def create_investigation_session_service(self) -> APIInvestigationSessionService:
+        """Create API investigation session service with dependencies.
 
-    # def create_session_service(self) -> SessionService:
-    #     """Create investigation session service."""
-    #     return SessionService(
-    #         session_repo=self.session_repo,
-    #         case_repo=self.case_repo,
-    #         execution_repo=self.execution_repo,
-    #     )
+        Returns:
+            APIInvestigationSessionService instance with injected repositories
+        """
+        return APIInvestigationSessionService(
+            session_repo=self.session_repo,
+            execution_repo=self.execution_repo,
+            case_repo=self.case_repo,
+        )
+
+    # Future service factory methods:
 
     # def create_evidence_service(self) -> EvidenceService:
     #     """Create evidence service."""
