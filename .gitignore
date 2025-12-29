@@ -208,6 +208,11 @@ website/.npmrc
 
 # Cleanup and archived files
 recycle/
+archive/
+
+# Virtual environments (additional patterns)
+.venv-*/
+venv-*/
 
 # Temporary documentation patterns (added 2025-11-09)
 *_REPORT.md
@@ -215,3 +220,5 @@ recycle/
 *_STATUS.md
 TEST_COVERAGE*.md
 CLEANUP_*.md
+*_PLAN.md
+*_ROADMAP.md
