@@ -654,8 +654,21 @@ class AgentExecutionModel(Base):
     # Metadata (JSON)
     execution_metadata = Column("metadata", Text, default="{}")
 
+    # Optional: link execution to session (ON DELETE SET NULL)
+    session_id = Column(
+        String(64),
+        ForeignKey("investigation_sessions.session_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Relationships
     case = relationship("CaseModel", backref="agent_executions")
+    session = relationship(
+        "InvestigationSessionModel",
+        back_populates="agent_executions",
+        foreign_keys=[session_id],
+    )
     tool_calls_v2 = relationship(
         "AgentToolCallV2Model",
         back_populates="execution",
@@ -761,4 +774,121 @@ class AgentToolCallV2Model(Base):
             f"execution_id={self.execution_id}, "
             f"tool_name={self.tool_name}, "
             f"status={self.status})>"
+        )
+
+
+# ============================================================
+# Investigation Session Status Enum
+# ============================================================
+
+class InvestigationSessionStatusEnum(str, enum.Enum):
+    """Investigation session status."""
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    ABANDONED = "abandoned"
+
+
+# ============================================================
+# Investigation Session Model
+# ============================================================
+
+class InvestigationSessionModel(Base):
+    """Investigation session tracking for case investigations.
+
+    Tracks investigation sessions within cases, including temporal structure,
+    agent executions, token usage, and session state management.
+
+    This creates a four-level CASCADE delete chain:
+        Case → InvestigationSession → AgentExecution → AgentToolCall
+    """
+    __tablename__ = "investigation_sessions"
+
+    # Primary Key
+    session_id = Column(String(64), primary_key=True)
+
+    # Foreign Key to cases
+    case_id = Column(
+        String(17),
+        ForeignKey("cases.case_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Ownership
+    user_id = Column(String(255), nullable=False, index=True)
+    organization_id = Column(String(64), nullable=False, index=True)
+
+    # Session status
+    status = Column(String(32), nullable=False, default="active", index=True)
+
+    # Temporal tracking
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    last_activity_at = Column(DateTime(timezone=True), nullable=False)
+    total_duration_ms = Column(Integer, nullable=True)
+
+    # Investigation context
+    session_goal = Column(Text, nullable=True)
+    findings_summary = Column(Text, nullable=True)
+
+    # Resource tracking
+    total_token_usage = Column(Integer, nullable=False, default=0)
+    total_agent_executions = Column(Integer, nullable=False, default=0)
+    token_budget_limit = Column(Integer, nullable=True)
+
+    # Timestamps
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    # Metadata (JSON)
+    session_metadata = Column("metadata", Text, default="{}")
+
+    # Relationships
+    case = relationship("CaseModel", backref="investigation_sessions")
+    agent_executions = relationship(
+        "AgentExecutionModel",
+        back_populates="session",
+        foreign_keys="AgentExecutionModel.session_id",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'paused', 'completed', 'abandoned')",
+            name="investigation_sessions_status_check"
+        ),
+        CheckConstraint(
+            "total_duration_ms IS NULL OR total_duration_ms >= 0",
+            name="investigation_sessions_duration_check"
+        ),
+        CheckConstraint(
+            "total_token_usage >= 0",
+            name="investigation_sessions_token_usage_check"
+        ),
+        CheckConstraint(
+            "total_agent_executions >= 0",
+            name="investigation_sessions_executions_check"
+        ),
+        CheckConstraint(
+            "token_budget_limit IS NULL OR token_budget_limit >= 0",
+            name="investigation_sessions_budget_check"
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<InvestigationSessionModel(session_id={self.session_id}, "
+            f"case_id={self.case_id}, "
+            f"status={self.status}, "
+            f"total_agent_executions={self.total_agent_executions})>"
         )
