@@ -23,6 +23,9 @@ from faultmaven.infrastructure.persistence.agent_execution_repository import (
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
 )
+from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+    DatabaseKnowledgeItemRepository,
+)
 
 
 @pytest.fixture(scope="session")
@@ -105,6 +108,22 @@ async def investigation_session_repository(benchmark_session) -> DatabaseInvesti
     return DatabaseInvestigationSessionRepository(benchmark_session)
 
 
+@pytest.fixture
+async def knowledge_item_repository(benchmark_session) -> DatabaseKnowledgeItemRepository:
+    """Create knowledge item repository for benchmarks."""
+    return DatabaseKnowledgeItemRepository(benchmark_session)
+
+
 def generate_case_id() -> str:
     """Generate a valid case ID matching the pattern ^case_[a-f0-9]{12}$."""
     return f"case_{uuid4().hex[:12]}"
+
+
+def generate_item_id() -> str:
+    """Generate a valid knowledge item ID."""
+    return f"ki_{uuid4().hex[:12]}"
+
+
+def generate_org_id() -> str:
+    """Generate a valid organization ID."""
+    return f"org_{uuid4().hex[:12]}"

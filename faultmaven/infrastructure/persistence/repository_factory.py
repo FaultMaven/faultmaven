@@ -55,6 +55,11 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
 )
+from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+    KnowledgeItemRepository,
+    DatabaseKnowledgeItemRepository,
+    InMemoryKnowledgeItemRepository,
+)
 from faultmaven.infrastructure.persistence.database import get_db_session
 
 logger = logging.getLogger(__name__)
@@ -70,6 +75,7 @@ _inmemory_session_repository: Optional[InMemorySessionRepository] = None
 _inmemory_evidence_artifact_repository: Optional[InMemoryEvidenceArtifactRepository] = None
 _inmemory_agent_execution_repository: Optional[InMemoryAgentExecutionRepository] = None
 _inmemory_investigation_session_repository: Optional[InMemoryInvestigationSessionRepository] = None
+_inmemory_knowledge_item_repository: Optional[InMemoryKnowledgeItemRepository] = None
 
 
 def get_storage_type() -> str:
@@ -897,4 +903,160 @@ async def get_investigation_session_repository_dependency() -> AsyncGenerator[In
         InvestigationSessionRepository instance
     """
     async with get_investigation_session_repository_async() as repo:
+        yield repo
+
+
+# ============================================================
+# Knowledge Item Repository Factory
+# ============================================================
+
+
+def get_knowledge_item_storage_type() -> str:
+    """
+    Get configured knowledge item storage type from environment.
+
+    Environment variable: KNOWLEDGE_ITEM_STORAGE_TYPE
+    Default: Falls back to CASE_STORAGE_TYPE, then "database"
+
+    Returns:
+        Storage type string ("inmemory" or "database")
+    """
+    return os.getenv("KNOWLEDGE_ITEM_STORAGE_TYPE", get_storage_type())
+
+
+def get_knowledge_item_repository(
+    storage_type: Optional[str] = None,
+    session: Optional[AsyncSession] = None,
+) -> KnowledgeItemRepository:
+    """
+    Get a knowledge item repository instance based on configuration.
+
+    Args:
+        storage_type: Optional override for storage type.
+                     If None, uses KNOWLEDGE_ITEM_STORAGE_TYPE env var.
+        session: Optional database session for database storage.
+                Required for database storage type.
+
+    Returns:
+        KnowledgeItemRepository implementation
+
+    Raises:
+        ValueError: If storage type is unknown
+        RuntimeError: If database session is required but not provided
+    """
+    global _inmemory_knowledge_item_repository
+
+    effective_type = storage_type or get_knowledge_item_storage_type()
+    logger.debug(f"Creating knowledge item repository with storage type: {effective_type}")
+
+    if effective_type == STORAGE_TYPE_INMEMORY:
+        # Return singleton in-memory repository
+        if _inmemory_knowledge_item_repository is None:
+            _inmemory_knowledge_item_repository = InMemoryKnowledgeItemRepository()
+            logger.info("Created InMemoryKnowledgeItemRepository (singleton)")
+        return _inmemory_knowledge_item_repository
+
+    elif effective_type == STORAGE_TYPE_DATABASE:
+        if session is None:
+            raise RuntimeError(
+                "Database session is required for database storage type. "
+                "Use get_knowledge_item_repository_async() or provide a session."
+            )
+        logger.debug("Created DatabaseKnowledgeItemRepository")
+        return DatabaseKnowledgeItemRepository(session)
+
+    else:
+        raise ValueError(f"Unknown storage type: {effective_type}")
+
+
+@asynccontextmanager
+async def get_knowledge_item_repository_async(
+    storage_type: Optional[str] = None,
+) -> AsyncGenerator[KnowledgeItemRepository, None]:
+    """
+    Get a knowledge item repository with automatic session management.
+
+    This is the recommended way to obtain a repository in async contexts.
+    It automatically handles database session lifecycle.
+
+    Args:
+        storage_type: Optional override for storage type.
+                     If None, uses KNOWLEDGE_ITEM_STORAGE_TYPE env var.
+
+    Yields:
+        KnowledgeItemRepository implementation
+
+    Raises:
+        ValueError: If storage type is unknown
+
+    Example:
+        async with get_knowledge_item_repository_async() as repo:
+            item = await repo.get_by_id("ki_abc123def456")
+    """
+    global _inmemory_knowledge_item_repository
+
+    effective_type = storage_type or get_knowledge_item_storage_type()
+
+    if effective_type == STORAGE_TYPE_INMEMORY:
+        # Return singleton in-memory repository
+        if _inmemory_knowledge_item_repository is None:
+            _inmemory_knowledge_item_repository = InMemoryKnowledgeItemRepository()
+            logger.info("Created InMemoryKnowledgeItemRepository (singleton)")
+        yield _inmemory_knowledge_item_repository
+
+    elif effective_type == STORAGE_TYPE_DATABASE:
+        # Create database repository with session
+        async with get_db_session() as db_session:
+            repo = DatabaseKnowledgeItemRepository(db_session)
+            yield repo
+
+    else:
+        raise ValueError(f"Unknown storage type: {effective_type}")
+
+
+def reset_inmemory_knowledge_item_repository() -> None:
+    """
+    Reset the singleton in-memory knowledge item repository.
+
+    Useful for testing to ensure clean state between tests.
+    """
+    global _inmemory_knowledge_item_repository
+    if _inmemory_knowledge_item_repository is not None:
+        _inmemory_knowledge_item_repository.clear()
+        _inmemory_knowledge_item_repository = None
+        logger.debug("Reset in-memory knowledge item repository singleton")
+
+
+def get_inmemory_knowledge_item_repository() -> InMemoryKnowledgeItemRepository:
+    """
+    Get or create the singleton in-memory knowledge item repository.
+
+    Useful when you specifically need in-memory storage.
+
+    Returns:
+        InMemoryKnowledgeItemRepository singleton instance
+    """
+    global _inmemory_knowledge_item_repository
+    if _inmemory_knowledge_item_repository is None:
+        _inmemory_knowledge_item_repository = InMemoryKnowledgeItemRepository()
+    return _inmemory_knowledge_item_repository
+
+
+async def get_knowledge_item_repository_dependency() -> AsyncGenerator[KnowledgeItemRepository, None]:
+    """
+    FastAPI dependency for obtaining a knowledge item repository.
+
+    Use this in FastAPI route dependencies:
+
+        @app.get("/knowledge/{item_id}")
+        async def get_knowledge_item(
+            item_id: str,
+            repo: KnowledgeItemRepository = Depends(get_knowledge_item_repository_dependency)
+        ):
+            return await repo.get_by_id(item_id)
+
+    Yields:
+        KnowledgeItemRepository instance
+    """
+    async with get_knowledge_item_repository_async() as repo:
         yield repo
