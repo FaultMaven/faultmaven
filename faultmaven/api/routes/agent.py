@@ -34,6 +34,7 @@ from faultmaven.exceptions import (
     LLMException,
     NotFoundError,
     ServiceError,
+    ValidationException,
 )
 from faultmaven.models.agent_execution import AgentType
 from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
@@ -134,12 +135,15 @@ async def execute_agent(
         422: Validation error (invalid agent_type, etc.)
         500: LLM or internal error
     """
-    # Parse agent type
+    # Parse and validate agent type
     try:
         agent_type = AgentType(request.agent_type)
     except ValueError:
-        # Default to investigator if invalid type provided
-        agent_type = AgentType.INVESTIGATOR
+        valid_types = [t.value for t in AgentType]
+        raise ValidationException(
+            f"Invalid agent_type: '{request.agent_type}'. "
+            f"Valid types are: {valid_types}"
+        )
 
     if request.stream:
         # Streaming mode: Return SSE
@@ -262,6 +266,8 @@ async def _execute_non_streaming(
     """Execute agent in non-streaming mode.
 
     Collects all events and returns complete response when done.
+    Exceptions from the service layer propagate naturally to FastAPI
+    exception handlers.
 
     Args:
         agent_service: Agent orchestration service
@@ -280,9 +286,8 @@ async def _execute_non_streaming(
         ServiceError: LLM or internal error
     """
     execution_id: Optional[str] = None
-    response_parts: list = []
-    total_tokens: int = 0
 
+    # Execute agent - exceptions propagate to FastAPI exception handlers
     async for event in agent_service.execute_agent(
         session_id=session_id,
         organization_id=organization_id,
@@ -293,45 +298,40 @@ async def _execute_non_streaming(
         if event.event_type == ExecutionEventType.STARTED:
             if event.metadata:
                 execution_id = event.metadata.get("execution_id") or event.execution_id
-
-        elif event.event_type == ExecutionEventType.RESPONSE:
-            response_parts.append(event.content)
-
-        elif event.event_type == ExecutionEventType.COMPLETED:
-            if event.metadata:
-                total_tokens = event.metadata.get("total_tokens", 0)
-            if not execution_id:
+            elif event.execution_id:
                 execution_id = event.execution_id
 
-    # Get the execution record from repository
-    if execution_id:
-        execution = await agent_service.get_execution(execution_id, organization_id)
-        if execution:
-            return AgentExecutionResponse.from_domain(execution)
+        elif event.event_type == ExecutionEventType.COMPLETED:
+            if not execution_id and event.execution_id:
+                execution_id = event.execution_id
 
-    # Fallback if we couldn't get the execution record
-    from datetime import datetime, timezone
-    return AgentExecutionResponse(
-        execution_id=execution_id or "unknown",
-        status="completed",
-        agent_response="".join(response_parts),
-        tokens_used=total_tokens,
-        started_at=datetime.now(timezone.utc),
-        completed_at=datetime.now(timezone.utc),
-        tool_calls=[],
-    )
+    # Execution must have completed with an ID
+    if not execution_id:
+        raise ServiceError("Execution did not complete successfully - no execution ID received")
+
+    # Get the execution record from repository
+    execution = await agent_service.get_execution(execution_id, organization_id)
+    if not execution:
+        raise NotFoundError("Execution", execution_id)
+
+    return AgentExecutionResponse.from_domain(execution)
 
 
 @router.get(
     "/executions",
     response_model=list,
     status_code=status.HTTP_200_OK,
-    summary="List executions for session",
-    description="List all agent executions for a session.",
+    summary="List executions for case",
+    description="""List all agent executions for the case.
+
+**Note**: Executions are stored at the case level, not the session level.
+The session_id in the path is for URL consistency with the execute endpoint,
+but filtering is done by case_id. All executions for the case are returned
+regardless of which session initiated them.""",
 )
 async def list_executions(
     case_id: str = Path(..., description="Case ID"),
-    session_id: str = Path(..., description="Investigation session ID"),
+    session_id: str = Path(..., description="Session ID (for URL consistency, not used for filtering)"),
     organization_id: str = Header(..., alias="X-Organization-ID"),
     limit: int = 50,
     offset: int = 0,
@@ -339,27 +339,32 @@ async def list_executions(
 ) -> list:
     """List all agent executions for a case.
 
-    Note: This endpoint lists executions at the case level since
-    executions are associated with cases, not individual sessions.
+    **Design Note**: Executions are associated with cases, not individual sessions.
+    The session_id path parameter is included for URL consistency with the
+    /execute endpoint, but executions are filtered by case_id only.
+    This allows viewing all executions across multiple investigation sessions.
 
     Headers:
         X-Organization-ID: Organization identifier (required)
 
     Args:
-        case_id: Case ID
-        session_id: Session ID (for path consistency)
+        case_id: Case ID to list executions for
+        session_id: Session ID (included for URL consistency, not used for filtering)
         organization_id: Organization owning the case
         limit: Maximum number of results (default 50)
         offset: Pagination offset (default 0)
         agent_service: Injected agent orchestration service
 
     Returns:
-        List of AgentExecutionResponse
+        List of AgentExecutionResponse for all executions in the case
 
     Raises:
         404: Case not found
         403: Not authorized
     """
+    # Note: session_id is not used for filtering - executions are per-case
+    _ = session_id  # Explicitly mark as intentionally unused
+
     executions, total = await agent_service.list_executions(
         case_id=case_id,
         organization_id=organization_id,
@@ -379,7 +384,7 @@ async def list_executions(
 )
 async def get_execution(
     case_id: str = Path(..., description="Case ID"),
-    session_id: str = Path(..., description="Investigation session ID"),
+    session_id: str = Path(..., description="Session ID (for URL consistency)"),
     execution_id: str = Path(..., description="Execution ID"),
     organization_id: str = Header(..., alias="X-Organization-ID"),
     agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
@@ -390,9 +395,9 @@ async def get_execution(
         X-Organization-ID: Organization identifier (required)
 
     Args:
-        case_id: Case ID
-        session_id: Session ID (for path consistency)
-        execution_id: Execution ID
+        case_id: Case ID the execution belongs to
+        session_id: Session ID (for URL consistency, not used for lookup)
+        execution_id: Execution ID to retrieve
         organization_id: Organization owning the case
         agent_service: Injected agent orchestration service
 
@@ -400,9 +405,11 @@ async def get_execution(
         AgentExecutionResponse with execution details
 
     Raises:
-        404: Execution not found
+        404: Execution not found or doesn't belong to case
         403: Not authorized
     """
+    _ = session_id  # Explicitly mark as intentionally unused
+
     execution = await agent_service.get_execution(execution_id, organization_id)
 
     if not execution:
@@ -423,7 +430,7 @@ async def get_execution(
 )
 async def cancel_execution(
     case_id: str = Path(..., description="Case ID"),
-    session_id: str = Path(..., description="Investigation session ID"),
+    session_id: str = Path(..., description="Session ID (for URL consistency)"),
     execution_id: str = Path(..., description="Execution ID"),
     organization_id: str = Header(..., alias="X-Organization-ID"),
     agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
@@ -434,20 +441,23 @@ async def cancel_execution(
         X-Organization-ID: Organization identifier (required)
 
     Args:
-        case_id: Case ID
-        session_id: Session ID (for path consistency)
-        execution_id: Execution ID
+        case_id: Case ID (for URL consistency)
+        session_id: Session ID (for URL consistency, not used)
+        execution_id: Execution ID to cancel
         organization_id: Organization owning the case
         agent_service: Injected agent orchestration service
 
     Returns:
-        Status message
+        Status message with cancelled execution ID
 
     Raises:
         404: Execution not found
         403: Not authorized
-        409: Execution not running
+        409: Execution not running (cannot be cancelled)
     """
+    _ = session_id  # Explicitly mark as intentionally unused
+    _ = case_id  # Case ID verification done by cancel_execution
+
     cancelled = await agent_service.cancel_execution(execution_id, organization_id)
 
     if not cancelled:

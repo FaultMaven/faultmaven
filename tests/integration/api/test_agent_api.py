@@ -286,21 +286,10 @@ class TestExecuteAgentNonStreaming:
         call_kwargs = mock_agent_service.execute_agent.call_args.kwargs
         assert call_kwargs["agent_type"] == AgentType.INVESTIGATOR
 
-    def test_execute_agent_invalid_agent_type_defaults(
+    def test_execute_agent_invalid_agent_type_returns_400(
         self, client, mock_agent_service, mock_execution, headers
     ):
-        """Test execution with invalid agent type defaults to investigator."""
-
-        async def mock_execute(*args, **kwargs):
-            yield ExecutionEvent.completed(
-                execution_id="exec_test123",
-                total_tokens=300,
-                duration_ms=1000,
-            )
-
-        mock_agent_service.execute_agent.return_value = mock_execute()
-        mock_agent_service.get_execution.return_value = mock_execution
-
+        """Test execution with invalid agent type returns 400 ValidationError."""
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
             json={
@@ -311,7 +300,10 @@ class TestExecuteAgentNonStreaming:
             headers=headers,
         )
 
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        # Verify error message mentions valid agent types
+        data = response.json()
+        assert "invalid_type" in str(data).lower() or "agent_type" in str(data).lower()
 
 
 # ============================================================
