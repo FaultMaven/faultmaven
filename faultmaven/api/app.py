@@ -31,7 +31,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from faultmaven.api.exception_handlers import get_exception_handlers
-from faultmaven.api.routes import cases, sessions, evidence, agent, auth, users
+from faultmaven.api.routes import cases, sessions, evidence, agent, auth, admin, users
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -98,6 +98,10 @@ def create_app() -> FastAPI:
                 "description": "Execute AI agents for troubleshooting investigations with streaming support",
             },
             {
+                "name": "Admin - User Management",
+                "description": "Admin-only user management operations (TASK-019)",
+            },
+            {
                 "name": "Health",
                 "description": "Health check and status endpoints",
             },
@@ -122,6 +126,7 @@ def create_app() -> FastAPI:
     # Register routers
     app.include_router(auth.router)  # Auth endpoints first (login, refresh, etc.)
     app.include_router(users.router)  # User management (TASK-018)
+    app.include_router(admin.router)  # Admin user management (TASK-019)
     app.include_router(cases.router)
     app.include_router(sessions.router)
     app.include_router(evidence.router)
