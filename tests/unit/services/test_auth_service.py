@@ -376,11 +376,19 @@ class TestTokenVerification:
 
         assert exc_info.value.error_code == "DECODE_ERROR"
 
-    def test_verify_raises_on_wrong_issuer(self, auth_service):
-        """verify_token raises AuthenticationError on wrong issuer."""
-        # We can't easily test this without manipulating the internal keys
-        # Skip this test for now - would need more complex mocking
-        pass
+    def test_verify_raises_on_wrong_token_type_refresh_as_access(self, auth_service, sample_user_data):
+        """verify_token raises AuthenticationError when refresh token used as access."""
+        # Generate refresh token
+        token = auth_service.generate_refresh_token(
+            user_id=sample_user_data["user_id"],
+            organization_id=sample_user_data["organization_id"],
+        )
+
+        # Try to verify as access token
+        with pytest.raises(AuthenticationError) as exc_info:
+            auth_service.verify_token(token, token_type="access")
+
+        assert exc_info.value.error_code == "INVALID_TOKEN_TYPE"
 
     def test_verify_raises_on_wrong_token_type(self, auth_service, sample_user_data):
         """verify_token raises AuthenticationError on wrong token type."""
@@ -847,3 +855,344 @@ class TestEdgeCases:
 
         claims = auth_service.verify_token(token, token_type="access")
         assert set(claims["roles"]) == {"admin", "member", "viewer"}
+
+
+# ============================================================
+# Key Loading Tests
+# ============================================================
+
+
+class TestKeyLoading:
+    """Tests for _load_keys() functionality."""
+
+    def test_load_keys_from_environment_variables(self, mock_settings):
+        """Keys are loaded from environment variables (SecretStr)."""
+        # Generate a test key pair
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend(),
+        )
+
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        public_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8")
+
+        # Configure mock settings to return keys from env
+        mock_settings.security.jwt_private_key = MagicMock()
+        mock_settings.security.jwt_private_key.get_secret_value.return_value = private_pem
+        mock_settings.security.jwt_public_key = public_pem
+
+        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+            service = AuthService()
+
+            # Verify keys were loaded
+            assert service._private_key == private_pem
+            assert service._public_key == public_pem
+
+    def test_load_keys_from_file_paths(self, mock_settings, tmp_path):
+        """Keys are loaded from file paths."""
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        # Generate a test key pair
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend(),
+        )
+
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        public_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8")
+
+        # Write keys to temp files
+        private_key_path = tmp_path / "private.pem"
+        public_key_path = tmp_path / "public.pem"
+        private_key_path.write_text(private_pem)
+        public_key_path.write_text(public_pem)
+
+        # Configure mock settings to use file paths
+        mock_settings.security.jwt_private_key = None
+        mock_settings.security.jwt_public_key = None
+        mock_settings.security.jwt_private_key_path = str(private_key_path)
+        mock_settings.security.jwt_public_key_path = str(public_key_path)
+
+        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+            service = AuthService()
+
+            # Verify keys were loaded from files
+            assert service._private_key == private_pem
+            assert service._public_key == public_pem
+
+    def test_load_keys_generates_dev_keys_when_not_configured(self, mock_settings, caplog):
+        """Development RSA keys are generated when no keys are configured."""
+        import logging
+
+        # No keys configured
+        mock_settings.security.jwt_private_key = None
+        mock_settings.security.jwt_public_key = None
+        mock_settings.security.jwt_private_key_path = None
+        mock_settings.security.jwt_public_key_path = None
+
+        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+            with caplog.at_level(logging.WARNING):
+                service = AuthService()
+
+            # Verify dev keys were generated
+            assert service._private_key is not None
+            assert service._public_key is not None
+            assert "-----BEGIN PRIVATE KEY-----" in service._private_key
+            assert "-----BEGIN PUBLIC KEY-----" in service._public_key
+            assert "Generated development RSA keys" in caplog.text
+
+    def test_load_keys_warns_on_missing_key_file(self, mock_settings, caplog, tmp_path):
+        """Warning is logged when key file does not exist."""
+        import logging
+
+        # Point to non-existent file
+        mock_settings.security.jwt_private_key = None
+        mock_settings.security.jwt_public_key = None
+        mock_settings.security.jwt_private_key_path = "/nonexistent/private.pem"
+        mock_settings.security.jwt_public_key_path = "/nonexistent/public.pem"
+
+        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+            with caplog.at_level(logging.WARNING):
+                service = AuthService()
+
+            # Warnings should be logged for missing files
+            assert "Private key file not found" in caplog.text
+            assert "Public key file not found" in caplog.text
+            # Dev keys should still be generated as fallback
+            assert service._private_key is not None
+
+    def test_generated_keys_are_valid_rsa_2048(self, mock_settings):
+        """Generated development keys are valid 2048-bit RSA keys."""
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
+
+        # No keys configured - will generate dev keys
+        mock_settings.security.jwt_private_key = None
+        mock_settings.security.jwt_public_key = None
+        mock_settings.security.jwt_private_key_path = None
+        mock_settings.security.jwt_public_key_path = None
+
+        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+            service = AuthService()
+
+            # Load and validate private key
+            private_key = load_pem_private_key(
+                service._private_key.encode(),
+                password=None,
+                backend=default_backend(),
+            )
+            assert private_key.key_size == 2048
+
+            # Load and validate public key
+            public_key = load_pem_public_key(
+                service._public_key.encode(),
+                backend=default_backend(),
+            )
+            assert public_key.key_size == 2048
+
+    def test_provided_keys_override_settings(self, mock_settings):
+        """Keys provided to constructor override settings-loaded keys."""
+        # Generate test keys
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend(),
+        )
+
+        provided_private = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        provided_public = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8")
+
+        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+            service = AuthService(
+                private_key=provided_private,
+                public_key=provided_public,
+            )
+
+            # Verify provided keys are used
+            assert service._private_key == provided_private
+            assert service._public_key == provided_public
+
+    def test_tokens_can_be_generated_and_verified_with_loaded_keys(self, mock_settings):
+        """Full token roundtrip works with properly loaded keys."""
+        # No keys configured - will generate dev keys
+        mock_settings.security.jwt_private_key = None
+        mock_settings.security.jwt_public_key = None
+        mock_settings.security.jwt_private_key_path = None
+        mock_settings.security.jwt_public_key_path = None
+
+        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+            service = AuthService()
+
+            # Generate a token
+            token = service.generate_access_token(
+                user_id="user-123",
+                organization_id="org-456",
+                email="test@example.com",
+                roles=["admin"],
+            )
+
+            # Verify the token
+            claims = service.verify_token(token, token_type="access")
+
+            assert claims["sub"] == "user-123"
+            assert claims["org_id"] == "org-456"
+            assert claims["email"] == "test@example.com"
+
+
+# ============================================================
+# Token Verification Edge Cases
+# ============================================================
+
+
+class TestTokenVerificationEdgeCases:
+    """Additional token verification edge case tests."""
+
+    def test_verify_raises_on_wrong_issuer(self, mock_settings):
+        """verify_token raises AuthenticationError on wrong issuer."""
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        # Generate test keys
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend(),
+        )
+
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        public_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8")
+
+        # Create token with wrong issuer
+        now = datetime.now(timezone.utc)
+        wrong_issuer_claims = {
+            "sub": "user-123",
+            "org_id": "org-456",
+            "email": "test@example.com",
+            "roles": ["admin"],
+            "permissions": [],
+            "iss": "wrong-issuer",  # Wrong issuer
+            "aud": "faultmaven-app",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=15)).timestamp()),
+            "jti": str(uuid.uuid4()),
+            "token_type": "access",
+        }
+
+        # Encode with the test private key
+        token_with_wrong_issuer = jwt.encode(
+            wrong_issuer_claims,
+            private_pem,
+            algorithm="RS256",
+        )
+
+        # Configure service with test keys
+        mock_settings.security.jwt_private_key = None
+        mock_settings.security.jwt_public_key = public_pem
+
+        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+            service = AuthService(private_key=private_pem, public_key=public_pem)
+
+            with pytest.raises(AuthenticationError) as exc_info:
+                service.verify_token(token_with_wrong_issuer, token_type="access")
+
+            assert exc_info.value.error_code == "INVALID_ISSUER"
+
+    def test_verify_raises_on_wrong_audience(self, mock_settings):
+        """verify_token raises AuthenticationError on wrong audience."""
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        # Generate test keys
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend(),
+        )
+
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        public_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8")
+
+        # Create token with wrong audience
+        now = datetime.now(timezone.utc)
+        wrong_audience_claims = {
+            "sub": "user-123",
+            "org_id": "org-456",
+            "email": "test@example.com",
+            "roles": ["admin"],
+            "permissions": [],
+            "iss": "faultmaven-api",
+            "aud": "wrong-audience",  # Wrong audience
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=15)).timestamp()),
+            "jti": str(uuid.uuid4()),
+            "token_type": "access",
+        }
+
+        # Encode with the test private key
+        token_with_wrong_audience = jwt.encode(
+            wrong_audience_claims,
+            private_pem,
+            algorithm="RS256",
+        )
+
+        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+            service = AuthService(private_key=private_pem, public_key=public_pem)
+
+            with pytest.raises(AuthenticationError) as exc_info:
+                service.verify_token(token_with_wrong_audience, token_type="access")
+
+            assert exc_info.value.error_code == "INVALID_AUDIENCE"
