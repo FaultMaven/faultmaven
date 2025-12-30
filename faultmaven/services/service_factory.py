@@ -196,6 +196,33 @@ class ServiceFactory:
             # LLM client will be created lazily by the service
         )
 
+    def create_user_service(self) -> "UserService":
+        """Create user management service.
+
+        Returns:
+            UserService instance with injected dependencies
+
+        Note:
+            UserService uses InMemoryUserRepository for development.
+            In production, this should use PostgreSQLUserRepository.
+        """
+        from faultmaven.infrastructure.persistence.user_repository import (
+            InMemoryUserRepository,
+            PostgreSQLUserRepository,
+        )
+        from faultmaven.services.user_service import UserService
+        from faultmaven.api.middleware.auth import get_auth_service
+
+        # Use PostgreSQL for production, InMemory for development
+        # For now, default to InMemory
+        user_repo = InMemoryUserRepository()
+        auth_service = get_auth_service()
+
+        return UserService(
+            user_repo=user_repo,
+            auth_service=auth_service,
+        )
+
     # Future service factory methods:
 
     # def create_knowledge_service(self) -> KnowledgeService:

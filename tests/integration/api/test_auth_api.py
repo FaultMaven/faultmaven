@@ -1,12 +1,16 @@
-"""Integration tests for Authentication API endpoints (TASK-017)
+"""Integration tests for Authentication API endpoints (TASK-017, TASK-018)
 
-Tests POST /api/v1/auth/login, /refresh, /logout, /verify endpoints.
+Tests POST /api/v1/auth/login, /refresh, /logout, /verify,
+/register, /password/reset-request, /password/reset, /password/change endpoints.
 
 Test Categories:
 1. Login Tests - Credential validation and token generation
 2. Refresh Tests - Token exchange and rotation
 3. Logout Tests - Token revocation
 4. Verify Tests - Token introspection
+5. Registration Tests - User account creation (TASK-018)
+6. Password Reset Tests - Password reset flow (TASK-018)
+7. Password Change Tests - Authenticated password change (TASK-018)
 
 Coverage Target: 90%+
 """
@@ -579,3 +583,368 @@ class TestEndToEndAuthFlow:
         data = verify_response.json()
         assert data["valid"] is True
         assert data["organization_id"] == "org-dev-001"
+
+
+# ============================================================
+# Registration Endpoint Tests (TASK-018)
+# ============================================================
+
+
+class TestRegisterEndpoint:
+    """Tests for POST /api/v1/auth/register."""
+
+    def test_register_creates_user(self, client):
+        """201 Created returns user details for valid registration."""
+        import uuid
+
+        unique_email = f"test_{uuid.uuid4().hex[:8]}@example.com"
+        response = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": unique_email,
+                "password": "SecureP@ss123",
+                "full_name": "Test User",
+            },
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+
+        assert "user_id" in data
+        assert data["email"] == unique_email
+        assert data["full_name"] == "Test User"
+        assert data["is_active"] is True
+        assert data["is_verified"] is False
+
+    def test_register_allows_login(self, client):
+        """Registered user can login with credentials."""
+        import uuid
+
+        unique_email = f"login_{uuid.uuid4().hex[:8]}@example.com"
+        password = "SecureP@ss123"
+
+        # Register
+        register_response = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": unique_email,
+                "password": password,
+                "full_name": "Login Test User",
+            },
+        )
+        assert register_response.status_code == 201
+
+        # Login
+        login_response = client.post(
+            "/api/v1/auth/login",
+            json={
+                "email": unique_email,
+                "password": password,
+            },
+        )
+
+        assert login_response.status_code == 200
+        assert "access_token" in login_response.json()
+
+    def test_register_rejects_duplicate_email(self, client):
+        """409 Conflict for duplicate email."""
+        import uuid
+
+        unique_email = f"dup_{uuid.uuid4().hex[:8]}@example.com"
+
+        # First registration
+        client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": unique_email,
+                "password": "SecureP@ss123",
+                "full_name": "First User",
+            },
+        )
+
+        # Second registration with same email
+        response = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": unique_email,
+                "password": "OtherP@ss456",
+                "full_name": "Second User",
+            },
+        )
+
+        assert response.status_code == 409
+
+    def test_register_rejects_weak_password(self, client):
+        """422 Validation error for weak password."""
+        import uuid
+
+        response = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": f"weak_{uuid.uuid4().hex[:8]}@example.com",
+                "password": "weak",
+                "full_name": "Weak Password User",
+            },
+        )
+
+        assert response.status_code == 422
+
+    def test_register_rejects_invalid_email(self, client):
+        """422 Validation error for invalid email."""
+        response = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": "not-an-email",
+                "password": "SecureP@ss123",
+                "full_name": "Invalid Email User",
+            },
+        )
+
+        assert response.status_code == 422
+
+    def test_register_password_requirements(self, client):
+        """Password must meet all requirements."""
+        import uuid
+
+        base_email = f"req_{uuid.uuid4().hex[:8]}"
+
+        # Too short
+        response = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": f"{base_email}@example.com",
+                "password": "Sh0rt!",
+                "full_name": "Test",
+            },
+        )
+        assert response.status_code == 422
+
+        # No uppercase
+        response = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": f"{base_email}2@example.com",
+                "password": "noupperc@se1",
+                "full_name": "Test",
+            },
+        )
+        assert response.status_code == 422
+
+        # No digit
+        response = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": f"{base_email}3@example.com",
+                "password": "NoDigit@Here",
+                "full_name": "Test",
+            },
+        )
+        assert response.status_code == 422
+
+
+# ============================================================
+# Password Reset Request Tests (TASK-018)
+# ============================================================
+
+
+class TestPasswordResetRequestEndpoint:
+    """Tests for POST /api/v1/auth/password/reset-request."""
+
+    def test_reset_request_returns_204(self, client):
+        """204 No Content for valid email."""
+        import uuid
+
+        # Register user first
+        unique_email = f"reset_{uuid.uuid4().hex[:8]}@example.com"
+        client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": unique_email,
+                "password": "SecureP@ss123",
+                "full_name": "Reset User",
+            },
+        )
+
+        # Request reset
+        response = client.post(
+            "/api/v1/auth/password/reset-request",
+            json={"email": unique_email},
+        )
+
+        assert response.status_code == 204
+
+    def test_reset_request_returns_204_for_nonexistent_email(self, client):
+        """204 No Content even for non-existent email (enumeration prevention)."""
+        response = client.post(
+            "/api/v1/auth/password/reset-request",
+            json={"email": "nonexistent@example.com"},
+        )
+
+        assert response.status_code == 204
+
+
+# ============================================================
+# Password Change Tests (TASK-018)
+# ============================================================
+
+
+class TestPasswordChangeEndpoint:
+    """Tests for POST /api/v1/auth/password/change."""
+
+    def test_password_change_success(self, client):
+        """200 OK for successful password change."""
+        import uuid
+
+        unique_email = f"change_{uuid.uuid4().hex[:8]}@example.com"
+        old_password = "OldP@ssw0rd!"
+        new_password = "NewP@ssw0rd!"
+
+        # Register
+        client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": unique_email,
+                "password": old_password,
+                "full_name": "Change User",
+            },
+        )
+
+        # Login
+        login_response = client.post(
+            "/api/v1/auth/login",
+            json={"email": unique_email, "password": old_password},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Change password
+        response = client.post(
+            "/api/v1/auth/password/change",
+            json={
+                "current_password": old_password,
+                "new_password": new_password,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+
+    def test_password_change_allows_new_login(self, client):
+        """After password change, new password works for login."""
+        import uuid
+
+        unique_email = f"newlogin_{uuid.uuid4().hex[:8]}@example.com"
+        old_password = "OldP@ssw0rd!"
+        new_password = "NewP@ssw0rd!"
+
+        # Register and login
+        client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": unique_email,
+                "password": old_password,
+                "full_name": "New Login User",
+            },
+        )
+        login_response = client.post(
+            "/api/v1/auth/login",
+            json={"email": unique_email, "password": old_password},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Change password
+        client.post(
+            "/api/v1/auth/password/change",
+            json={
+                "current_password": old_password,
+                "new_password": new_password,
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        # Try login with new password
+        new_login_response = client.post(
+            "/api/v1/auth/login",
+            json={"email": unique_email, "password": new_password},
+        )
+
+        assert new_login_response.status_code == 200
+
+    def test_password_change_rejects_wrong_current(self, client):
+        """401 Unauthorized for wrong current password."""
+        import uuid
+
+        unique_email = f"wrongcur_{uuid.uuid4().hex[:8]}@example.com"
+        password = "TestP@ssw0rd!"
+
+        # Register and login
+        client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": unique_email,
+                "password": password,
+                "full_name": "Wrong Current User",
+            },
+        )
+        login_response = client.post(
+            "/api/v1/auth/login",
+            json={"email": unique_email, "password": password},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try change with wrong current password
+        response = client.post(
+            "/api/v1/auth/password/change",
+            json={
+                "current_password": "WrongP@ssw0rd!",
+                "new_password": "NewP@ssw0rd!",
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 401
+
+    def test_password_change_requires_authentication(self, client):
+        """401 Unauthorized without authentication."""
+        response = client.post(
+            "/api/v1/auth/password/change",
+            json={
+                "current_password": "OldP@ssw0rd!",
+                "new_password": "NewP@ssw0rd!",
+            },
+        )
+
+        assert response.status_code == 401
+
+    def test_password_change_validates_new_password(self, client):
+        """422 Validation error for weak new password."""
+        import uuid
+
+        unique_email = f"weaknew_{uuid.uuid4().hex[:8]}@example.com"
+        password = "TestP@ssw0rd!"
+
+        # Register and login
+        client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": unique_email,
+                "password": password,
+                "full_name": "Weak New User",
+            },
+        )
+        login_response = client.post(
+            "/api/v1/auth/login",
+            json={"email": unique_email, "password": password},
+        )
+        access_token = login_response.json()["access_token"]
+
+        # Try change with weak new password
+        response = client.post(
+            "/api/v1/auth/password/change",
+            json={
+                "current_password": password,
+                "new_password": "weak",
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 422

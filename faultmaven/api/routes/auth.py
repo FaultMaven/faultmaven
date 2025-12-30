@@ -1,14 +1,21 @@
-"""Authentication API Routes (TASK-017)
+"""Authentication API Routes (TASK-017, TASK-018)
 
-Purpose: FastAPI routes for JWT authentication operations.
+Purpose: FastAPI routes for JWT authentication and user management operations.
 
 Endpoints:
-- POST /api/v1/auth/login     - Authenticate and get tokens
-- POST /api/v1/auth/refresh   - Refresh access token
-- POST /api/v1/auth/logout    - Revoke tokens
-- POST /api/v1/auth/verify    - Verify token validity
+- POST /api/v1/auth/login               - Authenticate and get tokens
+- POST /api/v1/auth/register            - Register new user account
+- POST /api/v1/auth/refresh             - Refresh access token
+- POST /api/v1/auth/logout              - Revoke tokens
+- POST /api/v1/auth/verify              - Verify token validity
+- POST /api/v1/auth/password/reset-request  - Request password reset
+- POST /api/v1/auth/password/reset      - Reset password with token
+- POST /api/v1/auth/password/change     - Change password (authenticated)
+- GET  /api/v1/auth/me                  - Get current user info
 
-Design Reference: TASK-017 JWT Authentication & Authorization Middleware
+Design Reference:
+- TASK-017 JWT Authentication & Authorization Middleware
+- TASK-018 User Management Service
 """
 
 import logging
@@ -23,6 +30,7 @@ from faultmaven.api.middleware.auth import (
     get_current_user,
     get_current_user_optional,
 )
+from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.models.auth import AuthenticatedUser, TokenPair
 from faultmaven.models.rbac import get_permissions_for_roles, Role
 from faultmaven.services.auth_service import (
@@ -91,19 +99,90 @@ class TokenVerifyResponse(BaseModel):
     error: Optional[str] = Field(None, description="Error message if invalid")
 
 
+# TASK-018: New request/response models
+
+
+class UserRegistrationRequest(BaseModel):
+    """User registration request."""
+
+    email: EmailStr = Field(..., description="User email address")
+    password: str = Field(..., min_length=8, description="User password (min 8 characters)")
+    full_name: str = Field(..., min_length=1, max_length=200, description="User's full name")
+
+
+class UserResponse(BaseModel):
+    """User response (without sensitive data)."""
+
+    user_id: str = Field(..., description="User ID")
+    email: str = Field(..., description="User email")
+    full_name: str = Field(..., description="User's full name")
+    is_active: bool = Field(..., description="Whether account is active")
+    is_verified: bool = Field(..., description="Whether email is verified")
+    created_at: str = Field(..., description="Account creation timestamp (ISO 8601)")
+    updated_at: str = Field(..., description="Last update timestamp (ISO 8601)")
+    last_login_at: Optional[str] = Field(None, description="Last login timestamp (ISO 8601)")
+
+
+class PasswordResetRequestRequest(BaseModel):
+    """Password reset request (email)."""
+
+    email: EmailStr = Field(..., description="User email address")
+
+
+class PasswordResetRequest(BaseModel):
+    """Password reset with token."""
+
+    token: str = Field(..., description="Password reset token")
+    new_password: str = Field(..., min_length=8, description="New password (min 8 characters)")
+
+
+class PasswordChangeRequest(BaseModel):
+    """Password change request (authenticated)."""
+
+    current_password: str = Field(..., description="Current password")
+    new_password: str = Field(..., min_length=8, description="New password (min 8 characters)")
+
+
 # ============================================================
-# Development User Lookup (Replace with UserService in TASK-018)
+# User Service Dependency
+# ============================================================
+
+
+def get_user_service():
+    """Get UserService instance.
+
+    Creates a UserService with InMemoryUserRepository for development.
+    In production, this would use PostgreSQLUserRepository.
+
+    Returns:
+        UserService instance
+    """
+    from faultmaven.infrastructure.persistence.user_repository import InMemoryUserRepository
+    from faultmaven.services.user_service import UserService
+
+    # Use singleton repositories for development
+    if not hasattr(get_user_service, "_instance"):
+        user_repo = InMemoryUserRepository()
+        auth_service = get_auth_service()
+        get_user_service._instance = UserService(
+            user_repo=user_repo,
+            auth_service=auth_service,
+        )
+    return get_user_service._instance
+
+
+# ============================================================
+# Development User Lookup (Fallback for backwards compatibility)
 # ============================================================
 
 
 async def _dev_validate_credentials(
     email: str, password: str
 ) -> Optional[Dict[str, Any]]:
-    """Development-only credential validation.
-
-    TODO: Replace with UserService.authenticate() in TASK-018
+    """Development-only credential validation (backwards compatibility).
 
     For development, accepts any password for known test users.
+    This is a fallback when UserService is not available.
 
     Args:
         email: User email
@@ -144,15 +223,22 @@ async def _dev_validate_credentials(
 async def _dev_load_user(user_id: str) -> Optional[tuple]:
     """Development-only user loader for token refresh.
 
-    TODO: Replace with UserService.get_user() in TASK-018
-
     Args:
         user_id: User ID to load
 
     Returns:
         Tuple of (email, roles, permissions) or None
     """
-    # Development test users by ID
+    # Try to load from UserService first
+    try:
+        user_service = get_user_service()
+        user = await user_service.get_user(user_id)
+        if user:
+            return (user.email, user.roles, None)
+    except Exception:
+        pass
+
+    # Fall back to development test users by ID
     dev_users = {
         "dev-admin-001": ("admin@faultmaven.local", ["admin"], None),
         "dev-member-001": ("member@faultmaven.local", ["member"], None),
@@ -160,6 +246,32 @@ async def _dev_load_user(user_id: str) -> Optional[tuple]:
     }
 
     return dev_users.get(user_id)
+
+
+# ============================================================
+# Helper Functions
+# ============================================================
+
+
+def _user_to_response(user) -> UserResponse:
+    """Convert user model to response.
+
+    Args:
+        user: User from repository
+
+    Returns:
+        UserResponse for API
+    """
+    return UserResponse(
+        user_id=user.user_id,
+        email=user.email,
+        full_name=user.display_name,
+        is_active=user.is_active,
+        is_verified=user.is_email_verified,
+        created_at=user.created_at.isoformat() if user.created_at else None,
+        updated_at=user.updated_at.isoformat() if user.updated_at else None,
+        last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
+    )
 
 
 # ============================================================
@@ -175,6 +287,7 @@ async def login(
     """Authenticate user and return JWT tokens.
 
     Validates credentials and returns access and refresh tokens.
+    First tries UserService, then falls back to dev users.
 
     Request Body:
         email: User email address
@@ -190,8 +303,8 @@ async def login(
     Example:
         POST /api/v1/auth/login
         {
-            "email": "admin@faultmaven.local",
-            "password": "password123"
+            "email": "user@example.com",
+            "password": "SecureP@ss123"
         }
 
         Response:
@@ -202,7 +315,37 @@ async def login(
             "expires_in": 900
         }
     """
-    # Validate credentials
+    # Try UserService first
+    try:
+        user_service = get_user_service()
+        user, access_token, refresh_token = await user_service.authenticate_user(
+            email=credentials.email,
+            password=credentials.password,
+        )
+
+        logger.info(f"Successful login via UserService: {credentials.email}")
+
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="Bearer",
+            expires_in=auth_service._access_token_expire_minutes * 60,
+        )
+
+    except AuthenticationError as e:
+        # For registered users that fail authentication
+        logger.info(f"Failed login attempt for: {credentials.email} - {e.message}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    except Exception:
+        # Fall back to dev users for development
+        pass
+
+    # Fall back to dev credential validation
     user = await _dev_validate_credentials(credentials.email, credentials.password)
 
     if not user:
@@ -229,6 +372,226 @@ async def login(
         token_type=token_pair.token_type,
         expires_in=token_pair.expires_in,
     )
+
+
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register(
+    request: UserRegistrationRequest,
+) -> UserResponse:
+    """Register new user account.
+
+    Creates a new user account with the provided credentials.
+    Password must meet strength requirements:
+    - Minimum 8 characters
+    - At least one uppercase letter
+    - At least one lowercase letter
+    - At least one digit
+    - At least one special character
+
+    Request Body:
+        email: User email address
+        password: User password
+        full_name: User's full name
+
+    Returns:
+        UserResponse with user details
+
+    Raises:
+        409: Email already registered
+        422: Validation error (weak password, invalid email)
+
+    Example:
+        POST /api/v1/auth/register
+        {
+            "email": "user@example.com",
+            "password": "SecureP@ss123",
+            "full_name": "John Doe"
+        }
+
+        Response:
+        {
+            "user_id": "uuid...",
+            "email": "user@example.com",
+            "full_name": "John Doe",
+            "is_active": true,
+            "is_verified": false,
+            ...
+        }
+    """
+    try:
+        user_service = get_user_service()
+        user = await user_service.register_user(
+            email=request.email,
+            password=request.password,
+            full_name=request.full_name,
+        )
+
+        logger.info(f"User registered: {user.user_id}")
+        return _user_to_response(user)
+
+    except ConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+
+    except ValidationException as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        )
+
+
+@router.post("/password/reset-request", status_code=status.HTTP_204_NO_CONTENT)
+async def request_password_reset(
+    request: PasswordResetRequestRequest,
+) -> None:
+    """Request password reset token.
+
+    Generates a password reset token and (in production) sends it via email.
+    Always returns 204 even if email not found (prevents email enumeration).
+
+    Request Body:
+        email: User email address
+
+    Returns:
+        204 No Content (always, regardless of email existence)
+
+    Note:
+        In development, the token is logged for testing.
+        In production, the token would be sent via email.
+
+    Example:
+        POST /api/v1/auth/password/reset-request
+        {
+            "email": "user@example.com"
+        }
+    """
+    try:
+        user_service = get_user_service()
+        token = await user_service.request_password_reset(email=request.email)
+
+        # In development, log the token for testing
+        logger.debug(f"Password reset token generated for {request.email}: {token}")
+
+    except Exception as e:
+        # Log error but don't expose it (prevents enumeration)
+        logger.warning(f"Password reset request error: {e}")
+
+    # Always return 204 (prevents email enumeration)
+    return None
+
+
+@router.post("/password/reset", response_model=UserResponse)
+async def reset_password(
+    request: PasswordResetRequest,
+) -> UserResponse:
+    """Reset password with reset token.
+
+    Resets the user's password using a valid reset token.
+    All existing sessions are invalidated after reset.
+
+    Request Body:
+        token: Password reset token (from email)
+        new_password: New password
+
+    Returns:
+        UserResponse with updated user details
+
+    Raises:
+        401: Invalid or expired token
+        422: Weak password
+
+    Example:
+        POST /api/v1/auth/password/reset
+        {
+            "token": "eyJhbGc...",
+            "new_password": "NewSecureP@ss456"
+        }
+    """
+    try:
+        user_service = get_user_service()
+        user = await user_service.reset_password(
+            reset_token=request.token,
+            new_password=request.new_password,
+        )
+
+        logger.info(f"Password reset completed for user: {user.user_id}")
+        return _user_to_response(user)
+
+    except AuthenticationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=e.message,
+        )
+
+    except ValidationException as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        )
+
+
+@router.post("/password/change", response_model=UserResponse)
+async def change_password(
+    request: PasswordChangeRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> UserResponse:
+    """Change password (authenticated).
+
+    Changes the current user's password. Requires current password.
+    All existing sessions are invalidated after change.
+
+    Headers:
+        Authorization: Bearer <access_token>
+
+    Request Body:
+        current_password: Current password
+        new_password: New password
+
+    Returns:
+        UserResponse with updated user details
+
+    Raises:
+        401: Current password incorrect or not authenticated
+        422: Weak new password
+
+    Example:
+        POST /api/v1/auth/password/change
+        Headers: Authorization: Bearer eyJhbGc...
+        {
+            "current_password": "OldP@ss123",
+            "new_password": "NewSecureP@ss456"
+        }
+    """
+    try:
+        user_service = get_user_service()
+        user = await user_service.change_password(
+            user_id=current_user.user_id,
+            current_password=request.current_password,
+            new_password=request.new_password,
+        )
+
+        logger.info(f"Password changed for user: {user.user_id}")
+        return _user_to_response(user)
+
+    except NotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    except AuthenticationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=e.message,
+        )
+
+    except ValidationException as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        )
 
 
 @router.post("/refresh", response_model=TokenResponse)
