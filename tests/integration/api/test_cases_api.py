@@ -45,7 +45,11 @@ def mock_user():
 
 @pytest.fixture
 def mock_case():
-    """Create a mock Case for testing."""
+    """Create a mock Case for testing.
+
+    Note: All optional fields must be explicitly set to None (not MagicMock)
+    to ensure Pydantic validation passes in CaseResponse.from_domain().
+    """
     mock = MagicMock()
     mock.case_id = "case_123abc"
     mock.organization_id = "org_456"
@@ -55,9 +59,13 @@ def mock_case():
     mock.status = CaseStatus.CONSULTING
     mock.created_at = datetime.now(timezone.utc)
     mock.updated_at = datetime.now(timezone.utc)
+    # Optional fields - must be explicit to avoid MagicMock being returned
     mock.problem_verification = None
     mock.closure_reason = None
     mock.metadata = None
+    mock.assigned_to = None  # Optional[str]
+    mock.closed_at = None  # Optional[datetime]
+    mock.severity = CaseSeverity.MEDIUM  # Used by from_domain
     return mock
 
 
