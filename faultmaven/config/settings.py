@@ -1283,6 +1283,117 @@ class PreprocessingSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+class AgentSettings(BaseSettings):
+    """Agent orchestration configuration (TASK-015).
+
+    Controls the behavior of AI agent execution including:
+    - LLM retry logic and timeouts
+    - Tool execution limits
+    - Token budget defaults
+    - Agent-specific model selection
+
+    Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
+    """
+
+    # LLM Provider for Agent Orchestration
+    agent_provider: str = Field(
+        default="anthropic",
+        env="AGENT_LLM_PROVIDER",
+        description="LLM provider for agent execution (anthropic, openai)"
+    )
+
+    agent_model: str = Field(
+        default="claude-sonnet-4-20250514",
+        env="AGENT_LLM_MODEL",
+        description="Model to use for agent execution"
+    )
+
+    # Retry configuration
+    max_retries: int = Field(
+        default=3,
+        env="AGENT_MAX_RETRIES",
+        ge=0,
+        le=10,
+        description="Maximum retry attempts for LLM calls"
+    )
+
+    retry_initial_delay: float = Field(
+        default=1.0,
+        env="AGENT_RETRY_INITIAL_DELAY",
+        ge=0.1,
+        le=30.0,
+        description="Initial delay for exponential backoff (seconds)"
+    )
+
+    # Tool execution configuration
+    tool_timeout: int = Field(
+        default=30,
+        env="AGENT_TOOL_TIMEOUT",
+        ge=5,
+        le=300,
+        description="Timeout for tool execution (seconds)"
+    )
+
+    max_parallel_tools: int = Field(
+        default=5,
+        env="AGENT_MAX_PARALLEL_TOOLS",
+        ge=1,
+        le=20,
+        description="Maximum parallel tool executions"
+    )
+
+    # LLM Request configuration
+    agent_max_tokens: int = Field(
+        default=4096,
+        env="AGENT_MAX_TOKENS",
+        ge=100,
+        le=128000,
+        description="Maximum tokens for agent responses"
+    )
+
+    agent_temperature: float = Field(
+        default=0.7,
+        env="AGENT_TEMPERATURE",
+        ge=0.0,
+        le=2.0,
+        description="Temperature for agent responses"
+    )
+
+    agent_request_timeout: int = Field(
+        default=120,
+        env="AGENT_REQUEST_TIMEOUT",
+        ge=30,
+        le=600,
+        description="Request timeout for LLM calls (seconds)"
+    )
+
+    # Token budget defaults
+    default_session_token_budget: Optional[int] = Field(
+        default=None,
+        env="DEFAULT_SESSION_TOKEN_BUDGET",
+        description="Default token budget for new sessions (None = unlimited)"
+    )
+
+    # Execution limits
+    max_tool_calls_per_execution: int = Field(
+        default=20,
+        env="MAX_TOOL_CALLS_PER_EXECUTION",
+        ge=1,
+        le=100,
+        description="Maximum tool calls per single execution"
+    )
+
+    max_iterations_per_execution: int = Field(
+        default=10,
+        env="MAX_ITERATIONS_PER_EXECUTION",
+        ge=1,
+        le=50,
+        description="Maximum LLM iterations (tool call loops) per execution"
+    )
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
 class EvidenceStorageSettings(BaseSettings):
     """Evidence storage configuration for file uploads and management.
 
@@ -1391,6 +1502,9 @@ class FaultMavenSettings(BaseSettings):
 
     # Evidence storage configuration (TASK-013)
     evidence_storage: EvidenceStorageSettings = Field(default_factory=EvidenceStorageSettings)
+
+    # Agent orchestration configuration (TASK-015)
+    agent: AgentSettings = Field(default_factory=AgentSettings)
 
     # Convenience properties for evidence storage (used by ServiceFactory)
     @property
