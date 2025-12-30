@@ -174,3 +174,193 @@ class TokenValidationResult:
     def is_expired(self) -> bool:
         """Check if token was expired"""
         return self.status == TokenStatus.EXPIRED
+
+
+# ============================================================
+# JWT Authentication Models (TASK-017)
+# ============================================================
+
+
+@dataclass
+class AuthenticatedUser:
+    """Represents an authenticated user from a JWT token.
+
+    This is the standard user representation extracted from a validated
+    JWT access token. It contains all claims necessary for authorization.
+
+    Attributes:
+        user_id: User UUID (from 'sub' claim)
+        organization_id: Organization UUID (from 'org_id' claim)
+        email: User email address
+        roles: List of organization-level roles (admin, member, viewer)
+        permissions: List of granular permissions (cases:read, sessions:execute, etc.)
+        token_jti: JWT ID for token revocation tracking (optional)
+    """
+
+    user_id: str
+    organization_id: str
+    email: str
+    roles: list[str]
+    permissions: list[str]
+    token_jti: Optional[str] = None
+
+    def has_permission(self, permission: str) -> bool:
+        """Check if user has a specific permission.
+
+        Args:
+            permission: Permission string (e.g., "cases:read")
+
+        Returns:
+            True if user has the permission
+        """
+        return permission in self.permissions
+
+    def has_role(self, role: str) -> bool:
+        """Check if user has a specific role.
+
+        Args:
+            role: Role name (e.g., "admin")
+
+        Returns:
+            True if user has the role
+        """
+        return role in self.roles
+
+    def is_admin(self) -> bool:
+        """Check if user has admin role.
+
+        Returns:
+            True if user is an admin
+        """
+        return "admin" in self.roles
+
+    def has_any_permission(self, permissions: list[str]) -> bool:
+        """Check if user has any of the specified permissions.
+
+        Args:
+            permissions: List of permission strings
+
+        Returns:
+            True if user has at least one of the permissions
+        """
+        return any(perm in self.permissions for perm in permissions)
+
+    def has_all_permissions(self, permissions: list[str]) -> bool:
+        """Check if user has all of the specified permissions.
+
+        Args:
+            permissions: List of permission strings
+
+        Returns:
+            True if user has all of the permissions
+        """
+        return all(perm in self.permissions for perm in permissions)
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "user_id": self.user_id,
+            "organization_id": self.organization_id,
+            "email": self.email,
+            "roles": self.roles,
+            "permissions": self.permissions,
+            "token_jti": self.token_jti,
+        }
+
+    @classmethod
+    def from_jwt_claims(cls, claims: dict) -> "AuthenticatedUser":
+        """Create AuthenticatedUser from JWT claims.
+
+        Args:
+            claims: Decoded JWT claims dictionary
+
+        Returns:
+            AuthenticatedUser instance
+        """
+        return cls(
+            user_id=claims.get("sub", ""),
+            organization_id=claims.get("org_id", ""),
+            email=claims.get("email", ""),
+            roles=claims.get("roles", []),
+            permissions=claims.get("permissions", []),
+            token_jti=claims.get("jti"),
+        )
+
+
+@dataclass
+class TokenPair:
+    """Access and refresh token pair.
+
+    Returned after successful authentication (login) or token refresh.
+
+    Attributes:
+        access_token: JWT access token (short-lived, typically 15 minutes)
+        refresh_token: JWT refresh token (long-lived, typically 7 days)
+        token_type: Token type for Authorization header ("Bearer")
+        expires_in: Access token expiration time in seconds
+    """
+
+    access_token: str
+    refresh_token: str
+    token_type: str = "Bearer"
+    expires_in: int = 900  # 15 minutes in seconds
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "token_type": self.token_type,
+            "expires_in": self.expires_in,
+        }
+
+
+@dataclass
+class TokenClaims:
+    """JWT token claims structure.
+
+    Represents all claims that should be included in a JWT token.
+
+    Standard Claims:
+        sub: Subject (user ID)
+        iss: Issuer
+        aud: Audience
+        iat: Issued at (Unix timestamp)
+        exp: Expiration (Unix timestamp)
+        jti: JWT ID (unique token identifier for revocation)
+
+    Custom Claims:
+        org_id: Organization ID
+        email: User email
+        roles: User roles in organization
+        permissions: Granular permissions
+        token_type: "access" or "refresh"
+    """
+
+    sub: str  # user_id
+    org_id: str
+    email: str
+    roles: list[str]
+    permissions: list[str]
+    iss: str
+    aud: str
+    iat: int
+    exp: int
+    jti: str
+    token_type: str = "access"
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JWT encoding."""
+        return {
+            "sub": self.sub,
+            "org_id": self.org_id,
+            "email": self.email,
+            "roles": self.roles,
+            "permissions": self.permissions,
+            "iss": self.iss,
+            "aud": self.aud,
+            "iat": self.iat,
+            "exp": self.exp,
+            "jti": self.jti,
+            "token_type": self.token_type,
+        }

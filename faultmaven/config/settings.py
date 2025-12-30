@@ -581,11 +581,24 @@ class SessionSettings(BaseSettings):
 
 class SecuritySettings(BaseSettings):
     """Security and authentication configuration"""
-    # JWT configuration
+    # JWT configuration (RS256 for production-ready asymmetric encryption)
+    jwt_algorithm: str = Field(default="RS256", env="JWT_ALGORITHM")
+    jwt_private_key_path: Optional[str] = Field(default=None, env="JWT_PRIVATE_KEY_PATH")
+    jwt_public_key_path: Optional[str] = Field(default=None, env="JWT_PUBLIC_KEY_PATH")
+    jwt_private_key: Optional[SecretStr] = Field(default=None, env="JWT_PRIVATE_KEY")
+    jwt_public_key: Optional[str] = Field(default=None, env="JWT_PUBLIC_KEY")
+    jwt_access_token_expire_minutes: int = Field(default=15, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
+    jwt_refresh_token_expire_days: int = Field(default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS")
+    jwt_issuer: str = Field(default="faultmaven-api", env="JWT_ISSUER")
+    jwt_audience: str = Field(default="faultmaven-app", env="JWT_AUDIENCE")
+
+    # Legacy JWT configuration (backwards compatibility)
     jwt_secret_key: Optional[SecretStr] = Field(default=None, env="JWT_SECRET_KEY")
-    jwt_algorithm: str = Field(default="HS256", env="JWT_ALGORITHM")
     jwt_expiration_hours: int = Field(default=24, env="JWT_EXPIRATION_HOURS")
-    
+
+    # Token revocation (Redis)
+    token_revocation_prefix: str = Field(default="revoked:token:", env="TOKEN_REVOCATION_PREFIX")
+
     # CORS configuration
     cors_allow_credentials: bool = Field(default=True, env="CORS_ALLOW_CREDENTIALS")
     cors_allow_origins: List[str] = Field(
