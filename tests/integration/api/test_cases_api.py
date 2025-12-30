@@ -1,4 +1,4 @@
-"""Integration tests for Case Management API (TASK-014).
+"""Integration tests for Case Management API (TASK-014, TASK-020).
 
 Tests:
 - POST /api/v1/cases (201 Created)
@@ -12,7 +12,10 @@ Tests:
 - POST /api/v1/cases/{case_id}/assign (200 OK)
 - POST /api/v1/cases/{case_id}/close (200 OK)
 - POST /api/v1/cases/{case_id}/reopen (200 OK)
-- Missing headers (X-Organization-ID, X-User-ID) returns 422
+- Missing JWT token returns 401
+
+Note: As of TASK-020, JWT authentication is required. Legacy header authentication
+(X-Organization-ID, X-User-ID) has been removed.
 """
 
 from datetime import datetime, timezone
@@ -24,12 +27,29 @@ from fastapi import status
 from fastapi.testclient import TestClient
 
 from faultmaven.api.app import create_app
+from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.models.case import Case, CaseSeverity, CaseStatus
 
 
 @pytest.fixture
+def mock_user():
+    """Create a mock authenticated user for testing."""
+    return AuthenticatedUser(
+        user_id="user_789",
+        organization_id="org_456",
+        email="test@example.com",
+        roles=["admin"],
+        permissions=["cases:read", "cases:write", "cases:delete"],
+    )
+
+
+@pytest.fixture
 def mock_case():
-    """Create a mock Case for testing."""
+    """Create a mock Case for testing.
+
+    Note: All optional fields must be explicitly set to None (not MagicMock)
+    to ensure Pydantic validation passes in CaseResponse.from_domain().
+    """
     mock = MagicMock()
     mock.case_id = "case_123abc"
     mock.organization_id = "org_456"
@@ -39,9 +59,13 @@ def mock_case():
     mock.status = CaseStatus.CONSULTING
     mock.created_at = datetime.now(timezone.utc)
     mock.updated_at = datetime.now(timezone.utc)
+    # Optional fields - must be explicit to avoid MagicMock being returned
     mock.problem_verification = None
     mock.closure_reason = None
     mock.metadata = None
+    mock.assigned_to = None  # Optional[str]
+    mock.closed_at = None  # Optional[datetime]
+    mock.severity = CaseSeverity.MEDIUM  # Used by from_domain
     return mock
 
 
@@ -53,16 +77,23 @@ def mock_case_service():
 
 
 @pytest.fixture
-def app(mock_case_service):
+def app(mock_case_service, mock_user):
     """Create test application with mocked dependencies."""
     app = create_app()
 
-    # Override the dependency
+    # Override the case service dependency
     async def get_mock_case_service():
         return mock_case_service
 
+    # Override the auth dependency to return mock user
+    async def get_mock_current_user():
+        return mock_user
+
     from faultmaven.api.dependencies import get_api_case_service
+    from faultmaven.api.middleware.auth import get_current_user
+
     app.dependency_overrides[get_api_case_service] = get_mock_case_service
+    app.dependency_overrides[get_current_user] = get_mock_current_user
 
     return app
 
@@ -75,11 +106,9 @@ def client(app):
 
 @pytest.fixture
 def headers():
-    """Standard request headers."""
-    return {
-        "X-Organization-ID": "org_456",
-        "X-User-ID": "user_789",
-    }
+    """Standard request headers with JWT auth (mocked via dependency override)."""
+    # No special headers needed since auth is mocked via dependency override
+    return {}
 
 
 # ============================================================
@@ -155,33 +184,25 @@ class TestCreateCase:
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
-    def test_create_case_missing_organization_header(self, client):
-        """Test case creation without organization header."""
-        response = client.post(
+    def test_create_case_missing_authentication(self):
+        """Test case creation without JWT authentication returns 401."""
+        # Create app without auth override to test unauthenticated request
+        from faultmaven.api.app import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        unauthenticated_client = TestClient(app)
+
+        response = unauthenticated_client.post(
             "/api/v1/cases",
             json={
                 "title": "Test",
                 "description": "Test",
                 "severity": "medium",
             },
-            headers={"X-User-ID": "user_789"},
         )
 
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-
-    def test_create_case_missing_user_header(self, client):
-        """Test case creation without user header."""
-        response = client.post(
-            "/api/v1/cases",
-            json={
-                "title": "Test",
-                "description": "Test",
-                "severity": "medium",
-            },
-            headers={"X-Organization-ID": "org_456"},
-        )
-
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     def test_create_case_all_severities(self, client, mock_case_service, mock_case, headers):
         """Test case creation with all severity levels."""
@@ -252,11 +273,18 @@ class TestGetCase:
         assert data["error"] == "Not Found"
         assert "nonexistent" in data["detail"]
 
-    def test_get_case_missing_org_header(self, client):
-        """Test get case without organization header."""
-        response = client.get("/api/v1/cases/case_123")
+    def test_get_case_missing_authentication(self):
+        """Test get case without JWT authentication returns 401."""
+        # Create app without auth override to test unauthenticated request
+        from faultmaven.api.app import create_app
+        from fastapi.testclient import TestClient
 
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        app = create_app()
+        unauthenticated_client = TestClient(app)
+
+        response = unauthenticated_client.get("/api/v1/cases/case_123")
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
 
 # ============================================================

@@ -1,10 +1,12 @@
-"""Integration tests for JWT-protected API endpoints (TASK-017)
+"""Integration tests for JWT-protected API endpoints (TASK-017, TASK-020)
 
 Tests JWT authentication across protected endpoints:
 - Cases API with JWT authentication
 - Sessions API with JWT authentication
 - Evidence API with JWT authentication
-- Backwards compatibility with legacy headers
+
+Note: Legacy header authentication (X-Organization-ID, X-User-ID) has been removed
+as part of TASK-020 technical debt cleanup. JWT is the only authentication method.
 
 Coverage Target: 90%+
 """
@@ -212,81 +214,6 @@ class TestCasesAPIWithJWT:
             assert response.status_code == 204
 
 
-class TestCasesAPILegacyAuth:
-    """Tests for Cases API backwards compatibility with legacy headers."""
-
-    def test_list_cases_with_legacy_headers(self, client):
-        """200 OK when accessing cases with legacy headers."""
-        with patch(
-            "faultmaven.api.dependencies.get_api_case_service"
-        ) as mock_service_dep:
-            mock_service = AsyncMock()
-            mock_service.list_cases = AsyncMock(return_value=[])
-            mock_service_dep.return_value = mock_service
-
-            response = client.get(
-                "/api/v1/cases",
-                headers={
-                    "X-Organization-ID": "org-test-001",
-                    "X-User-ID": "user-test-001",
-                },
-            )
-
-            assert response.status_code == 200
-
-    def test_create_case_with_legacy_headers(self, client, mock_case):
-        """Create case with legacy header authentication."""
-        mock_case.organization_id = "org-test-001"
-        mock_case.user_id = "user-test-001"
-
-        with patch(
-            "faultmaven.api.dependencies.get_api_case_service"
-        ) as mock_service_dep:
-            mock_service = AsyncMock()
-            mock_service.create_case = AsyncMock(return_value=mock_case)
-            mock_service_dep.return_value = mock_service
-
-            response = client.post(
-                "/api/v1/cases",
-                headers={
-                    "X-Organization-ID": "org-test-001",
-                    "X-User-ID": "user-test-001",
-                },
-                json={
-                    "title": "Test Case",
-                    "description": "Test description",
-                    "severity": "medium",
-                },
-            )
-
-            assert response.status_code == 201
-
-    def test_jwt_takes_precedence_over_legacy_headers(self, client, admin_token):
-        """JWT authentication takes precedence over legacy headers."""
-        with patch(
-            "faultmaven.api.dependencies.get_api_case_service"
-        ) as mock_service_dep:
-            mock_service = AsyncMock()
-            mock_service.list_cases = AsyncMock(return_value=[])
-            mock_service_dep.return_value = mock_service
-
-            # Provide both JWT and legacy headers
-            response = client.get(
-                "/api/v1/cases",
-                headers={
-                    "Authorization": f"Bearer {admin_token}",
-                    "X-Organization-ID": "different-org",
-                    "X-User-ID": "different-user",
-                },
-            )
-
-            assert response.status_code == 200
-
-            # Verify service was called with JWT org_id (org-dev-001), not legacy header
-            call_args = mock_service.list_cases.call_args
-            assert call_args.kwargs["organization_id"] == "org-dev-001"
-
-
 # ============================================================
 # Sessions API JWT Authentication Tests
 # ============================================================
@@ -325,29 +252,6 @@ class TestSessionsAPIWithJWT:
         assert response.status_code == 401
 
 
-class TestSessionsAPILegacyAuth:
-    """Tests for Sessions API backwards compatibility."""
-
-    def test_list_sessions_with_legacy_headers(self, client):
-        """200 OK when accessing sessions with legacy headers."""
-        with patch(
-            "faultmaven.api.dependencies.get_investigation_session_service"
-        ) as mock_service_dep:
-            mock_service = AsyncMock()
-            mock_service.list_sessions = AsyncMock(return_value=[])
-            mock_service_dep.return_value = mock_service
-
-            response = client.get(
-                "/api/v1/cases/case-001/sessions",
-                headers={
-                    "X-Organization-ID": "org-test-001",
-                    "X-User-ID": "user-test-001",
-                },
-            )
-
-            assert response.status_code == 200
-
-
 # ============================================================
 # Evidence API JWT Authentication Tests
 # ============================================================
@@ -384,29 +288,6 @@ class TestEvidenceAPIWithJWT:
             headers={"Authorization": "Bearer invalid-token"},
         )
         assert response.status_code == 401
-
-
-class TestEvidenceAPILegacyAuth:
-    """Tests for Evidence API backwards compatibility."""
-
-    def test_list_evidence_with_legacy_headers(self, client):
-        """200 OK when accessing evidence with legacy headers."""
-        with patch(
-            "faultmaven.api.dependencies.get_evidence_artifact_service"
-        ) as mock_service_dep:
-            mock_service = AsyncMock()
-            mock_service.list_evidence_by_case = AsyncMock(return_value=[])
-            mock_service_dep.return_value = mock_service
-
-            response = client.get(
-                "/api/v1/cases/case-001/evidence",
-                headers={
-                    "X-Organization-ID": "org-test-001",
-                    "X-User-ID": "user-test-001",
-                },
-            )
-
-            assert response.status_code == 200
 
 
 # ============================================================

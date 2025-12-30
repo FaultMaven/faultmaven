@@ -1,4 +1,4 @@
-"""Agent Execution API Routes (TASK-016, TASK-017)
+"""Agent Execution API Routes (TASK-016, TASK-017, TASK-020)
 
 Purpose: FastAPI routes for AI agent execution with SSE streaming support.
 
@@ -9,8 +9,7 @@ Endpoints:
 - POST /api/v1/cases/{case_id}/sessions/{session_id}/executions/{id}/cancel - Cancel
 
 Authentication:
-- JWT Bearer token (preferred): Authorization: Bearer <token>
-- Legacy headers (deprecated): X-Organization-ID, X-User-ID
+- JWT Bearer token: Authorization: Bearer <token>
 
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
@@ -18,11 +17,11 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 import logging
 from typing import AsyncGenerator, Optional
 
-from fastapi import APIRouter, Depends, Header, Path, status
+from fastapi import APIRouter, Depends, Path, status
 from fastapi.responses import StreamingResponse
 
 from faultmaven.api.dependencies import get_agent_orchestration_service
-from faultmaven.api.middleware.auth import get_current_user_optional
+from faultmaven.api.middleware.auth import get_current_user
 from faultmaven.api.models import (
     AgentExecutionRequest,
     AgentExecutionResponse,
@@ -48,34 +47,6 @@ router = APIRouter(
     prefix="/api/v1/cases/{case_id}/sessions/{session_id}",
     tags=["Agent Execution"],
 )
-
-
-# ============================================================
-# Backwards-Compatible Authentication Helper
-# ============================================================
-
-
-async def get_auth_context(
-    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
-    legacy_org_id: Optional[str] = Header(None, alias="X-Organization-ID"),
-    legacy_user_id: Optional[str] = Header(None, alias="X-User-ID"),
-) -> tuple[str, str]:
-    """Get authentication context from JWT or legacy headers."""
-    if current_user:
-        return current_user.organization_id, current_user.user_id
-
-    if legacy_org_id and legacy_user_id:
-        return legacy_org_id, legacy_user_id
-
-    if legacy_org_id:
-        return legacy_org_id, legacy_user_id or ""
-
-    from fastapi import HTTPException
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication required. Provide Bearer token or X-Organization-ID header.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
 
 
 # ============================================================
@@ -112,8 +83,7 @@ Execute an AI agent to analyze the case and generate recommendations.
 Supports streaming (SSE) or non-streaming mode.
 
 **Authentication:**
-- JWT Bearer token (preferred): Authorization: Bearer <token>
-- Legacy headers (deprecated): X-Organization-ID, X-User-ID
+- JWT Bearer token: Authorization: Bearer <token>
 
 **Streaming Mode (stream=true, default):**
 Returns Server-Sent Events (SSE) with real-time updates including:
@@ -141,7 +111,7 @@ async def execute_agent(
     case_id: str = Path(..., description="Case ID"),
     session_id: str = Path(..., description="Investigation session ID"),
     request: AgentExecutionRequest = ...,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
 ) -> AgentExecutionResponse:
     """Execute AI agent for troubleshooting investigation.
@@ -151,14 +121,13 @@ async def execute_agent(
     2. Non-streaming (stream=false): Returns complete response when done
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID, X-User-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case the session belongs to
         session_id: Unique session identifier
         request: Agent execution request with user message
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         agent_service: Injected agent orchestration service
 
     Returns:
@@ -173,15 +142,6 @@ async def execute_agent(
         422: Validation error (invalid agent_type, etc.)
         500: LLM or internal error
     """
-    organization_id, user_id = auth_context
-
-    if not user_id:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User ID required for agent execution",
-        )
-
     # Parse and validate agent type
     try:
         agent_type = AgentType(request.agent_type)
@@ -198,7 +158,7 @@ async def execute_agent(
             _stream_agent_execution(
                 agent_service=agent_service,
                 session_id=session_id,
-                organization_id=organization_id,
+                organization_id=current_user.organization_id,
                 user_message=request.user_message,
                 agent_type=agent_type,
             ),
@@ -214,7 +174,7 @@ async def execute_agent(
         return await _execute_non_streaming(
             agent_service=agent_service,
             session_id=session_id,
-            organization_id=organization_id,
+            organization_id=current_user.organization_id,
             user_message=request.user_message,
             agent_type=agent_type,
         )
@@ -379,7 +339,7 @@ regardless of which session initiated them.""",
 async def list_executions(
     case_id: str = Path(..., description="Case ID"),
     session_id: str = Path(..., description="Session ID (for URL consistency, not used for filtering)"),
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     limit: int = 50,
     offset: int = 0,
     agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
@@ -392,13 +352,12 @@ async def list_executions(
     This allows viewing all executions across multiple investigation sessions.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case ID to list executions for
         session_id: Session ID (included for URL consistency, not used for filtering)
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         limit: Maximum number of results (default 50)
         offset: Pagination offset (default 0)
         agent_service: Injected agent orchestration service
@@ -409,16 +368,13 @@ async def list_executions(
     Raises:
         401: Authentication required
         404: Case not found
-        403: Not authorized
     """
-    organization_id, _ = auth_context
-
     # Note: session_id is not used for filtering - executions are per-case
     _ = session_id  # Explicitly mark as intentionally unused
 
     executions, total = await agent_service.list_executions(
         case_id=case_id,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         limit=limit,
         offset=offset,
     )
@@ -437,20 +393,19 @@ async def get_execution(
     case_id: str = Path(..., description="Case ID"),
     session_id: str = Path(..., description="Session ID (for URL consistency)"),
     execution_id: str = Path(..., description="Execution ID"),
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
 ) -> AgentExecutionResponse:
     """Get details of a specific agent execution.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case ID the execution belongs to
         session_id: Session ID (for URL consistency, not used for lookup)
         execution_id: Execution ID to retrieve
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         agent_service: Injected agent orchestration service
 
     Returns:
@@ -459,13 +414,10 @@ async def get_execution(
     Raises:
         401: Authentication required
         404: Execution not found or doesn't belong to case
-        403: Not authorized
     """
-    organization_id, _ = auth_context
-
     _ = session_id  # Explicitly mark as intentionally unused
 
-    execution = await agent_service.get_execution(execution_id, organization_id)
+    execution = await agent_service.get_execution(execution_id, current_user.organization_id)
 
     if not execution:
         raise NotFoundError("Execution", execution_id)
@@ -487,20 +439,19 @@ async def cancel_execution(
     case_id: str = Path(..., description="Case ID"),
     session_id: str = Path(..., description="Session ID (for URL consistency)"),
     execution_id: str = Path(..., description="Execution ID"),
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
 ) -> dict:
     """Cancel a running agent execution.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case ID (for URL consistency)
         session_id: Session ID (for URL consistency, not used)
         execution_id: Execution ID to cancel
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         agent_service: Injected agent orchestration service
 
     Returns:
@@ -509,15 +460,12 @@ async def cancel_execution(
     Raises:
         401: Authentication required
         404: Execution not found
-        403: Not authorized
         409: Execution not running (cannot be cancelled)
     """
-    organization_id, _ = auth_context
-
     _ = session_id  # Explicitly mark as intentionally unused
     _ = case_id  # Case ID verification done by cancel_execution
 
-    cancelled = await agent_service.cancel_execution(execution_id, organization_id)
+    cancelled = await agent_service.cancel_execution(execution_id, current_user.organization_id)
 
     if not cancelled:
         raise NotFoundError("Execution", execution_id)
