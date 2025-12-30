@@ -178,6 +178,24 @@ class ServiceFactory:
             file_storage=file_storage,
         )
 
+    def create_agent_orchestration_service(self) -> "AgentOrchestrationService":
+        """Create agent orchestration service with dependencies.
+
+        Returns:
+            AgentOrchestrationService instance with injected dependencies
+        """
+        from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
+        from faultmaven.tools.agent_tools import agent_tool_registry
+
+        return AgentOrchestrationService(
+            session_service=self.create_investigation_session_service(),
+            evidence_service=self.create_evidence_artifact_service(),
+            execution_repo=self.execution_repo,
+            case_repo=self.case_repo,
+            tool_registry=agent_tool_registry,
+            # LLM client will be created lazily by the service
+        )
+
     # Future service factory methods:
 
     # def create_knowledge_service(self) -> KnowledgeService:

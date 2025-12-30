@@ -1,0 +1,456 @@
+"""Agent Execution API Routes (TASK-016)
+
+Purpose: FastAPI routes for AI agent execution with SSE streaming support.
+
+Endpoints:
+- POST /api/v1/cases/{case_id}/sessions/{session_id}/execute - Execute agent
+
+This endpoint enables frontend applications to:
+1. Execute agents with user messages and receive streaming responses
+2. Stream execution events in real-time (thinking, tool_call, response, completed)
+3. Support multi-turn conversations within investigation sessions
+4. Enforce authorization via organization and user headers
+5. Handle errors gracefully with proper HTTP status codes
+
+Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
+"""
+
+import logging
+from typing import AsyncGenerator, Optional
+
+from fastapi import APIRouter, Depends, Header, Path, status
+from fastapi.responses import StreamingResponse
+
+from faultmaven.api.dependencies import get_agent_orchestration_service
+from faultmaven.api.models import (
+    AgentExecutionRequest,
+    AgentExecutionResponse,
+    ExecutionEventSSE,
+)
+from faultmaven.domain.events import ExecutionEventType
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    LLMException,
+    NotFoundError,
+    ServiceError,
+)
+from faultmaven.models.agent_execution import AgentType
+from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
+
+logger = logging.getLogger(__name__)
+
+
+router = APIRouter(
+    prefix="/api/v1/cases/{case_id}/sessions/{session_id}",
+    tags=["Agent Execution"],
+)
+
+
+@router.post(
+    "/execute",
+    response_model=AgentExecutionResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {
+            "description": "Agent execution completed (non-streaming) or SSE stream (streaming)",
+            "content": {
+                "application/json": {
+                    "schema": {"$ref": "#/components/schemas/AgentExecutionResponse"}
+                },
+                "text/event-stream": {
+                    "schema": {"type": "string"},
+                    "example": 'event: started\ndata: {"content":"Execution started","metadata":{"execution_id":"exec-123"}}\n\n',
+                },
+            },
+        },
+        404: {"description": "Session not found"},
+        403: {"description": "Forbidden - wrong organization"},
+        409: {"description": "Conflict - session not active or budget exceeded"},
+        422: {"description": "Validation error"},
+        500: {"description": "LLM or tool execution error"},
+    },
+    summary="Execute AI agent for troubleshooting investigation",
+    description="""
+Execute an AI agent to analyze the case and generate recommendations.
+Supports streaming (SSE) or non-streaming mode.
+
+**Streaming Mode (stream=true, default):**
+Returns Server-Sent Events (SSE) with real-time updates including:
+- `started`: Execution has begun
+- `thinking`: Agent is reasoning/processing
+- `tool_call`: Tool invocation requested
+- `tool_result`: Tool execution completed
+- `response`: Incremental response chunk
+- `error`: Error occurred
+- `completed`: Execution finished
+
+**Non-Streaming Mode (stream=false):**
+Returns complete AgentExecutionResponse when done.
+
+The agent will:
+- Analyze case context and previous conversation
+- Use available tools (read evidence, search knowledge)
+- Generate hypotheses and recommendations
+- Stream thinking process in real-time
+
+Token usage is tracked and the session will auto-pause if budget is exceeded.
+""",
+)
+async def execute_agent(
+    case_id: str = Path(..., description="Case ID"),
+    session_id: str = Path(..., description="Investigation session ID"),
+    request: AgentExecutionRequest = ...,
+    organization_id: str = Header(..., alias="X-Organization-ID"),
+    user_id: str = Header(..., alias="X-User-ID"),
+    agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
+) -> AgentExecutionResponse:
+    """Execute AI agent for troubleshooting investigation.
+
+    Supports two modes:
+    1. Streaming (stream=true): Returns Server-Sent Events (SSE) with real-time updates
+    2. Non-streaming (stream=false): Returns complete response when done
+
+    Headers:
+        X-Organization-ID: Organization identifier (required)
+        X-User-ID: User identifier (required)
+
+    Args:
+        case_id: Case the session belongs to
+        session_id: Unique session identifier
+        request: Agent execution request with user message
+        organization_id: Organization owning the case
+        user_id: User executing the agent
+        agent_service: Injected agent orchestration service
+
+    Returns:
+        Streaming: StreamingResponse with SSE events
+        Non-streaming: AgentExecutionResponse with complete results
+
+    Raises:
+        404: Session not found
+        403: Not authorized (wrong organization)
+        409: Session not active or budget exceeded
+        422: Validation error (invalid agent_type, etc.)
+        500: LLM or internal error
+    """
+    # Parse agent type
+    try:
+        agent_type = AgentType(request.agent_type)
+    except ValueError:
+        # Default to investigator if invalid type provided
+        agent_type = AgentType.INVESTIGATOR
+
+    if request.stream:
+        # Streaming mode: Return SSE
+        return StreamingResponse(
+            _stream_agent_execution(
+                agent_service=agent_service,
+                session_id=session_id,
+                organization_id=organization_id,
+                user_message=request.user_message,
+                agent_type=agent_type,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",  # Disable nginx buffering
+                "Connection": "keep-alive",
+            },
+        )
+    else:
+        # Non-streaming mode: Return complete response
+        return await _execute_non_streaming(
+            agent_service=agent_service,
+            session_id=session_id,
+            organization_id=organization_id,
+            user_message=request.user_message,
+            agent_type=agent_type,
+        )
+
+
+async def _stream_agent_execution(
+    agent_service: AgentOrchestrationService,
+    session_id: str,
+    organization_id: str,
+    user_message: str,
+    agent_type: AgentType,
+) -> AsyncGenerator[str, None]:
+    """Stream agent execution events as SSE.
+
+    Yields SSE-formatted events for real-time streaming to clients.
+
+    Args:
+        agent_service: Agent orchestration service
+        session_id: Investigation session ID
+        organization_id: Organization ID for authorization
+        user_message: User's question/request
+        agent_type: Type of agent to execute
+
+    Yields:
+        SSE-formatted event strings
+    """
+    try:
+        async for event in agent_service.execute_agent(
+            session_id=session_id,
+            organization_id=organization_id,
+            user_message=user_message,
+            agent_type=agent_type,
+            stream=True,
+        ):
+            # Convert ExecutionEvent to SSE format
+            sse_event = ExecutionEventSSE.from_execution_event(event)
+            yield sse_event.to_sse()
+
+    except NotFoundError as e:
+        # Session not found
+        error_event = ExecutionEventSSE.error_event(
+            error_code="not_found",
+            message=str(e),
+        )
+        yield error_event.to_sse()
+
+    except AuthorizationError as e:
+        # Wrong organization
+        error_event = ExecutionEventSSE.error_event(
+            error_code="forbidden",
+            message=str(e),
+        )
+        yield error_event.to_sse()
+
+    except ConflictError as e:
+        # Session not active or budget exceeded
+        error_event = ExecutionEventSSE.error_event(
+            error_code="conflict",
+            message=str(e),
+        )
+        yield error_event.to_sse()
+
+    except LLMException as e:
+        # LLM error
+        error_event = ExecutionEventSSE.error_event(
+            error_code="llm_error",
+            message=str(e),
+        )
+        yield error_event.to_sse()
+
+    except ServiceError as e:
+        # Service error
+        error_event = ExecutionEventSSE.error_event(
+            error_code="service_error",
+            message=str(e),
+        )
+        yield error_event.to_sse()
+
+    except Exception as e:
+        # Unexpected error
+        logger.exception("Unexpected error during agent execution streaming")
+        error_event = ExecutionEventSSE.error_event(
+            error_code="internal_error",
+            message="An unexpected error occurred",
+        )
+        yield error_event.to_sse()
+
+
+async def _execute_non_streaming(
+    agent_service: AgentOrchestrationService,
+    session_id: str,
+    organization_id: str,
+    user_message: str,
+    agent_type: AgentType,
+) -> AgentExecutionResponse:
+    """Execute agent in non-streaming mode.
+
+    Collects all events and returns complete response when done.
+
+    Args:
+        agent_service: Agent orchestration service
+        session_id: Investigation session ID
+        organization_id: Organization ID for authorization
+        user_message: User's question/request
+        agent_type: Type of agent to execute
+
+    Returns:
+        AgentExecutionResponse with complete execution results
+
+    Raises:
+        NotFoundError: Session not found
+        AuthorizationError: Wrong organization
+        ConflictError: Session not active or budget exceeded
+        ServiceError: LLM or internal error
+    """
+    execution_id: Optional[str] = None
+    response_parts: list = []
+    total_tokens: int = 0
+
+    async for event in agent_service.execute_agent(
+        session_id=session_id,
+        organization_id=organization_id,
+        user_message=user_message,
+        agent_type=agent_type,
+        stream=False,
+    ):
+        if event.event_type == ExecutionEventType.STARTED:
+            if event.metadata:
+                execution_id = event.metadata.get("execution_id") or event.execution_id
+
+        elif event.event_type == ExecutionEventType.RESPONSE:
+            response_parts.append(event.content)
+
+        elif event.event_type == ExecutionEventType.COMPLETED:
+            if event.metadata:
+                total_tokens = event.metadata.get("total_tokens", 0)
+            if not execution_id:
+                execution_id = event.execution_id
+
+    # Get the execution record from repository
+    if execution_id:
+        execution = await agent_service.get_execution(execution_id, organization_id)
+        if execution:
+            return AgentExecutionResponse.from_domain(execution)
+
+    # Fallback if we couldn't get the execution record
+    from datetime import datetime, timezone
+    return AgentExecutionResponse(
+        execution_id=execution_id or "unknown",
+        status="completed",
+        agent_response="".join(response_parts),
+        tokens_used=total_tokens,
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+        tool_calls=[],
+    )
+
+
+@router.get(
+    "/executions",
+    response_model=list,
+    status_code=status.HTTP_200_OK,
+    summary="List executions for session",
+    description="List all agent executions for a session.",
+)
+async def list_executions(
+    case_id: str = Path(..., description="Case ID"),
+    session_id: str = Path(..., description="Investigation session ID"),
+    organization_id: str = Header(..., alias="X-Organization-ID"),
+    limit: int = 50,
+    offset: int = 0,
+    agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
+) -> list:
+    """List all agent executions for a case.
+
+    Note: This endpoint lists executions at the case level since
+    executions are associated with cases, not individual sessions.
+
+    Headers:
+        X-Organization-ID: Organization identifier (required)
+
+    Args:
+        case_id: Case ID
+        session_id: Session ID (for path consistency)
+        organization_id: Organization owning the case
+        limit: Maximum number of results (default 50)
+        offset: Pagination offset (default 0)
+        agent_service: Injected agent orchestration service
+
+    Returns:
+        List of AgentExecutionResponse
+
+    Raises:
+        404: Case not found
+        403: Not authorized
+    """
+    executions, total = await agent_service.list_executions(
+        case_id=case_id,
+        organization_id=organization_id,
+        limit=limit,
+        offset=offset,
+    )
+
+    return [AgentExecutionResponse.from_domain(e) for e in executions]
+
+
+@router.get(
+    "/executions/{execution_id}",
+    response_model=AgentExecutionResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get execution by ID",
+    description="Get details of a specific agent execution.",
+)
+async def get_execution(
+    case_id: str = Path(..., description="Case ID"),
+    session_id: str = Path(..., description="Investigation session ID"),
+    execution_id: str = Path(..., description="Execution ID"),
+    organization_id: str = Header(..., alias="X-Organization-ID"),
+    agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
+) -> AgentExecutionResponse:
+    """Get details of a specific agent execution.
+
+    Headers:
+        X-Organization-ID: Organization identifier (required)
+
+    Args:
+        case_id: Case ID
+        session_id: Session ID (for path consistency)
+        execution_id: Execution ID
+        organization_id: Organization owning the case
+        agent_service: Injected agent orchestration service
+
+    Returns:
+        AgentExecutionResponse with execution details
+
+    Raises:
+        404: Execution not found
+        403: Not authorized
+    """
+    execution = await agent_service.get_execution(execution_id, organization_id)
+
+    if not execution:
+        raise NotFoundError("Execution", execution_id)
+
+    # Verify the execution belongs to the specified case
+    if execution.case_id != case_id:
+        raise NotFoundError("Execution", execution_id)
+
+    return AgentExecutionResponse.from_domain(execution)
+
+
+@router.post(
+    "/executions/{execution_id}/cancel",
+    status_code=status.HTTP_200_OK,
+    summary="Cancel running execution",
+    description="Cancel a running agent execution.",
+)
+async def cancel_execution(
+    case_id: str = Path(..., description="Case ID"),
+    session_id: str = Path(..., description="Investigation session ID"),
+    execution_id: str = Path(..., description="Execution ID"),
+    organization_id: str = Header(..., alias="X-Organization-ID"),
+    agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
+) -> dict:
+    """Cancel a running agent execution.
+
+    Headers:
+        X-Organization-ID: Organization identifier (required)
+
+    Args:
+        case_id: Case ID
+        session_id: Session ID (for path consistency)
+        execution_id: Execution ID
+        organization_id: Organization owning the case
+        agent_service: Injected agent orchestration service
+
+    Returns:
+        Status message
+
+    Raises:
+        404: Execution not found
+        403: Not authorized
+        409: Execution not running
+    """
+    cancelled = await agent_service.cancel_execution(execution_id, organization_id)
+
+    if not cancelled:
+        raise NotFoundError("Execution", execution_id)
+
+    return {"status": "cancelled", "execution_id": execution_id}

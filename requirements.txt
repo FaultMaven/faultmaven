@@ -2,6 +2,7 @@
 fastapi>=0.115.8
 uvicorn>=0.28.0
 python-multipart>=0.0.9
+sse-starlette>=2.0.0  # Server-Sent Events support for streaming (TASK-016)
 
 # --- NEW: Agent Framework ---
 langgraph>=0.1.2 # Critical for the stateful agent architecture

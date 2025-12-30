@@ -29,7 +29,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from faultmaven.api.exception_handlers import get_exception_handlers
-from faultmaven.api.routes import cases, sessions, evidence
+from faultmaven.api.routes import cases, sessions, evidence, agent
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -84,6 +84,10 @@ def create_app() -> FastAPI:
                 "description": "Evidence artifact operations",
             },
             {
+                "name": "Agent Execution",
+                "description": "Execute AI agents for troubleshooting investigations with streaming support",
+            },
+            {
                 "name": "Health",
                 "description": "Health check and status endpoints",
             },
@@ -109,6 +113,7 @@ def create_app() -> FastAPI:
     app.include_router(cases.router)
     app.include_router(sessions.router)
     app.include_router(evidence.router)
+    app.include_router(agent.router)
 
     # Health check endpoint
     @app.get("/health", tags=["Health"])
