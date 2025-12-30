@@ -234,19 +234,22 @@ class TestEdgeCases:
         password = "Test Pass 123!"
         hashed = hash_password(password)
         assert verify_password(password, hashed) is True
-        # Spaces don't count as special chars in our validation
-        with pytest.raises(ValidationException):
-            validate_password_strength(password)
+        # This password has uppercase (T), lowercase (est, ass), digit (123), and special (!)
+        # So it should pass validation
+        validate_password_strength(password)  # Should not raise
 
     def test_bcrypt_truncation(self):
         """Passwords over 72 bytes are truncated by bcrypt."""
         # bcrypt only uses first 72 bytes
-        base = "A" * 71
-        password1 = base + "X@1"
-        password2 = base + "Y@1"
+        # Two passwords that differ only after byte 72 will hash the same
+        base = "A" * 72  # Exactly 72 bytes
+        password1 = base + "X"  # 73 bytes, but X is truncated
+        password2 = base + "Y"  # 73 bytes, but Y is truncated
         hashed1 = hash_password(password1)
-        # Due to truncation, these may verify the same
-        # This is expected bcrypt behavior
+        # Due to truncation, password2 should verify against hashed1
+        assert verify_password(password2, hashed1) is True
+        # Both passwords verify as the same (first 72 bytes are identical)
+        assert verify_password(password1, hashed1) is True
 
     def test_min_password_length_constant(self):
         """MIN_PASSWORD_LENGTH should be 8."""

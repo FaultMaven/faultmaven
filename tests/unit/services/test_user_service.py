@@ -347,6 +347,90 @@ class TestRequestPasswordReset:
             )
             assert token == "dummy-token"
 
+    @pytest.mark.asyncio
+    async def test_reset_request_generates_jwt_token(self, user_service, user_repo):
+        """Reset request should generate a JWT token."""
+        # Register user
+        await user_service.register_user(
+            email="resetjwt@example.com",
+            password="TestP@ssw0rd!",
+            full_name="Reset JWT User",
+        )
+
+        token = await user_service.request_password_reset(email="resetjwt@example.com")
+        # JWT tokens have 3 parts separated by dots
+        assert token is not None
+        assert token.count(".") == 2
+
+    @pytest.mark.asyncio
+    async def test_reset_request_token_contains_user_id(self, user_service, user_repo):
+        """Reset token should contain user_id in claims."""
+        import jwt
+
+        # Register user
+        user = await user_service.register_user(
+            email="resettok@example.com",
+            password="TestP@ssw0rd!",
+            full_name="Reset Token User",
+        )
+
+        token = await user_service.request_password_reset(email="resettok@example.com")
+
+        # Decode without verification to check claims
+        claims = jwt.decode(token, options={"verify_signature": False})
+        assert claims.get("sub") == user.user_id
+
+    @pytest.mark.asyncio
+    async def test_reset_request_token_has_expiration(self, user_service, user_repo):
+        """Reset token should have expiration time."""
+        import jwt
+
+        # Register user
+        await user_service.register_user(
+            email="resetexp@example.com",
+            password="TestP@ssw0rd!",
+            full_name="Reset Exp User",
+        )
+
+        token = await user_service.request_password_reset(email="resetexp@example.com")
+
+        # Decode without verification to check claims
+        claims = jwt.decode(token, options={"verify_signature": False})
+        assert "exp" in claims
+
+    @pytest.mark.asyncio
+    async def test_reset_request_token_has_type(self, user_service, user_repo):
+        """Reset token should have password_reset type."""
+        import jwt
+
+        # Register user
+        await user_service.register_user(
+            email="resettype@example.com",
+            password="TestP@ssw0rd!",
+            full_name="Reset Type User",
+        )
+
+        token = await user_service.request_password_reset(email="resettype@example.com")
+
+        # Decode without verification to check claims
+        claims = jwt.decode(token, options={"verify_signature": False})
+        assert claims.get("type") == "password_reset"
+
+    @pytest.mark.asyncio
+    async def test_reset_request_case_insensitive_email(self, user_service, user_repo):
+        """Reset request should work with different email case."""
+        # Register with lowercase
+        await user_service.register_user(
+            email="casetest@example.com",
+            password="TestP@ssw0rd!",
+            full_name="Case Test User",
+        )
+
+        # Request with uppercase
+        token = await user_service.request_password_reset(email="CASETEST@EXAMPLE.COM")
+        assert token is not None
+        assert token.count(".") == 2  # Valid JWT
+
 
 class TestResetPassword:
     """Tests for UserService.reset_password()."""
@@ -436,6 +520,112 @@ class TestResetPassword:
                     new_password="NewP@ssw0rd!",
                 )
             assert "INVALID_RESET_TOKEN" in excinfo.value.error_code
+
+    @pytest.mark.asyncio
+    async def test_reset_password_user_can_login_after(self, user_service, user_repo):
+        """After reset, user should be able to login with new password."""
+        # Register user
+        user = await user_service.register_user(
+            email="resetlogin@example.com",
+            password="OldP@ssw0rd!",
+            full_name="Reset Login User",
+        )
+
+        # Mock token verification
+        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+            mock_verify.return_value = {
+                "sub": user.user_id,
+                "type": "password_reset",
+                "jti": "test-jti",
+            }
+
+            await user_service.reset_password(
+                reset_token="valid-token",
+                new_password="NewP@ssw0rd!",
+            )
+
+        # Should be able to authenticate with new password
+        authed_user, _, _ = await user_service.authenticate_user(
+            email="resetlogin@example.com",
+            password="NewP@ssw0rd!",
+        )
+        assert authed_user is not None
+
+    @pytest.mark.asyncio
+    async def test_reset_password_old_password_fails(self, user_service, user_repo):
+        """After reset, old password should fail authentication."""
+        # Register user
+        user = await user_service.register_user(
+            email="resetoldfail@example.com",
+            password="OldP@ssw0rd!",
+            full_name="Reset Old Fail User",
+        )
+
+        # Mock token verification
+        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+            mock_verify.return_value = {
+                "sub": user.user_id,
+                "type": "password_reset",
+                "jti": "test-jti",
+            }
+
+            await user_service.reset_password(
+                reset_token="valid-token",
+                new_password="NewP@ssw0rd!",
+            )
+
+        # Old password should fail
+        with pytest.raises(AuthenticationError):
+            await user_service.authenticate_user(
+                email="resetoldfail@example.com",
+                password="OldP@ssw0rd!",
+            )
+
+    @pytest.mark.asyncio
+    async def test_reset_password_updates_updated_at(self, user_service, user_repo):
+        """Password reset should update the updated_at timestamp."""
+        # Register user
+        user = await user_service.register_user(
+            email="resetupdated@example.com",
+            password="OldP@ssw0rd!",
+            full_name="Reset Updated User",
+        )
+        original_updated = user.updated_at
+
+        # Small delay to ensure timestamp difference
+        import asyncio
+        await asyncio.sleep(0.01)
+
+        # Mock token verification
+        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+            mock_verify.return_value = {
+                "sub": user.user_id,
+                "type": "password_reset",
+                "jti": "test-jti",
+            }
+
+            updated_user = await user_service.reset_password(
+                reset_token="valid-token",
+                new_password="NewP@ssw0rd!",
+            )
+
+            assert updated_user.updated_at >= original_updated
+
+    @pytest.mark.asyncio
+    async def test_reset_password_nonexistent_user(self, user_service):
+        """Password reset should fail for non-existent user."""
+        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+            mock_verify.return_value = {
+                "sub": "nonexistent-user-id",
+                "type": "password_reset",
+                "jti": "test-jti",
+            }
+
+            with pytest.raises((AuthenticationError, NotFoundError)):
+                await user_service.reset_password(
+                    reset_token="valid-token",
+                    new_password="NewP@ssw0rd!",
+                )
 
 
 class TestChangePassword:

@@ -37,6 +37,9 @@ def hash_password(plain_password: str) -> str:
     balance of security and performance. The resulting hash includes
     the salt and can be used directly for verification.
 
+    Note: bcrypt has a 72-byte limit. Passwords longer than 72 bytes
+    (after UTF-8 encoding) are truncated. This is standard bcrypt behavior.
+
     Args:
         plain_password: Plain text password to hash
 
@@ -48,8 +51,10 @@ def hash_password(plain_password: str) -> str:
         >>> hashed.startswith("$2b$12$")
         True
     """
+    # bcrypt has a 72-byte limit - truncate to prevent ValueError
+    password_bytes = plain_password.encode("utf-8")[:72]
     salt = bcrypt.gensalt(rounds=BCRYPT_COST_FACTOR)
-    hashed = bcrypt.hashpw(plain_password.encode("utf-8"), salt)
+    hashed = bcrypt.hashpw(password_bytes, salt)
     return hashed.decode("utf-8")
 
 
@@ -57,6 +62,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify password against bcrypt hash.
 
     Performs constant-time comparison to prevent timing attacks.
+
+    Note: bcrypt has a 72-byte limit. Passwords longer than 72 bytes
+    (after UTF-8 encoding) are truncated before verification.
 
     Args:
         plain_password: Plain text password to verify
@@ -73,9 +81,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         False
     """
     try:
-        return bcrypt.checkpw(
-            plain_password.encode("utf-8"), hashed_password.encode("utf-8")
-        )
+        # bcrypt has a 72-byte limit - truncate to match hash_password behavior
+        password_bytes = plain_password.encode("utf-8")[:72]
+        return bcrypt.checkpw(password_bytes, hashed_password.encode("utf-8"))
     except (ValueError, TypeError):
         # Invalid hash format or encoding error
         return False

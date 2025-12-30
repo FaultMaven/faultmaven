@@ -43,6 +43,11 @@ python-json-logger>=2.0.7 # For JSON log formatting
 # --- NEW: Session Management ---
 redis[hiredis]>=5.0.0 # For distributed session storage
 
+# --- NEW: Authentication (TASK-017, TASK-018) ---
+PyJWT>=2.8.0 # For JWT token handling
+bcrypt>=4.0.0 # For password hashing
+email-validator>=2.0.0 # For pydantic email validation
+
 # --- NEW: Database (PostgreSQL) ---
 sqlalchemy[asyncio]>=2.0.0 # For async ORM and database abstraction
 asyncpg>=0.29.0 # For async PostgreSQL driver
