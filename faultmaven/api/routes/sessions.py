@@ -1,4 +1,4 @@
-"""Investigation Session API Routes (TASK-014, TASK-017)
+"""Investigation Session API Routes (TASK-014, TASK-017, TASK-020)
 
 Purpose: FastAPI routes for investigation session management operations.
 
@@ -13,18 +13,17 @@ Endpoints:
 - POST   /api/v1/cases/{case_id}/sessions/{session_id}/complete - Complete session
 
 Authentication:
-- JWT Bearer token (preferred): Authorization: Bearer <token>
-- Legacy headers (deprecated): X-Organization-ID, X-User-ID
+- JWT Bearer token: Authorization: Bearer <token>
 
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, Depends, Header, Query, status
+from fastapi import APIRouter, Body, Depends, Query, status
 
 from faultmaven.api.dependencies import get_investigation_session_service
-from faultmaven.api.middleware.auth import get_current_user_optional
+from faultmaven.api.middleware.auth import get_current_user
 from faultmaven.api.models import (
     SessionCreateRequest,
     SessionListResponse,
@@ -41,34 +40,6 @@ router = APIRouter(prefix="/api/v1/cases/{case_id}/sessions", tags=["Sessions"])
 
 
 # ============================================================
-# Backwards-Compatible Authentication Helper
-# ============================================================
-
-
-async def get_auth_context(
-    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
-    legacy_org_id: Optional[str] = Header(None, alias="X-Organization-ID"),
-    legacy_user_id: Optional[str] = Header(None, alias="X-User-ID"),
-) -> tuple[str, str]:
-    """Get authentication context from JWT or legacy headers."""
-    if current_user:
-        return current_user.organization_id, current_user.user_id
-
-    if legacy_org_id and legacy_user_id:
-        return legacy_org_id, legacy_user_id
-
-    if legacy_org_id:
-        return legacy_org_id, legacy_user_id or ""
-
-    from fastapi import HTTPException
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication required. Provide Bearer token or X-Organization-ID header.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
-
-# ============================================================
 # Session Endpoints
 # ============================================================
 
@@ -77,7 +48,7 @@ async def get_auth_context(
 async def create_session(
     case_id: str,
     request: SessionCreateRequest,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -88,37 +59,27 @@ async def create_session(
     Only one active session is allowed per case at a time.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID, X-User-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case to create session for
         request: Session creation request
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         session_service: Injected session service
 
     Returns:
         Created session details
 
     Raises:
+        401: Authentication required
         404: Case not found
-        403: Not authorized
         409: Active session already exists
         422: Validation error
     """
-    organization_id, user_id = auth_context
-
-    if not user_id:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User ID required for session creation",
-        )
-
     session = await session_service.create_session(
         case_id=case_id,
-        organization_id=organization_id,
-        user_id=user_id,
+        organization_id=current_user.organization_id,
+        user_id=current_user.user_id,
         session_goal=request.session_goal,
         token_budget_limit=request.token_budget_limit,
         metadata=request.metadata,
@@ -131,7 +92,7 @@ async def create_session(
 async def get_session(
     case_id: str,
     session_id: str,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -142,25 +103,22 @@ async def get_session(
     The session must belong to a case owned by the organization.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case the session belongs to
         session_id: Unique session identifier
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         session_service: Injected session service
 
     Returns:
         Session details if found and authorized
 
     Raises:
+        401: Authentication required
         404: Session not found or case not found
-        403: Not authorized
     """
-    organization_id, _ = auth_context
-
-    session = await session_service.get_session(session_id, organization_id)
+    session = await session_service.get_session(session_id, current_user.organization_id)
 
     if not session:
         raise NotFoundError("Session", session_id)
@@ -175,7 +133,7 @@ async def get_session(
 @router.get("", response_model=List[SessionResponse])
 async def list_sessions(
     case_id: str,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     status_filter: Optional[SessionStatus] = Query(None, alias="status"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -188,8 +146,7 @@ async def list_sessions(
     Retrieves all investigation sessions for a case with optional filtering.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Query Parameters:
         status: Filter by session status (active, paused, completed, abandoned)
@@ -198,7 +155,7 @@ async def list_sessions(
 
     Args:
         case_id: Case to list sessions for
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         status_filter: Optional status filter
         limit: Page size
         offset: Pagination offset
@@ -208,14 +165,12 @@ async def list_sessions(
         List of sessions for the case
 
     Raises:
+        401: Authentication required
         404: Case not found
-        403: Not authorized
     """
-    organization_id, _ = auth_context
-
     sessions = await session_service.list_sessions(
         case_id=case_id,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         status=status_filter,
         limit=limit,
         offset=offset,
@@ -229,7 +184,7 @@ async def update_session(
     case_id: str,
     session_id: str,
     request: SessionUpdateRequest,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -240,26 +195,23 @@ async def update_session(
     Only session_goal, token_budget_limit, and metadata can be updated.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case the session belongs to
         session_id: Unique session identifier
         request: Fields to update
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         session_service: Injected session service
 
     Returns:
         Updated session details
 
     Raises:
+        401: Authentication required
         404: Session not found
-        403: Not authorized
         422: Validation error
     """
-    organization_id, _ = auth_context
-
     # Build updates dict from non-None fields
     updates = {}
     if request.session_goal is not None:
@@ -271,7 +223,7 @@ async def update_session(
 
     if not updates:
         # If no updates provided, just return current session
-        session = await session_service.get_session(session_id, organization_id)
+        session = await session_service.get_session(session_id, current_user.organization_id)
         if not session:
             raise NotFoundError("Session", session_id)
         if session.case_id != case_id:
@@ -280,7 +232,7 @@ async def update_session(
 
     session = await session_service.update_session(
         session_id=session_id,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         updates=updates,
     )
 
@@ -295,7 +247,7 @@ async def update_session(
 async def pause_session(
     case_id: str,
     session_id: str,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -306,28 +258,25 @@ async def pause_session(
     can be paused. Paused sessions can be resumed later.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case the session belongs to
         session_id: Unique session identifier
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         session_service: Injected session service
 
     Returns:
         Updated session with paused status
 
     Raises:
+        401: Authentication required
         404: Session not found
-        403: Not authorized
         400: Session not active (cannot pause)
     """
-    organization_id, _ = auth_context
-
     session = await session_service.pause_session(
         session_id=session_id,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
     )
 
     # Verify session belongs to the specified case
@@ -341,7 +290,7 @@ async def pause_session(
 async def resume_session(
     case_id: str,
     session_id: str,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -352,28 +301,25 @@ async def resume_session(
     can be resumed.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case the session belongs to
         session_id: Unique session identifier
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         session_service: Injected session service
 
     Returns:
         Updated session with active status
 
     Raises:
+        401: Authentication required
         404: Session not found
-        403: Not authorized
         400: Session not paused (cannot resume)
     """
-    organization_id, _ = auth_context
-
     session = await session_service.resume_session(
         session_id=session_id,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
     )
 
     # Verify session belongs to the specified case
@@ -388,7 +334,7 @@ async def complete_session(
     case_id: str,
     session_id: str,
     findings_summary: str = Body(..., embed=True),
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -399,8 +345,7 @@ async def complete_session(
     This is a terminal action - completed sessions cannot be modified.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Body:
         findings_summary: Summary of investigation findings
@@ -409,23 +354,21 @@ async def complete_session(
         case_id: Case the session belongs to
         session_id: Unique session identifier
         findings_summary: Summary of investigation findings
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         session_service: Injected session service
 
     Returns:
         Updated session with completed status
 
     Raises:
+        401: Authentication required
         404: Session not found
-        403: Not authorized
         400: Session already in terminal state
         422: Missing findings summary
     """
-    organization_id, _ = auth_context
-
     session = await session_service.complete_session(
         session_id=session_id,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         findings_summary=findings_summary,
     )
 
@@ -439,7 +382,7 @@ async def complete_session(
 @router.get("/active", response_model=Optional[SessionResponse])
 async def get_active_session(
     case_id: str,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -450,26 +393,23 @@ async def get_active_session(
     if one exists. Each case can have at most one active session.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case to get active session for
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         session_service: Injected session service
 
     Returns:
         Active session if exists, null otherwise
 
     Raises:
+        401: Authentication required
         404: Case not found
-        403: Not authorized
     """
-    organization_id, _ = auth_context
-
     session = await session_service.get_active_session(
         case_id=case_id,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
     )
 
     if not session:

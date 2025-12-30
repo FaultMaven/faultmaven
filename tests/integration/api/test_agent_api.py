@@ -1,4 +1,4 @@
-"""Integration tests for Agent Execution API (TASK-016).
+"""Integration tests for Agent Execution API (TASK-016, TASK-020).
 
 Tests:
 - POST /api/v1/cases/{case_id}/sessions/{session_id}/execute (Streaming)
@@ -9,6 +9,10 @@ Tests:
 - Authorization errors (403 Forbidden)
 - Conflict errors (409 Conflict)
 - Not found errors (404 Not Found)
+- Missing JWT token returns 401
+
+Note: As of TASK-020, JWT authentication is required. Legacy header authentication
+(X-Organization-ID, X-User-ID) has been removed.
 """
 
 import json
@@ -28,7 +32,20 @@ from faultmaven.exceptions import (
     LLMException,
     NotFoundError,
 )
+from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
+
+
+@pytest.fixture
+def mock_user():
+    """Create a mock authenticated user for testing."""
+    return AuthenticatedUser(
+        user_id="user_789",
+        organization_id="org_456",
+        email="test@example.com",
+        roles=["admin"],
+        permissions=["sessions:execute", "executions:read", "executions:cancel"],
+    )
 
 
 @pytest.fixture
@@ -60,15 +77,21 @@ def mock_agent_service():
 
 
 @pytest.fixture
-def app(mock_agent_service):
+def app(mock_agent_service, mock_user):
     """Create test application with mocked dependencies."""
     app = create_app()
 
     async def get_mock_agent_service():
         return mock_agent_service
 
+    async def get_mock_current_user():
+        return mock_user
+
     from faultmaven.api.dependencies import get_agent_orchestration_service
+    from faultmaven.api.middleware.auth import get_current_user
+
     app.dependency_overrides[get_agent_orchestration_service] = get_mock_agent_service
+    app.dependency_overrides[get_current_user] = get_mock_current_user
 
     return app
 
@@ -81,11 +104,8 @@ def client(app):
 
 @pytest.fixture
 def headers():
-    """Standard request headers."""
-    return {
-        "X-Organization-ID": "org_456",
-        "X-User-ID": "user_789",
-    }
+    """Standard request headers (auth is mocked via dependency override)."""
+    return {}
 
 
 # ============================================================

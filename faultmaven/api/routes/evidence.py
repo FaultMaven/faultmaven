@@ -1,4 +1,4 @@
-"""Evidence Artifact API Routes (TASK-014, TASK-017)
+"""Evidence Artifact API Routes (TASK-014, TASK-017, TASK-020)
 
 Purpose: FastAPI routes for evidence artifact management operations.
 
@@ -12,8 +12,7 @@ Endpoints:
 - POST   /api/v1/cases/{case_id}/evidence/{evidence_id}/set-primary - Set primary evidence
 
 Authentication:
-- JWT Bearer token (preferred): Authorization: Bearer <token>
-- Legacy headers (deprecated): X-Organization-ID, X-User-ID
+- JWT Bearer token: Authorization: Bearer <token>
 
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
@@ -21,11 +20,11 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 import io
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from faultmaven.api.dependencies import get_evidence_artifact_service
-from faultmaven.api.middleware.auth import get_current_user_optional
+from faultmaven.api.middleware.auth import get_current_user
 from faultmaven.api.models import (
     EvidenceListResponse,
     EvidenceResponse,
@@ -41,34 +40,6 @@ router = APIRouter(prefix="/api/v1/cases/{case_id}/evidence", tags=["Evidence"])
 
 
 # ============================================================
-# Backwards-Compatible Authentication Helper
-# ============================================================
-
-
-async def get_auth_context(
-    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
-    legacy_org_id: Optional[str] = Header(None, alias="X-Organization-ID"),
-    legacy_user_id: Optional[str] = Header(None, alias="X-User-ID"),
-) -> tuple[str, str]:
-    """Get authentication context from JWT or legacy headers."""
-    if current_user:
-        return current_user.organization_id, current_user.user_id
-
-    if legacy_org_id and legacy_user_id:
-        return legacy_org_id, legacy_user_id
-
-    if legacy_org_id:
-        return legacy_org_id, legacy_user_id or ""
-
-    from fastapi import HTTPException
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication required. Provide Bearer token or X-Organization-ID header.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
-
-# ============================================================
 # Evidence Endpoints
 # ============================================================
 
@@ -80,7 +51,7 @@ async def upload_evidence(
     evidence_type: EvidenceArtifactType = Form(...),
     description: Optional[str] = Form(None),
     is_primary: bool = Form(False),
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
 ) -> EvidenceResponse:
     """Upload evidence artifact for case.
@@ -95,8 +66,7 @@ async def upload_evidence(
     - is_primary: Whether this is the primary evidence (default: false)
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID, X-User-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case to attach evidence to
@@ -104,15 +74,15 @@ async def upload_evidence(
         evidence_type: Type of evidence artifact
         description: Optional description
         is_primary: Whether this is primary evidence
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         evidence_service: Injected evidence service
 
     Returns:
         Created evidence artifact metadata
 
     Raises:
+        401: Authentication required
         404: Case not found
-        403: Not authorized
         422: Validation error
         500: File storage error
 
@@ -123,15 +93,6 @@ async def upload_evidence(
           -F "evidence_type=screenshot" \\
           -F "description=Login error screenshot"
     """
-    organization_id, user_id = auth_context
-
-    if not user_id:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User ID required for evidence upload",
-        )
-
     # Read file content
     file_data = await file.read()
 
@@ -143,8 +104,8 @@ async def upload_evidence(
 
     evidence = await evidence_service.upload_evidence(
         case_id=case_id,
-        organization_id=organization_id,
-        user_id=user_id,
+        organization_id=current_user.organization_id,
+        user_id=current_user.user_id,
         file_data=file_data,
         original_filename=original_filename,
         mime_type=mime_type,
@@ -161,7 +122,7 @@ async def upload_evidence(
 async def get_evidence(
     case_id: str,
     evidence_id: str,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
 ) -> EvidenceResponse:
     """Get evidence metadata by ID.
@@ -170,25 +131,22 @@ async def get_evidence(
     Use the /download endpoint to get the actual file content.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case the evidence belongs to
         evidence_id: Unique evidence identifier
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         evidence_service: Injected evidence service
 
     Returns:
         Evidence artifact metadata
 
     Raises:
+        401: Authentication required
         404: Evidence not found
-        403: Not authorized
     """
-    organization_id, _ = auth_context
-
-    evidence = await evidence_service.get_evidence(evidence_id, organization_id)
+    evidence = await evidence_service.get_evidence(evidence_id, current_user.organization_id)
 
     if not evidence:
         raise NotFoundError("Evidence", evidence_id)
@@ -204,7 +162,7 @@ async def get_evidence(
 async def download_evidence(
     case_id: str,
     evidence_id: str,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
 ) -> StreamingResponse:
     """Download evidence file.
@@ -214,38 +172,35 @@ async def download_evidence(
     and content-disposition headers.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case the evidence belongs to
         evidence_id: Unique evidence identifier
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         evidence_service: Injected evidence service
 
     Returns:
         Streaming response with file content
 
     Raises:
+        401: Authentication required
         404: Evidence not found
-        403: Not authorized
         500: File read error
 
     Example Response Headers:
         content-type: image/png
         content-disposition: attachment; filename="screenshot.png"
     """
-    organization_id, _ = auth_context
-
     # Verify evidence belongs to the case first
-    evidence = await evidence_service.get_evidence(evidence_id, organization_id)
+    evidence = await evidence_service.get_evidence(evidence_id, current_user.organization_id)
     if not evidence or evidence.case_id != case_id:
         raise NotFoundError("Evidence", evidence_id)
 
     # Download the file
     file_data, original_filename, mime_type = await evidence_service.download_evidence(
         evidence_id=evidence_id,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
     )
 
     # Create streaming response
@@ -262,7 +217,7 @@ async def download_evidence(
 @router.get("", response_model=List[EvidenceResponse])
 async def list_evidence(
     case_id: str,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     evidence_type: Optional[EvidenceArtifactType] = Query(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -273,8 +228,7 @@ async def list_evidence(
     Retrieves all evidence artifacts for a case with optional filtering.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Query Parameters:
         evidence_type: Filter by evidence type (screenshot, log_file, etc.)
@@ -283,7 +237,7 @@ async def list_evidence(
 
     Args:
         case_id: Case to list evidence for
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         evidence_type: Optional type filter
         limit: Page size
         offset: Pagination offset
@@ -293,14 +247,12 @@ async def list_evidence(
         List of evidence artifacts for the case
 
     Raises:
+        401: Authentication required
         404: Case not found
-        403: Not authorized
     """
-    organization_id, _ = auth_context
-
     evidence_list = await evidence_service.list_evidence_by_case(
         case_id=case_id,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         evidence_type=evidence_type,
         limit=limit,
         offset=offset,
@@ -314,7 +266,7 @@ async def update_evidence(
     case_id: str,
     evidence_id: str,
     request: EvidenceUpdateRequest,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
 ) -> EvidenceResponse:
     """Update evidence metadata.
@@ -324,28 +276,25 @@ async def update_evidence(
     content cannot be modified (must re-upload).
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case the evidence belongs to
         evidence_id: Unique evidence identifier
         request: Fields to update
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         evidence_service: Injected evidence service
 
     Returns:
         Updated evidence artifact metadata
 
     Raises:
+        401: Authentication required
         404: Evidence not found
-        403: Not authorized
         422: Validation error
     """
-    organization_id, _ = auth_context
-
     # Verify evidence belongs to the case first
-    evidence = await evidence_service.get_evidence(evidence_id, organization_id)
+    evidence = await evidence_service.get_evidence(evidence_id, current_user.organization_id)
     if not evidence or evidence.case_id != case_id:
         raise NotFoundError("Evidence", evidence_id)
 
@@ -364,7 +313,7 @@ async def update_evidence(
 
     updated_evidence = await evidence_service.update_evidence(
         evidence_id=evidence_id,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
         updates=updates,
     )
 
@@ -375,7 +324,7 @@ async def update_evidence(
 async def delete_evidence(
     case_id: str,
     evidence_id: str,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
 ) -> None:
     """Delete evidence artifact and file.
@@ -384,27 +333,24 @@ async def delete_evidence(
     This operation cannot be undone.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case the evidence belongs to
         evidence_id: Unique evidence identifier
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         evidence_service: Injected evidence service
 
     Raises:
-        403: Not authorized
+        401: Authentication required
         404: Evidence not found
     """
-    organization_id, _ = auth_context
-
     # Verify evidence belongs to the case first
-    evidence = await evidence_service.get_evidence(evidence_id, organization_id)
+    evidence = await evidence_service.get_evidence(evidence_id, current_user.organization_id)
     if not evidence or evidence.case_id != case_id:
         raise NotFoundError("Evidence", evidence_id)
 
-    deleted = await evidence_service.delete_evidence(evidence_id, organization_id)
+    deleted = await evidence_service.delete_evidence(evidence_id, current_user.organization_id)
 
     if not deleted:
         raise NotFoundError("Evidence", evidence_id)
@@ -414,7 +360,7 @@ async def delete_evidence(
 async def set_primary_evidence(
     case_id: str,
     evidence_id: str,
-    auth_context: tuple[str, str] = Depends(get_auth_context),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
 ) -> EvidenceResponse:
     """Set artifact as primary evidence for case.
@@ -424,32 +370,29 @@ async def set_primary_evidence(
     Only one evidence artifact can be primary at a time.
 
     Authentication:
-        - JWT Bearer token (preferred): Authorization: Bearer <token>
-        - Legacy headers (deprecated): X-Organization-ID
+        - JWT Bearer token: Authorization: Bearer <token>
 
     Args:
         case_id: Case the evidence belongs to
         evidence_id: Unique evidence identifier
-        auth_context: Authentication context (organization_id, user_id)
+        current_user: Authenticated user from JWT
         evidence_service: Injected evidence service
 
     Returns:
         Updated evidence artifact with is_primary=true
 
     Raises:
+        401: Authentication required
         404: Evidence not found
-        403: Not authorized
     """
-    organization_id, _ = auth_context
-
     # Verify evidence belongs to the case first
-    evidence = await evidence_service.get_evidence(evidence_id, organization_id)
+    evidence = await evidence_service.get_evidence(evidence_id, current_user.organization_id)
     if not evidence or evidence.case_id != case_id:
         raise NotFoundError("Evidence", evidence_id)
 
     updated_evidence = await evidence_service.set_primary_evidence(
         evidence_id=evidence_id,
-        organization_id=organization_id,
+        organization_id=current_user.organization_id,
     )
 
     return EvidenceResponse.from_domain(updated_evidence)

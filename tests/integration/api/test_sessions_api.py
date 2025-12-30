@@ -1,4 +1,4 @@
-"""Integration tests for Investigation Session API (TASK-014).
+"""Integration tests for Investigation Session API (TASK-014, TASK-020).
 
 Tests:
 - POST /api/v1/cases/{case_id}/sessions (201 Created)
@@ -10,6 +10,10 @@ Tests:
 - POST /api/v1/cases/{case_id}/sessions/{session_id}/complete (200 OK)
 - GET /api/v1/cases/{case_id}/sessions/active (200 OK)
 - Authorization errors (403 Forbidden)
+- Missing JWT token returns 401
+
+Note: As of TASK-020, JWT authentication is required. Legacy header authentication
+(X-Organization-ID, X-User-ID) has been removed.
 """
 
 from datetime import datetime, timezone
@@ -20,7 +24,20 @@ from fastapi import status
 from fastapi.testclient import TestClient
 
 from faultmaven.api.app import create_app
+from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.models.investigation_session import SessionStatus
+
+
+@pytest.fixture
+def mock_user():
+    """Create a mock authenticated user for testing."""
+    return AuthenticatedUser(
+        user_id="user_789",
+        organization_id="org_456",
+        email="test@example.com",
+        roles=["admin"],
+        permissions=["sessions:read", "sessions:write", "sessions:execute"],
+    )
 
 
 @pytest.fixture
@@ -54,15 +71,21 @@ def mock_session_service():
 
 
 @pytest.fixture
-def app(mock_session_service):
+def app(mock_session_service, mock_user):
     """Create test application with mocked dependencies."""
     app = create_app()
 
     async def get_mock_session_service():
         return mock_session_service
 
+    async def get_mock_current_user():
+        return mock_user
+
     from faultmaven.api.dependencies import get_investigation_session_service
+    from faultmaven.api.middleware.auth import get_current_user
+
     app.dependency_overrides[get_investigation_session_service] = get_mock_session_service
+    app.dependency_overrides[get_current_user] = get_mock_current_user
 
     return app
 
@@ -75,11 +98,8 @@ def client(app):
 
 @pytest.fixture
 def headers():
-    """Standard request headers."""
-    return {
-        "X-Organization-ID": "org_456",
-        "X-User-ID": "user_789",
-    }
+    """Standard request headers (auth is mocked via dependency override)."""
+    return {}
 
 
 # ============================================================
