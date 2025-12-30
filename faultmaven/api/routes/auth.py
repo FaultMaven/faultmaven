@@ -172,14 +172,14 @@ def get_user_service():
 
 
 # ============================================================
-# Development User Lookup (Fallback for backwards compatibility)
+# Development User Lookup (Development Fallback)
 # ============================================================
 
 
 async def _dev_validate_credentials(
     email: str, password: str
 ) -> Optional[Dict[str, Any]]:
-    """Development-only credential validation (backwards compatibility).
+    """Development-only credential validation (development fallback).
 
     For development, accepts any password for known test users.
     This is a fallback when UserService is not available.

@@ -146,7 +146,7 @@ class LLMSettings(BaseSettings):
     groq_classifier_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CLASSIFIER_MODEL")
     groq_code_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CODE_MODEL")
     
-    # Legacy model configuration (backward compatibility)
+    # Model configuration
     openai_model: str = Field(default="gpt-4o", env="OPENAI_MODEL")
     anthropic_model: str = Field(default="claude-3-sonnet-20240229", env="ANTHROPIC_MODEL")
     fireworks_model: str = Field(default="accounts/fireworks/models/llama-v3p1-405b-instruct", env="FIREWORKS_MODEL")
@@ -591,10 +591,6 @@ class SecuritySettings(BaseSettings):
     jwt_refresh_token_expire_days: int = Field(default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS")
     jwt_issuer: str = Field(default="faultmaven-api", env="JWT_ISSUER")
     jwt_audience: str = Field(default="faultmaven-app", env="JWT_AUDIENCE")
-
-    # Legacy JWT configuration (backwards compatibility)
-    jwt_secret_key: Optional[SecretStr] = Field(default=None, env="JWT_SECRET_KEY")
-    jwt_expiration_hours: int = Field(default=24, env="JWT_EXPIRATION_HOURS")
 
     # Token revocation (Redis)
     token_revocation_prefix: str = Field(default="revoked:token:", env="TOKEN_REVOCATION_PREFIX")
