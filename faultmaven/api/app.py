@@ -1,10 +1,11 @@
-"""FastAPI Application Setup (TASK-014)
+"""FastAPI Application Setup (TASK-014, TASK-017)
 
 Purpose: FastAPI application factory for the FaultMaven REST API.
 
 This module provides:
 - Application factory with CORS and exception handlers
-- Router registration for cases, sessions, and evidence
+- Router registration for cases, sessions, evidence, agent, and auth
+- JWT authentication support (TASK-017)
 - Health check endpoint
 - OpenAPI documentation configuration
 
@@ -19,6 +20,7 @@ Endpoints:
     /api/redoc      - ReDoc documentation
     /api/openapi.json - OpenAPI specification
     /health         - Health check endpoint
+    /api/v1/auth/*  - Authentication endpoints (TASK-017)
 
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
@@ -29,7 +31,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from faultmaven.api.exception_handlers import get_exception_handlers
-from faultmaven.api.routes import cases, sessions, evidence, agent
+from faultmaven.api.routes import cases, sessions, evidence, agent, auth
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -72,6 +74,10 @@ def create_app() -> FastAPI:
         openapi_url="/api/openapi.json",
         openapi_tags=[
             {
+                "name": "Authentication",
+                "description": "JWT authentication and authorization operations",
+            },
+            {
                 "name": "Cases",
                 "description": "Case management operations",
             },
@@ -110,6 +116,7 @@ def create_app() -> FastAPI:
         app.add_exception_handler(exc_class, handler)
 
     # Register routers
+    app.include_router(auth.router)  # Auth endpoints first (login, refresh, etc.)
     app.include_router(cases.router)
     app.include_router(sessions.router)
     app.include_router(evidence.router)

@@ -1,4 +1,4 @@
-"""Case Management API Routes (TASK-014)
+"""Case Management API Routes (TASK-014, TASK-017)
 
 Purpose: FastAPI routes for case management operations.
 
@@ -13,6 +13,10 @@ Endpoints:
 - POST   /api/v1/cases/{case_id}/reopen - Reopen case
 - GET    /api/v1/cases/{case_id}/statistics - Get case statistics
 
+Authentication:
+- JWT Bearer token (preferred): Authorization: Bearer <token>
+- Legacy headers (deprecated): X-Organization-ID, X-User-ID
+
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
@@ -21,6 +25,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Body, Depends, Header, Query, status
 
 from faultmaven.api.dependencies import get_api_case_service
+from faultmaven.api.middleware.auth import get_current_user_optional
 from faultmaven.api.models import (
     CaseCreateRequest,
     CaseListResponse,
@@ -28,6 +33,7 @@ from faultmaven.api.models import (
     CaseUpdateRequest,
 )
 from faultmaven.exceptions import NotFoundError
+from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.models.case import CaseSeverity, CaseStatus
 from faultmaven.services.case_service import APICaseService
 
@@ -35,34 +41,94 @@ from faultmaven.services.case_service import APICaseService
 router = APIRouter(prefix="/api/v1/cases", tags=["Cases"])
 
 
+# ============================================================
+# Backwards-Compatible Authentication Helper
+# ============================================================
+
+
+async def get_auth_context(
+    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
+    legacy_org_id: Optional[str] = Header(None, alias="X-Organization-ID"),
+    legacy_user_id: Optional[str] = Header(None, alias="X-User-ID"),
+) -> tuple[str, str]:
+    """Get authentication context from JWT or legacy headers.
+
+    Supports both JWT authentication and legacy header-based auth.
+    JWT takes precedence when provided.
+
+    Args:
+        current_user: Authenticated user from JWT (optional)
+        legacy_org_id: Legacy X-Organization-ID header
+        legacy_user_id: Legacy X-User-ID header
+
+    Returns:
+        Tuple of (organization_id, user_id)
+
+    Raises:
+        HTTPException 401: If neither JWT nor legacy headers provided
+    """
+    if current_user:
+        # JWT authentication - preferred
+        return current_user.organization_id, current_user.user_id
+
+    # Fall back to legacy headers
+    if legacy_org_id and legacy_user_id:
+        return legacy_org_id, legacy_user_id
+
+    # At least org_id must be provided for read operations
+    if legacy_org_id:
+        return legacy_org_id, legacy_user_id or ""
+
+    # No authentication provided
+    from fastapi import HTTPException
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Provide Bearer token or X-Organization-ID header.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+# ============================================================
+# Case Endpoints
+# ============================================================
+
+
 @router.post("", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
 async def create_case(
     request: CaseCreateRequest,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
-    user_id: str = Header(..., alias="X-User-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     case_service: APICaseService = Depends(get_api_case_service),
 ) -> CaseResponse:
     """Create a new case.
 
     Creates a new troubleshooting case with the specified details.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
-        X-User-ID: User identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID, X-User-ID
 
     Args:
         request: Case creation request with title, description, severity
-        organization_id: Organization creating the case
-        user_id: User creating the case
+        auth_context: Authentication context (organization_id, user_id)
         case_service: Injected case service
 
     Returns:
         Created case details
 
     Raises:
-        422: Validation error (missing headers or invalid request)
+        401: Authentication required
+        422: Validation error (invalid request)
         500: Internal server error
     """
+    organization_id, user_id = auth_context
+
+    if not user_id:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User ID required for case creation",
+        )
+
     case = await case_service.create_case(
         user_id=user_id,
         organization_id=organization_id,
@@ -78,29 +144,32 @@ async def create_case(
 @router.get("/{case_id}", response_model=CaseResponse)
 async def get_case(
     case_id: str,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     case_service: APICaseService = Depends(get_api_case_service),
 ) -> CaseResponse:
     """Get case by ID.
 
     Retrieves a specific case by its ID. The case must belong to the
-    organization specified in the header.
+    authenticated user's organization.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Unique case identifier
-        organization_id: Organization requesting the case
+        auth_context: Authentication context (organization_id, user_id)
         case_service: Injected case service
 
     Returns:
         Case details if found and authorized
 
     Raises:
+        401: Authentication required
         404: Case not found or not accessible
-        422: Missing required headers
     """
+    organization_id, _ = auth_context
+
     case = await case_service.get_case(case_id, organization_id)
 
     if not case:
@@ -111,7 +180,7 @@ async def get_case(
 
 @router.get("", response_model=CaseListResponse)
 async def list_cases(
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     status_filter: Optional[CaseStatus] = Query(None, alias="status"),
     severity: Optional[CaseSeverity] = Query(None),
     assigned_to: Optional[str] = Query(None),
@@ -124,8 +193,9 @@ async def list_cases(
     Retrieves a paginated list of cases belonging to the organization.
     Supports filtering by status, severity, and assignee.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Query Parameters:
         status: Filter by case status (consulting, investigating, resolved, closed)
@@ -135,7 +205,7 @@ async def list_cases(
         offset: Pagination offset (default 0)
 
     Args:
-        organization_id: Organization requesting cases
+        auth_context: Authentication context (organization_id, user_id)
         status_filter: Optional status filter
         severity: Optional severity filter
         assigned_to: Optional assignee filter
@@ -146,6 +216,8 @@ async def list_cases(
     Returns:
         Paginated list of cases with total count
     """
+    organization_id, _ = auth_context
+
     cases = await case_service.list_cases(
         organization_id=organization_id,
         status=status_filter,
@@ -169,7 +241,7 @@ async def list_cases(
 async def update_case(
     case_id: str,
     request: CaseUpdateRequest,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     case_service: APICaseService = Depends(get_api_case_service),
 ) -> CaseResponse:
     """Update case.
@@ -177,13 +249,14 @@ async def update_case(
     Updates specified fields of an existing case. Only provided
     fields will be updated; others remain unchanged.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Unique case identifier
         request: Fields to update
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         case_service: Injected case service
 
     Returns:
@@ -194,6 +267,8 @@ async def update_case(
         403: Not authorized to update case
         422: Validation error
     """
+    organization_id, _ = auth_context
+
     # Build updates dict from non-None fields
     updates = {}
     if request.title is not None:
@@ -226,7 +301,7 @@ async def update_case(
 @router.delete("/{case_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_case(
     case_id: str,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     case_service: APICaseService = Depends(get_api_case_service),
 ) -> None:
     """Delete case.
@@ -239,18 +314,21 @@ async def delete_case(
 
     This operation cannot be undone.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Unique case identifier
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         case_service: Injected case service
 
     Raises:
         403: Not authorized to delete case
         404: Case not found
     """
+    organization_id, _ = auth_context
+
     deleted = await case_service.delete_case(case_id, organization_id)
 
     if not deleted:
@@ -261,15 +339,16 @@ async def delete_case(
 async def assign_case(
     case_id: str,
     assigned_to: str = Body(..., embed=True),
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     case_service: APICaseService = Depends(get_api_case_service),
 ) -> CaseResponse:
     """Assign case to user.
 
     Assigns the case to a specific user for investigation.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Body:
         assigned_to: User ID to assign the case to
@@ -277,7 +356,7 @@ async def assign_case(
     Args:
         case_id: Unique case identifier
         assigned_to: User ID to assign to
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         case_service: Injected case service
 
     Returns:
@@ -288,6 +367,8 @@ async def assign_case(
         403: Not authorized to assign case
         422: Validation error
     """
+    organization_id, _ = auth_context
+
     case = await case_service.assign_case(
         case_id=case_id,
         organization_id=organization_id,
@@ -301,7 +382,7 @@ async def assign_case(
 async def close_case(
     case_id: str,
     resolution: str = Body(..., embed=True),
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     case_service: APICaseService = Depends(get_api_case_service),
 ) -> CaseResponse:
     """Close case with resolution.
@@ -311,8 +392,9 @@ async def close_case(
 
     This action can be reversed using the reopen endpoint.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Body:
         resolution: Resolution description explaining how the issue was resolved
@@ -320,7 +402,7 @@ async def close_case(
     Args:
         case_id: Unique case identifier
         resolution: Resolution description
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         case_service: Injected case service
 
     Returns:
@@ -332,6 +414,8 @@ async def close_case(
         409: Case already closed
         422: Validation error
     """
+    organization_id, _ = auth_context
+
     case = await case_service.close_case(
         case_id=case_id,
         organization_id=organization_id,
@@ -344,7 +428,7 @@ async def close_case(
 @router.post("/{case_id}/reopen", response_model=CaseResponse)
 async def reopen_case(
     case_id: str,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     case_service: APICaseService = Depends(get_api_case_service),
 ) -> CaseResponse:
     """Reopen closed case.
@@ -352,12 +436,13 @@ async def reopen_case(
     Reopens a previously closed case for continued investigation.
     The case status will be reset to CONSULTING.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Unique case identifier
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         case_service: Injected case service
 
     Returns:
@@ -368,6 +453,8 @@ async def reopen_case(
         403: Not authorized to reopen case
         409: Case not closed
     """
+    organization_id, _ = auth_context
+
     case = await case_service.reopen_case(
         case_id=case_id,
         organization_id=organization_id,
@@ -379,7 +466,7 @@ async def reopen_case(
 @router.get("/{case_id}/statistics")
 async def get_case_statistics(
     case_id: str,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     case_service: APICaseService = Depends(get_api_case_service),
 ) -> Dict[str, Any]:
     """Get case-specific statistics.
@@ -387,12 +474,13 @@ async def get_case_statistics(
     Returns statistics for a specific case including session counts,
     evidence counts, and investigation metrics.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Unique case identifier
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         case_service: Injected case service
 
     Returns:
@@ -406,6 +494,8 @@ async def get_case_statistics(
         404: Case not found
         403: Not authorized to view case
     """
+    organization_id, _ = auth_context
+
     # First verify the case exists and is accessible
     case = await case_service.get_case(case_id, organization_id)
     if not case:

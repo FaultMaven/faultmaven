@@ -1,16 +1,16 @@
-"""Agent Execution API Routes (TASK-016)
+"""Agent Execution API Routes (TASK-016, TASK-017)
 
 Purpose: FastAPI routes for AI agent execution with SSE streaming support.
 
 Endpoints:
 - POST /api/v1/cases/{case_id}/sessions/{session_id}/execute - Execute agent
+- GET  /api/v1/cases/{case_id}/sessions/{session_id}/executions - List executions
+- GET  /api/v1/cases/{case_id}/sessions/{session_id}/executions/{id} - Get execution
+- POST /api/v1/cases/{case_id}/sessions/{session_id}/executions/{id}/cancel - Cancel
 
-This endpoint enables frontend applications to:
-1. Execute agents with user messages and receive streaming responses
-2. Stream execution events in real-time (thinking, tool_call, response, completed)
-3. Support multi-turn conversations within investigation sessions
-4. Enforce authorization via organization and user headers
-5. Handle errors gracefully with proper HTTP status codes
+Authentication:
+- JWT Bearer token (preferred): Authorization: Bearer <token>
+- Legacy headers (deprecated): X-Organization-ID, X-User-ID
 
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, Header, Path, status
 from fastapi.responses import StreamingResponse
 
 from faultmaven.api.dependencies import get_agent_orchestration_service
+from faultmaven.api.middleware.auth import get_current_user_optional
 from faultmaven.api.models import (
     AgentExecutionRequest,
     AgentExecutionResponse,
@@ -37,6 +38,7 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.models.agent_execution import AgentType
+from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,39 @@ router = APIRouter(
     prefix="/api/v1/cases/{case_id}/sessions/{session_id}",
     tags=["Agent Execution"],
 )
+
+
+# ============================================================
+# Backwards-Compatible Authentication Helper
+# ============================================================
+
+
+async def get_auth_context(
+    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
+    legacy_org_id: Optional[str] = Header(None, alias="X-Organization-ID"),
+    legacy_user_id: Optional[str] = Header(None, alias="X-User-ID"),
+) -> tuple[str, str]:
+    """Get authentication context from JWT or legacy headers."""
+    if current_user:
+        return current_user.organization_id, current_user.user_id
+
+    if legacy_org_id and legacy_user_id:
+        return legacy_org_id, legacy_user_id
+
+    if legacy_org_id:
+        return legacy_org_id, legacy_user_id or ""
+
+    from fastapi import HTTPException
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Provide Bearer token or X-Organization-ID header.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+# ============================================================
+# Agent Execution Endpoints
+# ============================================================
 
 
 @router.post(
@@ -76,6 +111,10 @@ router = APIRouter(
 Execute an AI agent to analyze the case and generate recommendations.
 Supports streaming (SSE) or non-streaming mode.
 
+**Authentication:**
+- JWT Bearer token (preferred): Authorization: Bearer <token>
+- Legacy headers (deprecated): X-Organization-ID, X-User-ID
+
 **Streaming Mode (stream=true, default):**
 Returns Server-Sent Events (SSE) with real-time updates including:
 - `started`: Execution has begun
@@ -102,8 +141,7 @@ async def execute_agent(
     case_id: str = Path(..., description="Case ID"),
     session_id: str = Path(..., description="Investigation session ID"),
     request: AgentExecutionRequest = ...,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
-    user_id: str = Header(..., alias="X-User-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
 ) -> AgentExecutionResponse:
     """Execute AI agent for troubleshooting investigation.
@@ -112,16 +150,15 @@ async def execute_agent(
     1. Streaming (stream=true): Returns Server-Sent Events (SSE) with real-time updates
     2. Non-streaming (stream=false): Returns complete response when done
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
-        X-User-ID: User identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID, X-User-ID
 
     Args:
         case_id: Case the session belongs to
         session_id: Unique session identifier
         request: Agent execution request with user message
-        organization_id: Organization owning the case
-        user_id: User executing the agent
+        auth_context: Authentication context (organization_id, user_id)
         agent_service: Injected agent orchestration service
 
     Returns:
@@ -129,12 +166,22 @@ async def execute_agent(
         Non-streaming: AgentExecutionResponse with complete results
 
     Raises:
+        401: Authentication required
         404: Session not found
         403: Not authorized (wrong organization)
         409: Session not active or budget exceeded
         422: Validation error (invalid agent_type, etc.)
         500: LLM or internal error
     """
+    organization_id, user_id = auth_context
+
+    if not user_id:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User ID required for agent execution",
+        )
+
     # Parse and validate agent type
     try:
         agent_type = AgentType(request.agent_type)
@@ -332,7 +379,7 @@ regardless of which session initiated them.""",
 async def list_executions(
     case_id: str = Path(..., description="Case ID"),
     session_id: str = Path(..., description="Session ID (for URL consistency, not used for filtering)"),
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     limit: int = 50,
     offset: int = 0,
     agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
@@ -344,13 +391,14 @@ async def list_executions(
     /execute endpoint, but executions are filtered by case_id only.
     This allows viewing all executions across multiple investigation sessions.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Case ID to list executions for
         session_id: Session ID (included for URL consistency, not used for filtering)
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         limit: Maximum number of results (default 50)
         offset: Pagination offset (default 0)
         agent_service: Injected agent orchestration service
@@ -359,9 +407,12 @@ async def list_executions(
         List of AgentExecutionResponse for all executions in the case
 
     Raises:
+        401: Authentication required
         404: Case not found
         403: Not authorized
     """
+    organization_id, _ = auth_context
+
     # Note: session_id is not used for filtering - executions are per-case
     _ = session_id  # Explicitly mark as intentionally unused
 
@@ -386,28 +437,32 @@ async def get_execution(
     case_id: str = Path(..., description="Case ID"),
     session_id: str = Path(..., description="Session ID (for URL consistency)"),
     execution_id: str = Path(..., description="Execution ID"),
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
 ) -> AgentExecutionResponse:
     """Get details of a specific agent execution.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Case ID the execution belongs to
         session_id: Session ID (for URL consistency, not used for lookup)
         execution_id: Execution ID to retrieve
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         agent_service: Injected agent orchestration service
 
     Returns:
         AgentExecutionResponse with execution details
 
     Raises:
+        401: Authentication required
         404: Execution not found or doesn't belong to case
         403: Not authorized
     """
+    organization_id, _ = auth_context
+
     _ = session_id  # Explicitly mark as intentionally unused
 
     execution = await agent_service.get_execution(execution_id, organization_id)
@@ -432,29 +487,33 @@ async def cancel_execution(
     case_id: str = Path(..., description="Case ID"),
     session_id: str = Path(..., description="Session ID (for URL consistency)"),
     execution_id: str = Path(..., description="Execution ID"),
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
 ) -> dict:
     """Cancel a running agent execution.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Case ID (for URL consistency)
         session_id: Session ID (for URL consistency, not used)
         execution_id: Execution ID to cancel
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         agent_service: Injected agent orchestration service
 
     Returns:
         Status message with cancelled execution ID
 
     Raises:
+        401: Authentication required
         404: Execution not found
         403: Not authorized
         409: Execution not running (cannot be cancelled)
     """
+    organization_id, _ = auth_context
+
     _ = session_id  # Explicitly mark as intentionally unused
     _ = case_id  # Case ID verification done by cancel_execution
 

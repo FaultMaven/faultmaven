@@ -1,4 +1,4 @@
-"""Investigation Session API Routes (TASK-014)
+"""Investigation Session API Routes (TASK-014, TASK-017)
 
 Purpose: FastAPI routes for investigation session management operations.
 
@@ -12,6 +12,10 @@ Endpoints:
 - POST   /api/v1/cases/{case_id}/sessions/{session_id}/resume   - Resume session
 - POST   /api/v1/cases/{case_id}/sessions/{session_id}/complete - Complete session
 
+Authentication:
+- JWT Bearer token (preferred): Authorization: Bearer <token>
+- Legacy headers (deprecated): X-Organization-ID, X-User-ID
+
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
@@ -20,6 +24,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Body, Depends, Header, Query, status
 
 from faultmaven.api.dependencies import get_investigation_session_service
+from faultmaven.api.middleware.auth import get_current_user_optional
 from faultmaven.api.models import (
     SessionCreateRequest,
     SessionListResponse,
@@ -27,6 +32,7 @@ from faultmaven.api.models import (
     SessionUpdateRequest,
 )
 from faultmaven.exceptions import NotFoundError
+from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.models.investigation_session import SessionStatus
 from faultmaven.services.investigation_session_service import APIInvestigationSessionService
 
@@ -34,12 +40,44 @@ from faultmaven.services.investigation_session_service import APIInvestigationSe
 router = APIRouter(prefix="/api/v1/cases/{case_id}/sessions", tags=["Sessions"])
 
 
+# ============================================================
+# Backwards-Compatible Authentication Helper
+# ============================================================
+
+
+async def get_auth_context(
+    current_user: Optional[AuthenticatedUser] = Depends(get_current_user_optional),
+    legacy_org_id: Optional[str] = Header(None, alias="X-Organization-ID"),
+    legacy_user_id: Optional[str] = Header(None, alias="X-User-ID"),
+) -> tuple[str, str]:
+    """Get authentication context from JWT or legacy headers."""
+    if current_user:
+        return current_user.organization_id, current_user.user_id
+
+    if legacy_org_id and legacy_user_id:
+        return legacy_org_id, legacy_user_id
+
+    if legacy_org_id:
+        return legacy_org_id, legacy_user_id or ""
+
+    from fastapi import HTTPException
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Provide Bearer token or X-Organization-ID header.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+# ============================================================
+# Session Endpoints
+# ============================================================
+
+
 @router.post("", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 async def create_session(
     case_id: str,
     request: SessionCreateRequest,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
-    user_id: str = Header(..., alias="X-User-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -49,15 +87,14 @@ async def create_session(
     Creates a new investigation session for the specified case.
     Only one active session is allowed per case at a time.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
-        X-User-ID: User identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID, X-User-ID
 
     Args:
         case_id: Case to create session for
         request: Session creation request
-        organization_id: Organization owning the case
-        user_id: User creating the session
+        auth_context: Authentication context (organization_id, user_id)
         session_service: Injected session service
 
     Returns:
@@ -69,6 +106,15 @@ async def create_session(
         409: Active session already exists
         422: Validation error
     """
+    organization_id, user_id = auth_context
+
+    if not user_id:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User ID required for session creation",
+        )
+
     session = await session_service.create_session(
         case_id=case_id,
         organization_id=organization_id,
@@ -85,7 +131,7 @@ async def create_session(
 async def get_session(
     case_id: str,
     session_id: str,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -95,13 +141,14 @@ async def get_session(
     Retrieves a specific investigation session by its ID.
     The session must belong to a case owned by the organization.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Case the session belongs to
         session_id: Unique session identifier
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         session_service: Injected session service
 
     Returns:
@@ -111,6 +158,8 @@ async def get_session(
         404: Session not found or case not found
         403: Not authorized
     """
+    organization_id, _ = auth_context
+
     session = await session_service.get_session(session_id, organization_id)
 
     if not session:
@@ -126,7 +175,7 @@ async def get_session(
 @router.get("", response_model=List[SessionResponse])
 async def list_sessions(
     case_id: str,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     status_filter: Optional[SessionStatus] = Query(None, alias="status"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -138,8 +187,9 @@ async def list_sessions(
 
     Retrieves all investigation sessions for a case with optional filtering.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Query Parameters:
         status: Filter by session status (active, paused, completed, abandoned)
@@ -148,7 +198,7 @@ async def list_sessions(
 
     Args:
         case_id: Case to list sessions for
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         status_filter: Optional status filter
         limit: Page size
         offset: Pagination offset
@@ -161,6 +211,8 @@ async def list_sessions(
         404: Case not found
         403: Not authorized
     """
+    organization_id, _ = auth_context
+
     sessions = await session_service.list_sessions(
         case_id=case_id,
         organization_id=organization_id,
@@ -177,7 +229,7 @@ async def update_session(
     case_id: str,
     session_id: str,
     request: SessionUpdateRequest,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -187,14 +239,15 @@ async def update_session(
     Updates specified fields of an investigation session.
     Only session_goal, token_budget_limit, and metadata can be updated.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Case the session belongs to
         session_id: Unique session identifier
         request: Fields to update
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         session_service: Injected session service
 
     Returns:
@@ -205,6 +258,8 @@ async def update_session(
         403: Not authorized
         422: Validation error
     """
+    organization_id, _ = auth_context
+
     # Build updates dict from non-None fields
     updates = {}
     if request.session_goal is not None:
@@ -240,7 +295,7 @@ async def update_session(
 async def pause_session(
     case_id: str,
     session_id: str,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -250,13 +305,14 @@ async def pause_session(
     Pauses an active investigation session. Only active sessions
     can be paused. Paused sessions can be resumed later.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Case the session belongs to
         session_id: Unique session identifier
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         session_service: Injected session service
 
     Returns:
@@ -267,6 +323,8 @@ async def pause_session(
         403: Not authorized
         400: Session not active (cannot pause)
     """
+    organization_id, _ = auth_context
+
     session = await session_service.pause_session(
         session_id=session_id,
         organization_id=organization_id,
@@ -283,7 +341,7 @@ async def pause_session(
 async def resume_session(
     case_id: str,
     session_id: str,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -293,13 +351,14 @@ async def resume_session(
     Resumes a paused investigation session. Only paused sessions
     can be resumed.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Case the session belongs to
         session_id: Unique session identifier
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         session_service: Injected session service
 
     Returns:
@@ -310,6 +369,8 @@ async def resume_session(
         403: Not authorized
         400: Session not paused (cannot resume)
     """
+    organization_id, _ = auth_context
+
     session = await session_service.resume_session(
         session_id=session_id,
         organization_id=organization_id,
@@ -327,7 +388,7 @@ async def complete_session(
     case_id: str,
     session_id: str,
     findings_summary: str = Body(..., embed=True),
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -337,8 +398,9 @@ async def complete_session(
     Completes an investigation session with a findings summary.
     This is a terminal action - completed sessions cannot be modified.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Body:
         findings_summary: Summary of investigation findings
@@ -347,7 +409,7 @@ async def complete_session(
         case_id: Case the session belongs to
         session_id: Unique session identifier
         findings_summary: Summary of investigation findings
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         session_service: Injected session service
 
     Returns:
@@ -359,6 +421,8 @@ async def complete_session(
         400: Session already in terminal state
         422: Missing findings summary
     """
+    organization_id, _ = auth_context
+
     session = await session_service.complete_session(
         session_id=session_id,
         organization_id=organization_id,
@@ -375,7 +439,7 @@ async def complete_session(
 @router.get("/active", response_model=Optional[SessionResponse])
 async def get_active_session(
     case_id: str,
-    organization_id: str = Header(..., alias="X-Organization-ID"),
+    auth_context: tuple[str, str] = Depends(get_auth_context),
     session_service: APIInvestigationSessionService = Depends(
         get_investigation_session_service
     ),
@@ -385,12 +449,13 @@ async def get_active_session(
     Returns the currently active investigation session for a case,
     if one exists. Each case can have at most one active session.
 
-    Headers:
-        X-Organization-ID: Organization identifier (required)
+    Authentication:
+        - JWT Bearer token (preferred): Authorization: Bearer <token>
+        - Legacy headers (deprecated): X-Organization-ID
 
     Args:
         case_id: Case to get active session for
-        organization_id: Organization owning the case
+        auth_context: Authentication context (organization_id, user_id)
         session_service: Injected session service
 
     Returns:
@@ -400,6 +465,8 @@ async def get_active_session(
         404: Case not found
         403: Not authorized
     """
+    organization_id, _ = auth_context
+
     session = await session_service.get_active_session(
         case_id=case_id,
         organization_id=organization_id,
