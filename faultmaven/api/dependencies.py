@@ -211,6 +211,39 @@ async def get_evidence_artifact_service(
     return factory.create_evidence_artifact_service()
 
 
+async def get_agent_orchestration_service(
+    factory: ServiceFactory = Depends(get_service_factory),
+) -> "AgentOrchestrationService":
+    """Get agent orchestration service for request.
+
+    Creates an AgentOrchestrationService with all required dependencies
+    from the service factory. This service handles AI agent execution
+    with streaming support.
+
+    Args:
+        factory: Service factory from get_service_factory
+
+    Returns:
+        AgentOrchestrationService instance
+
+    Example:
+        @app.post("/sessions/{session_id}/execute")
+        async def execute_agent(
+            session_id: str,
+            request: AgentExecutionRequest,
+            agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service)
+        ):
+            async for event in agent_service.execute_agent(
+                session_id=session_id,
+                organization_id=org_id,
+                user_message=request.user_message,
+            ):
+                yield event
+    """
+    from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
+    return factory.create_agent_orchestration_service()
+
+
 # Future service dependencies:
 
 # async def get_knowledge_service(

@@ -298,3 +298,177 @@ class ValidationErrorResponse(BaseModel):
     detail: Optional[str] = None
     status_code: int = 400
     errors: Optional[List[Dict[str, Any]]] = None
+
+
+# ============================================================
+# Agent Execution Models (TASK-016)
+# ============================================================
+
+
+class AgentExecutionRequest(BaseModel):
+    """Request model for executing an AI agent.
+
+    This model defines the input for agent execution requests,
+    supporting both streaming and non-streaming modes.
+    """
+
+    user_message: str = Field(
+        ...,
+        min_length=1,
+        max_length=10000,
+        description="User's question or request for the agent",
+    )
+    agent_type: str = Field(
+        default="investigator",
+        description="Type of agent to execute (investigator, debugger, researcher, validator, reporter)",
+    )
+    stream: bool = Field(
+        default=True,
+        description="Whether to stream response events (SSE)",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "user_message": "What is causing the 500 errors in the API?",
+                "agent_type": "investigator",
+                "stream": True,
+            }
+        }
+    )
+
+
+class ToolCallResponse(BaseModel):
+    """Response model for a tool call within an execution."""
+
+    tool_call_id: str
+    tool_name: str
+    arguments: Dict[str, Any]
+    result: Optional[str] = None
+    status: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def from_domain(cls, tool_call: Any) -> "ToolCallResponse":
+        """Create ToolCallResponse from domain AgentToolCall model.
+
+        Args:
+            tool_call: Domain AgentToolCall object
+
+        Returns:
+            ToolCallResponse instance
+        """
+        return cls(
+            tool_call_id=tool_call.tool_call_id,
+            tool_name=tool_call.tool_name,
+            arguments=tool_call.tool_input or {},
+            result=str(tool_call.tool_output) if tool_call.tool_output else None,
+            status=tool_call.status,
+        )
+
+
+class AgentExecutionResponse(BaseModel):
+    """Response model for completed agent execution (non-streaming).
+
+    Used when stream=false in the request.
+    """
+
+    execution_id: str
+    status: str
+    agent_response: str
+    tokens_used: int
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+    tool_calls: List[ToolCallResponse] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def from_domain(cls, execution: Any) -> "AgentExecutionResponse":
+        """Create AgentExecutionResponse from domain AgentExecution model.
+
+        Args:
+            execution: Domain AgentExecution object
+
+        Returns:
+            AgentExecutionResponse instance
+        """
+        return cls(
+            execution_id=execution.execution_id,
+            status=execution.status.value if hasattr(execution.status, "value") else str(execution.status),
+            agent_response=execution.response or "",
+            tokens_used=execution.get_total_tokens() if hasattr(execution, "get_total_tokens") else 0,
+            started_at=execution.started_at or execution.created_at,
+            completed_at=execution.completed_at,
+            tool_calls=[
+                ToolCallResponse.from_domain(tc)
+                for tc in (execution.tool_calls or [])
+            ],
+        )
+
+
+class ExecutionEventSSE(BaseModel):
+    """Server-Sent Event model for execution streaming.
+
+    Represents a single SSE event sent during streaming agent execution.
+    Events are formatted according to the SSE specification.
+    """
+
+    event: str = Field(
+        ...,
+        description="Event type: started, thinking, tool_call, tool_result, response, error, completed",
+    )
+    data: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Event data payload",
+    )
+
+    def to_sse(self) -> str:
+        """Convert to SSE format string.
+
+        Returns:
+            SSE-formatted string with event and data lines
+        """
+        import json
+        data_json = json.dumps(self.data)
+        return f"event: {self.event}\ndata: {data_json}\n\n"
+
+    @classmethod
+    def from_execution_event(cls, event: Any) -> "ExecutionEventSSE":
+        """Create ExecutionEventSSE from domain ExecutionEvent.
+
+        Args:
+            event: Domain ExecutionEvent object
+
+        Returns:
+            ExecutionEventSSE instance
+        """
+        return cls(
+            event=event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type),
+            data={
+                "content": event.content,
+                "metadata": event.metadata or {},
+                "timestamp": event.timestamp.isoformat() if hasattr(event.timestamp, "isoformat") else str(event.timestamp),
+                "execution_id": event.execution_id,
+            },
+        )
+
+    @classmethod
+    def error_event(cls, error_code: str, message: str) -> "ExecutionEventSSE":
+        """Create an error SSE event.
+
+        Args:
+            error_code: Error code (not_found, forbidden, conflict, llm_error, internal_error)
+            message: Human-readable error message
+
+        Returns:
+            ExecutionEventSSE instance for the error
+        """
+        return cls(
+            event="error",
+            data={
+                "error": error_code,
+                "message": message,
+            },
+        )
