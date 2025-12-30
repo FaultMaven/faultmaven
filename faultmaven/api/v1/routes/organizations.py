@@ -1,15 +1,18 @@
-"""Organization Management API Routes
+"""Organization Management API Routes (TASK-021)
 
-Purpose: REST API endpoints for organization and RBAC management
+Purpose: REST API endpoints for organization and multi-tenant management
 
 This module provides REST API endpoints for managing organizations,
-team collaboration, and role-based access control (RBAC).
+member management, settings, and role-based access control (RBAC).
 
 Key Endpoints:
 - Organization CRUD operations
-- Member management with roles
+- Member management (add, remove, update roles)
+- Organization settings
 - Permission checking
-- Organization discovery
+- Multi-tenant isolation
+
+Design Reference: TASK-021 Organization Management API Endpoints
 """
 
 from datetime import datetime, timezone
@@ -18,7 +21,8 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status, Body
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+import re
 
 from faultmaven.models.interfaces_user import (
     Organization,
@@ -26,15 +30,17 @@ from faultmaven.models.interfaces_user import (
     OrgPlanTier
 )
 from faultmaven.services.domain.organization_service import OrganizationService
-from faultmaven.api.v1.auth_dependencies import (
-    require_authentication,
-    get_current_user_id
-)
+from faultmaven.api.services.organization_api_service import APIOrganizationService
+from faultmaven.api.middleware.auth import get_current_user
+from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.exceptions import (
     ValidationException,
     ServiceException,
     NotFoundException,
-    PermissionDeniedException
+    PermissionDeniedException,
+    NotFoundError,
+    AuthorizationError,
+    ConflictError,
 )
 from faultmaven.container import container
 
@@ -46,34 +52,49 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# Pydantic Models
+# Pydantic Request/Response Models
 # ============================================================================
 
 class OrganizationCreateRequest(BaseModel):
     """Request to create a new organization"""
-    name: str = Field(..., description="Organization name", min_length=1, max_length=200)
-    slug: str = Field(..., description="URL-friendly identifier", min_length=1, max_length=100)
-    description: Optional[str] = Field(None, description="Organization description", max_length=1000)
-    plan_tier: OrgPlanTier = Field(OrgPlanTier.FREE, description="Subscription plan tier")
+    name: str = Field(..., description="Organization name", min_length=1, max_length=100)
+    slug: str = Field(..., description="URL-friendly identifier", min_length=3, max_length=50)
+    description: Optional[str] = Field(None, description="Organization description", max_length=500)
+    plan_tier: str = Field("free", description="Subscription plan tier")
+
+    @field_validator('slug')
+    @classmethod
+    def validate_slug(cls, v: str) -> str:
+        if not re.match(r'^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$', v):
+            raise ValueError('Slug must contain only lowercase letters, numbers, and hyphens')
+        return v
+
+    @field_validator('plan_tier')
+    @classmethod
+    def validate_plan_tier(cls, v: str) -> str:
+        valid_tiers = ['free', 'pro', 'enterprise']
+        if v.lower() not in valid_tiers:
+            raise ValueError(f'Plan tier must be one of: {", ".join(valid_tiers)}')
+        return v.lower()
 
 
 class OrganizationUpdateRequest(BaseModel):
     """Request to update organization details"""
-    name: Optional[str] = Field(None, description="Updated organization name", max_length=200)
-    description: Optional[str] = Field(None, description="Updated description", max_length=1000)
-    settings: Optional[Dict[str, Any]] = Field(None, description="Organization settings")
+    name: Optional[str] = Field(None, description="Updated organization name", max_length=100)
+    description: Optional[str] = Field(None, description="Updated description", max_length=500)
 
 
 class OrganizationResponse(BaseModel):
     """Organization details response"""
-    org_id: str
+    organization_id: str
     name: str
     slug: str
     description: Optional[str]
-    plan_tier: OrgPlanTier
+    plan_tier: str
     max_members: int
-    max_cases: Optional[int]
-    settings: Dict[str, Any]
+    current_member_count: int = 0
+    owner_user_id: Optional[str] = None
+    settings: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -81,27 +102,126 @@ class OrganizationResponse(BaseModel):
         from_attributes = True
 
 
+class OrganizationListItem(BaseModel):
+    """Organization list item with user role"""
+    organization_id: str
+    name: str
+    slug: str
+    plan_tier: str
+    role: str
+    member_since: datetime
+
+
+class OrganizationListResponse(BaseModel):
+    """Response for listing user's organizations"""
+    organizations: List[OrganizationListItem]
+    total: int
+    limit: int
+    offset: int
+
+
 class MemberAddRequest(BaseModel):
     """Request to add member to organization"""
-    user_id: str = Field(..., description="User ID to add")
-    role_id: str = Field(..., description="Role to assign (e.g., 'role_org_member')")
+    email: str = Field(..., description="Email of user to invite")
+    role: str = Field("member", description="Role to assign (member, admin)")
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        valid_roles = ['member', 'admin']
+        if v.lower() not in valid_roles:
+            raise ValueError(f'Role must be one of: {", ".join(valid_roles)}')
+        return v.lower()
 
 
 class MemberRoleUpdateRequest(BaseModel):
     """Request to update member role"""
-    role_id: str = Field(..., description="New role to assign")
+    role: str = Field(..., description="New role to assign (member, admin)")
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        valid_roles = ['member', 'admin']
+        if v.lower() not in valid_roles:
+            raise ValueError(f'Role must be one of: {", ".join(valid_roles)}')
+        return v.lower()
 
 
 class MemberResponse(BaseModel):
     """Organization member response"""
     user_id: str
-    org_id: str
-    role_id: str
+    email: str
+    full_name: str
+    role: str
     joined_at: datetime
-    last_active_at: Optional[datetime]
 
     class Config:
         from_attributes = True
+
+
+class MemberListResponse(BaseModel):
+    """Response for listing organization members"""
+    members: List[MemberResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class MemberAddResponse(BaseModel):
+    """Response for adding a member"""
+    user_id: str
+    email: str
+    full_name: str
+    role: str
+    joined_at: datetime
+    invitation_sent: bool
+
+
+class MemberRoleUpdateResponse(BaseModel):
+    """Response for updating member role"""
+    user_id: str
+    email: str
+    full_name: str
+    role: str
+    joined_at: datetime
+    updated_at: datetime
+
+
+class SettingsResponse(BaseModel):
+    """Organization settings response"""
+    organization_id: str
+    plan_tier: str
+    max_members: int
+    current_member_count: int = 0
+    max_cases_per_month: Optional[int] = None
+    max_storage_gb: int
+    features: Dict[str, bool]
+    settings: Dict[str, Any]
+
+
+class SettingsUpdateRequest(BaseModel):
+    """Request to update organization settings"""
+    allow_public_cases: Optional[bool] = None
+    require_2fa: Optional[bool] = None
+    session_timeout_minutes: Optional[int] = Field(None, ge=15, le=480)
+    default_case_priority: Optional[str] = None
+
+    @field_validator('default_case_priority')
+    @classmethod
+    def validate_priority(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            valid_priorities = ['low', 'medium', 'high', 'critical']
+            if v.lower() not in valid_priorities:
+                raise ValueError(f'Priority must be one of: {", ".join(valid_priorities)}')
+            return v.lower()
+        return v
+
+
+class SettingsUpdateResponse(BaseModel):
+    """Response for updating organization settings"""
+    organization_id: str
+    settings: Dict[str, Any]
+    updated_at: datetime
 
 
 class PermissionCheckRequest(BaseModel):
@@ -117,9 +237,44 @@ class PermissionCheckResponse(BaseModel):
     org_id: str
 
 
+class DeleteResponse(BaseModel):
+    """Generic delete response"""
+    message: str
+    organization_id: Optional[str] = None
+    user_id: Optional[str] = None
+
+
 # ============================================================================
 # Dependencies
 # ============================================================================
+
+async def get_api_organization_service() -> APIOrganizationService:
+    """Get APIOrganizationService instance from container"""
+    org_service = container.get_organization_service()
+    if org_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Organization service not available"
+        )
+
+    # Get optional services
+    user_service = None
+    auth_service = None
+    try:
+        user_service = container.get_user_service()
+    except Exception:
+        pass
+    try:
+        auth_service = container.get_auth_service()
+    except Exception:
+        pass
+
+    return APIOrganizationService(
+        organization_service=org_service,
+        user_service=user_service,
+        auth_service=auth_service,
+    )
+
 
 async def get_organization_service() -> OrganizationService:
     """Get OrganizationService instance from container"""
@@ -133,7 +288,7 @@ async def get_organization_service() -> OrganizationService:
 
 
 # ============================================================================
-# Organization Endpoints
+# Organization CRUD Endpoints
 # ============================================================================
 
 @router.post(
@@ -145,35 +300,41 @@ async def get_organization_service() -> OrganizationService:
 )
 async def create_organization(
     request: OrganizationCreateRequest = Body(...),
-    user_id: str = Depends(get_current_user_id),
-    service: OrganizationService = Depends(get_organization_service)
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: APIOrganizationService = Depends(get_api_organization_service)
 ) -> OrganizationResponse:
     """Create a new organization with the authenticated user as owner."""
     try:
         org = await service.create_organization(
             name=request.name,
             slug=request.slug,
-            creator_user_id=user_id,
+            creator_user_id=current_user.user_id,
             description=request.description,
             plan_tier=request.plan_tier
         )
 
-        logger.info(f"Organization created: {org.org_id} by user {user_id}")
+        logger.info(f"Organization created: {org.org_id} by user {current_user.user_id}")
+
+        # Get member count
+        members = await service.organization_service.list_organization_members(org.org_id)
 
         return OrganizationResponse(
-            org_id=org.org_id,
+            organization_id=org.org_id,
             name=org.name,
             slug=org.slug,
             description=org.description,
-            plan_tier=org.plan_tier,
+            plan_tier=org.plan_tier.value if isinstance(org.plan_tier, OrgPlanTier) else org.plan_tier,
             max_members=org.max_members,
-            max_cases=org.max_cases,
+            current_member_count=len(members),
+            owner_user_id=current_user.user_id,
             settings=org.settings or {},
             created_at=org.created_at,
             updated_at=org.updated_at
         )
 
     except ValidationException as e:
+        if "already exists" in str(e).lower():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except ServiceException as e:
         logger.error(f"Service error creating organization: {e}")
@@ -181,41 +342,84 @@ async def create_organization(
 
 
 @router.get(
+    "",
+    response_model=OrganizationListResponse,
+    summary="List User Organizations",
+    description="List all organizations the authenticated user belongs to."
+)
+async def list_user_organizations(
+    limit: int = Query(20, ge=1, le=100, description="Maximum results"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: APIOrganizationService = Depends(get_api_organization_service)
+) -> OrganizationListResponse:
+    """List all organizations the user belongs to."""
+    try:
+        orgs, total = await service.list_user_organizations(
+            user_id=current_user.user_id,
+            limit=limit,
+            offset=offset
+        )
+
+        return OrganizationListResponse(
+            organizations=[
+                OrganizationListItem(
+                    organization_id=org["organization_id"],
+                    name=org["name"],
+                    slug=org["slug"],
+                    plan_tier=org["plan_tier"],
+                    role=org["role"],
+                    member_since=org["member_since"]
+                )
+                for org in orgs
+            ],
+            total=total,
+            limit=limit,
+            offset=offset
+        )
+
+    except Exception as e:
+        logger.error(f"Error listing organizations for user {current_user.user_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@router.get(
     "/{org_id}",
     response_model=OrganizationResponse,
     summary="Get Organization",
-    description="Get organization details by ID."
+    description="Get organization details by ID. Requires organization membership."
 )
 async def get_organization(
     org_id: str = Path(..., description="Organization ID"),
-    user_id: str = Depends(get_current_user_id),
-    service: OrganizationService = Depends(get_organization_service)
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: APIOrganizationService = Depends(get_api_organization_service)
 ) -> OrganizationResponse:
     """Get organization details."""
     try:
-        org = await service.get_organization(org_id)
+        org = await service.get_organization(org_id, current_user.user_id)
 
-        if not org:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Organization {org_id} not found"
-            )
+        # Get member count and owner
+        members = await service.organization_service.list_organization_members(org_id)
+        owner = next((m for m in members if m.role_id == "role_org_owner"), None)
 
         return OrganizationResponse(
-            org_id=org.org_id,
+            organization_id=org.org_id,
             name=org.name,
             slug=org.slug,
             description=org.description,
-            plan_tier=org.plan_tier,
+            plan_tier=org.plan_tier.value if isinstance(org.plan_tier, OrgPlanTier) else org.plan_tier,
             max_members=org.max_members,
-            max_cases=org.max_cases,
+            current_member_count=len(members),
+            owner_user_id=owner.user_id if owner else None,
             settings=org.settings or {},
             created_at=org.created_at,
             updated_at=org.updated_at
         )
 
-    except HTTPException:
-        raise
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except AuthorizationError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
         logger.error(f"Error getting organization {org_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -225,16 +429,17 @@ async def get_organization(
     "/by-slug/{slug}",
     response_model=OrganizationResponse,
     summary="Get Organization by Slug",
-    description="Get organization details by slug (URL-friendly identifier)."
+    description="Get organization details by slug. Requires organization membership."
 )
 async def get_organization_by_slug(
     slug: str = Path(..., description="Organization slug"),
-    user_id: str = Depends(get_current_user_id),
-    service: OrganizationService = Depends(get_organization_service)
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    org_service: OrganizationService = Depends(get_organization_service),
+    api_service: APIOrganizationService = Depends(get_api_organization_service)
 ) -> OrganizationResponse:
     """Get organization details by slug."""
     try:
-        org = await service.get_organization_by_slug(slug)
+        org = await org_service.get_organization_by_slug(slug)
 
         if not org:
             raise HTTPException(
@@ -242,14 +447,28 @@ async def get_organization_by_slug(
                 detail=f"Organization with slug '{slug}' not found"
             )
 
+        # Check membership using API service
+        try:
+            await api_service.get_organization(org.org_id, current_user.user_id)
+        except AuthorizationError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Organization membership required"
+            )
+
+        # Get member count and owner
+        members = await org_service.list_organization_members(org.org_id)
+        owner = next((m for m in members if m.role_id == "role_org_owner"), None)
+
         return OrganizationResponse(
-            org_id=org.org_id,
+            organization_id=org.org_id,
             name=org.name,
             slug=org.slug,
             description=org.description,
-            plan_tier=org.plan_tier,
+            plan_tier=org.plan_tier.value if isinstance(org.plan_tier, OrgPlanTier) else org.plan_tier,
             max_members=org.max_members,
-            max_cases=org.max_cases,
+            current_member_count=len(members),
+            owner_user_id=owner.user_id if owner else None,
             settings=org.settings or {},
             created_at=org.created_at,
             updated_at=org.updated_at
@@ -262,56 +481,53 @@ async def get_organization_by_slug(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.put(
+@router.patch(
     "/{org_id}",
     response_model=OrganizationResponse,
     summary="Update Organization",
-    description="Update organization details. Requires 'organization.write' permission."
+    description="Update organization details. Requires owner permission."
 )
 async def update_organization(
     org_id: str = Path(..., description="Organization ID"),
     request: OrganizationUpdateRequest = Body(...),
-    user_id: str = Depends(get_current_user_id),
-    service: OrganizationService = Depends(get_organization_service)
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: APIOrganizationService = Depends(get_api_organization_service)
 ) -> OrganizationResponse:
     """Update organization details."""
     try:
-        success = await service.update_organization(
-            org_id=org_id,
-            user_id=user_id,
+        org = await service.update_organization(
+            organization_id=org_id,
+            user_id=current_user.user_id,
             name=request.name,
-            description=request.description,
-            settings=request.settings
+            description=request.description
         )
 
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Organization {org_id} not found"
-            )
+        # Get member count and owner
+        members = await service.organization_service.list_organization_members(org_id)
+        owner = next((m for m in members if m.role_id == "role_org_owner"), None)
 
-        # Fetch updated organization
-        org = await service.get_organization(org_id)
-
-        logger.info(f"Organization updated: {org_id} by user {user_id}")
+        logger.info(f"Organization updated: {org_id} by user {current_user.user_id}")
 
         return OrganizationResponse(
-            org_id=org.org_id,
+            organization_id=org.org_id,
             name=org.name,
             slug=org.slug,
             description=org.description,
-            plan_tier=org.plan_tier,
+            plan_tier=org.plan_tier.value if isinstance(org.plan_tier, OrgPlanTier) else org.plan_tier,
             max_members=org.max_members,
-            max_cases=org.max_cases,
+            current_member_count=len(members),
+            owner_user_id=owner.user_id if owner else None,
             settings=org.settings or {},
             created_at=org.created_at,
             updated_at=org.updated_at
         )
 
-    except ValidationException as e:
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except AuthorizationError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
-    except HTTPException:
-        raise
+    except ValidationException as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         logger.error(f"Error updating organization {org_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -319,18 +535,18 @@ async def update_organization(
 
 @router.delete(
     "/{org_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=DeleteResponse,
     summary="Delete Organization",
-    description="Soft delete an organization. Requires 'organization.manage' permission (owner only)."
+    description="Soft delete an organization. Requires owner permission."
 )
 async def delete_organization(
     org_id: str = Path(..., description="Organization ID"),
-    user_id: str = Depends(get_current_user_id),
-    service: OrganizationService = Depends(get_organization_service)
-):
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: APIOrganizationService = Depends(get_api_organization_service)
+) -> DeleteResponse:
     """Soft delete an organization."""
     try:
-        success = await service.delete_organization(org_id, user_id)
+        success = await service.delete_organization(org_id, current_user.user_id)
 
         if not success:
             raise HTTPException(
@@ -338,49 +554,21 @@ async def delete_organization(
                 detail=f"Organization {org_id} not found"
             )
 
-        logger.info(f"Organization deleted: {org_id} by user {user_id}")
+        logger.info(f"Organization deleted: {org_id} by user {current_user.user_id}")
 
-    except ValidationException as e:
+        return DeleteResponse(
+            message="Organization deleted successfully",
+            organization_id=org_id
+        )
+
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except AuthorizationError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
-    except HTTPException:
-        raise
+    except ConflictError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except Exception as e:
         logger.error(f"Error deleting organization {org_id}: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-
-@router.get(
-    "",
-    response_model=List[OrganizationResponse],
-    summary="List User Organizations",
-    description="List all organizations the authenticated user belongs to."
-)
-async def list_user_organizations(
-    user_id: str = Depends(get_current_user_id),
-    service: OrganizationService = Depends(get_organization_service)
-) -> List[OrganizationResponse]:
-    """List all organizations the user belongs to."""
-    try:
-        orgs = await service.list_user_organizations(user_id)
-
-        return [
-            OrganizationResponse(
-                org_id=org.org_id,
-                name=org.name,
-                slug=org.slug,
-                description=org.description,
-                plan_tier=org.plan_tier,
-                max_members=org.max_members,
-                max_cases=org.max_cases,
-                settings=org.settings or {},
-                created_at=org.created_at,
-                updated_at=org.updated_at
-            )
-            for org in orgs
-        ]
-
-    except Exception as e:
-        logger.error(f"Error listing organizations for user {user_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
@@ -388,220 +576,267 @@ async def list_user_organizations(
 # Member Management Endpoints
 # ============================================================================
 
+@router.get(
+    "/{org_id}/members",
+    response_model=MemberListResponse,
+    summary="List Organization Members",
+    description="List all members of an organization. Requires organization membership."
+)
+async def list_organization_members(
+    org_id: str = Path(..., description="Organization ID"),
+    role: Optional[str] = Query(None, description="Filter by role: owner, admin, member"),
+    limit: int = Query(20, ge=1, le=100, description="Maximum results"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: APIOrganizationService = Depends(get_api_organization_service)
+) -> MemberListResponse:
+    """List all members of an organization."""
+    try:
+        members, total = await service.list_organization_members(
+            organization_id=org_id,
+            user_id=current_user.user_id,
+            role_filter=role,
+            limit=limit,
+            offset=offset
+        )
+
+        return MemberListResponse(
+            members=[
+                MemberResponse(
+                    user_id=m["user_id"],
+                    email=m["email"],
+                    full_name=m["full_name"],
+                    role=m["role"],
+                    joined_at=m["joined_at"]
+                )
+                for m in members
+            ],
+            total=total,
+            limit=limit,
+            offset=offset
+        )
+
+    except AuthorizationError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error listing members for organization {org_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
 @router.post(
     "/{org_id}/members",
-    response_model=MemberResponse,
+    response_model=MemberAddResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Add Member",
-    description="Add user to organization with role. Requires 'users.write' permission."
+    description="Add user to organization by email. Requires owner or admin permission."
 )
 async def add_member(
     org_id: str = Path(..., description="Organization ID"),
     request: MemberAddRequest = Body(...),
-    user_id: str = Depends(get_current_user_id),
-    service: OrganizationService = Depends(get_organization_service)
-) -> MemberResponse:
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: APIOrganizationService = Depends(get_api_organization_service)
+) -> MemberAddResponse:
     """Add member to organization."""
     try:
-        success = await service.add_member(
-            org_id=org_id,
-            user_id=request.user_id,
-            role_id=request.role_id,
-            added_by=user_id
+        result = await service.add_member(
+            organization_id=org_id,
+            requesting_user_id=current_user.user_id,
+            email=request.email,
+            role=request.role
         )
 
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to add member"
-            )
+        logger.info(f"Member added to organization: {request.email} to org {org_id}")
 
-        # Fetch the added member
-        members = await service.list_organization_members(org_id)
-        member = next((m for m in members if m.user_id == request.user_id), None)
-
-        if not member:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Member added but not found"
-            )
-
-        logger.info(f"Member added to organization: user {request.user_id} to org {org_id}")
-
-        return MemberResponse(
-            user_id=member.user_id,
-            org_id=member.org_id,
-            role_id=member.role_id,
-            joined_at=member.joined_at,
-            last_active_at=member.last_active_at
+        return MemberAddResponse(
+            user_id=result["user_id"],
+            email=result["email"],
+            full_name=result["full_name"],
+            role=result["role"],
+            joined_at=result["joined_at"],
+            invitation_sent=result.get("invitation_sent", True)
         )
 
-    except ValidationException as e:
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except AuthorizationError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
-    except HTTPException:
-        raise
+    except ConflictError as e:
+        if "max_members" in str(e).lower():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except ValidationException as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         logger.error(f"Error adding member to organization {org_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 @router.delete(
-    "/{org_id}/members/{target_user_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    "/{org_id}/members/{user_id}",
+    response_model=DeleteResponse,
     summary="Remove Member",
-    description="Remove user from organization. Requires 'users.manage' permission."
+    description="Remove user from organization. Owner can remove anyone except self, admin can remove members only."
 )
 async def remove_member(
     org_id: str = Path(..., description="Organization ID"),
-    target_user_id: str = Path(..., description="User ID to remove"),
-    user_id: str = Depends(get_current_user_id),
-    service: OrganizationService = Depends(get_organization_service)
-):
+    user_id: str = Path(..., description="User ID to remove"),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: APIOrganizationService = Depends(get_api_organization_service)
+) -> DeleteResponse:
     """Remove member from organization."""
     try:
         success = await service.remove_member(
-            org_id=org_id,
-            user_id=target_user_id,
-            removed_by=user_id
+            organization_id=org_id,
+            requesting_user_id=current_user.user_id,
+            target_user_id=user_id
         )
 
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Member {target_user_id} not found in organization {org_id}"
+                detail=f"Member {user_id} not found in organization {org_id}"
             )
 
-        logger.info(f"Member removed from organization: user {target_user_id} from org {org_id}")
+        logger.info(f"Member removed from organization: user {user_id} from org {org_id}")
 
-    except ValidationException as e:
+        return DeleteResponse(
+            message="Member removed successfully",
+            user_id=user_id
+        )
+
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except AuthorizationError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Error removing member from organization {org_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.put(
-    "/{org_id}/members/{target_user_id}/role",
-    response_model=MemberResponse,
+@router.patch(
+    "/{org_id}/members/{user_id}",
+    response_model=MemberRoleUpdateResponse,
     summary="Update Member Role",
-    description="Update user's role in organization. Requires 'users.manage' permission."
+    description="Update user's role in organization. Requires owner permission."
 )
 async def update_member_role(
     org_id: str = Path(..., description="Organization ID"),
-    target_user_id: str = Path(..., description="User ID"),
+    user_id: str = Path(..., description="User ID"),
     request: MemberRoleUpdateRequest = Body(...),
-    user_id: str = Depends(get_current_user_id),
-    service: OrganizationService = Depends(get_organization_service)
-) -> MemberResponse:
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: APIOrganizationService = Depends(get_api_organization_service)
+) -> MemberRoleUpdateResponse:
     """Update member's role in organization."""
     try:
-        success = await service.update_member_role(
-            org_id=org_id,
-            user_id=target_user_id,
-            role_id=request.role_id,
-            updated_by=user_id
+        result = await service.update_member_role(
+            organization_id=org_id,
+            requesting_user_id=current_user.user_id,
+            target_user_id=user_id,
+            role=request.role
         )
 
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Member {target_user_id} not found in organization {org_id}"
-            )
+        logger.info(f"Member role updated: user {user_id} in org {org_id} to {request.role}")
 
-        # Fetch updated member
-        members = await service.list_organization_members(org_id)
-        member = next((m for m in members if m.user_id == target_user_id), None)
-
-        if not member:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Member updated but not found"
-            )
-
-        logger.info(f"Member role updated: user {target_user_id} in org {org_id} to {request.role_id}")
-
-        return MemberResponse(
-            user_id=member.user_id,
-            org_id=member.org_id,
-            role_id=member.role_id,
-            joined_at=member.joined_at,
-            last_active_at=member.last_active_at
+        return MemberRoleUpdateResponse(
+            user_id=result["user_id"],
+            email=result["email"],
+            full_name=result["full_name"],
+            role=result["role"],
+            joined_at=result["joined_at"],
+            updated_at=result["updated_at"]
         )
 
-    except ValidationException as e:
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except AuthorizationError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
-    except HTTPException:
-        raise
+    except ValidationException as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     except Exception as e:
         logger.error(f"Error updating member role in organization {org_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
+# ============================================================================
+# Organization Settings Endpoints
+# ============================================================================
+
 @router.get(
-    "/{org_id}/members",
-    response_model=List[MemberResponse],
-    summary="List Organization Members",
-    description="List all members of an organization."
+    "/{org_id}/settings",
+    response_model=SettingsResponse,
+    summary="Get Organization Settings",
+    description="Get organization settings and plan limits. Requires organization membership."
 )
-async def list_organization_members(
+async def get_organization_settings(
     org_id: str = Path(..., description="Organization ID"),
-    user_id: str = Depends(get_current_user_id),
-    service: OrganizationService = Depends(get_organization_service)
-) -> List[MemberResponse]:
-    """List all members of an organization."""
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: APIOrganizationService = Depends(get_api_organization_service)
+) -> SettingsResponse:
+    """Get organization settings."""
     try:
-        members = await service.list_organization_members(org_id)
+        settings = await service.get_organization_settings(org_id, current_user.user_id)
 
-        return [
-            MemberResponse(
-                user_id=member.user_id,
-                org_id=member.org_id,
-                role_id=member.role_id,
-                joined_at=member.joined_at,
-                last_active_at=member.last_active_at
-            )
-            for member in members
-        ]
+        return SettingsResponse(
+            organization_id=settings["organization_id"],
+            plan_tier=settings["plan_tier"],
+            max_members=settings["max_members"],
+            current_member_count=settings["current_member_count"],
+            max_cases_per_month=settings["max_cases_per_month"],
+            max_storage_gb=settings["max_storage_gb"],
+            features=settings["features"],
+            settings=settings["settings"]
+        )
 
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except AuthorizationError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
-        logger.error(f"Error listing members for organization {org_id}: {e}")
+        logger.error(f"Error getting settings for organization {org_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@router.get(
-    "/{org_id}/members/{target_user_id}/role",
-    response_model=Dict[str, str],
-    summary="Get Member Role",
-    description="Get user's role in organization."
+@router.patch(
+    "/{org_id}/settings",
+    response_model=SettingsUpdateResponse,
+    summary="Update Organization Settings",
+    description="Update organization settings. Requires owner permission."
 )
-async def get_member_role(
+async def update_organization_settings(
     org_id: str = Path(..., description="Organization ID"),
-    target_user_id: str = Path(..., description="User ID"),
-    user_id: str = Depends(get_current_user_id),
-    service: OrganizationService = Depends(get_organization_service)
-) -> Dict[str, str]:
-    """Get member's role in organization."""
+    request: SettingsUpdateRequest = Body(...),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    service: APIOrganizationService = Depends(get_api_organization_service)
+) -> SettingsUpdateResponse:
+    """Update organization settings."""
     try:
-        role_id = await service.get_member_role(org_id, target_user_id)
-
-        if not role_id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User {target_user_id} not found in organization {org_id}"
-            )
-
-        return {
-            "user_id": target_user_id,
-            "org_id": org_id,
-            "role_id": role_id
+        # Convert request to dict, excluding None values
+        settings_update = {
+            k: v for k, v in request.model_dump().items() if v is not None
         }
 
-    except HTTPException:
-        raise
+        result = await service.update_organization_settings(
+            organization_id=org_id,
+            user_id=current_user.user_id,
+            settings=settings_update
+        )
+
+        logger.info(f"Organization settings updated: {org_id} by user {current_user.user_id}")
+
+        return SettingsUpdateResponse(
+            organization_id=result["organization_id"],
+            settings=result["settings"],
+            updated_at=result["updated_at"]
+        )
+
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except AuthorizationError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValidationException as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     except Exception as e:
-        logger.error(f"Error getting member role for {target_user_id} in org {org_id}: {e}")
+        logger.error(f"Error updating settings for organization {org_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
@@ -618,13 +853,13 @@ async def get_member_role(
 async def check_permission(
     org_id: str = Path(..., description="Organization ID"),
     request: PermissionCheckRequest = Body(...),
-    user_id: str = Depends(get_current_user_id),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     service: OrganizationService = Depends(get_organization_service)
 ) -> PermissionCheckResponse:
     """Check if user has permission in organization."""
     try:
         has_permission = await service.user_has_permission(
-            user_id=user_id,
+            user_id=current_user.user_id,
             org_id=org_id,
             permission=request.permission
         )
@@ -632,10 +867,10 @@ async def check_permission(
         return PermissionCheckResponse(
             has_permission=has_permission,
             permission=request.permission,
-            user_id=user_id,
+            user_id=current_user.user_id,
             org_id=org_id
         )
 
     except Exception as e:
-        logger.error(f"Error checking permission for user {user_id} in org {org_id}: {e}")
+        logger.error(f"Error checking permission for user {current_user.user_id} in org {org_id}: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
