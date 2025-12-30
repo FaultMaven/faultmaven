@@ -472,3 +472,102 @@ class ExecutionEventSSE(BaseModel):
                 "message": message,
             },
         )
+
+
+# ============================================================
+# Admin User Management Models (TASK-019)
+# ============================================================
+
+
+class AdminUserListItem(BaseModel):
+    """User list item for admin endpoints (with full info)."""
+
+    user_id: str
+    organization_id: str
+    email: str
+    full_name: str
+    roles: List[str]
+    is_active: bool
+    is_verified: bool
+    last_login_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AdminUserListResponse(BaseModel):
+    """Admin user list response with pagination."""
+
+    users: List[AdminUserListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class UserDetailResponse(BaseModel):
+    """Detailed user information (admin only)."""
+
+    user_id: str
+    organization_id: str
+    email: str
+    full_name: str
+    roles: List[str]
+    permissions: List[str]
+    is_active: bool
+    is_verified: bool
+    last_login_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserStatusResponse(BaseModel):
+    """User activation/deactivation response."""
+
+    user_id: str
+    is_active: bool
+    updated_at: datetime
+    message: str
+
+
+class RoleAssignmentRequest(BaseModel):
+    """Role assignment request."""
+
+    role: str = Field(
+        ...,
+        pattern="^(admin|member|viewer)$",
+        description="Role to assign (admin, member, or viewer)",
+    )
+
+
+class RoleAssignmentResponse(BaseModel):
+    """Role assignment response."""
+
+    user_id: str
+    roles: List[str]
+    updated_at: datetime
+    message: str
+
+
+class OrganizationUserListItem(BaseModel):
+    """User list item for organization user list (limited info)."""
+
+    user_id: str
+    email: str
+    full_name: str
+    roles: List[str]
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OrganizationUserListResponse(BaseModel):
+    """Organization user list response with pagination."""
+
+    users: List[OrganizationUserListItem]
+    total: int
+    limit: int
+    offset: int

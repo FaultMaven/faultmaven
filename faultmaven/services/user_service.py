@@ -1,7 +1,7 @@
-"""User Management Service (TASK-018)
+"""User Management Service (TASK-018, TASK-019)
 
 Purpose: Handle user registration, authentication, profile management,
-and password operations.
+password operations, and admin user management.
 
 This service provides:
 - User registration with email/password
@@ -10,8 +10,9 @@ This service provides:
 - Password change (authenticated)
 - User profile management
 - User deactivation (soft delete)
+- Role assignment and removal (TASK-019)
 
-Design Reference: TASK-018 User Management Service
+Design Reference: TASK-018 User Management Service, TASK-019 Admin User Management
 """
 
 import logging
@@ -36,7 +37,7 @@ from faultmaven.infrastructure.persistence.user_repository import (
     UserRepository,
 )
 from faultmaven.models.auth import TokenPair
-from faultmaven.models.rbac import get_permissions_for_roles
+from faultmaven.models.rbac import Role, get_permissions_for_roles
 from faultmaven.services.auth_service import AuthenticationError, AuthService
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
@@ -64,7 +65,8 @@ class UserService(BaseService):
     """User management service.
 
     Handles all user-related operations including registration,
-    authentication, password management, and profile updates.
+    authentication, password management, profile updates, and
+    role management (TASK-019).
 
     Attributes:
         user_repo: User repository for persistence
@@ -679,6 +681,8 @@ class UserService(BaseService):
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
+        role: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> Tuple[List[RepositoryUser], int]:
         """List users with pagination and optional filtering.
 
@@ -686,15 +690,217 @@ class UserService(BaseService):
             limit: Maximum results
             offset: Pagination offset
             is_active: Filter by active status
+            role: Filter by role (admin, member, viewer) - TASK-019
+            search: Search by email or name (case-insensitive) - TASK-019
 
         Returns:
             Tuple of (users, total_count)
         """
-        return await self.user_repo.list_users(
-            limit=limit,
-            offset=offset,
+        # Get base users list from repository
+        users, total = await self.user_repo.list_users(
+            limit=1000,  # Get all for filtering
+            offset=0,
             is_active=is_active,
         )
+
+        # Apply additional filters (TASK-019)
+        filtered_users = []
+        for user in users:
+            # Filter by role
+            if role is not None:
+                user_roles = user.roles if user.roles else ["member"]
+                if role not in user_roles:
+                    continue
+
+            # Filter by search (case-insensitive partial match)
+            if search is not None:
+                search_lower = search.lower()
+                email_match = search_lower in user.email.lower()
+                name_match = user.display_name and search_lower in user.display_name.lower()
+                if not (email_match or name_match):
+                    continue
+
+            filtered_users.append(user)
+
+        # Calculate total after filtering
+        total = len(filtered_users)
+
+        # Apply pagination
+        paginated_users = filtered_users[offset:offset + limit]
+
+        return paginated_users, total
+
+    # ============================================================
+    # Role Management (TASK-019)
+    # ============================================================
+
+    async def get_user_with_metadata(
+        self,
+        user_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get user with additional metadata (TASK-019).
+
+        Returns user dict with:
+        - All User fields (except hashed_password)
+        - permissions (derived from roles)
+        - metadata.login_count (if tracked)
+        - metadata.failed_login_attempts (if tracked)
+
+        Args:
+            user_id: User identifier
+
+        Returns:
+            User dict with metadata, or None if not found
+        """
+        user = await self.user_repo.get(user_id)
+
+        if not user:
+            return None
+
+        # Derive permissions from roles
+        user_roles = user.roles if user.roles else ["member"]
+        permissions = [p.value for p in get_permissions_for_roles(user_roles)]
+
+        return {
+            "user_id": user.user_id,
+            "organization_id": "org-default",
+            "email": user.email,
+            "full_name": user.display_name,
+            "roles": user_roles,
+            "permissions": sorted(permissions),
+            "is_active": user.is_active,
+            "is_verified": user.is_email_verified,
+            "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+            "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+            "metadata": {
+                "login_count": 0,  # TODO: Track in repository
+                "failed_login_attempts": 0,  # TODO: Track in repository
+            },
+        }
+
+    async def assign_role(
+        self,
+        user_id: str,
+        role: str,
+        admin_user_id: str,
+    ) -> RepositoryUser:
+        """Assign role to user (TASK-019).
+
+        Args:
+            user_id: Target user ID
+            role: Role to assign (admin, member, viewer)
+            admin_user_id: Admin performing the action (cannot be same as user_id)
+
+        Returns:
+            Updated User
+
+        Raises:
+            NotFoundError: User not found
+            AuthorizationError: admin_user_id == user_id (self-modification)
+            ValidationException: Invalid role
+            ConflictError: User already has this role
+        """
+        # Prevent self-modification
+        if admin_user_id == user_id:
+            raise AuthorizationError("Cannot modify your own roles")
+
+        # Validate role
+        valid_roles = [r.value for r in Role]
+        if role not in valid_roles:
+            raise ValidationException(
+                f"Invalid role: {role}. Valid roles are: {', '.join(valid_roles)}"
+            )
+
+        user = await self.user_repo.get(user_id)
+        if not user:
+            raise NotFoundError("User", user_id)
+
+        # Check if user already has this role
+        current_roles = user.roles if user.roles else ["member"]
+        if current_roles == [role]:
+            raise ConflictError(
+                f"User already has role '{role}'",
+                resource_type="User",
+                resource_id=user_id,
+                conflict_reason="role_already_assigned",
+            )
+
+        # Assign new role (replaces existing)
+        user.roles = [role]
+        user.updated_at = datetime.now(timezone.utc)
+        updated_user = await self.user_repo.save(user)
+
+        # Revoke all user tokens (roles changed, tokens stale)
+        tokens_revoked = await self.auth_service.revoke_user_tokens(user_id)
+
+        self.logger.info(
+            f"Role assigned: {user_id} -> {role}, tokens revoked: {tokens_revoked}"
+        )
+        return updated_user
+
+    async def remove_role(
+        self,
+        user_id: str,
+        role: str,
+        admin_user_id: str,
+    ) -> RepositoryUser:
+        """Remove role from user (TASK-019).
+
+        Downgrades user to viewer role (minimum privilege).
+
+        Args:
+            user_id: Target user ID
+            role: Role to remove (admin, member)
+            admin_user_id: Admin performing the action (cannot be same as user_id)
+
+        Returns:
+            Updated User (with viewer role)
+
+        Raises:
+            NotFoundError: User not found OR user doesn't have this role
+            AuthorizationError: admin_user_id == user_id (self-modification)
+            ValidationException: Attempting to remove viewer role (minimum privilege)
+        """
+        # Prevent self-modification
+        if admin_user_id == user_id:
+            raise AuthorizationError("Cannot modify your own roles")
+
+        # Cannot remove viewer role (minimum privilege level)
+        if role == Role.VIEWER.value:
+            raise ValidationException(
+                "Cannot remove viewer role. Viewer is the minimum privilege level."
+            )
+
+        # Validate role
+        valid_roles = [r.value for r in Role]
+        if role not in valid_roles:
+            raise ValidationException(
+                f"Invalid role: {role}. Valid roles are: {', '.join(valid_roles)}"
+            )
+
+        user = await self.user_repo.get(user_id)
+        if not user:
+            raise NotFoundError("User", user_id)
+
+        # Check if user has this role
+        current_roles = user.roles if user.roles else ["member"]
+        if role not in current_roles:
+            raise NotFoundError("Role", f"{user_id}/{role}")
+
+        # Downgrade to viewer (minimum privilege)
+        user.roles = [Role.VIEWER.value]
+        user.updated_at = datetime.now(timezone.utc)
+        updated_user = await self.user_repo.save(user)
+
+        # Revoke all user tokens (roles changed, tokens stale)
+        tokens_revoked = await self.auth_service.revoke_user_tokens(user_id)
+
+        self.logger.info(
+            f"Role removed: {user_id}, role={role}, downgraded to viewer, "
+            f"tokens revoked: {tokens_revoked}"
+        )
+        return updated_user
 
     # ============================================================
     # Helper Methods
