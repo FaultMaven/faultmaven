@@ -161,6 +161,58 @@ class UserRepository(ABC):
         pass
 
     @abstractmethod
+    async def list_users(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        is_active: Optional[bool] = None,
+    ) -> tuple[List[User], int]:
+        """
+        List users with pagination and optional active filter.
+
+        This is the TASK-018 required interface for listing users with
+        additional filtering capabilities.
+
+        Args:
+            limit: Maximum results
+            offset: Pagination offset
+            is_active: Filter by active status (None = no filter)
+
+        Returns:
+            Tuple of (users, total_count)
+        """
+        pass
+
+    @abstractmethod
+    async def update(self, user: User) -> User:
+        """
+        Update existing user.
+
+        Args:
+            user: User with updated fields
+
+        Returns:
+            Updated user object
+        """
+        pass
+
+    @abstractmethod
+    async def create(self, user: User) -> User:
+        """
+        Create a new user.
+
+        Args:
+            user: User to create
+
+        Returns:
+            Created user object
+
+        Raises:
+            ConflictError: If user with same email/username already exists
+        """
+        pass
+
+    @abstractmethod
     async def delete(self, user_id: str) -> bool:
         """
         Delete user by ID.
@@ -238,6 +290,67 @@ class InMemoryUserRepository(UserRepository):
         paginated = all_users[offset:offset + limit]
 
         return paginated, total_count
+
+    async def list_users(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        is_active: Optional[bool] = None,
+    ) -> tuple[List[User], int]:
+        """List users with pagination and optional active filter."""
+        all_users = list(self._users.values())
+
+        # Apply is_active filter if specified
+        if is_active is not None:
+            all_users = [u for u in all_users if u.is_active == is_active]
+
+        # Sort by created_at descending
+        all_users.sort(key=lambda u: u.created_at, reverse=True)
+
+        total_count = len(all_users)
+        paginated = all_users[offset:offset + limit]
+
+        return paginated, total_count
+
+    async def create(self, user: User) -> User:
+        """Create a new user."""
+        from faultmaven.exceptions import ConflictError
+
+        # Check for existing email or username
+        if user.email.lower() in self._email_index:
+            raise ConflictError("Email already registered")
+        if user.username.lower() in self._username_index:
+            raise ConflictError("Username already taken")
+
+        return await self.save(user)
+
+    async def update(self, user: User) -> User:
+        """Update existing user."""
+        # Check user exists
+        existing = self._users.get(user.user_id)
+        if not existing:
+            from faultmaven.exceptions import NotFoundError
+            raise NotFoundError("User", user.user_id)
+
+        # If email changed, check for conflicts
+        if existing.email.lower() != user.email.lower():
+            existing_with_email = self._email_index.get(user.email.lower())
+            if existing_with_email and existing_with_email != user.user_id:
+                from faultmaven.exceptions import ConflictError
+                raise ConflictError("Email already in use")
+            # Remove old email from index
+            self._email_index.pop(existing.email.lower(), None)
+
+        # If username changed, check for conflicts
+        if existing.username.lower() != user.username.lower():
+            existing_with_username = self._username_index.get(user.username.lower())
+            if existing_with_username and existing_with_username != user.user_id:
+                from faultmaven.exceptions import ConflictError
+                raise ConflictError("Username already taken")
+            # Remove old username from index
+            self._username_index.pop(existing.username.lower(), None)
+
+        return await self.save(user)
 
     async def delete(self, user_id: str) -> bool:
         """Delete user from memory."""
@@ -494,6 +607,122 @@ class PostgreSQLUserRepository(UserRepository):
         ]
 
         return users, total_count
+
+    async def list_users(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        is_active: Optional[bool] = None,
+    ) -> tuple[List[User], int]:
+        """List users with pagination and optional active filter."""
+        from sqlalchemy import text
+
+        # Build query with optional filter
+        where_clause = ""
+        params = {"limit": limit, "offset": offset}
+
+        if is_active is not None:
+            where_clause = "WHERE is_active = :is_active"
+            params["is_active"] = is_active
+
+        # Get total count
+        count_query = text(f"SELECT COUNT(*) FROM users {where_clause}")
+        count_result = await self.db.execute(count_query, params)
+        total_count = count_result.scalar()
+
+        # Get paginated results
+        query = text(f"""
+            SELECT * FROM users
+            {where_clause}
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
+        """)
+        result = await self.db.execute(query, params)
+        rows = result.fetchall()
+
+        users = [
+            User(
+                user_id=row.user_id,
+                username=row.username,
+                email=row.email,
+                display_name=row.display_name,
+                avatar_url=row.avatar_url,
+                timezone=row.timezone,
+                locale=row.locale,
+                hashed_password=row.hashed_password,
+                is_active=row.is_active,
+                is_email_verified=row.is_email_verified,
+                email_verified_at=row.email_verified_at,
+                sso_provider=row.sso_provider,
+                sso_provider_id=row.sso_provider_id,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                last_login_at=row.last_login_at,
+                last_password_change_at=row.last_password_change_at,
+                deleted_at=row.deleted_at,
+                roles=row.roles.split(',') if row.roles else []
+            )
+            for row in rows
+        ]
+
+        return users, total_count
+
+    async def create(self, user: User) -> User:
+        """Create a new user.
+
+        Checks for email/username uniqueness before inserting.
+        """
+        from sqlalchemy import text
+        from faultmaven.exceptions import ConflictError
+
+        # Check for existing email
+        email_check = text("SELECT user_id FROM users WHERE LOWER(email) = LOWER(:email)")
+        result = await self.db.execute(email_check, {"email": user.email})
+        if result.first():
+            raise ConflictError("Email already registered")
+
+        # Check for existing username
+        username_check = text("SELECT user_id FROM users WHERE LOWER(username) = LOWER(:username)")
+        result = await self.db.execute(username_check, {"username": user.username})
+        if result.first():
+            raise ConflictError("Username already taken")
+
+        return await self.save(user)
+
+    async def update(self, user: User) -> User:
+        """Update existing user.
+
+        Checks for email/username uniqueness if changed.
+        """
+        from sqlalchemy import text
+        from faultmaven.exceptions import ConflictError, NotFoundError
+
+        # Check user exists
+        existing = await self.get(user.user_id)
+        if not existing:
+            raise NotFoundError("User", user.user_id)
+
+        # If email changed, check for conflicts
+        if existing.email.lower() != user.email.lower():
+            email_check = text(
+                "SELECT user_id FROM users WHERE LOWER(email) = LOWER(:email) AND user_id != :user_id"
+            )
+            result = await self.db.execute(email_check, {"email": user.email, "user_id": user.user_id})
+            if result.first():
+                raise ConflictError("Email already in use")
+
+        # If username changed, check for conflicts
+        if existing.username.lower() != user.username.lower():
+            username_check = text(
+                "SELECT user_id FROM users WHERE LOWER(username) = LOWER(:username) AND user_id != :user_id"
+            )
+            result = await self.db.execute(
+                username_check, {"username": user.username, "user_id": user.user_id}
+            )
+            if result.first():
+                raise ConflictError("Username already taken")
+
+        return await self.save(user)
 
     async def delete(self, user_id: str) -> bool:
         """Delete user from PostgreSQL."""
