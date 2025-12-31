@@ -126,12 +126,15 @@ def sample_case():
 @pytest.fixture
 def auth_user():
     """Authenticated user for testing"""
+    from datetime import datetime, timezone
     return DevUser(
         user_id="user-integration-001",
         username="integration_tester",
         email="integration@test.com",
+        display_name="Integration Tester",
+        created_at=datetime.now(timezone.utc),
         is_dev_user=True,
-        organization_id="org-integration-001"
+        is_active=True
     )
 
 
