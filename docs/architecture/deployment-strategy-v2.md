@@ -115,6 +115,81 @@ class ISanitizer(ABC)        # PII redaction abstraction
 class IStorageBackend(ABC)   # File storage abstraction
 ```
 
+### Module Boundaries (Internal Communication)
+
+To prevent tight coupling and enable future module extraction, each module exposes a **public API** that other modules must use. Direct imports of internal services are prohibited.
+
+```
+faultmaven/
+├── identity/                    # Identity & Auth module
+│   ├── api.py                   # PUBLIC: Only import from here
+│   ├── services/                # INTERNAL: Do not import directly
+│   └── repositories/            # INTERNAL: Do not import directly
+├── cases/                       # Case Management module
+│   ├── api.py                   # PUBLIC: Only import from here
+│   ├── services/
+│   └── repositories/
+├── knowledge/                   # Knowledge Base module
+│   ├── api.py                   # PUBLIC: Only import from here
+│   ├── services/
+│   └── repositories/
+└── investigation/               # Investigation module
+    ├── api.py                   # PUBLIC: Only import from here
+    ├── services/
+    └── repositories/
+```
+
+**Module API Pattern:**
+
+```python
+# faultmaven/identity/api.py
+"""
+PUBLIC API for the Identity module.
+Other modules MUST only import from this file.
+"""
+
+from faultmaven.identity.services.user_service import UserService
+from faultmaven.identity.services.auth_service import AuthService
+
+# Type-only exports for dependency injection
+from faultmaven.identity.protocols import IUserLookup, IAuthValidator
+
+__all__ = [
+    "UserService",
+    "AuthService",
+    "IUserLookup",
+    "IAuthValidator",
+]
+```
+
+**Correct Usage (Other Modules):**
+
+```python
+# faultmaven/cases/services/case_service.py
+
+# ✅ CORRECT: Import from public API
+from faultmaven.identity.api import IUserLookup
+
+class CaseService:
+    def __init__(self, user_lookup: IUserLookup):
+        self.user_lookup = user_lookup
+```
+
+**Incorrect Usage (Avoid):**
+
+```python
+# ❌ WRONG: Direct import from internal service
+from faultmaven.identity.services.user_service import UserService
+```
+
+**Why This Matters:**
+
+| Without Module Boundaries | With Module Boundaries |
+|--------------------------|------------------------|
+| `CaseService` imports 10 internal identity classes | `CaseService` imports 1 interface |
+| Changing `UserService` breaks `CaseService` | Changes are encapsulated |
+| Cannot extract module to microservice | Clean extraction possible |
+
 ---
 
 ## 3. Five Infrastructure Layers
@@ -130,6 +205,240 @@ Following the deployment neutrality pattern, FaultMaven implements **five infras
 | **3. Vector** | `IVectorStore` | KB embeddings | ChromaDB, Pinecone |
 | **4. Cache** | `ISessionStore` | Sessions, cache | InMemory, Redis |
 | **5. Tenant** | `TenantProvider` | Multi-tenancy | Single, Multi |
+
+### Layer 2: Files (Extended for Cloud Scale)
+
+The `IStorageBackend` interface must support **presigned URLs** for cloud deployments. Without this, all file uploads/downloads route through the API server, creating a bottleneck.
+
+```python
+# faultmaven/infrastructure/storage/base.py
+
+from typing import Protocol, Optional
+from datetime import timedelta
+
+class IStorageBackend(Protocol):
+    """Storage abstraction supporting both local and cloud backends."""
+
+    async def store(
+        self,
+        file_path: str,
+        content: bytes,
+        content_type: str = "application/octet-stream"
+    ) -> str:
+        """Store file and return storage URI."""
+        ...
+
+    async def retrieve(self, storage_uri: str) -> bytes:
+        """Retrieve file contents by URI."""
+        ...
+
+    async def delete(self, storage_uri: str) -> bool:
+        """Delete file by URI."""
+        ...
+
+    async def generate_upload_url(
+        self,
+        file_path: str,
+        content_type: str,
+        expires_in: timedelta = timedelta(minutes=15)
+    ) -> str:
+        """Generate URL for direct upload (bypasses API server).
+
+        Local: Returns API endpoint path (e.g., /api/v1/upload/{path})
+        Cloud: Returns S3 presigned PUT URL
+        """
+        ...
+
+    async def generate_download_url(
+        self,
+        storage_uri: str,
+        expires_in: timedelta = timedelta(hours=1)
+    ) -> str:
+        """Generate URL for direct download.
+
+        Local: Returns static file path (e.g., /static/evidence/{id})
+        Cloud: Returns S3 presigned GET URL
+        """
+        ...
+```
+
+**LocalStorageBackend Implementation:**
+
+```python
+# faultmaven/infrastructure/storage/local.py
+
+class LocalStorageBackend:
+    """Local filesystem storage for self-hosted deployment."""
+
+    def __init__(self, base_path: Path, base_url: str = "/static/evidence"):
+        self.base_path = base_path
+        self.base_url = base_url
+
+    async def generate_upload_url(
+        self,
+        file_path: str,
+        content_type: str,
+        expires_in: timedelta = timedelta(minutes=15)
+    ) -> str:
+        """Return API upload endpoint - no presigning needed locally."""
+        return f"/api/v1/evidence/upload/{file_path}"
+
+    async def generate_download_url(
+        self,
+        storage_uri: str,
+        expires_in: timedelta = timedelta(hours=1)
+    ) -> str:
+        """Return static file path - served by FastAPI/nginx."""
+        return f"{self.base_url}/{storage_uri}"
+```
+
+**S3StorageBackend Implementation:**
+
+```python
+# faultmaven/infrastructure/storage/s3.py
+
+class S3StorageBackend:
+    """S3 storage for cloud SaaS deployment."""
+
+    def __init__(self, bucket: str, region: str):
+        self.bucket = bucket
+        self.s3_client = boto3.client("s3", region_name=region)
+
+    async def generate_upload_url(
+        self,
+        file_path: str,
+        content_type: str,
+        expires_in: timedelta = timedelta(minutes=15)
+    ) -> str:
+        """Generate S3 presigned PUT URL for direct browser upload."""
+        return self.s3_client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": self.bucket,
+                "Key": file_path,
+                "ContentType": content_type,
+            },
+            ExpiresIn=int(expires_in.total_seconds()),
+        )
+
+    async def generate_download_url(
+        self,
+        storage_uri: str,
+        expires_in: timedelta = timedelta(hours=1)
+    ) -> str:
+        """Generate S3 presigned GET URL for secure download."""
+        return self.s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": storage_uri},
+            ExpiresIn=int(expires_in.total_seconds()),
+        )
+```
+
+**Why Presigned URLs Matter:**
+
+| Without Presigned URLs | With Presigned URLs |
+|----------------------|---------------------|
+| 100MB file → API server → S3 | 100MB file → S3 directly |
+| API server becomes bottleneck | API server only generates URL |
+| High bandwidth costs | Minimal API traffic |
+| Timeout risk for large files | Reliable large file handling |
+
+### Layer 3: Vector (Metadata Sanitization)
+
+ChromaDB and Pinecone handle metadata differently. To ensure portability, all metadata must be sanitized to the **lowest common denominator**.
+
+```python
+# faultmaven/infrastructure/vector/base.py
+
+from typing import Protocol, Dict, Any, List
+
+class IMetadataSanitizer(Protocol):
+    """Ensures vector metadata is portable across backends."""
+
+    def sanitize(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Sanitize metadata for vector store compatibility.
+
+        Rules (Pinecone constraints):
+        - No None values (use empty string or 0)
+        - Only str, int, float, bool types
+        - No nested objects (flatten to dot notation)
+        - String values max 512 chars
+        """
+        ...
+
+class VectorMetadataSanitizer:
+    """Enforces strict metadata format for cross-backend compatibility."""
+
+    MAX_STRING_LENGTH = 512
+
+    def sanitize(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        result = {}
+        for key, value in metadata.items():
+            sanitized = self._sanitize_value(key, value)
+            if sanitized is not None:
+                result.update(sanitized)
+        return result
+
+    def _sanitize_value(
+        self, key: str, value: Any
+    ) -> Optional[Dict[str, Any]]:
+        # Handle None - convert to empty string
+        if value is None:
+            return {key: ""}
+
+        # Handle basic types
+        if isinstance(value, bool):
+            return {key: value}
+        if isinstance(value, (int, float)):
+            return {key: value}
+        if isinstance(value, str):
+            return {key: value[:self.MAX_STRING_LENGTH]}
+
+        # Handle nested dict - flatten with dot notation
+        if isinstance(value, dict):
+            result = {}
+            for nested_key, nested_value in value.items():
+                flat_key = f"{key}.{nested_key}"
+                nested_result = self._sanitize_value(flat_key, nested_value)
+                if nested_result:
+                    result.update(nested_result)
+            return result
+
+        # Handle list - convert to comma-separated string
+        if isinstance(value, list):
+            str_value = ",".join(str(v) for v in value)
+            return {key: str_value[:self.MAX_STRING_LENGTH]}
+
+        # Unknown type - convert to string
+        return {key: str(value)[:self.MAX_STRING_LENGTH]}
+```
+
+**Usage in VectorStore:**
+
+```python
+class ChromaVectorStore:
+    def __init__(self, sanitizer: IMetadataSanitizer):
+        self.sanitizer = sanitizer
+
+    async def upsert(
+        self, doc_id: str, embedding: List[float], metadata: Dict[str, Any]
+    ):
+        # ALWAYS sanitize before storing
+        clean_metadata = self.sanitizer.sanitize(metadata)
+        self.collection.upsert(
+            ids=[doc_id],
+            embeddings=[embedding],
+            metadatas=[clean_metadata]
+        )
+```
+
+**Why Metadata Sanitization Matters:**
+
+| Without Sanitizer | With Sanitizer |
+|------------------|----------------|
+| `{"tags": ["a", "b"]}` → Chroma OK, Pinecone fails | `{"tags": "a,b"}` → Both OK |
+| `{"user": None}` → Pinecone crashes | `{"user": ""}` → Both OK |
+| `{"meta": {"nested": 1}}` → Inconsistent | `{"meta.nested": 1}` → Both OK |
 
 ### Layer 5: TenantProvider (Critical for Deployment Neutrality)
 
@@ -349,6 +658,80 @@ class SingleTenantProvider:
         """Local deployment: only private KB access."""
         return [KBVisibility.PRIVATE]
 ```
+
+### Startup Bootstrapper (Critical for Referential Integrity)
+
+**Problem:** The `DEFAULT_ORGANIZATION_ID` is returned by `SingleTenantProvider`, but if this organization doesn't actually exist in the database, foreign key constraints will fail when inserting cases, KB documents, or other org-scoped resources.
+
+**Solution:** On application startup in single-tenant mode, ensure the default organization row exists.
+
+```python
+# faultmaven/bootstrap/single_tenant.py
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from faultmaven.models.organization import Organization
+from faultmaven.config import settings
+
+async def ensure_default_organization(session: AsyncSession) -> None:
+    """Bootstrap: Ensure DEFAULT_ORGANIZATION_ID exists in database.
+
+    This MUST run on startup when TENANT_PROVIDER=single.
+    Guarantees referential integrity for org_id foreign keys.
+    """
+    if settings.tenant_provider != "single":
+        return
+
+    # Check if default org exists
+    result = await session.execute(
+        select(Organization).where(
+            Organization.organization_id == settings.default_organization_id
+        )
+    )
+    existing = result.scalar_one_or_none()
+
+    if existing is None:
+        # Create the default organization
+        default_org = Organization(
+            organization_id=settings.default_organization_id,
+            name="Local Organization",
+            slug="local",
+            plan_tier="unlimited",
+            max_members=1,
+            is_system=True,  # Flag to identify bootstrap-created orgs
+        )
+        session.add(default_org)
+        await session.commit()
+        logger.info(f"Created default organization: {settings.default_organization_id}")
+```
+
+**Integration with Application Startup:**
+
+```python
+# faultmaven/main.py
+
+from faultmaven.bootstrap.single_tenant import ensure_default_organization
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan - runs on startup/shutdown."""
+    async with get_db_session() as session:
+        # CRITICAL: Ensure default org exists before any requests
+        await ensure_default_organization(session)
+
+    yield  # Application runs here
+
+    # Shutdown logic here
+
+app = FastAPI(lifespan=lifespan)
+```
+
+**Why This Matters:**
+
+| Without Bootstrapper | With Bootstrapper |
+|---------------------|-------------------|
+| `INSERT INTO cases (org_id=...) → FK violation` | `INSERT INTO cases (org_id=...) → Success` |
+| Local deployment crashes on first case creation | Local deployment works identically to cloud |
+| Migration to cloud requires data fixup | Migration is seamless - org_id already valid |
 
 ### MultiTenantProvider Implementation
 
@@ -791,14 +1174,17 @@ Based on actual codebase review:
 | **SQLite Support** | ✅ Exists | None | `database.py:98-107` already configured |
 | **PostgreSQL Support** | ✅ Exists | None | Fully implemented |
 | **TenantProvider** | ❌ Missing | 🔴 High | Critical for deployment neutrality |
-| **Local Storage** | ✅ Exists | 🟢 Low | Needs interface alignment |
+| **Startup Bootstrapper** | ❌ Missing | 🔴 High | Required for FK integrity in local |
+| **Local Storage** | ✅ Exists | 🟡 Medium | Needs presigned URL methods |
 | **S3 Storage** | ❌ Missing | 🟡 Medium | Required for cloud |
-| **ChromaDB** | ✅ Exists | None | Fully implemented |
+| **ChromaDB** | ✅ Exists | 🟢 Low | Needs MetadataSanitizer |
 | **Pinecone** | ❌ Missing | 🟡 Medium | Required for cloud scale |
+| **MetadataSanitizer** | ❌ Missing | 🟡 Medium | Required for vector portability |
 | **InMemory Cache** | ✅ Exists | None | Fully implemented |
 | **Redis Cache** | ✅ Exists | None | Fully implemented |
 | **KBVisibility** | ⚠️ Partial | 🟢 Low | Missing GLOBAL value |
 | **Organization Routes** | ✅ Exists | None | Full CRUD + members |
+| **Module Boundaries** | ⚠️ Partial | 🟢 Low | Needs public API pattern |
 | **Case Ownership** | ⚠️ Partial | 🟢 Low | Has org_id, needs sharing |
 
 ### Required Work
@@ -827,9 +1213,24 @@ Files to modify:
 
 **Effort**: 3-4 days
 
+**2. Implement Startup Bootstrapper**
+
+Ensure default organization exists in database on startup:
+
+```
+faultmaven/bootstrap/
+├── __init__.py
+└── single_tenant.py    # ensure_default_organization()
+```
+
+Files to modify:
+- `faultmaven/main.py` - Add lifespan handler calling bootstrapper
+
+**Effort**: 0.5 days
+
 #### P1: Required for Cloud
 
-**2. Add GLOBAL to KBVisibility**
+**3. Add GLOBAL to KBVisibility**
 
 Single line addition to `models/interfaces_kb.py`:
 ```python
@@ -838,19 +1239,19 @@ GLOBAL = "global"  # Provider-curated (read-only)
 
 **Effort**: 0.5 days (including search logic update)
 
-**3. Implement S3StorageBackend**
+**4. Implement S3StorageBackend with Presigned URLs**
 
 ```
 faultmaven/infrastructure/storage/
-├── base.py           # IStorageBackend (extract from existing)
-├── local.py          # LocalStorageBackend (refactor existing)
-├── s3.py             # S3StorageBackend (new)
+├── base.py           # IStorageBackend (with presigned URL methods)
+├── local.py          # LocalStorageBackend (add generate_upload/download_url)
+├── s3.py             # S3StorageBackend (new, with presigned URLs)
 └── factory.py        # get_storage_backend()
 ```
 
 **Effort**: 3-4 days
 
-**4. Implement PineconeVectorStore**
+**5. Implement PineconeVectorStore**
 
 ```
 faultmaven/infrastructure/vector/
@@ -860,13 +1261,31 @@ faultmaven/infrastructure/vector/
 
 **Effort**: 3-4 days
 
-#### P2: Nice to Have
+**6. Implement MetadataSanitizer**
 
-**5. Align LocalStorageBackend with Interface**
-
-Current `file_storage_service.py` needs to conform to `IStorageBackend` interface.
+```
+faultmaven/infrastructure/vector/
+├── base.py            # Add IMetadataSanitizer protocol
+├── sanitizer.py       # VectorMetadataSanitizer implementation
+├── chroma_store.py    # Update to use sanitizer
+└── pinecone_store.py  # Use sanitizer
+```
 
 **Effort**: 1-2 days
+
+#### P2: Nice to Have
+
+**7. Align LocalStorageBackend with Extended Interface**
+
+Current `file_storage_service.py` needs to conform to extended `IStorageBackend` interface with presigned URL methods.
+
+**Effort**: 1-2 days
+
+**8. Establish Module Boundaries**
+
+Create public `api.py` files for each module and enforce import rules.
+
+**Effort**: 2-3 days
 
 ---
 
