@@ -38,6 +38,7 @@ from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
 from faultmaven.infrastructure.persistence.agent_execution_repository import (
     AgentExecutionRepository,
 )
+from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.exceptions import (
     NotFoundError,
     AuthorizationError,
@@ -56,12 +57,14 @@ class APICaseService(BaseService):
     - Service-level exception translation
     - Unified logging and error handling
     - Transaction coordination across repositories
+    - Deployment-neutral tenant resolution (TASK-023)
 
     Attributes:
         case_repo: Case repository for case persistence
         session_repo: Investigation session repository
         evidence_repo: Evidence artifact repository
         execution_repo: Agent execution repository
+        tenant_provider: Provider for deployment-neutral organization context
     """
 
     def __init__(
@@ -70,6 +73,7 @@ class APICaseService(BaseService):
         session_repo: InvestigationSessionRepository,
         evidence_repo: EvidenceArtifactRepository,
         execution_repo: AgentExecutionRepository,
+        tenant_provider: Optional[TenantProvider] = None,
     ):
         """Initialize API case service.
 
@@ -78,12 +82,14 @@ class APICaseService(BaseService):
             session_repo: Investigation session repository
             evidence_repo: Evidence artifact repository
             execution_repo: Agent execution repository
+            tenant_provider: Provider for deployment-neutral organization context (TASK-023)
         """
         super().__init__("api_case_service")
         self.case_repo = case_repo
         self.session_repo = session_repo
         self.evidence_repo = evidence_repo
         self.execution_repo = execution_repo
+        self.tenant_provider = tenant_provider
 
     # ============================================================
     # Core CRUD Operations
@@ -92,21 +98,27 @@ class APICaseService(BaseService):
     async def create_case(
         self,
         user_id: str,
-        organization_id: str,
-        title: str,
-        description: str,
-        severity: CaseSeverity,
+        organization_id: Optional[str] = None,
+        title: str = "",
+        description: str = "",
+        severity: Optional[CaseSeverity] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        current_user: Optional[Any] = None,
     ) -> Case:
         """Create a new case.
 
+        Deployment-neutral implementation using TenantProvider (TASK-023):
+        - Single-tenant: organization_id ignored, uses default organization
+        - Multi-tenant: organization_id required, validates membership
+
         Args:
             user_id: User creating the case
-            organization_id: Organization owning the case
+            organization_id: Organization ID (optional for single-tenant, required for multi-tenant)
             title: Case title
             description: Case description
             severity: Case severity level
             metadata: Optional additional metadata
+            current_user: Authenticated user (for TenantProvider)
 
         Returns:
             Created Case
@@ -115,10 +127,25 @@ class APICaseService(BaseService):
             ValidationException: If inputs invalid
             ServiceError: If creation fails
         """
+        # Resolve organization context using TenantProvider (deployment-neutral)
+        resolved_org_id = organization_id
+        if self.tenant_provider and current_user:
+            try:
+                organization = await self.tenant_provider.get_current_organization(
+                    current_user=current_user,
+                    organization_id=organization_id
+                )
+                resolved_org_id = organization.org_id
+            except Exception as e:
+                self.log_error("tenant_provider_resolution", e, user_id=user_id)
+                # Fall back to provided organization_id if TenantProvider fails
+                if not organization_id:
+                    raise
+
         self.log_operation(
             "create_case",
             user_id=user_id,
-            organization_id=organization_id,
+            organization_id=resolved_org_id,
             title=title,
             severity=severity.value if severity else None,
         )
@@ -133,7 +160,7 @@ class APICaseService(BaseService):
         if not user_id or not user_id.strip():
             raise ValidationException("user_id: User ID is required")
 
-        if not organization_id or not organization_id.strip():
+        if not resolved_org_id or not resolved_org_id.strip():
             raise ValidationException("organization_id: Organization ID is required")
 
         try:
@@ -141,7 +168,7 @@ class APICaseService(BaseService):
             case = Case(
                 case_id=f"case_{uuid4().hex[:12]}",
                 user_id=user_id.strip(),
-                organization_id=organization_id.strip(),
+                organization_id=resolved_org_id.strip(),
                 title=title.strip(),
                 description=description.strip() if description else "",
                 status=CaseStatus.CONSULTING,
@@ -375,31 +402,52 @@ class APICaseService(BaseService):
 
     async def list_cases(
         self,
-        organization_id: str,
+        organization_id: Optional[str] = None,
         user_id: Optional[str] = None,
         status: Optional[CaseStatus] = None,
         severity: Optional[CaseSeverity] = None,
         assigned_to: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
+        current_user: Optional[Any] = None,
     ) -> List[Case]:
         """List cases for organization with filters.
 
+        Deployment-neutral implementation using TenantProvider (TASK-023):
+        - Single-tenant: organization_id ignored, lists all cases in default org
+        - Multi-tenant: organization_id required, lists cases with membership check
+
         Args:
-            organization_id: Organization to list cases for
+            organization_id: Organization ID (optional for single-tenant, required for multi-tenant)
             user_id: Optional filter by reporter
             status: Optional filter by status
             severity: Optional filter by severity
             assigned_to: Optional filter by assignee
             limit: Max results (default 50)
             offset: Pagination offset
+            current_user: Authenticated user (for TenantProvider)
 
         Returns:
             List of cases
         """
+        # Resolve organization context using TenantProvider (deployment-neutral)
+        resolved_org_id = organization_id
+        if self.tenant_provider and current_user:
+            try:
+                organization = await self.tenant_provider.get_current_organization(
+                    current_user=current_user,
+                    organization_id=organization_id
+                )
+                resolved_org_id = organization.org_id
+            except Exception as e:
+                self.log_error("tenant_provider_resolution", e)
+                # Fall back to provided organization_id if TenantProvider fails
+                if not organization_id:
+                    raise
+
         self.log_operation(
             "list_cases",
-            organization_id=organization_id,
+            organization_id=resolved_org_id,
             user_id=user_id,
             status=status.value if status else None,
             severity=severity.value if severity else None,
@@ -408,13 +456,13 @@ class APICaseService(BaseService):
             offset=offset,
         )
 
-        if not organization_id:
+        if not resolved_org_id:
             return []
 
         try:
             # Get cases from repository
             cases, total = await self.case_repo.list(
-                organization_id=organization_id,
+                organization_id=resolved_org_id,
                 user_id=user_id,
                 status=status,
                 limit=limit,
@@ -435,7 +483,7 @@ class APICaseService(BaseService):
 
             self.log_operation(
                 "list_cases_result",
-                organization_id=organization_id,
+                organization_id=resolved_org_id,
                 count=len(cases),
                 total=total,
             )
@@ -443,7 +491,7 @@ class APICaseService(BaseService):
             return cases
 
         except Exception as e:
-            self.log_error("list_cases", e, organization_id=organization_id)
+            self.log_error("list_cases", e, organization_id=resolved_org_id)
             return []
 
     async def get_case_with_details(

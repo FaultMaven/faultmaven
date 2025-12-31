@@ -695,6 +695,22 @@ class DIContainer:
             logger.warning(f"OrganizationService initialization failed: {e}")
             self.organization_service = None
 
+        # Tenant Provider - Deployment neutrality (TASK-023)
+        try:
+            from faultmaven.providers.tenancy.factory import create_tenant_provider
+            if hasattr(self, 'db_session') and self.db_session:
+                organization_repository = PostgreSQLOrganizationRepository(self.db_session)
+                self.tenant_provider = create_tenant_provider(
+                    organization_repository=organization_repository
+                )
+                logger.debug(f"TenantProvider initialized (mode: {self.settings.deployment_mode})")
+            else:
+                self.tenant_provider = None
+                logger.debug("TenantProvider not available - database session missing")
+        except Exception as e:
+            logger.warning(f"TenantProvider initialization failed: {e}")
+            self.tenant_provider = None
+
         # Team Service - Team collaboration management
         try:
             from faultmaven.services.domain.team_service import TeamService

@@ -1463,15 +1463,24 @@ class EvidenceStorageSettings(BaseSettings):
 class FaultMavenSettings(BaseSettings):
     """
     Unified configuration for FaultMaven system.
-    
+
     Single source of truth that replaces:
     - config/config.py
-    - config/configuration_manager.py  
+    - config/configuration_manager.py
     - Direct os.getenv() calls throughout codebase
-    
+
     All configuration access should go through this class via dependency injection.
     """
-    
+
+    # Deployment Mode (TASK-023: TenantProvider)
+    deployment_mode: Literal["single-tenant", "multi-tenant"] = Field(
+        default="single-tenant",
+        env="DEPLOYMENT_MODE",
+        description="Deployment mode for tenant isolation. "
+                    "single-tenant: All users share default organization (local, community). "
+                    "multi-tenant: Multiple organizations with strict isolation (cloud, enterprise)."
+    )
+
     # Nested configuration sections
     server: ServerSettings = Field(default_factory=ServerSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
