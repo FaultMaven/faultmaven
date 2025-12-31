@@ -87,6 +87,18 @@ async def get_investigation_service():
     return service
 
 
+async def get_investigation_orchestrator():
+    """Get InvestigationOrchestrator instance from container (TASK-026)"""
+    from ...services.domain.investigation_orchestrator import InvestigationOrchestrator
+    orchestrator = container.get_investigation_orchestrator()
+    if orchestrator is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Investigation orchestrator not available"
+        )
+    return orchestrator
+
+
 async def get_report_store() -> Optional[IReportStore]:
     """Get ReportStore instance from container"""
     try:

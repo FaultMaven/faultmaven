@@ -198,12 +198,15 @@ def sample_case():
 @pytest.fixture
 def auth_user():
     """Fixture providing authenticated user"""
+    from datetime import datetime, timezone
     return DevUser(
         user_id="user-123",
         username="testuser",
         email="test@example.com",
+        display_name="Test User",
+        created_at=datetime.now(timezone.utc),
         is_dev_user=True,
-        organization_id="org-456"
+        is_active=True
     )
 
 
@@ -725,8 +728,11 @@ class TestReportAuthentication:
     def test_auth_user_fixture(self, auth_user):
         """Test auth user fixture is properly configured"""
         assert auth_user.user_id == "user-123"
-        assert auth_user.organization_id == "org-456"
+        assert auth_user.username == "testuser"
+        assert auth_user.email == "test@example.com"
+        assert auth_user.display_name == "Test User"
         assert auth_user.is_dev_user is True
+        assert auth_user.is_active is True
 
 
 # ============================================================

@@ -477,6 +477,37 @@ class DIContainer:
         # Legacy case store (deprecated - will be removed)
         self.case_store = None
 
+        # Hypothesis and Solution repositories (TASK-026)
+        try:
+            from faultmaven.infrastructure.persistence.hypothesis_repository import (
+                DatabaseHypothesisRepository,
+                InMemoryHypothesisRepository,
+            )
+            from faultmaven.infrastructure.persistence.solution_repository import (
+                DatabaseSolutionRepository,
+                InMemorySolutionRepository,
+            )
+
+            if database_url:
+                # Use database repositories
+                from faultmaven.infrastructure.persistence.database import get_session_factory
+                session_factory = get_session_factory(database_url)
+                hypothesis_session = session_factory()
+                solution_session = session_factory()
+
+                self.hypothesis_repository = DatabaseHypothesisRepository(hypothesis_session)
+                self.solution_repository = DatabaseSolutionRepository(solution_session)
+                logger.info("✅ Hypothesis and Solution repositories: Database (SQLAlchemy ORM)")
+            else:
+                # Use in-memory repositories for testing
+                self.hypothesis_repository = InMemoryHypothesisRepository()
+                self.solution_repository = InMemorySolutionRepository()
+                logger.debug("Hypothesis and Solution repositories: InMemory (RAM)")
+        except Exception as e:
+            logger.warning(f"Hypothesis/Solution repository initialization failed: {e}")
+            self.hypothesis_repository = None
+            self.solution_repository = None
+
         # Report store for report persistence (requires vector_store and redis_client)
         try:
             from faultmaven.infrastructure.persistence.redis_report_store import RedisReportStore
@@ -675,6 +706,23 @@ class DIContainer:
         except Exception as e:
             logger.warning(f"InvestigationService initialization failed: {e}")
             self.investigation_service = None
+
+        # InvestigationOrchestrator - Hypothesis/Solution workflow orchestration (TASK-026)
+        try:
+            if hasattr(self, 'hypothesis_repository') and self.hypothesis_repository and \
+               hasattr(self, 'solution_repository') and self.solution_repository:
+                from faultmaven.services.domain.investigation_orchestrator import InvestigationOrchestrator
+                self.investigation_orchestrator = InvestigationOrchestrator(
+                    hypothesis_repo=self.hypothesis_repository,
+                    solution_repo=self.solution_repository,
+                )
+                logger.debug("InvestigationOrchestrator initialized with hypothesis and solution repositories")
+            else:
+                self.investigation_orchestrator = None
+                logger.debug("InvestigationOrchestrator not available (missing repositories)")
+        except Exception as e:
+            logger.warning(f"InvestigationOrchestrator initialization failed: {e}")
+            self.investigation_orchestrator = None
 
         # Organization Service - Enterprise organization management
         try:
@@ -1708,6 +1756,15 @@ class DIContainer:
             if not getattr(self, '_initializing', False):
                 self.initialize()
         return getattr(self, 'investigation_service', None)
+
+    def get_investigation_orchestrator(self):
+        """Get the investigation orchestrator service (TASK-026)"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Investigation orchestrator requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'investigation_orchestrator', None)
 
     def get_organization_service(self):
         """Get the organization service implementation (optional feature)"""

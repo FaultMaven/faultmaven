@@ -126,12 +126,15 @@ def sample_case():
 @pytest.fixture
 def auth_user():
     """Authenticated user for testing"""
+    from datetime import datetime, timezone
     return DevUser(
         user_id="user-integration-001",
         username="integration_tester",
         email="integration@test.com",
+        display_name="Integration Tester",
+        created_at=datetime.now(timezone.utc),
         is_dev_user=True,
-        organization_id="org-integration-001"
+        is_active=True
     )
 
 
@@ -351,7 +354,7 @@ class TestCaseClosureIntegration:
                 report_id="runbook-001",
                 case_id=sample_case.case_id,
                 report_type=ReportType.RUNBOOK,
-                title="Runbook",
+                title="Test Runbook Report",
                 content="Steps...",
                 format="markdown",
                 generation_status=ReportStatus.COMPLETED,
@@ -498,7 +501,7 @@ class TestReportPerformance:
                 generated_at=datetime.now(timezone.utc).isoformat(),
                 generation_time_ms=1000,
                 is_current=(i == NUM_REPORTS - 1),
-                version=i + 1,
+                version=(i % 5) + 1,  # Cycle versions 1-5 to meet constraint
                 linked_to_closure=False
             )
             await report_store.save_report(report)
