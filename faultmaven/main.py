@@ -555,6 +555,19 @@ if REPORTS_ROUTES_AVAILABLE and reports:
     app.include_router(reports.router, prefix="/api/v1", tags=["reports"])
     logger.info("✅ Report management endpoints added")
 
+# Hypothesis & Solution management routes (TASK-026)
+try:
+    from .api.v1.routes import hypotheses
+    HYPOTHESES_ROUTES_AVAILABLE = True
+except ImportError:
+    HYPOTHESES_ROUTES_AVAILABLE = False
+    hypotheses = None
+    logger.warning("Hypotheses routes not available")
+
+if HYPOTHESES_ROUTES_AVAILABLE and hypotheses:
+    app.include_router(hypotheses.router, prefix="/api/v1", tags=["hypotheses", "solutions"])
+    logger.info("✅ Hypothesis & Solution management endpoints added")
+
 # Debug endpoints (present in locked API spec)
 @app.get("/debug/routes")
 async def debug_routes():

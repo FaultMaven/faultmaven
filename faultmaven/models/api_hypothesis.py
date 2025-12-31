@@ -179,6 +179,25 @@ class HypothesisResponse(BaseModel):
     updated_by: Optional[str] = Field(None, description="User who last updated")
     metadata: Dict = Field(default_factory=dict, description="Additional metadata")
 
+    @classmethod
+    def from_dict(cls, data: Dict) -> "HypothesisResponse":
+        """Create HypothesisResponse from dictionary (repository layer)."""
+        return cls(
+            hypothesis_id=data.get("hypothesis_id"),
+            case_id=data.get("case_id"),
+            description=data.get("description"),
+            status=data.get("status"),
+            confidence_score=float(data.get("confidence_score")) if data.get("confidence_score") is not None else None,
+            supporting_evidence_ids=data.get("supporting_evidence_ids", []),
+            validation_result=data.get("validation_result"),
+            validation_timestamp=data.get("validation_timestamp"),
+            proposed_at=data.get("proposed_at"),
+            updated_at=data.get("updated_at"),
+            created_by=data.get("created_by"),
+            updated_by=data.get("updated_by"),
+            metadata=data.get("metadata", {}),
+        )
+
     class Config:
         from_attributes = True
 
@@ -333,6 +352,27 @@ class SolutionResponse(BaseModel):
     created_by: str = Field(..., description="User who created this solution")
     updated_by: Optional[str] = Field(None, description="User who last updated")
     metadata: Dict = Field(default_factory=dict, description="Additional metadata")
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "SolutionResponse":
+        """Create SolutionResponse from dictionary (repository layer)."""
+        return cls(
+            solution_id=data.get("solution_id"),
+            case_id=data.get("case_id"),
+            description=data.get("description"),
+            status=data.get("status"),
+            implementation_steps=data.get("implementation_steps", []),
+            risk_level=data.get("risk_level"),
+            estimated_effort=data.get("estimated_effort"),
+            verification_result=data.get("verification_result"),
+            verification_timestamp=data.get("verification_timestamp"),
+            proposed_at=data.get("proposed_at"),
+            implemented_at=data.get("implemented_at"),
+            updated_at=data.get("updated_at"),
+            created_by=data.get("created_by"),
+            updated_by=data.get("updated_by"),
+            metadata=data.get("metadata", {}),
+        )
 
     class Config:
         from_attributes = True
