@@ -1,5 +1,20 @@
 # FaultMaven Deployment Strategy v2.1
 
+## Document Context
+
+This document is the **technical design specification** for **Objective 5: Deployment Neutrality** in the [FaultMaven Platform Evolution Strategy](../FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md).
+
+**Timeline**: Scheduled for Phase 2 (Weeks 14-15) of the platform evolution.
+
+**Strategic Context**: See Platform Evolution Strategy for business justification, team allocation, and success metrics.
+
+**Related Documents**:
+
+- [Platform Evolution Strategy](../FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md) - Master strategic plan
+- [API Feature Gap Analysis](../API_FEATURE_GAP_ANALYSIS.md) - Phase 0 missing endpoints
+
+---
+
 ## Executive Summary
 
 This document defines the deployment strategy for FaultMaven, supporting two distinct deployment scenarios using the **deployment neutrality principle**:

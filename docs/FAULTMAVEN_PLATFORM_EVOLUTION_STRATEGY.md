@@ -190,20 +190,35 @@ FaultMaven adopts a "Micro-Kernel" architecture pattern where the core applicati
 
 **Goal**: Infrastructure becomes a deployment-time decision, not a code-time decision.
 
+**Technical Specification**: See [deployment-strategy-v2.md](architecture/deployment-strategy-v2.md) for complete implementation details.
+
 **Why This Matters**:
+
 - Same codebase runs on laptop (SQLite) or production (PostgreSQL + Redis)
 - Reduces configuration errors by 60%
-- Clear upgrade path: CORE → TEAM → ENTERPRISE
+- Clear upgrade path: Self-Hosted Local → Cloud SaaS
 - No vendor lock-in
 
 **Success Criteria**:
-- ✅ Single `PROFILE` variable controls infrastructure tier
-- ✅ Provider pattern implemented for all infrastructure (DB, storage, identity, cache)
-- ✅ `PROFILE=core` runs with zero external dependencies
-- ✅ `PROFILE=enterprise` activates all features automatically
-- ✅ DI container injects providers based on environment
 
-**Implementation**: Deployment profile pattern (CORE/TEAM/ENTERPRISE) from `faultmaven`.
+- ✅ TenantProvider layer implemented (SingleTenantProvider + MultiTenantProvider)
+- ✅ 5 infrastructure providers (Identity, Data, Files, Vector, Tenant)
+- ✅ Provider factory with environment-based selection
+- ✅ Startup bootstrapper for referential integrity
+- ✅ Complete migration scripts (local → cloud)
+- ✅ Zero conditional logic in application code
+
+**Timeline**: Phase 2 (Weeks 14-15) - Deployment Profile Pattern
+
+**Deliverables** (from deployment-strategy-v2.md):
+
+- TenantProvider interface and implementations
+- Provider factory and dependency injection
+- Startup bootstrapper with schema validation
+- Updated authentication middleware
+- Migration scripts and documentation
+
+**Implementation Details**: All technical specifications, code examples, API contracts, and migration procedures are documented in the [deployment-strategy-v2.md](architecture/deployment-strategy-v2.md) design document.
 
 **The Provider Pattern in Detail**:
 
