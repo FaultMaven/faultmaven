@@ -354,7 +354,7 @@ class TestCaseClosureIntegration:
                 report_id="runbook-001",
                 case_id=sample_case.case_id,
                 report_type=ReportType.RUNBOOK,
-                title="Runbook",
+                title="Test Runbook Report",
                 content="Steps...",
                 format="markdown",
                 generation_status=ReportStatus.COMPLETED,
@@ -501,7 +501,7 @@ class TestReportPerformance:
                 generated_at=datetime.now(timezone.utc).isoformat(),
                 generation_time_ms=1000,
                 is_current=(i == NUM_REPORTS - 1),
-                version=i + 1,
+                version=(i % 5) + 1,  # Cycle versions 1-5 to meet constraint
                 linked_to_closure=False
             )
             await report_store.save_report(report)
