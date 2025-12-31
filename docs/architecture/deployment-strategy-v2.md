@@ -1,443 +1,496 @@
-# FaultMaven Deployment Strategy v2.0
+# FaultMaven Deployment Strategy v2.1
 
 ## Executive Summary
 
-This document defines the deployment strategy for FaultMaven, supporting two distinct deployment scenarios:
+This document defines the deployment strategy for FaultMaven, supporting two distinct deployment scenarios using the **deployment neutrality principle**:
+
 - **Local Deployment**: Single-user, self-hosted, free tier
 - **Cloud Deployment**: Multi-user, managed SaaS, subscription-based
 
-Both deployments share **FaultMaven Core** - the investigation engine - while differing in infrastructure providers and feature availability.
+**Both deployments use the SAME codebase, SAME Docker image, with ZERO conditional logic.** Infrastructure differences are handled entirely through the provider pattern and environment variables.
 
-**Version**: 2.0
+**Version**: 2.1
 **Date**: 2025-12-31
-**Status**: Approved Design
+**Status**: Revised based on architectural review feedback
 
 ---
 
 ## Table of Contents
 
-1. [Architecture Philosophy](#1-architecture-philosophy)
-2. [FaultMaven Core Definition](#2-faultmaven-core-definition)
-3. [Deployment Scenarios](#3-deployment-scenarios)
-4. [Infrastructure Providers](#4-infrastructure-providers)
-5. [Knowledge Base Architecture](#5-knowledge-base-architecture)
-6. [Data Model](#6-data-model)
-7. [Implementation Strategy](#7-implementation-strategy)
-8. [Gap Analysis](#8-gap-analysis)
-9. [Implementation Roadmap](#9-implementation-roadmap)
+1. [Deployment Neutrality Principle](#1-deployment-neutrality-principle)
+2. [FaultMaven Core](#2-faultmaven-core)
+3. [Five Infrastructure Layers](#3-five-infrastructure-layers)
+4. [Knowledge Base Architecture](#4-knowledge-base-architecture)
+5. [Data Model](#5-data-model)
+6. [Configuration](#6-configuration)
+7. [Gap Analysis](#7-gap-analysis)
+8. [Implementation Roadmap](#8-implementation-roadmap)
 
 ---
 
-## 1. Architecture Philosophy
+## 1. Deployment Neutrality Principle
 
 ### Core Principle
 
-> **Two separate systems sharing one core engine.**
+> **"Infrastructure choices are deployment-time decisions, not code-time decisions."**
+
+This means:
+
+| Requirement | Implementation |
+|-------------|----------------|
+| ✅ Same codebase for all deployments | Single repository, no deployment branches |
+| ✅ Same Docker image | One artifact serves all environments |
+| ✅ Zero conditional logic | No `if deployment == "local"` anywhere |
+| ✅ Environment variables control behavior | `TENANT_PROVIDER=single` vs `multi` |
+| ❌ NO separate packages | No `faultmaven/local/` or `faultmaven/cloud/` |
+| ❌ NO deployment mode enums | No `DeploymentMode.LOCAL` in code |
+| ❌ NO feature flags based on environment | Providers handle everything |
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Application Code                              │
+│                                                                  │
+│  Uses interfaces only - no deployment-specific logic             │
+│  • CaseService calls TenantProvider.get_user_organization_id()   │
+│  • KnowledgeService calls VectorStore.search()                   │
+│  • EvidenceService calls StorageBackend.store()                  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Provider Layer                                │
+│                                                                  │
+│  Environment variables select implementations at startup         │
+│                                                                  │
+│  TENANT_PROVIDER=single → SingleTenantProvider                   │
+│  TENANT_PROVIDER=multi  → MultiTenantProvider                    │
+│                                                                  │
+│  STORAGE_BACKEND=local → LocalStorageBackend                     │
+│  STORAGE_BACKEND=s3    → S3StorageBackend                        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Deployment Scenarios
 
 | Aspect | Local Deployment | Cloud Deployment |
 |--------|------------------|------------------|
-| **Analogy** | Computer NOT connected to Internet | Computer connected to Internet |
-| **Runtime** | App runs on user's machine | App runs on managed infrastructure |
-| **Data** | Stored locally | Stored in cloud |
-| **Users** | Single user, isolated | Multiple users, can share |
-| **Knowledge** | User builds their own KB | Global KB + Org KB + User KB |
+| **Target** | Individual engineer | Teams and organizations |
+| **Infrastructure** | SQLite, local filesystem, ChromaDB | PostgreSQL, S3, Pinecone |
+| **Users** | Single user | Multiple users |
+| **Organizations** | None (null organization) | Full org management |
+| **Knowledge Base** | User KB only | Global KB + Org KB + User KB |
+| **Sharing** | N/A | Full sharing capabilities |
 | **Price** | Free | Subscription |
-
-### What They Share
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      FaultMaven Core                             │
-│                                                                  │
-│  The investigation engine - identical in both deployments        │
-│                                                                  │
-│  • Case Management                                               │
-│  • Session Management (conversation state)                       │
-│  • Evidence Processing (parsers, analyzers)                      │
-│  • Knowledge Base Engine (RAG pipeline, embeddings, search)      │
-│  • Agent Orchestration (OODA framework, LLM integration)         │
-│  • Reporting                                                     │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### What They Don't Share
-
-- Infrastructure providers (database, storage, vector, cache)
-- User management and authentication systems
-- Organization and sharing features (Cloud only)
-- Global Knowledge Base (Cloud only)
 
 ---
 
-## 2. FaultMaven Core Definition
+## 2. FaultMaven Core
+
+FaultMaven Core is the investigation engine shared by all deployments. It consists of:
 
 ### Core Components
 
-| Component | Description | Key Interfaces |
-|-----------|-------------|----------------|
-| **Case Management** | Create, update, close investigation cases | `CaseRepository`, `CaseService` |
-| **Session Management** | Conversation context, state persistence | `SessionRepository`, `ISessionStore` |
-| **Evidence Processing** | Upload, parse, analyze logs/screenshots/configs | `EvidenceArtifactRepository`, `IPreprocessor` |
-| **Knowledge Base Engine** | RAG pipeline, semantic search, embeddings | `IVectorStore`, `KnowledgeItemRepository` |
-| **Agent Orchestration** | LLM integration, tool execution, OODA framework | `ILLMProvider`, `BaseTool` |
-| **Reporting** | Generate investigation reports | `IReportService` |
+| Component | Location | Interfaces |
+|-----------|----------|------------|
+| **Case Management** | `services/case_service.py` | `ICaseRepository` |
+| **Session Management** | `services/investigation_session_service.py` | `ISessionStore` |
+| **Evidence Processing** | `services/evidence_artifact_service.py` | `IStorageBackend` |
+| **Knowledge Base** | `services/knowledge_search_service.py` | `IVectorStore` |
+| **Agent Orchestration** | `services/agent_orchestration_service.py` | `ILLMProvider` |
 
-### Core Interfaces (Already Exist)
+### Existing Interfaces
 
-The codebase already defines comprehensive interfaces in `faultmaven/models/interfaces.py`:
+The codebase already defines comprehensive interfaces in `models/interfaces.py`:
 
 ```python
-# Infrastructure interfaces (already implemented)
-class ILLMProvider(ABC):           # LLM abstraction
-class IVectorStore(ABC):           # Vector database abstraction
-class ISessionStore(ABC):          # Session storage abstraction
-class ISanitizer(ABC):             # PII redaction abstraction
-class ITracer(ABC):                # Observability abstraction
-class IConfiguration(ABC):         # Configuration abstraction
-class IStorageBackend(ABC):        # File storage abstraction
-
-# Data processing interfaces (already implemented)
-class IDataClassifier(ABC):        # Data type classification
-class ILogProcessor(ABC):          # Log analysis
-class IPreprocessor(ABC):          # Data preprocessing
-class IKnowledgeIngester(ABC):     # KB document ingestion
-```
-
-### Core Services (Already Exist)
-
-Located in `faultmaven/services/`:
-
-- `case_service.py` - Case lifecycle management
-- `investigation_session_service.py` - Investigation sessions
-- `evidence_artifact_service.py` - Evidence handling
-- `knowledge_search_service.py` - KB search (RAG)
-- `vector_store_service.py` - Vector operations
-- `agent_orchestration_service.py` - Agent coordination
-
----
-
-## 3. Deployment Scenarios
-
-### 3.1 Local Deployment
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     LOCAL DEPLOYMENT                             │
-│                                                                  │
-│  User installs FaultMaven locally                                │
-│  • No internet required (except for LLM API calls)               │
-│  • No account on FaultMaven Cloud                                │
-│  • Completely isolated                                           │
-│                                                                  │
-│  What they get:                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ FaultMaven Core (full functionality)                     │    │
-│  │ • Create cases, investigate, use agents                  │    │
-│  │ • Upload and analyze evidence                            │    │
-│  │ • Build personal knowledge base (starts empty)           │    │
-│  │ • Generate reports                                       │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-│  What they DON'T get:                                            │
-│  • Global KB (provider's curated knowledge)                      │
-│  • Sharing with anyone                                           │
-│  • Organization features                                         │
-│  • Managed infrastructure                                        │
-│                                                                  │
-│  Storage Layout:                                                 │
-│  └── ./data/                                                     │
-│      ├── faultmaven.db      (SQLite)                            │
-│      ├── evidence/          (uploaded files)                     │
-│      └── chroma/            (vector embeddings)                  │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Configuration** (`.env`):
-```bash
-# Infrastructure
-DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
-STORAGE_BACKEND=local
-STORAGE_PATH=./data/evidence
-VECTOR_BACKEND=chroma
-CHROMA_PATH=./data/chroma
-CACHE_BACKEND=memory
-
-# LLM (user provides their own key)
-LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-...
-```
-
-### 3.2 Cloud Deployment
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     CLOUD DEPLOYMENT                             │
-│                                                                  │
-│  User creates account on FaultMaven Cloud                        │
-│  • Internet connected                                            │
-│  • Managed infrastructure                                        │
-│  • Connected to ecosystem                                        │
-│                                                                  │
-│  What they get:                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ FaultMaven Core (same as local)                          │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-│  PLUS:                                                           │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ Global KB (read-only, provider-curated)                  │    │
-│  │ • Common troubleshooting patterns                        │    │
-│  │ • Technology-specific runbooks                           │    │
-│  │ • Best practices, known issues                           │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────┐    │
-│  │ Organization Features (optional)                         │    │
-│  │ • Create or join organization                            │    │
-│  │ • Organization KB (shared knowledge)                     │    │
-│  │ • Share cases with org members                           │    │
-│  │ • Share cases with external users                        │    │
-│  │ • Team collaboration                                     │    │
-│  └─────────────────────────────────────────────────────────┘    │
-│                                                                  │
-│  Storage: Managed cloud infrastructure                           │
-│  • PostgreSQL (cases, sessions, users, orgs)                     │
-│  • S3 (evidence files)                                           │
-│  • Pinecone/pgvector (KB embeddings)                             │
-│  • Redis (sessions, cache)                                       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**Configuration** (environment/secrets):
-```bash
-# Infrastructure
-DATABASE_URL=postgresql+asyncpg://user:pass@postgres:5432/faultmaven
-STORAGE_BACKEND=s3
-S3_BUCKET=faultmaven-evidence
-AWS_REGION=us-east-1
-VECTOR_BACKEND=pinecone
-PINECONE_API_KEY=...
-PINECONE_INDEX=faultmaven-kb
-CACHE_BACKEND=redis
-REDIS_URL=redis://redis:6379
-
-# Global KB
-GLOBAL_KB_ENABLED=true
-GLOBAL_KB_INDEX=faultmaven-global-kb
-
-# LLM (platform key)
-LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-...
+class ILLMProvider(ABC)      # LLM abstraction
+class IVectorStore(ABC)      # Vector database abstraction
+class ISessionStore(ABC)     # Session storage abstraction
+class ISanitizer(ABC)        # PII redaction abstraction
+class IStorageBackend(ABC)   # File storage abstraction
 ```
 
 ---
 
-## 4. Infrastructure Providers
+## 3. Five Infrastructure Layers
 
-### Provider Matrix
+Following the deployment neutrality pattern, FaultMaven implements **five infrastructure layers** as provider abstractions.
 
-| Interface | Local Provider | Cloud Provider | Status |
-|-----------|---------------|----------------|--------|
-| `IDatabase` | SQLite | PostgreSQL | PostgreSQL exists, SQLite needed |
-| `IStorage` | LocalFileStorage | S3Storage | Local exists, S3 needed |
-| `IVectorStore` | ChromaDB | Pinecone | ChromaDB exists, Pinecone needed |
-| `ICache` | InMemoryCache | RedisCache | Both exist |
-| `ILLMProvider` | Same | Same | Exists (multiple providers) |
+### Layer Overview
 
-### 4.1 Database Layer
+| Layer | Interface | Purpose | Providers |
+|-------|-----------|---------|-----------|
+| **1. Data** | SQLAlchemy | Persistent storage | SQLite, PostgreSQL |
+| **2. Files** | `IStorageBackend` | Evidence files | LocalStorage, S3 |
+| **3. Vector** | `IVectorStore` | KB embeddings | ChromaDB, Pinecone |
+| **4. Cache** | `ISessionStore` | Sessions, cache | InMemory, Redis |
+| **5. Tenant** | `TenantProvider` | Multi-tenancy | Single, Multi |
 
-**Interface**: Already abstracted through SQLAlchemy ORM
+### Layer 5: TenantProvider (Critical for Deployment Neutrality)
 
-**Current State**:
-- PostgreSQL: Fully implemented (`database.py`, `database_*_repository.py`)
-- SQLite: NOT implemented (needed for local)
+The **TenantProvider** is the key abstraction that enables the same application code to work in both local and cloud deployments without any conditional logic.
 
-**Implementation Strategy**:
 ```python
-# Database URL determines dialect automatically via SQLAlchemy
-# Local:  sqlite+aiosqlite:///./data/faultmaven.db
-# Cloud:  postgresql+asyncpg://user:pass@host:port/db
+# faultmaven/providers/tenancy/base.py
 
-# SQLite-specific configuration needed:
-if database_url.startswith("sqlite"):
-    connect_args = {
-        "timeout": 30,
-        "check_same_thread": False,
-    }
-    # Enable WAL mode for better concurrency
+from typing import Protocol, Optional, List, Tuple, Dict, Any
+
+class TenantProvider(Protocol):
+    """Abstract interface for tenant/organization management.
+
+    This provider enables deployment neutrality by abstracting
+    how organization context is resolved for a user.
+
+    Implementations:
+    - SingleTenantProvider: Local deployment (null organization)
+    - MultiTenantProvider: Cloud deployment (database-backed)
+    """
+
+    async def get_user_organization_id(
+        self,
+        user_id: str
+    ) -> Optional[str]:
+        """Get organization_id for user.
+
+        SingleTenant: Returns None (no organization concept)
+        MultiTenant: Queries database for user's primary org
+        """
+        ...
+
+    async def verify_membership(
+        self,
+        user_id: str,
+        organization_id: Optional[str]
+    ) -> bool:
+        """Verify user has access to organization scope.
+
+        SingleTenant: Returns True (user owns everything)
+        MultiTenant: Queries database for membership
+        """
+        ...
+
+    async def list_user_organizations(
+        self,
+        user_id: str,
+        limit: int = 20,
+        offset: int = 0
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """List organizations user belongs to.
+
+        SingleTenant: Returns empty list (no orgs)
+        MultiTenant: Queries database for all user orgs
+        """
+        ...
+
+    async def get_resource_owner_filter(
+        self,
+        user_id: str,
+        organization_id: Optional[str]
+    ) -> Dict[str, Any]:
+        """Get filter for querying user's resources.
+
+        SingleTenant: Returns {"owner_user_id": user_id}
+        MultiTenant: Returns org-based filter if org_id provided
+        """
+        ...
 ```
 
-### 4.2 Storage Layer
+### SingleTenantProvider Implementation
 
-**Interface**: `IStorageBackend` (exists in `models/interfaces.py`)
-
-**Current State**:
-- LocalFileStorage: Partially implemented (`file_storage_service.py`)
-- S3Storage: NOT implemented
-
-**Implementation Strategy**:
 ```python
-# faultmaven/infrastructure/storage/base.py
-class IStorageBackend(ABC):
-    async def store(self, key: str, data: bytes, content_type: str) -> str: ...
-    async def retrieve(self, key: str) -> bytes: ...
-    async def delete(self, key: str) -> None: ...
-    async def get_url(self, key: str, expiry: int = 3600) -> str: ...
+# faultmaven/providers/tenancy/single.py
 
-# faultmaven/infrastructure/storage/local.py
-class LocalStorageBackend(IStorageBackend):
-    def __init__(self, base_path: str = "./data/evidence"): ...
+class SingleTenantProvider:
+    """Single-tenant provider for local deployment.
 
-# faultmaven/infrastructure/storage/s3.py
-class S3StorageBackend(IStorageBackend):
-    def __init__(self, bucket: str, region: str): ...
+    In local deployment:
+    - There is no organization concept
+    - User owns all their resources directly
+    - No sharing (single user)
+    """
+
+    async def get_user_organization_id(
+        self,
+        user_id: str
+    ) -> Optional[str]:
+        """No organization in local deployment."""
+        return None
+
+    async def verify_membership(
+        self,
+        user_id: str,
+        organization_id: Optional[str]
+    ) -> bool:
+        """User always has access in single-tenant mode."""
+        return True
+
+    async def list_user_organizations(
+        self,
+        user_id: str,
+        limit: int = 20,
+        offset: int = 0
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """No organizations in single-tenant mode."""
+        return ([], 0)
+
+    async def get_resource_owner_filter(
+        self,
+        user_id: str,
+        organization_id: Optional[str]
+    ) -> Dict[str, Any]:
+        """Filter by user ownership only."""
+        return {"owner_user_id": user_id}
 ```
 
-### 4.3 Vector Layer
+### MultiTenantProvider Implementation
 
-**Interface**: `IVectorStore` (exists in `models/interfaces.py`)
-
-**Current State**:
-- ChromaDB: Fully implemented (`chromadb.py`, `chromadb_store.py`)
-- Pinecone: NOT implemented
-
-**Implementation Strategy**:
 ```python
-# faultmaven/infrastructure/vector/pinecone_store.py
-class PineconeVectorStore(IVectorStore):
-    def __init__(self, api_key: str, index_name: str): ...
+# faultmaven/providers/tenancy/multi.py
 
-    async def add_documents(self, documents: List[Dict]) -> None: ...
-    async def search(self, query: str, k: int = 5) -> List[Dict]: ...
-    async def delete_documents(self, ids: List[str]) -> None: ...
+class MultiTenantProvider:
+    """Multi-tenant provider for Cloud deployment.
+
+    In cloud deployment:
+    - Users belong to organizations
+    - Resources can be user-owned or org-owned
+    - Full sharing capabilities
+    """
+
+    def __init__(
+        self,
+        org_repository: OrganizationRepository,
+    ):
+        self.org_repository = org_repository
+
+    async def get_user_organization_id(
+        self,
+        user_id: str
+    ) -> Optional[str]:
+        """Query database for user's primary organization."""
+        memberships = await self.org_repository.get_user_memberships(user_id)
+        if not memberships:
+            return None
+        return memberships[0].organization_id
+
+    async def verify_membership(
+        self,
+        user_id: str,
+        organization_id: Optional[str]
+    ) -> bool:
+        """Check database for organization membership."""
+        if organization_id is None:
+            return True  # No org scope = user-level access
+        return await self.org_repository.is_member(user_id, organization_id)
+
+    async def list_user_organizations(
+        self,
+        user_id: str,
+        limit: int = 20,
+        offset: int = 0
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Query database for user's organizations."""
+        return await self.org_repository.get_user_memberships(
+            user_id, limit=limit, offset=offset
+        )
+
+    async def get_resource_owner_filter(
+        self,
+        user_id: str,
+        organization_id: Optional[str]
+    ) -> Dict[str, Any]:
+        """Build filter based on ownership context."""
+        if organization_id:
+            return {"org_id": organization_id}
+        return {"owner_user_id": user_id}
 ```
 
-### 4.4 Cache Layer
+### Provider Factory
 
-**Interface**: `ISessionStore` (exists in `models/interfaces.py`)
+```python
+# faultmaven/providers/tenancy/factory.py
 
-**Current State**:
-- InMemory: Implemented (`inmemory_session_store.py`)
-- Redis: Implemented (`redis_session_store.py`)
+def get_tenant_provider(
+    settings: Settings,
+    org_repository: Optional[OrganizationRepository] = None,
+) -> TenantProvider:
+    """Factory to select tenant provider based on environment.
 
-**No additional work needed.**
+    Environment variable: TENANT_PROVIDER
+    - "single": SingleTenantProvider (local deployment)
+    - "multi": MultiTenantProvider (cloud deployment)
+    """
+    provider_type = settings.tenant_provider
+
+    if provider_type == "single":
+        return SingleTenantProvider()
+
+    elif provider_type == "multi":
+        if not org_repository:
+            raise ValueError(
+                "MultiTenantProvider requires OrganizationRepository"
+            )
+        return MultiTenantProvider(org_repository)
+
+    else:
+        raise ValueError(f"Unknown tenant provider: {provider_type}")
+```
+
+### Application Code (Deployment-Neutral)
+
+```python
+# faultmaven/services/case_service.py
+
+class CaseService:
+    """Case management service - deployment neutral."""
+
+    def __init__(
+        self,
+        case_repository: ICaseRepository,
+        tenant_provider: TenantProvider,
+    ):
+        self.case_repository = case_repository
+        self.tenant_provider = tenant_provider
+
+    async def list_user_cases(
+        self,
+        user_id: str,
+        organization_id: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Case]:
+        """List cases accessible to user.
+
+        The TenantProvider builds the appropriate filter:
+        - Local: Filters by owner_user_id only
+        - Cloud: Filters by org_id or owner_user_id
+
+        NO conditional logic here - provider handles it.
+        """
+        owner_filter = await self.tenant_provider.get_resource_owner_filter(
+            user_id, organization_id
+        )
+        return await self.case_repository.list_cases(
+            filters=owner_filter,
+            limit=limit,
+            offset=offset,
+        )
+```
 
 ---
 
-## 5. Knowledge Base Architecture
+## 4. Knowledge Base Architecture
 
-### 5.1 Knowledge Scope Model
+### Existing Model
 
-| Scope | Local | Cloud | Description |
-|-------|-------|-------|-------------|
-| **Global** | ❌ None | ✅ Provider-built | Curated by FaultMaven, read-only for users |
-| **Organization** | ❌ No orgs | ✅ Shared in org | Created by org members, shared within org |
-| **User** | ✅ Starts empty | ✅ Private | User builds their own, private by default |
-
-### 5.2 Data Model
+The codebase already has `KBVisibility` enum in `models/interfaces_kb.py`:
 
 ```python
-class KnowledgeScope(Enum):
-    GLOBAL = "global"           # Provider-curated (Cloud only)
-    ORGANIZATION = "organization"  # Shared within org (Cloud only)
-    USER = "user"               # Private to user
-
-@dataclass
-class KnowledgeItem:
-    item_id: str
-    content: str
-    embeddings: List[float]
-
-    # Scoping
-    scope: KnowledgeScope
-    scope_id: Optional[str]     # null for global, org_id or user_id
-
-    # Metadata
-    created_by: str
-    created_at: datetime
-
-    # Promotion tracking (user → org)
-    promoted_from_user_id: Optional[str]
-    promoted_at: Optional[datetime]
+class KBVisibility(str, Enum):
+    """Document visibility scope."""
+    PRIVATE = "private"       # User's private KB
+    SHARED = "shared"         # Shared with specific users
+    TEAM = "team"             # Shared with team
+    ORGANIZATION = "organization"  # Shared with entire org
 ```
 
-### 5.3 Search Logic
+### Required Addition: GLOBAL Scope
+
+For Cloud deployment, add GLOBAL visibility for provider-curated KB:
 
 ```python
-async def search_knowledge(
-    user_id: str,
-    org_id: Optional[str],      # None for local deployment
-    query: str,
-    include_global: bool = True  # False for local deployment
-) -> List[KnowledgeItem]:
-    """Search knowledge base with proper scoping."""
-
-    scopes = []
-
-    # Always include user's private KB
-    scopes.append((KnowledgeScope.USER, user_id))
-
-    # Include org KB if user belongs to org (Cloud only)
-    if org_id:
-        scopes.append((KnowledgeScope.ORGANIZATION, org_id))
-
-    # Include global KB (Cloud only)
-    if include_global:
-        scopes.append((KnowledgeScope.GLOBAL, None))
-
-    return await vector_store.search(query, filters={"scope": scopes})
+class KBVisibility(str, Enum):
+    """Document visibility scope."""
+    PRIVATE = "private"           # User's private KB
+    SHARED = "shared"             # Shared with specific users
+    TEAM = "team"                 # Shared with team
+    ORGANIZATION = "organization" # Shared with entire org
+    GLOBAL = "global"             # Provider-curated (read-only)
 ```
 
-### 5.4 KB Promotion (Cloud Only)
+### KB Scoping by Deployment
 
-Users can promote their private KB items to organizational scope:
+| KB Type | Local | Cloud | Description |
+|---------|-------|-------|-------------|
+| **GLOBAL** | ❌ Not available | ✅ Read-only | Provider-curated runbooks, best practices |
+| **ORGANIZATION** | ❌ No orgs | ✅ Shared in org | Team knowledge, internal docs |
+| **TEAM** | ❌ No teams | ✅ Shared in team | Team-specific knowledge |
+| **SHARED** | ❌ No sharing | ✅ Specific users | Shared with selected users |
+| **PRIVATE** | ✅ Starts empty | ✅ Private | User builds their own |
+
+### KB Search (Deployment-Neutral)
 
 ```python
-async def promote_to_org_kb(
-    item_id: str,
-    user_id: str,
-    org_id: str,
-) -> None:
-    """Move a user's KB item to organizational scope."""
-    item = await kb_repo.get(item_id)
+# faultmaven/services/knowledge_search_service.py
 
-    # Verify ownership
-    if item.scope != KnowledgeScope.USER or item.scope_id != user_id:
-        raise PermissionDenied("Can only promote own KB items")
+class KnowledgeSearchService:
+    """KB search service - deployment neutral."""
 
-    # Verify org membership
-    if not await org_repo.is_member(user_id, org_id):
-        raise PermissionDenied("Must be org member to promote")
+    def __init__(
+        self,
+        vector_store: IVectorStore,
+        kb_repository: IKBDocumentRepository,
+        tenant_provider: TenantProvider,
+        settings: Settings,
+    ):
+        self.vector_store = vector_store
+        self.kb_repository = kb_repository
+        self.tenant_provider = tenant_provider
+        self.global_kb_enabled = settings.global_kb_enabled
 
-    # Promote
-    item.scope = KnowledgeScope.ORGANIZATION
-    item.scope_id = org_id
-    item.promoted_from_user_id = user_id
-    item.promoted_at = datetime.utcnow()
+    async def search(
+        self,
+        user_id: str,
+        query: str,
+        limit: int = 10,
+    ) -> List[KBSearchResult]:
+        """Search KB with proper scoping.
 
-    await kb_repo.update(item)
+        Scoping is determined by TenantProvider:
+        - Local: User's PRIVATE KB only
+        - Cloud: GLOBAL + ORG + TEAM + SHARED + PRIVATE
+
+        NO conditional logic - scoping built from available context.
+        """
+        org_id = await self.tenant_provider.get_user_organization_id(user_id)
+
+        # Build visibility filter based on available context
+        visibilities = [KBVisibility.PRIVATE]
+
+        if org_id:
+            visibilities.extend([
+                KBVisibility.ORGANIZATION,
+                KBVisibility.TEAM,
+                KBVisibility.SHARED,
+            ])
+
+        if self.global_kb_enabled:
+            visibilities.append(KBVisibility.GLOBAL)
+
+        return await self.vector_store.search(
+            query=query,
+            filters={
+                "visibility": visibilities,
+                "owner_user_id": user_id,
+                "org_id": org_id,
+            },
+            limit=limit,
+        )
 ```
 
 ---
 
-## 6. Data Model
+## 5. Data Model
 
-### 6.1 Case Ownership
+### Case Ownership (Existing Model)
+
+The case model already supports ownership. The key is using `org_id` which is nullable:
 
 ```python
-class OwnerType(Enum):
-    USER = "user"               # Individual owns it
-    ORGANIZATION = "organization"  # Org owns it (Cloud only)
-
-class CaseVisibility(Enum):
-    PRIVATE = "private"         # Only owner can see
-    ORG = "org"                 # All org members can see (Cloud only)
-    SHARED = "shared"           # Specific users can see (Cloud only)
-
-@dataclass
+# Existing in models/
 class Case:
     case_id: str
     title: str
@@ -445,262 +498,103 @@ class Case:
     status: CaseStatus
 
     # Ownership
-    owner_type: OwnerType       # LOCAL: always USER
-    owner_id: str               # LOCAL: user_id, CLOUD: user_id or org_id
-    created_by: str             # user_id who created it
+    owner_user_id: str          # Always set - who created it
+    org_id: Optional[str]       # None for local, org_id for cloud
 
-    # Sharing (Cloud only)
-    visibility: CaseVisibility  # LOCAL: always PRIVATE
-    shared_with: List[str]      # LOCAL: always empty
+    # Sharing (for cloud)
+    visibility: CaseVisibility   # PRIVATE, SHARED, ORG
+    shared_with: List[str]       # user_ids who can access
 ```
 
-### 6.2 Access Control
+### Access Control (Deployment-Neutral)
 
 ```python
 async def can_access_case(
+    case: Case,
     user_id: str,
-    user_org_id: Optional[str],  # None for local
-    case: Case
+    tenant_provider: TenantProvider,
 ) -> bool:
-    """Determine if user can access a case."""
+    """Check if user can access case - deployment neutral."""
 
     # Owner always has access
-    if case.owner_type == OwnerType.USER and case.owner_id == user_id:
+    if case.owner_user_id == user_id:
         return True
 
-    # Org member can access org-owned cases (Cloud only)
-    if case.owner_type == OwnerType.ORGANIZATION:
-        if case.owner_id == user_org_id:
+    # Check org membership if case has org
+    if case.org_id:
+        if await tenant_provider.verify_membership(user_id, case.org_id):
             return True
 
-    # Check explicit sharing (Cloud only)
-    if case.visibility == CaseVisibility.SHARED:
-        if user_id in case.shared_with:
-            return True
+    # Check explicit sharing
+    if user_id in (case.shared_with or []):
+        return True
 
     return False
 ```
 
 ---
 
-## 7. Implementation Strategy
+## 6. Configuration
 
-### 7.1 Module Structure
+### Environment Variables
 
-```
-faultmaven/
-│
-├── core/                           # FaultMaven Core (shared by both)
-│   ├── cases/
-│   │   ├── models.py
-│   │   ├── service.py
-│   │   └── repository.py
-│   │
-│   ├── sessions/
-│   │   ├── models.py
-│   │   ├── service.py
-│   │   └── repository.py
-│   │
-│   ├── evidence/
-│   │   ├── models.py
-│   │   ├── service.py
-│   │   └── processors/
-│   │
-│   ├── knowledge/
-│   │   ├── models.py
-│   │   ├── service.py
-│   │   ├── scopes.py               # NEW: Scope-aware search
-│   │   └── repository.py
-│   │
-│   ├── agents/
-│   │   ├── orchestrator.py
-│   │   ├── tools/
-│   │   └── llm/
-│   │
-│   └── interfaces/                 # Core interfaces
-│       ├── database.py
-│       ├── storage.py
-│       ├── vector.py
-│       └── cache.py
-│
-├── infrastructure/                 # Provider implementations
-│   ├── database/
-│   │   ├── sqlite.py               # NEW: SQLite support
-│   │   └── postgres.py             # Existing
-│   │
-│   ├── storage/
-│   │   ├── local.py                # Existing (needs interface alignment)
-│   │   └── s3.py                   # NEW: S3 support
-│   │
-│   ├── vector/
-│   │   ├── chroma.py               # Existing
-│   │   └── pinecone.py             # NEW: Pinecone support
-│   │
-│   ├── cache/
-│   │   ├── memory.py               # Existing
-│   │   └── redis.py                # Existing
-│   │
-│   └── llm/                        # Existing (shared)
-│       ├── anthropic.py
-│       ├── openai.py
-│       └── fireworks.py
-│
-├── local/                          # Local deployment package
-│   ├── __main__.py                 # Entry point
-│   ├── app.py                      # FastAPI app (core routes only)
-│   ├── auth.py                     # Local single-user auth
-│   └── config.py                   # Local configuration
-│
-├── cloud/                          # Cloud deployment package
-│   ├── app.py                      # FastAPI app (full routes)
-│   ├── auth.py                     # Cloud auth (OAuth, JWT)
-│   ├── config.py                   # Cloud configuration
-│   │
-│   ├── organizations/              # Cloud-only
-│   │   ├── models.py
-│   │   ├── service.py
-│   │   └── routes.py
-│   │
-│   ├── sharing/                    # Cloud-only
-│   │   ├── models.py
-│   │   ├── service.py
-│   │   └── routes.py
-│   │
-│   ├── global_kb/                  # Cloud-only
-│   │   ├── service.py
-│   │   └── admin.py
-│   │
-│   └── billing/                    # Cloud-only
-│       ├── models.py
-│       └── service.py
-│
-└── api/                            # Shared API components
-    ├── routes/                     # Core routes (used by both)
-    │   ├── cases.py
-    │   ├── sessions.py
-    │   ├── evidence.py
-    │   └── knowledge.py
-    └── middleware/
+```bash
+# === TENANT PROVIDER ===
+# "single" = local deployment (no orgs)
+# "multi" = cloud deployment (full orgs)
+TENANT_PROVIDER=single
+
+# === DATABASE ===
+# SQLite for local, PostgreSQL for cloud
+# Both already supported in database.py
+DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
+# DATABASE_URL=postgresql+asyncpg://user:pass@host:port/db
+
+# === STORAGE ===
+STORAGE_BACKEND=local
+STORAGE_PATH=./data/evidence
+# STORAGE_BACKEND=s3
+# S3_BUCKET=faultmaven-evidence
+
+# === VECTOR ===
+VECTOR_BACKEND=chroma
+CHROMA_PATH=./data/chroma
+# VECTOR_BACKEND=pinecone
+# PINECONE_API_KEY=...
+
+# === CACHE ===
+CACHE_BACKEND=memory
+# CACHE_BACKEND=redis
+# REDIS_URL=redis://localhost:6379
+
+# === GLOBAL KB (Cloud only) ===
+GLOBAL_KB_ENABLED=false
+# GLOBAL_KB_ENABLED=true
+# GLOBAL_KB_INDEX=faultmaven-global-kb
+
+# === LLM ===
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-...
 ```
 
-### 7.2 Provider Factory Pattern
-
-Leverage existing `repository_factory.py` pattern:
-
-```python
-# faultmaven/infrastructure/provider_factory.py
-
-from enum import Enum
-from typing import Protocol
-
-class StorageBackend(str, Enum):
-    LOCAL = "local"
-    S3 = "s3"
-
-class VectorBackend(str, Enum):
-    CHROMA = "chroma"
-    PINECONE = "pinecone"
-
-def get_storage_backend(settings: Settings) -> IStorageBackend:
-    """Factory for storage backend based on configuration."""
-    backend = settings.storage_backend
-
-    if backend == StorageBackend.LOCAL:
-        from .storage.local import LocalStorageBackend
-        return LocalStorageBackend(settings.storage_path)
-
-    elif backend == StorageBackend.S3:
-        from .storage.s3 import S3StorageBackend
-        return S3StorageBackend(
-            bucket=settings.s3_bucket,
-            region=settings.aws_region
-        )
-
-    raise ValueError(f"Unknown storage backend: {backend}")
-
-def get_vector_backend(settings: Settings) -> IVectorStore:
-    """Factory for vector backend based on configuration."""
-    backend = settings.vector_backend
-
-    if backend == VectorBackend.CHROMA:
-        from .vector.chroma import ChromaDBVectorStore
-        return ChromaDBVectorStore(path=settings.chroma_path)
-
-    elif backend == VectorBackend.PINECONE:
-        from .vector.pinecone import PineconeVectorStore
-        return PineconeVectorStore(
-            api_key=settings.pinecone_api_key,
-            index_name=settings.pinecone_index
-        )
-
-    raise ValueError(f"Unknown vector backend: {backend}")
-```
-
-### 7.3 Configuration Schema
+### Settings Schema Addition
 
 ```python
 # faultmaven/config/settings.py (additions)
 
-class InfrastructureSettings(BaseSettings):
-    """Infrastructure provider configuration."""
+class TenancySettings(BaseSettings):
+    """Tenancy configuration."""
 
-    # Database
-    database_url: str = Field(
-        default="sqlite+aiosqlite:///./data/faultmaven.db",
-        description="Database connection URL"
-    )
-
-    # Storage
-    storage_backend: str = Field(
-        default="local",
-        description="Storage backend: local, s3"
-    )
-    storage_path: str = Field(
-        default="./data/evidence",
-        description="Local storage path (when storage_backend=local)"
-    )
-    s3_bucket: Optional[str] = Field(
-        default=None,
-        description="S3 bucket name (when storage_backend=s3)"
-    )
-    aws_region: str = Field(
-        default="us-east-1",
-        description="AWS region for S3"
+    tenant_provider: str = Field(
+        default="single",
+        description="Tenant provider: single (local), multi (cloud)"
     )
 
-    # Vector
-    vector_backend: str = Field(
-        default="chroma",
-        description="Vector backend: chroma, pinecone"
-    )
-    chroma_path: str = Field(
-        default="./data/chroma",
-        description="ChromaDB storage path (when vector_backend=chroma)"
-    )
-    pinecone_api_key: Optional[str] = Field(
-        default=None,
-        description="Pinecone API key (when vector_backend=pinecone)"
-    )
-    pinecone_index: Optional[str] = Field(
-        default=None,
-        description="Pinecone index name"
-    )
-
-    # Cache
-    cache_backend: str = Field(
-        default="memory",
-        description="Cache backend: memory, redis"
-    )
-    redis_url: Optional[str] = Field(
-        default=None,
-        description="Redis URL (when cache_backend=redis)"
-    )
-
-    # Knowledge Base
     global_kb_enabled: bool = Field(
         default=False,
-        description="Enable global KB (Cloud only)"
+        description="Enable global KB (cloud only)"
     )
+
     global_kb_index: Optional[str] = Field(
         default=None,
         description="Global KB index name"
@@ -709,301 +603,182 @@ class InfrastructureSettings(BaseSettings):
 
 ---
 
-## 8. Gap Analysis
+## 7. Gap Analysis
 
-### 8.1 Summary Matrix
+### Corrected Assessment
 
-| Component | Target Design | Current State | Gap Level | Priority |
-|-----------|---------------|---------------|-----------|----------|
-| **SQLite Support** | Required for local | Not implemented | 🔴 High | P0 |
-| **S3 Storage** | Required for cloud | Not implemented | 🟡 Medium | P1 |
-| **Pinecone Vector** | Required for cloud | Not implemented | 🟡 Medium | P1 |
-| **KB Scoping** | Global/Org/User | No scope concept | 🔴 High | P0 |
-| **Core/Deployment Split** | Separate packages | Mixed code | 🟡 Medium | P1 |
-| **Provider Factory** | Unified factory | Per-repo factories | 🟢 Low | P2 |
-| **Local Auth** | Simplified single-user | Full JWT auth | 🟡 Medium | P1 |
+Based on actual codebase review:
 
-### 8.2 Detailed Gap Analysis
+| Component | Status | Gap Level | Notes |
+|-----------|--------|-----------|-------|
+| **SQLite Support** | ✅ Exists | None | `database.py:98-107` already configured |
+| **PostgreSQL Support** | ✅ Exists | None | Fully implemented |
+| **TenantProvider** | ❌ Missing | 🔴 High | Critical for deployment neutrality |
+| **Local Storage** | ✅ Exists | 🟢 Low | Needs interface alignment |
+| **S3 Storage** | ❌ Missing | 🟡 Medium | Required for cloud |
+| **ChromaDB** | ✅ Exists | None | Fully implemented |
+| **Pinecone** | ❌ Missing | 🟡 Medium | Required for cloud scale |
+| **InMemory Cache** | ✅ Exists | None | Fully implemented |
+| **Redis Cache** | ✅ Exists | None | Fully implemented |
+| **KBVisibility** | ⚠️ Partial | 🟢 Low | Missing GLOBAL value |
+| **Organization Routes** | ✅ Exists | None | Full CRUD + members |
+| **Case Ownership** | ⚠️ Partial | 🟢 Low | Has org_id, needs sharing |
 
-#### GAP-001: SQLite Database Support
+### Required Work
 
-**Current**: PostgreSQL only via `asyncpg`
-**Target**: SQLite for local, PostgreSQL for cloud
+#### P0: Critical (Blocks deployment neutrality)
 
-**Work Required**:
-1. Add `aiosqlite` dependency
-2. Test SQLAlchemy models with SQLite dialect
-3. Add SQLite-specific connection configuration (WAL mode, timeout)
-4. Verify Alembic migrations work with SQLite
-5. Test concurrent access behavior
+**1. Implement TenantProvider Layer**
 
-**Files Affected**:
-- `faultmaven/infrastructure/persistence/database.py`
-- `requirements.txt`
-- `alembic/env.py`
+Create the tenant provider abstraction:
 
-**Estimated Effort**: 2-3 days
+```
+faultmaven/providers/
+└── tenancy/
+    ├── __init__.py
+    ├── base.py           # TenantProvider protocol
+    ├── single.py         # SingleTenantProvider
+    ├── multi.py          # MultiTenantProvider
+    └── factory.py        # get_tenant_provider()
+```
 
----
+Files to modify:
+- `faultmaven/config/settings.py` - Add TENANT_PROVIDER
+- `faultmaven/container.py` - Wire TenantProvider
+- `faultmaven/services/case_service.py` - Use TenantProvider
+- `faultmaven/services/knowledge_search_service.py` - Use TenantProvider
 
-#### GAP-002: S3 Storage Provider
+**Effort**: 3-4 days
 
-**Current**: Local filesystem via `file_storage_service.py`
-**Target**: S3 for cloud deployments
+#### P1: Required for Cloud
 
-**Work Required**:
-1. Create `IStorageBackend` protocol (extract from existing interface)
-2. Implement `S3StorageBackend` class using `boto3`/`aioboto3`
-3. Add presigned URL generation
-4. Add factory for backend selection
-5. Update evidence service to use abstraction
+**2. Add GLOBAL to KBVisibility**
 
-**Files to Create**:
-- `faultmaven/infrastructure/storage/base.py`
-- `faultmaven/infrastructure/storage/s3.py`
-- `faultmaven/infrastructure/storage/factory.py`
-
-**Files to Modify**:
-- `faultmaven/services/file_storage_service.py`
-- `faultmaven/services/evidence_artifact_service.py`
-
-**Estimated Effort**: 3-4 days
-
----
-
-#### GAP-003: Pinecone Vector Provider
-
-**Current**: ChromaDB only
-**Target**: Pinecone for cloud scale
-
-**Work Required**:
-1. Implement `PineconeVectorStore` conforming to `IVectorStore`
-2. Handle score normalization (Pinecone uses cosine similarity)
-3. Add namespace support for multi-tenant isolation
-4. Add factory for backend selection
-5. Test embedding compatibility
-
-**Files to Create**:
-- `faultmaven/infrastructure/vector/pinecone_store.py`
-- `faultmaven/infrastructure/vector/factory.py`
-
-**Files to Modify**:
-- `faultmaven/services/vector_store_service.py`
-- `faultmaven/services/knowledge_search_service.py`
-
-**Estimated Effort**: 3-4 days
-
----
-
-#### GAP-004: Knowledge Base Scoping
-
-**Current**: No scope concept in KB items
-**Target**: Global/Organization/User scoping
-
-**Work Required**:
-1. Add `scope` and `scope_id` to KnowledgeItem model
-2. Update KB repository to filter by scope
-3. Add scope-aware search logic
-4. Add promotion endpoint (user → org)
-5. Update UI to display scope badges
-
-**Files to Modify**:
-- `faultmaven/models/interfaces_kb.py`
-- `faultmaven/infrastructure/persistence/knowledge_item_repository.py`
-- `faultmaven/services/knowledge_search_service.py`
-- `faultmaven/api/v1/routes/knowledge.py`
-
-**Database Migration**: Add `scope`, `scope_id` columns
-
-**Estimated Effort**: 4-5 days
-
----
-
-#### GAP-005: Core/Deployment Separation
-
-**Current**: All code in single package structure
-**Target**: Separate `local/` and `cloud/` packages
-
-**Work Required**:
-1. Create `faultmaven/local/` package with entry point
-2. Create `faultmaven/cloud/` package with entry point
-3. Move organization routes to `cloud/organizations/`
-4. Create simplified auth for local deployment
-5. Create separate FastAPI app factories
-
-**Approach**: Gradual extraction, not big-bang refactor
-
-**Estimated Effort**: 5-7 days
-
----
-
-#### GAP-006: Case Ownership Model
-
-**Current**: Cases have `created_by` but no `owner_type` or sharing
-**Target**: Full ownership and sharing model
-
-**Work Required**:
-1. Add `owner_type`, `owner_id`, `visibility`, `shared_with` to Case model
-2. Update case repository with ownership filters
-3. Add sharing endpoints (Cloud only)
-4. Update access control middleware
-
-**Files to Modify**:
-- `faultmaven/models/case.py`
-- `faultmaven/infrastructure/persistence/case_repository.py`
-- `faultmaven/services/case_service.py`
-- `faultmaven/api/v1/routes/case.py`
-
-**Database Migration**: Add ownership columns to cases table
-
-**Estimated Effort**: 3-4 days
-
----
-
-## 9. Implementation Roadmap
-
-### Phase 1: Local Deployment Foundation (Weeks 1-2)
-
-**Goal**: Enable local deployment with SQLite
-
-| Task | Description | Effort | Dependencies |
-|------|-------------|--------|--------------|
-| 1.1 | Add SQLite support to database layer | 2d | None |
-| 1.2 | Test/fix Alembic migrations for SQLite | 1d | 1.1 |
-| 1.3 | Add KB scoping model (scope, scope_id) | 2d | None |
-| 1.4 | Create local entry point (`faultmaven/local/`) | 2d | 1.1, 1.3 |
-| 1.5 | Simplified local auth (no org context) | 1d | 1.4 |
-
-**Deliverable**: `python -m faultmaven.local` runs with SQLite + ChromaDB
-
----
-
-### Phase 2: Cloud Provider Integration (Weeks 3-4)
-
-**Goal**: Add cloud-scale providers
-
-| Task | Description | Effort | Dependencies |
-|------|-------------|--------|--------------|
-| 2.1 | Implement S3StorageBackend | 3d | None |
-| 2.2 | Implement PineconeVectorStore | 3d | None |
-| 2.3 | Create provider factory pattern | 2d | 2.1, 2.2 |
-| 2.4 | Update services to use factories | 2d | 2.3 |
-
-**Deliverable**: Cloud deployment uses S3 + Pinecone via configuration
-
----
-
-### Phase 3: Knowledge Base Enhancement (Weeks 5-6)
-
-**Goal**: Full KB scoping with Global/Org/User
-
-| Task | Description | Effort | Dependencies |
-|------|-------------|--------|--------------|
-| 3.1 | Scope-aware KB search | 2d | 1.3 |
-| 3.2 | KB promotion endpoint (user → org) | 2d | 3.1 |
-| 3.3 | Global KB infrastructure (Cloud) | 3d | 2.2 |
-| 3.4 | KB admin tools for provider curation | 3d | 3.3 |
-
-**Deliverable**: Full KB scoping working in Cloud
-
----
-
-### Phase 4: Case Ownership & Sharing (Weeks 7-8)
-
-**Goal**: Full case ownership and sharing model
-
-| Task | Description | Effort | Dependencies |
-|------|-------------|--------|--------------|
-| 4.1 | Add ownership model to cases | 2d | None |
-| 4.2 | Sharing endpoints (Cloud only) | 3d | 4.1 |
-| 4.3 | Access control middleware | 2d | 4.1 |
-| 4.4 | UI updates for sharing | 3d | 4.2 |
-
-**Deliverable**: Cases can be shared in Cloud deployment
-
----
-
-### Phase 5: Deployment Separation (Weeks 9-10)
-
-**Goal**: Clean separation of Local and Cloud packages
-
-| Task | Description | Effort | Dependencies |
-|------|-------------|--------|--------------|
-| 5.1 | Extract cloud-only routes | 2d | All previous |
-| 5.2 | Create `faultmaven/cloud/` package | 2d | 5.1 |
-| 5.3 | Docker images for both deployments | 2d | 5.2 |
-| 5.4 | Documentation and guides | 2d | 5.3 |
-
-**Deliverable**: Two deployable artifacts (local, cloud)
-
----
-
-## Appendix A: Migration Path (Local → Cloud)
-
-When a local user wants to migrate to Cloud:
-
+Single line addition to `models/interfaces_kb.py`:
 ```python
-async def migrate_local_to_cloud(
-    local_db_path: str,
-    cloud_account: CloudAccount,
-) -> MigrationResult:
-    """
-    Migrate local deployment data to cloud.
+GLOBAL = "global"  # Provider-curated (read-only)
+```
 
-    1. Export local data
-    2. Upload to cloud storage
-    3. Remap ownership to cloud user
-    4. User's KB becomes their cloud user KB
-    """
+**Effort**: 0.5 days (including search logic update)
 
-    # Export from SQLite
-    cases = await export_cases(local_db_path)
-    knowledge = await export_knowledge(local_db_path)
-    evidence = await export_evidence("./data/evidence")
+**3. Implement S3StorageBackend**
 
-    # Import to cloud
-    new_user_id = cloud_account.user_id
+```
+faultmaven/infrastructure/storage/
+├── base.py           # IStorageBackend (extract from existing)
+├── local.py          # LocalStorageBackend (refactor existing)
+├── s3.py             # S3StorageBackend (new)
+└── factory.py        # get_storage_backend()
+```
 
-    for case in cases:
-        case.owner_type = OwnerType.USER
-        case.owner_id = new_user_id
-        case.visibility = CaseVisibility.PRIVATE
-        await cloud_case_repo.create(case)
+**Effort**: 3-4 days
 
-    for item in knowledge:
-        item.scope = KnowledgeScope.USER
-        item.scope_id = new_user_id
-        await cloud_kb_repo.create(item)
+**4. Implement PineconeVectorStore**
 
-    # Upload evidence files to S3
-    await s3_storage.upload_batch(evidence, prefix=f"users/{new_user_id}/")
+```
+faultmaven/infrastructure/vector/
+├── pinecone_store.py  # PineconeVectorStore (new)
+└── factory.py         # Add pinecone option
+```
 
-    return MigrationResult(
-        cases_migrated=len(cases),
-        kb_items=len(knowledge),
-        files_uploaded=len(evidence),
-    )
+**Effort**: 3-4 days
+
+#### P2: Nice to Have
+
+**5. Align LocalStorageBackend with Interface**
+
+Current `file_storage_service.py` needs to conform to `IStorageBackend` interface.
+
+**Effort**: 1-2 days
+
+---
+
+## 8. Implementation Roadmap
+
+### Phase 1: TenantProvider (Week 1)
+
+| Task | Description | Effort |
+|------|-------------|--------|
+| 1.1 | Create TenantProvider protocol | 1d |
+| 1.2 | Implement SingleTenantProvider | 1d |
+| 1.3 | Implement MultiTenantProvider | 1d |
+| 1.4 | Add factory and settings | 0.5d |
+| 1.5 | Wire into DI container | 0.5d |
+| 1.6 | Update CaseService to use TenantProvider | 1d |
+
+**Deliverable**: Deployment-neutral case management
+
+### Phase 2: Storage Providers (Week 2)
+
+| Task | Description | Effort |
+|------|-------------|--------|
+| 2.1 | Extract IStorageBackend interface | 0.5d |
+| 2.2 | Refactor existing to LocalStorageBackend | 1d |
+| 2.3 | Implement S3StorageBackend | 2d |
+| 2.4 | Add factory and settings | 0.5d |
+| 2.5 | Update EvidenceService to use interface | 1d |
+
+**Deliverable**: Deployment-neutral evidence storage
+
+### Phase 3: Vector Providers (Week 3)
+
+| Task | Description | Effort |
+|------|-------------|--------|
+| 3.1 | Implement PineconeVectorStore | 2d |
+| 3.2 | Add factory for vector backend selection | 0.5d |
+| 3.3 | Update KnowledgeService to use factory | 1d |
+| 3.4 | Add GLOBAL to KBVisibility | 0.5d |
+| 3.5 | Implement Global KB service | 1d |
+
+**Deliverable**: Deployment-neutral knowledge base
+
+### Phase 4: Integration Testing (Week 4)
+
+| Task | Description | Effort |
+|------|-------------|--------|
+| 4.1 | Test with TENANT_PROVIDER=single | 1d |
+| 4.2 | Test with TENANT_PROVIDER=multi | 1d |
+| 4.3 | Test provider switching | 1d |
+| 4.4 | E2E tests for both deployments | 2d |
+
+**Deliverable**: Verified deployment neutrality
+
+---
+
+## Appendix A: Module Structure (No Changes)
+
+The existing codebase structure is correct. **NO separate `local/` and `cloud/` packages.**
+
+```
+faultmaven/
+├── api/                    # FastAPI routes (same for all deployments)
+├── config/                 # Configuration (add TENANT_PROVIDER)
+├── infrastructure/         # Provider implementations
+│   ├── persistence/        # Database repositories
+│   ├── storage/            # Storage backends (add S3)
+│   ├── vector/             # Vector stores (add Pinecone)
+│   └── llm/                # LLM providers
+├── models/                 # Domain models
+├── providers/              # NEW: Provider abstractions
+│   └── tenancy/            # TenantProvider
+├── services/               # Business logic
+└── container.py            # DI container
 ```
 
 ---
 
-## Appendix B: Feature Availability Matrix
+## Appendix B: Migration Path (Local → Cloud)
 
-| Feature | Local | Cloud Free | Cloud Pro | Cloud Enterprise |
-|---------|-------|------------|-----------|------------------|
-| Case Management | ✅ | ✅ | ✅ | ✅ |
-| Evidence Upload | ✅ | ✅ | ✅ | ✅ |
-| Agent Investigation | ✅ | ✅ | ✅ | ✅ |
-| User KB | ✅ | ✅ | ✅ | ✅ |
-| Global KB | ❌ | ✅ | ✅ | ✅ |
-| Organizations | ❌ | ❌ | ✅ | ✅ |
-| Org KB | ❌ | ❌ | ✅ | ✅ |
-| Case Sharing | ❌ | ❌ | ✅ | ✅ |
-| Team Collaboration | ❌ | ❌ | ✅ | ✅ |
-| SSO/SAML | ❌ | ❌ | ❌ | ✅ |
-| Custom KB Import | ❌ | ❌ | ✅ | ✅ |
-| API Access | ❌ | ❌ | ✅ | ✅ |
-| Priority Support | ❌ | ❌ | ❌ | ✅ |
+Since both deployments use the same codebase and data models:
+
+1. Export local SQLite data
+2. Import to Cloud PostgreSQL
+3. Create organization for user
+4. Set `org_id` on user's resources
+5. Upload evidence files to S3
+6. Migrate vectors to Pinecone
+
+The data model is the same - only infrastructure changes.
 
 ---
 
@@ -1012,7 +787,20 @@ async def migrate_local_to_cloud(
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2025-12-30 | Solutions Architect | Initial draft |
-| 2.0 | 2025-12-31 | Claude | Complete redesign based on review feedback |
+| 2.0 | 2025-12-31 | Claude | Complete redesign |
+| 2.1 | 2025-12-31 | Claude | Revised based on architectural review: restored deployment neutrality, added TenantProvider, removed separate packages, corrected gap analysis |
+
+---
+
+**Key Changes in v2.1:**
+
+1. ✅ Restored deployment neutrality principle
+2. ✅ Added TenantProvider as 5th infrastructure layer
+3. ✅ Removed separate `local/` and `cloud/` packages
+4. ✅ Removed conditional logic from code examples
+5. ✅ Corrected gap analysis (SQLite works, KBVisibility exists)
+6. ✅ Aligned with existing codebase structure
+7. ✅ Provider pattern handles ALL deployment differences
 
 ---
 
