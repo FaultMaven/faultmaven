@@ -411,3 +411,501 @@ class InvestigationOrchestrator:
         )
 
         return progress
+
+    async def get_hypothesis(
+        self,
+        hypothesis_id: str,
+        organization_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Get hypothesis by ID with organization isolation.
+
+        Args:
+            hypothesis_id: Hypothesis identifier
+            organization_id: Organization identifier (multi-tenant isolation)
+
+        Returns:
+            Hypothesis object
+
+        Raises:
+            NotFoundError: If hypothesis doesn't exist or organization mismatch
+        """
+        hypothesis = await self.hypothesis_repo.get_hypothesis(
+            hypothesis_id=hypothesis_id,
+            organization_id=organization_id,
+        )
+
+        if not hypothesis:
+            raise NotFoundError(
+                resource_type="Hypothesis",
+                resource_id=hypothesis_id
+            )
+
+        return hypothesis
+
+    async def list_hypotheses_for_case(
+        self,
+        case_id: str,
+        organization_id: str,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        List hypotheses for a case with optional filtering.
+
+        Args:
+            case_id: Case identifier
+            organization_id: Organization identifier (multi-tenant isolation)
+            status: Optional status filter
+            limit: Maximum number of results (default 100)
+            offset: Result offset for pagination (default 0)
+
+        Returns:
+            List of hypothesis objects
+        """
+        logger.info(
+            f"Listing hypotheses for case {case_id}",
+            extra={
+                "case_id": case_id,
+                "organization_id": organization_id,
+                "status": status,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+
+        hypotheses = await self.hypothesis_repo.list_hypotheses_by_case(
+            case_id=case_id,
+            organization_id=organization_id,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+
+        logger.info(
+            f"Found {len(hypotheses)} hypotheses for case {case_id}",
+            extra={"case_id": case_id, "count": len(hypotheses)}
+        )
+
+        return hypotheses
+
+    async def update_hypothesis(
+        self,
+        hypothesis_id: str,
+        organization_id: str,
+        updated_by: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        confidence: Optional[float] = None,
+        status: Optional[str] = None,
+        evidence_supporting: Optional[List[str]] = None,
+        evidence_against: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Update hypothesis fields with validation.
+
+        Enforces business rules for status transitions:
+        - Can only transition to "validated" if confidence ≥ 0.7
+        - Can only transition to "refuted" if confidence ≤ 0.3
+
+        Args:
+            hypothesis_id: Hypothesis identifier
+            organization_id: Organization identifier (multi-tenant isolation)
+            updated_by: User ID performing the update
+            title: Optional title (stored in metadata)
+            description: Optional updated description
+            confidence: Optional new confidence score (0.0-1.0)
+            status: Optional new status
+            evidence_supporting: Optional list of supporting evidence IDs
+            evidence_against: Optional list of refuting evidence IDs
+
+        Returns:
+            Updated hypothesis object
+
+        Raises:
+            NotFoundError: If hypothesis doesn't exist
+            ValidationException: If validation fails
+            ConflictError: If status transition violates business rules
+        """
+        # Get existing hypothesis
+        hypothesis = await self.hypothesis_repo.get_hypothesis(
+            hypothesis_id=hypothesis_id,
+            organization_id=organization_id,
+        )
+
+        if not hypothesis:
+            raise NotFoundError(
+                resource_type="Hypothesis",
+                resource_id=hypothesis_id
+            )
+
+        # Validate description length if provided
+        if description is not None and len(description) < 10:
+            raise ValidationException(
+                "Hypothesis description must be at least 10 characters",
+                details={"description_length": len(description), "min_length": 10}
+            )
+
+        if description is not None and len(description) > 5000:
+            raise ValidationException(
+                "Hypothesis description cannot exceed 5000 characters",
+                details={"description_length": len(description), "max_length": 5000}
+            )
+
+        # Validate confidence if provided
+        if confidence is not None and not (0.0 <= confidence <= 1.0):
+            raise ValidationException(
+                "Confidence score must be between 0.0 and 1.0",
+                details={"confidence": confidence, "valid_range": "0.0-1.0"}
+            )
+
+        # Get current confidence (use provided or existing)
+        current_confidence = float(hypothesis.get("confidence_score", 0.5)) if hypothesis.get("confidence_score") else 0.5
+        target_confidence = confidence if confidence is not None else current_confidence
+
+        # Enforce business rules for status transitions if status is being changed
+        if status is not None:
+            if status == "validated" and target_confidence < 0.7:
+                raise ConflictError(
+                    f"Cannot validate hypothesis with confidence {target_confidence}. "
+                    "Confidence must be ≥ 0.7 to validate.",
+                    resource_type="Hypothesis",
+                    resource_id=hypothesis_id,
+                    conflict_reason=f"Low confidence ({target_confidence} < 0.7)"
+                )
+
+            if status == "refuted" and target_confidence > 0.3:
+                raise ConflictError(
+                    f"Cannot refute hypothesis with confidence {target_confidence}. "
+                    "Confidence must be ≤ 0.3 to refute.",
+                    resource_type="Hypothesis",
+                    resource_id=hypothesis_id,
+                    conflict_reason=f"High confidence ({target_confidence} > 0.3)"
+                )
+
+        logger.info(
+            f"Updating hypothesis {hypothesis_id}",
+            extra={
+                "hypothesis_id": hypothesis_id,
+                "organization_id": organization_id,
+                "updated_by": updated_by,
+                "has_status_change": status is not None,
+                "has_confidence_change": confidence is not None,
+            }
+        )
+
+        # Prepare metadata update
+        metadata = hypothesis.get("metadata", {})
+        if title is not None:
+            metadata["title"] = title
+
+        # Build update dict with only provided fields
+        update_fields = {}
+        if description is not None:
+            update_fields["description"] = description
+        if confidence is not None:
+            update_fields["confidence_score"] = Decimal(str(confidence))
+        if status is not None:
+            update_fields["status"] = status
+        if evidence_supporting is not None:
+            update_fields["supporting_evidence_ids"] = evidence_supporting
+        if evidence_against is not None:
+            # Store in metadata for now (schema doesn't have evidence_against field)
+            metadata["evidence_against"] = evidence_against
+        if metadata != hypothesis.get("metadata", {}):
+            update_fields["metadata"] = metadata
+
+        # Update hypothesis
+        updated_hypothesis = await self.hypothesis_repo.update_hypothesis(
+            hypothesis_id=hypothesis_id,
+            organization_id=organization_id,
+            **update_fields
+        )
+
+        logger.info(
+            f"Hypothesis {hypothesis_id} updated successfully",
+            extra={"hypothesis_id": hypothesis_id}
+        )
+
+        return updated_hypothesis
+
+    async def delete_hypothesis(
+        self,
+        hypothesis_id: str,
+        organization_id: str,
+    ) -> None:
+        """
+        Delete a hypothesis with organization isolation.
+
+        Args:
+            hypothesis_id: Hypothesis identifier
+            organization_id: Organization identifier (multi-tenant isolation)
+
+        Raises:
+            NotFoundError: If hypothesis doesn't exist
+        """
+        # Verify hypothesis exists
+        hypothesis = await self.hypothesis_repo.get_hypothesis(
+            hypothesis_id=hypothesis_id,
+            organization_id=organization_id,
+        )
+
+        if not hypothesis:
+            raise NotFoundError(
+                resource_type="Hypothesis",
+                resource_id=hypothesis_id
+            )
+
+        logger.info(
+            f"Deleting hypothesis {hypothesis_id}",
+            extra={"hypothesis_id": hypothesis_id, "organization_id": organization_id}
+        )
+
+        await self.hypothesis_repo.delete_hypothesis(
+            hypothesis_id=hypothesis_id,
+            organization_id=organization_id,
+        )
+
+        logger.info(
+            f"Hypothesis {hypothesis_id} deleted successfully",
+            extra={"hypothesis_id": hypothesis_id}
+        )
+
+    async def create_solution(
+        self,
+        case_id: str,
+        organization_id: str,
+        title: str,
+        description: str,
+        created_by: str,
+        hypothesis_id: Optional[str] = None,
+        implementation_steps: Optional[List[str]] = None,
+        risk_level: Optional[str] = None,
+        estimated_effort: Optional[str] = None,
+        metadata: Optional[Dict] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create new solution with optional hypothesis linking.
+
+        If hypothesis_id provided, validates that hypothesis is in "validated" status
+        (business rule: solutions can only link to validated hypotheses).
+
+        Args:
+            case_id: Case identifier
+            organization_id: Organization identifier (multi-tenant isolation)
+            title: Solution title
+            description: Solution description (20-5000 characters)
+            created_by: User ID who created the solution
+            hypothesis_id: Optional hypothesis to link to (must be validated)
+            implementation_steps: Optional list of implementation steps
+            risk_level: Optional risk level (low, medium, high, critical)
+            estimated_effort: Optional effort estimate
+            metadata: Additional metadata
+
+        Returns:
+            Created solution object
+
+        Raises:
+            ValidationException: If validation fails
+            NotFoundError: If hypothesis doesn't exist
+            ConflictError: If hypothesis is not validated
+        """
+        # Validate description length
+        if len(description) < 20:
+            raise ValidationException(
+                "Solution description must be at least 20 characters",
+                details={"description_length": len(description), "min_length": 20}
+            )
+
+        if len(description) > 5000:
+            raise ValidationException(
+                "Solution description cannot exceed 5000 characters",
+                details={"description_length": len(description), "max_length": 5000}
+            )
+
+        # Validate risk level if provided
+        if risk_level and risk_level not in ["low", "medium", "high", "critical"]:
+            raise ValidationException(
+                "Risk level must be: low, medium, high, or critical",
+                details={"risk_level": risk_level, "valid_values": ["low", "medium", "high", "critical"]}
+            )
+
+        # If hypothesis_id provided, verify it exists and is validated
+        if hypothesis_id:
+            hypothesis = await self.hypothesis_repo.get_hypothesis(
+                hypothesis_id=hypothesis_id,
+                organization_id=organization_id,
+            )
+
+            if not hypothesis:
+                raise NotFoundError(
+                    resource_type="Hypothesis",
+                    resource_id=hypothesis_id
+                )
+
+            if hypothesis.get("status") != "validated":
+                raise ConflictError(
+                    f"Cannot link solution to {hypothesis.get('status')} hypothesis. "
+                    "Only validated hypotheses can have solutions.",
+                    resource_type="Hypothesis",
+                    resource_id=hypothesis_id,
+                    conflict_reason=f"Hypothesis status is '{hypothesis.get('status')}', not 'validated'"
+                )
+
+        logger.info(
+            f"Creating solution for case {case_id}",
+            extra={
+                "case_id": case_id,
+                "organization_id": organization_id,
+                "created_by": created_by,
+                "hypothesis_id": hypothesis_id,
+            }
+        )
+
+        # Prepare metadata
+        solution_metadata = metadata or {}
+        solution_metadata["title"] = title
+        if implementation_steps:
+            solution_metadata["implementation_steps"] = implementation_steps
+        if risk_level:
+            solution_metadata["risk_level"] = risk_level
+        if estimated_effort:
+            solution_metadata["estimated_effort"] = estimated_effort
+
+        # Create solution via repository
+        solution = await self.solution_repo.create_solution(
+            case_id=case_id,
+            organization_id=organization_id,
+            description=description,
+            created_by=created_by,
+            hypothesis_id=hypothesis_id,
+            metadata=solution_metadata,
+        )
+
+        logger.info(
+            f"Solution created successfully: {solution['solution_id']}",
+            extra={"solution_id": solution["solution_id"]}
+        )
+
+        return solution
+
+    async def get_solution(
+        self,
+        solution_id: str,
+        organization_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Get solution by ID with organization isolation.
+
+        Args:
+            solution_id: Solution identifier
+            organization_id: Organization identifier (multi-tenant isolation)
+
+        Returns:
+            Solution object
+
+        Raises:
+            NotFoundError: If solution doesn't exist or organization mismatch
+        """
+        solution = await self.solution_repo.get_solution(
+            solution_id=solution_id,
+            organization_id=organization_id,
+        )
+
+        if not solution:
+            raise NotFoundError(
+                resource_type="Solution",
+                resource_id=solution_id
+            )
+
+        return solution
+
+    async def list_solutions_for_case(
+        self,
+        case_id: str,
+        organization_id: str,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        List solutions for a case with optional filtering.
+
+        Args:
+            case_id: Case identifier
+            organization_id: Organization identifier (multi-tenant isolation)
+            status: Optional status filter
+            limit: Maximum number of results (default 100)
+            offset: Result offset for pagination (default 0)
+
+        Returns:
+            List of solution objects
+        """
+        logger.info(
+            f"Listing solutions for case {case_id}",
+            extra={
+                "case_id": case_id,
+                "organization_id": organization_id,
+                "status": status,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+
+        solutions = await self.solution_repo.list_solutions_by_case(
+            case_id=case_id,
+            organization_id=organization_id,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+
+        logger.info(
+            f"Found {len(solutions)} solutions for case {case_id}",
+            extra={"case_id": case_id, "count": len(solutions)}
+        )
+
+        return solutions
+
+    async def delete_solution(
+        self,
+        solution_id: str,
+        organization_id: str,
+    ) -> None:
+        """
+        Delete a solution with organization isolation.
+
+        Args:
+            solution_id: Solution identifier
+            organization_id: Organization identifier (multi-tenant isolation)
+
+        Raises:
+            NotFoundError: If solution doesn't exist
+        """
+        # Verify solution exists
+        solution = await self.solution_repo.get_solution(
+            solution_id=solution_id,
+            organization_id=organization_id,
+        )
+
+        if not solution:
+            raise NotFoundError(
+                resource_type="Solution",
+                resource_id=solution_id
+            )
+
+        logger.info(
+            f"Deleting solution {solution_id}",
+            extra={"solution_id": solution_id, "organization_id": organization_id}
+        )
+
+        await self.solution_repo.delete_solution(
+            solution_id=solution_id,
+            organization_id=organization_id,
+        )
+
+        logger.info(
+            f"Solution {solution_id} deleted successfully",
+            extra={"solution_id": solution_id}
+        )

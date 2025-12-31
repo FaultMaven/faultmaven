@@ -198,6 +198,14 @@ class HypothesisResponse(BaseModel):
             metadata=data.get("metadata", {}),
         )
 
+    @classmethod
+    def from_domain(cls, data: Dict) -> "HypothesisResponse":
+        """Create HypothesisResponse from domain model (orchestrator/repository layer).
+
+        This is an alias for from_dict() for consistency with other API response models.
+        """
+        return cls.from_dict(data)
+
     class Config:
         from_attributes = True
 
@@ -356,14 +364,17 @@ class SolutionResponse(BaseModel):
     @classmethod
     def from_dict(cls, data: Dict) -> "SolutionResponse":
         """Create SolutionResponse from dictionary (repository layer)."""
+        # Extract metadata fields
+        metadata = data.get("metadata", {})
+
         return cls(
             solution_id=data.get("solution_id"),
             case_id=data.get("case_id"),
             description=data.get("description"),
             status=data.get("status"),
-            implementation_steps=data.get("implementation_steps", []),
-            risk_level=data.get("risk_level"),
-            estimated_effort=data.get("estimated_effort"),
+            implementation_steps=metadata.get("implementation_steps", []),
+            risk_level=metadata.get("risk_level"),
+            estimated_effort=metadata.get("estimated_effort"),
             verification_result=data.get("verification_result"),
             verification_timestamp=data.get("verification_timestamp"),
             proposed_at=data.get("proposed_at"),
@@ -371,8 +382,16 @@ class SolutionResponse(BaseModel):
             updated_at=data.get("updated_at"),
             created_by=data.get("created_by"),
             updated_by=data.get("updated_by"),
-            metadata=data.get("metadata", {}),
+            metadata=metadata,
         )
+
+    @classmethod
+    def from_domain(cls, data: Dict) -> "SolutionResponse":
+        """Create SolutionResponse from domain model (orchestrator/repository layer).
+
+        This is an alias for from_dict() for consistency with other API response models.
+        """
+        return cls.from_dict(data)
 
     class Config:
         from_attributes = True
