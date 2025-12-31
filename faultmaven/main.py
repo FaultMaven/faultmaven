@@ -568,6 +568,7 @@ if HYPOTHESES_ROUTES_AVAILABLE and hypotheses:
     app.include_router(hypotheses.router, prefix="/api/v1", tags=["hypotheses", "solutions"])
     logger.info("✅ Hypothesis & Solution management endpoints added")
 
+
 # Debug endpoints (present in locked API spec)
 @app.get("/debug/routes")
 async def debug_routes():
