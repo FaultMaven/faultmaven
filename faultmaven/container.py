@@ -1749,7 +1749,28 @@ class DIContainer:
             if not getattr(self, '_initializing', False):
                 self.initialize()
         return getattr(self, 'report_store', None)
-    
+
+    def get_tenant_provider(self):
+        """Get the tenant provider for multi-tenant isolation (TASK-023/024)"""
+        if not self._initialized:
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'tenant_provider', None)
+
+    def get_report_generation_service(self):
+        """Get the report generation service (TASK-024)"""
+        if not self._initialized:
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'report_generation_service', None)
+
+    def get_report_recommendation_service(self):
+        """Get the report recommendation service (TASK-024)"""
+        if not self._initialized:
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'report_recommendation_service', None)
+
     def get_config(self):
         """Get the configuration manager instance"""
         if not self._initialized:

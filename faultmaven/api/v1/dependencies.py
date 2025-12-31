@@ -24,6 +24,7 @@ from ...models.interfaces import IJobService
 from ...services import DataService, KnowledgeService, SessionService
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
 from ...services.preprocessing import PreprocessingService
+from ...providers.tenancy.base import TenantProvider
 
 
 # Service Dependencies
@@ -92,6 +93,36 @@ async def get_report_store() -> Optional[IReportStore]:
         return container.get_report_store()
     except Exception:
         # Report store is optional - return None if not available
+        return None
+
+
+async def get_tenant_provider() -> Optional[TenantProvider]:
+    """Get TenantProvider instance from container (TASK-023/024).
+
+    Returns TenantProvider for multi-tenant isolation in API endpoints.
+    """
+    try:
+        return container.get_tenant_provider()
+    except Exception:
+        # TenantProvider is optional - return None if not available
+        return None
+
+
+async def get_report_generation_service():
+    """Get ReportGenerationService instance from container (TASK-024)"""
+    try:
+        return container.get_report_generation_service()
+    except Exception:
+        # Report generation service is optional
+        return None
+
+
+async def get_report_recommendation_service():
+    """Get ReportRecommendationService instance from container (TASK-024)"""
+    try:
+        return container.get_report_recommendation_service()
+    except Exception:
+        # Report recommendation service is optional
         return None
 
 

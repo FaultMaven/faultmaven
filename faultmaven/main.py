@@ -86,6 +86,15 @@ from .api.v1.routes import jobs
 # Import organization and team routes
 from .api.v1.routes import organizations, teams
 
+# Import reports routes (TASK-024)
+try:
+    from .api.v1.routes import reports
+    REPORTS_ROUTES_AVAILABLE = True
+except ImportError:
+    REPORTS_ROUTES_AVAILABLE = False
+    reports = None
+    logger.warning("Reports routes not available")
+
 from .infrastructure.observability.tracing import init_opik_tracing
 from .api.middleware.logging import LoggingMiddleware
 # SessionManager now handled via DI container - services.session.SessionService
@@ -540,6 +549,11 @@ logger.info("✅ Organization management endpoints added")
 # Team management routes
 app.include_router(teams.router, prefix="/api/v1", tags=["teams"])
 logger.info("✅ Team management endpoints added")
+
+# Report management routes (TASK-024)
+if REPORTS_ROUTES_AVAILABLE and reports:
+    app.include_router(reports.router, prefix="/api/v1", tags=["reports"])
+    logger.info("✅ Report management endpoints added")
 
 # Debug endpoints (present in locked API spec)
 @app.get("/debug/routes")
