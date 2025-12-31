@@ -119,6 +119,27 @@ class IReportStore(ABC):
         pass
 
     @abstractmethod
+    async def delete_report(self, report_id: str) -> bool:
+        """
+        Delete a single report by ID.
+
+        Removes:
+        - Report metadata from Redis
+        - Report content from ChromaDB
+        - Updates case report indexes
+
+        Note: Runbooks are NOT deleted - they persist independently
+        in the knowledge base for similarity search.
+
+        Args:
+            report_id: Report identifier (UUID)
+
+        Returns:
+            True if deletion successful, False if report not found
+        """
+        pass
+
+    @abstractmethod
     async def delete_case_reports(self, case_id: str) -> bool:
         """
         Delete all reports for a case.

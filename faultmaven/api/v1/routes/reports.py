@@ -41,7 +41,11 @@ from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import (
     get_case_service,
     get_report_store,
+    get_tenant_provider,
+    get_report_generation_service,
+    get_report_recommendation_service,
 )
+from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import (
     ValidationException,
@@ -174,40 +178,57 @@ def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseS
     return case_service
 
 
-async def get_report_generation_service():
-    """Get ReportGenerationService from DI container."""
-    from faultmaven.container import container
-    try:
-        # Try to get from container if available
-        service = getattr(container, 'report_generation_service', None)
-        if service:
-            return service
-
-        # Fallback: Create service with available dependencies
-        from faultmaven.services.domain.report_generation_service import ReportGenerationService
-
-        llm_router = container.get_llm_provider()
-        report_store = container.get_report_store()
-
-        return ReportGenerationService(
-            llm_router=llm_router,
-            report_store=report_store,
+def check_tenant_provider_available(tenant_provider: Optional[TenantProvider]) -> TenantProvider:
+    """Check if tenant provider is available."""
+    if tenant_provider is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Tenant provider unavailable"
         )
-    except Exception as e:
-        logger.warning(f"Could not get report generation service: {e}")
-        return None
+    return tenant_provider
 
 
-async def get_report_recommendation_service():
-    """Get ReportRecommendationService from DI container."""
-    from faultmaven.container import container
+async def validate_organization_access(
+    tenant_provider: TenantProvider,
+    current_user: DevUser,
+    case_organization_id: Optional[str] = None
+) -> None:
+    """Validate user has access to the organization context.
+
+    Args:
+        tenant_provider: TenantProvider for organization resolution
+        current_user: Authenticated user
+        case_organization_id: Optional organization ID from case (for validation)
+
+    Raises:
+        HTTPException: 403 if user lacks organization access
+    """
     try:
-        service = getattr(container, 'report_recommendation_service', None)
-        if service:
-            return service
-        return None
-    except Exception:
-        return None
+        # Get current organization context
+        organization = await tenant_provider.get_current_organization(current_user)
+
+        # If case has organization_id, verify it matches
+        if case_organization_id and organization.organization_id != case_organization_id:
+            logger.warning(
+                "Organization access denied",
+                extra={
+                    "user_id": current_user.user_id,
+                    "requested_org": case_organization_id,
+                    "user_org": organization.organization_id
+                }
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied - resource belongs to different organization"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Organization validation failed: {e}")
+        raise HTTPException(
+            status_code=403,
+            detail="Unable to validate organization access"
+        )
 
 
 # ============================================================
@@ -227,8 +248,10 @@ async def generate_report(
     request: ReportGenerationRequest,
     case_id: str = Query(..., description="Case ID to generate reports for"),
     current_user: DevUser = Depends(require_authentication),
+    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_service: Optional[ICaseService] = Depends(get_case_service),
     report_store: Optional[IReportStore] = Depends(get_report_store),
+    generation_service = Depends(get_report_generation_service),
 ) -> ReportGenerationResponse:
     """Generate reports for a case.
 
@@ -256,6 +279,10 @@ async def generate_report(
     case_service = check_case_service_available(case_service)
     report_store = check_report_store_available(report_store)
 
+    # Validate tenant context if provider available (multi-tenant mode)
+    if tenant_provider:
+        await validate_organization_access(tenant_provider, current_user)
+
     logger.info(
         f"Generating reports for case",
         extra={
@@ -274,8 +301,13 @@ async def generate_report(
                 detail=f"Case {case_id} not found"
             )
 
-        # Get report generation service
-        generation_service = await get_report_generation_service()
+        # Validate organization ownership of case (multi-tenant isolation)
+        if tenant_provider and hasattr(case, 'organization_id'):
+            await validate_organization_access(
+                tenant_provider, current_user, case.organization_id
+            )
+
+        # Validate generation service is available
         if not generation_service:
             raise HTTPException(
                 status_code=503,
@@ -298,6 +330,8 @@ async def generate_report(
 
         return response
 
+    except HTTPException:
+        raise
     except ValidationException as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotFoundException as e:
@@ -316,7 +350,9 @@ async def generate_report(
 async def get_report_recommendations(
     case_id: str = Path(..., description="Case ID"),
     current_user: DevUser = Depends(require_authentication),
+    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_service: Optional[ICaseService] = Depends(get_case_service),
+    rec_service = Depends(get_report_recommendation_service),
 ) -> ReportRecommendationResponse:
     """Get report generation recommendations.
 
@@ -327,12 +363,18 @@ async def get_report_recommendations(
     Args:
         case_id: Case identifier
         current_user: Authenticated user
+        tenant_provider: Tenant provider for multi-tenant isolation
         case_service: Case service
+        rec_service: Report recommendation service
 
     Returns:
         ReportRecommendationResponse with recommendations
     """
     case_service = check_case_service_available(case_service)
+
+    # Validate tenant context if provider available
+    if tenant_provider:
+        await validate_organization_access(tenant_provider, current_user)
 
     try:
         # Get case
@@ -340,8 +382,12 @@ async def get_report_recommendations(
         if not case:
             raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
 
-        # Get recommendation service
-        rec_service = await get_report_recommendation_service()
+        # Validate organization ownership (multi-tenant isolation)
+        if tenant_provider and hasattr(case, 'organization_id'):
+            await validate_organization_access(
+                tenant_provider, current_user, case.organization_id
+            )
+
         if not rec_service:
             # Return default recommendation if service unavailable
             return ReportRecommendationResponse(
@@ -389,20 +435,25 @@ async def get_report_recommendations(
 async def get_report(
     report_id: str = Path(..., description="Report UUID"),
     current_user: DevUser = Depends(require_authentication),
+    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportResponse:
     """Get report by ID.
 
     Args:
         report_id: Report UUID
         current_user: Authenticated user
+        tenant_provider: Tenant provider for multi-tenant isolation
         report_store: Report storage service
+        case_service: Case service for organization validation
 
     Returns:
         Report details
 
     Raises:
         401: Authentication required
+        403: Access denied (wrong organization)
         404: Report not found
         503: Service unavailable
     """
@@ -421,6 +472,14 @@ async def get_report(
                 status_code=404,
                 detail=f"Report {report_id} not found"
             )
+
+        # Validate organization ownership via case (multi-tenant isolation)
+        if tenant_provider and case_service and report.case_id:
+            case = await case_service.get_case(report.case_id, user_id=current_user.user_id)
+            if case and hasattr(case, 'organization_id'):
+                await validate_organization_access(
+                    tenant_provider, current_user, case.organization_id
+                )
 
         return ReportResponse.from_domain(report)
 
@@ -442,7 +501,9 @@ async def update_report(
     report_id: str = Path(..., description="Report UUID"),
     request: ReportUpdateRequest = Body(...),
     current_user: DevUser = Depends(require_authentication),
+    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportResponse:
     """Update existing report.
 
@@ -456,13 +517,16 @@ async def update_report(
         report_id: Report UUID
         request: Update request with new values
         current_user: Authenticated user
+        tenant_provider: Tenant provider for multi-tenant isolation
         report_store: Report storage service
+        case_service: Case service for organization validation
 
     Returns:
         Updated report
 
     Raises:
         401: Authentication required
+        403: Access denied (wrong organization)
         404: Report not found
         400: Validation error
     """
@@ -478,6 +542,14 @@ async def update_report(
         existing_report = await report_store.get_report(report_id)
         if not existing_report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+
+        # Validate organization ownership via case (multi-tenant isolation)
+        if tenant_provider and case_service and existing_report.case_id:
+            case = await case_service.get_case(existing_report.case_id, user_id=current_user.user_id)
+            if case and hasattr(case, 'organization_id'):
+                await validate_organization_access(
+                    tenant_provider, current_user, case.organization_id
+                )
 
         # Update fields
         updated_title = request.title if request.title else existing_report.title
@@ -526,28 +598,33 @@ async def update_report(
     "/{report_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete report",
-    description="Permanently delete a report"
+    description="Permanently delete a report (runbooks cannot be deleted)"
 )
 @trace("api_delete_report")
 async def delete_report(
     report_id: str = Path(..., description="Report UUID"),
     current_user: DevUser = Depends(require_authentication),
+    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> None:
     """Delete report.
 
     Permanently deletes a report. This operation cannot be undone.
 
-    Note: Runbooks are NOT deleted via this endpoint as they persist
-    independently in the knowledge base.
+    Note: Runbooks CANNOT be deleted via this endpoint as they persist
+    independently in the knowledge base for similarity search.
 
     Args:
         report_id: Report UUID
         current_user: Authenticated user
+        tenant_provider: Tenant provider for multi-tenant isolation
         report_store: Report storage service
+        case_service: Case service for organization validation
 
     Raises:
         401: Authentication required
+        403: Access denied (wrong organization) or attempt to delete runbook
         404: Report not found
     """
     report_store = check_report_store_available(report_store)
@@ -558,24 +635,40 @@ async def delete_report(
     )
 
     try:
-        # Verify report exists
+        # Get report to validate it exists
         report = await report_store.get_report(report_id)
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
-        # Note: RedisReportStore doesn't have delete_report method
-        # For now, we'll mark it as not current (soft delete)
-        # In a full implementation, we would add a delete method
-        logger.warning(
-            f"Report deletion not fully implemented - report marked as deleted",
-            extra={"report_id": report_id}
-        )
+        # Check if runbook - runbooks cannot be deleted
+        if report.report_type == ReportType.RUNBOOK:
+            raise HTTPException(
+                status_code=403,
+                detail="Runbooks cannot be deleted - they persist independently in the knowledge base"
+            )
 
-        # For MVP, just log the deletion request
-        # Full implementation would call: await report_store.delete_report(report_id)
+        # Validate organization ownership via case (multi-tenant isolation)
+        if tenant_provider and case_service and report.case_id:
+            case = await case_service.get_case(report.case_id, user_id=current_user.user_id)
+            if case and hasattr(case, 'organization_id'):
+                await validate_organization_access(
+                    tenant_provider, current_user, case.organization_id
+                )
+
+        # Actually delete the report
+        deleted = await report_store.delete_report(report_id)
+        if not deleted:
+            raise HTTPException(status_code=500, detail="Failed to delete report")
+
+        logger.info(
+            f"Report deleted successfully",
+            extra={"report_id": report_id, "case_id": report.case_id}
+        )
 
     except HTTPException:
         raise
+    except ServiceException as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error(f"Error deleting report {report_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete report")
@@ -593,7 +686,9 @@ async def list_reports_for_case(
     include_history: bool = Query(False, description="Include all versions or only current"),
     report_type: Optional[str] = Query(None, description="Filter by report type"),
     current_user: DevUser = Depends(require_authentication),
+    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportListResponse:
     """List all reports for a case.
 
@@ -602,16 +697,27 @@ async def list_reports_for_case(
         include_history: If True, include all versions; if False, only current
         report_type: Optional filter by report type (incident_report, runbook, post_mortem)
         current_user: Authenticated user
+        tenant_provider: Tenant provider for multi-tenant isolation
         report_store: Report storage service
+        case_service: Case service for organization validation
 
     Returns:
         List of reports for the case
 
     Raises:
         401: Authentication required
+        403: Access denied (wrong organization)
         404: Case not found
     """
     report_store = check_report_store_available(report_store)
+
+    # Validate organization ownership via case (multi-tenant isolation)
+    if tenant_provider and case_service:
+        case = await case_service.get_case(case_id, user_id=current_user.user_id)
+        if case and hasattr(case, 'organization_id'):
+            await validate_organization_access(
+                tenant_provider, current_user, case.organization_id
+            )
 
     logger.info(
         f"Listing reports for case",
@@ -664,7 +770,9 @@ async def list_reports_for_case(
 async def get_report_versions(
     report_id: str = Path(..., description="Report UUID"),
     current_user: DevUser = Depends(require_authentication),
+    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportVersionListResponse:
     """Get version history for a report.
 
@@ -673,13 +781,16 @@ async def get_report_versions(
     Args:
         report_id: Report UUID
         current_user: Authenticated user
+        tenant_provider: Tenant provider for multi-tenant isolation
         report_store: Report storage service
+        case_service: Case service for organization validation
 
     Returns:
         List of report versions
 
     Raises:
         401: Authentication required
+        403: Access denied (wrong organization)
         404: Report not found
     """
     report_store = check_report_store_available(report_store)
@@ -694,6 +805,14 @@ async def get_report_versions(
         report = await report_store.get_report(report_id)
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+
+        # Validate organization ownership via case (multi-tenant isolation)
+        if tenant_provider and case_service and report.case_id:
+            case = await case_service.get_case(report.case_id, user_id=current_user.user_id)
+            if case and hasattr(case, 'organization_id'):
+                await validate_organization_access(
+                    tenant_provider, current_user, case.organization_id
+                )
 
         # Get all versions for this report type in this case
         all_reports = await report_store.get_case_reports(
@@ -741,6 +860,7 @@ async def link_report_to_case_closure(
     report_id: str = Path(..., description="Report UUID"),
     request: LinkCaseRequest = Body(default=LinkCaseRequest()),
     current_user: DevUser = Depends(require_authentication),
+    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     report_store: Optional[IReportStore] = Depends(get_report_store),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> LinkCaseResponse:
@@ -755,6 +875,7 @@ async def link_report_to_case_closure(
         report_id: Report UUID
         request: Optional closure note
         current_user: Authenticated user
+        tenant_provider: Tenant provider for multi-tenant isolation
         report_store: Report storage service
         case_service: Case service
 
@@ -763,6 +884,7 @@ async def link_report_to_case_closure(
 
     Raises:
         401: Authentication required
+        403: Access denied (wrong organization)
         404: Report or case not found
         400: Report already linked or case not in valid state
     """
@@ -779,6 +901,14 @@ async def link_report_to_case_closure(
         report = await report_store.get_report(report_id)
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+
+        # Validate organization ownership via case (multi-tenant isolation)
+        if tenant_provider and report.case_id:
+            case = await case_service.get_case(report.case_id, user_id=current_user.user_id)
+            if case and hasattr(case, 'organization_id'):
+                await validate_organization_access(
+                    tenant_provider, current_user, case.organization_id
+                )
 
         # Check if already linked
         if report.linked_to_closure:

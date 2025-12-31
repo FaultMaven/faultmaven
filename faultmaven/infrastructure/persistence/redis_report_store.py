@@ -334,6 +334,87 @@ class RedisReportStore(IReportStore):
             self.logger.error(f"Failed to mark reports as linked: {e}", exc_info=True)
             return False
 
+    async def delete_report(self, report_id: str) -> bool:
+        """
+        Delete a single report by ID.
+
+        IMPORTANT: Runbooks are NOT deleted - they persist independently
+        in the knowledge base for similarity search.
+
+        Removes:
+        - Report metadata from Redis
+        - Report content from ChromaDB
+        - Updates case report indexes
+
+        Args:
+            report_id: Report identifier (UUID)
+
+        Returns:
+            True if deletion successful, False if report not found
+        """
+        try:
+            # Get report metadata
+            metadata_key = f"report:{report_id}:metadata"
+            metadata_raw = await self.redis.hgetall(metadata_key)
+
+            if not metadata_raw:
+                self.logger.warning(f"Report not found for deletion: {report_id}")
+                return False
+
+            metadata = self._deserialize_report_metadata(metadata_raw)
+            case_id = metadata.get("case_id")
+            report_type = metadata.get("report_type")
+
+            # Check if runbook - runbooks are not deleted
+            if report_type == ReportType.RUNBOOK.value:
+                self.logger.warning(
+                    f"Runbook deletion not allowed - runbooks persist independently",
+                    extra={"report_id": report_id}
+                )
+                raise ServiceException("Runbooks cannot be deleted - they persist in the knowledge base")
+
+            self.logger.info(
+                f"Deleting report",
+                extra={"report_id": report_id, "case_id": case_id, "report_type": report_type}
+            )
+
+            pipe = self.redis.pipeline()
+
+            # Delete metadata
+            pipe.delete(metadata_key)
+
+            # Remove from case reports sorted set
+            if case_id:
+                reports_key = f"case:{case_id}:reports"
+                pipe.zrem(reports_key, report_id)
+
+                # Remove from type-specific sorted set
+                if report_type:
+                    type_key = f"case:{case_id}:reports:{report_type}"
+                    pipe.zrem(type_key, report_id)
+
+                    # If this was the current report, update current reference
+                    current_key = f"case:{case_id}:reports:current"
+                    current_id = await self.redis.hget(current_key, report_type)
+                    if current_id:
+                        current_id = current_id.decode() if isinstance(current_id, bytes) else current_id
+                        if current_id == report_id:
+                            pipe.hdel(current_key, report_type)
+
+            await pipe.execute()
+
+            # Delete content from ChromaDB
+            await self.vector_store.delete_documents([report_id])
+
+            self.logger.info(f"Report deleted successfully: {report_id}")
+            return True
+
+        except ServiceException:
+            raise
+        except Exception as e:
+            self.logger.error(f"Failed to delete report {report_id}: {e}", exc_info=True)
+            raise ServiceException(f"Report deletion failed: {str(e)}")
+
     async def delete_case_reports(self, case_id: str) -> bool:
         """
         Delete incident reports and post-mortems for a case (cascade delete).

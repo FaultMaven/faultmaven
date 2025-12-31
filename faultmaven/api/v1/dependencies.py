@@ -24,6 +24,7 @@ from ...models.interfaces import IJobService
 from ...services import DataService, KnowledgeService, SessionService
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
 from ...services.preprocessing import PreprocessingService
+from ...providers.tenancy.base import TenantProvider
 
 
 # Service Dependencies
@@ -95,24 +96,22 @@ async def get_report_store() -> Optional[IReportStore]:
         return None
 
 
+async def get_tenant_provider() -> Optional[TenantProvider]:
+    """Get TenantProvider instance from container (TASK-023/024).
+
+    Returns TenantProvider for multi-tenant isolation in API endpoints.
+    """
+    try:
+        return container.get_tenant_provider()
+    except Exception:
+        # TenantProvider is optional - return None if not available
+        return None
+
+
 async def get_report_generation_service():
     """Get ReportGenerationService instance from container (TASK-024)"""
     try:
-        from ...services.domain.report_generation_service import ReportGenerationService
-
-        # Try to get from container attributes first
-        service = getattr(container, 'report_generation_service', None)
-        if service:
-            return service
-
-        # Fallback: Create service with available dependencies
-        llm_router = container.get_llm_provider()
-        report_store = container.get_report_store()
-
-        return ReportGenerationService(
-            llm_router=llm_router,
-            report_store=report_store,
-        )
+        return container.get_report_generation_service()
     except Exception:
         # Report generation service is optional
         return None
@@ -121,8 +120,7 @@ async def get_report_generation_service():
 async def get_report_recommendation_service():
     """Get ReportRecommendationService instance from container (TASK-024)"""
     try:
-        service = getattr(container, 'report_recommendation_service', None)
-        return service
+        return container.get_report_recommendation_service()
     except Exception:
         # Report recommendation service is optional
         return None
