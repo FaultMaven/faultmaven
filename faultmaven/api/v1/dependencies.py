@@ -95,6 +95,39 @@ async def get_report_store() -> Optional[IReportStore]:
         return None
 
 
+async def get_report_generation_service():
+    """Get ReportGenerationService instance from container (TASK-024)"""
+    try:
+        from ...services.domain.report_generation_service import ReportGenerationService
+
+        # Try to get from container attributes first
+        service = getattr(container, 'report_generation_service', None)
+        if service:
+            return service
+
+        # Fallback: Create service with available dependencies
+        llm_router = container.get_llm_provider()
+        report_store = container.get_report_store()
+
+        return ReportGenerationService(
+            llm_router=llm_router,
+            report_store=report_store,
+        )
+    except Exception:
+        # Report generation service is optional
+        return None
+
+
+async def get_report_recommendation_service():
+    """Get ReportRecommendationService instance from container (TASK-024)"""
+    try:
+        service = getattr(container, 'report_recommendation_service', None)
+        return service
+    except Exception:
+        # Report recommendation service is optional
+        return None
+
+
 async def get_case_vector_store():
     """Get CaseVectorStore instance from container"""
     try:
