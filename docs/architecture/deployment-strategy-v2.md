@@ -25,6 +25,7 @@ This document defines the deployment strategy for FaultMaven, supporting two dis
 6. [Configuration](#6-configuration)
 7. [Gap Analysis](#7-gap-analysis)
 8. [Implementation Roadmap](#8-implementation-roadmap)
+9. [Request Flow Diagrams](#9-request-flow-diagrams)
 
 ---
 
@@ -213,6 +214,35 @@ class TenantProvider(Protocol):
         Returns: (members, total_count)
         """
         ...
+
+    async def get_resource_owner_filter(
+        self,
+        user_id: str,
+        organization_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Build filter dict for querying user-accessible resources.
+
+        SingleTenant: Returns {"owner_user_id": user_id}
+        MultiTenant: Returns {"org_id": org_id} or complex filter
+
+        This abstracts the ownership model differences between deployments.
+        """
+        ...
+
+    def get_kb_visibility_scopes(
+        self,
+        user_id: str,
+        org_id: str,
+        global_kb_enabled: bool = False
+    ) -> List[str]:
+        """Get list of KB visibility scopes user can access.
+
+        SingleTenant: Returns [PRIVATE] only
+        MultiTenant: Returns [PRIVATE, SHARED, TEAM, ORGANIZATION, GLOBAL*]
+
+        *GLOBAL only if global_kb_enabled=True
+        """
+        ...
 ```
 
 ### SingleTenantProvider Implementation
@@ -301,6 +331,23 @@ class SingleTenantProvider:
 
         # Fallback: return minimal member info
         return ([{"role": "owner"}], 1)
+
+    async def get_resource_owner_filter(
+        self,
+        user_id: str,
+        organization_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Filter by owner only - no org-level sharing in local."""
+        return {"owner_user_id": user_id}
+
+    def get_kb_visibility_scopes(
+        self,
+        user_id: str,
+        org_id: str,
+        global_kb_enabled: bool = False
+    ) -> List[str]:
+        """Local deployment: only private KB access."""
+        return [KBVisibility.PRIVATE]
 ```
 
 ### MultiTenantProvider Implementation
@@ -398,6 +445,36 @@ class MultiTenantProvider:
             organization_id
         )
         return (member_list, total)
+
+    async def get_resource_owner_filter(
+        self,
+        user_id: str,
+        organization_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Build filter for org-scoped or user-scoped resources."""
+        if organization_id:
+            # Org-level access: user must be member
+            if await self.verify_membership(user_id, organization_id):
+                return {"org_id": organization_id}
+        # Fallback to user-owned resources
+        return {"owner_user_id": user_id}
+
+    def get_kb_visibility_scopes(
+        self,
+        user_id: str,
+        org_id: str,
+        global_kb_enabled: bool = False
+    ) -> List[str]:
+        """Cloud deployment: full KB scope access."""
+        scopes = [
+            KBVisibility.PRIVATE,
+            KBVisibility.SHARED,
+            KBVisibility.TEAM,
+            KBVisibility.ORGANIZATION,
+        ]
+        if global_kb_enabled:
+            scopes.append(KBVisibility.GLOBAL)
+        return scopes
 ```
 
 ### Provider Factory
@@ -553,22 +630,16 @@ class KnowledgeSearchService:
         - Local: User's PRIVATE KB only
         - Cloud: GLOBAL + ORG + TEAM + SHARED + PRIVATE
 
-        NO conditional logic - scoping built from available context.
+        NO conditional logic - TenantProvider determines scoping.
         """
         org_id = await self.tenant_provider.get_user_organization_id(user_id)
 
-        # Build visibility filter based on available context
-        visibilities = [KBVisibility.PRIVATE]
-
-        if org_id:
-            visibilities.extend([
-                KBVisibility.ORGANIZATION,
-                KBVisibility.TEAM,
-                KBVisibility.SHARED,
-            ])
-
-        if self.global_kb_enabled:
-            visibilities.append(KBVisibility.GLOBAL)
+        # Use TenantProvider helper - handles deployment differences
+        visibilities = self.tenant_provider.get_kb_visibility_scopes(
+            user_id=user_id,
+            org_id=org_id,
+            global_kb_enabled=self.global_kb_enabled
+        )
 
         return await self.vector_store.search(
             query=query,
@@ -851,6 +922,168 @@ Current `file_storage_service.py` needs to conform to `IStorageBackend` interfac
 
 ---
 
+## 9. Request Flow Diagrams
+
+### Case Creation Flow
+
+```
+┌──────────┐     ┌──────────┐     ┌────────────────┐     ┌────────────┐
+│  Client  │     │   API    │     │  CaseService   │     │ TenantProv │
+└────┬─────┘     └────┬─────┘     └───────┬────────┘     └─────┬──────┘
+     │                │                    │                    │
+     │ POST /cases    │                    │                    │
+     │───────────────>│                    │                    │
+     │                │                    │                    │
+     │                │ create_case(       │                    │
+     │                │   user_id, data)   │                    │
+     │                │───────────────────>│                    │
+     │                │                    │                    │
+     │                │                    │ get_user_org_id()  │
+     │                │                    │───────────────────>│
+     │                │                    │                    │
+     │                │                    │    org_id          │
+     │                │                    │<───────────────────│
+     │                │                    │                    │
+     │                │                    │ ┌────────────────┐ │
+     │                │                    │ │ Same code path │ │
+     │                │                    │ │ Local: default │ │
+     │                │                    │ │ Cloud: real id │ │
+     │                │                    │ └────────────────┘ │
+     │                │                    │                    │
+     │                │    Case created    │                    │
+     │                │<───────────────────│                    │
+     │                │                    │                    │
+     │  201 Created   │                    │                    │
+     │<───────────────│                    │                    │
+```
+
+### KB Search Flow
+
+```
+┌──────────┐     ┌──────────┐     ┌────────────────┐     ┌────────────┐     ┌─────────────┐
+│  Client  │     │   API    │     │  KBService     │     │ TenantProv │     │ VectorStore │
+└────┬─────┘     └────┬─────┘     └───────┬────────┘     └─────┬──────┘     └──────┬──────┘
+     │                │                    │                    │                   │
+     │ GET /kb/search │                    │                    │                   │
+     │───────────────>│                    │                    │                   │
+     │                │                    │                    │                   │
+     │                │ search(user, q)    │                    │                   │
+     │                │───────────────────>│                    │                   │
+     │                │                    │                    │                   │
+     │                │                    │ get_user_org_id()  │                   │
+     │                │                    │───────────────────>│                   │
+     │                │                    │    org_id          │                   │
+     │                │                    │<───────────────────│                   │
+     │                │                    │                    │                   │
+     │                │                    │ get_kb_scopes()    │                   │
+     │                │                    │───────────────────>│                   │
+     │                │                    │   [PRIVATE] or     │                   │
+     │                │                    │   [PRIV,ORG,...]   │                   │
+     │                │                    │<───────────────────│                   │
+     │                │                    │                    │                   │
+     │                │                    │ search(q, scopes)                      │
+     │                │                    │───────────────────────────────────────>│
+     │                │                    │                    │                   │
+     │                │                    │    results                             │
+     │                │                    │<───────────────────────────────────────│
+     │                │                    │                    │                   │
+     │                │    results         │                    │                   │
+     │                │<───────────────────│                    │                   │
+     │  200 OK        │                    │                    │                   │
+     │<───────────────│                    │                    │                   │
+```
+
+### Provider Selection at Startup
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Application Startup                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+                        ┌─────────────────────────┐
+                        │   Read Environment Vars  │
+                        │   TENANT_PROVIDER=?      │
+                        └─────────────────────────┘
+                                      │
+                    ┌─────────────────┴─────────────────┐
+                    │                                   │
+                    ▼                                   ▼
+        ┌───────────────────┐               ┌───────────────────┐
+        │ TENANT_PROVIDER   │               │ TENANT_PROVIDER   │
+        │    = "single"     │               │    = "multi"      │
+        └─────────┬─────────┘               └─────────┬─────────┘
+                  │                                   │
+                  ▼                                   ▼
+        ┌───────────────────┐               ┌───────────────────┐
+        │ SingleTenant      │               │ MultiTenant       │
+        │ Provider          │               │ Provider          │
+        │                   │               │                   │
+        │ • DEFAULT_ORG_ID  │               │ • OrgRepository   │
+        │ • Returns default │               │ • UserRepository  │
+        │   org for all     │               │ • Queries DB      │
+        └─────────┬─────────┘               └─────────┬─────────┘
+                  │                                   │
+                  └─────────────────┬─────────────────┘
+                                    │
+                                    ▼
+                        ┌─────────────────────────┐
+                        │   Inject into Services   │
+                        │   (CaseService, etc.)    │
+                        └─────────────────────────┘
+                                    │
+                                    ▼
+                        ┌─────────────────────────┐
+                        │  Same Application Code   │
+                        │  Different Behavior      │
+                        └─────────────────────────┘
+```
+
+### Evidence Upload Flow (Local vs Cloud)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            Evidence Upload Request                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+                        ┌─────────────────────────┐
+                        │   EvidenceService       │
+                        │   store(file, user_id)  │
+                        └─────────────────────────┘
+                                      │
+                                      ▼
+                        ┌─────────────────────────┐
+                        │   StorageBackend.store()│
+                        │   (Interface call)      │
+                        └─────────────────────────┘
+                                      │
+                    ┌─────────────────┴─────────────────┐
+                    │                                   │
+                    ▼                                   ▼
+    ┌───────────────────────────┐       ┌───────────────────────────┐
+    │   STORAGE_BACKEND=local   │       │   STORAGE_BACKEND=s3      │
+    └───────────────────────────┘       └───────────────────────────┘
+                    │                                   │
+                    ▼                                   ▼
+    ┌───────────────────────────┐       ┌───────────────────────────┐
+    │   LocalStorageBackend     │       │   S3StorageBackend        │
+    │                           │       │                           │
+    │   ./data/evidence/{id}    │       │   s3://bucket/evidence/   │
+    │   shutil.copy(file, path) │       │   s3.upload_file(...)     │
+    └───────────────────────────┘       └───────────────────────────┘
+                    │                                   │
+                    └─────────────────┬─────────────────┘
+                                      │
+                                      ▼
+                        ┌─────────────────────────┐
+                        │   Return storage_uri     │
+                        │   (Same interface)       │
+                        └─────────────────────────┘
+```
+
+---
+
 ## Appendix A: Module Structure (No Changes)
 
 The existing codebase structure is correct. **NO separate `local/` and `cloud/` packages.**
@@ -875,16 +1108,205 @@ faultmaven/
 
 ## Appendix B: Migration Path (Local → Cloud)
 
-Since both deployments use the same codebase and data models:
+Since both deployments use the same codebase and data models, migration is straightforward.
 
-1. Export local SQLite data
-2. Import to Cloud PostgreSQL
-3. Create organization for user
-4. Set `org_id` on user's resources
-5. Upload evidence files to S3
-6. Migrate vectors to Pinecone
+### Step 1: Export Local SQLite Data
 
-The data model is the same - only infrastructure changes.
+```bash
+#!/bin/bash
+# scripts/migration/export_local.sh
+
+LOCAL_DB="./data/faultmaven.db"
+EXPORT_DIR="./migration_export"
+
+mkdir -p $EXPORT_DIR
+
+# Export each table to JSON
+sqlite3 $LOCAL_DB <<EOF
+.mode json
+.output $EXPORT_DIR/users.json
+SELECT * FROM users;
+.output $EXPORT_DIR/cases.json
+SELECT * FROM cases;
+.output $EXPORT_DIR/sessions.json
+SELECT * FROM investigation_sessions;
+.output $EXPORT_DIR/evidence.json
+SELECT * FROM evidence_artifacts;
+.output $EXPORT_DIR/kb_documents.json
+SELECT * FROM kb_documents;
+EOF
+
+echo "Exported to $EXPORT_DIR"
+```
+
+### Step 2: Create Organization and Update References
+
+```python
+# scripts/migration/prepare_for_cloud.py
+
+import json
+import uuid
+from pathlib import Path
+
+EXPORT_DIR = Path("./migration_export")
+NEW_ORG_ID = str(uuid.uuid4())
+OLD_ORG_ID = "local-user-org"  # DEFAULT_ORGANIZATION_ID
+
+def migrate_references():
+    """Update org_id from default to new cloud organization."""
+
+    # Update cases
+    cases = json.loads((EXPORT_DIR / "cases.json").read_text())
+    for case in cases:
+        if case.get("org_id") == OLD_ORG_ID:
+            case["org_id"] = NEW_ORG_ID
+    (EXPORT_DIR / "cases_migrated.json").write_text(json.dumps(cases))
+
+    # Update KB documents
+    kb_docs = json.loads((EXPORT_DIR / "kb_documents.json").read_text())
+    for doc in kb_docs:
+        if doc.get("org_id") == OLD_ORG_ID:
+            doc["org_id"] = NEW_ORG_ID
+        # Upgrade PRIVATE to ORGANIZATION for shared access
+        if doc.get("visibility") == "private":
+            doc["visibility"] = "organization"
+    (EXPORT_DIR / "kb_documents_migrated.json").write_text(json.dumps(kb_docs))
+
+    print(f"Migrated to new org_id: {NEW_ORG_ID}")
+    return NEW_ORG_ID
+
+if __name__ == "__main__":
+    migrate_references()
+```
+
+### Step 3: Import to PostgreSQL
+
+```python
+# scripts/migration/import_to_cloud.py
+
+import asyncio
+import json
+from pathlib import Path
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+
+EXPORT_DIR = Path("./migration_export")
+CLOUD_DB_URL = "postgresql+asyncpg://user:pass@host:5432/faultmaven"
+
+async def import_data():
+    engine = create_async_engine(CLOUD_DB_URL)
+
+    async with AsyncSession(engine) as session:
+        # Import users
+        users = json.loads((EXPORT_DIR / "users.json").read_text())
+        for user in users:
+            await session.execute(
+                "INSERT INTO users (user_id, email, ...) VALUES (:user_id, :email, ...)",
+                user
+            )
+
+        # Import migrated cases
+        cases = json.loads((EXPORT_DIR / "cases_migrated.json").read_text())
+        for case in cases:
+            await session.execute(
+                "INSERT INTO cases (case_id, org_id, ...) VALUES (:case_id, :org_id, ...)",
+                case
+            )
+
+        await session.commit()
+
+    print("Import complete")
+
+if __name__ == "__main__":
+    asyncio.run(import_data())
+```
+
+### Step 4: Migrate Evidence Files to S3
+
+```python
+# scripts/migration/migrate_evidence_to_s3.py
+
+import boto3
+from pathlib import Path
+
+LOCAL_EVIDENCE = Path("./data/evidence")
+S3_BUCKET = "faultmaven-evidence"
+
+def migrate_to_s3():
+    s3 = boto3.client("s3")
+
+    for file_path in LOCAL_EVIDENCE.rglob("*"):
+        if file_path.is_file():
+            s3_key = str(file_path.relative_to(LOCAL_EVIDENCE))
+            s3.upload_file(str(file_path), S3_BUCKET, s3_key)
+            print(f"Uploaded: {s3_key}")
+
+    print("Evidence migration complete")
+
+if __name__ == "__main__":
+    migrate_to_s3()
+```
+
+### Step 5: Migrate Vectors to Pinecone
+
+```python
+# scripts/migration/migrate_vectors_to_pinecone.py
+
+import chromadb
+import pinecone
+from tqdm import tqdm
+
+CHROMA_PATH = "./data/chroma"
+PINECONE_INDEX = "faultmaven-kb"
+
+def migrate_vectors():
+    # Connect to local ChromaDB
+    chroma = chromadb.PersistentClient(path=CHROMA_PATH)
+    collection = chroma.get_collection("kb_documents")
+
+    # Connect to Pinecone
+    pinecone.init(api_key="...", environment="...")
+    index = pinecone.Index(PINECONE_INDEX)
+
+    # Get all vectors from ChromaDB
+    results = collection.get(include=["embeddings", "metadatas", "documents"])
+
+    # Batch upload to Pinecone
+    batch_size = 100
+    vectors = []
+
+    for i, (id_, embedding, metadata) in enumerate(
+        zip(results["ids"], results["embeddings"], results["metadatas"])
+    ):
+        vectors.append({
+            "id": id_,
+            "values": embedding,
+            "metadata": metadata
+        })
+
+        if len(vectors) >= batch_size:
+            index.upsert(vectors=vectors)
+            vectors = []
+
+    # Upload remaining
+    if vectors:
+        index.upsert(vectors=vectors)
+
+    print(f"Migrated {len(results['ids'])} vectors")
+
+if __name__ == "__main__":
+    migrate_vectors()
+```
+
+### Migration Checklist
+
+| Step | Script | Verification |
+|------|--------|--------------|
+| 1. Export SQLite | `export_local.sh` | Check JSON files exist |
+| 2. Update org_id | `prepare_for_cloud.py` | Verify new org_id in files |
+| 3. Import PostgreSQL | `import_to_cloud.py` | Query tables for data |
+| 4. Upload to S3 | `migrate_evidence_to_s3.py` | List S3 bucket contents |
+| 5. Migrate vectors | `migrate_vectors_to_pinecone.py` | Query Pinecone index |
+| 6. Create org membership | Cloud admin panel | User can access org |
 
 ---
 
