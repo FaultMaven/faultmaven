@@ -20,6 +20,13 @@ from pydantic import BaseModel, Field, field_validator
 class HypothesisCreateRequest(BaseModel):
     """Request model for creating a hypothesis."""
 
+    title: Optional[str] = Field(
+        None,
+        min_length=5,
+        max_length=200,
+        description="Short hypothesis title (optional, derived from description if not provided)",
+    )
+
     description: str = Field(
         ...,
         min_length=10,
@@ -47,6 +54,7 @@ class HypothesisCreateRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
+                "title": "Database connection pool exhausted",
                 "description": "Database connection timeout due to network latency spikes between app and DB server",
                 "confidence_score": 0.7,
                 "supporting_evidence_ids": ["e1234567890ab"],
@@ -61,6 +69,13 @@ class HypothesisCreateRequest(BaseModel):
 class HypothesisUpdateRequest(BaseModel):
     """Request model for updating a hypothesis."""
 
+    title: Optional[str] = Field(
+        None,
+        min_length=5,
+        max_length=200,
+        description="Updated hypothesis title",
+    )
+
     description: Optional[str] = Field(
         None,
         min_length=10,
@@ -73,16 +88,21 @@ class HypothesisUpdateRequest(BaseModel):
         description="Status: proposed, testing, validated, invalidated, deferred",
     )
 
-    confidence_score: Optional[Decimal] = Field(
+    confidence: Optional[float] = Field(
         None,
         ge=0.0,
         le=1.0,
         description="Updated confidence score (0.00-1.00)",
     )
 
-    supporting_evidence_ids: Optional[List[str]] = Field(
+    evidence_supporting: Optional[List[str]] = Field(
         None,
         description="Updated list of supporting evidence IDs",
+    )
+
+    evidence_against: Optional[List[str]] = Field(
+        None,
+        description="Updated list of contradicting evidence IDs",
     )
 
     validation_result: Optional[str] = Field(
@@ -96,7 +116,7 @@ class HypothesisUpdateRequest(BaseModel):
         description="Updated metadata",
     )
 
-    @field_validator("confidence_score")
+    @field_validator("confidence")
     @classmethod
     def validate_confidence(cls, v):
         """Validate confidence score range."""
@@ -181,7 +201,11 @@ class HypothesisResponse(BaseModel):
 
     @classmethod
     def from_dict(cls, data: Dict) -> "HypothesisResponse":
-        """Create HypothesisResponse from dictionary (repository layer)."""
+        """Create HypothesisResponse from dictionary (repository layer).
+
+        Use from_domain() instead for domain objects. This method is for
+        direct dictionary sources (e.g., database results).
+        """
         return cls(
             hypothesis_id=data.get("hypothesis_id"),
             case_id=data.get("case_id"),
@@ -200,9 +224,16 @@ class HypothesisResponse(BaseModel):
 
     @classmethod
     def from_domain(cls, data: Dict) -> "HypothesisResponse":
-        """Create HypothesisResponse from domain model (orchestrator/repository layer).
+        """Create HypothesisResponse from domain model dict (orchestrator/repository layer).
 
-        This is an alias for from_dict() for consistency with other API response models.
+        This method is consistent with TASK-024 (Report Module) pattern.
+        The orchestrator returns dicts, so this is just an alias for from_dict().
+
+        Args:
+            data: Dictionary from orchestrator or repository
+
+        Returns:
+            HypothesisResponse instance
         """
         return cls.from_dict(data)
 
@@ -218,6 +249,13 @@ class HypothesisResponse(BaseModel):
 class SolutionCreateRequest(BaseModel):
     """Request model for creating a solution."""
 
+    title: str = Field(
+        ...,
+        min_length=5,
+        max_length=200,
+        description="Short solution title",
+    )
+
     description: str = Field(
         ...,
         min_length=20,
@@ -229,6 +267,11 @@ class SolutionCreateRequest(BaseModel):
         ...,
         min_items=1,
         description="Ordered list of implementation steps",
+    )
+
+    hypothesis_id: Optional[str] = Field(
+        None,
+        description="Optional hypothesis ID to link this solution to (must be validated)",
     )
 
     risk_level: Optional[str] = Field(
@@ -258,6 +301,7 @@ class SolutionCreateRequest(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
+                "title": "Increase database connection timeout",
                 "description": "Increase database connection timeout from 5s to 30s to accommodate network latency",
                 "implementation_steps": [
                     "Backup current database.yml configuration",
@@ -266,6 +310,7 @@ class SolutionCreateRequest(BaseModel):
                     "Monitor connection error rate for 24 hours",
                     "Verify P95 latency metrics improved",
                 ],
+                "hypothesis_id": "hyp-123",
                 "risk_level": "low",
                 "estimated_effort": "30 minutes",
                 "metadata": {
@@ -347,6 +392,7 @@ class SolutionResponse(BaseModel):
 
     solution_id: str = Field(..., description="Unique solution identifier")
     case_id: str = Field(..., description="Associated case identifier")
+    hypothesis_id: Optional[str] = Field(None, description="Linked hypothesis identifier (if any)")
     description: str = Field(..., description="Solution description")
     status: str = Field(..., description="Current status")
     implementation_steps: List[str] = Field(..., description="Implementation steps")
@@ -367,14 +413,29 @@ class SolutionResponse(BaseModel):
         # Extract metadata fields
         metadata = data.get("metadata", {})
 
+        # implementation_steps can be either top-level (from domain model) or in metadata (from repository)
+        implementation_steps = data.get("implementation_steps")
+        if implementation_steps is None:
+            implementation_steps = metadata.get("implementation_steps", [])
+
+        # risk_level and estimated_effort can also be either top-level or in metadata
+        risk_level = data.get("risk_level")
+        if risk_level is None:
+            risk_level = metadata.get("risk_level")
+
+        estimated_effort = data.get("estimated_effort")
+        if estimated_effort is None:
+            estimated_effort = metadata.get("estimated_effort")
+
         return cls(
             solution_id=data.get("solution_id"),
             case_id=data.get("case_id"),
+            hypothesis_id=data.get("hypothesis_id"),
             description=data.get("description"),
             status=data.get("status"),
-            implementation_steps=metadata.get("implementation_steps", []),
-            risk_level=metadata.get("risk_level"),
-            estimated_effort=metadata.get("estimated_effort"),
+            implementation_steps=implementation_steps,
+            risk_level=risk_level,
+            estimated_effort=estimated_effort,
             verification_result=data.get("verification_result"),
             verification_timestamp=data.get("verification_timestamp"),
             proposed_at=data.get("proposed_at"),

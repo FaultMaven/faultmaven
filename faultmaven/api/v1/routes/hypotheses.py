@@ -179,6 +179,11 @@ async def create_hypothesis(
     organization_id = await validate_organization_access(tenant_provider, current_user)
 
     try:
+        # Prepare metadata (include title if provided)
+        metadata = request.metadata or {}
+        if request.title:
+            metadata["title"] = request.title
+
         # Create hypothesis via orchestrator
         hypothesis_dict = await orchestrator.create_hypothesis(
             case_id=case_id,
@@ -187,7 +192,7 @@ async def create_hypothesis(
             created_by=current_user.user_id,
             confidence=float(request.confidence_score) if request.confidence_score is not None else 0.5,
             supporting_evidence_ids=request.supporting_evidence_ids or [],
-            metadata=request.metadata or {},
+            metadata=metadata,
         )
 
         logger.info(
@@ -200,7 +205,7 @@ async def create_hypothesis(
             }
         )
 
-        return HypothesisResponse.from_dict(hypothesis_dict)
+        return HypothesisResponse.from_domain(hypothesis_dict)
 
     except ValidationException as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -505,9 +510,9 @@ async def create_solution(
         )
 
         logger.info(
-            f"Created solution {solution.solution_id} for case {case_id}",
+            f"Created solution {solution['solution_id']} for case {case_id}",
             extra={
-                "solution_id": solution.solution_id,
+                "solution_id": solution["solution_id"],
                 "case_id": case_id,
                 "user_id": current_user.user_id,
                 "organization_id": organization_id,
