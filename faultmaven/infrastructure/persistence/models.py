@@ -283,6 +283,11 @@ class HypothesisModel(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     hypothesis_metadata = Column("metadata", Text, default='{}')
 
+    # Multi-tenancy and audit fields (TASK-026)
+    organization_id = Column(String(20), nullable=False, index=True)
+    created_by = Column(String(255), nullable=False, index=True)
+    updated_by = Column(String(255), nullable=True)
+
     # Relationship
     case = relationship("CaseModel", back_populates="hypotheses")
 
@@ -319,6 +324,11 @@ class SolutionModel(Base):
     implemented_at = Column(DateTime(timezone=True))
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     solution_metadata = Column("metadata", Text, default='{}')
+
+    # Multi-tenancy and audit fields (TASK-026)
+    organization_id = Column(String(20), nullable=False, index=True)
+    created_by = Column(String(255), nullable=False, index=True)
+    updated_by = Column(String(255), nullable=True)
 
     # Relationship
     case = relationship("CaseModel", back_populates="solutions")
