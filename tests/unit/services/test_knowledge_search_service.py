@@ -16,13 +16,13 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import List, Dict, Any
 
-from faultmaven.services.knowledge_search_service import KnowledgeSearchService
-from faultmaven.services.embedding_service import EmbeddingService
-from faultmaven.services.vector_store_service import VectorStoreService
-from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
+from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
+from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     InMemoryKnowledgeItemRepository,
 )
-from faultmaven.models.knowledge_item import (
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
     EMBEDDING_DIMENSIONS,

@@ -18,7 +18,6 @@ from .domain import (
     CaseService,
     SessionService,
     DataService,
-    KnowledgeService,
     PlanningService
 )
 from .analytics import (
@@ -34,7 +33,6 @@ __all__ = [
     "CaseService",
     "SessionService",
     "DataService",
-    "KnowledgeService",
     "PlanningService",
     # Analytics Services
     "AnalyticsDashboardService",

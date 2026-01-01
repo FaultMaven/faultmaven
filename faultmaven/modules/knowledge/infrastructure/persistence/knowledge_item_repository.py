@@ -13,7 +13,7 @@ Features:
 - Support for both in-memory and database backends
 
 Usage:
-    from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
         DatabaseKnowledgeItemRepository,
         InMemoryKnowledgeItemRepository,
     )
@@ -40,7 +40,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.models.knowledge_item import (
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
 )

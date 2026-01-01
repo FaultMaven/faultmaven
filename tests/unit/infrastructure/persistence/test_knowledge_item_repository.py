@@ -7,12 +7,12 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
-from faultmaven.models.knowledge_item import (
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
     EMBEDDING_DIMENSIONS,
 )
-from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     InMemoryKnowledgeItemRepository,
 )
 

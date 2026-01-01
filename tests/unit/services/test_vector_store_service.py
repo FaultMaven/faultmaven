@@ -17,12 +17,12 @@ import shutil
 from typing import List, Dict, Any
 from unittest.mock import MagicMock, patch
 
-from faultmaven.services.vector_store_service import VectorStoreService
+from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
 from faultmaven.exceptions import (
     VectorStoreConnectionError,
     VectorStoreOperationError,
 )
-from faultmaven.models.knowledge_item import EMBEDDING_DIMENSIONS
+from faultmaven.modules.knowledge.domain.models.knowledge_item import EMBEDDING_DIMENSIONS
 
 
 # Test fixtures

@@ -16,13 +16,15 @@ modules =
     faultmaven.services.auth_service
     faultmaven.services.case_service
     faultmaven.services.investigation_session_service
-    faultmaven.services.knowledge_search_service
     faultmaven.services.evidence_artifact_service
     faultmaven.services.user_service
-    faultmaven.services.embedding_service
-    faultmaven.services.vector_store_service
     faultmaven.services.file_storage_service
     faultmaven.services.agent_orchestration_service
+    # Knowledge services moved to vertical slice module
+    faultmaven.modules.knowledge.domain.services.search_service
+    faultmaven.modules.knowledge.domain.services.embedding_service
+    faultmaven.modules.knowledge.domain.services.vector_store_service
+    faultmaven.modules.knowledge.domain.services.knowledge_service
 
 # ============================================================================
 # CONTRACT 2: Services Cannot Import API Layer
@@ -70,3 +72,22 @@ forbidden_modules =
 # - Extract modules/auth, modules/case, modules/knowledge, etc.
 # - Each module self-contained with router, service, models, tests
 # ============================================================================
+
+# ============================================================================
+# CONTRACT 4: Knowledge Module Layer Boundaries
+# ============================================================================
+# Enforce clean architecture within the Knowledge module vertical slice
+# Layers are listed from highest to lowest dependency level:
+# - API layer (highest) can depend on Domain and Infrastructure
+# - Domain layer (middle) can depend on Infrastructure
+# - Infrastructure layer (lowest) cannot depend on higher layers
+# Exception: Infrastructure CAN import Domain models (repositories need models)
+[importlinter:contract:4]
+name = Knowledge module layer boundaries
+type = layers
+layers =
+    faultmaven.modules.knowledge.api
+    faultmaven.modules.knowledge.domain
+    faultmaven.modules.knowledge.infrastructure
+ignore_imports =
+    faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository -> faultmaven.modules.knowledge.domain.models.knowledge_item

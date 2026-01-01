@@ -11,7 +11,7 @@ Features:
 - Indexing statistics
 
 Usage:
-    from faultmaven.services.knowledge_search_service import KnowledgeSearchService
+    from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
 
     service = KnowledgeSearchService(knowledge_repo, embedding_service, vector_store)
     results = await service.semantic_search("error handling", org_id, n_results=10)
@@ -22,10 +22,10 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.services.base import BaseService
-from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
-from faultmaven.models.knowledge_item import KnowledgeItem, KnowledgeItemType
+from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem, KnowledgeItemType
 from faultmaven.exceptions import (
     KnowledgeBaseException,
     EmbeddingException,
@@ -77,8 +77,8 @@ class KnowledgeSearchService(BaseService):
         if embedding_service is None or vector_store is None:
             import importlib
             ServiceContainer = importlib.import_module('faultmaven.core.container').ServiceContainer
-            EmbeddingService = importlib.import_module('faultmaven.services.embedding_service').EmbeddingService
-            VectorStoreService = importlib.import_module('faultmaven.services.vector_store_service').VectorStoreService
+            EmbeddingService = importlib.import_module('faultmaven.modules.knowledge.domain.services.embedding_service').EmbeddingService
+            VectorStoreService = importlib.import_module('faultmaven.modules.knowledge.domain.services.vector_store_service').VectorStoreService
 
             self.embedding_service = embedding_service or ServiceContainer.get(EmbeddingService)
             self.vector_store = vector_store or ServiceContainer.get(VectorStoreService)

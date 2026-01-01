@@ -101,7 +101,7 @@ class TestLowerLevelServiceInjection:
     @patch('faultmaven.services.embedding_service.EmbeddingService.__init__', return_value=None)
     def test_embedding_service_injection(self, mock_init, mock_settings):
         """Test that EmbeddingService can be created via DI container."""
-        from faultmaven.services.embedding_service import EmbeddingService
+        from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
 
         service = ServiceContainer.get(EmbeddingService)
 
@@ -112,7 +112,7 @@ class TestLowerLevelServiceInjection:
     @patch('faultmaven.services.vector_store_service.VectorStoreService.__init__', return_value=None)
     def test_vector_store_service_injection(self, mock_init, mock_settings):
         """Test that VectorStoreService can be created via DI container."""
-        from faultmaven.services.vector_store_service import VectorStoreService
+        from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
 
         service = ServiceContainer.get(VectorStoreService)
 
@@ -173,7 +173,7 @@ class TestServiceIndependenceViolationsFixed:
     def test_knowledge_search_service_uses_di(self, mock_vector, mock_embedding, mock_settings):
         """Test that KnowledgeSearchService uses DI instead of direct imports."""
         # This would have been a violation: knowledge_search_service → embedding_service
-        from faultmaven.services.knowledge_search_service import KnowledgeSearchService
+        from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
         from faultmaven.infrastructure.persistence.repository_factory import (
             get_knowledge_repository,
             STORAGE_TYPE_MEMORY,
@@ -302,7 +302,7 @@ class TestServiceLifecycle:
     def test_services_use_singleton_pattern(self, mock_settings):
         """Test that services follow singleton pattern within same lifecycle."""
         from faultmaven.services.auth_service import AuthService
-        from faultmaven.services.embedding_service import EmbeddingService
+        from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
 
         # Get services multiple times
         auth1 = ServiceContainer.get(AuthService)
@@ -327,7 +327,7 @@ class TestBackwardCompatibility:
     @patch('faultmaven.services.vector_store_service.VectorStoreService')
     def test_manual_dependency_injection_still_works(self, mock_vector, mock_embedding, mock_settings):
         """Test that manually providing dependencies still works (backward compatibility)."""
-        from faultmaven.services.knowledge_search_service import KnowledgeSearchService
+        from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
         from faultmaven.infrastructure.persistence.repository_factory import (
             get_knowledge_repository,
             STORAGE_TYPE_MEMORY,

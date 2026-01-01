@@ -647,7 +647,7 @@ class DIContainer:
         # OLD OODA AgentService removed - use InvestigationService instead
         # from faultmaven.services.agentic.orchestration.agent_service import AgentService
         from faultmaven.services.domain.data_service import DataService
-        from faultmaven.services.domain.knowledge_service import KnowledgeService
+        from faultmaven.modules.knowledge.domain.services.knowledge_service import KnowledgeService
         from faultmaven.services.domain.session_service import SessionService
         
         # Case Service - Case persistence and management (v2.0 milestone-based)

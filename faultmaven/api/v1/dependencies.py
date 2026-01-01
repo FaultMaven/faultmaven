@@ -21,7 +21,8 @@ from ...models import SessionContext
 from ...models.interfaces_case import ICaseService
 from ...models.interfaces_report import IReportStore
 from ...models.interfaces import IJobService
-from ...services import DataService, KnowledgeService, SessionService
+from ...services import DataService, SessionService
+from ...modules.knowledge.domain.services.knowledge_service import KnowledgeService
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
 from ...services.preprocessing import PreprocessingService
 from ...providers.tenancy.base import TenantProvider

@@ -14,13 +14,13 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 from typing import List
 
-from faultmaven.services.embedding_service import EmbeddingService
+from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
 from faultmaven.exceptions import (
     EmbeddingGenerationError,
     EmbeddingRateLimitError,
     EmbeddingInvalidInputError,
 )
-from faultmaven.models.knowledge_item import EMBEDDING_DIMENSIONS
+from faultmaven.modules.knowledge.domain.models.knowledge_item import EMBEDDING_DIMENSIONS
 
 
 # Test fixtures
