@@ -1,0 +1,72 @@
+[importlinter]
+root_package = faultmaven
+
+# ============================================================================
+# CONTRACT 1: Service Layer Independence
+# ============================================================================
+# Services should not directly import from each other
+# This will be enforced more strictly once DI container is implemented (Phase 3, Week 14-15)
+#
+# Current state: Services can import via service_factory pattern
+# Target state: All service dependencies injected via DI container
+[importlinter:contract:1]
+name = Service layer independence
+type = independence
+modules =
+    faultmaven.services.auth_service
+    faultmaven.services.case_service
+    faultmaven.services.investigation_session_service
+    faultmaven.services.knowledge_search_service
+    faultmaven.services.evidence_artifact_service
+    faultmaven.services.user_service
+    faultmaven.services.embedding_service
+    faultmaven.services.vector_store_service
+    faultmaven.services.file_storage_service
+    faultmaven.services.agent_orchestration_service
+
+# ============================================================================
+# CONTRACT 2: Services Cannot Import API Layer
+# ============================================================================
+# API layer depends on services, not the other way around
+# This prevents circular dependencies and maintains proper layering
+#
+# Violation: Service importing from API is a critical architectural error
+[importlinter:contract:2]
+name = Services cannot import API layer
+type = forbidden
+source_modules =
+    faultmaven.services
+forbidden_modules =
+    faultmaven.api
+
+# ============================================================================
+# CONTRACT 3: Models Cannot Import Services
+# ============================================================================
+# Models are data structures; they should not import business logic
+# This prevents circular dependencies between models and services
+[importlinter:contract:3]
+name = Models cannot import services
+type = forbidden
+source_modules =
+    faultmaven.models
+forbidden_modules =
+    faultmaven.services
+
+# ============================================================================
+# CONFIGURATION NOTES
+# ============================================================================
+# Phase 3 Week 13: Baseline and Enforcement
+# - Establish current violation baseline
+# - Enable CI/CD enforcement to prevent NEW violations
+# - Focus on critical architectural boundaries
+# - Do NOT fix all violations yet (that's Week 14-18)
+#
+# Phase 3 Week 14-15: DI Container Refactoring
+# - Tighten Contract 1 (service independence)
+# - All service dependencies via DI
+#
+# Phase 3 Week 16-18: Vertical Slice Extraction
+# - Add contracts for module boundaries
+# - Extract modules/auth, modules/case, modules/knowledge, etc.
+# - Each module self-contained with router, service, models, tests
+# ============================================================================
