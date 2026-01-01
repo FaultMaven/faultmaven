@@ -651,6 +651,12 @@ except Exception as e:
 
 
 
+# Register domain exception handlers (TASK-027)
+from faultmaven.api.exception_handlers import get_exception_handlers
+for exc_type, handler in get_exception_handlers().items():
+    app.add_exception_handler(exc_type, handler)
+logger.info("✅ Domain exception handlers registered")
+
 
 # Custom exception handlers
 @app.exception_handler(RequestValidationError)

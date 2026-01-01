@@ -99,14 +99,14 @@ async def validation_exception_handler(
 ) -> JSONResponse:
     """Handle ValidationException.
 
-    Translates ValidationException to HTTP 400 Bad Request response.
+    Translates ValidationException to HTTP 422 Unprocessable Entity response.
 
     Args:
         request: FastAPI request object
         exc: ValidationException exception
 
     Returns:
-        JSONResponse with 400 status and error details
+        JSONResponse with 422 status and error details
     """
     logger.warning(
         "Validation error: %s %s - %s",
@@ -116,11 +116,11 @@ async def validation_exception_handler(
     )
 
     return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST,
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "error": "Validation Error",
             "detail": str(exc),
-            "status_code": 400,
+            "status_code": 422,
         },
     )
 
