@@ -1340,6 +1340,195 @@ For complete specifications, see:
 
 ---
 
+## Architectural Boundaries (Enforced by Import-Linter)
+
+**Status**: ✅ **IMPLEMENTED** (Phase 3, Week 13)
+**Tool**: import-linter 2.9
+**Configuration**: `.importlinter`
+**Baseline**: [Import Linter Baseline](./IMPORT-LINTER-BASELINE.md)
+
+### Overview
+
+FaultMaven enforces architectural boundaries through automated import analysis using import-linter. This ensures code quality, prevents architectural drift, and maintains clear separation of concerns across the codebase.
+
+### Current Contracts
+
+Import-linter enforces three critical architectural contracts that define module boundaries and dependency flows:
+
+#### 1. Service Layer Independence
+
+**Status**: 🟡 BASELINE ESTABLISHED (6 violations accepted, will fix in Week 14-15)
+
+**Policy**: Services should not directly import from each other. Service dependencies must be injected via a Dependency Injection (DI) container.
+
+**Current State**:
+- Services CAN import via service_factory pattern (temporary)
+- Direct service-to-service imports tracked as technical debt
+- 6 baseline violations documented (knowledge_search, agent_orchestration, user, evidence_artifact services)
+
+**Target State** (Phase 3, Week 14-15):
+- All service dependencies injected via DI container
+- Zero service-to-service imports
+- Clean service independence with interface-based composition
+
+**Monitored Services**:
+- `faultmaven.services.auth_service`
+- `faultmaven.services.case_service`
+- `faultmaven.services.investigation_session_service`
+- `faultmaven.services.knowledge_search_service`
+- `faultmaven.services.evidence_artifact_service`
+- `faultmaven.services.user_service`
+- `faultmaven.services.embedding_service`
+- `faultmaven.services.vector_store_service`
+- `faultmaven.services.file_storage_service`
+- `faultmaven.services.agent_orchestration_service`
+
+#### 2. Services Cannot Import API Layer ✅ KEPT
+
+**Status**: ✅ ZERO VIOLATIONS (CRITICAL)
+
+**Policy**: API layer depends on services, not the other way around. This prevents circular dependencies and maintains proper layering.
+
+**Enforcement**: Any violation blocks PR merge immediately.
+
+**Rationale**: Services are domain logic and should not be coupled to HTTP/REST concerns.
+
+#### 3. Models Cannot Import Services ✅ KEPT
+
+**Status**: ✅ ZERO VIOLATIONS (CRITICAL)
+
+**Policy**: Model classes (data structures, DTOs, entities) must not import service layer. This prevents circular dependencies between models and services.
+
+**Enforcement**: Any violation blocks PR merge immediately.
+
+**Rationale**: Models are data structures and should not depend on business logic implementations.
+
+### Future Contracts (Phase 3, Week 16-18)
+
+#### 4. Module Independence (Vertical Slices)
+
+**Planned**: Phase 3, Week 16-18 (Vertical Slice Extraction)
+
+When the codebase is refactored into vertical modules, additional contracts will enforce module boundaries:
+
+```
+faultmaven/modules/
+├── auth/        # Authentication module (independent)
+├── case/        # Case management module (independent)
+├── knowledge/   # Knowledge base module (independent)
+├── evidence/    # Evidence module (independent)
+└── session/     # Session module (independent)
+```
+
+**Future Policy**: Modules will be independent with communication via:
+- Shared domain events
+- Well-defined interfaces
+- Message-based integration
+- No direct cross-module imports
+
+### Enforcement
+
+#### CI/CD Integration
+
+Import-linter runs automatically on every pull request via `.github/workflows/ci-cd.yml`:
+
+```yaml
+architecture-lint:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+    - run: pip install -e .[dev]
+    - run: lint-imports --config .importlinter
+    - run: python scripts/check_import_violations.py
+```
+
+#### Policy: Zero New Violations
+
+**Enforcement Rules**:
+1. **Zero new violations allowed**: PRs that introduce new violations will be blocked
+2. **Existing violations tracked**: Current 6 violations are documented and accepted as technical debt
+3. **Critical contracts** (Services → API, Models → Services): Any violation blocks merge immediately
+4. **Service independence violations**: New service-to-service imports must go through DI container (after Week 14-15)
+
+#### Violation Baseline Check
+
+The `scripts/check_import_violations.py` script compares current violations against the established baseline:
+
+- **Expected violations**: 6 (service independence - technical debt)
+- **Expected clean contracts**: Services → API, Models → Services
+- **Fails if**: New violations detected or clean contracts broken
+- **Reports**: Clear violation details and remediation guidance
+
+### Baseline Violations (Technical Debt)
+
+**Documented**: [Import Linter Baseline](./IMPORT-LINTER-BASELINE.md)
+**Established**: 2026-01-01
+**Total**: 6 violations (all in Service Independence contract)
+
+| Violation | Service A → Service B | Fix Timeline |
+|-----------|----------------------|--------------|
+| 1 | knowledge_search → embedding | Week 14-15 (DI) |
+| 2 | knowledge_search → vector_store | Week 14-15 (DI) |
+| 3 | user → auth | Week 14-15 (DI) |
+| 4 | agent_orchestration → investigation_session | Week 14-15 (DI) |
+| 5 | evidence_artifact → file_storage | Week 14-15 (DI) |
+| 6 | agent_orchestration → evidence_artifact | Week 14-15 (DI) |
+
+**Remediation Strategy**: All violations follow the same pattern (service-to-service imports needing DI). Rather than piecemeal fixes, all 6 will be resolved together when the DI container is implemented in Phase 3, Week 14-15.
+
+### Benefits
+
+**Prevents Architectural Drift**: Automated enforcement prevents gradual degradation of architecture over time.
+
+**Clear Module Boundaries**: Explicit contracts make it obvious which modules can depend on which.
+
+**Faster Code Reviews**: Reviewers can focus on business logic instead of architectural violations.
+
+**Safe Refactoring**: Contracts ensure refactoring doesn't accidentally introduce coupling.
+
+**Documentation as Code**: `.importlinter` configuration serves as machine-readable architecture documentation.
+
+**Early Detection**: Violations caught in CI/CD before merge, not discovered months later.
+
+### Running Locally
+
+Developers can check architectural compliance before pushing:
+
+```bash
+# Run import-linter
+lint-imports --config .importlinter
+
+# Check against baseline
+python scripts/check_import_violations.py
+```
+
+**Exit Codes**:
+- `0` - No new violations (safe to merge)
+- `1` - New violations detected (fix before merge)
+- `2` - Critical contracts broken (immediate fix required)
+
+### Architecture Evolution
+
+Import-linter configuration will evolve with the architecture:
+
+**Phase 3, Week 13** (Current):
+- ✅ Baseline established
+- ✅ CI/CD enforcement active
+- ✅ Zero new violations policy
+
+**Phase 3, Week 14-15** (Next):
+- DI container implementation
+- Resolve 6 service independence violations
+- Tighten service independence contract
+
+**Phase 3, Week 16-18** (Future):
+- Extract vertical modules
+- Add module independence contracts
+- Enforce module-to-module communication patterns
+
+---
+
 ## Related Documentation
 
 This section provides a complete navigation map to all FaultMaven design documents, **organized to mirror the actual code structure** for easy navigation during implementation.
