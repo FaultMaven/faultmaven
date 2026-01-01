@@ -14,6 +14,8 @@ Tests cover:
 
 import json
 import pytest
+
+pytestmark = pytest.mark.enterprise  # Requires Redis database
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, Mock, patch
 from typing import List, Dict, Any
@@ -21,14 +23,16 @@ from typing import List, Dict, Any
 from faultmaven.infrastructure.persistence.redis_case_store import RedisCaseStore
 from faultmaven.models.case import (
     Case,
+    CaseStatus,
+    MessageType,
+    ParticipantRole,
+)
+from faultmaven.models import (
     CaseMessage,
     CaseListFilter,
     CaseSearchRequest,
     CaseSummary,
-    CaseStatus,
-    CasePriority,
-    MessageType,
-    ParticipantRole
+    CaseSeverity as CasePriority
 )
 from faultmaven.exceptions import ServiceException
 

@@ -9,9 +9,9 @@ from unittest.mock import Mock
 from faultmaven.core.investigation.working_conclusion_generator import (
     generate_working_conclusion,
     calculate_progress_metrics,
-    _calculate_evidence_completeness,
-    _detect_investigation_momentum,
-    _map_confidence_to_level,
+    _calculate_overall_evidence_completeness,
+    _determine_investigation_momentum,
+    _get_confidence_level_from_value,  # Renamed from _map_confidence_to_level
     _determine_if_can_proceed,
     _should_enter_degraded_mode,
 )
@@ -217,7 +217,7 @@ class TestEvidenceCompleteness:
 
     def test_no_hypotheses_zero_completeness(self, base_investigation_state):
         """Test completeness with no hypotheses"""
-        completeness = _calculate_evidence_completeness(base_investigation_state)
+        completeness = _calculate_overall_evidence_completeness(base_investigation_state)
 
         assert completeness == 0.0
 
@@ -233,7 +233,7 @@ class TestEvidenceCompleteness:
         )
         base_investigation_state.ooda_engine.hypotheses.append(hypothesis)
 
-        completeness = _calculate_evidence_completeness(base_investigation_state)
+        completeness = _calculate_overall_evidence_completeness(base_investigation_state)
 
         assert completeness >= 0.80  # Good evidence
 
@@ -249,7 +249,7 @@ class TestEvidenceCompleteness:
         )
         base_investigation_state.ooda_engine.hypotheses.append(hypothesis)
 
-        completeness = _calculate_evidence_completeness(base_investigation_state)
+        completeness = _calculate_overall_evidence_completeness(base_investigation_state)
 
         assert completeness <= 0.40  # Weak evidence
 

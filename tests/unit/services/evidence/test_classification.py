@@ -1061,3 +1061,4 @@ async def test_prompt_template_includes_all_context(
     assert "req-001" in prompt  # Evidence request IDs included
     assert "Error rate metrics" in prompt  # Request labels included
     assert "My API is returning 500 errors" in prompt  # Conversation context included
+

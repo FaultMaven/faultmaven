@@ -407,3 +407,4 @@ class TestHypothesisCategorization:
         from faultmaven.services.evidence.evidence_enhancements import _categorize_hypothesis
 
         assert _categorize_hypothesis("Something weird happened") == "unknown"
+

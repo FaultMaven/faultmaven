@@ -463,3 +463,4 @@ class TestKeyFindingsExtraction:
         )
 
         assert len(evidence.key_findings) <= 5
+

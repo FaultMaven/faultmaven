@@ -402,3 +402,4 @@ class TestEdgeCases:
         """Test that PARTIAL completeness blocks completion suggestion"""
         base_investigation_state.lifecycle.current_phase = InvestigationPhase.SOLUTION
         base_investigation_state.lifecycle.working_conclusion = WorkingConclusion(
+

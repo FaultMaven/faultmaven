@@ -5,6 +5,8 @@ validating persistent memory and execution state management capabilities.
 """
 
 import pytest
+
+pytestmark = pytest.mark.enterprise  # Requires Redis for state persistence
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 import json

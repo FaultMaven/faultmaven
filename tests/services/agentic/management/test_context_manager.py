@@ -577,3 +577,4 @@ class TestContextManagerPerformance:
 
         # Should complete in under 100ms (without LLM summarization)
         assert elapsed < 0.1, f"Context building too slow: {elapsed}s"
+
