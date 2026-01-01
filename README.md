@@ -69,46 +69,70 @@ graph LR
 
 ## 🚀 Quick Start
 
-### Installation
+**Get running in 5 minutes** with zero external dependencies:
 
-FaultMaven offers two installation modes to fit your needs:
+```bash
+git clone https://github.com/FaultMaven/faultmaven.git
+cd faultmaven
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -e .
+cp .env.example .env
+# Edit .env - add your LLM API key (OPENAI_API_KEY, ANTHROPIC_API_KEY, or FIREWORKS_API_KEY)
+python -m faultmaven
+```
 
-#### Community Edition (Lightweight, Local Development)
+Visit **<http://localhost:8000>** - you're running FaultMaven!
 
-Perfect for local development, testing, and community users. Uses SQLite, local file storage, and in-memory sessions.
+**Interactive API Docs**: <http://localhost:8000/docs>
+
+See **[Quick Start Guide](docs/QUICKSTART.md)** for detailed 5-minute setup instructions with examples.
+
+---
+
+## What's Included
+
+FaultMaven offers two installation modes optimized for different use cases:
+
+### Community Edition (Zero Dependencies)
+
+Perfect for local development, testing, and community users. **No external services required.**
 
 ```bash
 pip install faultmaven
 ```
 
-**Included features:**
+**Included**:
 
-- ✅ Core FastAPI server
-- ✅ Multi-LLM support (7 providers)
-- ✅ Agentic framework with autonomous reasoning
-- ✅ Knowledge base (ChromaDB + RAG)
-- ✅ SQLite database
-- ✅ Local file storage
-- ✅ In-memory sessions
+- ✅ **Core FastAPI REST API server**
+- ✅ **Multi-LLM support** (7 providers: OpenAI, Anthropic, Fireworks, Gemini, Groq, HuggingFace, Local)
+- ✅ **Agentic framework** with autonomous reasoning (7-component system)
+- ✅ **Knowledge base** (ChromaDB with RAG)
+- ✅ **Case management** and investigation workflows
+- ✅ **Evidence processing** (logs, metrics, configs)
+- ✅ **SQLite database** (local file, no setup)
+- ✅ **Local file storage** (no cloud dependencies)
+- ✅ **In-memory sessions** (no Redis required)
 
-#### Enterprise Edition (Full Features)
+### Enterprise Edition (Full Features)
 
-Full-featured installation with observability, PII redaction, distributed infrastructure, and cloud storage.
+Production-ready with observability, security, and distributed infrastructure.
 
 ```bash
 pip install faultmaven[enterprise]
 ```
 
-**Additional features:**
+**Adds**:
 
-- ✅ Opik tracing and Prometheus metrics
-- ✅ PII redaction (Presidio)
-- ✅ Redis session management
-- ✅ PostgreSQL database support
-- ✅ Cloud storage (AWS S3, Azure Blob)
-- ✅ Advanced observability
+- ✅ **Distributed tracing** (Opik)
+- ✅ **Metrics collection** (Prometheus)
+- ✅ **PII redaction** (Presidio)
+- ✅ **PostgreSQL database** support
+- ✅ **Redis sessions** (distributed session management)
+- ✅ **Cloud storage** (AWS S3, Azure Blob)
+- ✅ **Advanced observability**
 
-#### Development Installation
+### Development Installation
 
 For contributors and local development:
 
@@ -122,7 +146,7 @@ cd faultmaven
 pip install -e .[dev,test]
 ```
 
-See [Installation Guide](docs/installation/INSTALLATION_GUIDE.md) for detailed instructions and configuration options.
+See **[Installation Guide](docs/installation/INSTALLATION_GUIDE.md)** for comprehensive setup instructions and configuration options.
 
 ### Prerequisites
 
@@ -490,7 +514,16 @@ Apache 2.0 - See [LICENSE](LICENSE) for details.
 
 We welcome contributions! Please see our [Contribution Guidelines](docs/CONTRIBUTING.md) for details.
 
+**Getting Started as a Contributor**:
+
+1. **Quick Setup**: Follow the [Quick Start Guide](docs/QUICKSTART.md) to get FaultMaven running in under 5 minutes
+2. **Install Dev Dependencies**: `pip install -e .[dev,test]`
+3. **Run Tests**: `pytest -v tests/`
+4. **Make Changes**: Follow our architecture guidelines below
+5. **Submit PR**: Create a pull request with your improvements
+
 **Architecture Guidelines**: When contributing, please follow the interface-based design patterns. All new components should:
+
 1. Define and implement appropriate interfaces from `models/interfaces.py`
 2. Integrate with the dependency injection container
 3. Include comprehensive unit tests with interface mocks
