@@ -194,17 +194,22 @@ class TestDependencyCategorization:
 # ============================================================================
 
 class TestConfigurationDefaults:
-    """Test that configuration defaults match community mode expectations."""
+    """Test that configuration defaults match community mode expectations.
 
-    @pytest.fixture
-    def settings_module(self):
-        """Import settings module."""
-        from faultmaven.config.settings import FaultMavenSettings
-        return FaultMavenSettings
+    Note: These tests verify code defaults, not environment variable overrides.
+    In production, environment variables can override these defaults.
+    """
 
-    def test_community_storage_defaults(self, settings_module):
+    def test_community_storage_defaults(self, monkeypatch):
         """Verify storage defaults are community-friendly (in-memory)."""
-        settings = settings_module()
+        # Clear all environment variables that might override defaults
+        import os
+        for key in list(os.environ.keys()):
+            if key.startswith(('USER_STORAGE', 'CASE_STORAGE', 'SESSION_STORAGE', 'VECTOR_STORAGE')):
+                monkeypatch.delenv(key, raising=False)
+
+        from faultmaven.config.settings import FaultMavenSettings
+        settings = FaultMavenSettings()
 
         # Storage should default to in-memory (no external dependencies)
         assert settings.database.user_storage_type == "inmemory"
@@ -212,34 +217,51 @@ class TestConfigurationDefaults:
         assert settings.database.session_storage_type == "inmemory"
         assert settings.database.vector_storage_type == "inmemory"
 
-    def test_community_observability_defaults(self, settings_module):
-        """Verify observability features are disabled by default."""
-        settings = settings_module()
+    def test_community_observability_defaults(self, monkeypatch):
+        """Verify observability features are disabled by default (code defaults)."""
+        # Clear environment variables that might override defaults
+        import os
+        for key in list(os.environ.keys()):
+            if 'OPIK' in key or 'PROMETHEUS' in key or 'TRACING' in key or 'METRICS' in key:
+                monkeypatch.delenv(key, raising=False)
 
-        # Enterprise observability should be disabled
-        assert settings.observability.opik_enabled is False
-        assert settings.observability.opik_track_disable is True
-        assert settings.observability.prometheus_enabled is False
-        assert settings.observability.tracing_enabled is False
-        assert settings.observability.metrics_enabled is False
+        # Verify code defaults in settings.py
+        from faultmaven.config.settings import ObservabilitySettings
+        # Check class defaults directly (before environment override)
+        assert ObservabilitySettings.model_fields['opik_enabled'].default is False
+        assert ObservabilitySettings.model_fields['opik_track_disable'].default is True
+        assert ObservabilitySettings.model_fields['prometheus_enabled'].default is False
+        assert ObservabilitySettings.model_fields['tracing_enabled'].default is False
+        assert ObservabilitySettings.model_fields['metrics_enabled'].default is False
 
-    def test_community_protection_defaults(self, settings_module):
-        """Verify protection features are disabled by default."""
-        settings = settings_module()
+    def test_community_protection_defaults(self, monkeypatch):
+        """Verify protection features are disabled by default (code defaults)."""
+        # Clear environment variables
+        import os
+        for key in list(os.environ.keys()):
+            if 'PROTECTION' in key or 'SANITIZE_PII' in key:
+                monkeypatch.delenv(key, raising=False)
 
-        # PII protection requires enterprise Presidio dependencies
-        assert settings.protection.protection_enabled is False
-        assert settings.protection.sanitize_pii is False
-        assert settings.protection.basic_protection_enabled is False
-        assert settings.protection.intelligent_protection_enabled is False
+        # Verify code defaults in settings.py
+        from faultmaven.config.settings import ProtectionSettings
+        # Check class defaults directly (before environment override)
+        assert ProtectionSettings.model_fields['protection_enabled'].default is False
+        assert ProtectionSettings.model_fields['sanitize_pii'].default is False
+        assert ProtectionSettings.model_fields['basic_protection_enabled'].default is False
+        assert ProtectionSettings.model_fields['intelligent_protection_enabled'].default is False
 
-    def test_community_performance_monitoring_defaults(self, settings_module):
-        """Verify performance monitoring is disabled by default."""
-        settings = settings_module()
+    def test_community_performance_monitoring_defaults(self, monkeypatch):
+        """Verify performance monitoring is disabled by default (code defaults)."""
+        # Clear environment variables
+        import os
+        for key in list(os.environ.keys()):
+            if 'PERFORMANCE' in key or 'DETAILED_TRACING' in key:
+                monkeypatch.delenv(key, raising=False)
 
-        # Performance monitoring is an enterprise feature
-        assert settings.observability.enable_performance_monitoring is False
-        assert settings.observability.enable_detailed_tracing is False
+        # Verify code defaults in settings.py
+        from faultmaven.config.settings import ObservabilitySettings
+        assert ObservabilitySettings.model_fields['enable_performance_monitoring'].default is False
+        assert ObservabilitySettings.model_fields['enable_detailed_tracing'].default is False
 
 
 # ============================================================================
