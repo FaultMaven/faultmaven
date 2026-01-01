@@ -247,9 +247,9 @@ class RunbookIngestionPipeline:
                     dt = datetime.fromisoformat(last_updated)
                     updated_at = to_json_compatible(dt)
                 except ValueError:
-                    updated_at = to_json_compatible(to_json_compatible(datetime.now(timezone.utc))
+                    updated_at = to_json_compatible(datetime.now(timezone.utc))
             else:
-                updated_at = to_json_compatible(to_json_compatible(datetime.now(timezone.utc))
+                updated_at = to_json_compatible(datetime.now(timezone.utc))
 
             created_at = updated_at  # Use same timestamp for both
 
@@ -268,7 +268,7 @@ class RunbookIngestionPipeline:
             file_key = str(file_path.relative_to(self.runbook_dir))
             self.ingestion_log[file_key] = {
                 "hash": self._calculate_file_hash(file_path),
-                "ingested_at": to_json_compatible(datetime.now(timezone.utc).isoformat(),
+                "ingested_at": to_json_compatible(datetime.now(timezone.utc).isoformat()),
                 "document_id": document_id,
                 "title": title,
                 "technology": technology,

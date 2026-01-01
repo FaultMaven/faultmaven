@@ -509,3 +509,4 @@ def test_calculate_evidence_coverage_partial_requests():
 
     # Expected: (0.5 + 0.5) / 2 = 0.5 (both get weight 0.5 for being partial)
     assert coverage == 0.5
+

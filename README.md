@@ -69,14 +69,70 @@ graph LR
 
 ## 🚀 Quick Start
 
+### Installation
+
+FaultMaven offers two installation modes to fit your needs:
+
+#### Community Edition (Lightweight, Local Development)
+
+Perfect for local development, testing, and community users. Uses SQLite, local file storage, and in-memory sessions.
+
+```bash
+pip install faultmaven
+```
+
+**Included features:**
+
+- ✅ Core FastAPI server
+- ✅ Multi-LLM support (7 providers)
+- ✅ Agentic framework with autonomous reasoning
+- ✅ Knowledge base (ChromaDB + RAG)
+- ✅ SQLite database
+- ✅ Local file storage
+- ✅ In-memory sessions
+
+#### Enterprise Edition (Full Features)
+
+Full-featured installation with observability, PII redaction, distributed infrastructure, and cloud storage.
+
+```bash
+pip install faultmaven[enterprise]
+```
+
+**Additional features:**
+
+- ✅ Opik tracing and Prometheus metrics
+- ✅ PII redaction (Presidio)
+- ✅ Redis session management
+- ✅ PostgreSQL database support
+- ✅ Cloud storage (AWS S3, Azure Blob)
+- ✅ Advanced observability
+
+#### Development Installation
+
+For contributors and local development:
+
+```bash
+# Install with dev and test dependencies
+pip install faultmaven[dev,test]
+
+# Or install in editable mode
+git clone https://github.com/FaultMaven/faultmaven.git
+cd faultmaven
+pip install -e .[dev,test]
+```
+
+See [Installation Guide](docs/installation/INSTALLATION_GUIDE.md) for detailed instructions and configuration options.
+
 ### Prerequisites
-- [Docker](https://www.docker.com/products/docker-desktop/)
+
+- [Docker](https://www.docker.com/products/docker-desktop/) (for containerized deployment)
 - [Python 3.11+](https://www.python.org/downloads/)
 - Clone the repositories:
   ```bash
   # Backend API server + Website frontend
   git clone https://github.com/FaultMaven/faultmaven.git
-  
+
   # Browser extension (separate repository)
   git clone https://github.com/FaultMaven/faultmaven-copilot.git
   ```

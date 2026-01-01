@@ -8,6 +8,8 @@ Tests the integration of TokenAwareContextManager with:
 """
 
 import pytest
+
+pytestmark = pytest.mark.enterprise  # Requires Redis for session storage
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Dict, List
@@ -18,7 +20,9 @@ from faultmaven.services.agentic.management.context_manager import (
     ConversationSummarizer,
 )
 from faultmaven.services.domain.session_service import SessionService
-from faultmaven.models.case import CaseStatus
+from faultmaven.models.case import (
+    CaseStatus,
+)
 
 
 @pytest.mark.integration
@@ -262,3 +266,4 @@ class TestTokenAwareContextIntegration:
         assert metadata["total_tokens"] == 0
         assert metadata["recent_message_count"] == 0
         assert not metadata["truncated"]
+

@@ -14,7 +14,12 @@ from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from faultmaven.services.agentic.orchestration.agent_service import AgentService
 from faultmaven.services.domain.session_service import SessionService
 from faultmaven.models import QueryRequest, AgentResponse, ResponseType, ViewState, Source, SourceType, SessionContext
-from faultmaven.models.case import Case, CaseStatus, CasePriority, MessageType
+from faultmaven.models.case import (
+    Case,
+    CaseStatus,
+    MessageType,
+)
+from faultmaven.models import CaseSeverity as CasePriority  # Backward compat alias
 from faultmaven.models.api import User, Case as APICase
 from faultmaven.exceptions import ValidationException, ServiceException
 from faultmaven.infrastructure.observability.tracing import OpikTracer

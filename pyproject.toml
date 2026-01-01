@@ -1,0 +1,289 @@
+[project]
+name = "faultmaven"
+version = "1.0.0"
+description = "AI-powered incident investigation and troubleshooting platform"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "FaultMaven Team", email = "team@faultmaven.com"}
+]
+keywords = ["troubleshooting", "incident-response", "ai", "investigation", "observability"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Systems Administration",
+]
+
+# ============================================================================
+# COMMUNITY EDITION DEPENDENCIES
+# Lightweight installation for local development and community users
+# Uses SQLite, local file storage, in-memory sessions
+# ============================================================================
+dependencies = [
+    # Core FastAPI and server
+    "fastapi>=0.115.8",
+    "uvicorn>=0.28.0",
+    "python-multipart>=0.0.9",
+    "sse-starlette>=2.0.0",
+
+    # LLM Framework (REQUIRED - core functionality)
+    "langgraph>=0.1.2",
+    "openai>=1.0.0",
+    "anthropic>=0.25.0",
+    "fireworks-ai>=0.12.1",
+    "tiktoken>=0.5.0",
+
+    # Database (SQLite in base, PostgreSQL drivers in enterprise)
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+
+    # Core utilities and validation
+    "pydantic>=2.6,<2.10",
+    "pydantic-settings>=2.3.0",
+    "httpx>=0.28.1",
+    "aiohttp>=3.9.3",
+    "anyio>=4.3.0",
+    "requests>=2.31.0",
+    "PyJWT>=2.8.0",
+    "bcrypt>=4.0.0",
+    "email-validator>=2.0.0",
+    "python-dotenv>=1.0.1",
+    "typing-extensions>=4.12.2",
+    "tenacity>=8.3.0",
+
+    # Logging (structured logging for all editions)
+    "structlog>=24.1.0",
+    "python-json-logger>=2.0.7",
+
+    # Knowledge base and embeddings (ChromaDB + sentence transformers)
+    "chromadb>=0.5.3",
+    "sentence-transformers>=3.0.1",
+    "pypdf>=4.2.0",
+    "python-docx>=1.1.2",
+
+    # Data processing and analysis
+    "numpy>=1.26.4,<2",
+    "pandas>=1.5.0",
+    "pandas-stubs>=2.0.0",
+    "pylogrus>=0.1.2",
+    "scikit-learn>=1.5.0",
+    "pyod>=2.0.1",
+    "protobuf>=3.20.0,<3.21.0",
+
+    # LangChain integrations (for agent framework)
+    "langchain>=0.1.15",
+    "langchain-community>=0.0.32",
+    "langchain-openai>=0.1.3",
+    "langchain-huggingface>=0.0.3",
+    "langchain-anthropic>=0.1.5",
+
+    # Web utilities
+    "beautifulsoup4>=4.12.3",
+    "tavily-python>=0.7.0",
+
+    # Background task scheduling
+    "apscheduler>=3.10.4",
+]
+
+# ============================================================================
+# OPTIONAL DEPENDENCIES FOR ENTERPRISE EDITION
+# Full-featured installation with observability, security, and cloud storage
+# ============================================================================
+[project.optional-dependencies]
+enterprise = [
+    # Observability (Opik tracing, Prometheus metrics)
+    "opik>=0.2.1",
+    "prometheus-client>=0.20.0",
+
+    # Security (Presidio PII redaction)
+    # Note: Production uses K8s Presidio microservice
+    # These libraries are for local enterprise testing
+    "presidio-analyzer>=2.2.0",
+    "presidio-anonymizer>=2.2.0",
+
+    # Enterprise infrastructure
+    "redis[hiredis]>=5.0.0",      # Distributed session management
+    "psycopg2-binary>=2.9.0",     # PostgreSQL driver
+    "asyncpg>=0.29.0",            # Async PostgreSQL driver
+    "boto3>=1.34.0",              # AWS S3 storage
+    "azure-storage-blob>=12.0.0", # Azure Blob storage
+]
+
+# ============================================================================
+# TESTING DEPENDENCIES
+# For development and CI/CD testing
+# ============================================================================
+test = [
+    # Core testing framework
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "pytest-xdist>=3.5.0",
+    "pytest-html>=3.2.0",
+    "pytest-json-report>=1.5.0",
+
+    # HTTP testing
+    "httpx>=0.24.0",
+
+    # Mocking and test utilities
+    "responses>=0.23.0",
+    "freezegun>=1.2.0",
+    "factory-boy>=3.3.0",
+    "Faker>=40.0.0",
+
+    # Coverage and reporting
+    "coverage>=7.2.0",
+    "codecov>=2.1.0",
+
+    # Performance testing
+    "pytest-benchmark>=4.0.0",
+    "locust>=2.20.0",
+    "psutil>=5.9.0",
+
+    # Security testing
+    "bandit>=1.7.0",
+    "safety>=2.3.0",
+]
+
+# ============================================================================
+# DEVELOPMENT DEPENDENCIES
+# For local development, linting, and type checking
+# ============================================================================
+dev = [
+    # Code quality and formatting
+    "ruff>=0.2.0",              # Fast Python linter and formatter
+    "black>=23.0.0",            # Code formatter
+    "isort>=5.12.0",            # Import sorting
+    "mypy>=1.8.0",              # Type checking
+
+    # Pre-commit hooks
+    "pre-commit>=3.6.0",
+
+    # Architecture enforcement
+    "import-linter>=2.0.0",
+]
+
+# ============================================================================
+# BUILD SYSTEM
+# Modern setuptools-based build
+# ============================================================================
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["faultmaven*"]
+exclude = ["tests*", "docs*", "scripts*", ".github*"]
+
+# ============================================================================
+# PROJECT METADATA AND URLS
+# ============================================================================
+[project.urls]
+Homepage = "https://github.com/FaultMaven/faultmaven"
+Documentation = "https://github.com/FaultMaven/faultmaven/blob/main/README.md"
+Repository = "https://github.com/FaultMaven/faultmaven"
+Issues = "https://github.com/FaultMaven/faultmaven/issues"
+Changelog = "https://github.com/FaultMaven/faultmaven/blob/main/CHANGELOG.md"
+
+# ============================================================================
+# TOOL CONFIGURATION
+# ============================================================================
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=faultmaven",
+    "--cov-branch",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+]
+markers = [
+    "enterprise: marks tests that require enterprise dependencies",
+    "integration: marks integration tests",
+    "unit: marks unit tests",
+    "slow: marks slow tests",
+    "security: marks security-focused tests",
+]
+
+[tool.coverage.run]
+source = ["faultmaven"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+    "*/conftest.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+    "@abc.abstractmethod",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # Allow unused imports in __init__.py
+"test_*.py" = ["F401", "F811"]  # Allow unused imports and redefinitions in tests
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = false
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+show_error_codes = true
+check_untyped_defs = false

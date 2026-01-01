@@ -1,3 +1,22 @@
+# ============================================================================
+# DEPRECATED: This file is deprecated in favor of pyproject.toml
+# ============================================================================
+#
+# Modern Python packaging uses pyproject.toml (PEP 621) instead of requirements-test.txt
+#
+# INSTALLATION INSTRUCTIONS:
+#
+# Install with test dependencies:
+#   pip install -e .[test]
+#
+# Install with all dependencies (enterprise + dev + test):
+#   pip install -e .[enterprise,dev,test]
+#
+# See docs/installation/INSTALLATION_GUIDE.md for detailed instructions.
+#
+# This file is kept for backward compatibility but will be removed in v2.0.0
+# ============================================================================
+
 # Testing dependencies for FaultMaven
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
