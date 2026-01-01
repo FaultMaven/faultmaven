@@ -137,6 +137,15 @@ def auth_user():
         email="test@example.com",
         organization_id="org-test",
         roles=["member"],
+        permissions=[
+            "sessions:read",
+            "sessions:write",
+            "cases:read",
+            "cases:write",
+            "executions:read",
+            "executions:write",
+            "agent:execute",
+        ],
     )
 
 
@@ -322,6 +331,44 @@ def test_get_messages_pagination(client, mock_factory, sample_session):
     assert data["pagination"]["offset"] == 0
 
 
+def test_get_messages_pagination_odd_offset(client, mock_factory, sample_executions):
+    """Test message pagination with odd offset returns correct messages.
+
+    Verifies that odd offsets correctly skip into the middle of an execution's
+    messages (e.g., offset=1 skips the first user message and starts with
+    the first assistant message).
+    """
+    # With 2 executions, we have 4 messages total:
+    # [0] user "What caused the 500 error?"
+    # [1] assistant "Based on the logs..."
+    # [2] user "How can we fix this?"
+    # [3] assistant "I recommend increasing..."
+
+    # Test offset=1 (skip first user message, start with first assistant)
+    response = client.get("/api/v1/sessions/sess-123/messages?limit=50&offset=1")
+
+    assert response.status_code == 200
+    data = response.json()
+    # Should get 3 messages (indices 1, 2, 3)
+    assert len(data["messages"]) == 3
+    assert data["total_count"] == 4
+    # First message should be assistant (the response to first prompt)
+    assert data["messages"][0]["role"] == "assistant"
+    assert "Based on the logs" in data["messages"][0]["content"]
+
+
+def test_get_messages_pagination_odd_offset_small_limit(client, mock_factory, sample_executions):
+    """Test odd offset with small limit returns correct count."""
+    # Test offset=1 with limit=2 should return exactly 2 messages
+    response = client.get("/api/v1/sessions/sess-123/messages?limit=2&offset=1")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["messages"]) == 2
+    assert data["has_more"] is True
+    assert data["pagination"]["next_offset"] == 3  # 1 + 2
+
+
 def test_get_messages_not_found(client):
     """Test retrieving messages for non-existent session returns 404."""
     response = client.get("/api/v1/sessions/sess-nonexistent/messages")
@@ -501,6 +548,39 @@ def test_chat_case_forbidden(client, mock_factory):
     )
 
     assert response.status_code == 403
+
+
+def test_chat_session_case_mismatch(client, mock_factory, sample_case):
+    """Test chat with session belonging to different case returns 422."""
+    # Create session for a different case
+    wrong_case_session = InvestigationSession(
+        session_id="sess-wrong-case",
+        case_id="CASE-DIFFERENT",  # Different from request.case_id
+        user_id="user-001",
+        organization_id="org-test",
+        status=SessionStatus.ACTIVE,
+        started_at=datetime.now(timezone.utc),
+        last_activity_at=datetime.now(timezone.utc),
+        total_token_usage=0,
+        total_agent_executions=0,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    mock_factory.session_repo.add_session(wrong_case_session)
+
+    response = client.post(
+        "/api/v1/agent/chat",
+        json={
+            "case_id": "CASE-2026010100001",  # Different from session.case_id
+            "session_id": "sess-wrong-case",
+            "message": "Hello",
+            "agent_type": "investigator",
+            "stream": False,
+        },
+    )
+
+    # Should fail validation because session belongs to different case
+    assert response.status_code == 422
 
 
 def test_chat_invalid_agent_type(client):

@@ -138,26 +138,34 @@ async def get_session_messages(
         )
 
     # Get executions for the session
-    # Pagination: divide by 2 since each execution = 2 messages
-    execution_limit = max(1, (limit + 1) // 2)  # Round up to ensure we get enough
-    execution_offset = offset // 2
+    # Pagination strategy: each execution = 2 messages (user prompt + assistant response)
+    # For correct pagination with odd offsets, we need to:
+    # 1. Calculate which execution contains the first message at the offset
+    # 2. Fetch enough executions to fill the requested limit
+
+    # Calculate execution range needed for the requested message range
+    # offset=0 -> exec 0, offset=1 -> exec 0, offset=2 -> exec 1, etc.
+    first_execution_idx = offset // 2
+    # For limit messages, we need at most (limit + 1) // 2 + 1 executions
+    # +1 to handle odd offset starting mid-execution
+    execution_limit = (limit + 1) // 2 + 1
 
     executions, total_executions = await factory.execution_repo.list_executions_by_session(
         session_id=session_id,
         status=ExecutionStatus.COMPLETED,
         limit=execution_limit,
-        offset=execution_offset,
+        offset=first_execution_idx,
     )
 
     # Transform executions to messages
-    messages: List[MessageResponse] = []
+    all_messages: List[MessageResponse] = []
     for execution in executions:
-        # Extract tool calls from tool_calls list
+        # Extract tool calls from tool_calls list - always return list, not None
         tool_names = [tc.tool_name for tc in execution.tool_calls] if execution.tool_calls else []
 
         # User message (prompt)
         if execution.prompt:
-            messages.append(
+            all_messages.append(
                 MessageResponse(
                     message_id=execution.execution_id,
                     role="user",
@@ -167,14 +175,14 @@ async def get_session_messages(
                         execution_id=execution.execution_id,
                         token_usage=None,
                         agent_type=None,
-                        tool_calls=None,
+                        tool_calls=[],  # Empty list instead of None for consistency
                     ),
                 )
             )
 
         # Assistant message (response)
         if execution.response:
-            messages.append(
+            all_messages.append(
                 MessageResponse(
                     message_id=execution.execution_id,
                     role="assistant",
@@ -184,7 +192,7 @@ async def get_session_messages(
                         execution_id=execution.execution_id,
                         token_usage=execution.token_usage,
                         agent_type=execution.agent_type.value,
-                        tool_calls=tool_names if tool_names else None,
+                        tool_calls=tool_names,  # Always a list, may be empty
                     ),
                 )
             )
@@ -192,9 +200,10 @@ async def get_session_messages(
     # Calculate total messages (each execution = 2 messages)
     total_messages = total_executions * 2
 
-    # Apply offset within the message list for precise pagination
-    start_idx = offset % 2 if offset % 2 != 0 else 0
-    messages = messages[start_idx:start_idx + limit] if start_idx > 0 else messages[:limit]
+    # Apply offset within the fetched messages for precise pagination
+    # If offset is odd, skip the first message (which is the user message from the execution)
+    start_idx = offset % 2  # 0 for even offset, 1 for odd offset
+    messages = all_messages[start_idx:start_idx + limit]
 
     # Calculate pagination info
     has_more = offset + len(messages) < total_messages
@@ -330,6 +339,12 @@ async def agent_chat(
         if session.organization_id != current_user.organization_id:
             raise AuthorizationError(
                 f"Session {session_id} belongs to a different organization"
+            )
+        # Validate session belongs to the specified case
+        if session.case_id != request.case_id:
+            raise ValidationException(
+                f"Session {session_id} belongs to case {session.case_id}, "
+                f"not {request.case_id}"
             )
 
     if request.stream:

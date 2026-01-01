@@ -30,8 +30,8 @@ class MessageMetadata(BaseModel):
     agent_type: Optional[str] = Field(
         None, description="Type of agent that generated this message"
     )
-    tool_calls: Optional[List[str]] = Field(
-        None, description="List of tool names called during this execution"
+    tool_calls: List[str] = Field(
+        default_factory=list, description="List of tool names called during this execution"
     )
 
 
