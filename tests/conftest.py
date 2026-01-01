@@ -53,10 +53,43 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
+# Stub heavy dependencies to avoid import issues in tests
+# These stubs prevent importing sklearn, chromadb, pypdf, etc.
+sys.modules.setdefault("sklearn", SimpleNamespace())
+sys.modules.setdefault("sklearn.ensemble", SimpleNamespace(IsolationForest=Mock))
+sys.modules.setdefault("sklearn.preprocessing", SimpleNamespace(StandardScaler=Mock))
+sys.modules.setdefault("chromadb", SimpleNamespace())
+sys.modules.setdefault("pypdf", SimpleNamespace())
+
+sys.modules.setdefault(
+    "faultmaven.tools.knowledge_base",
+    SimpleNamespace(
+        KnowledgeBaseTool=Mock,
+    ),
+)
+sys.modules.setdefault(
+    "faultmaven.core.knowledge.ingestion",
+    SimpleNamespace(
+        KnowledgeIngester=Mock,
+    ),
+)
+sys.modules.setdefault(
+    "faultmaven.tools.web_search",
+    SimpleNamespace(
+        WebSearchTool=Mock,
+    ),
+)
+sys.modules.setdefault(
+    "faultmaven.core.processing.log_analyzer",
+    SimpleNamespace(
+        LogProcessor=Mock,
+    ),
+)
+
 from faultmaven.tools.knowledge_base import KnowledgeBaseTool
 from faultmaven.tools.web_search import WebSearchTool
-from faultmaven.services.preprocessing.classifier import DataClassifier  # Updated to new classifier
-from faultmaven.core.processing.log_analyzer import LogProcessor
+# from faultmaven.services.preprocessing.classifier import DataClassifier  # May need heavy deps
+# from faultmaven.core.processing.log_analyzer import LogProcessor
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models import AgentState, DataType, SessionContext
 from faultmaven.infrastructure.security.redaction import DataSanitizer

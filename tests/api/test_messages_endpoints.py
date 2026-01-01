@@ -120,7 +120,9 @@ class MockAgentOrchestrationService:
     """Mock implementation of AgentOrchestrationService for testing."""
 
     def __init__(self):
-        self.execute_agent = AsyncMock()
+        # Use Mock for execute_agent since it's an async generator, not a coroutine
+        # Tests should set side_effect to a function returning an async generator
+        self.execute_agent = Mock()
         self.get_execution = AsyncMock()
 
 
@@ -460,7 +462,7 @@ def test_chat_success_non_streaming(client, mock_agent_service, sample_session):
             duration_ms=1000,
         )
 
-    mock_agent_service.execute_agent.return_value = mock_execute()
+    mock_agent_service.execute_agent.side_effect = lambda *args, **kwargs: mock_execute()
 
     response = client.post(
         "/api/v1/agent/chat",
@@ -498,7 +500,7 @@ def test_chat_auto_create_session(client, mock_agent_service, mock_session_servi
             duration_ms=500,
         )
 
-    mock_agent_service.execute_agent.return_value = mock_execute()
+    mock_agent_service.execute_agent.side_effect = lambda *args, **kwargs: mock_execute()
 
     response = client.post(
         "/api/v1/agent/chat",
@@ -632,7 +634,7 @@ def test_chat_streaming_mode(client, mock_agent_service, sample_session):
             duration_ms=800,
         )
 
-    mock_agent_service.execute_agent.return_value = mock_execute()
+    mock_agent_service.execute_agent.side_effect = lambda *args, **kwargs: mock_execute()
 
     response = client.post(
         "/api/v1/agent/chat",
@@ -672,7 +674,7 @@ def test_e2e_chat_and_retrieve(client, mock_factory, mock_agent_service, mock_se
             duration_ms=500,
         )
 
-    mock_agent_service.execute_agent.return_value = mock_execute()
+    mock_agent_service.execute_agent.side_effect = lambda *args, **kwargs: mock_execute()
 
     chat_response = client.post(
         "/api/v1/agent/chat",
@@ -703,10 +705,11 @@ def test_e2e_session_continuity(client, mock_factory, mock_agent_service, sample
 
     # First chat
     async def mock_execute_1(*args, **kwargs):
-        yield ExecutionEvent.started(execution_id="exec-1", metadata={})
+        yield ExecutionEvent.started(execution_id="exec-1", metadata={"agent_type": "investigator"})
+        yield ExecutionEvent.response(content="First response.")
         yield ExecutionEvent.completed(execution_id="exec-1", total_tokens=100, duration_ms=200)
 
-    mock_agent_service.execute_agent.return_value = mock_execute_1()
+    mock_agent_service.execute_agent.side_effect = lambda *args, **kwargs: mock_execute_1()
 
     response1 = client.post(
         "/api/v1/agent/chat",
@@ -722,10 +725,11 @@ def test_e2e_session_continuity(client, mock_factory, mock_agent_service, sample
 
     # Second chat with same session
     async def mock_execute_2(*args, **kwargs):
-        yield ExecutionEvent.started(execution_id="exec-2", metadata={})
+        yield ExecutionEvent.started(execution_id="exec-2", metadata={"agent_type": "investigator"})
+        yield ExecutionEvent.response(content="Second response.")
         yield ExecutionEvent.completed(execution_id="exec-2", total_tokens=100, duration_ms=200)
 
-    mock_agent_service.execute_agent.return_value = mock_execute_2()
+    mock_agent_service.execute_agent.side_effect = lambda *args, **kwargs: mock_execute_2()
 
     response2 = client.post(
         "/api/v1/agent/chat",
