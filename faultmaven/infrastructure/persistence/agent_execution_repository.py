@@ -118,6 +118,27 @@ class AgentExecutionRepository(ABC):
         pass
 
     @abstractmethod
+    async def list_executions_by_session(
+        self,
+        session_id: str,
+        status: Optional[ExecutionStatus] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Tuple[List[AgentExecution], int]:
+        """List executions for a session with optional filters.
+
+        Args:
+            session_id: Session identifier
+            status: Optional filter by execution status
+            limit: Maximum results to return
+            offset: Offset for pagination
+
+        Returns:
+            Tuple of (execution list, total count)
+        """
+        pass
+
+    @abstractmethod
     async def update_execution(self, execution: AgentExecution) -> AgentExecution:
         """Update execution status and results.
 
@@ -363,6 +384,55 @@ class DatabaseAgentExecutionRepository(AgentExecutionRepository):
             logger.error(f"Failed to list executions for case {case_id}: {e}")
             raise AgentExecutionRepositoryException(
                 f"Failed to list executions for case {case_id}: {e}"
+            ) from e
+
+    async def list_executions_by_session(
+        self,
+        session_id: str,
+        status: Optional[ExecutionStatus] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Tuple[List[AgentExecution], int]:
+        """List executions for a session with optional filters."""
+        try:
+            # Build query conditions
+            conditions = [AgentExecutionModel.session_id == session_id]
+            if status:
+                conditions.append(AgentExecutionModel.status == status.value)
+
+            where_clause = and_(*conditions)
+
+            # Get total count
+            count_stmt = (
+                select(func.count())
+                .select_from(AgentExecutionModel)
+                .where(where_clause)
+            )
+            count_result = await self.db.execute(count_stmt)
+            total = count_result.scalar() or 0
+
+            # Get paginated results with tool calls loaded
+            # Order by created_at ASC for chronological message order
+            stmt = (
+                select(AgentExecutionModel)
+                .options(selectinload(AgentExecutionModel.tool_calls_v2))
+                .where(where_clause)
+                .order_by(AgentExecutionModel.created_at.asc())
+                .limit(limit)
+                .offset(offset)
+            )
+
+            result = await self.db.execute(stmt)
+            execution_models = result.scalars().all()
+
+            executions = [self._execution_to_domain(model) for model in execution_models]
+
+            return executions, total
+
+        except Exception as e:
+            logger.error(f"Failed to list executions for session {session_id}: {e}")
+            raise AgentExecutionRepositoryException(
+                f"Failed to list executions for session {session_id}: {e}"
             ) from e
 
     async def update_execution(self, execution: AgentExecution) -> AgentExecution:
@@ -741,6 +811,44 @@ class InMemoryAgentExecutionRepository(AgentExecutionRepository):
 
         # Sort by created_at descending
         executions.sort(key=lambda e: e.created_at, reverse=True)
+
+        total = len(executions)
+
+        # Apply pagination
+        paginated = executions[offset : offset + limit]
+
+        # Deep copy and attach tool calls
+        result = []
+        for e in paginated:
+            exec_copy = deepcopy(e)
+            exec_copy.tool_calls = [
+                deepcopy(tc) for tc in self._tool_calls.values()
+                if tc.execution_id == e.execution_id
+            ]
+            exec_copy.tool_calls.sort(key=lambda x: x.created_at)
+            result.append(exec_copy)
+
+        return result, total
+
+    async def list_executions_by_session(
+        self,
+        session_id: str,
+        status: Optional[ExecutionStatus] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Tuple[List[AgentExecution], int]:
+        """List executions for a session with optional filters."""
+        # Filter by session_id via metadata (in-memory doesn't have session_id field)
+        # For testing purposes, we check if session_id is in metadata
+        executions = []
+        for e in self._executions.values():
+            # Check metadata for session_id
+            if e.metadata and e.metadata.get("session_id") == session_id:
+                if status is None or e.status == status:
+                    executions.append(e)
+
+        # Sort by created_at ascending (chronological order)
+        executions.sort(key=lambda e: e.created_at)
 
         total = len(executions)
 

@@ -568,6 +568,19 @@ if HYPOTHESES_ROUTES_AVAILABLE and hypotheses:
     app.include_router(hypotheses.router, prefix="/api/v1", tags=["hypotheses", "solutions"])
     logger.info("✅ Hypothesis & Solution management endpoints added")
 
+# Session Messages & Agent Chat routes (TASK-027)
+try:
+    from .api.v1.routes import messages
+    MESSAGES_ROUTES_AVAILABLE = True
+except ImportError:
+    MESSAGES_ROUTES_AVAILABLE = False
+    messages = None
+    logger.warning("Messages routes not available")
+
+if MESSAGES_ROUTES_AVAILABLE and messages:
+    app.include_router(messages.router, prefix="/api/v1", tags=["messages", "agent_chat"])
+    logger.info("✅ Session Messages & Agent Chat endpoints added")
+
 
 # Debug endpoints (present in locked API spec)
 @app.get("/debug/routes")
@@ -637,6 +650,12 @@ except Exception as e:
 
 
 
+
+# Register domain exception handlers (TASK-027)
+from faultmaven.api.exception_handlers import get_exception_handlers
+for exc_type, handler in get_exception_handlers().items():
+    app.add_exception_handler(exc_type, handler)
+logger.info("✅ Domain exception handlers registered")
 
 
 # Custom exception handlers
