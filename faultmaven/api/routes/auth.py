@@ -53,7 +53,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 class LoginRequest(BaseModel):
     """Login request with credentials."""
 
-    email: EmailStr = Field(..., description="User email address")
+    email: str = Field(..., description="User email address", pattern=r"^[^@]+@[^@]+\.[^@]+$")
     password: str = Field(..., min_length=1, description="User password")
 
 
@@ -316,6 +316,7 @@ async def login(
         }
     """
     # Try UserService first
+    user_service_failed = False
     try:
         user_service = get_user_service()
         user, access_token, refresh_token = await user_service.authenticate_user(
@@ -333,17 +334,13 @@ async def login(
         )
 
     except AuthenticationError as e:
-        # For registered users that fail authentication
-        logger.info(f"Failed login attempt for: {credentials.email} - {e.message}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        # User not found or password mismatch - try dev users fallback
+        logger.debug(f"UserService auth failed for {credentials.email}, trying dev users fallback: {e.message}")
+        user_service_failed = True
 
     except Exception:
-        # Fall back to dev users for development
-        pass
+        # Other errors - fall back to dev users for development
+        user_service_failed = True
 
     # Fall back to dev credential validation
     user = await _dev_validate_credentials(credentials.email, credentials.password)

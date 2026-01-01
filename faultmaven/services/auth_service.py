@@ -167,7 +167,14 @@ class AuthService:
 
     @property
     def _algorithm(self) -> str:
-        """Get JWT algorithm from settings."""
+        """Get JWT algorithm from settings.
+
+        Automatically uses RS256 if RSA keys are loaded, otherwise uses configured algorithm.
+        """
+        # If RSA keys are available, use RS256
+        if self._private_key and self._public_key:
+            return "RS256"
+        # Otherwise use configured algorithm
         return self._settings.security.jwt_algorithm
 
     @property
