@@ -621,17 +621,19 @@ class ProtectionSettings(BaseSettings):
     """Unified protection configuration - PII, behavioral, and ML protection"""
 
     # Basic Protection Control
-    protection_enabled: bool = Field(default=True, env="PROTECTION_ENABLED")
+    # COMMUNITY DEFAULT: Disabled (enterprise feature - requires Presidio)
+    protection_enabled: bool = Field(default=False, env="PROTECTION_ENABLED")
     fail_open: bool = Field(default=True, env="PROTECTION_FAIL_OPEN")
-    basic_protection_enabled: bool = Field(default=True, env="BASIC_PROTECTION_ENABLED")
-    intelligent_protection_enabled: bool = Field(default=True, env="INTELLIGENT_PROTECTION_ENABLED")
+    basic_protection_enabled: bool = Field(default=False, env="BASIC_PROTECTION_ENABLED")
+    intelligent_protection_enabled: bool = Field(default=False, env="INTELLIGENT_PROTECTION_ENABLED")
 
     # PII Sanitization Control
     # When True: Always sanitize PII before sending to LLM (safer, recommended for external LLMs)
     # When False: Skip PII sanitization (only use with local/self-hosted LLMs)
     # Note: This affects data sent to LLM providers. Disable only if using LOCAL provider
     #       or if you trust your external LLM provider with sensitive data.
-    sanitize_pii: bool = Field(default=True, env="SANITIZE_PII")
+    # COMMUNITY DEFAULT: Disabled (enterprise feature - requires Presidio libraries)
+    sanitize_pii: bool = Field(default=False, env="SANITIZE_PII")
 
     # Auto-detect: Only sanitize when using external LLM providers
     # When True: Automatically disable sanitization for LOCAL provider, enable for others
@@ -693,35 +695,40 @@ class ObservabilitySettings(BaseSettings):
     opik_local_host: str = Field(default="opik-api.faultmaven.local", env="OPIK_LOCAL_HOST")
     
     # Opik API and tracking controls (merged from EnhancedObservabilitySettings)
+    # COMMUNITY DEFAULT: Disabled (enterprise feature)
     opik_api_key: Optional[SecretStr] = Field(default=None, env="OPIK_API_KEY")
-    opik_enabled: bool = Field(default=True, env="OPIK_ENABLED")
-    opik_track_disable: bool = Field(default=False, env="OPIK_TRACK_DISABLE")
+    opik_enabled: bool = Field(default=False, env="OPIK_ENABLED")
+    opik_track_disable: bool = Field(default=True, env="OPIK_TRACK_DISABLE")
     opik_track_users: str = Field(default="", env="OPIK_TRACK_USERS")
     opik_track_sessions: str = Field(default="", env="OPIK_TRACK_SESSIONS")
     opik_track_operations: str = Field(default="", env="OPIK_TRACK_OPERATIONS")
-    
+
     # APM Integration (merged from EnhancedObservabilitySettings)
+    # COMMUNITY DEFAULT: Disabled (enterprise feature)
     prometheus_enabled: bool = Field(default=False, env="PROMETHEUS_ENABLED")
     prometheus_pushgateway_url: str = Field(default="http://localhost:9091", env="PROMETHEUS_PUSHGATEWAY_URL")
     generic_apm_enabled: bool = Field(default=False, env="GENERIC_APM_ENABLED")
     generic_apm_url: Optional[str] = Field(default=None, env="GENERIC_APM_URL")
     generic_apm_api_key: Optional[SecretStr] = Field(default=None, env="GENERIC_APM_API_KEY")
-    
+
     # Workspace integration (merged from WorkspaceSettings)
     comet_workspace: Optional[str] = Field(default=None, env="COMET_WORKSPACE")
     instance_id: str = Field(default="localhost:8000", env="INSTANCE_ID")
-    
+
     # Performance monitoring (merged from EnhancedObservabilitySettings)
-    enable_performance_monitoring: bool = Field(default=True, env="ENABLE_PERFORMANCE_MONITORING")
+    # COMMUNITY DEFAULT: Basic monitoring only
+    enable_performance_monitoring: bool = Field(default=False, env="ENABLE_PERFORMANCE_MONITORING")
     enable_detailed_tracing: bool = Field(default=False, env="ENABLE_DETAILED_TRACING")
-    
+
     # Basic tracing configuration
-    tracing_enabled: bool = Field(default=True, env="TRACING_ENABLED")
-    trace_llm_calls: bool = Field(default=True, env="TRACE_LLM_CALLS")
-    trace_agent_workflows: bool = Field(default=True, env="TRACE_AGENT_WORKFLOWS")
-    
+    # COMMUNITY DEFAULT: Disabled (enterprise feature)
+    tracing_enabled: bool = Field(default=False, env="TRACING_ENABLED")
+    trace_llm_calls: bool = Field(default=False, env="TRACE_LLM_CALLS")
+    trace_agent_workflows: bool = Field(default=False, env="TRACE_AGENT_WORKFLOWS")
+
     # Metrics
-    metrics_enabled: bool = Field(default=True, env="METRICS_ENABLED")
+    # COMMUNITY DEFAULT: Disabled (enterprise feature)
+    metrics_enabled: bool = Field(default=False, env="METRICS_ENABLED")
     metrics_port: int = Field(default=9090, env="METRICS_PORT")
     
     model_config = {"env_prefix": "", "extra": "ignore"}

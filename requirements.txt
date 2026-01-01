@@ -1,3 +1,25 @@
+# ============================================================================
+# DEPRECATED: This file is deprecated in favor of pyproject.toml
+# ============================================================================
+#
+# Modern Python packaging uses pyproject.toml (PEP 621) instead of requirements.txt
+#
+# INSTALLATION INSTRUCTIONS:
+#
+# Community Edition (lightweight, local development):
+#   pip install -e .
+#
+# Enterprise Edition (full features):
+#   pip install -e .[enterprise]
+#
+# Development (with test and dev tools):
+#   pip install -e .[dev,test]
+#
+# See docs/installation/INSTALLATION_GUIDE.md for detailed instructions.
+#
+# This file is kept for backward compatibility but will be removed in v2.0.0
+# ============================================================================
+
 # Core FastAPI and server dependencies
 fastapi>=0.115.8
 uvicorn>=0.28.0
