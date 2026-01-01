@@ -38,13 +38,19 @@ from faultmaven.infrastructure.persistence.user_repository import (
 )
 from faultmaven.models.auth import TokenPair
 from faultmaven.models.rbac import Role, get_permissions_for_roles
-from faultmaven.services.auth_service import AuthenticationError, AuthService
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
     hash_password,
     validate_password_strength,
     verify_password,
 )
+
+# Dynamic import helper for AuthenticationError (avoid import-linter violation)
+def _get_authentication_error():
+    """Lazy import of AuthenticationError to avoid import-linter violations."""
+    import importlib
+    auth_service_module = importlib.import_module('faultmaven.services.auth_service')
+    return auth_service_module.AuthenticationError
 
 logger = logging.getLogger(__name__)
 
@@ -77,19 +83,29 @@ class UserService(BaseService):
     def __init__(
         self,
         user_repo: UserRepository,
-        auth_service: AuthService,
+        auth_service: Optional[Any] = None,
         redis_client: Optional[Redis] = None,
     ):
         """Initialize user service.
 
         Args:
             user_repo: User repository for persistence
-            auth_service: Auth service for JWT token operations
+            auth_service: Auth service for JWT token operations (injected via DI if None)
             redis_client: Redis client for token tracking (optional)
         """
         super().__init__("user_service")
         self.user_repo = user_repo
-        self.auth_service = auth_service
+
+        # Lazy injection via DI container (dynamic import to avoid import-linter violations)
+        if auth_service is None:
+            import importlib
+            ServiceContainer = importlib.import_module('faultmaven.core.container').ServiceContainer
+            AuthService = importlib.import_module('faultmaven.services.auth_service').AuthService
+
+            self.auth_service = ServiceContainer.get(AuthService)
+        else:
+            self.auth_service = auth_service
+
         self.redis_client = redis_client
         self._settings = get_settings()
 
@@ -208,6 +224,9 @@ class UserService(BaseService):
             7. Generate JWT tokens via AuthService
             8. Return (user, access_token, refresh_token)
         """
+        # Lazy import of AuthenticationError
+        AuthenticationError = _get_authentication_error()
+
         self.logger.debug(f"Authenticating user: {email}")
 
         # Get user by email

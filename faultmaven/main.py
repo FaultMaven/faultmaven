@@ -157,6 +157,17 @@ async def lifespan(app: FastAPI):
         # Don't fail startup - let services use fallback implementations
         logger.warning("Continuing with fallback service implementations")
 
+    # Register service factories for dependency injection (resolves import-linter violations)
+    logger.info("Registering service factories...")
+    try:
+        from .core.service_factories import register_services
+        register_services()
+        logger.info("✅ Service factories registered successfully")
+    except Exception as e:
+        logger.error(f"Service factory registration failed: {e}")
+        # Don't fail startup - services will use default direct imports
+        logger.warning("Continuing with direct service imports")
+
     # Initialize core services with K8s support
     # SessionManager replaced by services.session.SessionService via DI container
     # Access via: container.get_session_service()

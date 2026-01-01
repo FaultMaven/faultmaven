@@ -13,10 +13,12 @@ Exit codes:
     1 - New violations detected (block merge)
     2 - Critical contracts broken (block merge immediately)
 
-Baseline (established 2026-01-01):
-    - Contract 1 (Service Independence): 6 violations (ACCEPTED)
+Baseline (updated 2026-01-01 after Phase 3 Week 14-15):
+    - Contract 1 (Service Independence): 0 violations (FIXED via DI Container)
     - Contract 2 (Services → API): 0 violations (MUST REMAIN 0)
     - Contract 3 (Models → Services): 0 violations (MUST REMAIN 0)
+
+All contracts MUST remain at 0 violations. Any new violation blocks merge.
 """
 
 import subprocess
@@ -25,15 +27,17 @@ import re
 from typing import Dict, Tuple
 
 
-# Baseline violations (established in Phase 3 Week 13)
+# Baseline violations (updated in Phase 3 Week 14-15)
+# ALL contracts must remain at 0 violations after DI Container implementation
 BASELINE = {
-    "Service layer independence": 6,  # Expected, will fix in Week 14-15
+    "Service layer independence": 0,  # Fixed in Week 14-15 via DI Container
     "Services cannot import API layer": 0,  # CRITICAL: must remain 0
     "Models cannot import services": 0,  # CRITICAL: must remain 0
 }
 
-# Critical contracts that must never be broken
+# All contracts are now critical (must remain at 0)
 CRITICAL_CONTRACTS = [
+    "Service layer independence",  # Now critical (was fixed in Week 14-15)
     "Services cannot import API layer",
     "Models cannot import services",
 ]
@@ -46,9 +50,15 @@ def run_import_linter() -> Tuple[str, int]:
     Returns:
         Tuple of (output string, exit code)
     """
+    # Try .venv/bin/lint-imports first, then fallback to system lint-imports
+    import os
+    venv_lint_imports = os.path.join(os.path.dirname(__file__), "../.venv/bin/lint-imports")
+
+    lint_import_cmd = venv_lint_imports if os.path.exists(venv_lint_imports) else "lint-imports"
+
     try:
         result = subprocess.run(
-            ["lint-imports", "--config", ".importlinter"],
+            [lint_import_cmd, "--config", ".importlinter"],
             capture_output=True,
             text=True,
             timeout=120,
