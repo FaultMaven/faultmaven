@@ -23,7 +23,7 @@ from faultmaven.infrastructure.persistence.agent_execution_repository import (
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
 )
-from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
 )
 

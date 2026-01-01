@@ -24,11 +24,11 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
-from faultmaven.services.knowledge_search_service import KnowledgeSearchService
-from faultmaven.models.knowledge_item import KnowledgeItem
+from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
+from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem
 
 
 logger = logging.getLogger(__name__)
@@ -328,9 +328,9 @@ class KnowledgeIndexingJob:
 #         from faultmaven.infrastructure.persistence.repository_factory import (
 #             get_knowledge_item_repository,
 #         )
-#         from faultmaven.services.embedding_service import EmbeddingService
-#         from faultmaven.services.vector_store_service import VectorStoreService
-#         from faultmaven.services.knowledge_search_service import KnowledgeSearchService
+#         from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
+#         from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
+#         from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
 #         from faultmaven.config.settings import get_settings
 #
 #         settings = get_settings()

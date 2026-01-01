@@ -12,7 +12,7 @@ Usage:
     register_services()
 
     # Services will now use DI container
-    from faultmaven.services.knowledge_search_service import KnowledgeSearchService
+    from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
     service = KnowledgeSearchService(knowledge_repo)  # Dependencies injected automatically
 
 Design Reference: Phase 3, Week 14-15 - DI Container Implementation
@@ -56,8 +56,8 @@ def register_services(redis_client=None) -> None:
 
     # Import service classes
     from faultmaven.services.auth_service import AuthService
-    from faultmaven.services.embedding_service import EmbeddingService
-    from faultmaven.services.vector_store_service import VectorStoreService
+    from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
+    from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
     from faultmaven.services.file_storage_service import FileStorageService
 
     # AuthService - Used by UserService

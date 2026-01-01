@@ -20,14 +20,14 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.database import reset_engine
-from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
     InMemoryKnowledgeItemRepository,
 )
 from faultmaven.infrastructure.persistence.repository_factory import (
     reset_inmemory_knowledge_item_repository,
 )
-from faultmaven.models.knowledge_item import (
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
     EMBEDDING_DIMENSIONS,

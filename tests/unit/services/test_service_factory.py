@@ -36,7 +36,7 @@ from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
 from faultmaven.infrastructure.persistence.agent_execution_repository import (
     AgentExecutionRepository,
 )
-from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
 

@@ -11,7 +11,7 @@ Features:
 - Collection statistics and management
 
 Usage:
-    from faultmaven.services.vector_store_service import VectorStoreService
+    from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
 
     service = VectorStoreService(persist_directory="./chroma_data")
     await service.add_item(item_id, embedding, metadata, document)

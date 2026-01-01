@@ -11,7 +11,7 @@ Features:
 - Indexing statistics
 
 Usage:
-    from faultmaven.services.knowledge_search_service import KnowledgeSearchService
+    from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
 
     service = KnowledgeSearchService(knowledge_repo, embedding_service, vector_store)
     results = await service.semantic_search("error handling", org_id, n_results=10)

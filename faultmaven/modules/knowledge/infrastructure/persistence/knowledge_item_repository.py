@@ -13,7 +13,7 @@ Features:
 - Support for both in-memory and database backends
 
 Usage:
-    from faultmaven.infrastructure.persistence.knowledge_item_repository import (
+    from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
         DatabaseKnowledgeItemRepository,
         InMemoryKnowledgeItemRepository,
     )

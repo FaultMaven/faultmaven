@@ -12,7 +12,7 @@ Features:
 - Input validation (empty text, too long text)
 
 Usage:
-    from faultmaven.services.embedding_service import EmbeddingService
+    from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
 
     service = EmbeddingService(api_key="sk-...")
     embedding = await service.generate_embedding("Hello, world!")
