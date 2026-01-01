@@ -763,6 +763,53 @@ async def root():
     }
 
 
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus metrics endpoint for production monitoring.
+
+    Returns Prometheus-format metrics when ENABLE_METRICS=true.
+    Returns 404 when metrics are disabled or prometheus_client is not installed.
+
+    Metrics included:
+    - faultmaven_build_info: Build/deployment information
+    - http_requests_total: Total HTTP requests by endpoint, method, status
+    - http_request_duration_seconds: HTTP request latency histogram
+    - llm_requests_total: Total LLM API requests
+    - llm_request_duration_seconds: LLM request latency histogram
+    - faultmaven_ml_model_load_seconds: ML model load time
+    - faultmaven_ml_model_loaded: Whether ML model is loaded
+    - process_*: Default process metrics (CPU, memory, etc.)
+
+    Label constraints (to prevent cardinality explosion):
+    - endpoint: Route template, NOT raw URL path
+    - NO: case_id, user_id, org_id, session_id, user-agent, IP
+    """
+    from fastapi.responses import Response
+    from .infrastructure.monitoring.prometheus_metrics import (
+        is_metrics_enabled,
+        generate_metrics_output,
+        get_content_type,
+        PROMETHEUS_AVAILABLE,
+    )
+
+    if not PROMETHEUS_AVAILABLE:
+        raise HTTPException(
+            status_code=404,
+            detail="Prometheus metrics not available (prometheus_client not installed)"
+        )
+
+    if not is_metrics_enabled():
+        raise HTTPException(
+            status_code=404,
+            detail="Prometheus metrics disabled (set ENABLE_METRICS=true to enable)"
+        )
+
+    return Response(
+        content=generate_metrics_output(),
+        media_type=get_content_type(),
+    )
+
+
 @app.get("/health")
 async def health_check():
     """Enhanced health check endpoint with component-specific metrics and SLA monitoring."""
