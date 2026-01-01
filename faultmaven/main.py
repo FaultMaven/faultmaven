@@ -527,8 +527,8 @@ app.include_router(knowledge.router, prefix="/api/v1", tags=["knowledge_base"])
 
 app.include_router(session.router, prefix="/api/v1", tags=["session_management"])
 
-# Authentication routes
-app.include_router(auth.router, prefix="/api/v1", tags=["authentication"])
+# Authentication routes (auth.router already has prefix="/api/v1/auth")
+app.include_router(auth.router, tags=["authentication"])
 
 # Case persistence routes (always included in production)
 app.include_router(case.router, prefix="/api/v1", tags=["case_persistence"])

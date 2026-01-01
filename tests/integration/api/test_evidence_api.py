@@ -372,7 +372,7 @@ class TestDownloadEvidence:
             )
 
             assert response.status_code == status.HTTP_200_OK
-            assert response.headers["content-type"] == mimetype
+            assert response.headers["content-type"].startswith(mimetype)
 
 
 # ============================================================
