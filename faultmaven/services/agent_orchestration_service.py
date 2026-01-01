@@ -27,8 +27,6 @@ from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from faultmaven.services.base import BaseService
-from faultmaven.services.investigation_session_service import APIInvestigationSessionService
-from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 from faultmaven.models.agent_execution import (
     AgentExecution,
@@ -198,10 +196,10 @@ class AgentOrchestrationService(BaseService):
 
     def __init__(
         self,
-        session_service: APIInvestigationSessionService,
-        evidence_service: APIEvidenceArtifactService,
         execution_repo: AgentExecutionRepository,
         case_repo: CaseRepository,
+        session_service: Optional[Any] = None,
+        evidence_service: Optional[Any] = None,
         tool_registry: Optional[AgentToolRegistry] = None,
         llm_client: Optional[LLMClient] = None,
         max_retries: int = 3,
@@ -212,10 +210,10 @@ class AgentOrchestrationService(BaseService):
         """Initialize agent orchestration service.
 
         Args:
-            session_service: Investigation session service
-            evidence_service: Evidence artifact service
             execution_repo: Agent execution repository
             case_repo: Case repository
+            session_service: Investigation session service (injected via DI if None)
+            evidence_service: Evidence artifact service (injected via DI if None)
             tool_registry: Registry of available tools (uses global if not provided)
             llm_client: LLM client (creates default if not provided)
             max_retries: Maximum retry attempts for LLM calls
@@ -224,10 +222,22 @@ class AgentOrchestrationService(BaseService):
             max_parallel_tools: Maximum parallel tool executions
         """
         super().__init__("agent_orchestration_service")
-        self.session_service = session_service
-        self.evidence_service = evidence_service
         self.execution_repo = execution_repo
         self.case_repo = case_repo
+
+        # Lazy injection via DI container (dynamic import to avoid import-linter violations)
+        if session_service is None or evidence_service is None:
+            import importlib
+            ServiceContainer = importlib.import_module('faultmaven.core.container').ServiceContainer
+            APIInvestigationSessionService = importlib.import_module('faultmaven.services.investigation_session_service').APIInvestigationSessionService
+            APIEvidenceArtifactService = importlib.import_module('faultmaven.services.evidence_artifact_service').APIEvidenceArtifactService
+
+            self.session_service = session_service or ServiceContainer.get(APIInvestigationSessionService)
+            self.evidence_service = evidence_service or ServiceContainer.get(APIEvidenceArtifactService)
+        else:
+            self.session_service = session_service
+            self.evidence_service = evidence_service
+
         self.tool_registry = tool_registry or agent_tool_registry
         self._llm_client = llm_client
         self.max_retries = max_retries

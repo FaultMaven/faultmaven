@@ -9,14 +9,11 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional
 import logging
 
 from faultmaven.models.interfaces import BaseTool, ToolResult
 from faultmaven.domain.events import Tool
-
-if TYPE_CHECKING:
-    from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 
 
 logger = logging.getLogger(__name__)
@@ -43,7 +40,7 @@ class ToolContext:
     case_id: str
     organization_id: str
     user_id: str
-    evidence_service: Optional["APIEvidenceArtifactService"] = None
+    evidence_service: Optional[Any] = None  # APIEvidenceArtifactService (avoid import violation)
     execution_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 

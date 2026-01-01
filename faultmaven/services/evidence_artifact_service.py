@@ -20,7 +20,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from faultmaven.services.base import BaseService
-from faultmaven.services.file_storage_service import FileStorageService
 from faultmaven.models.evidence_artifact import (
     EvidenceArtifact,
     EvidenceArtifactType,
@@ -57,19 +56,28 @@ class APIEvidenceArtifactService(BaseService):
         self,
         evidence_repo: EvidenceArtifactRepository,
         case_repo: CaseRepository,
-        file_storage: FileStorageService,
+        file_storage: Optional[Any] = None,
     ):
         """Initialize API evidence artifact service.
 
         Args:
             evidence_repo: Evidence artifact repository
             case_repo: Case repository (for authorization)
-            file_storage: File storage service
+            file_storage: File storage service (injected via DI if None)
         """
         super().__init__("api_evidence_artifact_service")
         self.evidence_repo = evidence_repo
         self.case_repo = case_repo
-        self.file_storage = file_storage
+
+        # Lazy injection via DI container (dynamic import to avoid import-linter violations)
+        if file_storage is None:
+            import importlib
+            ServiceContainer = importlib.import_module('faultmaven.core.container').ServiceContainer
+            FileStorageService = importlib.import_module('faultmaven.services.file_storage_service').FileStorageService
+
+            self.file_storage = ServiceContainer.get(FileStorageService)
+        else:
+            self.file_storage = file_storage
 
     # ============================================================
     # Authorization Helpers
