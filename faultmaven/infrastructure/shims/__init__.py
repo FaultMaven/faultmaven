@@ -3,17 +3,20 @@
 This package provides shim layers for optional enterprise dependencies:
 - Observability (Opik): Distributed tracing
 - Security (Presidio): PII redaction
+- Metrics (Prometheus): Metrics collection
 
 Shims enable FaultMaven to run in both:
 - Community mode: Zero external dependencies
-- Enterprise mode: Full observability and security features
+- Enterprise mode: Full observability, security, and metrics features
 
 Environment Variables:
     ENABLE_TRACING: Set to 'true' to enable Opik distributed tracing
     ENABLE_PII_REDACTION: Set to 'true' to enable Presidio PII redaction
+    ENABLE_METRICS: Set to 'true' to enable Prometheus metrics collection
 
 Usage:
     from faultmaven.infrastructure.shims import track, PIIRedactor
+    from faultmaven.infrastructure.shims import Counter, Histogram, Gauge
 
     # Tracing (no-op if Opik not installed or disabled)
     @track("my_operation")
@@ -24,14 +27,25 @@ Usage:
     redactor = PIIRedactor()
     safe_text = redactor.redact(user_input)
 
+    # Metrics (no-op if Prometheus not installed or disabled)
+    my_counter = Counter('my_metric', 'My metric description')
+    my_counter.inc()
+
     # Check status of shims
-    from faultmaven.infrastructure.shims import get_tracing_status, get_pii_redaction_status
+    from faultmaven.infrastructure.shims import (
+        get_tracing_status,
+        get_pii_redaction_status,
+        get_metrics_status,
+    )
 
     tracing = get_tracing_status()
     print(f"Tracing active: {tracing['active']}")
 
     pii = get_pii_redaction_status()
     print(f"PII redaction available: {pii['would_be_active']}")
+
+    metrics = get_metrics_status()
+    print(f"Metrics active: {metrics['active']}")
 """
 
 from .observability import (
@@ -45,6 +59,24 @@ from .security import (
     get_pii_redaction_status,
     PRESIDIO_AVAILABLE,
 )
+from .metrics import (
+    Counter,
+    Histogram,
+    Gauge,
+    Summary,
+    Info,
+    get_metrics_status,
+    is_metrics_active,
+    PROMETHEUS_AVAILABLE,
+    # Pre-defined common metrics
+    request_counter,
+    request_duration,
+    active_sessions,
+    case_operations,
+    knowledge_queries,
+    llm_requests,
+    llm_latency,
+)
 
 __all__ = [
     # Observability exports
@@ -56,4 +88,21 @@ __all__ = [
     "PIIRedactor",
     "get_pii_redaction_status",
     "PRESIDIO_AVAILABLE",
+    # Metrics exports
+    "Counter",
+    "Histogram",
+    "Gauge",
+    "Summary",
+    "Info",
+    "get_metrics_status",
+    "is_metrics_active",
+    "PROMETHEUS_AVAILABLE",
+    # Pre-defined metrics
+    "request_counter",
+    "request_duration",
+    "active_sessions",
+    "case_operations",
+    "knowledge_queries",
+    "llm_requests",
+    "llm_latency",
 ]
