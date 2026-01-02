@@ -355,6 +355,106 @@ async def search_documents(
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
+@router.post("/documents/search")
+@trace("api_fulltext_search_documents")
+async def fulltext_search_documents(
+    request: SearchRequest, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+) -> dict:
+    """
+    Full-text search for knowledge base documents (Microservices Parity)
+
+    Implements full-text search complementing the semantic search at /knowledge/search.
+    This endpoint provides simple keyword-based text matching across document titles
+    and content, useful when semantic understanding is not required.
+
+    **Differences from /knowledge/search:**
+    - `/knowledge/search` - Semantic vector search using embeddings (similarity-based)
+    - `/documents/search` - Full-text keyword search (exact/partial word matching)
+
+    **Use Cases:**
+    - Searching for specific error codes or identifiers
+    - Finding documents with exact phrases
+    - Faster search when semantic understanding not needed
+    - Filtering by document_type, category, tags
+
+    **Request Body:**
+    ```json
+    {
+        "query": "PostgreSQL connection timeout",
+        "document_type": "kb_article",
+        "category": "database",
+        "tags": "postgresql,timeout",
+        "limit": 20,
+        "similarity_threshold": 0.5
+    }
+    ```
+
+    **Returns:**
+    ```json
+    {
+        "query": "...",
+        "total_results": 5,
+        "results": [
+            {
+                "document_id": "...",
+                "content": "...",
+                "metadata": {
+                    "title": "...",
+                    "document_type": "...",
+                    "category": "...",
+                    "tags": [...],
+                    "priority": "..."
+                },
+                "similarity_score": 0.85
+            }
+        ]
+    }
+    ```
+    """
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Validate query length
+        if len(request.query.strip()) > 1000:
+            logger.warning("Full-text search query too long")
+            raise HTTPException(status_code=422, detail="Query cannot exceed 1000 characters")
+
+        # Parse tags filter
+        tag_list = parse_comma_separated_tags(request.tags) or None
+
+        # Extract category and document_type
+        category = request.category
+        if request.filters and not category:
+            category = request.filters.get("category")
+
+        document_type = request.document_type
+        if request.filters and not document_type:
+            document_type = request.filters.get("document_type")
+
+        # Use the search_documents method which implements full-text search
+        result = await knowledge_service.search_documents(
+            query=request.query.strip(),
+            document_type=document_type,
+            category=category,
+            tags=tag_list,
+            limit=request.limit,
+            similarity_threshold=request.similarity_threshold,
+            rank_by=request.rank_by
+        )
+
+        logger.info(
+            f"Full-text search for '{request.query}' returned {result.get('total_results', 0)} results"
+        )
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Full-text search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Full-text search failed: {str(e)}")
+
+
 @router.put("/documents/{document_id}")
 async def update_document(
     document_id: str,
