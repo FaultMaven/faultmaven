@@ -13,6 +13,16 @@ import threading
 import time
 
 
+@pytest.fixture(autouse=True)
+def clean_model_cache():
+    """Ensure clean model cache for each test to avoid singleton state leakage."""
+    from faultmaven.infrastructure.model_cache import ModelCache
+    cache = ModelCache()
+    cache.clear_cache()
+    yield
+    cache.clear_cache()
+
+
 class TestModelCacheLazyLoading:
     """Test model cache lazy loading behavior."""
 
@@ -30,7 +40,7 @@ class TestModelCacheLazyLoading:
         from faultmaven.infrastructure.model_cache import ModelCache
 
         cache = ModelCache()
-        cache.clear_cache()
+        # Note: cache is already cleared by fixture
 
         assert not cache.is_model_loaded("BAAI/bge-m3")
         assert cache.get_cache_info()["cache_size"] == 0
@@ -40,7 +50,7 @@ class TestModelCacheLazyLoading:
         from faultmaven.infrastructure.model_cache import ModelCache
 
         cache = ModelCache()
-        cache.clear_cache()
+        # Note: cache is already cleared by fixture
 
         # Mock the SentenceTransformer to avoid actual loading
         with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
@@ -56,7 +66,7 @@ class TestModelCacheLazyLoading:
         from faultmaven.infrastructure.model_cache import ModelCache
 
         cache = ModelCache()
-        cache.clear_cache()
+        # Note: cache is already cleared by fixture
 
         with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
             cache.get_bge_m3_model(triggered_by="lazy")
@@ -70,7 +80,7 @@ class TestModelCacheLazyLoading:
         from faultmaven.infrastructure.model_cache import ModelCache
 
         cache = ModelCache()
-        cache.clear_cache()
+        # Note: cache is already cleared by fixture
 
         with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
             cache.get_bge_m3_model(triggered_by="startup")
@@ -87,7 +97,7 @@ class TestModelCacheLazyLoading:
         from faultmaven.infrastructure.model_cache import ModelCache
 
         cache = ModelCache()
-        cache.clear_cache()
+        # Note: cache is already cleared by fixture
 
         # Add a mock model directly to the cache
         mock_model = MagicMock()
@@ -104,14 +114,18 @@ class TestModelCacheLazyLoading:
         from faultmaven.infrastructure.model_cache import ModelCache
 
         cache = ModelCache()
+        # Note: cache is already cleared by fixture
 
         with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
             cache.get_bge_m3_model()
 
-        assert cache.get_model_load_info("BAAI/bge-m3") is not None
+        # Verify load info was recorded
+        load_info = cache.get_model_load_info("BAAI/bge-m3")
+        assert load_info is not None, "Load info should be recorded even when model unavailable"
 
         cache.clear_cache()
 
+        # Verify load info is cleared
         assert cache.get_model_load_info("BAAI/bge-m3") is None
         assert cache.get_cache_info()["cache_size"] == 0
 
