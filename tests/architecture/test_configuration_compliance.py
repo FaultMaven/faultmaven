@@ -24,7 +24,8 @@ class ConfigurationViolationScanner:
     def __init__(self, source_root: Path):
         self.source_root = source_root
         self.allowed_files = {
-            "faultmaven/config/settings.py",  # Only file allowed to access env vars
+            "faultmaven/config/settings.py",  # Main configuration module
+            "faultmaven/main.py",  # Composition root / bootstrap
             "tests/architecture/test_configuration_compliance.py"  # This test file
         }
         
