@@ -267,26 +267,31 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Phase 2 monitoring initialization failed (non-critical): {e}")
 
-    # Start case collection cleanup scheduler for Working Memory feature
+    # In-process scheduler (opt-in via RUN_SCHEDULER=true)
+    # Default: disabled for operational neutrality - use CLI jobs or external schedulers instead
+    # See: python -m faultmaven.jobs.run --list
     case_cleanup_scheduler = None
-    try:
-        from .infrastructure.tasks import start_case_cleanup_scheduler
+    if settings.server.run_scheduler:
+        try:
+            from .infrastructure.tasks import start_case_cleanup_scheduler
 
-        # Only start if both case_vector_store and case_store are available
-        case_vector_store = getattr(container, 'case_vector_store', None)
-        case_store = getattr(container, 'case_store', None)
-        if case_vector_store and case_store:
-            case_cleanup_scheduler = start_case_cleanup_scheduler(
-                case_vector_store=case_vector_store,
-                case_store=case_store,
-                interval_hours=6  # Run cleanup every 6 hours
-            )
-            logger.info("✅ Case collection cleanup scheduler started (Working Memory lifecycle-based)")
-            app.extra["case_cleanup_scheduler"] = case_cleanup_scheduler
-        else:
-            logger.debug("Case collection cleanup scheduler skipped (missing case_vector_store or case_store)")
-    except Exception as e:
-        logger.warning(f"Case cleanup scheduler initialization failed (non-critical): {e}")
+            # Only start if both case_vector_store and case_store are available
+            case_vector_store = getattr(container, 'case_vector_store', None)
+            case_store = getattr(container, 'case_store', None)
+            if case_vector_store and case_store:
+                case_cleanup_scheduler = start_case_cleanup_scheduler(
+                    case_vector_store=case_vector_store,
+                    case_store=case_store,
+                    interval_hours=6  # Run cleanup every 6 hours
+                )
+                logger.info("✅ Case cleanup scheduler started (RUN_SCHEDULER=true, single-process mode)")
+                app.extra["case_cleanup_scheduler"] = case_cleanup_scheduler
+            else:
+                logger.debug("Case cleanup scheduler skipped (missing case_vector_store or case_store)")
+        except Exception as e:
+            logger.warning(f"Case cleanup scheduler initialization failed (non-critical): {e}")
+    else:
+        logger.info("ℹ️ In-process scheduler disabled (RUN_SCHEDULER=false). Use 'python -m faultmaven.jobs.run' for jobs.")
 
     logger.info("🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!")
 

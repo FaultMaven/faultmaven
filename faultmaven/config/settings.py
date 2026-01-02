@@ -99,7 +99,18 @@ class ServerSettings(BaseSettings):
     
     # Testing configuration
     pytest_current_test: Optional[str] = Field(default=None, env="PYTEST_CURRENT_TEST")
-    
+
+    # Scheduler configuration - opt-in for single-process convenience mode
+    # When True, starts APScheduler in-process during app startup.
+    # Default is False for operational neutrality (use external schedulers like cron/k8s).
+    # Set RUN_SCHEDULER=true only for single-process development/convenience mode.
+    run_scheduler: bool = Field(
+        default=False,
+        env="RUN_SCHEDULER",
+        description="Enable in-process APScheduler. Default False for operational neutrality. "
+                    "Set to True only for single-process convenience mode (not recommended for production)."
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
