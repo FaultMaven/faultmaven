@@ -1336,28 +1336,37 @@ faultmaven/
 
 **Implementation** (parallel work):
 
-1. **Evidence Service Endpoints** (Day 1-7) - CRITICAL:
-   - `POST /api/v1/evidence` - Upload evidence (not case-scoped)
-   - `GET /api/v1/evidence/{evidence_id}` - Get evidence details
-   - `GET /api/v1/evidence/{evidence_id}/download` - Download evidence file
-   - `DELETE /api/v1/evidence/{evidence_id}` - Delete evidence
-   - `GET /api/v1/evidence` - List all evidence (with filtering)
-   - `GET /api/v1/evidence/case/{case_id}` - Get evidence for specific case
-   - `POST /api/v1/evidence/{evidence_id}/link` - Link evidence to case
-   - Tests: 20 tests (CRUD + linking + download)
+1. **Evidence Service Endpoints** (Day 1-7) - CRITICAL - ✅ **COMPLETE** (PR #46, #47, #48):
+   - ✅ `POST /api/v1/evidence` - Upload evidence (not case-scoped)
+   - ✅ `GET /api/v1/evidence/{evidence_id}` - Get evidence details
+   - ✅ `GET /api/v1/evidence/{evidence_id}/download` - Download evidence file
+   - ✅ `DELETE /api/v1/evidence/{evidence_id}` - Delete evidence
+   - ✅ `GET /api/v1/evidence` - List all evidence (with filtering)
+   - ✅ `GET /api/v1/evidence/case/{case_id}` - Get evidence for specific case
+   - ✅ `POST /api/v1/evidence/{evidence_id}/link` - Link evidence to case
+   - ✅ Tests: 83 tests (complete vertical slice with domain, infrastructure, API tests)
 
-2. **Session Enhancement Endpoints** (Day 8-12) - HIGH:
-   - `PUT /api/v1/sessions/{session_id}` - Update session metadata
-   - `GET /api/v1/sessions/{session_id}/messages` - List session messages
-   - `POST /api/v1/sessions/{session_id}/messages` - Add message to session
-   - `POST /api/v1/sessions/search` - Search sessions by query
-   - `POST /api/v1/sessions/{session_id}/archive` - Archive session
-   - Tests: 15 tests (update + messages + search + archive)
+2. **Session Enhancement Endpoints** (Day 8-12) - HIGH - ⏳ **IN PROGRESS**:
+   - ❌ `PUT /api/v1/sessions/{session_id}` - Update session metadata (MISSING)
+   - ❌ `POST /api/v1/sessions/search` - Search sessions by query (MISSING)
+   - ❌ `POST /api/v1/sessions/{session_id}/archive` - Archive session (MISSING)
+   - ⏳ Tests: 9 tests (update + search + archive)
 
-3. **Knowledge Base Full-Text Search** (Day 13-15) - HIGH:
-   - `POST /api/v1/knowledge/documents/search` - Full-text search (non-semantic)
+   **Architectural Note**: Message endpoints (`GET/POST /sessions/{id}/messages`) **NOT implemented** due to architectural conflict:
+   - ⚠️ **Rejected**: `GET /api/v1/sessions/{session_id}/messages` - Messages belong to Cases (not Sessions)
+   - ⚠️ **Rejected**: `POST /api/v1/sessions/{session_id}/messages` - Violates spec-compliant architecture
+   - Per `docs/architecture/case-and-session-concepts.md`: Sessions are authentication-only, messages belong to Cases
+   - fm-session-service implementation contradicts monolith's authoritative architecture
+   - Frontend doesn't use these endpoints (marked ⚠️ in frontend-api-consistency-check.md)
+
+   **Current Status**: Session module has 11 endpoints implemented. Adding 3 endpoints for valid microservices parity.
+
+3. **Knowledge Base Full-Text Search** (Day 13-15) - HIGH - ⏳ **PENDING**:
+   - ❌ `POST /api/v1/knowledge/documents/search` - Full-text search (non-semantic) (MISSING)
    - Complements existing semantic search endpoint
-   - Tests: 8 tests (full-text vs semantic search)
+   - ⏳ Tests: 8 tests (full-text vs semantic search)
+
+   **Note**: Current monolith has user KB endpoints (`/api/v1/users/{user_id}/kb/*`) but microservices missing this. Need to verify if full-text search is truly needed or if semantic search is sufficient.
 
 4. **Remove Obsolete Data Endpoints** (Day 16):
    - Remove standalone `/api/v1/data/*` endpoints
@@ -1365,9 +1374,12 @@ faultmaven/
    - Update documentation and OpenAPI spec
 
 **Deliverables**:
-- ✅ 13 HIGH priority endpoints implemented
-- ✅ 43+ tests passing (20 + 15 + 8)
-- ✅ Microservices API parity achieved
+
+- ✅ **7/11 valid endpoints implemented** (Evidence Service complete)
+- ⏳ **4/11 endpoints remaining** (3 Session + 1 Knowledge)
+- ⚠️ **2 endpoints rejected** (Session messages - architectural conflict)
+- ✅ **83/97+ tests implemented** (Evidence tests complete, 86% complete)
+- ⏳ **Microservices API parity**: 64% complete (7 of 11 valid endpoints)
 - ✅ 5 obsolete endpoints removed
 - ✅ OpenAPI spec updated
 

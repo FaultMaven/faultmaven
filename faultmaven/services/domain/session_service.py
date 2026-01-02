@@ -580,3 +580,86 @@ class SessionService(BaseService):
         # Check recent activity
         time_since_activity = now - session.last_activity
         return time_since_activity < self.inactive_threshold
+
+    # =========================================================================
+    # Enhanced Session Operations (Microservices Parity)
+    # =========================================================================
+
+    @trace("session_service_search_sessions")
+    async def search_sessions(
+        self,
+        user_id: str,
+        query: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[SessionContext]:
+        """Search user's sessions with filters
+
+        Implements microservices parity endpoint from fm-session-service.
+
+        Args:
+            user_id: User identifier
+            query: Optional text query (searches metadata)
+            status: Optional status filter (active, archived, etc.)
+            limit: Maximum number of results (default 50)
+
+        Returns:
+            List of matching sessions
+        """
+        # Get all user sessions
+        all_sessions = await self.list_sessions(user_id=user_id)
+
+        # Apply filters
+        filtered = all_sessions
+
+        # Status filter
+        if status:
+            filtered = [
+                s for s in filtered
+                if s.metadata.get("status", "active") == status
+            ]
+
+        # Text query filter (searches in metadata)
+        if query:
+            query_lower = query.lower()
+            filtered = [
+                s for s in filtered
+                if any(
+                    query_lower in str(v).lower()
+                    for v in s.metadata.values()
+                    if v is not None
+                )
+            ]
+
+        # Apply limit
+        return filtered[:limit]
+
+    @trace("session_service_archive_session")
+    async def archive_session(self, session_id: str) -> bool:
+        """Archive a session by setting status to 'archived'
+
+        Implements microservices parity endpoint from fm-session-service.
+        Preserves all session data but marks as archived.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            True if archived successfully, False if session not found
+        """
+        session = await self.get_session(session_id)
+        if not session:
+            return False
+
+        # Update status in metadata
+        if not session.metadata:
+            session.metadata = {}
+        session.metadata["status"] = "archived"
+        session.updated_at = datetime.now(timezone.utc)
+
+        # Persist
+        if self.session_store:
+            await self.session_store.save(session)
+
+        self.logger.info(f"Session {session_id} archived")
+        return True

@@ -45,6 +45,7 @@ from faultmaven.models import utc_timestamp
 from faultmaven.models.api import SessionResponse, SessionCasesResponse, ErrorResponse, ErrorDetail, SessionErrorCode, SessionStatus
 from faultmaven.models.api_models import CaseListFilter
 from faultmaven.models.auth import DevUser
+from faultmaven.exceptions import ValidationException
 import logging
 import uuid
 import os
@@ -1073,4 +1074,214 @@ async def restore_session(
         logger.error(f"Failed to restore session {session_id}: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to restore session: {str(e)}"
+        )
+
+
+# =============================================================================
+# Microservices Parity Endpoints (Phase 3 Week 19-20)
+# =============================================================================
+
+@router.put("/{session_id}")
+async def update_session(
+    session_id: str,
+    updates: dict = Body(...),
+    session_service: SessionService = Depends(get_session_service),
+    current_user: DevUser = Depends(require_authentication),
+):
+    """
+    Update session metadata.
+
+    Implements microservices parity with fm-session-service.
+    Updates authentication-related metadata only (not case data).
+
+    Args:
+        session_id: Session identifier
+        updates: Dict of fields to update (metadata, timeout_minutes, etc.)
+
+    Returns:
+        Updated session information
+
+    Raises:
+        404: Session not found
+        403: User not authorized to update this session
+        400: Invalid update fields (trying to update case data)
+    """
+    try:
+        # Get session to check ownership
+        session = await session_service.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Authorization check - users can only update their own sessions
+        if session.user_id != current_user.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to update this session"
+            )
+
+        # Update session
+        success = await session_service.update_session(session_id, updates)
+        if not success:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to update session"
+            )
+
+        # Get updated session
+        updated_session = await session_service.get_session(session_id)
+
+        logger.info(f"Updated session {session_id} for user {current_user.user_id}")
+
+        return {
+            "session_id": updated_session.session_id,
+            "user_id": updated_session.user_id,
+            "created_at": _safe_datetime_to_utc_string(updated_session.created_at),
+            "updated_at": _safe_datetime_to_utc_string(updated_session.updated_at),
+            "last_activity": _safe_datetime_to_utc_string(updated_session.last_activity),
+            "metadata": updated_session.metadata,
+            "message": "Session updated successfully"
+        }
+
+    except HTTPException:
+        raise
+    except ValidationException as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to update session {session_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update session: {str(e)}"
+        )
+
+
+@router.post("/search")
+async def search_sessions(
+    search_params: dict = Body(...),
+    session_service: SessionService = Depends(get_session_service),
+    current_user: DevUser = Depends(require_authentication),
+):
+    """
+    Search user's sessions with filters.
+
+    Implements microservices parity with fm-session-service.
+    Searches only the authenticated user's sessions.
+
+    Request body:
+        {
+            "query": "optional text search",
+            "status": "optional status filter (active, archived)",
+            "limit": 50
+        }
+
+    Returns:
+        {
+            "sessions": [...],
+            "total": int
+        }
+    """
+    try:
+        query = search_params.get("query")
+        status = search_params.get("status")
+        limit = search_params.get("limit", 50)
+
+        # Search sessions
+        sessions = await session_service.search_sessions(
+            user_id=current_user.user_id,
+            query=query,
+            status=status,
+            limit=limit
+        )
+
+        # Format response
+        sessions_response = []
+        for session in sessions:
+            sessions_response.append({
+                "session_id": session.session_id,
+                "user_id": session.user_id,
+                "created_at": _safe_datetime_to_utc_string(session.created_at),
+                "last_activity": _safe_datetime_to_utc_string(session.last_activity),
+                "status": session.metadata.get("status", "active"),
+                "metadata": session.metadata
+            })
+
+        logger.info(
+            f"Search returned {len(sessions)} sessions for user {current_user.user_id} "
+            f"(query={query}, status={status})"
+        )
+
+        return {
+            "sessions": sessions_response,
+            "total": len(sessions)
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to search sessions: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to search sessions: {str(e)}"
+        )
+
+
+@router.post("/{session_id}/archive")
+async def archive_session(
+    session_id: str,
+    session_service: SessionService = Depends(get_session_service),
+    current_user: DevUser = Depends(require_authentication),
+):
+    """
+    Archive a session.
+
+    Implements microservices parity with fm-session-service.
+    Sets session status to 'archived' while preserving all data.
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        {
+            "session_id": str,
+            "status": "archived",
+            "message": "Session archived successfully"
+        }
+
+    Raises:
+        404: Session not found
+        403: User not authorized to archive this session
+    """
+    try:
+        # Get session to check ownership
+        session = await session_service.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Authorization check
+        if session.user_id != current_user.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to archive this session"
+            )
+
+        # Archive session
+        success = await session_service.archive_session(session_id)
+        if not success:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to archive session"
+            )
+
+        logger.info(f"Archived session {session_id} for user {current_user.user_id}")
+
+        return {
+            "session_id": session_id,
+            "status": "archived",
+            "message": "Session archived successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to archive session {session_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to archive session: {str(e)}"
         )
