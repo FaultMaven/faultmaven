@@ -3,10 +3,12 @@ FaultMaven Logging Configuration
 
 Provides enhanced logging configuration using structlog with JSON formatting,
 request context injection, deduplication, and OpenTelemetry integration.
+
+Configuration is read from the unified settings system (faultmaven.config.settings)
+at runtime, not at import time.
 """
 
 import logging
-import os
 from typing import Dict, Any, Optional
 import structlog
 from opentelemetry import trace
@@ -14,29 +16,35 @@ from opentelemetry import trace
 
 class LoggingConfig:
     """
-    Configuration for logging system from environment variables.
-    
-    This class reads logging configuration from environment variables
-    and provides type-safe access to configuration values with sensible
-    defaults.
-    
-    Note: Environment variables are read at module import time.
-    Ensure load_dotenv() is called before importing this module (see main.py).
+    Configuration for logging system from unified settings.
+
+    This class provides type-safe access to logging configuration values
+    from the unified settings system. Configuration is read at runtime
+    when methods are called, not at import time.
+
+    All configuration comes from faultmaven.config.settings.LoggingSettings.
     """
-    
-    # Read environment variables at import time (after load_dotenv() in main.py)
-    LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO').upper()
-    LOG_FORMAT: str = os.getenv('LOG_FORMAT', 'json').lower()
-    LOG_DEDUPE: bool = os.getenv('LOG_DEDUPE', 'true').lower() == 'true'
-    LOG_BUFFER_SIZE: int = int(os.getenv('LOG_BUFFER_SIZE', '100'))
-    LOG_FLUSH_INTERVAL: float = float(os.getenv('LOG_FLUSH_INTERVAL', '5'))
-    LOG_HUMAN_READABLE: bool = os.getenv('LOG_HUMAN_READABLE', 'false').lower() == 'true'
-    
-    @classmethod
-    def get_log_level(cls) -> int:
+
+    def __init__(self):
+        """Initialize logging config by reading from settings."""
+        self._load_from_settings()
+
+    def _load_from_settings(self) -> None:
+        """Load configuration from unified settings system."""
+        from faultmaven.config.settings import get_settings
+        settings = get_settings()
+
+        self.LOG_LEVEL = settings.logging.level.value.upper()
+        self.LOG_FORMAT = settings.logging.log_output_format.lower()
+        self.LOG_DEDUPE = settings.logging.log_dedupe
+        self.LOG_BUFFER_SIZE = settings.logging.log_buffer_size
+        self.LOG_FLUSH_INTERVAL = settings.logging.log_flush_interval
+        self.LOG_HUMAN_READABLE = settings.logging.log_human_readable
+
+    def get_log_level(self) -> int:
         """
         Convert string log level to logging constant.
-        
+
         Returns:
             Logging level constant (logging.DEBUG, logging.INFO, etc.)
         """
@@ -47,7 +55,7 @@ class LoggingConfig:
             'ERROR': logging.ERROR,
             'CRITICAL': logging.CRITICAL
         }
-        return levels.get(cls.LOG_LEVEL, logging.INFO)
+        return levels.get(self.LOG_LEVEL, logging.INFO)
 
 
 class FaultMavenLogger:

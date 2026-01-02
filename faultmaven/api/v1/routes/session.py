@@ -46,9 +46,9 @@ from faultmaven.models.api import SessionResponse, SessionCasesResponse, ErrorRe
 from faultmaven.models.api_models import CaseListFilter
 from faultmaven.models.auth import DevUser
 from faultmaven.exceptions import ValidationException
+from faultmaven.config.settings import get_settings
 import logging
 import uuid
-import os
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
 
@@ -59,38 +59,49 @@ logger = logging.getLogger(__name__)
 _session_not_found_log_tracker = {}
 _SESSION_NOT_FOUND_LOG_INTERVAL = 30  # Log every 30 seconds per session_id
 
-# Session timeout configuration
-SESSION_MIN_TIMEOUT_MINUTES = int(os.getenv("SESSION_MIN_TIMEOUT_MINUTES", "60"))     # 1 hour
-SESSION_MAX_TIMEOUT_MINUTES = int(os.getenv("SESSION_MAX_TIMEOUT_MINUTES", "480"))   # 8 hours  
-SESSION_DEFAULT_TIMEOUT_MINUTES = int(os.getenv("SESSION_DEFAULT_TIMEOUT_MINUTES", "180"))  # 3 hours
+
+def _get_session_timeout_bounds() -> tuple[int, int, int]:
+    """Get session timeout bounds from settings.
+
+    Returns:
+        Tuple of (min_timeout, max_timeout, default_timeout) in minutes
+    """
+    settings = get_settings()
+    return (
+        settings.session.min_timeout_minutes,
+        settings.session.max_timeout_minutes,
+        settings.session.default_timeout_minutes,
+    )
 
 
 def validate_session_timeout(timeout_minutes: Optional[int]) -> int:
     """
     Validate and clamp session timeout parameter to safe ranges.
-    
+
     Frontend crash recovery requires specific timeout behavior:
     - Min: 60 minutes (1 hour) - prevents too-frequent expiration
     - Max: 480 minutes (8 hours) - prevents indefinite sessions
     - Default: 180 minutes (3 hours) - good balance for troubleshooting sessions
-    
+
     Args:
         timeout_minutes: Requested timeout in minutes
-        
+
     Returns:
         Validated timeout in minutes, clamped to safe range
     """
+    min_timeout, max_timeout, default_timeout = _get_session_timeout_bounds()
+
     if not timeout_minutes or timeout_minutes <= 0:
-        logger.debug(f"Using default session timeout: {SESSION_DEFAULT_TIMEOUT_MINUTES} minutes")
-        return SESSION_DEFAULT_TIMEOUT_MINUTES
-    
+        logger.debug(f"Using default session timeout: {default_timeout} minutes")
+        return default_timeout
+
     original_timeout = timeout_minutes
     # Clamp to safe range
-    validated_timeout = max(SESSION_MIN_TIMEOUT_MINUTES, min(SESSION_MAX_TIMEOUT_MINUTES, timeout_minutes))
-    
+    validated_timeout = max(min_timeout, min(max_timeout, timeout_minutes))
+
     if validated_timeout != original_timeout:
         logger.info(f"Session timeout clamped from {original_timeout} to {validated_timeout} minutes")
-    
+
     return validated_timeout
 
 

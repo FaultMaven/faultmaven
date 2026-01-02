@@ -3,10 +3,11 @@ Enhanced Redis client configuration for FaultMaven.
 
 Supports both local development and K8s cluster deployments with
 proper authentication, connection pooling, and error handling.
+
+Configuration is read from the unified settings system (faultmaven.config.settings).
 """
 
 import logging
-import os
 from typing import Optional, Union
 from urllib.parse import urlparse
 
@@ -102,45 +103,41 @@ class RedisClientFactory:
     @staticmethod
     def _build_config(
         redis_url: Optional[str],
-        host: Optional[str], 
+        host: Optional[str],
         port: Optional[int],
         password: Optional[str]
     ) -> dict:
-        """Build Redis configuration from various sources."""
-        
+        """Build Redis configuration from various sources.
+
+        Configuration priority:
+        1. Explicit parameters passed to create_client()
+        2. Unified settings system (faultmaven.config.settings)
+
+        Note: This method no longer falls back to os.getenv() directly.
+        All environment variable access happens through the settings system.
+        """
         # 1. Check for explicit URL parameter
         if redis_url:
             return {'url': redis_url, 'host': None, 'port': None, 'password': None}
-        
-        # 2. Check environment variables for REDIS_URL
-        env_url = os.getenv('REDIS_URL')
-        if env_url:
-            return {'url': env_url, 'host': None, 'port': None, 'password': None}
-        
-        # 3. Try to use configuration manager for other settings
-        try:
-            from ..config.settings import get_settings
-            settings = get_settings()
-            db_config = settings.database
-            
-            config = {
-                'url': None,
-                'host': host or db_config.redis_host,
-                'port': port or db_config.redis_port,
-                'password': password or (db_config.redis_password.get_secret_value() if db_config.redis_password is not None else None)
-            }
-            logger.debug(f"Built Redis config from settings system: {config['host']}:{config['port']}")
-        except Exception as e:
-            logger.debug(f"Settings system not available, using environment variables: {e}")
-            # 4. Fallback to direct environment variables
-            config = {
-                'url': None,
-                'host': host or os.getenv('REDIS_HOST', '192.168.0.111'),
-                'port': port or int(os.getenv('REDIS_PORT', '30379')),
-                'password': password or os.getenv('REDIS_PASSWORD')
-            }
-            logger.debug(f"Built Redis config from environment: {config['host']}:{config['port']}")
-        
+
+        # 2. Use unified settings system
+        from faultmaven.config.settings import get_settings
+        settings = get_settings()
+        db_config = settings.database
+
+        # Check if settings has a Redis URL configured
+        if db_config.redis_url:
+            return {'url': db_config.redis_url, 'host': None, 'port': None, 'password': None}
+
+        # Build from individual settings fields
+        config = {
+            'url': None,
+            'host': host or db_config.redis_host,
+            'port': port or db_config.redis_port,
+            'password': password or (db_config.redis_password.get_secret_value() if db_config.redis_password is not None else None)
+        }
+        logger.debug(f"Built Redis config from settings: {config['host']}:{config['port']}")
+
         return config
     
     @staticmethod

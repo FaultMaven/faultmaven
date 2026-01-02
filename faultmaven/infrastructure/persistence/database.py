@@ -5,10 +5,12 @@ both SQLite (development) and PostgreSQL (production).
 
 Features:
 - Async session factory with connection pooling
-- Environment-based database URL configuration
+- Settings-based database URL configuration
 - Context manager for session lifecycle
 - Pool pre-ping for connection health
 - Proper transaction handling
+
+Configuration is read from the unified settings system (faultmaven.config.settings).
 
 Usage:
     from faultmaven.infrastructure.persistence.database import get_db_session
@@ -19,7 +21,6 @@ Usage:
             result = await session.execute(query)
 """
 
-import os
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 def get_database_url() -> str:
     """
-    Get database URL from environment variable.
+    Get database URL from unified settings.
 
     Supports:
     - SQLite: sqlite+aiosqlite:///./faultmaven.db
@@ -52,10 +53,8 @@ def get_database_url() -> str:
     Returns:
         Database URL string
     """
-    return os.getenv(
-        "DATABASE_URL",
-        "sqlite+aiosqlite:///./faultmaven.db"
-    )
+    from faultmaven.config.settings import get_settings
+    return get_settings().database.database_url
 
 
 def is_sqlite(database_url: str) -> bool:
@@ -91,7 +90,12 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
     if _engine is not None:
         return _engine
 
-    url = database_url or get_database_url()
+    # Get settings for database configuration
+    from faultmaven.config.settings import get_settings
+    settings = get_settings()
+    db_config = settings.database
+
+    url = database_url or db_config.database_url
     logger.info(f"Creating async engine for: {url.split('@')[-1] if '@' in url else url}")
 
     # Configure engine based on database type
@@ -99,7 +103,7 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         # SQLite: Use NullPool (doesn't support connection pooling)
         _engine = create_async_engine(
             url,
-            echo=os.getenv("DATABASE_ECHO", "false").lower() == "true",
+            echo=db_config.database_echo,
             pool_pre_ping=True,
             poolclass=NullPool,
             # SQLite-specific: enable foreign keys
@@ -109,12 +113,12 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         # PostgreSQL: Use connection pooling
         _engine = create_async_engine(
             url,
-            echo=os.getenv("DATABASE_ECHO", "false").lower() == "true",
+            echo=db_config.database_echo,
             pool_pre_ping=True,  # Check connection health before use
-            pool_size=int(os.getenv("DATABASE_POOL_SIZE", "5")),
-            max_overflow=int(os.getenv("DATABASE_MAX_OVERFLOW", "10")),
-            pool_timeout=int(os.getenv("DATABASE_POOL_TIMEOUT", "30")),
-            pool_recycle=int(os.getenv("DATABASE_POOL_RECYCLE", "1800")),  # 30 minutes
+            pool_size=db_config.database_pool_size,
+            max_overflow=db_config.database_max_overflow,
+            pool_timeout=db_config.database_pool_timeout,
+            pool_recycle=db_config.database_pool_recycle,
         )
 
     return _engine
