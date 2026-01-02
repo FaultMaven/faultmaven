@@ -1636,27 +1636,23 @@ class FaultMavenSettings(BaseSettings):
     # Provider Selectors (PR #3 - doc-aligned vocabulary)
     providers: ProviderSettings = Field(default_factory=ProviderSettings)
 
-    # DEPRECATED: Use providers.tenant_provider instead
-    # Kept for backward compatibility - will be removed in future version
-    _deployment_mode: Optional[Literal["single-tenant", "multi-tenant"]] = Field(
-        default=None,
-        env="DEPLOYMENT_MODE",
-        alias="deployment_mode",
-        description="DEPRECATED: Use TENANT_PROVIDER instead. "
-                    "single-tenant: All users share default organization. "
-                    "multi-tenant: Multiple organizations with strict isolation."
-    )
-
     @property
     def deployment_mode(self) -> str:
         """Get deployment mode (backward compatibility property).
 
         DEPRECATED: Use settings.providers.tenant_provider instead.
         Maps new TENANT_PROVIDER values to legacy deployment_mode format.
+
+        This property supports backward compatibility by:
+        1. Checking for legacy DEPLOYMENT_MODE env var first
+        2. Falling back to providers.tenant_provider mapping
         """
-        # If legacy env var was set directly, use it
-        if self._deployment_mode:
-            return self._deployment_mode
+        import os
+        # Check for legacy env var first
+        legacy_value = os.getenv("DEPLOYMENT_MODE")
+        if legacy_value:
+            _warn_legacy_env_var("DEPLOYMENT_MODE", "TENANT_PROVIDER")
+            return legacy_value.lower()
         # Otherwise derive from new selector
         if self.providers.tenant_provider == TenantProvider.MULTI:
             return "multi-tenant"
