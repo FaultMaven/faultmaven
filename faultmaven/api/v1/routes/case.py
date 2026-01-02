@@ -1036,8 +1036,8 @@ async def _generate_title_with_llm(context_text: str, case, max_words: int = 8, 
                            extra={"invalid_title": generated_title})
                 
                 # Minimal deterministic fallback behind flag for resiliency (optional but prudent)
-                import os
-                use_fallback = os.getenv("TITLE_GENERATION_USE_FALLBACK", "true").lower() == "true"
+                from faultmaven.config.settings import get_settings
+                use_fallback = get_settings().case.title_generation_use_fallback
                 if use_fallback:
                     fallback = get_fallback_title()
                     if fallback and is_title_valid(fallback, check_banned_words=False):  # Don't block non-English fallbacks

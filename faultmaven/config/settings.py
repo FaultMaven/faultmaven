@@ -173,7 +173,14 @@ class LLMSettings(BaseSettings):
     request_timeout: int = Field(default=30, env="LLM_REQUEST_TIMEOUT")
     max_retries: int = Field(default=3, env="LLM_MAX_RETRIES")
     retry_delay: float = Field(default=1.0, env="LLM_RETRY_DELAY")
-    
+
+    # Provider behavior
+    strict_provider_mode: bool = Field(
+        default=False,
+        env="STRICT_PROVIDER_MODE",
+        description="When enabled, only use the primary provider with no fallbacks"
+    )
+
     # Token limits
     max_tokens: int = Field(default=4096, env="LLM_MAX_TOKENS")
     context_window: int = Field(default=128000, env="LLM_CONTEXT_WINDOW")
@@ -466,31 +473,54 @@ class LLMSettings(BaseSettings):
 
 class DatabaseSettings(BaseSettings):
     """Unified database and persistence configuration"""
-    
+
+    # ============================================
+    # Primary Database Configuration (SQLite/PostgreSQL)
+    # ============================================
+    database_url: str = Field(
+        default="sqlite+aiosqlite:///./faultmaven.db",
+        env="DATABASE_URL",
+        description="Primary database URL (SQLite for dev, PostgreSQL for prod)"
+    )
+    database_echo: bool = Field(
+        default=False,
+        env="DATABASE_ECHO",
+        description="Echo SQL statements to log"
+    )
+    database_pool_size: int = Field(default=5, env="DATABASE_POOL_SIZE")
+    database_max_overflow: int = Field(default=10, env="DATABASE_MAX_OVERFLOW")
+    database_pool_timeout: int = Field(default=30, env="DATABASE_POOL_TIMEOUT")
+    database_pool_recycle: int = Field(default=1800, env="DATABASE_POOL_RECYCLE")
+
+    # ============================================
     # Redis Configuration (K8s NodePort for TCP)
+    # ============================================
     redis_host: str = Field(default="192.168.0.111", env="REDIS_HOST")
     redis_port: int = Field(default=30379, env="REDIS_PORT")
     redis_db: int = Field(default=0, env="REDIS_DB")
     redis_password: Optional[SecretStr] = Field(default=None, env="REDIS_PASSWORD")
     redis_url: Optional[str] = Field(default=None, env="REDIS_URL")
-    
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": False,
         "extra": "ignore"
     }
-    
+
+    # ============================================
     # ChromaDB Configuration (K8s Ingress for HTTP)
+    # ============================================
     chromadb_host: str = Field(default="chromadb.faultmaven.local", env="CHROMADB_HOST")
     chromadb_port: int = Field(default=30080, env="CHROMADB_PORT")
     chromadb_url: str = Field(default="http://chromadb.faultmaven.local:30080", env="CHROMADB_URL")
     chromadb_api_key: Optional[SecretStr] = Field(default=None, env="CHROMADB_API_KEY")
-    
+
     # ChromaDB Extended Configuration (merged from EnhancedDatabaseSettings)
     chromadb_auth_token: Optional[SecretStr] = Field(default=None, env="CHROMADB_AUTH_TOKEN")
     chromadb_collection: str = Field(default="faultmaven_kb", env="CHROMADB_COLLECTION")
-    
+    chromadb_persist_dir: str = Field(default="./chroma_db", env="CHROMADB_PERSIST_DIR")
+
     # Vector Database Settings
     embedding_model: str = Field(default="BAAI/bge-m3", env="EMBEDDING_MODEL")
     similarity_threshold: float = Field(default=0.7, env="SIMILARITY_THRESHOLD")
@@ -550,6 +580,11 @@ class SessionSettings(BaseSettings):
     max_memory_mb: int = Field(default=100, env="SESSION_MAX_MEMORY_MB")
     heartbeat_interval_seconds: int = Field(default=30, env="SESSION_HEARTBEAT_INTERVAL_SECONDS")
     max_sessions_per_user: int = Field(default=10, env="MAX_SESSIONS_PER_USER")
+
+    # Session timeout bounds for validation (used by API routes)
+    min_timeout_minutes: int = Field(default=60, env="SESSION_MIN_TIMEOUT_MINUTES", ge=1)
+    max_timeout_minutes: int = Field(default=480, env="SESSION_MAX_TIMEOUT_MINUTES", le=1440)
+    default_timeout_minutes: int = Field(default=180, env="SESSION_DEFAULT_TIMEOUT_MINUTES")
     
     @field_validator('heartbeat_interval_seconds')
     @classmethod
@@ -576,6 +611,18 @@ class SessionSettings(BaseSettings):
             )
         return v
     
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
+class CaseSettings(BaseSettings):
+    """Case management configuration"""
+    # Title generation settings
+    title_generation_use_fallback: bool = Field(
+        default=True,
+        env="TITLE_GENERATION_USE_FALLBACK",
+        description="Use fallback title when LLM-generated title fails validation"
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
@@ -741,17 +788,30 @@ class LoggingSettings(BaseSettings):
         default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         env="LOG_FORMAT"
     )
-    
+
+    # Structlog format type: 'json' or 'console'
+    log_output_format: str = Field(default="json", env="LOG_OUTPUT_FORMAT")
+
+    # Log deduplication (prevents repeated log messages)
+    log_dedupe: bool = Field(default=True, env="LOG_DEDUPE")
+
+    # Buffered logging configuration
+    log_buffer_size: int = Field(default=100, env="LOG_BUFFER_SIZE")
+    log_flush_interval: float = Field(default=5.0, env="LOG_FLUSH_INTERVAL")
+
+    # Human-readable output (console renderer instead of JSON)
+    log_human_readable: bool = Field(default=False, env="LOG_HUMAN_READABLE")
+
     # File logging
     log_to_file: bool = Field(default=False, env="LOG_TO_FILE")
     log_file_path: str = Field(default="logs/faultmaven.log", env="LOG_FILE_PATH")
     log_file_max_bytes: int = Field(default=10*1024*1024, env="LOG_FILE_MAX_BYTES")  # 10MB
     log_file_backup_count: int = Field(default=5, env="LOG_FILE_BACKUP_COUNT")
-    
+
     # Structured logging
     structured_logging: bool = Field(default=True, env="STRUCTURED_LOGGING")
     include_trace_id: bool = Field(default=True, env="INCLUDE_TRACE_ID")
-    
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
@@ -1516,6 +1576,7 @@ class FaultMavenSettings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     session: SessionSettings = Field(default_factory=SessionSettings)
+    case: CaseSettings = Field(default_factory=CaseSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     protection: ProtectionSettings = Field(default_factory=ProtectionSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)

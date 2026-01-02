@@ -4,17 +4,14 @@ Centralized Provider Registry for LLM providers.
 This module provides a central registry for managing LLM providers, their configurations,
 and fallback strategies. It resolves the scattered configuration problem by providing
 a single source of truth for provider management.
+
+Configuration is read from the unified settings system (faultmaven.config.settings).
+Note: This module no longer calls load_dotenv() at import time. Environment variable
+loading is handled by the settings system.
 """
 
 import logging
-import os
 from typing import Dict, List, Optional, Type, Union
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()  # Load environment variables when module is imported
-except ImportError:
-    pass  # dotenv not available, continue without it
 
 from .base import BaseLLMProvider, ProviderConfig, LLMResponse
 from .fireworks_provider import FireworksProvider
@@ -136,36 +133,19 @@ class ProviderRegistry:
         # self._initialize_from_environment()
     
     def _ensure_initialized(self):
-        """Ensure providers are initialized before use"""
+        """Ensure providers are initialized before use.
+
+        Note: This method no longer reloads .env files. All environment variable
+        loading is handled by the unified settings system (faultmaven.config.settings).
+        """
         if not self._initialized:
             self.logger.info("🔍 Lazy-initializing provider registry...")
-            
-            # Force reload environment variables
-            try:
-                from dotenv import load_dotenv
-                import os
-                
-                # Get the current working directory and look for .env file
-                cwd = os.getcwd()
-                env_file = os.path.join(cwd, '.env')
-                
-                if os.path.exists(env_file):
-                    self.logger.info(f"🔍 Loading .env file from: {env_file}")
-                    load_dotenv(env_file, override=True)
-                    self.logger.info("🔍 Environment variables reloaded from .env file")
-                else:
-                    self.logger.warning(f"🔍 .env file not found at: {env_file}")
-                
-                # Also try to load from parent directory
-                parent_env = os.path.join(os.path.dirname(cwd), '.env')
-                if os.path.exists(parent_env):
-                    self.logger.info(f"🔍 Loading .env file from parent: {parent_env}")
-                    load_dotenv(parent_env, override=True)
-                    self.logger.info("🔍 Environment variables reloaded from parent .env file")
-                    
-            except ImportError:
-                self.logger.info("🔍 dotenv not available, using system environment")
-            
+
+            # Re-fetch settings to ensure we have the latest configuration
+            if self.settings is None:
+                from faultmaven.config.settings import get_settings
+                self.settings = get_settings()
+
             self._initialize_from_settings()
             self._initialized = True
     
@@ -219,78 +199,68 @@ class ProviderRegistry:
         self._setup_fallback_chain(primary_provider)
     
     def _create_provider_config(self, provider_name: str, schema: Dict) -> Optional[ProviderConfig]:
-        """Create provider configuration from schema and settings/environment variables"""
-        
+        """Create provider configuration from schema and settings.
+
+        Note: This method requires settings to be available. All configuration
+        comes from the unified settings system (faultmaven.config.settings).
+        """
         api_key = None
         model = None
         base_url = None
-        
-        if self.settings:
-            # Use settings-based configuration
-            if provider_name == "fireworks":
-                api_key = self.settings.llm.fireworks_api_key.get_secret_value() if self.settings.llm.fireworks_api_key else None
-                model = self.settings.llm.fireworks_model or schema["default_model"]
-                base_url = self.settings.llm.fireworks_base_url or schema["default_base_url"]
-            elif provider_name == "openai":
-                api_key = self.settings.llm.openai_api_key.get_secret_value() if self.settings.llm.openai_api_key else None
-                model = self.settings.llm.openai_model or schema["default_model"]
-                base_url = self.settings.llm.openai_base_url or schema["default_base_url"]
-            elif provider_name == "local":
-                api_key = None  # Local doesn't need API key
-                model = self.settings.llm.local_model
-                base_url = self.settings.llm.local_url
-            elif provider_name == "anthropic":
-                api_key = self.settings.llm.anthropic_api_key.get_secret_value() if self.settings.llm.anthropic_api_key else None
-                model = self.settings.llm.anthropic_model or schema["default_model"]
-                base_url = self.settings.llm.anthropic_base_url or schema["default_base_url"]
-            elif provider_name == "gemini":
-                api_key = self.settings.llm.gemini_api_key.get_secret_value() if self.settings.llm.gemini_api_key else None
-                model = self.settings.llm.gemini_model or schema["default_model"]
-                base_url = self.settings.llm.gemini_base_url or schema["default_base_url"]
-            elif provider_name == "huggingface":
-                api_key = self.settings.llm.huggingface_api_key.get_secret_value() if self.settings.llm.huggingface_api_key else None
-                model = self.settings.llm.huggingface_model or schema["default_model"]
-                base_url = self.settings.llm.huggingface_base_url or schema["default_base_url"]
-            elif provider_name == "openrouter":
-                api_key = self.settings.llm.openrouter_api_key.get_secret_value() if self.settings.llm.openrouter_api_key else None
-                model = self.settings.llm.openrouter_model or schema["default_model"]
-                base_url = self.settings.llm.openrouter_base_url or schema["default_base_url"]
-            elif provider_name == "groq":
-                api_key = self.settings.llm.groq_api_key.get_secret_value() if self.settings.llm.groq_api_key else None
-                model = self.settings.llm.groq_chat_model or schema["default_model"]
-                base_url = self.settings.llm.groq_base_url or schema["default_base_url"]
-            
-            # Skip providers without required API keys (except local)
-            if schema.get("api_key_var") and not api_key and provider_name != "local":
-                self.logger.warning(
-                    f"⚠️ Skipping provider '{provider_name}': "
-                    f"API key '{schema['api_key_var']}' not found in settings"
-                )
-                return None
-                
-        else:
-            # Fallback to environment variables when settings unavailable
-            # Check if API key is required and available
-            api_key_var = schema.get("api_key_var")
-            if api_key_var:
-                api_key = os.getenv(api_key_var)
-                if not api_key:
-                    # Skip providers without required API keys
-                    return None
-            
-            # Get configuration values from environment or defaults
-            model = os.getenv(schema["model_var"], schema["default_model"])
-            base_url = os.getenv(schema.get("base_url_var", ""), schema["default_base_url"])
-        
-        # For local provider, require environment variables
+
+        # Settings is required - use settings-based configuration
+        llm_settings = self.settings.llm
+
+        if provider_name == "fireworks":
+            api_key = llm_settings.fireworks_api_key.get_secret_value() if llm_settings.fireworks_api_key else None
+            model = llm_settings.fireworks_model or schema["default_model"]
+            base_url = llm_settings.fireworks_base_url or schema["default_base_url"]
+        elif provider_name == "openai":
+            api_key = llm_settings.openai_api_key.get_secret_value() if llm_settings.openai_api_key else None
+            model = llm_settings.openai_model or schema["default_model"]
+            base_url = llm_settings.openai_base_url or schema["default_base_url"]
+        elif provider_name == "local":
+            api_key = None  # Local doesn't need API key
+            model = llm_settings.local_model
+            base_url = llm_settings.local_url
+        elif provider_name == "anthropic":
+            api_key = llm_settings.anthropic_api_key.get_secret_value() if llm_settings.anthropic_api_key else None
+            model = llm_settings.anthropic_model or schema["default_model"]
+            base_url = llm_settings.anthropic_base_url or schema["default_base_url"]
+        elif provider_name == "gemini":
+            api_key = llm_settings.gemini_api_key.get_secret_value() if llm_settings.gemini_api_key else None
+            model = llm_settings.gemini_model or schema["default_model"]
+            base_url = llm_settings.gemini_base_url or schema["default_base_url"]
+        elif provider_name == "huggingface":
+            api_key = llm_settings.huggingface_api_key.get_secret_value() if llm_settings.huggingface_api_key else None
+            model = llm_settings.huggingface_model or schema["default_model"]
+            base_url = llm_settings.huggingface_base_url or schema["default_base_url"]
+        elif provider_name == "openrouter":
+            api_key = llm_settings.openrouter_api_key.get_secret_value() if llm_settings.openrouter_api_key else None
+            model = llm_settings.openrouter_model or schema["default_model"]
+            base_url = llm_settings.openrouter_base_url or schema["default_base_url"]
+        elif provider_name == "groq":
+            api_key = llm_settings.groq_api_key.get_secret_value() if llm_settings.groq_api_key else None
+            model = llm_settings.groq_chat_model or schema["default_model"]
+            base_url = llm_settings.groq_base_url or schema["default_base_url"]
+
+        # Skip providers without required API keys (except local)
+        if schema.get("api_key_var") and not api_key and provider_name != "local":
+            self.logger.warning(
+                f"⚠️ Skipping provider '{provider_name}': "
+                f"API key '{schema['api_key_var']}' not found in settings"
+            )
+            return None
+
+        # For local provider, require model and base_url from settings
         if provider_name == "local":
             if not model:
-                self.logger.warning(f"❌ Local provider requires LOCAL_LLM_MODEL environment variable")
+                self.logger.warning(f"❌ Local provider requires LOCAL_LLM_MODEL in settings")
                 return None
             if not base_url:
-                self.logger.warning(f"❌ Local provider requires LOCAL_LLM_URL environment variable")
+                self.logger.warning(f"❌ Local provider requires LOCAL_LLM_URL in settings")
                 return None
-        
+
         # Debug configuration values
         self.logger.info(f"🔍 Provider '{provider_name}' config:")
         self.logger.info(f"🔍   Model: {model} (from {schema.get('model_var', 'N/A')})")
@@ -298,14 +268,9 @@ class ProviderRegistry:
         self.logger.info(f"🔍   API Key: {'SET' if api_key else 'NOT_SET'}")
 
         # Get timeout and max_retries from schema or settings
-        if self.settings:
-            timeout = schema.get("timeout", self.settings.llm.request_timeout)
-            max_retries = schema.get("max_retries", self.settings.llm.max_retries)
-        else:
-            # Fallback to environment or defaults
-            timeout = schema.get("timeout", int(os.getenv("LLM_REQUEST_TIMEOUT", "30")))
-            max_retries = schema.get("max_retries", int(os.getenv("LLM_MAX_RETRIES", "3")))
-        
+        timeout = schema.get("timeout", llm_settings.request_timeout)
+        max_retries = schema.get("max_retries", llm_settings.max_retries)
+
         self.logger.info(f"🔍   Timeout: {timeout}s")
         self.logger.info(f"🔍   Max Retries: {max_retries}")
 
@@ -340,12 +305,15 @@ class ProviderRegistry:
             self.logger.error(f"❌ Error creating provider '{name}': {e}")
     
     def _setup_fallback_chain(self, primary_provider: str):
-        """Set up the provider fallback chain"""
+        """Set up the provider fallback chain.
+
+        Uses settings.llm.strict_provider_mode to determine if fallbacks are allowed.
+        """
         # Start with primary provider
         chain = [primary_provider] if primary_provider in self._providers else []
 
-        # Check if strict mode is enabled
-        strict_mode = os.getenv("STRICT_PROVIDER_MODE", "false").lower() == "true"
+        # Check if strict mode is enabled (from settings)
+        strict_mode = self.settings.llm.strict_provider_mode
 
         if strict_mode:
             # In strict mode, only use the primary provider

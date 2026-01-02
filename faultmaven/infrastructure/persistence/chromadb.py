@@ -3,9 +3,10 @@ ChromaDB Client with BaseExternalClient integration.
 
 Provides a ChromaDB client that inherits from BaseExternalClient for unified
 logging, retry logic, circuit breaker patterns, and comprehensive error handling.
+
+Configuration is read from the unified settings system (faultmaven.config.settings).
 """
 
-import os
 import chromadb
 from chromadb.config import Settings
 from typing import Any, Dict, List, Optional, Union
@@ -78,16 +79,27 @@ class ChromaDBClient(BaseExternalClient):
     def _build_config(
         self,
         chroma_persist_directory: Optional[str],
-        chromadb_url: Optional[str], 
+        chromadb_url: Optional[str],
         chromadb_host: Optional[str],
         chromadb_port: Optional[int],
         chromadb_auth_token: Optional[str]
     ) -> Dict[str, Any]:
-        """Build ChromaDB configuration from various sources."""
-        
-        # Priority: explicit parameters > environment variables > defaults
+        """Build ChromaDB configuration from various sources.
+
+        Configuration priority:
+        1. Explicit parameters passed to __init__
+        2. Unified settings system (faultmaven.config.settings)
+
+        Note: This method no longer falls back to os.getenv() directly.
+        All environment variable access happens through the settings system.
+        """
+        # Get settings for ChromaDB configuration
+        from faultmaven.config.settings import get_settings
+        settings = get_settings()
+        db_config = settings.database
+
         config = {}
-        
+
         # 1. Check for explicit URL parameter
         if chromadb_url:
             config.update({
@@ -97,24 +109,23 @@ class ChromaDBClient(BaseExternalClient):
                 "port": int(chromadb_url.split(":")[-1])
             })
             return config
-        
-        # 2. Check environment URL
-        env_url = os.getenv('CHROMADB_URL')
-        if env_url:
+
+        # 2. Check settings URL
+        if db_config.chromadb_url:
             config.update({
                 "client_type": "http",
-                "url": env_url,
-                "host": env_url.replace("http://", "").replace("https://", "").split(":")[0],
-                "port": int(env_url.split(":")[-1])
+                "url": db_config.chromadb_url,
+                "host": db_config.chromadb_url.replace("http://", "").replace("https://", "").split(":")[0],
+                "port": int(db_config.chromadb_url.split(":")[-1])
             })
             return config
-            
-        # 3. Build from individual parameters and environment
-        host = chromadb_host or os.getenv('CHROMADB_HOST', 'chromadb.faultmaven.local')
-        port = chromadb_port or int(os.getenv('CHROMADB_PORT', '30080'))
-        token = chromadb_auth_token or os.getenv('CHROMADB_AUTH_TOKEN', 'faultmaven-dev-chromadb-2025')
-        persist_dir = chroma_persist_directory or os.getenv('CHROMADB_PERSIST_DIR', './chroma_db')
-        
+
+        # 3. Build from individual parameters and settings
+        host = chromadb_host or db_config.chromadb_host
+        port = chromadb_port or db_config.chromadb_port
+        token = chromadb_auth_token or (db_config.chromadb_auth_token.get_secret_value() if db_config.chromadb_auth_token else None)
+        persist_dir = chroma_persist_directory or db_config.chromadb_persist_dir
+
         # Determine client type based on host
         if host == 'localhost' or host.startswith('127.'):
             # Local development with persistent client
@@ -130,7 +141,7 @@ class ChromaDBClient(BaseExternalClient):
                 "port": port,
                 "auth_token": token
             })
-        
+
         return config
     
     def _create_client(self, config: Dict[str, Any]):
