@@ -46,21 +46,47 @@ This document defines the deployment strategy for FaultMaven, supporting two dis
 
 ## 1. Deployment Neutrality Principle
 
-### Core Principle
+### Core Principles
 
-> **"Infrastructure choices are deployment-time decisions, not code-time decisions."**
+#### 1. Deployment Neutrality
 
-This means:
+> **"Infrastructure choices are deployment-time decisions, not code-time constraints."**
 
-| Requirement | Implementation |
-|-------------|----------------|
-| ✅ Same codebase for all deployments | Single repository, no deployment branches |
-| ✅ Same Docker image | One artifact serves all environments |
-| ✅ Zero conditional logic | No `if deployment == "local"` anywhere |
-| ✅ Environment variables control behavior | `TENANT_PROVIDER=single` vs `multi` |
-| ❌ NO separate packages | No `faultmaven/local/` or `faultmaven/cloud/` |
-| ❌ NO deployment mode enums | No `DeploymentMode.LOCAL` in code |
-| ❌ NO feature flags based on environment | Providers handle everything |
+FaultMaven Core must remain agnostic to where it runs (local dev, Docker, Kubernetes, serverless, bare metal). Infrastructure differences (databases, file storage, vector stores, cache/session backends, tenancy) are expressed via provider selection and configuration injection.
+
+**Implication**: We do not maintain separate code branches for \"local\" vs \"cloud\". We ship one codebase and one artifact that accepts different provider configurations.
+
+#### 2. Strict Separation of Composition and Logic
+
+To achieve neutrality, we enforce a strict boundary between *where the application is configured* and *where it runs*.
+
+- **Business logic (zero deployment-specific conditional logic)**: Domain core, services, and API handlers must contain **zero deployment-specific branching**. They must never read environment variables directly or check flags like `if DEPLOYMENT_MODE == \"local\"`. They operate solely on injected interfaces.
+- **Composition root (provider selection)**: Conditional logic is restricted exclusively to the application entry point / composition root. This is the only layer allowed to read provider selectors (e.g., `TENANT_PROVIDER`, `STORAGE_BACKEND`, `VECTOR_BACKEND`) to decide which concrete implementations to instantiate and inject.
+
+#### 3. Provider-Based Variability
+
+All external dependencies are modeled as Providers behind strict interfaces (Protocols/ABCs).
+
+- **Terminology**: Avoid \"deployment\" vocabulary in configuration. Prefer specific provider selectors like `TENANT_PROVIDER=single|multi` or `STORAGE_BACKEND=filesystem|s3`.
+- **Standardization**: A \"local\" deployment is simply a particular permutation of providers (e.g., SQLite + LocalFS + SingleTenant), not a separate mode.
+
+#### 4. Operational Neutrality
+
+FaultMaven Core provides the mechanisms needed for operations but does not assume the existence of any specific runtime orchestration.
+
+- **Observability**: The core exposes hooks for metrics and tracing but does not assume a specific collector (e.g., Prometheus) is running.
+- **Scheduling**: The core exposes job entry points (functions/commands) but does not assume an always-on scheduler (CronJobs, Celery beat, etc.) is present. Deployment environments are responsible for invoking these entry points.
+
+### Non-Negotiable Rules (Summary)
+
+| Rule | What it means in practice |
+|------|----------------------------|
+| ✅ Single codebase & artifact | One repository and one build artifact runs everywhere |
+| ✅ Business logic stays neutral | No deployment-specific branching in services/domain/API handlers |
+| ✅ Provider selection is explicit | Provider factories / composition root choose implementations from env selectors |
+| ✅ Operational neutrality | Metrics/tracing/jobs are exposed as hooks/entrypoints; the runtime decides exporters/schedulers |
+| ❌ No separate \"local\"/\"cloud\" packages | No parallel app trees like `faultmaven/local/` or `faultmaven/cloud/` |
+| ❌ No infra coupling in business logic | No direct vendor calls (S3/Pinecone/Redis) from core services; use interfaces |
 
 ### How It Works
 
@@ -68,10 +94,10 @@ This means:
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Application Code                              │
 │                                                                  │
-│  Uses interfaces only - no deployment-specific logic             │
-│  • CaseService calls TenantProvider.get_user_organization_id()   │
-│  • KnowledgeService calls VectorStore.search()                   │
-│  • EvidenceService calls StorageBackend.store()                  │
+│  Business logic uses interfaces only (no deployment branching)   │
+│  • CaseService calls TenantProvider (organization context)       │
+│  • KnowledgeService calls VectorStore (vector search)            │
+│  • EvidenceService calls StorageBackend (file storage)           │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -79,12 +105,12 @@ This means:
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Provider Layer                                │
 │                                                                  │
-│  Environment variables select implementations at startup         │
+│  Composition root selects implementations at startup             │
 │                                                                  │
 │  TENANT_PROVIDER=single → SingleTenantProvider                   │
 │  TENANT_PROVIDER=multi  → MultiTenantProvider                    │
 │                                                                  │
-│  STORAGE_BACKEND=local → LocalStorageBackend                     │
+│  STORAGE_BACKEND=filesystem → LocalStorageBackend                │
 │  STORAGE_BACKEND=s3    → S3StorageBackend                        │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
