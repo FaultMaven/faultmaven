@@ -48,6 +48,57 @@ class LLMProvider(str, Enum):
 
 
 # =============================================================================
+# PROVIDER SELECTORS (Doc-aligned - PR #3)
+# =============================================================================
+
+class TenantProvider(str, Enum):
+    """Tenant isolation strategy selector."""
+    SINGLE = "single"
+    MULTI = "multi"
+
+
+class DbBackend(str, Enum):
+    """Database backend selector."""
+    SQLITE = "sqlite"
+    POSTGRES = "postgres"
+
+
+class CacheBackend(str, Enum):
+    """Cache backend selector."""
+    MEMORY = "memory"
+    REDIS = "redis"
+
+
+class VectorBackend(str, Enum):
+    """Vector database backend selector."""
+    CHROMA = "chroma"
+    PINECONE = "pinecone"
+
+
+class StorageBackend(str, Enum):
+    """File storage backend selector."""
+    FILESYSTEM = "filesystem"
+    S3 = "s3"
+
+
+# Legacy deprecation tracking (logged once per session)
+_legacy_env_warnings_logged: set = set()
+
+
+def _warn_legacy_env_var(old_var: str, new_var: str) -> None:
+    """Log deprecation warning for legacy environment variable (once per var)."""
+    if old_var not in _legacy_env_warnings_logged:
+        import os
+        if os.getenv(old_var):
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"DEPRECATION: Environment variable '{old_var}' is deprecated. "
+                f"Use '{new_var}' instead. This will be removed in a future version."
+            )
+            _legacy_env_warnings_logged.add(old_var)
+
+
+# =============================================================================
 # NESTED CONFIGURATION SECTIONS
 # =============================================================================
 
@@ -1433,6 +1484,86 @@ class AgentSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+class ProviderSettings(BaseSettings):
+    """Provider selection configuration (doc-aligned selectors - PR #3).
+
+    Unified provider selection using deployment strategy vocabulary:
+    - tenant_provider: Tenant isolation strategy (single/multi)
+    - db_backend: Database backend (sqlite/postgres)
+    - cache_backend: Cache backend (memory/redis)
+    - vector_backend: Vector database backend (chroma/pinecone)
+    - storage_backend: File storage backend (filesystem/s3)
+
+    Legacy environment variables are mapped with deprecation warnings:
+    - DEPLOYMENT_MODE → TENANT_PROVIDER
+    - CASE_STORAGE_TYPE=database → DB_BACKEND=postgres (context-dependent)
+    """
+
+    # Tenant isolation strategy
+    tenant_provider: TenantProvider = Field(
+        default=TenantProvider.SINGLE,
+        env="TENANT_PROVIDER",
+        description="Tenant isolation: 'single' (local/community) or 'multi' (cloud/enterprise)"
+    )
+
+    # Database backend
+    db_backend: DbBackend = Field(
+        default=DbBackend.SQLITE,
+        env="DB_BACKEND",
+        description="Database backend: 'sqlite' (local) or 'postgres' (production)"
+    )
+
+    # Cache backend
+    cache_backend: CacheBackend = Field(
+        default=CacheBackend.MEMORY,
+        env="CACHE_BACKEND",
+        description="Cache backend: 'memory' (local) or 'redis' (production)"
+    )
+
+    # Vector database backend
+    vector_backend: VectorBackend = Field(
+        default=VectorBackend.CHROMA,
+        env="VECTOR_BACKEND",
+        description="Vector DB backend: 'chroma' (local/cloud) or 'pinecone' (cloud)"
+    )
+
+    # File storage backend
+    storage_backend: StorageBackend = Field(
+        default=StorageBackend.FILESYSTEM,
+        env="STORAGE_BACKEND",
+        description="File storage: 'filesystem' (local) or 's3' (cloud)"
+    )
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+    def __init__(self, **data):
+        """Initialize with legacy environment variable mapping."""
+        import os
+
+        # Map legacy DEPLOYMENT_MODE to TENANT_PROVIDER
+        if os.getenv("DEPLOYMENT_MODE") and not os.getenv("TENANT_PROVIDER"):
+            _warn_legacy_env_var("DEPLOYMENT_MODE", "TENANT_PROVIDER")
+            legacy_mode = os.getenv("DEPLOYMENT_MODE", "").lower()
+            if legacy_mode == "multi-tenant":
+                data.setdefault("tenant_provider", TenantProvider.MULTI)
+            elif legacy_mode == "single-tenant":
+                data.setdefault("tenant_provider", TenantProvider.SINGLE)
+
+        # Map legacy CASE_STORAGE_TYPE to DB_BACKEND
+        if os.getenv("CASE_STORAGE_TYPE") and not os.getenv("DB_BACKEND"):
+            _warn_legacy_env_var("CASE_STORAGE_TYPE", "DB_BACKEND")
+            legacy_storage = os.getenv("CASE_STORAGE_TYPE", "").lower()
+            if legacy_storage == "database":
+                # Infer postgres if production, sqlite otherwise
+                env = os.getenv("ENVIRONMENT", "development").lower()
+                if env == "production":
+                    data.setdefault("db_backend", DbBackend.POSTGRES)
+                else:
+                    data.setdefault("db_backend", DbBackend.SQLITE)
+
+        super().__init__(**data)
+
+
 class EvidenceStorageSettings(BaseSettings):
     """Evidence storage configuration for file uploads and management.
 
@@ -1502,14 +1633,34 @@ class FaultMavenSettings(BaseSettings):
     All configuration access should go through this class via dependency injection.
     """
 
-    # Deployment Mode (TASK-023: TenantProvider)
-    deployment_mode: Literal["single-tenant", "multi-tenant"] = Field(
-        default="single-tenant",
+    # Provider Selectors (PR #3 - doc-aligned vocabulary)
+    providers: ProviderSettings = Field(default_factory=ProviderSettings)
+
+    # DEPRECATED: Use providers.tenant_provider instead
+    # Kept for backward compatibility - will be removed in future version
+    _deployment_mode: Optional[Literal["single-tenant", "multi-tenant"]] = Field(
+        default=None,
         env="DEPLOYMENT_MODE",
-        description="Deployment mode for tenant isolation. "
-                    "single-tenant: All users share default organization (local, community). "
-                    "multi-tenant: Multiple organizations with strict isolation (cloud, enterprise)."
+        alias="deployment_mode",
+        description="DEPRECATED: Use TENANT_PROVIDER instead. "
+                    "single-tenant: All users share default organization. "
+                    "multi-tenant: Multiple organizations with strict isolation."
     )
+
+    @property
+    def deployment_mode(self) -> str:
+        """Get deployment mode (backward compatibility property).
+
+        DEPRECATED: Use settings.providers.tenant_provider instead.
+        Maps new TENANT_PROVIDER values to legacy deployment_mode format.
+        """
+        # If legacy env var was set directly, use it
+        if self._deployment_mode:
+            return self._deployment_mode
+        # Otherwise derive from new selector
+        if self.providers.tenant_provider == TenantProvider.MULTI:
+            return "multi-tenant"
+        return "single-tenant"
 
     # Nested configuration sections
     server: ServerSettings = Field(default_factory=ServerSettings)
