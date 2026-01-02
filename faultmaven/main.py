@@ -601,6 +601,38 @@ async def debug_health():
     return {"status": "ok", "timestamp": to_json_compatible(datetime.now(timezone.utc))}
 
 
+@app.get("/debug/config")
+async def debug_config():
+    """Get current configuration summary including active preset.
+
+    Returns information about:
+    - Active configuration preset (if any)
+    - Environment settings
+    - Storage backend types
+    - LLM provider configuration
+    - Protection settings
+
+    Useful for debugging configuration issues and verifying preset application.
+    """
+    try:
+        from .config.settings import get_settings
+        from .config.presets import get_preset_info, list_available_presets
+
+        settings = get_settings()
+
+        return {
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+            "configuration": settings.get_configuration_summary(),
+            "available_presets": list_available_presets(),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get configuration info: {e}")
+        return {
+            "error": f"Failed to get configuration: {e}",
+            "timestamp": to_json_compatible(datetime.now(timezone.utc))
+        }
+
+
 @app.get("/debug/llm-providers")
 async def debug_llm_providers():
     """Get current LLM provider status and fallback chain."""

@@ -1638,6 +1638,29 @@ class FaultMavenSettings(BaseSettings):
         """Check if running in production mode"""
         return self.server.environment == Environment.PRODUCTION
 
+    def get_active_preset(self) -> Optional[str]:
+        """Get the name of the currently active configuration preset."""
+        import os
+        return os.getenv("CONFIG_PRESET")
+
+    def get_configuration_summary(self) -> Dict[str, Any]:
+        """Get a summary of the current configuration for debugging/display."""
+        from .presets import get_preset_info
+        return {
+            "preset": get_preset_info(),
+            "environment": self.server.environment.value,
+            "deployment_mode": self.deployment_mode,
+            "storage": {
+                "session": self.database.session_storage_type,
+                "vector": self.database.vector_storage_type,
+                "case": self.database.case_storage_type,
+                "user": self.database.user_storage_type,
+            },
+            "llm_provider": self.llm.provider.value if self.llm.provider else "not_set",
+            "protection_enabled": self.protection.protection_enabled,
+            "rate_limit_enabled": self.security.rate_limit_enabled,
+        }
+
 
 # =============================================================================
 # SINGLETON MANAGEMENT
@@ -1649,11 +1672,22 @@ _settings_instance: Optional[FaultMavenSettings] = None
 def get_settings() -> FaultMavenSettings:
     """
     Get global settings instance (singleton pattern).
-    
+
     This is the ONLY function that should be used to access configuration
     throughout the application. All other modules should receive settings
     via dependency injection.
-    
+
+    Configuration Loading Order:
+    1. Load .env file (if exists)
+    2. Apply preset defaults (if CONFIG_PRESET is set or zero-config detected)
+    3. Environment variables override preset defaults
+    4. Validate final configuration
+
+    Zero-Config Mode:
+    - If no .env file and no API keys set, auto-applies 'local' preset
+    - Uses in-memory storage and local LLM (Ollama) for quick startup
+    - No external dependencies required
+
     Raises:
         ConfigurationError: If settings validation fails
     """
@@ -1667,9 +1701,26 @@ def get_settings() -> FaultMavenSettings:
             # Force load .env file with override to ensure fresh values
             load_dotenv(override=True)
 
+            # Apply preset defaults for zero-config experience
+            # Presets are applied AFTER .env but BEFORE settings instantiation
+            # This allows env vars to override preset values
+            from .presets import ensure_preset_applied, validate_preset_requirements, get_current_preset_name
+            ensure_preset_applied()
+
+            # Validate preset requirements (e.g., API keys for selected provider)
+            preset_errors = validate_preset_requirements()
+            if preset_errors:
+                import logging
+                logger = logging.getLogger(__name__)
+                for error in preset_errors:
+                    logger.warning(f"Preset configuration warning: {error}")
+
             # Debug: Log what we're loading
             import logging
             logger = logging.getLogger(__name__)
+            preset_name = get_current_preset_name()
+            if preset_name:
+                logger.info(f"Settings loading with preset '{preset_name}'")
             logger.info(f"Settings loading - CHAT_PROVIDER={os.getenv('CHAT_PROVIDER')}")
             logger.info(f"Settings loading - LOCAL_LLM_URL={os.getenv('LOCAL_LLM_URL')}")
             logger.info(f"Settings loading - LOCAL_LLM_MODEL={os.getenv('LOCAL_LLM_MODEL')}")
