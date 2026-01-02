@@ -172,17 +172,46 @@ async def lifespan(app: FastAPI):
     # SessionManager replaced by services.session.SessionService via DI container
     # Access via: container.get_session_service()
 
-    # Pre-load expensive ML models during startup (not per-request)
-    logger.info("Pre-loading ML models...")
+    # ML Model Loading Strategy (configurable lazy vs eager loading)
+    # Default: lazy loading for faster startup, models load on first use
     try:
-        from .infrastructure.model_cache import model_cache
-        bge_model = model_cache.get_bge_m3_model()
-        if bge_model:
-            logger.info("✅ BGE-M3 model pre-loaded successfully")
+        lazy_load = settings.embedding.lazy_load_ml_models
+        preload_models = settings.embedding.preload_models or []
+
+        if lazy_load and not preload_models:
+            logger.info("🚀 Lazy ML model loading enabled - models will load on first use")
+            logger.info("   (Set LAZY_LOAD_ML_MODELS=false for eager loading)")
         else:
-            logger.warning("⚠️ BGE-M3 model not available")
+            # Eager loading or specific models requested
+            logger.info("Pre-loading ML models during startup...")
+            from .infrastructure.model_cache import model_cache
+
+            # Determine which models to load
+            models_to_load = []
+            if not lazy_load:
+                # Eager mode: load all default models
+                models_to_load = ["BAAI/bge-m3"]
+            elif preload_models:
+                # Lazy mode with specific preload list
+                models_to_load = preload_models
+
+            for model_name in models_to_load:
+                try:
+                    triggered_by = "startup" if not lazy_load else "preload"
+                    if model_name == "BAAI/bge-m3":
+                        bge_model = model_cache.get_bge_m3_model(triggered_by=triggered_by)
+                        if bge_model:
+                            load_info = model_cache.get_model_load_info(model_name)
+                            load_time = load_info.load_time_seconds if load_info else "?"
+                            logger.info(f"✅ {model_name} pre-loaded in {load_time}s")
+                        else:
+                            logger.warning(f"⚠️ {model_name} not available")
+                    else:
+                        logger.warning(f"Unknown model for preloading: {model_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to pre-load {model_name}: {e}")
     except Exception as e:
-        logger.warning(f"Failed to pre-load ML models: {e}")
+        logger.warning(f"ML model loading configuration error: {e}")
 
     # Setup tracing
     init_opik_tracing()
