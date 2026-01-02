@@ -1,0 +1,308 @@
+"""Infrastructure service providers.
+
+This module contains factory functions for core infrastructure services:
+- Security (sanitizer)
+- Observability (tracer)
+- LLM (provider)
+- Storage (vector store, session store, repositories)
+- Preprocessing pipeline
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from faultmaven.container.base import BaseDIContainer
+    from faultmaven.config.settings import FaultMavenSettings
+
+logger = logging.getLogger(__name__)
+
+
+def create_sanitizer(settings: FaultMavenSettings) -> Any:
+    """Create data sanitizer for PII protection."""
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+
+    logger.debug(f"Protection config: enabled={settings.protection.protection_enabled}")
+    return DataSanitizer(settings=settings)
+
+
+def create_tracer(settings: FaultMavenSettings) -> Any:
+    """Create distributed tracer."""
+    from faultmaven.infrastructure.observability.tracing import OpikTracer
+
+    logger.debug(f"Observability config: enabled={settings.observability.tracing_enabled}")
+    return OpikTracer(settings=settings)
+
+
+def create_llm_provider() -> Any:
+    """Create LLM provider/router."""
+    from faultmaven.infrastructure.llm.router import LLMRouter
+
+    return LLMRouter()
+
+
+def create_log_processor() -> Any:
+    """Create legacy log processor."""
+    from faultmaven.core.processing.log_analyzer import LogProcessor
+
+    return LogProcessor()
+
+
+def create_data_classifier() -> Any:
+    """Create data classifier for preprocessing."""
+    from faultmaven.services.preprocessing.classifier import DataClassifier
+
+    return DataClassifier()
+
+
+def create_extractors() -> dict[str, Any]:
+    """Create all data extractors.
+
+    Returns:
+        Dict mapping extractor names to instances
+    """
+    from faultmaven.services.preprocessing.extractors import (
+        LogsAndErrorsExtractor,
+        StructuredConfigExtractor,
+        MetricsAndPerformanceExtractor,
+        UnstructuredTextExtractor,
+        SourceCodeExtractor,
+        VisualEvidenceExtractor,
+        TraceDataExtractor,
+        ProfilingDataExtractor,
+        ErrorReportExtractor,
+        DocumentationExtractor,
+        CommandOutputExtractor,
+    )
+
+    return {
+        "logs_extractor": LogsAndErrorsExtractor(),
+        "config_extractor": StructuredConfigExtractor(),
+        "metrics_extractor": MetricsAndPerformanceExtractor(),
+        "text_extractor": UnstructuredTextExtractor(),
+        "source_code_extractor": SourceCodeExtractor(),
+        "visual_extractor": VisualEvidenceExtractor(),
+        "trace_extractor": TraceDataExtractor(),
+        "profiling_extractor": ProfilingDataExtractor(),
+        "error_report_extractor": ErrorReportExtractor(),
+        "documentation_extractor": DocumentationExtractor(),
+        "command_output_extractor": CommandOutputExtractor(),
+    }
+
+
+def create_chunking_service(
+    llm_provider: Any,
+    settings: FaultMavenSettings,
+) -> Any:
+    """Create chunking service for large documents."""
+    from faultmaven.services.preprocessing.chunking_service import ChunkingService
+
+    return ChunkingService(
+        llm_router=llm_provider,
+        chunk_size_tokens=settings.preprocessing.chunk_size_tokens,
+        overlap_tokens=settings.preprocessing.chunk_overlap_tokens,
+        max_parallel_chunks=settings.preprocessing.map_reduce_max_parallel,
+    )
+
+
+def create_preprocessing_service(
+    data_classifier: Any,
+    data_sanitizer: Any,
+    extractors: dict[str, Any],
+    chunking_service: Any,
+    settings: FaultMavenSettings,
+) -> Any:
+    """Create preprocessing service with all extractors."""
+    from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
+
+    return PreprocessingService(
+        classifier=data_classifier,
+        sanitizer=data_sanitizer,
+        logs_extractor=extractors["logs_extractor"],
+        config_extractor=extractors["config_extractor"],
+        metrics_extractor=extractors["metrics_extractor"],
+        text_extractor=extractors["text_extractor"],
+        source_code_extractor=extractors["source_code_extractor"],
+        visual_extractor=extractors["visual_extractor"],
+        trace_extractor=extractors["trace_extractor"],
+        profiling_extractor=extractors["profiling_extractor"],
+        error_report_extractor=extractors["error_report_extractor"],
+        documentation_extractor=extractors["documentation_extractor"],
+        command_output_extractor=extractors["command_output_extractor"],
+        chunking_service=chunking_service,
+        chunk_trigger_tokens=settings.preprocessing.chunk_trigger_tokens,
+    )
+
+
+def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
+    """Create vector store based on configuration.
+
+    Returns:
+        Tuple of (vector_store, is_disabled)
+    """
+    vector_storage_type = settings.database.vector_storage_type.lower()
+
+    if vector_storage_type == "chromadb":
+        if not settings.server.skip_service_checks:
+            from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+
+            store = ChromaDBVectorStore()
+            logger.info(f"✅ Vector store: ChromaDB @ {settings.database.chromadb_url}")
+            return store, False
+        else:
+            logger.info("Skipping vector store (SKIP_SERVICE_CHECKS=True)")
+            return None, True
+    else:
+        from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
+
+        store = InMemoryVectorStore()
+        logger.debug("Vector store: InMemory (RAM)")
+        return store, False
+
+
+def create_case_vector_store(settings: FaultMavenSettings) -> Any | None:
+    """Create case vector store for session-specific RAG."""
+    if settings.server.skip_service_checks:
+        logger.info("Skipping case vector store (SKIP_SERVICE_CHECKS=True)")
+        return None
+
+    try:
+        from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
+
+        store = CaseVectorStore()
+        logger.debug("Case vector store initialized")
+        return store
+    except Exception as e:
+        logger.warning(f"Case vector store initialization failed: {e}")
+        return None
+
+
+async def create_redis_client(settings: FaultMavenSettings) -> Any | None:
+    """Create Redis client for session storage."""
+    if settings.server.skip_service_checks:
+        logger.info("Skipping Redis client (SKIP_SERVICE_CHECKS=True)")
+        return None
+
+    try:
+        import redis.asyncio as redis
+
+        client = redis.Redis(
+            host=settings.database.redis_host,
+            port=settings.database.redis_port,
+            db=settings.database.redis_db,
+            decode_responses=True,
+        )
+        await client.ping()
+        logger.info(f"✅ Redis client connected @ {settings.database.redis_host}:{settings.database.redis_port}")
+        return client
+    except Exception as e:
+        logger.warning(f"Redis client initialization failed: {e}")
+        return None
+
+
+def create_session_store(redis_client: Any | None, settings: FaultMavenSettings) -> Any:
+    """Create session store (Redis or InMemory)."""
+    if redis_client and not settings.server.skip_service_checks:
+        from faultmaven.infrastructure.persistence.redis_session_store import RedisSessionStore
+
+        store = RedisSessionStore(redis_client)
+        logger.info("✅ Session store: Redis")
+        return store
+    else:
+        from faultmaven.infrastructure.persistence.inmemory_session_store import InMemorySessionStore
+
+        store = InMemorySessionStore()
+        logger.debug("Session store: InMemory (RAM)")
+        return store
+
+
+async def register_infrastructure(container: BaseDIContainer) -> None:
+    """Register all infrastructure services with the container.
+
+    Args:
+        container: The DI container to register services with
+    """
+    settings = container.settings
+
+    # Log configuration
+    logger.info("🔍 Infrastructure: Registering services...")
+    logger.info(f"🔍 CHAT_PROVIDER = {settings.llm.provider}")
+    logger.info(f"🔍 SKIP_SERVICE_CHECKS = {settings.server.skip_service_checks}")
+
+    # Core security
+    sanitizer = create_sanitizer(settings)
+    container._register_service("sanitizer", sanitizer)
+
+    # Observability
+    tracer = create_tracer(settings)
+    container._register_service("tracer", tracer)
+
+    # LLM
+    llm_provider = create_llm_provider()
+    container._register_service("llm_provider", llm_provider)
+
+    # Processing
+    log_processor = create_log_processor()
+    container._register_service("log_processor", log_processor)
+
+    # Data classification
+    data_classifier = create_data_classifier()
+    container._register_service("data_classifier", data_classifier)
+
+    # Create a separate sanitizer for preprocessing (stateless)
+    from faultmaven.infrastructure.security.redaction import DataSanitizer
+    data_sanitizer = DataSanitizer()
+    container._register_service("data_sanitizer", data_sanitizer)
+
+    # Extractors
+    extractors = create_extractors()
+    for name, extractor in extractors.items():
+        setattr(container, name, extractor)
+
+    # Chunking service
+    chunking_service = create_chunking_service(llm_provider, settings)
+    container._register_service("chunking_service", chunking_service)
+
+    # Preprocessing service
+    preprocessing_service = create_preprocessing_service(
+        data_classifier, data_sanitizer, extractors, chunking_service, settings
+    )
+    container._register_service(
+        "preprocessing_service",
+        preprocessing_service,
+        dependencies=["data_classifier", "chunking_service"],
+    )
+
+    # Vector store
+    try:
+        vector_store, is_disabled = create_vector_store(settings)
+        if is_disabled:
+            container._register_disabled("vector_store", "SKIP_SERVICE_CHECKS=True")
+        else:
+            container._register_service("vector_store", vector_store)
+    except Exception as e:
+        logger.warning(f"Vector store failed, using fallback: {e}")
+        from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
+        container._register_service("vector_store", InMemoryVectorStore())
+
+    # Case vector store
+    case_vector_store = create_case_vector_store(settings)
+    if case_vector_store:
+        container._register_service("case_vector_store", case_vector_store)
+        container.case_vector_store = case_vector_store
+    else:
+        container.case_vector_store = None
+
+    # Redis client
+    redis_client = await create_redis_client(settings)
+    if redis_client:
+        container._register_service("redis_client", redis_client)
+    container.redis_client = redis_client
+
+    # Session store
+    session_store = create_session_store(redis_client, settings)
+    container._register_service("session_store", session_store)
+
+    logger.info("✅ Infrastructure layer registered")

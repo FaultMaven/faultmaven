@@ -1,0 +1,174 @@
+"""Tools layer providers.
+
+This module contains factory functions for tool creation:
+- Core tools via tool registry
+- Document Q&A tools (case evidence, user KB, global KB)
+- Knowledge ingester
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Any, List
+
+if TYPE_CHECKING:
+    from faultmaven.container.base import BaseDIContainer
+    from faultmaven.config.settings import FaultMavenSettings
+
+logger = logging.getLogger(__name__)
+
+
+def create_knowledge_ingester(settings: FaultMavenSettings) -> Any | None:
+    """Create knowledge ingester for tools that need it."""
+    if settings.server.skip_service_checks:
+        logger.debug("KnowledgeIngester skipped (SKIP_SERVICE_CHECKS=True)")
+        return None
+
+    try:
+        from faultmaven.core.knowledge.ingestion import KnowledgeIngester
+
+        return KnowledgeIngester(settings=settings)
+    except Exception as e:
+        logger.warning(f"KnowledgeIngester creation failed: {e}")
+        return None
+
+
+def create_registry_tools(
+    ingester: Any | None,
+    settings: FaultMavenSettings,
+) -> List[Any]:
+    """Create all tools from the tool registry.
+
+    Args:
+        ingester: Knowledge ingester instance
+        settings: Application settings
+
+    Returns:
+        List of tool instances
+    """
+    from faultmaven.tools.registry import tool_registry
+
+    # Import tools to trigger registration
+    import faultmaven.tools.knowledge_base
+    import faultmaven.tools.web_search
+
+    return tool_registry.create_all_tools(
+        knowledge_ingester=ingester,
+        settings=settings,
+    )
+
+
+def create_document_qa_tools(
+    case_vector_store: Any | None,
+    user_kb_vector_store: Any | None,
+    llm_provider: Any,
+    settings: FaultMavenSettings,
+) -> dict[str, Any | None]:
+    """Create document Q&A tools using strategy pattern.
+
+    Three tool instances from one base class, configured differently:
+    - Case Evidence: case-scoped forensic analysis
+    - User KB: user-scoped personal runbooks
+    - Global KB: system-wide best practices
+
+    Args:
+        case_vector_store: Vector store for case evidence
+        user_kb_vector_store: Vector store for user knowledge base
+        llm_provider: LLM provider for Q&A
+        settings: Application settings
+
+    Returns:
+        Dict with tool instances (may be None if unavailable)
+    """
+    result = {
+        "case_evidence_qa_tool": None,
+        "user_kb_qa_tool": None,
+        "global_kb_qa_tool": None,
+    }
+
+    if settings.server.skip_service_checks or not case_vector_store:
+        logger.debug("Document Q&A tools skipped (no case_vector_store or SKIP_SERVICE_CHECKS=True)")
+        return result
+
+    try:
+        from faultmaven.tools.case_evidence_qa import AnswerFromCaseEvidence
+        from faultmaven.tools.user_kb_qa import AnswerFromUserKB
+        from faultmaven.tools.global_kb_qa import AnswerFromGlobalKB
+
+        # Tool 1: Case Evidence (case-scoped forensic analysis)
+        result["case_evidence_qa_tool"] = AnswerFromCaseEvidence(
+            vector_store=case_vector_store,
+            llm_router=llm_provider,
+        )
+
+        # Tool 2: User KB (user-scoped personal runbooks)
+        if user_kb_vector_store:
+            result["user_kb_qa_tool"] = AnswerFromUserKB(
+                vector_store=user_kb_vector_store,
+                llm_router=llm_provider,
+            )
+        else:
+            logger.warning("User KB QA tool skipped (user_kb_vector_store not available)")
+
+        # Tool 3: Global KB (system-wide best practices)
+        result["global_kb_qa_tool"] = AnswerFromGlobalKB(
+            vector_store=case_vector_store,
+            llm_router=llm_provider,
+        )
+
+        logger.info("✅ Created document Q&A tools (case evidence, user KB, global KB)")
+
+    except Exception as e:
+        logger.warning(f"Document Q&A tools creation failed: {e}")
+
+    return result
+
+
+def register_tools(container: BaseDIContainer) -> None:
+    """Register all tools with the container.
+
+    Args:
+        container: The DI container to register tools with
+    """
+    settings = container.settings
+
+    logger.info("🔍 Tools: Registering tools...")
+
+    # Create knowledge ingester
+    ingester = create_knowledge_ingester(settings)
+    if ingester:
+        container._register_service("knowledge_ingester", ingester)
+    container.knowledge_ingester = ingester
+
+    # Create registry tools
+    tools = create_registry_tools(ingester, settings)
+    container.tools = tools
+
+    # Create document Q&A tools
+    llm_provider = container.get_service("llm_provider")
+    case_vector_store = getattr(container, "case_vector_store", None)
+    user_kb_vector_store = getattr(container, "user_kb_vector_store", None)
+
+    qa_tools = create_document_qa_tools(
+        case_vector_store,
+        user_kb_vector_store,
+        llm_provider,
+        settings,
+    )
+
+    # Set tool instances on container
+    container.case_evidence_qa_tool = qa_tools["case_evidence_qa_tool"]
+    container.user_kb_qa_tool = qa_tools["user_kb_qa_tool"]
+    container.global_kb_qa_tool = qa_tools["global_kb_qa_tool"]
+
+    # Add Q&A tools to tools list
+    tools_to_add = [
+        qa_tools["case_evidence_qa_tool"],
+        qa_tools["global_kb_qa_tool"],
+    ]
+    if qa_tools["user_kb_qa_tool"]:
+        tools_to_add.insert(1, qa_tools["user_kb_qa_tool"])
+
+    container.tools.extend([t for t in tools_to_add if t is not None])
+
+    logger.info(f"✅ Tools layer registered: {len(container.tools)} tools")
