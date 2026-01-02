@@ -374,11 +374,14 @@ def some_function(config):
 class TestConfigPurityAllowlist:
     """Tests verifying the allowlist configuration is correct."""
 
-    @pytest.mark.architecture
-    def test_allowed_files_exist(self, tmp_path: Path):
-        """Verify allowed files exist in the project."""
-        project_root = Path(__file__).parent.parent
+    @pytest.fixture(scope="class")
+    def project_root(self) -> Path:
+        """Get the project root directory."""
+        return Path(__file__).parent.parent.parent
 
+    @pytest.mark.architecture
+    def test_allowed_files_exist(self, project_root: Path):
+        """Verify allowed files exist in the project."""
         allowed_files = [
             "faultmaven/config/settings.py",
             "faultmaven/main.py",
@@ -389,10 +392,8 @@ class TestConfigPurityAllowlist:
             assert file_path.exists(), f"Allowed file does not exist: {allowed_file}"
 
     @pytest.mark.architecture
-    def test_forbidden_directories_exist(self):
+    def test_forbidden_directories_exist(self, project_root: Path):
         """Verify forbidden directories exist in the project."""
-        project_root = Path(__file__).parent.parent
-
         forbidden_dirs = [
             "faultmaven/services",
             "faultmaven/core",
