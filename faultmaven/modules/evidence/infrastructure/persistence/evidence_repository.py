@@ -3,6 +3,7 @@
 Handles CRUD operations for evidence records in the database.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -11,7 +12,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.models import Evidence as EvidenceModel  # SQLAlchemy model
+from faultmaven.infrastructure.persistence.models import StandaloneEvidenceModel
 from faultmaven.modules.evidence.domain.models import (
     Evidence,
     EvidenceListFilter,
@@ -56,18 +57,18 @@ class EvidenceRepository:
             Created evidence domain model
         """
         evidence_id = uuid4()
-        evidence = EvidenceModel(
-            id=evidence_id,
+        evidence = StandaloneEvidenceModel(
+            id=str(evidence_id),
             filename=filename,
             content_type=content_type,
             size_bytes=size_bytes,
             storage_path=storage_path,
-            uploaded_by=uploaded_by,
+            uploaded_by=str(uploaded_by),
             uploaded_at=datetime.now(timezone.utc),
             description=description,
-            tags=tags or [],
-            linked_cases=[],
-            metadata={},
+            tags=json.dumps(tags or []),
+            linked_cases=json.dumps([]),
+            evidence_metadata=json.dumps({}),
         )
 
         self.session.add(evidence)
@@ -85,7 +86,9 @@ class EvidenceRepository:
         Returns:
             Evidence domain model or None
         """
-        stmt = select(EvidenceModel).where(EvidenceModel.id == evidence_id)
+        stmt = select(StandaloneEvidenceModel).where(
+            StandaloneEvidenceModel.id == str(evidence_id)
+        )
         result = await self.session.execute(stmt)
         evidence = result.scalar_one_or_none()
 
@@ -106,31 +109,39 @@ class EvidenceRepository:
         conditions = []
 
         if filters.case_id:
+            # For JSON array in TEXT column, use LIKE for SQLite compatibility
             conditions.append(
-                EvidenceModel.linked_cases.contains([str(filters.case_id)])
+                StandaloneEvidenceModel.linked_cases.like(f'%"{filters.case_id}"%')
             )
 
         if filters.uploaded_by:
-            conditions.append(EvidenceModel.uploaded_by == filters.uploaded_by)
+            conditions.append(
+                StandaloneEvidenceModel.uploaded_by == str(filters.uploaded_by)
+            )
 
         if filters.tags:
-            # Match any of the provided tags
+            # Match any of the provided tags using LIKE for SQLite compatibility
+            tag_conditions = []
             for tag in filters.tags:
-                conditions.append(EvidenceModel.tags.contains([tag]))
+                tag_conditions.append(
+                    StandaloneEvidenceModel.tags.like(f'%"{tag}"%')
+                )
+            if tag_conditions:
+                conditions.append(or_(*tag_conditions))
 
         if filters.filename_contains:
             conditions.append(
-                EvidenceModel.filename.ilike(f"%{filters.filename_contains}%")
+                StandaloneEvidenceModel.filename.ilike(f"%{filters.filename_contains}%")
             )
 
         # Count query
-        count_stmt = select(func.count()).select_from(EvidenceModel)
+        count_stmt = select(func.count()).select_from(StandaloneEvidenceModel)
         if conditions:
             count_stmt = count_stmt.where(and_(*conditions))
         total = await self.session.scalar(count_stmt)
 
         # List query
-        stmt = select(EvidenceModel).offset(filters.offset).limit(filters.limit)
+        stmt = select(StandaloneEvidenceModel).offset(filters.offset).limit(filters.limit)
         if conditions:
             stmt = stmt.where(and_(*conditions))
 
@@ -151,7 +162,9 @@ class EvidenceRepository:
         Returns:
             True if deleted, False if not found
         """
-        stmt = select(EvidenceModel).where(EvidenceModel.id == evidence_id)
+        stmt = select(StandaloneEvidenceModel).where(
+            StandaloneEvidenceModel.id == str(evidence_id)
+        )
         result = await self.session.execute(stmt)
         evidence = result.scalar_one_or_none()
 
@@ -174,22 +187,27 @@ class EvidenceRepository:
         Returns:
             Updated evidence domain model or None if not found
         """
-        stmt = select(EvidenceModel).where(EvidenceModel.id == evidence_id)
+        stmt = select(StandaloneEvidenceModel).where(
+            StandaloneEvidenceModel.id == str(evidence_id)
+        )
         result = await self.session.execute(stmt)
         evidence = result.scalar_one_or_none()
 
         if not evidence:
             return None
 
-        # Add case_id to linked_cases if not already linked
-        if str(case_id) not in evidence.linked_cases:
-            evidence.linked_cases = evidence.linked_cases + [str(case_id)]
+        # Parse JSON, add case_id, serialize back
+        linked_cases = json.loads(evidence.linked_cases or "[]")
+        case_id_str = str(case_id)
+        if case_id_str not in linked_cases:
+            linked_cases.append(case_id_str)
+            evidence.linked_cases = json.dumps(linked_cases)
             await self.session.commit()
             await self.session.refresh(evidence)
 
         return self._to_domain(evidence)
 
-    def _to_domain(self, evidence: EvidenceModel) -> Evidence:
+    def _to_domain(self, evidence: StandaloneEvidenceModel) -> Evidence:
         """Convert SQLAlchemy model to domain model.
 
         Args:
@@ -198,16 +216,21 @@ class EvidenceRepository:
         Returns:
             Evidence domain model
         """
+        # Parse JSON fields
+        tags = json.loads(evidence.tags or "[]")
+        linked_cases_str = json.loads(evidence.linked_cases or "[]")
+        metadata = json.loads(evidence.evidence_metadata or "{}")
+
         return Evidence(
-            id=evidence.id,
+            id=UUID(evidence.id),
             filename=evidence.filename,
             content_type=evidence.content_type,
             size_bytes=evidence.size_bytes,
             storage_path=evidence.storage_path,
-            uploaded_by=evidence.uploaded_by,
+            uploaded_by=UUID(evidence.uploaded_by),
             uploaded_at=evidence.uploaded_at,
             description=evidence.description,
-            tags=evidence.tags or [],
-            linked_cases=[UUID(cid) for cid in (evidence.linked_cases or [])],
-            metadata=evidence.metadata or {},
+            tags=tags,
+            linked_cases=[UUID(cid) for cid in linked_cases_str],
+            metadata=metadata,
         )
