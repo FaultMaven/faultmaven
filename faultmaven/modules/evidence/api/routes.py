@@ -84,6 +84,29 @@ async def upload_evidence(
     )
 
 
+# NOTE: /case/{case_id} must be defined BEFORE /{evidence_id} routes
+# to avoid FastAPI matching "case" as an evidence_id
+@router.get("/case/{case_id}", response_model=List[Evidence])
+async def get_evidence_for_case(
+    case_id: UUID,
+    current_user: DevUser = Depends(get_current_user),
+    service: EvidenceService = Depends(get_evidence_service),
+) -> List[Evidence]:
+    """Get all evidence linked to a specific case.
+
+    Args:
+        case_id: Case UUID
+        current_user: Authenticated user
+        service: Evidence service
+
+    Returns:
+        List of evidence records for the case
+    """
+    filters = EvidenceListFilter(case_id=case_id, limit=200)
+    evidence_list, _ = await service.list_evidence(filters)
+    return evidence_list
+
+
 @router.get("/{evidence_id}", response_model=Evidence)
 async def get_evidence(
     evidence_id: UUID,
@@ -205,27 +228,6 @@ async def list_evidence(
         offset=offset,
     )
 
-    evidence_list, _ = await service.list_evidence(filters)
-    return evidence_list
-
-
-@router.get("/case/{case_id}", response_model=List[Evidence])
-async def get_evidence_for_case(
-    case_id: UUID,
-    current_user: DevUser = Depends(get_current_user),
-    service: EvidenceService = Depends(get_evidence_service),
-) -> List[Evidence]:
-    """Get all evidence linked to a specific case.
-
-    Args:
-        case_id: Case UUID
-        current_user: Authenticated user
-        service: Evidence service
-
-    Returns:
-        List of evidence records for the case
-    """
-    filters = EvidenceListFilter(case_id=case_id, limit=200)
     evidence_list, _ = await service.list_evidence(filters)
     return evidence_list
 

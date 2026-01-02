@@ -653,6 +653,15 @@ class DIContainer(BaseDIContainer):
                 self.initialize()
         return getattr(self, 'investigation_orchestrator', None)
 
+    def get_evidence_service(self):
+        """Get the evidence service (PR #46b - Evidence management)"""
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("Evidence service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                self.initialize()
+        return getattr(self, 'evidence_service', None)
+
     def get_organization_service(self):
         """Get the organization service implementation (optional feature)"""
         if not self._initialized:

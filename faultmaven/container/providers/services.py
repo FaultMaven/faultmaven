@@ -120,6 +120,57 @@ def create_investigation_orchestrator(
         return None
 
 
+def create_evidence_service(
+    db_session: Any | None,
+    settings: FaultMavenSettings,
+) -> Any | None:
+    """Create evidence service for evidence management (PR #46b).
+
+    Args:
+        db_session: Database session for repository
+        settings: Application settings
+
+    Returns:
+        EvidenceService or None if dependencies unavailable
+    """
+    if not db_session:
+        logger.debug("EvidenceService skipped (no database session)")
+        return None
+
+    try:
+        from faultmaven.modules.evidence.domain.services import EvidenceService
+        from faultmaven.modules.evidence.infrastructure import (
+            EvidenceStorageAdapter,
+            EvidenceRepository,
+        )
+        from faultmaven.services.file_storage_service import FileStorageService
+
+        # Create file storage service
+        file_storage = FileStorageService(
+            storage_root=settings.evidence_storage_root,
+            max_file_size_bytes=settings.max_evidence_file_size,
+        )
+
+        # Create storage adapter
+        base_url = f"http://{settings.server.host}:{settings.server.port}"
+        storage_adapter = EvidenceStorageAdapter(
+            file_storage=file_storage,
+            base_url=base_url,
+        )
+
+        # Create repository and service
+        evidence_repository = EvidenceRepository(session=db_session)
+        service = EvidenceService(
+            storage_provider=storage_adapter,
+            repository=evidence_repository,
+        )
+        logger.info("✅ EvidenceService initialized")
+        return service
+    except Exception as e:
+        logger.warning(f"EvidenceService initialization failed: {e}")
+        return None
+
+
 def create_session_service(
     session_store: Any | None,
     case_service: Any,
@@ -318,6 +369,12 @@ def register_services(container: BaseDIContainer) -> None:
     container.investigation_orchestrator = investigation_orchestrator
     if investigation_orchestrator:
         container._register_service("investigation_orchestrator", investigation_orchestrator)
+
+    # Evidence Service (PR #46b)
+    evidence_service = create_evidence_service(db_session, settings)
+    container.evidence_service = evidence_service
+    if evidence_service:
+        container._register_service("evidence_service", evidence_service)
 
     # Organization Service
     organization_service, organization_repository = create_organization_service(db_session, settings)
