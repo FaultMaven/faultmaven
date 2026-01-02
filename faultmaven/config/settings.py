@@ -48,6 +48,40 @@ class LLMProvider(str, Enum):
 
 
 # =============================================================================
+# PROVIDER SELECTORS (Doc-aligned - PR #3)
+# =============================================================================
+
+class TenantProvider(str, Enum):
+    """Tenant isolation strategy selector."""
+    SINGLE = "single"
+    MULTI = "multi"
+
+
+class DbBackend(str, Enum):
+    """Database backend selector."""
+    SQLITE = "sqlite"
+    POSTGRES = "postgres"
+
+
+class CacheBackend(str, Enum):
+    """Cache backend selector."""
+    MEMORY = "memory"
+    REDIS = "redis"
+
+
+class VectorBackend(str, Enum):
+    """Vector database backend selector."""
+    CHROMA = "chroma"
+    PINECONE = "pinecone"
+
+
+class StorageBackend(str, Enum):
+    """File storage backend selector."""
+    FILESYSTEM = "filesystem"
+    S3 = "s3"
+
+
+# =============================================================================
 # NESTED CONFIGURATION SECTIONS
 # =============================================================================
 
@@ -1493,6 +1527,55 @@ class AgentSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+class ProviderSettings(BaseSettings):
+    """Provider selection configuration (doc-aligned selectors - PR #3).
+
+    Unified provider selection using deployment strategy vocabulary:
+    - tenant_provider: Tenant isolation strategy (single/multi)
+    - db_backend: Database backend (sqlite/postgres)
+    - cache_backend: Cache backend (memory/redis)
+    - vector_backend: Vector database backend (chroma/pinecone)
+    - storage_backend: File storage backend (filesystem/s3)
+    """
+
+    # Tenant isolation strategy
+    tenant_provider: TenantProvider = Field(
+        default=TenantProvider.SINGLE,
+        env="TENANT_PROVIDER",
+        description="Tenant isolation: 'single' (local/community) or 'multi' (cloud/enterprise)"
+    )
+
+    # Database backend
+    db_backend: DbBackend = Field(
+        default=DbBackend.SQLITE,
+        env="DB_BACKEND",
+        description="Database backend: 'sqlite' (local) or 'postgres' (production)"
+    )
+
+    # Cache backend
+    cache_backend: CacheBackend = Field(
+        default=CacheBackend.MEMORY,
+        env="CACHE_BACKEND",
+        description="Cache backend: 'memory' (local) or 'redis' (production)"
+    )
+
+    # Vector database backend
+    vector_backend: VectorBackend = Field(
+        default=VectorBackend.CHROMA,
+        env="VECTOR_BACKEND",
+        description="Vector DB backend: 'chroma' (local/cloud) or 'pinecone' (cloud)"
+    )
+
+    # File storage backend
+    storage_backend: StorageBackend = Field(
+        default=StorageBackend.FILESYSTEM,
+        env="STORAGE_BACKEND",
+        description="File storage: 'filesystem' (local) or 's3' (cloud)"
+    )
+
+    model_config = {"env_prefix": "", "extra": "ignore"}
+
+
 class EvidenceStorageSettings(BaseSettings):
     """Evidence storage configuration for file uploads and management.
 
@@ -1562,14 +1645,19 @@ class FaultMavenSettings(BaseSettings):
     All configuration access should go through this class via dependency injection.
     """
 
-    # Deployment Mode (TASK-023: TenantProvider)
-    deployment_mode: Literal["single-tenant", "multi-tenant"] = Field(
-        default="single-tenant",
-        env="DEPLOYMENT_MODE",
-        description="Deployment mode for tenant isolation. "
-                    "single-tenant: All users share default organization (local, community). "
-                    "multi-tenant: Multiple organizations with strict isolation (cloud, enterprise)."
-    )
+    # Provider Selectors (PR #3 - doc-aligned vocabulary)
+    providers: ProviderSettings = Field(default_factory=ProviderSettings)
+
+    @property
+    def deployment_mode(self) -> str:
+        """Get deployment mode derived from tenant_provider.
+
+        Convenience property that maps tenant_provider to deployment mode format.
+        Use settings.providers.tenant_provider for new code.
+        """
+        if self.providers.tenant_provider == TenantProvider.MULTI:
+            return "multi-tenant"
+        return "single-tenant"
 
     # Nested configuration sections
     server: ServerSettings = Field(default_factory=ServerSettings)

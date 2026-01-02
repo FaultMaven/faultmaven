@@ -80,28 +80,40 @@ _inmemory_knowledge_item_repository: Optional[InMemoryKnowledgeItemRepository] =
 
 def get_storage_type() -> str:
     """
-    Get configured storage type from environment.
+    Get configured storage type from settings.
 
-    Environment variable: CASE_STORAGE_TYPE
+    Uses settings.database.case_storage_type (env: CASE_STORAGE_TYPE)
     Default: "database"
 
     Returns:
         Storage type string ("inmemory" or "database")
     """
-    return os.getenv("CASE_STORAGE_TYPE", STORAGE_TYPE_DATABASE)
+    from faultmaven.config.settings import get_settings
+    try:
+        settings = get_settings()
+        return settings.database.case_storage_type
+    except Exception:
+        # Fallback for early initialization before settings are available
+        return os.getenv("CASE_STORAGE_TYPE", STORAGE_TYPE_DATABASE)
 
 
 def get_session_storage_type() -> str:
     """
-    Get configured session storage type from environment.
+    Get configured session storage type from settings.
 
-    Environment variable: SESSION_STORAGE_TYPE
-    Default: Falls back to CASE_STORAGE_TYPE, then "database"
+    Uses settings.database.session_storage_type (env: SESSION_STORAGE_TYPE)
+    Default: Falls back to case_storage_type, then "database"
 
     Returns:
         Storage type string ("inmemory" or "database")
     """
-    return os.getenv("SESSION_STORAGE_TYPE", get_storage_type())
+    from faultmaven.config.settings import get_settings
+    try:
+        settings = get_settings()
+        return settings.database.session_storage_type
+    except Exception:
+        # Fallback for early initialization
+        return os.getenv("SESSION_STORAGE_TYPE", get_storage_type())
 
 
 def get_case_repository(
