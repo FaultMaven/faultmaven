@@ -634,6 +634,20 @@ try:
 except ImportError as e:
     logger.warning(f"Evidence routes not available: {e}")
 
+# Prometheus metrics endpoint (PR #5 - observability neutrality)
+# Only mounted when METRICS_EXPORTER=prometheus_http
+try:
+    from .config.settings import get_settings, MetricsExporter
+    _metrics_settings = get_settings()
+    if _metrics_settings.providers.metrics_exporter == MetricsExporter.PROMETHEUS_HTTP:
+        from .infrastructure.observability.metrics_exporters import create_prometheus_metrics_endpoint
+        app.include_router(create_prometheus_metrics_endpoint(), tags=["metrics"])
+        logger.info("✅ Prometheus /metrics endpoint mounted (METRICS_EXPORTER=prometheus_http)")
+    else:
+        logger.info("ℹ️ Prometheus /metrics not mounted (METRICS_EXPORTER=none). Set METRICS_EXPORTER=prometheus_http to enable.")
+except Exception as e:
+    logger.warning(f"Prometheus metrics endpoint initialization failed (non-critical): {e}")
+
 
 # Debug endpoints (present in locked API spec)
 @app.get("/debug/routes")

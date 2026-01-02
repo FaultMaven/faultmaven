@@ -81,6 +81,19 @@ class StorageBackend(str, Enum):
     S3 = "s3"
 
 
+class MetricsExporter(str, Enum):
+    """Metrics exporter provider selector (PR #5).
+
+    Controls how metrics are exposed for external collection:
+    - none: No metrics endpoint (default, operationally neutral)
+    - prometheus_http: Mount /metrics endpoint with Prometheus text format
+    - otel: (future) OpenTelemetry exporter
+    """
+    NONE = "none"
+    PROMETHEUS_HTTP = "prometheus_http"
+    # OTEL = "otel"  # Future: OpenTelemetry exporter
+
+
 # =============================================================================
 # NESTED CONFIGURATION SECTIONS
 # =============================================================================
@@ -1582,6 +1595,13 @@ class ProviderSettings(BaseSettings):
         default=StorageBackend.FILESYSTEM,
         env="STORAGE_BACKEND",
         description="File storage: 'filesystem' (local) or 's3' (cloud)"
+    )
+
+    # Metrics exporter (PR #5 - observability neutrality)
+    metrics_exporter: MetricsExporter = Field(
+        default=MetricsExporter.NONE,
+        env="METRICS_EXPORTER",
+        description="Metrics exporter: 'none' (default, no /metrics) or 'prometheus_http' (mount /metrics)"
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
