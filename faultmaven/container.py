@@ -24,6 +24,11 @@ from datetime import datetime, timezone
 from faultmaven.config.settings import FaultMavenSettings, get_settings
 from faultmaven.container.base import BaseDIContainer
 from faultmaven.container.errors import ServiceUnavailableError, InitializationError
+from faultmaven.container.providers import (
+    register_infrastructure,
+    register_services,
+    register_tools,
+)
 
 # Import interfaces with graceful fallback for testing environments
 try:
@@ -120,15 +125,15 @@ class DIContainer(BaseDIContainer):
             raise InitializationError("Failed to initialize settings", cause=e)
 
         try:
-            # Always try to create infrastructure layer first - even if interfaces not available
-            # This allows tests to mock the infrastructure layer creation
-            await self._create_infrastructure_layer()
+            # Use providers for layer initialization
+            # Infrastructure layer: LLM, storage, security, observability
+            await register_infrastructure(self)
 
-            # Core tools - Domain-specific functionality
-            self._create_tools_layer()
+            # Tools layer: Tool registry, document Q&A tools
+            register_tools(self)
 
-            # Service layer - Business logic orchestration
-            self._create_service_layer()
+            # Service layer: Business logic services
+            register_services(self)
 
             self._initialized = True
             self._initializing = False
@@ -136,16 +141,14 @@ class DIContainer(BaseDIContainer):
 
         except Exception as e:
             logger.error(f"❌ DI Container initialization failed: {e}")
-            # Always reset _initializing flag regardless of error type
             self._initializing = False
 
-            # Check if interfaces are available - if not, this is expected and we use minimal container
+            # Check if interfaces are available - if not, use minimal container
             if not INTERFACES_AVAILABLE:
                 logger.warning("Interfaces not available - creating minimal container for testing")
                 self._create_minimal_container()
                 self._initialized = True
             else:
-                # Real error with interfaces available - don't initialize
                 import traceback
                 logger.error(f"Critical initialization error: {traceback.format_exc()}")
                 self._initialized = False

@@ -5,6 +5,7 @@ This package provides modular components for the DI container:
 - registry: Dependency tracking and validation
 - errors: Container-specific exceptions
 - utils: Common utilities for service management
+- providers: Service factory modules (infrastructure, services, tools)
 
 Usage:
     from faultmaven.container import container
@@ -32,6 +33,11 @@ from faultmaven.container.utils import (
     log_service_status,
 )
 from faultmaven.container.base import BaseDIContainer
+from faultmaven.container.providers import (
+    register_infrastructure,
+    register_services,
+    register_tools,
+)
 
 __all__ = [
     # Base
@@ -52,4 +58,8 @@ __all__ = [
     "service_getter",
     "check_dependencies",
     "log_service_status",
+    # Providers
+    "register_infrastructure",
+    "register_services",
+    "register_tools",
 ]
