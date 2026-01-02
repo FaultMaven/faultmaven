@@ -1318,46 +1318,58 @@ faultmaven/
 
 ---
 
-#### Week 19-20: High Priority API Endpoints
+#### Week 19-20: High Priority API Endpoints (Microservices Parity)
 
-**Objective**: Implement HIGH priority missing endpoints.
+**Objective**: Implement missing endpoints from microservices architecture to achieve API superset.
 
-**Missing Endpoints** (11 total):
-- Evidence management: 4 endpoints
-- Session search: 1 endpoint
-- Case statistics: 3 endpoints
-- Knowledge ingest: 1 endpoint
-- Bulk operations: 2 endpoints
+**Status**: Based on API comparison analysis (`faultmaven-doc-internal/guides/api-comparison-monolith-vs-microservices.md`)
+
+**Missing Endpoints** (13 total from microservices):
+
+- Evidence Service: 7 endpoints (CRITICAL - dedicated service in microservices)
+- Session enhancements: 5 endpoints (HIGH - enhanced features)
+- Knowledge Base search: 1 endpoint (HIGH - full-text search)
+
+**Obsolete Endpoints** (5 endpoints to remove):
+
+- Standalone `/api/v1/data/*` endpoints (replaced by case-scoped evidence and dedicated evidence service)
 
 **Implementation** (parallel work):
 
-1. **Evidence Management** (Day 1-5):
-   - `POST /evidence` - Upload with metadata
-   - `GET /evidence` - List evidence
-   - `DELETE /evidence/{id}` - Delete evidence
-   - `PUT /evidence/{id}` - Update metadata
-   - Tests: 15 tests
+1. **Evidence Service Endpoints** (Day 1-7) - CRITICAL:
+   - `POST /api/v1/evidence` - Upload evidence (not case-scoped)
+   - `GET /api/v1/evidence/{evidence_id}` - Get evidence details
+   - `GET /api/v1/evidence/{evidence_id}/download` - Download evidence file
+   - `DELETE /api/v1/evidence/{evidence_id}` - Delete evidence
+   - `GET /api/v1/evidence` - List all evidence (with filtering)
+   - `GET /api/v1/evidence/case/{case_id}` - Get evidence for specific case
+   - `POST /api/v1/evidence/{evidence_id}/link` - Link evidence to case
+   - Tests: 20 tests (CRUD + linking + download)
 
-2. **Session Search** (Day 6-8):
-   - `GET /sessions/search?q={query}` - Full-text search
-   - Elasticsearch integration (optional)
-   - Tests: 8 tests
+2. **Session Enhancement Endpoints** (Day 8-12) - HIGH:
+   - `PUT /api/v1/sessions/{session_id}` - Update session metadata
+   - `GET /api/v1/sessions/{session_id}/messages` - List session messages
+   - `POST /api/v1/sessions/{session_id}/messages` - Add message to session
+   - `POST /api/v1/sessions/search` - Search sessions by query
+   - `POST /api/v1/sessions/{session_id}/archive` - Archive session
+   - Tests: 15 tests (update + messages + search + archive)
 
-3. **Case Analytics** (Day 9-12):
-   - `GET /cases/statistics` - Aggregate stats
-   - `GET /cases/{id}/timeline` - Case timeline
-   - `GET /cases/trends` - Trend analysis
-   - Tests: 12 tests
+3. **Knowledge Base Full-Text Search** (Day 13-15) - HIGH:
+   - `POST /api/v1/knowledge/documents/search` - Full-text search (non-semantic)
+   - Complements existing semantic search endpoint
+   - Tests: 8 tests (full-text vs semantic search)
 
-4. **Knowledge Ingest** (Day 13-15):
-   - `POST /knowledge/ingest` - Bulk document upload
-   - Chunking and embedding pipeline
-   - Tests: 10 tests
+4. **Remove Obsolete Data Endpoints** (Day 16):
+   - Remove standalone `/api/v1/data/*` endpoints
+   - Ensure case-scoped evidence endpoints handle all use cases
+   - Update documentation and OpenAPI spec
 
 **Deliverables**:
-- ✅ 11 HIGH priority endpoints implemented
-- ✅ 45+ tests passing
-- ✅ User-facing features enhanced
+- ✅ 13 HIGH priority endpoints implemented
+- ✅ 43+ tests passing (20 + 15 + 8)
+- ✅ Microservices API parity achieved
+- ✅ 5 obsolete endpoints removed
+- ✅ OpenAPI spec updated
 
 ---
 
