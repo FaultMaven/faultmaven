@@ -621,6 +621,14 @@ if MESSAGES_ROUTES_AVAILABLE and messages:
     app.include_router(messages.router, prefix="/api/v1", tags=["messages", "agent_chat"])
     logger.info("✅ Session Messages & Agent Chat endpoints added")
 
+# Evidence module routes (PR #46b)
+try:
+    from .modules.evidence.api.routes import router as evidence_router
+    app.include_router(evidence_router, prefix="/api/v1", tags=["evidence"])
+    logger.info("✅ Evidence management endpoints added")
+except ImportError as e:
+    logger.warning(f"Evidence routes not available: {e}")
+
 
 # Debug endpoints (present in locked API spec)
 @app.get("/debug/routes")

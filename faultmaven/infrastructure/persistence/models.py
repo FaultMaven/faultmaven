@@ -905,7 +905,7 @@ class InvestigationSessionModel(Base):
 
 
 # ============================================================
-# Knowledge Item Type Enum
+# Knowledge Item Model
 # ============================================================
 
 class KnowledgeItemTypeEnum(str, enum.Enum):
@@ -918,6 +918,66 @@ class KnowledgeItemTypeEnum(str, enum.Enum):
     BEST_PRACTICE = "best_practice"
     FAQ = "faq"
     RUNBOOK = "runbook"
+
+
+# ============================================================
+# Standalone Evidence Model (PR #46b)
+# ============================================================
+
+class StandaloneEvidenceModel(Base):
+    """Standalone evidence file metadata for Evidence module (PR #46b).
+
+    Unlike EvidenceModel (which is case-scoped), this model supports
+    standalone evidence files that can be linked to multiple cases.
+
+    Used by the Evidence Service API endpoints:
+    - POST /api/v1/evidence (upload)
+    - GET /api/v1/evidence/{id} (get details)
+    - DELETE /api/v1/evidence/{id} (delete)
+    - POST /api/v1/evidence/{id}/link (link to case)
+    """
+    __tablename__ = "standalone_evidence"
+
+    # Primary Key (UUID)
+    id = Column(String(36), primary_key=True)
+
+    # File metadata
+    filename = Column(String(512), nullable=False)
+    content_type = Column(String(256), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    storage_path = Column(String(2048), nullable=False)
+
+    # Ownership
+    uploaded_by = Column(String(36), nullable=False, index=True)
+
+    # Timestamps
+    uploaded_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+
+    # Optional fields
+    description = Column(Text, nullable=True)
+    tags = Column(Text, nullable=False, default="[]")  # JSON array as TEXT
+    linked_cases = Column(Text, nullable=False, default="[]")  # JSON array of case IDs
+
+    # Metadata (JSON)
+    evidence_metadata = Column("metadata", Text, default="{}")
+
+    __table_args__ = (
+        CheckConstraint("LENGTH(TRIM(filename)) > 0", name="standalone_evidence_filename_not_empty"),
+        CheckConstraint("LENGTH(TRIM(storage_path)) > 0", name="standalone_evidence_storage_path_not_empty"),
+        CheckConstraint("size_bytes >= 0", name="standalone_evidence_size_non_negative"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<StandaloneEvidenceModel(id={self.id}, "
+            f"filename={self.filename}, "
+            f"size_bytes={self.size_bytes})>"
+        )
 
 
 # ============================================================
