@@ -892,6 +892,21 @@ class EmbeddingSettings(BaseSettings):
             )
         return v
 
+    # ML Model Loading Strategy
+    lazy_load_ml_models: bool = Field(
+        default=True,
+        env="LAZY_LOAD_ML_MODELS",
+        description="If True, ML models (BGE-M3, etc.) are loaded on first use. "
+                    "If False, models are pre-loaded at startup for warm starts. "
+                    "Lazy loading improves startup time but first request may be slower."
+    )
+    preload_models: list = Field(
+        default_factory=list,
+        env="PRELOAD_MODELS",
+        description="List of model names to pre-load at startup even with lazy_load_ml_models=True. "
+                    "Example: ['BAAI/bge-m3'] to pre-load only BGE-M3."
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
