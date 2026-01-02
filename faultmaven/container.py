@@ -7,9 +7,9 @@ the interface-based dependency injection pattern.
 
 Core Responsibilities:
 - Singleton container with lazy initialization
-- Dependency graph resolution for all services
+- Dependency graph resolution for all services via DependencyRegistry
 - Configuration management from environment variables
-- Proper error handling and fallback mechanisms
+- Proper error handling with specific exceptions
 
 Key Components:
 - Infrastructure layer: LLM providers, security, observability
@@ -22,6 +22,8 @@ from typing import List, Optional, Any
 import logging
 from datetime import datetime, timezone
 from faultmaven.config.settings import FaultMavenSettings, get_settings
+from faultmaven.container.base import BaseDIContainer
+from faultmaven.container.errors import ServiceUnavailableError, InitializationError
 
 # Import interfaces with graceful fallback for testing environments
 try:
@@ -75,18 +77,22 @@ except ImportError as e:
 
 
 
-class DIContainer:
-    """Singleton dependency injection container for centralized component management"""
-    
-    _instance = None
-    
+class DIContainer(BaseDIContainer):
+    """Singleton dependency injection container for centralized component management.
+
+    Extends BaseDIContainer to inherit:
+    - DependencyRegistry for service lifecycle tracking
+    - Standardized service access patterns
+    - Health check infrastructure
+    """
+
     def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-            cls._instance._initializing = False  # Prevent re-entrant initialization
-            cls._instance.settings = None  # Will be initialized on first access
-        return cls._instance
+        # Use parent's singleton implementation
+        instance = super().__new__(cls)
+        # Initialize settings if not already present
+        if not hasattr(instance, 'settings'):
+            instance.settings = None
+        return instance
     
     async def initialize(self):
         """Initialize all dependencies with proper error handling (async for proper event loop handling)"""
@@ -96,7 +102,7 @@ class DIContainer:
             logger.debug("Container already initialized, skipping")
             return
 
-        if getattr(self, '_initializing', False):
+        if self._initializing:
             logger.debug("Container initialization already in progress, skipping")
             return
 
@@ -106,11 +112,12 @@ class DIContainer:
         # Initialize settings as the single source of truth
         try:
             self.settings = get_settings()
+            self._register_service("settings", self.settings)
             logger.info("✅ Unified settings system initialized")
         except Exception as e:
             logger.error(f"❌ Failed to initialize settings system: {e}")
             self._initializing = False
-            raise
+            raise InitializationError("Failed to initialize settings", cause=e)
 
         try:
             # Always try to create infrastructure layer first - even if interfaces not available
@@ -185,21 +192,24 @@ class DIContainer:
         # Data sanitization for PII protection
         from faultmaven.infrastructure.security.redaction import DataSanitizer
         logger.debug(f"Protection config loaded: enabled={self.settings.protection.protection_enabled}")
-        self.sanitizer: ISanitizer = DataSanitizer(settings=self.settings)
-        
+        sanitizer = DataSanitizer(settings=self.settings)
+        self._register_service("sanitizer", sanitizer)
+
         # Distributed tracing (initialize first to set up environment variables)
         from faultmaven.infrastructure.observability.tracing import OpikTracer
         logger.debug(f"Observability config loaded: enabled={self.settings.observability.tracing_enabled}")
-        self.tracer: ITracer = OpikTracer(settings=self.settings)
-        
+        tracer = OpikTracer(settings=self.settings)
+        self._register_service("tracer", tracer)
+
         # LLM Provider (initialize after Opik tracer to ensure environment is properly set up)
         from faultmaven.infrastructure.llm.router import LLMRouter
-        # LLMRouter does not accept settings; it reads runtime config internally
-        self.llm_provider: ILLMProvider = LLMRouter()
-        
+        llm_provider = LLMRouter()
+        self._register_service("llm_provider", llm_provider)
+
         # Core processing interfaces (legacy log processor)
         from faultmaven.core.processing.log_analyzer import LogProcessor
-        self.log_processor = LogProcessor()
+        log_processor = LogProcessor()
+        self._register_service("log_processor", log_processor)
 
         # New preprocessing pipeline (Phase 1-4) - All 11 data types
         from faultmaven.services.preprocessing.classifier import DataClassifier
@@ -220,7 +230,8 @@ class DIContainer:
         from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
         from faultmaven.infrastructure.security.redaction import DataSanitizer
 
-        self.data_classifier = DataClassifier()
+        data_classifier = DataClassifier()
+        self._register_service("data_classifier", data_classifier)
 
         # Original 6 extractors
         self.logs_extractor = LogsAndErrorsExtractor()
@@ -237,19 +248,21 @@ class DIContainer:
         self.documentation_extractor = DocumentationExtractor()
         self.command_output_extractor = CommandOutputExtractor()
 
-        self.data_sanitizer = DataSanitizer()
+        data_sanitizer = DataSanitizer()
+        self._register_service("data_sanitizer", data_sanitizer)
 
         # ChunkingService for large documents (Phase 4)
-        self.chunking_service = ChunkingService(
+        chunking_service = ChunkingService(
             llm_router=self.llm_provider,
             chunk_size_tokens=self.settings.preprocessing.chunk_size_tokens,
             overlap_tokens=self.settings.preprocessing.chunk_overlap_tokens,
             max_parallel_chunks=self.settings.preprocessing.map_reduce_max_parallel
         )
+        self._register_service("chunking_service", chunking_service)
 
-        self.preprocessing_service = PreprocessingService(
-            classifier=self.data_classifier,
-            sanitizer=self.data_sanitizer,
+        preprocessing_service = PreprocessingService(
+            classifier=data_classifier,
+            sanitizer=data_sanitizer,
             logs_extractor=self.logs_extractor,
             config_extractor=self.config_extractor,
             metrics_extractor=self.metrics_extractor,
@@ -261,9 +274,10 @@ class DIContainer:
             error_report_extractor=self.error_report_extractor,
             documentation_extractor=self.documentation_extractor,
             command_output_extractor=self.command_output_extractor,
-            chunking_service=self.chunking_service,
+            chunking_service=chunking_service,
             chunk_trigger_tokens=self.settings.preprocessing.chunk_trigger_tokens
         )
+        self._register_service("preprocessing_service", preprocessing_service, dependencies=["data_classifier", "chunking_service"])
         
         # ============================================
         # Vector Store (Configurable Adapter)
@@ -276,21 +290,24 @@ class DIContainer:
                 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 
                 if not self.settings.server.skip_service_checks:
-                    self.vector_store: IVectorStore = ChromaDBVectorStore()
+                    vector_store = ChromaDBVectorStore()
+                    self._register_service("vector_store", vector_store)
                     logger.info(f"✅ Vector store: ChromaDB @ {self.settings.database.chromadb_url}")
                 else:
                     logger.info("Skipping vector store initialization (SKIP_SERVICE_CHECKS=True)")
-                    self.vector_store = None
+                    self._register_disabled("vector_store", "SKIP_SERVICE_CHECKS=True")
             else:
                 # In-memory adapter for vector embeddings (default)
                 from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
 
-                self.vector_store = InMemoryVectorStore()
+                vector_store = InMemoryVectorStore()
+                self._register_service("vector_store", vector_store)
                 logger.debug("Vector store: InMemory (RAM) - simple word-based similarity, data lost on restart")
         except Exception as e:
             logger.warning(f"Vector store initialization failed; falling back to in-memory: {e}")
             from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
-            self.vector_store = InMemoryVectorStore()
+            vector_store = InMemoryVectorStore()
+            self._register_service("vector_store", vector_store)
 
         # Case vector store for Session-Specific RAG (Working Memory)
         from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
@@ -1630,123 +1647,48 @@ class DIContainer:
         return llm_provider
     
     def get_sanitizer(self):
-        """Get the data sanitizer interface implementation"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            # Only warn if not currently initializing
-            if not getattr(self, '_initializing', False):
-                logger.warning("Data sanitizer requested but container not initialized - this should not happen after startup")
-                self.initialize()
-        
-        # Ensure we always return a valid implementation, even if initialization failed
-        sanitizer = getattr(self, 'sanitizer', None)
-        if sanitizer is None:
-            # Create minimal fallback implementation
-            from unittest.mock import MagicMock
-            logger = logging.getLogger(__name__)
-            logger.warning("Creating fallback sanitizer due to initialization failure")
-            self.sanitizer = MagicMock()
-            return self.sanitizer
-        return sanitizer
-    
+        """Get the data sanitizer interface implementation."""
+        return self.get_service("sanitizer", required=True)
+
     def get_tracer(self):
-        """Get the tracer interface implementation"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            # Only warn if not currently initializing
-            if not getattr(self, '_initializing', False):
-                logger.warning("Tracer requested but container not initialized - this should not happen after startup")
-                self.initialize()
-        
-        # Ensure we always return a valid implementation, even if initialization failed
-        tracer = getattr(self, 'tracer', None)
-        if tracer is None:
-            # Create minimal fallback implementation
-            from unittest.mock import MagicMock
-            logger = logging.getLogger(__name__)
-            logger.warning("Creating fallback tracer due to initialization failure")
-            self.tracer = MagicMock()
-            return self.tracer
-        return tracer
-    
+        """Get the tracer interface implementation."""
+        return self.get_service("tracer", required=True)
+
     def get_tools(self):
-        """Get list of available tools"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            # Only warn if not currently initializing
-            if not getattr(self, '_initializing', False):
-                logger.warning("Tools requested but container not initialized - this should not happen after startup")
-                self.initialize()
+        """Get list of available tools."""
         return getattr(self, 'tools', [])
-    
+
     def get_data_classifier(self):
-        """Get the data classifier interface implementation"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            # Only warn if not currently initializing
-            if not getattr(self, '_initializing', False):
-                logger.warning("Data classifier requested but container not initialized - this should not happen after startup")
-                self.initialize()
-        return getattr(self, 'data_classifier', None)
+        """Get the data classifier interface implementation."""
+        return self.get_service("data_classifier", required=True)
     
     def get_log_processor(self):
-        """Get the log processor interface implementation"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            # Only warn if not currently initializing
-            if not getattr(self, '_initializing', False):
-                logger.warning("Log processor requested but container not initialized - this should not happen after startup")
-                self.initialize()
-        return getattr(self, 'log_processor', None)
+        """Get the log processor interface implementation."""
+        return self.get_service("log_processor", required=True)
 
     def get_preprocessing_service(self):
-        """Get the preprocessing service (new Phase 1 pipeline)"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            if not getattr(self, '_initializing', False):
-                logger.warning("Preprocessing service requested but container not initialized")
-                self.initialize()
-        return getattr(self, 'preprocessing_service', None)
-    
+        """Get the preprocessing service (new Phase 1 pipeline)."""
+        return self.get_service("preprocessing_service", required=True)
+
     def get_vector_store(self):
-        """Get the vector store interface implementation"""
-        if not self._initialized:
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        return getattr(self, 'vector_store', None)
-    
+        """Get the vector store interface implementation."""
+        return self.get_service("vector_store")
+
     def get_knowledge_ingester(self):
-        """Get the knowledge ingester interface implementation"""
-        if not self._initialized:
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        return getattr(self, 'knowledge_ingester', None)
-    
+        """Get the knowledge ingester interface implementation."""
+        return self.get_service("knowledge_ingester")
+
     def get_session_store(self):
-        """Get the session store interface implementation"""
-        if not self._initialized:
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        return getattr(self, 'session_store', None)
-    
+        """Get the session store interface implementation."""
+        return self.get_service("session_store")
+
     def get_session_service(self):
-        """Get the session service implementation"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            # Only warn if not currently initializing
-            if not getattr(self, '_initializing', False):
-                logger.warning("Session service requested but container not initialized - this should not happen after startup")
-                self.initialize()
-        return getattr(self, 'session_service', None)
-    
+        """Get the session service implementation."""
+        return self.get_service("session_service")
+
     def get_case_service(self) -> Optional[ICaseService]:
-        """Get the case service implementation (optional feature)"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning("Case service requested but container not initialized")
-            if not getattr(self, '_initializing', False):
-                self.initialize()
-        return getattr(self, 'case_service', None)
+        """Get the case service implementation (optional feature)."""
+        return self.get_service("case_service")
 
     def get_investigation_service(self):
         """Get the investigation service implementation (v2.0 milestone-based)"""
@@ -2754,96 +2696,56 @@ class DIContainer:
         return getattr(self, 'user_store', None)
 
     def health_check(self) -> dict:
-        """Check health of all container dependencies"""
+        """Check health of all container dependencies.
+
+        Uses the registry to get service status information.
+        """
+        # Get base health from registry
+        base_health = self.get_health()
+
         if not self._initialized:
             return {"status": "not_initialized", "components": {}}
-        
-        components = {
-            "llm_provider": self.llm_provider is not None,
-            "sanitizer": self.sanitizer is not None,
-            "tracer": self.tracer is not None,
-            "vector_store": self.vector_store is not None,
-            "session_store": self.session_store is not None,
-            # Authentication Services
-            "token_manager": getattr(self, 'token_manager', None) is not None,
-            "user_store": getattr(self, 'user_store', None) is not None,
-            "tools_count": len(self.tools) if self.tools else 0,
-            "agent_service": self.agent_service is not None,
-            "data_service": self.data_service is not None,
-            "knowledge_service": self.knowledge_service is not None,
-            "session_service": self.session_service is not None,
-            "data_classifier": self.data_classifier is not None,
-            "log_processor": self.log_processor is not None,
-            # Phase 2 Advanced Intelligence Services
-            "memory_service": getattr(self, 'memory_service', None) is not None,
-            "planning_service": getattr(self, 'planning_service', None) is not None,
-            "enhanced_agent_service": getattr(self, 'enhanced_agent_service', None) is not None,
-            "orchestration_service": getattr(self, 'orchestration_service', None) is not None,
-            # Performance Monitoring Services
-            "metrics_collector": getattr(self, 'metrics_collector', None) is not None,
-            "intelligent_cache": getattr(self, 'intelligent_cache', None) is not None,
-            "analytics_dashboard_service": getattr(self, 'analytics_dashboard_service', None) is not None,
-            "sla_monitor": getattr(self, 'sla_monitor', None) is not None,
-            "performance_monitor": getattr(self, 'performance_monitor', None) is not None,
-            # Phase 3 Enhanced Data Processing Services
-            "pattern_learner": getattr(self, 'pattern_learner', None) is not None,
-            "enhanced_data_classifier": getattr(self, 'enhanced_data_classifier', None) is not None,
-            "enhanced_log_processor": getattr(self, 'enhanced_log_processor', None) is not None,
-            "enhanced_security_assessment": getattr(self, 'enhanced_security_assessment', None) is not None,
-            "enhanced_data_service": getattr(self, 'enhanced_data_service', None) is not None,
-            # Phase A Microservice Foundation Services
-            "microservice_session_service": getattr(self, 'microservice_session_service', None) is not None,
-            "confidence_service": getattr(self, 'confidence_service', None) is not None,
-            "policy_service": getattr(self, 'policy_service', None) is not None,
-            "unified_retrieval_service": getattr(self, 'unified_retrieval_service', None) is not None,
-            "decision_recorder": getattr(self, 'decision_recorder', None) is not None,
-            # Phase B Orchestration and Coordination Services
-            "gateway_service": getattr(self, 'gateway_service', None) is not None,
-            "loop_guard_service": getattr(self, 'loop_guard_service', None) is not None,
-            "orchestrator_service": getattr(self, 'orchestrator_service', None) is not None,
-            # Agentic Framework Services - Next-generation agent architecture
-            "business_logic_workflow_engine": getattr(self, 'business_logic_workflow_engine', None) is not None,
-            "agent_state_manager": getattr(self, 'agent_state_manager', None) is not None,
-            "query_classification_engine": getattr(self, 'query_classification_engine', None) is not None,
-            "tool_skill_broker": getattr(self, 'tool_skill_broker', None) is not None,
-            "guardrails_policy_layer": getattr(self, 'guardrails_policy_layer', None) is not None,
-            "response_synthesizer": getattr(self, 'response_synthesizer', None) is not None,
-            "error_fallback_manager": getattr(self, 'error_fallback_manager', None) is not None,
-        }
-        
-        all_healthy = all(
-            comp if isinstance(comp, bool) else comp > 0
-            for comp in components.values()
-        )
-        
+
+        # Build component status from registry
+        all_services = self._registry.get_all_services()
+        components = {}
+
+        for name, info in all_services.items():
+            components[name] = info.is_available()
+
+        # Add tools count
+        components["tools_count"] = len(self.tools) if hasattr(self, 'tools') and self.tools else 0
+
+        # Determine overall health
+        failed_services = self._registry.get_failed_services()
+        if failed_services:
+            status = "degraded"
+        elif all(v if isinstance(v, bool) else v > 0 for v in components.values()):
+            status = "healthy"
+        else:
+            status = "degraded"
+
         return {
-            "status": "healthy" if all_healthy else "degraded",
-            "components": components
+            "status": status,
+            "initialized": self._initialized,
+            "components": components,
+            "registry": base_health,
         }
-    
+
     def reset(self):
-        """Reset container state (useful for testing)"""
-        self._initialized = False
-        self._initializing = False
-        
-        # Clear all cached infrastructure and service components
-        infrastructure_attrs = [
-            'llm_provider', 'sanitizer', 'tracer', 'vector_store', 'session_store', 'token_manager', 'user_store',
-            'data_classifier', 'log_processor', 'session_service', 'agent_service', 'data_service', 'knowledge_service'
-        ]
-        for attr in infrastructure_attrs:
-            if hasattr(self, attr):
-                delattr(self, attr)
-        
-        # Clear tools layer
+        """Reset container state (useful for testing).
+
+        Delegates to BaseDIContainer.reset() which clears the registry.
+        """
+        # Clear tools separately (not in registry)
         if hasattr(self, 'tools'):
             delattr(self, 'tools')
-        
-        # Clear cached services
-        service_attrs = ['agent_service', 'data_service', 'knowledge_service']
-        for attr in service_attrs:
-            if hasattr(self, attr):
-                delattr(self, attr)
+
+        # Clear settings
+        self.settings = None
+
+        # Use parent's reset which clears all registered services
+        super().reset()
 
 
 # Global container access - always returns the current singleton instance

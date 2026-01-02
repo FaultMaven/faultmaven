@@ -1,17 +1,15 @@
 """Container package for FaultMaven Dependency Injection.
 
 This package provides modular components for the DI container:
+- base: Core BaseDIContainer with registry integration
 - registry: Dependency tracking and validation
 - errors: Container-specific exceptions
 - utils: Common utilities for service management
 
-The main DIContainer class remains in container.py for backward compatibility,
-but uses these modular components internally.
-
 Usage:
     from faultmaven.container import container
     await container.initialize()
-    service = container.get_session_service()
+    llm = container.get_service("llm_provider", required=True)
 """
 
 from faultmaven.container.registry import (
@@ -33,8 +31,11 @@ from faultmaven.container.utils import (
     check_dependencies,
     log_service_status,
 )
+from faultmaven.container.base import BaseDIContainer
 
 __all__ = [
+    # Base
+    "BaseDIContainer",
     # Registry
     "DependencyRegistry",
     "ServiceInfo",
