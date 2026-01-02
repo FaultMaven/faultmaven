@@ -1180,6 +1180,14 @@ class FeatureSettings(BaseSettings):
     # Deprecated: SELF_CORRECTION_THRESHOLD → use ConversationThresholds.self_correction_max_confidence
     # Deprecated: FORCED_CLARIFICATION_THRESHOLD → use ConversationThresholds.confidence_override_threshold
 
+    # Job Runner Configuration
+    job_runner_type: str = Field(
+        default="inmemory",
+        env="JOB_RUNNER_TYPE",
+        description="Background job scheduler type. Options: 'apscheduler' (production), "
+                    "'inmemory' (development). APScheduler requires the apscheduler package."
+    )
+
     # Experimental features
     enable_advanced_reasoning: bool = Field(default=False, env="ENABLE_ADVANCED_REASONING")
     enable_multi_agent: bool = Field(default=False, env="ENABLE_MULTI_AGENT")

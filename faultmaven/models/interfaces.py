@@ -2475,3 +2475,176 @@ class IPreprocessor(ABC):
             with clear section headers, and limited to ~8,000 characters.
         """
         pass
+
+
+# =============================================================================
+# JOB RUNNER INTERFACE
+# =============================================================================
+
+class IJobRunner(ABC):
+    """Interface for background job scheduling and execution.
+
+    This interface abstracts the job runner/scheduler implementation, allowing
+    FaultMaven to use different backends (APScheduler, in-memory, RQ, Celery)
+    without changing application code.
+
+    Design Principles:
+        - Deployment-neutral: Works with any scheduler backend
+        - Simple API: Schedule, cancel, and query scheduled jobs
+        - Async-friendly: Supports both sync and async task functions
+        - Observable: Provides job status and execution history
+
+    Implementations:
+        - APSchedulerJobRunner: Production scheduler using APScheduler
+        - InMemoryJobRunner: Simple scheduler for local development
+        - (Future) RQJobRunner: Redis Queue-based distributed jobs
+        - (Future) CeleryJobRunner: Celery-based distributed jobs
+
+    Configuration:
+        Set JOB_RUNNER_TYPE environment variable:
+        - "apscheduler" (default for production)
+        - "inmemory" (default for local/development)
+
+    Usage:
+        job_runner = container.get_job_runner()
+
+        # Schedule recurring task
+        job_id = job_runner.schedule_recurring(
+            task_func=cleanup_task,
+            interval_seconds=3600,
+            job_id="hourly_cleanup"
+        )
+
+        # Schedule one-time task
+        job_id = job_runner.schedule_once(
+            task_func=process_data,
+            run_at=datetime.now() + timedelta(minutes=5)
+        )
+
+        # Cancel job
+        job_runner.cancel_job(job_id)
+    """
+
+    @abstractmethod
+    def start(self) -> None:
+        """Start the job runner.
+
+        Must be called before scheduling any jobs.
+        Called during application startup.
+        """
+        pass
+
+    @abstractmethod
+    def shutdown(self, wait: bool = True) -> None:
+        """Shutdown the job runner gracefully.
+
+        Args:
+            wait: If True, wait for running jobs to complete.
+                  If False, cancel running jobs immediately.
+
+        Called during application shutdown.
+        """
+        pass
+
+    @abstractmethod
+    def schedule_recurring(
+        self,
+        task_func: callable,
+        interval_seconds: int,
+        job_id: Optional[str] = None,
+        job_name: Optional[str] = None,
+        args: tuple = (),
+        kwargs: dict = None,
+        replace_existing: bool = True
+    ) -> str:
+        """Schedule a recurring job that runs at fixed intervals.
+
+        Args:
+            task_func: Function to execute (sync or async)
+            interval_seconds: Interval between executions in seconds
+            job_id: Unique identifier for the job (auto-generated if None)
+            job_name: Human-readable job name for logging
+            args: Positional arguments to pass to task_func
+            kwargs: Keyword arguments to pass to task_func
+            replace_existing: If True, replace job with same job_id
+
+        Returns:
+            job_id: The scheduled job's identifier
+
+        Example:
+            job_id = runner.schedule_recurring(
+                task_func=cleanup_orphaned_data,
+                interval_seconds=3600,  # Every hour
+                job_id="hourly_cleanup",
+                job_name="Cleanup orphaned data"
+            )
+        """
+        pass
+
+    @abstractmethod
+    def schedule_once(
+        self,
+        task_func: callable,
+        run_at: datetime,
+        job_id: Optional[str] = None,
+        job_name: Optional[str] = None,
+        args: tuple = (),
+        kwargs: dict = None
+    ) -> str:
+        """Schedule a one-time job to run at a specific time.
+
+        Args:
+            task_func: Function to execute (sync or async)
+            run_at: Datetime when the job should run
+            job_id: Unique identifier for the job (auto-generated if None)
+            job_name: Human-readable job name for logging
+            args: Positional arguments to pass to task_func
+            kwargs: Keyword arguments to pass to task_func
+
+        Returns:
+            job_id: The scheduled job's identifier
+        """
+        pass
+
+    @abstractmethod
+    def cancel_job(self, job_id: str) -> bool:
+        """Cancel a scheduled job.
+
+        Args:
+            job_id: Identifier of the job to cancel
+
+        Returns:
+            True if job was cancelled, False if job not found
+        """
+        pass
+
+    @abstractmethod
+    def get_job_info(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get information about a scheduled job.
+
+        Args:
+            job_id: Identifier of the job
+
+        Returns:
+            Dictionary with job info, or None if job not found.
+            Info includes: job_id, name, next_run_time, interval, status
+        """
+        pass
+
+    @abstractmethod
+    def list_jobs(self) -> List[Dict[str, Any]]:
+        """List all scheduled jobs.
+
+        Returns:
+            List of job info dictionaries
+        """
+        pass
+
+    @abstractmethod
+    def is_running(self) -> bool:
+        """Check if the job runner is currently running.
+
+        Returns:
+            True if runner is started and accepting jobs
+        """
+        pass
