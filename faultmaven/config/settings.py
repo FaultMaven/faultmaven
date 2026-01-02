@@ -81,23 +81,6 @@ class StorageBackend(str, Enum):
     S3 = "s3"
 
 
-# Legacy deprecation tracking (logged once per session)
-_legacy_env_warnings_logged: set = set()
-
-
-def _warn_legacy_env_var(old_var: str, new_var: str) -> None:
-    """Log deprecation warning for legacy environment variable (once per var)."""
-    if old_var not in _legacy_env_warnings_logged:
-        import os
-        if os.getenv(old_var):
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                f"DEPRECATION: Environment variable '{old_var}' is deprecated. "
-                f"Use '{new_var}' instead. This will be removed in a future version."
-            )
-            _legacy_env_warnings_logged.add(old_var)
-
-
 # =============================================================================
 # NESTED CONFIGURATION SECTIONS
 # =============================================================================
@@ -1493,10 +1476,6 @@ class ProviderSettings(BaseSettings):
     - cache_backend: Cache backend (memory/redis)
     - vector_backend: Vector database backend (chroma/pinecone)
     - storage_backend: File storage backend (filesystem/s3)
-
-    Legacy environment variables are mapped with deprecation warnings:
-    - DEPLOYMENT_MODE → TENANT_PROVIDER
-    - CASE_STORAGE_TYPE=database → DB_BACKEND=postgres (context-dependent)
     """
 
     # Tenant isolation strategy
@@ -1535,33 +1514,6 @@ class ProviderSettings(BaseSettings):
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
-
-    def __init__(self, **data):
-        """Initialize with legacy environment variable mapping."""
-        import os
-
-        # Map legacy DEPLOYMENT_MODE to TENANT_PROVIDER
-        if os.getenv("DEPLOYMENT_MODE") and not os.getenv("TENANT_PROVIDER"):
-            _warn_legacy_env_var("DEPLOYMENT_MODE", "TENANT_PROVIDER")
-            legacy_mode = os.getenv("DEPLOYMENT_MODE", "").lower()
-            if legacy_mode == "multi-tenant":
-                data.setdefault("tenant_provider", TenantProvider.MULTI)
-            elif legacy_mode == "single-tenant":
-                data.setdefault("tenant_provider", TenantProvider.SINGLE)
-
-        # Map legacy CASE_STORAGE_TYPE to DB_BACKEND
-        if os.getenv("CASE_STORAGE_TYPE") and not os.getenv("DB_BACKEND"):
-            _warn_legacy_env_var("CASE_STORAGE_TYPE", "DB_BACKEND")
-            legacy_storage = os.getenv("CASE_STORAGE_TYPE", "").lower()
-            if legacy_storage == "database":
-                # Infer postgres if production, sqlite otherwise
-                env = os.getenv("ENVIRONMENT", "development").lower()
-                if env == "production":
-                    data.setdefault("db_backend", DbBackend.POSTGRES)
-                else:
-                    data.setdefault("db_backend", DbBackend.SQLITE)
-
-        super().__init__(**data)
 
 
 class EvidenceStorageSettings(BaseSettings):
@@ -1638,22 +1590,11 @@ class FaultMavenSettings(BaseSettings):
 
     @property
     def deployment_mode(self) -> str:
-        """Get deployment mode (backward compatibility property).
+        """Get deployment mode derived from tenant_provider.
 
-        DEPRECATED: Use settings.providers.tenant_provider instead.
-        Maps new TENANT_PROVIDER values to legacy deployment_mode format.
-
-        This property supports backward compatibility by:
-        1. Checking for legacy DEPLOYMENT_MODE env var first
-        2. Falling back to providers.tenant_provider mapping
+        Convenience property that maps tenant_provider to deployment mode format.
+        Use settings.providers.tenant_provider for new code.
         """
-        import os
-        # Check for legacy env var first
-        legacy_value = os.getenv("DEPLOYMENT_MODE")
-        if legacy_value:
-            _warn_legacy_env_var("DEPLOYMENT_MODE", "TENANT_PROVIDER")
-            return legacy_value.lower()
-        # Otherwise derive from new selector
         if self.providers.tenant_provider == TenantProvider.MULTI:
             return "multi-tenant"
         return "single-tenant"
