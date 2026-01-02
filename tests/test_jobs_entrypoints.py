@@ -185,7 +185,7 @@ class TestJobsRunner:
         """Test run_job function with mocked dependencies."""
         from faultmaven.jobs.run import run_job
 
-        with patch("faultmaven.jobs.run.get_settings", return_value=mock_settings), \
+        with patch("faultmaven.config.settings.get_settings", return_value=mock_settings), \
              patch("faultmaven.jobs.run.container", mock_container):
             result = await run_job("case_cleanup", verbose=False)
 
