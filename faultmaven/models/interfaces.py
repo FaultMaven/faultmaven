@@ -1,5 +1,6 @@
 # File: faultmaven/models/interfaces.py
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Any, Dict, Optional, List, ContextManager
 from pydantic import BaseModel, Field
 
