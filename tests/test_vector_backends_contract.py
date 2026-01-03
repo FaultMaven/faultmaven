@@ -16,6 +16,53 @@ from datetime import datetime
 from typing import Dict, Any, List
 from unittest.mock import MagicMock, patch, AsyncMock
 
+# =============================================================================
+# Remove chromadb stub from conftest.py to allow real chromadb import
+# =============================================================================
+
+import sys
+
+# conftest.py stubs out chromadb to avoid heavy dependencies, but we need the real module
+if "chromadb" in sys.modules and not hasattr(sys.modules["chromadb"], "__version__"):
+    # Stubbed chromadb detected - remove it to allow real import
+    del sys.modules["chromadb"]
+    # Also remove any cached imports that depend on the stub
+    for module_name in list(sys.modules.keys()):
+        if module_name.startswith("faultmaven.infrastructure.vector"):
+            del sys.modules[module_name]
+
+# =============================================================================
+# Module-level imports to avoid pytest import machinery issues
+# =============================================================================
+
+try:
+    from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
+    from faultmaven.infrastructure.vector.base import VectorDocument, VectorBackendType
+    from faultmaven.infrastructure.vector.sanitizer import (
+        create_chroma_sanitizer,
+        sanitize_metadata,
+    )
+    from faultmaven.infrastructure.vector import (
+        get_vector_backend,
+        reset_vector_backend,
+    )
+    CHROMA_AVAILABLE = True
+except ImportError:
+    CHROMA_AVAILABLE = False
+    ChromaVectorBackend = None
+    VectorDocument = None
+    VectorBackendType = None
+    create_chroma_sanitizer = None
+    sanitize_metadata = None
+    get_vector_backend = None
+    reset_vector_backend = None
+
+# Skip marker for tests requiring chromadb
+skip_if_no_chroma = pytest.mark.skipif(
+    not CHROMA_AVAILABLE,
+    reason="chromadb not installed (optional dependency)"
+)
+
 
 # =============================================================================
 # Fixtures
@@ -54,8 +101,6 @@ def complex_raw_metadata() -> Dict[str, Any]:
 @pytest.fixture
 def sample_documents():
     """Sample documents for testing."""
-    from faultmaven.infrastructure.vector.base import VectorDocument
-
     return [
         VectorDocument(
             id="doc1",
@@ -148,28 +193,25 @@ def mock_pinecone_index():
 class TestSanitizerContract:
     """Tests that sanitizer produces output acceptable to both backends."""
 
+    @skip_if_no_chroma
     def test_sanitizer_output_has_only_primitives(self, complex_raw_metadata):
         """Verify sanitizer output contains only primitive types."""
-        from faultmaven.infrastructure.vector.sanitizer import sanitize_metadata
-
         result = sanitize_metadata(complex_raw_metadata)
 
         for key, value in result.items():
             assert isinstance(value, (str, int, float, bool, list)), \
                 f"Key {key} has non-primitive type: {type(value)}"
 
+    @skip_if_no_chroma
     def test_sanitizer_removes_none_values(self, complex_raw_metadata):
         """Verify None values are removed."""
-        from faultmaven.infrastructure.vector.sanitizer import sanitize_metadata
-
         result = sanitize_metadata(complex_raw_metadata)
 
         assert None not in result.values()
 
+    @skip_if_no_chroma
     def test_sanitizer_flattens_nested_dicts(self, complex_raw_metadata):
         """Verify nested dicts are flattened with dot notation."""
-        from faultmaven.infrastructure.vector.sanitizer import sanitize_metadata
-
         result = sanitize_metadata(complex_raw_metadata)
 
         # Should have flattened key
@@ -177,18 +219,16 @@ class TestSanitizerContract:
         # Should not have nested dict
         assert not any(isinstance(v, dict) for v in result.values())
 
+    @skip_if_no_chroma
     def test_sanitizer_removes_internal_keys(self, complex_raw_metadata):
         """Verify internal keys (starting with __) are removed."""
-        from faultmaven.infrastructure.vector.sanitizer import sanitize_metadata
-
         result = sanitize_metadata(complex_raw_metadata)
 
         assert "__internal" not in result
 
+    @skip_if_no_chroma
     def test_chroma_sanitizer_converts_lists(self, complex_raw_metadata):
         """Verify Chroma sanitizer converts lists to strings."""
-        from faultmaven.infrastructure.vector.sanitizer import create_chroma_sanitizer
-
         sanitizer = create_chroma_sanitizer()
         result = sanitizer.sanitize(complex_raw_metadata)
 
@@ -196,6 +236,7 @@ class TestSanitizerContract:
         if "tags" in result:
             assert isinstance(result["tags"], str)
 
+    @skip_if_no_chroma
     def test_pinecone_sanitizer_preserves_lists(self, complex_raw_metadata):
         """Verify Pinecone sanitizer preserves lists."""
         from faultmaven.infrastructure.vector.sanitizer import create_pinecone_sanitizer
@@ -215,6 +256,7 @@ class TestSanitizerContract:
 class TestBackendContract:
     """Tests that both backends accept same sanitized metadata."""
 
+    @skip_if_no_chroma
     @pytest.mark.asyncio
     async def test_chroma_accepts_sanitized_metadata(
         self,
@@ -222,26 +264,19 @@ class TestBackendContract:
         sanitized_metadata,
     ):
         """Test ChromaDB backend accepts sanitized metadata."""
-        with patch("chromadb.PersistentClient", return_value=mock_chroma_client):
-            try:
-                from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
-                from faultmaven.infrastructure.vector.base import VectorDocument
+        backend = ChromaVectorBackend()  # Ephemeral mode
+        backend._client = mock_chroma_client  # Inject mock client
 
-                backend = ChromaVectorBackend(persist_directory="./test_data")
+        doc = VectorDocument(
+            id="test1",
+            content="Test content",
+            embedding=[0.1] * 384,
+            metadata=sanitized_metadata,
+        )
 
-                doc = VectorDocument(
-                    id="test1",
-                    content="Test content",
-                    embedding=[0.1] * 384,
-                    metadata=sanitized_metadata,
-                )
-
-                # Should not raise
-                count = await backend.upsert([doc])
-                assert count == 1
-
-            except ImportError:
-                pytest.skip("chromadb not installed")
+        # Should not raise
+        count = await backend.upsert([doc])
+        assert count == 1
 
     @pytest.mark.asyncio
     async def test_pinecone_accepts_sanitized_metadata(
@@ -279,29 +314,23 @@ class TestBackendContract:
                 except ImportError:
                     pytest.skip("pinecone not installed")
 
+    @skip_if_no_chroma
     @pytest.mark.asyncio
     async def test_both_backends_handle_empty_metadata(self, mock_chroma_client):
         """Test both backends handle empty metadata."""
-        with patch("chromadb.PersistentClient", return_value=mock_chroma_client):
-            try:
-                from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
-                from faultmaven.infrastructure.vector.base import VectorDocument
+        backend = ChromaVectorBackend()  # Ephemeral mode
+        backend._client = mock_chroma_client  # Inject mock client
 
-                backend = ChromaVectorBackend(persist_directory="./test_data")
+        doc = VectorDocument(
+            id="test1",
+            content="Test content",
+            embedding=[0.1] * 384,
+            metadata={},  # Empty metadata
+        )
 
-                doc = VectorDocument(
-                    id="test1",
-                    content="Test content",
-                    embedding=[0.1] * 384,
-                    metadata={},  # Empty metadata
-                )
-
-                # Should not raise
-                count = await backend.upsert([doc])
-                assert count == 1
-
-            except ImportError:
-                pytest.skip("chromadb not installed")
+        # Should not raise
+        count = await backend.upsert([doc])
+        assert count == 1
 
 
 # =============================================================================
@@ -311,62 +340,44 @@ class TestBackendContract:
 class TestVectorFactory:
     """Tests for vector backend factory."""
 
+    @skip_if_no_chroma
     def test_factory_creates_chroma_by_default(self, mock_chroma_client):
         """Test factory creates ChromaDB backend by default."""
-        with patch("chromadb.PersistentClient", return_value=mock_chroma_client):
-            with patch("faultmaven.config.settings.get_settings") as mock_settings:
-                mock_settings.return_value = MagicMock(
-                    providers=MagicMock(
-                        vector_backend=MagicMock(value="chroma")
-                    ),
-                    evidence_storage=MagicMock(
-                        evidence_storage_root="./data"
-                    ),
-                )
+        with patch("faultmaven.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(
+                providers=MagicMock(
+                    vector_backend=MagicMock(value="chroma")
+                ),
+                evidence_storage=MagicMock(
+                    evidence_storage_root="./data"
+                ),
+            )
 
-                try:
-                    from faultmaven.infrastructure.vector import (
-                        get_vector_backend,
-                        reset_vector_backend,
-                        VectorBackendType,
-                    )
+            reset_vector_backend()
+            backend = get_vector_backend(reset=True)
+            backend._client = mock_chroma_client  # Inject mock client
 
-                    reset_vector_backend()
-                    backend = get_vector_backend(reset=True)
+            assert backend.get_backend_type() == VectorBackendType.CHROMA
 
-                    assert backend.get_backend_type() == VectorBackendType.CHROMA
-
-                except ImportError:
-                    pytest.skip("chromadb not installed")
-
+    @skip_if_no_chroma
     def test_factory_explicit_override(self, mock_chroma_client):
         """Test factory accepts explicit backend type override."""
-        with patch("chromadb.PersistentClient", return_value=mock_chroma_client):
-            with patch("faultmaven.config.settings.get_settings") as mock_settings:
-                mock_settings.return_value = MagicMock(
-                    providers=MagicMock(
-                        vector_backend=MagicMock(value="pinecone")  # Settings say Pinecone
-                    ),
-                    evidence_storage=MagicMock(
-                        evidence_storage_root="./data"
-                    ),
-                )
+        with patch("faultmaven.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(
+                providers=MagicMock(
+                    vector_backend=MagicMock(value="pinecone")  # Settings say Pinecone
+                ),
+                evidence_storage=MagicMock(
+                    evidence_storage_root="./data"
+                ),
+            )
 
-                try:
-                    from faultmaven.infrastructure.vector import (
-                        get_vector_backend,
-                        reset_vector_backend,
-                        VectorBackendType,
-                    )
+            reset_vector_backend()
+            # But we explicitly request Chroma
+            backend = get_vector_backend(backend_type="chroma", reset=True)
+            backend._client = mock_chroma_client  # Inject mock client
 
-                    reset_vector_backend()
-                    # But we explicitly request Chroma
-                    backend = get_vector_backend(backend_type="chroma", reset=True)
-
-                    assert backend.get_backend_type() == VectorBackendType.CHROMA
-
-                except ImportError:
-                    pytest.skip("chromadb not installed")
+            assert backend.get_backend_type() == VectorBackendType.CHROMA
 
     def test_factory_pinecone_requires_api_key(self):
         """Test factory raises error if Pinecone requested without API key."""
@@ -378,11 +389,6 @@ class TestVectorFactory:
                 providers=MagicMock(
                     vector_backend=MagicMock(value="pinecone")
                 ),
-            )
-
-            from faultmaven.infrastructure.vector import (
-                get_vector_backend,
-                reset_vector_backend,
             )
 
             reset_vector_backend()
@@ -398,6 +404,7 @@ class TestVectorFactory:
 class TestIntegrationContract:
     """Integration tests verifying full workflow with sanitized metadata."""
 
+    @skip_if_no_chroma
     @pytest.mark.asyncio
     async def test_full_upsert_search_cycle_chroma(
         self,
@@ -405,38 +412,31 @@ class TestIntegrationContract:
         complex_raw_metadata,
     ):
         """Test full upsert/search cycle with Chroma using sanitized metadata."""
-        with patch("chromadb.PersistentClient", return_value=mock_chroma_client):
-            try:
-                from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
-                from faultmaven.infrastructure.vector.base import VectorDocument
-                from faultmaven.infrastructure.vector.sanitizer import create_chroma_sanitizer
+        backend = ChromaVectorBackend()  # Ephemeral mode
+        backend._client = mock_chroma_client  # Inject mock client
+        sanitizer = create_chroma_sanitizer()
 
-                backend = ChromaVectorBackend(persist_directory="./test_data")
-                sanitizer = create_chroma_sanitizer()
+        # Sanitize metadata
+        clean_metadata = sanitizer.sanitize(complex_raw_metadata)
 
-                # Sanitize metadata
-                clean_metadata = sanitizer.sanitize(complex_raw_metadata)
+        # Upsert document
+        doc = VectorDocument(
+            id="test1",
+            content="Test content about error handling",
+            embedding=[0.1] * 384,
+            metadata=clean_metadata,
+        )
+        count = await backend.upsert([doc])
+        assert count == 1
 
-                # Upsert document
-                doc = VectorDocument(
-                    id="test1",
-                    content="Test content about error handling",
-                    embedding=[0.1] * 384,
-                    metadata=clean_metadata,
-                )
-                count = await backend.upsert([doc])
-                assert count == 1
+        # Search
+        results = await backend.search(
+            query_embedding=[0.1] * 384,
+            top_k=5,
+        )
+        assert len(results) >= 1
 
-                # Search
-                results = await backend.search(
-                    query_embedding=[0.1] * 384,
-                    top_k=5,
-                )
-                assert len(results) >= 1
-
-            except ImportError:
-                pytest.skip("chromadb not installed")
-
+    @skip_if_no_chroma
     @pytest.mark.asyncio
     async def test_sanitized_metadata_round_trip(
         self,
@@ -452,29 +452,22 @@ class TestIntegrationContract:
             "metadatas": [sanitized_metadata],
         })
 
-        with patch("chromadb.PersistentClient", return_value=mock_chroma_client):
-            try:
-                from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
-                from faultmaven.infrastructure.vector.base import VectorDocument
+        backend = ChromaVectorBackend()  # Ephemeral mode
+        backend._client = mock_chroma_client  # Inject mock client
 
-                backend = ChromaVectorBackend(persist_directory="./test_data")
+        # Upsert
+        doc = VectorDocument(
+            id="test1",
+            content="Test content",
+            embedding=[0.1] * 384,
+            metadata=sanitized_metadata,
+        )
+        await backend.upsert([doc])
 
-                # Upsert
-                doc = VectorDocument(
-                    id="test1",
-                    content="Test content",
-                    embedding=[0.1] * 384,
-                    metadata=sanitized_metadata,
-                )
-                await backend.upsert([doc])
-
-                # Get back
-                results = await backend.get(["test1"])
-                assert len(results) == 1
-                assert results[0].metadata == sanitized_metadata
-
-            except ImportError:
-                pytest.skip("chromadb not installed")
+        # Get back
+        results = await backend.get(["test1"])
+        assert len(results) == 1
+        assert results[0].metadata == sanitized_metadata
 
 
 # =============================================================================
@@ -484,18 +477,12 @@ class TestIntegrationContract:
 class TestBackendTypeConsistency:
     """Tests for backend type reporting consistency."""
 
+    @skip_if_no_chroma
     def test_chroma_reports_correct_type(self, mock_chroma_client):
         """Test ChromaDB backend reports CHROMA type."""
-        with patch("chromadb.PersistentClient", return_value=mock_chroma_client):
-            try:
-                from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
-                from faultmaven.infrastructure.vector.base import VectorBackendType
-
-                backend = ChromaVectorBackend(persist_directory="./test_data")
-                assert backend.get_backend_type() == VectorBackendType.CHROMA
-
-            except ImportError:
-                pytest.skip("chromadb not installed")
+        backend = ChromaVectorBackend()  # Ephemeral mode
+        backend._client = mock_chroma_client  # Inject mock client
+        assert backend.get_backend_type() == VectorBackendType.CHROMA
 
     def test_pinecone_reports_correct_type(self, mock_pinecone_index):
         """Test Pinecone backend reports PINECONE type."""
@@ -518,6 +505,7 @@ class TestBackendTypeConsistency:
                 except ImportError:
                     pytest.skip("pinecone not installed")
 
+    @skip_if_no_chroma
     def test_interface_is_abstract(self):
         """Test that IVectorBackend cannot be instantiated directly."""
         from faultmaven.infrastructure.vector.base import IVectorBackend

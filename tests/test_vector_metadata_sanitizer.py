@@ -129,8 +129,11 @@ class TestNestedFlattening:
         metadata = {"l1": {"l2": {"l3": {"l4": {"l5": "too deep"}}}}}
         result = sanitizer.sanitize(metadata)
 
-        # Default max depth is 3, so l4+ should be stringified
-        assert "l1.l2.l3" in result
+        # Default max depth is 3, so at depth 3 it stops recursing
+        # This means l1.l2.l3.l4 will be a key with dict value (stringified)
+        assert "l1.l2.l3.l4" in result
+        # The value should be a string (dict got stringified)
+        assert isinstance(result["l1.l2.l3.l4"], str)
 
     def test_mixed_nested_and_flat(self, sanitizer):
         """Test handling of mixed nested and flat keys."""
