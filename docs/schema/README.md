@@ -42,21 +42,16 @@ This directory contains PostgreSQL schema definition scripts for the FaultMaven 
 
 **When to use**: After 001, enables Feature 1 (share cases with specific users)
 
-### 003_enterprise_user_schema.sql (24KB)
+### Enterprise User Schema (Enterprise Edition)
 
-**Status**: ✅ Production-ready (Implemented 2025-01-14)
+**Description**: Multi-tenancy with organizations, teams, and RBAC
 
-**Description**: Implements enterprise SaaS multi-tenancy with teams and RBAC:
-- 8 tables: `organizations`, `organization_members`, `teams`, `team_members`, `roles`, `permissions`, `role_permissions`, `user_audit_log`
-- 7 system roles: owner, admin, member, viewer, team lead
-- 19 permissions across 5 resources (cases, knowledge_base, organization, users, teams)
-- Row-Level Security (RLS) policies for multi-tenant isolation
-- SQL functions: `user_has_org_permission()`, `user_is_team_member()`, `get_user_teams()`
-- Adds `org_id` and `team_id` columns to `cases` table for team-based sharing
+This schema is available in FaultMaven Enterprise Edition. It implements:
 
-**Reference**: `docs/architecture/user-storage-design.md`
-
-**When to use**: After 002, enables Features 2-4 prerequisites (organizations, teams, RBAC)
+- Organization and team management
+- Role-Based Access Control (RBAC)
+- Multi-tenant data isolation with Row-Level Security (RLS)
+- Organization and team-based case sharing
 
 ### 004_kb_sharing_infrastructure.sql (23KB)
 
@@ -80,10 +75,11 @@ This directory contains PostgreSQL schema definition scripts for the FaultMaven 
 ### Application Order
 
 **IMPORTANT**: Apply schema files in sequential order:
+
 1. `001_initial_hybrid_schema.sql` - Base schema (required)
 2. `002_add_case_sharing.sql` - Case sharing (depends on 001)
-3. `003_enterprise_user_schema.sql` - Organizations & teams (depends on 001, 002)
-4. `004_kb_sharing_infrastructure.sql` - KB sharing (depends on 003)
+3. Enterprise user schema (Enterprise Edition only)
+4. `004_kb_sharing_infrastructure.sql` - KB sharing (depends on enterprise schema if using teams/orgs)
 
 ### Option 1: Manual Application (PostgreSQL CLI)
 
@@ -92,10 +88,10 @@ This directory contains PostgreSQL schema definition scripts for the FaultMaven 
 psql -h localhost -U faultmaven -d faultmaven_cases
 
 # Apply migrations in order
-\i docs/database/docs/schema/001_initial_hybrid_schema.sql
-\i docs/database/docs/schema/002_add_case_sharing.sql
-\i docs/database/docs/schema/003_enterprise_user_schema.sql
-\i docs/database/docs/schema/004_kb_sharing_infrastructure.sql
+\i docs/schema/001_initial_hybrid_schema.sql
+\i docs/schema/002_add_case_sharing.sql
+# Enterprise schema available in Enterprise Edition
+\i docs/schema/004_kb_sharing_infrastructure.sql
 
 # Verify tables created
 \dt
@@ -123,10 +119,10 @@ docker run -d \
 sleep 5
 
 # Apply migrations in order
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/schema/001_initial_hybrid_schema.sql
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/schema/002_add_case_sharing.sql
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/schema/003_enterprise_user_schema.sql
-docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/database/docs/schema/004_kb_sharing_infrastructure.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/schema/001_initial_hybrid_schema.sql
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/schema/002_add_case_sharing.sql
+# Enterprise schema available in Enterprise Edition
+docker exec -i faultmaven-postgres psql -U faultmaven -d faultmaven_cases < docs/schema/004_kb_sharing_infrastructure.sql
 
 # Verify
 docker exec -it faultmaven-postgres psql -U faultmaven -d faultmaven_cases -c "\dt"
@@ -137,7 +133,7 @@ docker exec -it faultmaven-postgres psql -U faultmaven -d faultmaven_cases -c "\
 ```bash
 # Create ConfigMap from migration files
 kubectl create configmap case-db-migrations \
-  --from-file=docs/database/docs/schema/ \
+  --from-file=docs/schema/ \
   -n faultmaven
 
 # Create migration Job
