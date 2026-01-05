@@ -29,7 +29,7 @@ from uuid import uuid4
 from threading import RLock
 import time
 
-from faultmaven.models.microservice_contracts.core_contracts import DecisionRecord, TurnContext
+from faultmaven.models.contracts.core_contracts import DecisionRecord, TurnContext
 from faultmaven.models.interfaces import ITracer
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import ServiceException
@@ -265,7 +265,7 @@ class DecisionRecorder:
 
     def _convert_budget_dict(self, budget_dict: Dict[str, Any]) -> Any:
         """Convert budget dictionary to Budget object if needed"""
-        from faultmaven.models.microservice_contracts.core_contracts import Budget
+        from faultmaven.models.contracts.core_contracts import Budget
         
         if isinstance(budget_dict, Budget):
             return budget_dict

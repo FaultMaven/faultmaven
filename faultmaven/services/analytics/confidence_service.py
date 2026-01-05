@@ -44,7 +44,7 @@ except ImportError:
     CalibratedClassifierCV = None
 
 from faultmaven.models.interfaces import IGlobalConfidenceService
-from faultmaven.models.microservice_contracts.core_contracts import (
+from faultmaven.models.contracts.core_contracts import (
     ConfidenceRequest, ConfidenceResponse, ConfidenceBand
 )
 from faultmaven.infrastructure.observability.tracing import trace
