@@ -235,20 +235,20 @@ REDIS_PORT=6379
 REDIS_PASSWORD=
 ```
 
-### Kubernetes Deployment
+### Production Deployment
 
 ```bash
 # Environment variables
-REDIS_HOST=192.168.0.111
-REDIS_PORT=30379
-REDIS_PASSWORD=faultmaven-dev-redis-2025
+REDIS_HOST=your-redis-host
+REDIS_PORT=6379
+REDIS_PASSWORD=your-redis-password
 ```
 
 ### URL-Based Configuration
 
 ```bash
 # Single URL configuration (overrides individual settings)
-REDIS_URL=redis://:faultmaven-dev-redis-2025@192.168.0.111:30379/0
+REDIS_URL=redis://:password@host:port/0
 ```
 
 ## Performance Optimization
