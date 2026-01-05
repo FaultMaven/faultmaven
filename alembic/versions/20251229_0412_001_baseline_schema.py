@@ -5,7 +5,7 @@ Baseline migration capturing existing FaultMaven database schema.
 This migration represents the initial schema state as defined in:
 - docs/schema/001_initial_hybrid_schema.sql (Cases Database - 10 tables)
 - docs/schema/002_add_case_sharing.sql (Case sharing infrastructure)
-- docs/schema/003_enterprise_user_schema.sql (Enterprise user/teams)
+- Enterprise user/teams schema (Enterprise Edition)
 - docs/schema/004_kb_sharing_infrastructure.sql (KB document sharing)
 
 The schema follows a hybrid normalized design:
