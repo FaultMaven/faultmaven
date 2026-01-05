@@ -86,12 +86,13 @@ Start here:
 ## For Operators
 
 ### Infrastructure
-- [Redis Architecture](./infrastructure/redis-architecture-guide.md) - Redis setup and usage
-- [Opik Setup](./infrastructure/opik-setup.md) - LLM observability
+
+- [Redis Architecture](./architecture/redis-architecture.md) - Redis design patterns and usage
 - [Local LLM Setup](./infrastructure/Local-LLM-Setup.md) - Local model deployment
+- [KB Metadata Persistence](./infrastructure/KB_METADATA_PERSISTENCE.md) - Knowledge base metadata storage
 
 ### Operational Runbooks
-- [Kubernetes Issues](./runbooks/kubernetes/) - Pod, node, deployment issues
+
 - [PostgreSQL Issues](./runbooks/postgresql/) - Database troubleshooting
 - [Redis Issues](./runbooks/redis/) - Cache troubleshooting
 - [Networking Issues](./runbooks/networking/) - Connection, DNS issues
