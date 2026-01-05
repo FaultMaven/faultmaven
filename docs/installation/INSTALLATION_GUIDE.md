@@ -1,6 +1,8 @@
 # FaultMaven Installation Guide
 
-Complete guide for installing and configuring FaultMaven in both Community and Enterprise modes.
+Complete guide for installing and configuring FaultMaven.
+
+**Note**: This guide covers both Community Edition (open source, self-host) and Enterprise Edition (additional features for production deployments). Enterprise features require separate licensing and infrastructure.
 
 ## Table of Contents
 
