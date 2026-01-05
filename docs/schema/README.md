@@ -53,20 +53,23 @@ This schema is available in FaultMaven Enterprise Edition. It implements:
 - Multi-tenant data isolation with Row-Level Security (RLS)
 - Organization and team-based case sharing
 
-### 004_kb_sharing_infrastructure.sql (23KB)
+### 004_kb_sharing_infrastructure.sql (Core)
 
 **Status**: ✅ Production-ready (Implemented 2025-01-14)
 
-**Description**: Adds knowledge base document sharing capabilities:
-- 5 tables: `kb_documents`, `kb_document_shares`, `kb_document_team_shares`, `kb_document_org_shares`, `kb_sharing_audit`
-- Visibility levels: private, shared, team, organization
+**Description**: Core knowledge base document sharing (user-to-user):
+
+- 3 tables: `kb_documents`, `kb_document_shares`, `kb_sharing_audit`
+- Visibility levels: private, shared (core only)
 - Share permissions: read, write
-- SQL functions: `share_kb_document_with_user()`, `share_kb_document_with_team()`, `user_can_access_kb_document()`
+- SQL functions: `share_kb_document_with_user()`, `user_can_access_kb_document()`, `get_user_kb_document_permission()`
 - ChromaDB integration metadata (collection references)
 
-**Reference**: `docs/architecture/data-storage-design.md` (Section 5.5 - KB Sharing)
+**Enterprise Extension**: See Enterprise Edition for team and organization sharing
 
-**When to use**: After 003, enables Features 3-4 (share KB documents with users/teams)
+**Reference**: `docs/architecture/data-storage-design.md` (Section 5 - KB Sharing)
+
+**When to use**: After 002, enables user-to-user KB document sharing
 
 ---
 
