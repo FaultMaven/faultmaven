@@ -181,7 +181,7 @@ FaultMaven adopts a "Micro-Kernel" architecture pattern where the core applicati
 - Default `settings.py` points to zero-dependency tools
 - SQLite (not PostgreSQL), Console Logs (not JSON), Memory Cache (not Redis)
 - Enterprise features activate when specific env vars detected
-- Single `PROFILE` variable can switch entire stack (CORE/TEAM/ENTERPRISE)
+- Configuration presets (`CONFIG_PRESET=local` or `CONFIG_PRESET=enterprise`) expand to provider selectors
 
 **Result**: Same codebase welcomes hobbyist contributors AND scales to Fortune 500 deployments.
 
@@ -209,7 +209,7 @@ FaultMaven adopts a "Micro-Kernel" architecture pattern where the core applicati
 - ✅ Complete migration scripts (local → cloud)
 - ✅ Zero conditional logic in application code
 
-**Timeline**: Phase 2 (Weeks 14-15) - Deployment Profile Pattern
+**Timeline**: Phase 2 (Weeks 14-15) - Provider-Based Configuration (DEPRECATED - see note below)
 
 **Deliverables** (from deployment-strategy-v2.md):
 
@@ -339,7 +339,7 @@ This roadmap uses **week-based granularity** for implementation tracking, but ma
 |----------------------------------|-------------------------------------|----------------|
 | **Phase 0: API Feature Parity (Months 1-2)** | Phase 1 (Weeks 1-8) | User's strategic inputs assume feature parity pre-exists; this roadmap adds Phase 0 for 43 missing endpoints |
 | **Phase 1: Stabilization (Month 3)** | Phase 2 (Weeks 9-12) | Aligned - Shims, packaging, rebranding |
-| **Phase 2: Boundary Enforcement (Month 4)** | Week 13 + Week 14-15 | Aligned - Import-linter + deployment profiles |
+| **Phase 2: Boundary Enforcement (Month 4)** | Week 13 + Week 14-15 | Week 13: Import-linter; Week 14-15: DEPRECATED (provider config already exists) |
 | **Phase 3: Vertical Slicing (Months 5-8)** | Phase 3 (Weeks 16-20) + Phase 4 (Months 6-8) | Document timeline is more conservative; 1 module by Week 20, 4 more in Months 6-8 |
 | **Phase 4: Community Growth (Months 9-12)** | Phase 4 (Months 9-12) | Aligned but timing shifted due to slicing delays |
 
@@ -363,7 +363,7 @@ The user's strategic inputs assume FaultMaven-Mono and faultmaven (modular) are 
 |-------|-------|----------------|--------------|
 | **Months 1-2** | Phase 0: API Parity | Implement 43 missing endpoints | • 26 CRITICAL+HIGH endpoints live<br>• Reports, Hypothesis tracking functional<br>• Migration unblocked |
 | **Month 3** | Phase 1: Stabilization | Shims, packaging, rebranding | • `pip install faultmaven` works<br>• `python main.py` runs with zero Docker<br>• Renamed to faultmaven-platform |
-| **Month 4** | Phase 2: Boundaries | Import-linter, deployment profiles | • Architectural violations blocked in CI<br>• `PROFILE` variable controls infrastructure<br>• DI container centralized |
+| **Month 4** | Phase 2: Boundaries | Import-linter, provider configuration | • Architectural violations blocked in CI<br>• Provider selectors control infrastructure<br>• DI container centralized |
 | **Months 5-6** | Phase 3: Vertical Slicing (Part 1) | Extract Knowledge, Evidence modules | • 2 vertical modules extracted<br>• Directory structure modernized<br>• All 1,425+ tests passing |
 | **Months 7-8** | Phase 3: Vertical Slicing (Part 2) | Extract Case, Report modules | • 4 vertical modules total<br>• Auth/Agent deferred (too foundational)<br>• Milestone: Matches faultmaven structure |
 | **Months 9-12** | Phase 4: Community Growth | Plugin ecosystem, PyPI publication | • First community plugin merged<br>• 10+ external contributors<br>• Enterprise feature acceleration |
@@ -1030,7 +1030,7 @@ class InvestigationOrchestrator:
 
    ```bash
    pip install -e .[enterprise]
-   PROFILE=enterprise \
+   CONFIG_PRESET=enterprise \
    DATABASE_URL=postgresql://... \
    STORAGE_TYPE=s3 \
    python -m faultmaven
@@ -1141,82 +1141,69 @@ class InvestigationOrchestrator:
 
 ---
 
-#### Week 14-15: Deployment Profile Pattern
+#### Week 14-15: Provider-Based Configuration ⚠️ DEPRECATED
 
-**Objective**: Implement CORE/TEAM/ENTERPRISE profiles.
+**ARCHITECTURAL CORRECTION**: This section described a "Deployment Profile Pattern" (CORE/TEAM/ENTERPRISE) that was based on a misunderstanding of the architecture.
 
-**Implementation**:
+**CORRECT UNDERSTANDING**:
 
-1. **Profile Definition** (Day 1-2):
-   ```python
-   # faultmaven/config/profiles.py
-   from enum import Enum
+**Two Deployment Types** (from provider perspective):
 
-   class DeploymentProfile(str, Enum):
-       CORE = "core"           # SQLite, local files, in-memory sessions
-       TEAM = "team"           # PostgreSQL, local files, in-memory sessions
-       ENTERPRISE = "enterprise"  # PostgreSQL, S3, Redis sessions
+1. **LOCAL Deployment**: User downloads/installs FaultMaven, controls infrastructure
+   - Preset: `CONFIG_PRESET=local`
+   - Providers: SQLite, filesystem, in-memory, single-tenant
+   - Use case: Laptop, on-premises, self-hosted
 
-   PROFILE_CONFIG = {
-       "core": {
-           "database_url": "sqlite:///./data/faultmaven.db",
-           "storage_type": "local",
-           "session_backend": "inmemory",
-           "cache_backend": "inmemory",
-       },
-       "team": {
-           "database_url": "postgresql://...",
-           "storage_type": "local",
-           "session_backend": "inmemory",
-           "cache_backend": "redis",
-       },
-       "enterprise": {
-           "database_url": "postgresql://...",
-           "storage_type": "s3",
-           "session_backend": "redis",
-           "cache_backend": "redis",
-           "enable_tracing": True,
-           "enable_pii_redaction": True,
-           "enable_metrics": True,
-       }
-   }
-   ```
+2. **CLOUD Deployment**: FaultMaven manages K8s platform, controls infrastructure
+   - Preset: `CONFIG_PRESET=enterprise`
+   - Providers: PostgreSQL, Redis, S3, multi-tenant
+   - Use case: SaaS, managed service
 
-2. **DI Container Integration** (Day 3-5):
-   ```python
-   # faultmaven/container.py
-   class Container:
-       def __init__(self):
-           profile = os.getenv("PROFILE", "core")
-           self.config = PROFILE_CONFIG[profile]
+**Key Points**:
 
-       def get_database_provider(self):
-           if "sqlite" in self.config["database_url"]:
-               return SQLiteDatabase(self.config["database_url"])
-           else:
-               return PostgreSQLDatabase(self.config["database_url"])
+- **NO CORE/TEAM/ENTERPRISE tiered profiles** - This was a misunderstanding
+- **NO feature gating** based on deployment type
+- Environment (dev/staging/prod) is the user's business, not a deployment type
+- Configuration presets are **convenience bundles** that expand to individual provider selectors
 
-       def get_storage_provider(self):
-           storage_type = self.config["storage_type"]
-           if storage_type == "local":
-               return LocalFileStorage(base_path="./data/files")
-           elif storage_type == "s3":
-               return S3Storage(bucket=os.getenv("S3_BUCKET"))
-   ```
+**Actual Implementation** (already exists in codebase):
 
-3. **Environment Variable Overrides** (Day 6-7):
-   - Allow individual settings to override profile defaults
-   - Priority: ENV VAR > .env file > profile defaults
+```python
+# faultmaven/config/settings.py
+class Settings(BaseSettings):
+    # Individual provider selectors (the source of truth)
+    TENANT_PROVIDER: str = "single"  # "single" or "multi"
+    DB_BACKEND: str = "sqlite"       # "sqlite" or "postgresql"
+    STORAGE_BACKEND: str = "local"   # "local" or "s3"
+    CACHE_BACKEND: str = "inmemory"  # "inmemory" or "redis"
 
-4. **Documentation** (Day 8-10):
-   - Profile comparison table
-   - Migration guide: CORE → TEAM → ENTERPRISE
-   - Configuration examples
+    # Configuration preset (convenience - expands to provider selectors)
+    CONFIG_PRESET: str = "local"     # "local" or "enterprise"
 
-**Deliverables**:
-- ✅ Single `PROFILE` variable controls infrastructure
-- ✅ 60% reduction in configuration errors
-- ✅ Clear upgrade path
+    def apply_preset(self):
+        """Convenience presets expand to provider selectors"""
+        if self.CONFIG_PRESET == "local":
+            self.TENANT_PROVIDER = "single"
+            self.DB_BACKEND = "sqlite"
+            self.STORAGE_BACKEND = "local"
+            self.CACHE_BACKEND = "inmemory"
+        elif self.CONFIG_PRESET == "enterprise":
+            self.TENANT_PROVIDER = "multi"
+            self.DB_BACKEND = "postgresql"
+            self.STORAGE_BACKEND = "s3"
+            self.CACHE_BACKEND = "redis"
+        # Individual env vars can still override preset
+```
+
+**What Changed from Original Plan**:
+
+- ❌ Removed: CORE/TEAM/ENTERPRISE profile tiers
+- ❌ Removed: `PROFILE` environment variable
+- ✅ Added: Individual provider selectors (`TENANT_PROVIDER`, `DB_BACKEND`, etc.)
+- ✅ Added: Configuration presets as convenience (not requirement)
+- ✅ Clarified: Two deployment types (LOCAL vs CLOUD), not three profile tiers
+
+**Status**: This week's work was **NOT NEEDED** - provider-based configuration already exists via individual selectors. Week 14-15 can be used for other priorities or removed from timeline.
 
 ---
 
