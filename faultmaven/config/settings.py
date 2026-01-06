@@ -18,6 +18,9 @@ from pathlib import Path
 import logging
 from enum import Enum
 
+# Import DeploymentProfile for profile-based configuration
+from faultmaven.config.deployment_profile import DeploymentProfile
+
 
 # =============================================================================
 # ENVIRONMENT AND LOGGING ENUMS
@@ -1555,12 +1558,20 @@ class ProviderSettings(BaseSettings):
     """Provider selection configuration (doc-aligned selectors - PR #3).
 
     Unified provider selection using deployment strategy vocabulary:
+    - deployment_profile: High-level deployment type (core/team/enterprise)
     - tenant_provider: Tenant isolation strategy (single/multi)
     - db_backend: Database backend (sqlite/postgres)
     - cache_backend: Cache backend (memory/redis)
     - vector_backend: Vector database backend (chroma/pinecone)
     - storage_backend: File storage backend (filesystem/s3)
     """
+
+    # Deployment Profile (Phase 3 - Week 14-15)
+    deployment_profile: DeploymentProfile = Field(
+        default=DeploymentProfile.CORE,
+        env="DEPLOYMENT_PROFILE",
+        description="Deployment profile: 'core' (Community), 'team' (Team Edition), 'enterprise' (Enterprise Edition)"
+    )
 
     # Tenant isolation strategy
     tenant_provider: TenantProvider = Field(

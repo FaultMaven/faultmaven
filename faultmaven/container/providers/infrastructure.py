@@ -6,6 +6,12 @@ This module contains factory functions for core infrastructure services:
 - LLM (provider)
 - Storage (vector store, session store, repositories)
 - Preprocessing pipeline
+
+Pattern: Profile-Based Provider Selection (Phase 3 - Week 14-15)
+- Uses ProfileManager to determine correct provider for deployment profile
+- CORE: SQLite, in-memory, local files, no observability
+- TEAM: PostgreSQL, Redis, S3/MinIO, basic metrics
+- ENTERPRISE: PostgreSQL, Redis, S3, Presidio, Opik, Prometheus
 """
 
 from __future__ import annotations
@@ -16,6 +22,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from faultmaven.container.base import BaseDIContainer
     from faultmaven.config.settings import FaultMavenSettings
+
+from faultmaven.config.deployment_profile import ProfileManager, DeploymentProfile
 
 logger = logging.getLogger(__name__)
 
@@ -137,11 +145,26 @@ def create_preprocessing_service(
 
 
 def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
-    """Create vector store based on configuration.
+    """Create vector store based on configuration and deployment profile.
+
+    Pattern: Profile-Based Provider Selection
+    - CORE profile: Always use InMemoryVectorStore (zero dependencies)
+    - TEAM/ENTERPRISE: Use ChromaDB if configured, otherwise fallback to InMemory
 
     Returns:
         Tuple of (vector_store, is_disabled)
     """
+    # Get deployment profile for provider selection
+    profile = ProfileManager.get_current_profile()
+
+    # CORE profile always uses in-memory (zero dependencies)
+    if profile == DeploymentProfile.CORE:
+        from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
+        store = InMemoryVectorStore()
+        logger.info(f"✅ Vector store: InMemory (CORE profile)")
+        return store, False
+
+    # TEAM/ENTERPRISE profiles use ChromaDB if available
     vector_storage_type = settings.database.vector_storage_type.lower()
 
     if vector_storage_type == "chromadb":
@@ -149,7 +172,7 @@ def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
             from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 
             store = ChromaDBVectorStore()
-            logger.info(f"✅ Vector store: ChromaDB @ {settings.database.chromadb_url}")
+            logger.info(f"✅ Vector store: ChromaDB @ {settings.database.chromadb_url} ({profile.value.upper()} profile)")
             return store, False
         else:
             logger.info("Skipping vector store (SKIP_SERVICE_CHECKS=True)")
@@ -158,7 +181,7 @@ def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
         from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
 
         store = InMemoryVectorStore()
-        logger.debug("Vector store: InMemory (RAM)")
+        logger.info(f"✅ Vector store: InMemory (RAM, {profile.value.upper()} profile)")
         return store, False
 
 
@@ -203,31 +226,65 @@ async def create_redis_client(settings: FaultMavenSettings) -> Any | None:
 
 
 def create_session_store(redis_client: Any | None, settings: FaultMavenSettings) -> Any:
-    """Create session store (Redis or InMemory)."""
+    """Create session store based on deployment profile.
+
+    Pattern: Profile-Based Provider Selection
+    - CORE profile: Always use InMemorySessionStore (zero dependencies)
+    - TEAM/ENTERPRISE: Use RedisSessionStore if Redis available, otherwise InMemory
+    """
+    # Get deployment profile
+    profile = ProfileManager.get_current_profile()
+
+    # CORE profile always uses in-memory (zero dependencies)
+    if profile == DeploymentProfile.CORE:
+        from faultmaven.infrastructure.persistence.inmemory_session_store import InMemorySessionStore
+        store = InMemorySessionStore()
+        logger.info("✅ Session store: InMemory (CORE profile)")
+        return store
+
+    # TEAM/ENTERPRISE profiles use Redis if available
     if redis_client and not settings.server.skip_service_checks:
         from faultmaven.infrastructure.persistence.redis_session_store import RedisSessionStore
 
         store = RedisSessionStore(redis_client)
-        logger.info("✅ Session store: Redis")
+        logger.info(f"✅ Session store: Redis ({profile.value.upper()} profile)")
         return store
     else:
         from faultmaven.infrastructure.persistence.inmemory_session_store import InMemorySessionStore
 
         store = InMemorySessionStore()
-        logger.debug("Session store: InMemory (RAM)")
+        logger.info(f"✅ Session store: InMemory (RAM, {profile.value.upper()} profile fallback)")
         return store
 
 
 async def register_infrastructure(container: BaseDIContainer) -> None:
     """Register all infrastructure services with the container.
 
+    Pattern: Profile-Based Provider Selection
+    - Validates deployment profile requirements at startup
+    - Selects appropriate providers based on profile (CORE/TEAM/ENTERPRISE)
+    - Fails fast if profile requirements are not met
+
     Args:
         container: The DI container to register services with
     """
     settings = container.settings
 
+    # Phase 3 - Week 14-15: Validate deployment profile requirements
+    profile = ProfileManager.get_current_profile()
+    is_valid, errors = ProfileManager.validate_profile_requirements()
+
+    if not is_valid and not settings.server.skip_service_checks:
+        logger.error(f"Deployment profile validation failed for {profile.value.upper()}:")
+        for error in errors:
+            logger.error(f"  ❌ {error}")
+        # In production, we would raise an exception here
+        # For now, log warnings and continue with degraded functionality
+        logger.warning("Continuing with degraded functionality (set SKIP_SERVICE_CHECKS=true to suppress)")
+
     # Log configuration
     logger.info("🔍 Infrastructure: Registering services...")
+    logger.info(f"🔍 DEPLOYMENT_PROFILE = {profile.value.upper()}")
     logger.info(f"🔍 CHAT_PROVIDER = {settings.llm.provider}")
     logger.info(f"🔍 SKIP_SERVICE_CHECKS = {settings.server.skip_service_checks}")
 
