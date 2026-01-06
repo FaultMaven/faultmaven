@@ -30,7 +30,7 @@ from faultmaven.models.agent_execution import (
     ExecutionStatus,
 )
 from faultmaven.models.case import Case, CaseStatus, CaseSeverity
-from faultmaven.models.evidence_artifact import EvidenceArtifact, EvidenceArtifactType
+from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceArtifactType
 from faultmaven.domain.events import (
     LLMEvent,
     LLMEventType,

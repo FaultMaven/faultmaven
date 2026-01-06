@@ -6,7 +6,7 @@ Tests the EvidenceArtifact dataclass and related enums.
 import pytest
 from datetime import datetime, timezone
 
-from faultmaven.models.evidence_artifact import (
+from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,

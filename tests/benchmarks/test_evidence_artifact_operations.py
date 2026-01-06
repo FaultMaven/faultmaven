@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from faultmaven.models.case import Case, CaseStatus, InvestigationStrategy
-from faultmaven.models.evidence_artifact import (
+from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,

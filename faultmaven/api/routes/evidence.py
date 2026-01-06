@@ -32,7 +32,7 @@ from faultmaven.api.models import (
 )
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.models.evidence_artifact import EvidenceArtifactType
+from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 
 

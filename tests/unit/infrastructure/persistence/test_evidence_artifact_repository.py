@@ -7,7 +7,7 @@ import pytest
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from faultmaven.models.evidence_artifact import (
+from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,

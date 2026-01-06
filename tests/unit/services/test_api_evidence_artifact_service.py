@@ -20,7 +20,7 @@ import pytest
 
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.services.file_storage_service import FileStorageService
-from faultmaven.models.evidence_artifact import (
+from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,

@@ -40,7 +40,7 @@ from faultmaven.services.case_service import APICaseService
 from faultmaven.services.service_factory import ServiceFactory
 from faultmaven.models.case import Case, CaseStatus, CaseSeverity
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.models.evidence_artifact import EvidenceArtifact, EvidenceArtifactType, StorageBackend
+from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceArtifactType, StorageBackend
 from faultmaven.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
 from faultmaven.exceptions import (
     NotFoundError,

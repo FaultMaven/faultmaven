@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from faultmaven.services.base import BaseService
-from faultmaven.models.evidence_artifact import (
+from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,

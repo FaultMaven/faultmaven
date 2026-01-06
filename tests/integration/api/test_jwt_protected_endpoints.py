@@ -551,7 +551,7 @@ class TestRBACAdminPrivileges:
 
     def test_admin_can_delete_any_evidence(self, client, admin_token):
         """Admin can delete evidence (has evidence:delete permission)."""
-        from faultmaven.models.evidence_artifact import EvidenceArtifact, EvidenceArtifactType
+        from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceArtifactType
 
         mock_evidence = MagicMock()
         mock_evidence.case_id = "case-001"

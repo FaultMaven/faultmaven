@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from faultmaven.models.case import CaseSeverity, CaseStatus
 from faultmaven.models.investigation_session import SessionStatus
-from faultmaven.models.evidence_artifact import EvidenceArtifactType
+from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
 
 
 # ============================================================

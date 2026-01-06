@@ -12,7 +12,7 @@ import pytest
 
 from faultmaven.tools.read_file_tool import ReadFileTool, MAX_TEXT_SIZE, TEXT_MIME_TYPES
 from faultmaven.tools.agent_tools import ToolContext
-from faultmaven.models.evidence_artifact import EvidenceArtifact, EvidenceArtifactType
+from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceArtifactType
 
 
 # =============================================================================

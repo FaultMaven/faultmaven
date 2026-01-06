@@ -97,7 +97,7 @@ class ListEvidenceTool(AgentTool):
 
         try:
             # Import evidence type enum
-            from faultmaven.models.evidence_artifact import EvidenceArtifactType
+            from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
 
             # Parse evidence type filter if provided
             evidence_type = None

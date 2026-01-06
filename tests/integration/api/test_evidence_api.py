@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 
 from faultmaven.api.app import create_app
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.models.evidence_artifact import EvidenceArtifactType
+from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
 
 
 @pytest.fixture
