@@ -13,8 +13,7 @@ Master index for all architecture documentation.
 | Document | Purpose |
 |----------|---------|
 | **[Investigation Architecture](./milestone-based-investigation-framework.md)** | 🎯 Investigation workflow, lifecycle, stages, milestones |
-| **[Case Data Model Design](./case-data-model-design.md)** | 🎯 Complete data structures, validation, database schema |
-| **[DB Design Specifications](./db-design-specifications.md)** | 🎯 PostgreSQL schema, migrations, queries |
+| **[Case Storage Design](./case-storage-design.md)** | 🎯 PostgreSQL schema (10 tables) |
 | **[Prompt Engineering Guide](./prompt-engineering-guide.md)** | 🎯 LLM prompts, templates, strategies |
 | **[Prompt Templates](./prompt-templates.md)** | Implementation-ready prompt code |
 | **[Prompt Implementation Examples](./prompt-implementation-examples.md)** | Complete code examples |
@@ -29,11 +28,10 @@ Master index for all architecture documentation.
 
 | Document | Version | Purpose |
 |----------|---------|---------|
+| **[Architecture Overview](./architecture-overview.md)** | v3.0 | 🎯 Master system architecture document |
 | **[Investigation Architecture](./milestone-based-investigation-framework.md)** | v2.0 | 🎯 Milestone-based investigation framework |
-| **[Case Data Model Design](./case-data-model-design.md)** | v2.0 | 🎯 Complete data models and validation |
-| **[DB Design Specifications](./db-design-specifications.md)** | v2.0 | 🎯 Database schema and migrations |
+| **[Case Storage Design](./case-storage-design.md)** | v2.0 | 🎯 PostgreSQL schema (10 tables) |
 | **[Prompt Engineering Guide](./prompt-engineering-guide.md)** | v2.0 | 🎯 Prompt templates and strategies |
-| **[Architecture Overview](./architecture-overview.md)** | v2.0* | System architecture (needs v2.0 update) |
 
 ### Supporting Components
 
@@ -67,64 +65,35 @@ Master index for all architecture documentation.
 
 | Archived Document | Superseded By | Reason |
 |-------------------|---------------|--------|
-| ~~investigation-phases-and-ooda-integration.md~~ | milestone-based-investigation-framework.md v2.0 | Old 7-phase model replaced by milestones |
-| ~~evidence-collection-and-tracking-design.md~~ | case-data-model-design.md v2.0 (Evidence sections) | Merged into unified data model |
-| ~~investigation-state-and-control-design.md~~ | milestone-based-investigation-framework.md v2.0 | Old phase-based design |
-| ~~prompt-engineering-architecture.md~~ | prompt-engineering-guide.md v2.0 | Outdated prompt design |
-| ~~data-models-reference.md~~ | case-data-model-design.md v2.0 | Old OODA-based models |
+| ~~case-data-model-design.md~~ | case-storage-design.md | Merged into unified storage design |
+| ~~db-design-specifications.md~~ | case-storage-design.md | Merged into unified storage design |
 
-**Location**: `/archive/` directory
-
-**Note**: `document-generation-and-closure-design.md` introduces `DOCUMENTING` status - conflicts with v2.0 (needs review)
+**Location**: `archive/` directory
 
 ---
 
 ## 📁 Subdirectories
 
-### [reference/](./reference/)
-**9 documents** - Valuable analysis and detailed designs not currently linked from architecture-overview.md
-
-Includes:
-- Component interaction patterns
-- Critical concepts and relationships
-- Context engineering analysis
-- Infrastructure layer guides
-- Detailed system designs
-
-### [legacy/](./legacy/)
+### [archive/](./archive/)
 **3 documents** - Superseded architecture documents preserved for historical context
 
-Includes:
-- Doctor-Patient Prompting v1.0 (superseded by Investigation Phases v2.1)
-- Sub-Agent Architecture v1.0 (superseded by Agentic Framework)
-- System Architecture v1.0 (superseded by Architecture Overview v2.0)
+### [decisions/](./decisions/)
+**2 documents + README** - Architecture Decision Records (ADRs)
 
 ### [diagrams/](./diagrams/)
-**3 diagrams + README** - Visual architecture representations
+**3 diagrams + README** - Visual architecture representations (Mermaid sources)
 
-Includes:
-- System architecture diagrams (multiple views)
-- Mermaid diagram sources
+### [reference/](./reference/)
+**9 documents** - Detailed designs and analysis (component interactions, infrastructure guides)
 
-### [decisions/](./decisions/)
-**1 document + README** - Architecture Decision Records (ADRs)
-
-Includes:
-- Architecture decision guide and framework
-
-### [_temp/](./temp/)
-**9 documents** - Temporary status reports and planning docs (to review/delete later)
-
-Contains:
-- status-reports/ - Implementation status (3 files)
-- working-docs/ - Working notes (4 files)
-- planning/ - Reorganization planning (3 files)
+### [specifications/](./specifications/)
+**4 documents** - Formal specifications (configuration management, session management, etc.)
 
 ---
 
 ## Documentation Organization
 
-### At Root Level (~19 active docs)
+### At Root Level (~33 active docs)
 All documents referenced by architecture-overview.md remain at the root level for:
 - ✅ No broken links
 - ✅ Simple relative paths
@@ -132,11 +101,11 @@ All documents referenced by architecture-overview.md remain at the root level fo
 - ✅ Logical grouping via architecture-overview.md
 
 ### In Subdirectories (organized by purpose)
-- **reference/**: Supplementary material (not currently linked)
-- **legacy/**: Historical/superseded documents
+- **archive/**: Historical/superseded documents
+- **decisions/**: Architecture Decision Records
 - **diagrams/**: Visual representations
-- **decisions/**: ADRs
-- **_temp/**: To review and delete
+- **reference/**: Supplementary material
+- **specifications/**: Formal specifications
 
 ---
 
@@ -144,13 +113,12 @@ All documents referenced by architecture-overview.md remain at the root level fo
 
 | Category | Count | Location |
 |----------|-------|----------|
-| **Active architecture docs** | ~19 | Root level |
+| **Active architecture docs** | ~33 | Root level |
 | **Reference material** | 9 | reference/ |
-| **Legacy/superseded** | 3 | legacy/ |
+| **Archived/superseded** | 3 | archive/ |
 | **Diagrams** | 3 | diagrams/ |
-| **ADRs** | 1 | decisions/ |
-| **Temporary/planning** | 9 | _temp/ |
-| **Total** | ~44 | |
+| **ADRs** | 2 | decisions/ |
+| **Total** | ~50 | |
 
 ---
 
@@ -173,7 +141,7 @@ All documents referenced by architecture-overview.md remain at the root level fo
    - Alternative perspectives
    - Supplementary material
 
-4. **Historical context?**: Check [legacy/](./legacy/)
+4. **Historical context?**: Check [archive/](./archive/)
    - Understand architecture evolution
    - See what changed and why
 
@@ -188,8 +156,8 @@ All documents referenced by architecture-overview.md remain at the root level fo
 
 ---
 
-**Last Updated**: 2025-10-13
-**Architecture Version**: v2.0
+**Last Updated**: 2026-01-06
+**Architecture Version**: v3.0
 
 ---
 
@@ -197,7 +165,7 @@ All documents referenced by architecture-overview.md remain at the root level fo
 
 ### Data Preprocessing System v4.0
 
-**[data-preprocessing-design.md](./data-preprocessing-design.md)** - Complete design specification for data preprocessing system
+**[data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md)** - Complete design specification for data preprocessing system
 
 **What it covers**:
 - 3-step pipeline architecture (Classify → Preprocess → LLM Analysis)
@@ -226,5 +194,4 @@ Step 3: LLM Analysis (✅ Ready)
 
 **Related Documents**:
 - [data-submission-design.md](./data-submission-design.md) - Upload flow and dual submission paths
-- [simplified-3-step-pipeline.md](./simplified-3-step-pipeline.md) - Quick reference
 

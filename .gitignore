@@ -189,36 +189,12 @@ chroma_db/
 scripts/config/opik_remote.sh
 scripts/config/local_*.sh
 
-# Next.js website build artifacts and dependencies
-website/.next/
-website/node_modules/
-website/.env.local
-website/.env.development.local
-website/.env.test.local
-website/.env.production.local
-website/build/
-website/out/
-website/.eslintcache
-website/*.tsbuildinfo
-website/coverage/
-website/package-lock.json
-website/.vscode/
-website/.npmrc
+# macOS
 .DS_Store
 
-# Cleanup and archived files
-recycle/
-archive/
+# Cleanup and archived files (root level only)
+/recycle/
 
 # Virtual environments (additional patterns)
 .venv-*/
 venv-*/
-
-# Temporary documentation patterns (added 2025-11-09)
-*_REPORT.md
-*_SUMMARY.md
-*_STATUS.md
-TEST_COVERAGE*.md
-CLEANUP_*.md
-*_PLAN.md
-*_ROADMAP.md
