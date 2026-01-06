@@ -12,6 +12,8 @@
 > - **Security**: PII redaction (Presidio) + RBAC authorization + guardrails
 >
 > **Key Design Documents**:
+>
+> - **[Architectural Design Principles](./architectural-design-principles.md)** - Core design principles (Deployment Neutrality, Vertical Slicing, DI, etc.)
 > - [Milestone-Based Investigation Framework](./milestone-based-investigation-framework.md) - Investigation engine design
 > - [Case Storage Design](./case-storage-design.md) - PostgreSQL schema (10 tables)
 > - [Prompt Engineering Guide](./prompt-engineering-guide.md) - Prompting system
