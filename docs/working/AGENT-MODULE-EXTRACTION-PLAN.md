@@ -1,24 +1,64 @@
 # Agent Module Extraction Plan
 
 **Date**: 2026-01-06
-**Status**: Planning Phase
+**Status**: Planning Phase - REVISED
 **Complexity**: HIGH (Final vertical slice)
-**Estimated Effort**: 3-5 weeks (phased approach)
+**Estimated Effort**: 2-3 weeks (simplified approach)
+**Revision**: Incorporated feedback to reduce over-engineering
 
 ---
 
 ## Executive Summary
 
-The Agent module is the **final and most complex** vertical slice extraction in the Platform Evolution. It encompasses AI agent orchestration, investigation workflows, tool systems, and core investigation components totaling **~35-40 production files** and **~49 test files**.
+The Agent module is the **final and most complex** vertical slice extraction in the Platform Evolution. It encompasses AI agent orchestration, investigation workflows, and tool systems totaling **~25-30 production files** and **~40-45 test files** (revised after verification).
 
 **Key Complexity Factors:**
-- Strong coupling with LLM infrastructure
-- Three overlapping investigation services requiring clarification
-- Tool system spanning multiple modules (Evidence, Knowledge)
-- Shared core investigation components (OODA, milestones, phases)
-- Deep integration with Case, Evidence, Knowledge, and Session modules
+- Three overlapping investigation services requiring separation
+- Strong coupling with LLM infrastructure (keep as shared)
+- Tool system with Evidence/Knowledge dependencies
+- Deep integration with Case, Evidence, Knowledge modules
 
-**Recommended Approach:** Multi-phase extraction over 3-5 weeks with careful attention to module boundaries, shared infrastructure, and integration points.
+**Recommended Approach:** Simplified 2-3 week extraction with pragmatic decisions:
+
+- ✅ Keep `core/investigation/` as shared infrastructure (no move)
+- ✅ Keep all tools in Agent module initially (no cross-module distribution)
+- ✅ Keep LLM infrastructure as shared (no move)
+- ✅ Clear service separation (commit to Option B)
+
+---
+
+## Revision Summary (Based on Feedback)
+
+**🔴 Critical Changes from Original Plan:**
+
+1. **NO Investigation Core Library** - Keep `core/investigation/` as shared infrastructure (unchanged)
+   - ❌ Original: Create `faultmaven/investigation/` library
+   - ✅ Revised: Keep existing `core/investigation/` location
+   - **Reason**: Already works, other modules don't need it, adds unnecessary complexity
+
+2. **NO Tool Distribution** - Keep all tools in Agent module initially
+   - ❌ Original: Move evidence tools → `modules/evidence/tools/`, knowledge tools → `modules/knowledge/tools/`
+   - ✅ Revised: All tools in `modules/agent/tools/`
+   - **Reason**: Reduces blast radius, avoids modifying Evidence/Knowledge modules during Agent extraction
+
+3. **Commit to Service Separation (Option B)** - Clear decision, no deferred refactoring
+   - ❌ Original: "Start with Option B and refactor to Option A if complexity becomes unmanageable"
+   - ✅ Revised: Commit to Option B (clear separation of concerns)
+   - **Reason**: Non-decisions create uncertainty during implementation
+
+**🟡 Timeline & Scope Adjustments:**
+
+1. **Simplified Timeline** - 2-3 weeks instead of 5 weeks
+   - Phase 1: Module structure, models, events (3-4 days)
+   - Phase 2: Services extraction (3-4 days)
+   - Phase 3: API routes, tools, repositories (3-4 days)
+   - Phase 4: Tests, integration, cleanup (3-4 days)
+
+2. **Verified File Count** - ~25-30 production files (down from 35-40)
+   - Removed `core/investigation/*` (7 files) - not moving
+   - Verified actual files to move
+
+3. **Safer Import Updates** - Use grep + manual/IDE refactoring instead of sed mass replacement
 
 ---
 
@@ -379,14 +419,29 @@ Three services handle investigation workflows with unclear boundaries:
 - Each service handles specific workflow type
 - **Risk**: Inheritance complexity
 
-**Recommendation:** Start with **Option B** and refactor to **Option A** if complexity becomes unmanageable.
+**DECISION (FIRM):** **Option B - Clear Separation of Concerns**
+
+We commit to maintaining three separate services with clear responsibilities:
+
+| Service | Responsibility | LOC |
+|---------|---------------|-----|
+| `AgentOrchestrationService` | **Low-level**: LLM calls, streaming, tool execution | 1,068 |
+| `InvestigationOrchestrator` | **Mid-level**: Workflow state, phase transitions, hypothesis tracking | 911 |
+| `InvestigationService` | **High-level**: Milestone tracking, OODA coordination, progress management | 369 |
+
+**Rationale:**
+- Clear separation prevents god object anti-pattern
+- Each service has distinct responsibility level
+- Easier to test and maintain in isolation
+- If merging is needed later, do it as **separate refactor AFTER extraction**
 
 ---
 
-#### 2. Shared Core Investigation Components ⚠️
+#### 2. Shared Core Investigation Components ✅ RESOLVED
 
 **Problem:**
 `core/investigation/` contains 7 files (~2,000 LOC) that are foundational investigation infrastructure:
+
 - OODA engine
 - Milestone engine
 - Phase definitions
@@ -397,101 +452,95 @@ Three services handle investigation workflows with unclear boundaries:
 
 **Question:** Do these belong in the Agent module or as shared infrastructure?
 
-**Analysis:**
+**DECISION (FIRM):** **Keep as Shared Infrastructure (NO MOVE)**
 
-**If in Agent Module:**
-- ✅ Clear ownership
-- ✅ Vertical slice completeness
-- ❌ Other modules can't use investigation patterns
-- ❌ Tight coupling if other modules need investigation logic
+`core/investigation/` stays exactly where it is. Do NOT create `faultmaven/investigation/` library.
 
-**If Shared Infrastructure:**
-- ✅ Reusable across modules
-- ✅ Horizontal infrastructure pattern
-- ❌ No clear ownership
-- ❌ Breaks vertical slice purity
+**Rationale:**
 
-**Recommendation:**
-Create a **shared Investigation Core library** (`faultmaven.investigation.core/`) that is:
-- Owned by the Agent module team
-- Provides investigation patterns and engines
-- Used by Agent module as primary consumer
-- Available to other modules if needed
+- ✅ Already works as shared infrastructure
+- ✅ No other modules actually need investigation patterns currently
+- ✅ Avoids creating new top-level package during extraction
+- ✅ Reduces complexity and risk
+- ❌ Creating new library adds work without clear benefit
+- ❌ Moving files increases blast radius unnecessarily
 
-**Structure:**
+**Action:** Agent module will import from existing `core/investigation/` location
+
+```python
+# Agent services import from existing location
+from faultmaven.core.investigation.ooda_engine import OODAEngine
+from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+# etc.
 ```
-faultmaven/investigation/
-├── core/
-│   ├── engines/
-│   │   ├── ooda_engine.py
-│   │   ├── milestone_engine.py
-│   │   └── hypothesis_engine.py
-│   ├── models/
-│   │   ├── phases.py
-│   │   ├── strategies.py
-│   │   └── conclusions.py
-│   └── coordinators/
-│       └── investigation_coordinator.py
-```
+
+**Future Consideration:** If other modules need investigation patterns later, we can reconsider extraction then. For now, pragmatically keep it unchanged.
 
 ---
 
-#### 3. Tool System Spanning Multiple Modules ⚠️
+#### 3. Tool System Spanning Multiple Modules ✅ RESOLVED
 
 **Problem:**
 The tool system has 9 tools with dependencies across multiple modules:
 
 **Evidence Tools:**
+
 - `list_evidence_tool.py` → Evidence module
 - `read_file_tool.py` → Evidence module
 - `case_evidence_qa.py` → Evidence module
 
 **Knowledge Tools:**
+
 - `knowledge_base.py` → Knowledge module
 - `user_kb_qa.py` → Knowledge module
 - `global_kb_qa.py` → Knowledge module
 - `document_qa_tool.py` → Knowledge module
 
 **Web Tools:**
+
 - `web_search.py` → External services
 
 **Question:** Where should tools live?
 
-**Resolution Options:**
+**DECISION (FIRM):** **Option A - All Tools in Agent Module (Initially)**
 
-**Option A: All Tools in Agent Module**
-- Agent module owns entire tool system
-- Tools import from other modules (Evidence, Knowledge)
-- **Pro**: Clear ownership, single registry
-- **Con**: Agent module depends on Evidence + Knowledge
+All tools move to `modules/agent/tools/` directory. No cross-module distribution during extraction.
 
-**Option B: Tools Stay in Source Modules**
-- Evidence tools → Evidence module
-- Knowledge tools → Knowledge module
-- Web tools → Agent module (or shared utilities)
-- Tool registry in Agent module discovers tools from all modules
-- **Pro**: Clear module boundaries, loose coupling
-- **Con**: Distributed tool system, complex registration
+**Structure:**
 
-**Option C: Shared Tool Infrastructure**
-- `tools/` becomes shared infrastructure
-- Each module contributes tools
-- Agent module consumes tools
-- **Pro**: Flexible, extensible
-- **Con**: No clear ownership
+```
+modules/agent/tools/
+├── base.py                      # AgentTool base class
+├── registry.py                  # ToolRegistry
+├── list_evidence_tool.py        # Evidence tools (imports from Evidence module)
+├── read_file_tool.py
+├── case_evidence_qa_tool.py
+├── knowledge_base_tool.py       # Knowledge tools (imports from Knowledge module)
+├── user_kb_qa_tool.py
+├── global_kb_qa_tool.py
+├── document_qa_tool.py
+└── web_search_tool.py           # Agent-specific tools
+```
 
-**Recommendation:** **Option B** - Tools in source modules with Agent-owned registry
-- Evidence module provides evidence tools
-- Knowledge module provides knowledge tools
-- Agent module provides agent-specific tools (web search)
-- `AgentToolRegistry` discovers tools via plugin pattern
+**Rationale:**
+
+- ✅ Clear ownership: Agent module owns all tools
+- ✅ Single registry, simple discovery
+- ✅ Reduces blast radius (no changes to Evidence/Knowledge modules)
+- ✅ Faster extraction (don't modify other modules)
+- ✅ Tools import from Evidence/Knowledge services (dependency is explicit)
+- ❌ Plugin discovery pattern adds complexity unnecessarily
+- ❌ Distributing tools requires coordinated changes across 3 modules
+
+**Future Consideration:** After Agent extraction is stable, we can refactor to distributed tools if needed. Document as future improvement in module README.
 
 ---
 
-#### 4. LLM Infrastructure Coupling ⚠️
+#### 4. LLM Infrastructure Coupling ✅ RESOLVED
 
 **Problem:**
 Agent orchestration is deeply tied to LLM client:
+
 - Streaming implementation specific to LLM
 - Token counting and budget tracking
 - Provider failover logic
@@ -499,32 +548,27 @@ Agent orchestration is deeply tied to LLM client:
 
 **Question:** Should LLM infrastructure be part of Agent module?
 
-**Analysis:**
+**DECISION (FIRM):** **Keep LLM as Shared Infrastructure (NO MOVE)**
 
-**Current State:**
-- `integrations/llm_client.py` - LLM client wrapper
-- `infrastructure/llm/providers/` - OpenAI, Anthropic, etc.
-- Used by Agent orchestration service
+LLM infrastructure remains in `infrastructure/llm/` and `integrations/llm_client.py`.
 
-**Options:**
+**Rationale:**
 
-**Option A: LLM in Agent Module**
-- Agent module owns LLM integration
-- Clear coupling
-- **Pro**: Vertical slice completeness
-- **Con**: Other modules can't use LLM (e.g., Report module for summaries)
+- ✅ Other modules may need LLM (Report for summaries, Knowledge for embeddings)
+- ✅ Already well-abstracted as shared infrastructure
+- ✅ Reduces Agent module extraction scope
+- ✅ Maintains clear interface boundaries
+- ❌ Moving LLM to Agent creates tight coupling
+- ❌ Prevents future LLM reuse by other modules
 
-**Option B: LLM as Shared Infrastructure**
-- LLM client remains in `infrastructure/`
-- Agent module uses LLM as dependency
-- **Pro**: Reusable across modules
-- **Con**: Agent module doesn't fully own its stack
+**Action:** Agent module imports LLM client as dependency
 
-**Recommendation:** **Option B** - LLM as shared infrastructure
-- LLM infrastructure stays in `infrastructure/llm/`
-- Agent module imports and uses LLM client
-- Allows Report, Knowledge, or other modules to use LLM if needed
-- Maintain clear interface boundaries
+```python
+# Agent services import from shared infrastructure
+from faultmaven.integrations.llm_client import LLMClient
+from faultmaven.infrastructure.llm.providers import OpenAIProvider
+# etc.
+```
 
 ---
 
@@ -639,11 +683,11 @@ POST /api/v1/cases/{case_id}/sessions/{session_id}/execute
 
 ---
 
-## Recommended Module Structure
+## Recommended Module Structure (SIMPLIFIED)
 
-Based on the architectural analysis, here's the recommended structure for the Agent module:
+Based on the revised architectural decisions, here's the **simplified** structure for the Agent module:
 
-```
+```text
 faultmaven/modules/agent/
 ├── __init__.py
 ├── api/
@@ -663,241 +707,210 @@ faultmaven/modules/agent/
 │   │   └── execution_events.py # Agent execution events
 │   └── services/
 │       ├── __init__.py
-│       ├── agent_orchestration_service.py
-│       ├── investigation_orchestrator.py
-│       ├── investigation_service.py
-│       └── investigation_session_service.py
+│       ├── agent_orchestration_service.py  # Low-level execution
+│       ├── investigation_orchestrator.py   # Mid-level workflow
+│       └── investigation_service.py        # High-level management
 ├── infrastructure/
 │   ├── __init__.py
-│   ├── persistence/
-│   │   ├── __init__.py
-│   │   └── agent_execution_repository.py
-│   └── tools/
+│   └── persistence/
 │       ├── __init__.py
-│       ├── base.py             # AgentTool, ToolContext
-│       ├── registry.py         # ToolRegistry
-│       └── web_search_tool.py  # Agent-specific tools
-└── README.md
+│       └── agent_execution_repository.py
+└── tools/                      # ALL TOOLS HERE (initially)
+    ├── __init__.py
+    ├── base.py                 # AgentTool base class, ToolContext
+    ├── registry.py             # ToolRegistry
+    ├── list_evidence_tool.py   # Evidence tools (import from Evidence module)
+    ├── read_file_tool.py
+    ├── case_evidence_qa_tool.py
+    ├── knowledge_base_tool.py  # Knowledge tools (import from Knowledge module)
+    ├── user_kb_qa_tool.py
+    ├── global_kb_qa_tool.py
+    ├── document_qa_tool.py
+    └── web_search_tool.py      # Agent-specific tools
 
-# Shared Investigation Core (separate from Agent module)
-faultmaven/investigation/
-├── __init__.py
-├── core/
-│   ├── __init__.py
-│   ├── engines/
-│   │   ├── __init__.py
-│   │   ├── ooda_engine.py
-│   │   ├── milestone_engine.py
-│   │   └── hypothesis_engine.py
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── phases.py
-│   │   ├── strategies.py
-│   │   └── conclusions.py
-│   └── coordinators/
-│       ├── __init__.py
-│       └── investigation_coordinator.py
-└── README.md
+# NO CHANGES to existing shared infrastructure:
+faultmaven/core/investigation/  # Stays as-is (NO MOVE)
+├── ooda_engine.py
+├── milestone_engine.py
+├── hypothesis_manager.py
+├── phases.py
+├── strategy_selector.py
+├── working_conclusion_generator.py
+└── investigation_coordinator.py
 
-# Tools Distributed Across Modules
-faultmaven/modules/evidence/tools/
-├── list_evidence_tool.py
-├── read_file_tool.py
-└── case_evidence_qa_tool.py
+faultmaven/infrastructure/llm/  # Stays as-is (NO MOVE)
+└── providers/
+    ├── openai.py
+    ├── anthropic.py
+    └── ...
 
-faultmaven/modules/knowledge/tools/
-├── knowledge_base_tool.py
-├── user_kb_qa_tool.py
-├── global_kb_qa_tool.py
-└── document_qa_tool.py
+faultmaven/integrations/
+└── llm_client.py              # Stays as-is (NO MOVE)
 ```
 
-**Key Design Decisions:**
-1. **Agent module** owns orchestration, execution, and agent-specific logic
-2. **Investigation Core** is shared infrastructure owned by Agent team
-3. **Tools** distributed to source modules (Evidence, Knowledge) with registry in Agent
-4. **LLM infrastructure** remains shared in `infrastructure/llm/`
-5. **InvestigationSessionService** in Agent module, `InvestigationSession` model in Case module
+**Key Design Decisions (Revised):**
+
+1. **Agent module** owns orchestration, execution, and ALL tools
+2. **Investigation Core** stays in `core/investigation/` (NO MOVE)
+3. **ALL Tools** in `modules/agent/tools/` initially (no distribution)
+4. **LLM infrastructure** remains in `infrastructure/llm/` and `integrations/` (NO MOVE)
+5. **Three services** maintained separately (clear separation)
 
 ---
 
-## Phased Implementation Roadmap
+## Phased Implementation Roadmap (SIMPLIFIED)
 
-### Phase 1: Preparation & Design (Week 1)
+**Total Duration: 2-3 weeks** (down from 5 weeks)
 
-**Goals:**
-- Finalize architectural decisions
-- Create shared Investigation Core library
-- Document module interfaces and contracts
-- Set up module boundary tests
-
-**Tasks:**
-1. Review and approve architectural decisions in this document
-2. Create `faultmaven/investigation/` directory structure
-3. Move core investigation components to Investigation Core:
-   - `core/investigation/ooda_engine.py` → `investigation/core/engines/ooda_engine.py`
-   - `core/investigation/milestone_engine.py` → `investigation/core/engines/milestone_engine.py`
-   - `core/investigation/hypothesis_manager.py` → `investigation/core/engines/hypothesis_engine.py`
-   - `core/investigation/phases.py` → `investigation/core/models/phases.py`
-   - `core/investigation/strategy_selector.py` → `investigation/core/models/strategies.py`
-   - `core/investigation/working_conclusion_generator.py` → `investigation/core/models/conclusions.py`
-   - `core/investigation/investigation_coordinator.py` → `investigation/core/coordinators/investigation_coordinator.py`
-4. Update imports to use Investigation Core
-5. Define module interface contracts:
-   - Agent → Case: `Case` model, `CaseRepository`
-   - Agent → Evidence: Evidence tools
-   - Agent → Knowledge: Knowledge tools
-   - Agent → Session: `InvestigationSession` model
-6. Create module boundary tests
-7. **Deliverable:** Investigation Core library with passing tests
-
----
-
-### Phase 2: Infrastructure & Events (Week 2)
+### Phase 1: Module Structure, Models & Events (3-4 days)
 
 **Goals:**
-- Extract Agent infrastructure components
-- Set up domain events
-- Configure module-specific DI
+
+- Create Agent module directory structure
+- Extract domain models
+- Extract domain events
+- Set up module `__init__.py` files (no eager imports!)
 
 **Tasks:**
-1. Create `modules/agent/infrastructure/` structure
-2. Move agent execution repository:
-   - `infrastructure/persistence/agent_execution_repository.py` → `modules/agent/infrastructure/persistence/agent_execution_repository.py`
-3. Extract agent-specific domain events:
-   - Create `modules/agent/domain/events/execution_events.py`
-   - Move `ExecutionEvent`, `ExecutionEventType` from `domain/events.py`
-   - Leave shared LLM events in `infrastructure/events/` (if needed)
-4. Move investigation session repository to Agent module:
-   - `infrastructure/persistence/investigation_session_repository.py` → `modules/agent/infrastructure/persistence/investigation_session_repository.py`
-5. Set up Agent module DI configuration:
-   - Create `modules/agent/di/` for dependency injection
-   - Register Agent services
-   - Configure tool registry
-6. Update container to use Agent module DI
-7. **Deliverable:** Agent infrastructure with passing repository tests
 
----
-
-### Phase 3: Domain Models & Services (Week 3)
-
-**Goals:**
-- Extract Agent domain models
-- Extract and clarify Agent services
-- Resolve service overlap
-
-**Tasks:**
-1. Create `modules/agent/domain/models/` structure
-2. Move agent models:
+1. **Review and approve** this revised extraction plan
+2. **Create module structure:**
+   ```bash
+   mkdir -p faultmaven/modules/agent/{api,domain/{models,events,services},infrastructure/persistence,tools}
+   ```
+3. **Move domain models:**
    - `models/agent_execution.py` → `modules/agent/domain/models/agent_execution.py`
    - `models/agentic.py` → `modules/agent/domain/models/agentic.py`
-   - `models/investigation.py` → `modules/agent/domain/models/investigation.py`
-3. Create `modules/agent/domain/services/` structure
-4. Clarify service responsibilities (see Challenge #1):
-   - **`AgentOrchestrationService`** - Low-level agent execution
-   - **`InvestigationOrchestrator`** - Mid-level workflow orchestration
-   - **`InvestigationService`** - High-level investigation management
-5. Move services:
+   - `models/investigation.py` → `modules/agent/domain/models/investigation.py` (if not in core/)
+4. **Extract domain events:**
+   - Create `modules/agent/domain/events/execution_events.py`
+   - Move `ExecutionEvent`, `ExecutionEventType` from `domain/events.py`
+   - Leave shared events in place
+5. **Set up `__init__.py` files** (no eager imports, lessons from Auth module)
+6. **Update model imports** in affected files
+7. **Run tests** to verify models work
+
+**Deliverable:** Agent module structure with models and events, passing tests
+
+---
+
+### Phase 2: Services Extraction (3-4 days)
+
+**Goals:**
+
+- Extract all three Agent services
+- Maintain clear separation of concerns
+- Update service dependencies and imports
+
+**Tasks:**
+
+1. **Move services** (use `git mv` to preserve history):
    - `services/agent_orchestration_service.py` → `modules/agent/domain/services/agent_orchestration_service.py`
    - `services/domain/investigation_orchestrator.py` → `modules/agent/domain/services/investigation_orchestrator.py`
    - `services/domain/investigation_service.py` → `modules/agent/domain/services/investigation_service.py`
-   - `services/investigation_session_service.py` → `modules/agent/domain/services/investigation_session_service.py`
-6. Update service interactions and dependencies
-7. Update imports across codebase
-8. **Deliverable:** Agent services with passing unit tests
+2. **Update service dependencies:**
+   - Services import from `core/investigation/` (stays as-is)
+   - Services import from `infrastructure/llm/` (stays as-is)
+   - Services import models from `modules/agent/domain/models/`
+3. **Update DI container:**
+   - Register Agent services in container
+   - Update service factory methods
+4. **Update imports** using grep to find all references:
+
+   ```bash
+   grep -r "from faultmaven.services.agent_orchestration" --include="*.py" -l
+   ```
+
+5. **Run unit tests** for services
+6. **Commit changes** (services extraction)
+
+**Deliverable:** Agent services extracted with passing unit tests
 
 ---
 
-### Phase 4: Tool System & API (Week 4)
+### Phase 3: API Routes, Tools & Repositories (3-4 days)
 
 **Goals:**
-- Implement distributed tool pattern
+
 - Extract Agent API routes
-- Set up tool registry
+- Move ALL tools to Agent module
+- Extract Agent repository
 
 **Tasks:**
-1. Create tool infrastructure in Agent module:
-   - `modules/agent/infrastructure/tools/base.py` - `AgentTool` base class
-   - `modules/agent/infrastructure/tools/registry.py` - `AgentToolRegistry`
-2. Move agent-specific tools:
-   - `tools/web_search.py` → `modules/agent/infrastructure/tools/web_search_tool.py`
-3. Create tool directories in source modules:
-   - `modules/evidence/tools/`
-   - `modules/knowledge/tools/`
-4. Move evidence tools to Evidence module:
-   - `tools/list_evidence_tool.py` → `modules/evidence/tools/list_evidence_tool.py`
-   - `tools/read_file_tool.py` → `modules/evidence/tools/read_file_tool.py`
-   - `tools/case_evidence_qa.py` → `modules/evidence/tools/case_evidence_qa_tool.py`
-5. Move knowledge tools to Knowledge module:
-   - `tools/knowledge_base.py` → `modules/knowledge/tools/knowledge_base_tool.py`
-   - `tools/user_kb_qa.py` → `modules/knowledge/tools/user_kb_qa_tool.py`
-   - `tools/global_kb_qa.py` → `modules/knowledge/tools/global_kb_qa_tool.py`
-   - `tools/document_qa_tool.py` → `modules/knowledge/tools/document_qa_tool.py`
-6. Implement plugin-based tool discovery:
-   - Each module registers tools with central registry
-   - Registry discovers tools at startup
-7. Create `modules/agent/api/` structure
-8. Move agent API routes:
+
+1. **Move agent execution repository:**
+   - `infrastructure/persistence/agent_execution_repository.py` → `modules/agent/infrastructure/persistence/agent_execution_repository.py`
+2. **Create tools directory and move ALL tools:**
+   - Create `modules/agent/tools/`
+   - Move `tools/base.py` → `modules/agent/tools/base.py` (AgentTool, ToolContext)
+   - Move `tools/registry.py` → `modules/agent/tools/registry.py`
+   - Move ALL 9 tool files to `modules/agent/tools/`:
+     - `list_evidence_tool.py`, `read_file_tool.py`, `case_evidence_qa.py`
+     - `knowledge_base.py`, `user_kb_qa.py`, `global_kb_qa.py`, `document_qa_tool.py`
+     - `web_search.py`
+3. **Update tool imports:**
+   - Tools import from Evidence module services (e.g., `EvidenceArtifactService`)
+   - Tools import from Knowledge module services
+   - Update tool registry to find tools in new location
+4. **Move API routes:**
    - `api/routes/agent.py` → `modules/agent/api/routes.py`
-9. Create `modules/agent/api/streaming.py` for SSE utilities
-10. Update API routing to include Agent module routes
-11. Update import paths across codebase
-12. **Deliverable:** Agent API with passing integration tests, working tool system
+   - Create `modules/agent/api/streaming.py` for SSE utilities
+   - Create `modules/agent/api/dependencies.py` for FastAPI dependencies
+5. **Update main app routing** to include Agent module routes
+6. **Run integration tests**
+7. **Commit changes** (API, tools, repositories)
+
+**Deliverable:** Agent API routes, all tools, and repositories extracted
 
 ---
 
-### Phase 5: Testing, Integration & Finalization (Week 5)
+### Phase 4: Testing, Integration & Cleanup (3-4 days)
 
 **Goals:**
-- Move and adapt test suite
-- Integration testing across modules
-- Performance and security testing
-- Documentation and cleanup
+
+- Migrate test suite
+- Verify cross-module integration
+- Clean up old locations
+- Documentation
 
 **Tasks:**
-1. Create test structure:
-   - `tests/modules/agent/unit/`
-   - `tests/modules/agent/integration/`
-2. Move unit tests:
-   - Move 15+ unit test files to `tests/modules/agent/unit/`
-   - Update import paths
+
+1. **Move test files** (verify actual count first):
+   - Move unit tests to appropriate locations
+   - Move integration tests
+   - Update test imports
+2. **Run full test suite:**
+   - Unit tests (target: 100% pass)
+   - Integration tests (target: 95%+ pass)
    - Fix any broken tests
-3. Move integration tests:
-   - Move 11+ integration test files to `tests/modules/agent/integration/`
-   - Ensure cross-module integration works
-4. Move performance tests:
-   - Move benchmark tests to `tests/modules/agent/benchmarks/`
-   - Verify performance metrics
-5. Move security tests:
-   - Move security test to `tests/modules/agent/security/`
-6. Run full test suite:
-   - All unit tests (target: 100% pass)
-   - All integration tests (target: 95%+ pass)
-   - Performance benchmarks
-   - Security tests
-7. Integration testing across modules:
+3. **Integration testing:**
    - Case → Agent workflow
-   - Agent → Evidence tool calls
-   - Agent → Knowledge tool calls
-   - End-to-end case investigation flow
-8. Update documentation:
-   - Create `modules/agent/README.md`
-   - Document Agent module architecture
-   - Update main Platform Evolution documentation
-   - Create migration guide for developers
-9. Clean up old locations:
+   - Agent → Evidence tools
+   - Agent → Knowledge tools
+   - End-to-end investigation flow
+4. **Clean up old locations:**
    - Remove `services/agent_orchestration_service.py`
-   - Remove `services/domain/investigation_*.py`
-   - Remove `models/agent_execution.py`, `models/agentic.py`
+   - Remove `services/domain/investigation_orchestrator.py`
+   - Remove `services/domain/investigation_service.py`
+   - Remove `models/agent_execution.py`, `models/agentic.py`, `models/investigation.py`
    - Remove `api/routes/agent.py`
+   - Remove `tools/` directory
    - Remove `infrastructure/persistence/agent_execution_repository.py`
-   - Update `services/__init__.py` to remove agent imports
-10. Final verification:
-    - All imports updated
-    - No circular dependencies
-    - All tests passing
-    - Documentation complete
-11. **Deliverable:** Fully extracted Agent module with comprehensive test coverage
+5. **Update central imports:**
+   - Remove agent imports from `services/__init__.py`
+   - Remove agent imports from `models/__init__.py`
+   - Update API routing
+6. **Documentation:**
+   - Create `modules/agent/README.md`
+   - Update `MODULE-EXTRACTION-STATUS.md` (71% → 86%)
+   - Document future improvements (tool distribution)
+7. **Final verification:**
+   - All imports updated
+   - No circular dependencies
+   - All tests passing
+   - Code review
+
+**Deliverable:** Fully extracted Agent module, all tests passing, documentation complete
 
 ---
 
@@ -939,57 +952,43 @@ Based on the analysis, approximately **30-40 files** will need import updates:
 - Integration tests
 - Conftest files
 
-### Automated Import Update Script
+### Import Update Approach (SAFER)
 
-Create `scripts/update_agent_imports.sh`:
+**Use grep + manual/IDE refactoring instead of sed mass replacement:**
 
 ```bash
-#!/bin/bash
-# Script to update all import references for Agent module extraction
+# Find files that need updates for services
+grep -r "from faultmaven.services.agent_orchestration" --include="*.py" -l
+grep -r "from faultmaven.services.domain.investigation" --include="*.py" -l
 
-set -e
+# Find files that need updates for models
+grep -r "from faultmaven.models.agent_execution" --include="*.py" -l
+grep -r "from faultmaven.models.agentic" --include="*.py" -l
 
-echo "Updating agent module imports..."
+# Find files that need updates for repositories
+grep -r "from faultmaven.infrastructure.persistence.agent_execution" --include="*.py" -l
 
-# Service imports
-find . -name "*.py" -type f -exec sed -i \
-  -e 's|from faultmaven\.services\.agent_orchestration_service import|from faultmaven.modules.agent.domain.services.agent_orchestration_service import|g' \
-  -e 's|from faultmaven\.services\.domain\.investigation_orchestrator import|from faultmaven.modules.agent.domain.services.investigation_orchestrator import|g' \
-  -e 's|from faultmaven\.services\.domain\.investigation_service import|from faultmaven.modules.agent.domain.services.investigation_service import|g' \
-  -e 's|from faultmaven\.services\.investigation_session_service import|from faultmaven.modules.agent.domain.services.investigation_session_service import|g' \
-  {} +
+# Find files that need updates for API routes
+grep -r "from faultmaven.api.routes.agent" --include="*.py" -l
 
-# Model imports
-find . -name "*.py" -type f -exec sed -i \
-  -e 's|from faultmaven\.models\.agent_execution import|from faultmaven.modules.agent.domain.models.agent_execution import|g' \
-  -e 's|from faultmaven\.models\.agentic import|from faultmaven.modules.agent.domain.models.agentic import|g' \
-  -e 's|from faultmaven\.models\.investigation import|from faultmaven.modules.agent.domain.models.investigation import|g' \
-  {} +
-
-# Infrastructure imports
-find . -name "*.py" -type f -exec sed -i \
-  -e 's|from faultmaven\.infrastructure\.persistence\.agent_execution_repository import|from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import|g' \
-  {} +
-
-# API route imports
-find . -name "*.py" -type f -exec sed -i \
-  -e 's|from faultmaven\.api\.routes\.agent import|from faultmaven.modules.agent.api.routes import|g' \
-  {} +
-
-# Tool imports
-find . -name "*.py" -type f -exec sed -i \
-  -e 's|from faultmaven\.tools\.agent_tools import|from faultmaven.modules.agent.infrastructure.tools.base import|g' \
-  {} +
-
-# Investigation Core imports (new library)
-find . -name "*.py" -type f -exec sed -i \
-  -e 's|from faultmaven\.core\.investigation\.ooda_engine import|from faultmaven.investigation.core.engines.ooda_engine import|g' \
-  -e 's|from faultmaven\.core\.investigation\.milestone_engine import|from faultmaven.investigation.core.engines.milestone_engine import|g' \
-  -e 's|from faultmaven\.core\.investigation\.hypothesis_manager import|from faultmaven.investigation.core.engines.hypothesis_engine import|g' \
-  {} +
-
-echo "✓ All import updates complete!"
+# Find files that need updates for tools
+grep -r "from faultmaven.tools" --include="*.py" -l
 ```
+
+**Then update manually or use IDE refactoring:**
+
+- Use VS Code / PyCharm "Find and Replace" with regex
+- Update imports file by file
+- Verify each change
+- Run tests after each batch of changes
+
+**Why not sed?**
+
+- ❌ Mass sed replacement can break things unexpectedly
+- ❌ Hard to review what changed
+- ❌ No rollback if something goes wrong
+- ✅ grep + manual is safer and more controlled
+- ✅ IDE refactoring tools are smarter about context
 
 ---
 
@@ -1164,42 +1163,43 @@ After Agent module extraction is complete:
 
 ---
 
-## Timeline & Effort Estimate
+## Timeline & Effort Estimate (REVISED)
 
-### Total Effort: 3-5 Weeks (Full-Time)
+### Total Effort: 2-3 Weeks (Full-Time)
 
-**Phase 1: Preparation** - 1 week
-- Investigation Core extraction
-- Interface design
-- Module boundary setup
+**Phase 1: Module Structure, Models & Events** - 3-4 days
 
-**Phase 2: Infrastructure** - 1 week
-- Repositories
-- Events
-- DI configuration
+- Create directory structure
+- Move domain models
+- Extract domain events
+- Set up `__init__.py` files (no eager imports)
 
-**Phase 3: Services & Models** - 1 week
-- Service clarification
-- Model extraction
-- Service extraction
+**Phase 2: Services Extraction** - 3-4 days
 
-**Phase 4: Tools & API** - 1 week
-- Tool system refactoring
-- API route extraction
-- Tool registry implementation
+- Move all three services
+- Update dependencies
+- Update DI container
+- Run unit tests
 
-**Phase 5: Testing & Finalization** - 1 week
-- Test migration
+**Phase 3: API Routes, Tools & Repositories** - 3-4 days
+
+- Move agent execution repository
+- Move ALL tools to Agent module
+- Move API routes
+- Run integration tests
+
+**Phase 4: Testing, Integration & Cleanup** - 3-4 days
+
+- Migrate test suite
 - Integration testing
+- Clean up old locations
 - Documentation
-- Cleanup
 
 ### Resource Requirements
 
 - **Developer**: 1 senior developer with platform architecture knowledge
 - **Reviewer**: 1-2 reviewers for code review
-- **Tester**: QA support for integration and performance testing
-- **Documentation**: Technical writer for comprehensive docs
+- **Tester**: QA support for integration testing
 
 ---
 
@@ -1207,25 +1207,30 @@ After Agent module extraction is complete:
 
 ### Immediate Actions (Before Starting Extraction)
 
-1. **Review This Plan**
-   - Team review of architectural decisions
-   - Approve/adjust extraction strategy
-   - Confirm phased timeline
+1. **Review This REVISED Plan**
+   - Team review of simplified architectural decisions
+   - Approve extraction strategy
+   - Confirm 2-3 week timeline
 
-2. **Stakeholder Alignment**
-   - Product team: Impact on roadmap
+2. **Verify File Counts**
+   - Use grep/find to verify actual file counts
+   - Confirm ~25-30 production files (not 35-40)
+   - Confirm ~40-45 test files (not 49)
+
+3. **Stakeholder Alignment**
+   - Product team: Impact on roadmap (2-3 weeks)
    - Engineering team: Resource allocation
-   - QA team: Testing requirements
+   - QA team: Integration testing requirements
 
-3. **Environment Preparation**
+4. **Environment Preparation**
    - Create feature branch for extraction
-   - Set up CI/CD for Agent module
+   - Set up CI/CD for Agent module tests
    - Prepare test environments
 
-4. **Kick-off Phase 1**
-   - Schedule Phase 1 work
-   - Assign resources
-   - Begin Investigation Core extraction
+5. **Kick-off Phase 1**
+   - Schedule Phase 1 work (3-4 days)
+   - Assign developer resources
+   - Begin with module structure and models
 
 ### Long-Term Vision
 
