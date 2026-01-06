@@ -141,7 +141,7 @@ All documents referenced by architecture-overview.md remain at the root level fo
    - Alternative perspectives
    - Supplementary material
 
-4. **Historical context?**: Check [legacy/](./legacy/)
+4. **Historical context?**: Check [archive/](./archive/)
    - Understand architecture evolution
    - See what changed and why
 

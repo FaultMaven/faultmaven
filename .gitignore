@@ -206,19 +206,9 @@ website/.vscode/
 website/.npmrc
 .DS_Store
 
-# Cleanup and archived files
-recycle/
-archive/
+# Cleanup and archived files (root level only)
+/recycle/
 
 # Virtual environments (additional patterns)
 .venv-*/
 venv-*/
-
-# Temporary documentation patterns (added 2025-11-09)
-*_REPORT.md
-*_SUMMARY.md
-*_STATUS.md
-TEST_COVERAGE*.md
-CLEANUP_*.md
-*_PLAN.md
-*_ROADMAP.md
