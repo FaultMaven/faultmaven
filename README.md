@@ -53,8 +53,8 @@ Visit **<http://localhost:8000>** - you're running FaultMaven!
 
 > **Troubleshooting:** See `docs/runbooks/` and `docs/how-to/operational-configuration.md` for common issues and solutions.
 
-> **Note (Local defaults)**: Local is defined by **who controls infrastructure** (you). Defaults are minimal:
-> SQLite + local filesystem evidence storage + in-memory cache/sessions + Chroma (single-node). Postgres/Redis/hosted-Chroma are optional self-host upgrades and still “Local”.
+> **Note (Local defaults)**: Local is defined by **who controls the app/infra** (you). Defaults are minimal:
+> SQLite + local filesystem evidence storage + in-memory cache/sessions + Chroma (single-node).
 
 ---
 
@@ -161,10 +161,10 @@ FaultMaven provides **two deployment options**:
 
 - **Local (self-hosted)**: users download and run FaultMaven themselves. This public repository documents and supports **Local**.
   - **Default Local stack**: **SQLite** (local file DB), **filesystem** evidence storage, **in-memory** cache/sessions, **Chroma** (single-node).
-  - Optional self-host upgrades are still “Local” (e.g., Postgres/Redis/hosted Chroma), because they remain user-controlled.
+  - Local is intentionally kept simple in the public repo docs: **SQLite is the Local default**.
 - **Cloud (SaaS)**: FaultMaven runs a provider-operated, managed SaaS. Users **subscribe**; they do not deploy the cloud platform from this repo.
 
-See **[Installation Guide](docs/installation/INSTALLATION_GUIDE.md)** for Local setup and optional self-host upgrades.
+See **[Installation Guide](docs/installation/INSTALLATION_GUIDE.md)** for Local setup.
 
 ---
 
@@ -228,7 +228,7 @@ cp .env.example .env
 **Key configuration areas:**
 
 - **LLM Providers** - OpenAI, Anthropic, Fireworks, Gemini, etc.
- - **Database** - SQLite (Local default); PostgreSQL supported as an optional self-host upgrade and used by SaaS
+ - **Database** - SQLite (Local default); PostgreSQL is used by SaaS/Cloud
 - **Session Management** - Timeout, cleanup intervals, memory limits
 - **File Upload** - Size limits, allowed MIME types
 - **Vector Search** - ChromaDB configuration
