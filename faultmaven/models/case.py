@@ -153,6 +153,10 @@ class CaseSeverity(str, Enum):
         raise ValueError(f"Invalid severity: {value}. Must be one of: {[s.value for s in cls]}")
 
 
+# Alias for backward compatibility with tests
+CasePriority = CaseSeverity
+
+
 class CaseStatusTransition(BaseModel):
     """
     Record of one status change.

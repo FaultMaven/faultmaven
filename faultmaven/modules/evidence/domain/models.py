@@ -221,3 +221,7 @@ class EvidenceListFilter(BaseModel):
     filename_contains: Optional[str] = None
     limit: int = PydanticField(default=50, le=200)
     offset: int = PydanticField(default=0, ge=0)
+
+
+# Alias for backward compatibility with tests
+Evidence = EvidenceArtifact

@@ -1,1 +1,0 @@
-"""Evidence classification service tests"""

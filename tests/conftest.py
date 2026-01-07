@@ -398,39 +398,6 @@ def sample_case_participant():
 
 
 @pytest.fixture
-def sample_case_context():
-    """Sample case context for testing."""
-    from faultmaven.models.case import CaseContext
-    
-    return CaseContext(
-        problem_description="Test problem for case persistence",
-        system_info={
-            "os": "Linux",
-            "version": "Ubuntu 20.04",
-            "memory": "16GB"
-        },
-        environment_details={
-            "env": "test",
-            "region": "local"
-        },
-        uploaded_files=["test.log", "error.log"],
-        log_snippets=[
-            {
-                "timestamp": "2024-01-01T12:00:00Z",
-                "level": "ERROR",
-                "message": "Test error message"
-            }
-        ],
-        error_patterns=["connection timeout", "memory allocation error"],
-        blast_radius_defined=True,
-        timeline_established=False,
-        hypothesis_formulated=["Network connectivity issue", "Memory leak"],
-        root_causes=["Insufficient connection pool"],
-        recommendations=["Increase pool size", "Add monitoring"]
-    )
-
-
-@pytest.fixture
 def sample_case_summary():
     """Sample case summary for testing list operations."""
     from faultmaven.models.case import CaseSummary, CaseStatus, CasePriority

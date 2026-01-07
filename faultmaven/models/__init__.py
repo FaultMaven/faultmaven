@@ -1,6 +1,7 @@
 """Models package - central exports for FaultMaven models.
 
 This module provides convenient imports for commonly used models across the application.
+Models are now primarily located in their respective modules under faultmaven/modules/.
 """
 
 # Import common models used throughout the application
@@ -45,7 +46,6 @@ from .api import (
 )
 
 # Import new interfaces (Phase 1.1 of refactoring)
-# These are added for the refactoring but don't break backward compatibility
 from .interfaces import (
     ToolResult,
     BaseTool,
@@ -62,78 +62,72 @@ from .interfaces import (
     IKnowledgeIngester,
 )
 
-# Import case persistence models (optional)
-try:
-    from .case import (
-        Case,
-        CaseMessage,
-        CaseParticipant,
-        CaseContext,
-        CaseDiagnosticState,
-        CaseStatus,
-        CasePriority,
-        MessageType,
-        CaseCreateRequest,
-        CaseUpdateRequest,
-        CaseListFilter,
-        CaseSearchRequest,
-        CaseSummary
-    )
-    from .interfaces_case import (
-        ICaseStore,
-        ICaseService,
-        ICaseNotificationService,
-        ICaseIntegrationService
-    )
-    CASE_MODELS_AVAILABLE = True
-except ImportError:
-    CASE_MODELS_AVAILABLE = False
+# Import case models from the new module location
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    CaseSeverity,
+    MessageType,
+    UrgencyLevel,
+)
 
-# Import report generation models (FR-CM-006)
-try:
-    from .report import (
-        ReportType,
-        ReportStatus,
-        RunbookSource,
-        RunbookMetadata,
-        CaseReport,
-        SimilarRunbook,
-        RunbookRecommendation,
-        ReportRecommendation,
-        ReportGenerationRequest,
-        ReportGenerationResponse,
-        CaseClosureRequest,
-        CaseClosureResponse
-    )
-    REPORT_MODELS_AVAILABLE = True
-except ImportError:
-    REPORT_MODELS_AVAILABLE = False
+# Import case API models from api_models.py
+from .api_models import (
+    CaseMessage,
+    CaseParticipant,
+    CaseCreateRequest,
+    CaseUpdateRequest,
+    CaseListFilter,
+    CaseSearchRequest,
+    CaseSummary,
+)
 
-# Import agentic models (active OODA framework)
+# Import case interfaces
+from .interfaces_case import (
+    ICaseStore,
+    ICaseService,
+    ICaseNotificationService,
+    ICaseIntegrationService
+)
+
+# Import report generation models from the new module location
+from faultmaven.modules.report.domain.models import (
+    ReportType,
+    ReportStatus,
+    RunbookSource,
+    RunbookMetadata,
+    CaseReport,
+    SimilarRunbook,
+    RunbookRecommendation,
+    ReportRecommendation,
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+    CaseClosureRequest,
+    CaseClosureResponse
+)
+
+# Import agentic models from the new module location
 from faultmaven.modules.agent.domain.models.agentic import SuggestedAction
-from .case import UrgencyLevel
 
-# Import session model
+# Import session model from auth module
 from faultmaven.modules.auth.domain.models.session import Session
-
-# Utility functions are now imported from legacy.py
 
 # Re-export everything
 __all__ = [
-    # Original models (backward compatibility)
+    # Common models
     "AgentState",
     "AgentStateEnum",
     "AgentStateDict",
-    "DataInsightsResponse", 
+    "DataInsightsResponse",
     "DataType",
     "KnowledgeBaseDocument",
     "SearchRequest",
     "SearchResult",
     "SessionContext",
     "TroubleshootingResponse",
-    # New v3.1.0 API models
+    # v3.1.0 API models
     "ResponseType",
-    "SourceType", 
+    "SourceType",
     "Source",
     "PlanStep",
     "UploadedData",
@@ -144,7 +138,7 @@ __all__ = [
     "ErrorResponse",
     "TitleGenerateRequest",
     "TitleResponse",
-    # New interfaces (Phase 1.1)
+    # Interfaces
     "ToolResult",
     "BaseTool",
     "ILLMProvider",
@@ -152,69 +146,47 @@ __all__ = [
     "ISanitizer",
     "IVectorStore",
     "ISessionStore",
-    # Phase 3.2 additions
     "IDataClassifier",
-    "ILogProcessor", 
+    "ILogProcessor",
     "IStorageBackend",
-    # Phase 3.3 additions
     "IKnowledgeIngester",
     # Utility functions
     "utc_timestamp",
     "parse_utc_timestamp",
-]
-
-# Add case models to exports if available
-if CASE_MODELS_AVAILABLE:
-    __all__.extend([
-        # Case persistence models
-        "Case",
-        "CaseMessage",
-        "CaseParticipant",
-        "CaseContext",
-        "CaseDiagnosticState",
-        "CaseStatus",
-        "CasePriority",
-        "MessageType",
-        "CaseCreateRequest",
-        "CaseUpdateRequest",
-        "CaseListFilter",
-        "CaseSearchRequest",
-        "CaseSummary",
-        # Case interfaces
-        "ICaseStore",
-        "ICaseService",
-        "ICaseNotificationService",
-        "ICaseIntegrationService",
-    ])
-
-# Add agentic models to exports (always available)
-__all__.extend([
-    "SuggestedAction",
+    # Case models (from modules/case)
+    "Case",
+    "CaseStatus",
+    "CaseSeverity",
+    "MessageType",
     "UrgencyLevel",
-])
-
-# Add session model to exports
-__all__.append("Session")
-
-# Add report models to exports if available (FR-CM-006)
-if REPORT_MODELS_AVAILABLE:
-    __all__.extend([
-        "ReportType",
-        "ReportStatus",
-        "RunbookSource",
-        "RunbookMetadata",
-        "CaseReport",
-        "SimilarRunbook",
-        "RunbookRecommendation",
-        "ReportRecommendation",
-        "ReportGenerationRequest",
-        "ReportGenerationResponse",
-        "CaseClosureRequest",
-        "CaseClosureResponse",
-    ])
-
-# As we migrate, we'll replace the above with:
-# from .agent import *
-# from .api import *
-# from .domain import *
-# from .session import *
+    # Case API models (from api_models.py)
+    "CaseMessage",
+    "CaseParticipant",
+    "CaseCreateRequest",
+    "CaseUpdateRequest",
+    "CaseListFilter",
+    "CaseSearchRequest",
+    "CaseSummary",
+    # Case interfaces
+    "ICaseStore",
+    "ICaseService",
+    "ICaseNotificationService",
+    "ICaseIntegrationService",
+    # Report models (from modules/report)
+    "ReportType",
+    "ReportStatus",
+    "RunbookSource",
+    "RunbookMetadata",
+    "CaseReport",
+    "SimilarRunbook",
+    "RunbookRecommendation",
+    "ReportRecommendation",
+    "ReportGenerationRequest",
+    "ReportGenerationResponse",
+    "CaseClosureRequest",
+    "CaseClosureResponse",
+    # Agentic models
+    "SuggestedAction",
+    # Auth models
+    "Session",
+]
