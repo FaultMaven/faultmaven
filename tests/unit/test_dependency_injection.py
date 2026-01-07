@@ -44,20 +44,20 @@ def test_container_import_and_basic_behavior():
     """Test that container can be imported and has basic behavior"""
     
     try:
-        from faultmaven.container import DIContainer, container
+        from faultmaven.container import BaseDIContainer, container
         
         # Test basic container properties
-        assert DIContainer is not None
+        assert BaseDIContainer is not None
         assert container is not None
-        assert isinstance(container, DIContainer)
+        assert isinstance(container, BaseDIContainer)
         
-        # Test singleton behavior - multiple DIContainer() calls return same instance
-        new_container = DIContainer()
-        another_container = DIContainer()
+        # Test singleton behavior - multiple BaseDIContainer() calls return same instance
+        new_container = BaseDIContainer()
+        another_container = BaseDIContainer()
         assert new_container is another_container
         
         # Test that global container proxy points to the singleton
-        direct_instance = DIContainer()
+        direct_instance = BaseDIContainer()
         assert container.initialize == direct_instance.initialize
         
         # Test basic methods exist

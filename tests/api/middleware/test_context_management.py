@@ -210,14 +210,14 @@ class TestUserIdLookup:
     def test_successful_user_id_lookup(self, client, mock_session):
         """Test successful user_id lookup from session_id through full HTTP cycle."""
         # Import here to avoid circular imports
-        from faultmaven.container import DIContainer
+        from faultmaven.container import BaseDIContainer
         
         # Mock session service to return test session
         mock_session_service = AsyncMock()
         mock_session_service.get_session.return_value = mock_session
         
         # Create a complete mock container that bypasses initialization
-        with patch.object(DIContainer, '__new__') as mock_container_new:
+        with patch.object(BaseDIContainer, '__new__') as mock_container_new:
             # Create a mock container instance
             mock_container_instance = Mock()
             mock_container_instance._initialized = True
@@ -245,14 +245,14 @@ class TestUserIdLookup:
     def test_user_id_lookup_session_not_found(self, client):
         """Test graceful handling when session is not found."""
         # Import here to avoid circular imports
-        from faultmaven.container import DIContainer
+        from faultmaven.container import BaseDIContainer
         
         # Mock session service returning None
         mock_session_service = AsyncMock()
         mock_session_service.get_session.return_value = None
         
         # Create a complete mock container that bypasses initialization
-        with patch.object(DIContainer, '__new__') as mock_container_new:
+        with patch.object(BaseDIContainer, '__new__') as mock_container_new:
             # Create a mock container instance
             mock_container_instance = Mock()
             mock_container_instance._initialized = True
@@ -271,14 +271,14 @@ class TestUserIdLookup:
     def test_user_id_lookup_service_failure(self, client):
         """Test graceful handling when session service fails."""
         # Import here to avoid circular imports
-        from faultmaven.container import DIContainer
+        from faultmaven.container import BaseDIContainer
         
         # Mock session service raising exception
         mock_session_service = AsyncMock()
         mock_session_service.get_session.side_effect = Exception("Service unavailable")
         
         # Create a complete mock container that bypasses initialization
-        with patch.object(DIContainer, '__new__') as mock_container_new:
+        with patch.object(BaseDIContainer, '__new__') as mock_container_new:
             # Create a mock container instance
             mock_container_instance = Mock()
             mock_container_instance._initialized = True
@@ -301,14 +301,14 @@ class TestContextContinuity:
     def test_context_continuity_within_request(self, client, mock_session):
         """Test that context is maintained throughout request processing."""
         # Import here to avoid circular imports
-        from faultmaven.container import DIContainer
+        from faultmaven.container import BaseDIContainer
         
         # Mock session service to return test session
         mock_session_service = AsyncMock()
         mock_session_service.get_session.return_value = mock_session
         
         # Create a complete mock container that bypasses initialization
-        with patch.object(DIContainer, '__new__') as mock_container_new:
+        with patch.object(BaseDIContainer, '__new__') as mock_container_new:
             # Create a mock container instance
             mock_container_instance = Mock()
             mock_container_instance._initialized = True
@@ -394,14 +394,14 @@ class TestTargetedTracingIntegration:
     def test_context_available_for_targeted_tracing(self, client, mock_session):
         """Test that context is properly populated for targeted tracing to work."""
         # Import here to avoid circular imports
-        from faultmaven.container import DIContainer
+        from faultmaven.container import BaseDIContainer
         
         # Mock session service to return test session
         mock_session_service = AsyncMock()
         mock_session_service.get_session.return_value = mock_session
         
         # Create a complete mock container that bypasses initialization
-        with patch.object(DIContainer, '__new__') as mock_container_new:
+        with patch.object(BaseDIContainer, '__new__') as mock_container_new:
             # Create a mock container instance
             mock_container_instance = Mock()
             mock_container_instance._initialized = True

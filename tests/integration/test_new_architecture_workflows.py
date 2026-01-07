@@ -19,7 +19,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from faultmaven.container import DIContainer
+from faultmaven.container import BaseDIContainer
 from faultmaven.config.settings import get_settings, reset_settings, FaultMavenSettings
 from faultmaven.infrastructure.llm.providers.registry import get_registry, reset_registry
 
@@ -55,7 +55,7 @@ except ImportError:
 def reset_architecture_before_test():
     """Reset all architecture components before each test."""
     # Reset container singleton
-    DIContainer._instance = None
+    BaseDIContainer._instance = None
     reset_settings()
     reset_registry()
     
@@ -66,7 +66,7 @@ def reset_architecture_before_test():
     yield
     
     # Reset after test
-    DIContainer._instance = None
+    BaseDIContainer._instance = None
     reset_settings()
     reset_registry()
 
@@ -250,7 +250,7 @@ class TestSettingsContainerServicesFlow:
         assert settings.features.use_di_container == True
         
         # Initialize container with these settings
-        container = DIContainer()
+        container = BaseDIContainer()
 
         with patch('faultmaven.infrastructure.llm.router.LLMRouter', Mock(return_value=Mock())), \
              patch('faultmaven.infrastructure.security.redaction.DataSanitizer', Mock(return_value=Mock())), \
@@ -264,7 +264,7 @@ class TestSettingsContainerServicesFlow:
     
     def test_container_to_services_dependency_injection(self, integration_env, mock_infrastructure_components):
         """Test container properly injects dependencies into services."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock service classes to track dependency injection
         agent_service_calls = []
@@ -305,7 +305,7 @@ class TestSettingsContainerServicesFlow:
     def test_settings_changes_affect_container_initialization(self, integration_env):
         """Test that settings changes affect container initialization."""
         # Initialize with first settings
-        container1 = DIContainer()
+        container1 = BaseDIContainer()
         
         with patch('faultmaven.infrastructure.llm.router.LLMRouter') as mock_llm_router:
             container1.initialize()
@@ -314,7 +314,7 @@ class TestSettingsContainerServicesFlow:
             assert container1.settings.llm.provider.value == 'fireworks'
         
         # Reset and change settings
-        DIContainer._instance = None
+        BaseDIContainer._instance = None
         reset_settings()
         
         # Change environment
@@ -322,7 +322,7 @@ class TestSettingsContainerServicesFlow:
         os.environ['OPENAI_MODEL'] = 'gpt-4-turbo'
         
         # Initialize new container
-        container2 = DIContainer()
+        container2 = BaseDIContainer()
         
         with patch('faultmaven.infrastructure.llm.router.LLMRouter'):
             container2.initialize()
@@ -367,7 +367,7 @@ class TestEndToEndWorkflows:
     async def test_complete_troubleshooting_workflow(self, integration_env, mock_infrastructure_components):
         """Test a complete troubleshooting workflow from query to response."""
         # Set up container with all components
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock complete service chain
         agent_service = Mock()
@@ -446,7 +446,7 @@ class TestEndToEndWorkflows:
     @pytest.mark.asyncio
     async def test_data_upload_and_analysis_workflow(self, integration_env, mock_infrastructure_components):
         """Test data upload and analysis workflow."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock data service with analysis capabilities
         data_service = Mock()
@@ -511,7 +511,7 @@ class TestEndToEndWorkflows:
     @pytest.mark.asyncio
     async def test_knowledge_base_integration_workflow(self, integration_env, mock_infrastructure_components):
         """Test knowledge base integration workflow."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock knowledge service
         knowledge_service = Mock()
@@ -574,7 +574,7 @@ class TestEndToEndWorkflows:
     @pytest.mark.asyncio
     async def test_multi_session_case_continuity_workflow(self, integration_env, mock_infrastructure_components):
         """Test case continuity across multiple sessions."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock session and case services
         session_service = Mock()
@@ -649,7 +649,7 @@ class TestErrorHandlingAcrossLayers:
     
     def test_container_initialization_error_handling(self, integration_env):
         """Test container error handling during initialization."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock infrastructure creation to fail
         with patch.object(container, '_create_infrastructure_layer', side_effect=Exception("Infrastructure failed")):
@@ -662,7 +662,7 @@ class TestErrorHandlingAcrossLayers:
     
     def test_service_layer_error_recovery(self, integration_env, mock_infrastructure_components):
         """Test service layer error recovery."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock agent service to fail initially then succeed
         call_count = 0
@@ -703,7 +703,7 @@ class TestErrorHandlingAcrossLayers:
     @pytest.mark.asyncio
     async def test_cross_service_error_handling(self, integration_env, mock_infrastructure_components):
         """Test error handling between services."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock services with different failure modes
         session_service = Mock()
@@ -743,7 +743,7 @@ class TestErrorHandlingAcrossLayers:
     
     def test_infrastructure_dependency_failure_handling(self, integration_env):
         """Test handling of infrastructure dependency failures."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock some infrastructure to fail, others to succeed
         def failing_llm_router(*args, **kwargs):
@@ -785,7 +785,7 @@ class TestInterfaceComplianceInRealScenarios:
     @patch('faultmaven.container.INTERFACES_AVAILABLE', True)
     def test_interface_contract_enforcement(self, integration_env, mock_infrastructure_components):
         """Test that interface contracts are enforced."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock infrastructure with proper interface compliance
         llm_provider = Mock(spec=ILLMProvider)
@@ -824,7 +824,7 @@ class TestInterfaceComplianceInRealScenarios:
     @pytest.mark.asyncio
     async def test_async_interface_compliance(self, integration_env, mock_infrastructure_components):
         """Test async interface compliance across services."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Ensure all async methods are properly implemented
         async_methods_called = []
@@ -880,7 +880,7 @@ class TestInterfaceComplianceInRealScenarios:
     
     def test_interface_mock_compatibility(self, integration_env):
         """Test that mock implementations are compatible with interfaces."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Create mock implementations that satisfy interfaces
         if INTERFACES_AVAILABLE:
@@ -916,7 +916,7 @@ class TestCrossLayerCommunicationPatterns:
     @pytest.mark.asyncio
     async def test_request_response_pattern(self, integration_env, mock_infrastructure_components):
         """Test request-response pattern across layers."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Track calls across layers
         layer_calls = []
@@ -954,7 +954,7 @@ class TestCrossLayerCommunicationPatterns:
     @pytest.mark.asyncio
     async def test_event_driven_communication(self, integration_env, mock_infrastructure_components):
         """Test event-driven communication patterns."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock event tracking
         events_fired = []
@@ -993,7 +993,7 @@ class TestCrossLayerCommunicationPatterns:
     
     def test_dependency_chain_communication(self, integration_env, mock_infrastructure_components):
         """Test communication through dependency chains."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Track dependency usage
         dependency_usage = []

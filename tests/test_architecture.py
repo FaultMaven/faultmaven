@@ -135,9 +135,9 @@ class TestDependencyInjection:
 
     def test_container_interface_compliance(self):
         """Test that DI container properly provides interfaces"""
-        from faultmaven.container import DIContainer
+        from faultmaven.container import BaseDIContainer
         
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         # Test that getter methods return objects with required interfaces
@@ -155,9 +155,9 @@ class TestDependencyInjection:
 
     def test_service_dependency_injection(self):
         """Test that services receive proper dependencies"""
-        from faultmaven.container import DIContainer
+        from faultmaven.container import BaseDIContainer
         
-        container = DIContainer()
+        container = BaseDIContainer()
         agent_service = container.get_agent_service()
         
         # Verify agent service has injected dependencies
@@ -168,9 +168,9 @@ class TestDependencyInjection:
 
     def test_container_health_reporting(self):
         """Test container health check provides meaningful status"""
-        from faultmaven.container import DIContainer
+        from faultmaven.container import BaseDIContainer
         
-        container = DIContainer()
+        container = BaseDIContainer()
         health = container.health_check()
         
         # Health check should return proper structure
@@ -185,9 +185,9 @@ class TestInterfaceCompliance:
 
     def test_llm_provider_interface(self):
         """Test LLM provider implements required interface"""
-        from faultmaven.container import DIContainer
+        from faultmaven.container import BaseDIContainer
         
-        container = DIContainer()
+        container = BaseDIContainer()
         llm_provider = container.get_llm_provider()
         
         # Should have generate method (real or mock)
@@ -195,9 +195,9 @@ class TestInterfaceCompliance:
 
     def test_sanitizer_interface(self):
         """Test sanitizer implements required interface"""
-        from faultmaven.container import DIContainer
+        from faultmaven.container import BaseDIContainer
         
-        container = DIContainer()
+        container = BaseDIContainer()
         sanitizer = container.get_sanitizer()
         
         # Should have sanitize method
@@ -213,9 +213,9 @@ class TestInterfaceCompliance:
 
     def test_tracer_interface(self):
         """Test tracer implements required interface"""
-        from faultmaven.container import DIContainer
+        from faultmaven.container import BaseDIContainer
         
-        container = DIContainer()
+        container = BaseDIContainer()
         tracer = container.get_tracer()
         
         # Should have trace method

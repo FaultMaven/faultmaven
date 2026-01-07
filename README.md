@@ -123,8 +123,8 @@ FaultMaven is built as a **monolithic application** with clean separation of con
          │                    │                    │
          ▼                    ▼                    ▼
     ┌────────┐          ┌─────────┐         ┌──────────┐
-    │ Redis  │          │ChromaDB │         │ SQLite/  │
-    │(Cache) │          │(Vectors)│         │PostgreSQL│
+    │ Redis  │          │ChromaDB │         │ SQLite   │
+    │(Cache) │          │(Vectors)│         │(Local)   │
     └────────┘          └─────────┘         └──────────┘
 ```
 
@@ -228,7 +228,7 @@ cp .env.example .env
 **Key configuration areas:**
 
 - **LLM Providers** - OpenAI, Anthropic, Fireworks, Gemini, etc.
- - **Database** - SQLite (Local default); PostgreSQL is used by SaaS/Cloud
+ - **Database** - SQLite (Local default)
 - **Session Management** - Timeout, cleanup intervals, memory limits
 - **File Upload** - Size limits, allowed MIME types
 - **Vector Search** - ChromaDB configuration
