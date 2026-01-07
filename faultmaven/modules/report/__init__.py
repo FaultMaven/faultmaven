@@ -1,0 +1,55 @@
+"""Report Module - Vertical Slice
+
+Generates case documentation including incident reports, runbooks, and post-mortems.
+
+Public API:
+    From domain.models:
+        - ReportType, ReportStatus, RunbookSource
+        - CaseReport, ReportRecommendation
+        - ReportGenerationRequest, ReportGenerationResponse
+
+    From domain.services (import directly to avoid circular imports):
+        - ReportGenerationService, ReportRecommendationService
+
+Structure:
+- domain/: Report domain models and services
+- api/: FastAPI routes for report endpoints
+"""
+
+# Domain models
+from faultmaven.modules.report.domain.models import (
+    ReportType,
+    ReportStatus,
+    RunbookSource,
+    RunbookMetadata,
+    CaseReport,
+    SimilarRunbook,
+    RunbookRecommendation,
+    ReportRecommendation,
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+    CaseClosureRequest,
+    CaseClosureResponse,
+)
+
+# Domain services - import directly to avoid circular imports:
+# from faultmaven.modules.report.domain.services.report_generation_service import ReportGenerationService
+# from faultmaven.modules.report.domain.services.report_recommendation_service import ReportRecommendationService
+
+__all__ = [
+    # Models - Enums
+    "ReportType",
+    "ReportStatus",
+    "RunbookSource",
+    # Models - Data
+    "RunbookMetadata",
+    "CaseReport",
+    "SimilarRunbook",
+    "RunbookRecommendation",
+    "ReportRecommendation",
+    # Models - Request/Response
+    "ReportGenerationRequest",
+    "ReportGenerationResponse",
+    "CaseClosureRequest",
+    "CaseClosureResponse",
+]

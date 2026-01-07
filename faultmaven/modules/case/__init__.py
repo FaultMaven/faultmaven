@@ -2,20 +2,59 @@
 
 Manages case lifecycle, investigation sessions, and case data ingestion.
 
+Public API:
+    From domain.models:
+        - Case, CaseStatus, CaseSeverity, MessageType
+        - InvestigationProgress, Evidence, Hypothesis, Solution
+
+    From domain.services (import directly to avoid circular imports):
+        - CaseService, InvestigationSessionService, CaseStatusManager
+
 Structure:
 - api/: API routes for case endpoints
 - domain/: Domain models and services
-  - models.py: Case, CaseStatus, CaseMessage, etc.
-  - services/: CaseService, InvestigationSessionService, CaseStatusManager
-  - investigation_session.py: Investigation session domain model
-- infrastructure/: Persistence layer
-  - case_repository.py: Abstract repository interface
-  - database_case_repository.py: Database implementation
-  - postgresql_hybrid_case_repository.py: PostgreSQL + vector store implementation
-  - investigation_session_repository.py: Session persistence
+- infrastructure/: Persistence layer (repositories)
 """
 
-# Don't eagerly import to avoid circular imports
-# Components will be imported directly when needed
+# Domain models - core case types
+from faultmaven.modules.case.domain.models import (
+    # Core
+    Case,
+    CaseStatus,
+    CaseSeverity,
+    MessageType,
+    # Investigation
+    InvestigationProgress,
+    InvestigationStrategy,
+    # Evidence & Hypothesis
+    Evidence,
+    EvidenceCategory,
+    Hypothesis,
+    HypothesisStatus,
+    # Solution
+    Solution,
+    SolutionType,
+)
 
-__all__ = []
+# Domain services - import directly to avoid circular imports:
+# from faultmaven.modules.case.domain.services.case_service import CaseService
+# from faultmaven.modules.case.domain.services.investigation_session_service import InvestigationSessionService
+
+__all__ = [
+    # Core
+    "Case",
+    "CaseStatus",
+    "CaseSeverity",
+    "MessageType",
+    # Investigation
+    "InvestigationProgress",
+    "InvestigationStrategy",
+    # Evidence & Hypothesis
+    "Evidence",
+    "EvidenceCategory",
+    "Hypothesis",
+    "HypothesisStatus",
+    # Solution
+    "Solution",
+    "SolutionType",
+]
