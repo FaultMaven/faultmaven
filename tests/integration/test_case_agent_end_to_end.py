@@ -108,7 +108,7 @@ def mock_case_service():
         case = Mock()
         case.case_id = case_id
         case.title = f"Test Case {case_id}"
-        case.status = CaseStatus.ACTIVE
+        case.status = CaseStatus.CONSULTING
         case.priority = CasePriority.MEDIUM
         case.owner_id = user_id or "test-user"
         case.message_count = 0

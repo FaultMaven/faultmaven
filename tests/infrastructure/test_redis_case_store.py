@@ -96,7 +96,7 @@ def sample_case():
         title="Sample Redis Case",
         description="Test case for Redis storage",
         owner_id="user-456",
-        status=CaseStatus.ACTIVE,
+        status=CaseStatus.CONSULTING,
         priority=CasePriority.MEDIUM,
         tags=["redis", "test"]
     )
@@ -226,7 +226,7 @@ class TestCaseSerialization:
         assert isinstance(case, Case)
         assert case.case_id == "case-123"
         assert case.title == "Test Case"
-        assert case.status == CaseStatus.ACTIVE
+        assert case.status == CaseStatus.CONSULTING
         assert case.priority == CasePriority.MEDIUM
         assert isinstance(case.created_at, datetime)
         assert isinstance(case.session_ids, set)
@@ -749,7 +749,7 @@ class TestCaseListing:
     @pytest.mark.asyncio
     async def test_list_cases_with_status_filter(self, redis_case_store, mock_redis_client):
         """Test case listing with status filter"""
-        filters = CaseListFilter(status=CaseStatus.ACTIVE)
+        filters = CaseListFilter(status=CaseStatus.CONSULTING)
         mock_redis_client.smembers.return_value = {"case-1", "case-2"}
         
         await redis_case_store.list_cases(filters)
@@ -829,7 +829,7 @@ class TestCaseSearch:
             CaseSummary(
                 case_id="case-1",
                 title="Database Connection Issue",
-                status=CaseStatus.ACTIVE,
+                status=CaseStatus.CONSULTING,
                 priority=CasePriority.HIGH,
                 owner_id="user-1",
                 created_at=datetime.utcnow(),
@@ -870,7 +870,7 @@ class TestCaseSearch:
             CaseSummary(
                 case_id="case-1",
                 title="Connection Issue",
-                status=CaseStatus.ACTIVE,
+                status=CaseStatus.CONSULTING,
                 priority=CasePriority.HIGH,
                 owner_id="user-1",
                 created_at=datetime.utcnow(),
@@ -906,7 +906,7 @@ class TestCaseSearch:
             CaseSummary(
                 case_id="case-1",
                 title="Database Issue",
-                status=CaseStatus.ACTIVE,
+                status=CaseStatus.CONSULTING,
                 priority=CasePriority.HIGH,
                 owner_id="user-1",
                 created_at=datetime.utcnow(),
@@ -1092,7 +1092,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_get_user_cases_success(self, redis_case_store, mock_redis_client):
         """Test successful user cases retrieval"""
-        filters = CaseListFilter(status=CaseStatus.ACTIVE)
+        filters = CaseListFilter(status=CaseStatus.CONSULTING)
         expected_cases = []
         
         redis_case_store.list_cases = AsyncMock(return_value=expected_cases)

@@ -20,13 +20,16 @@ from typing import List, Optional
 from faultmaven.services.domain.case_service import CaseService
 from faultmaven.models.case import (
     Case,
+    CaseStatus,
+    CasePriority,
+    MessageType,
+    ParticipantRole,
+)
+from faultmaven.models.api_models import (
     CaseMessage,
     CaseListFilter,
     CaseSearchRequest,
     CaseSummary,
-    CaseStatus,
-    CasePriority,
-    MessageType
 )
 from faultmaven.models.interfaces_case import ICaseStore
 from faultmaven.models.interfaces import ISessionStore
@@ -96,7 +99,7 @@ def sample_case():
         title="Sample Test Case",
         description="Test case description",
         owner_id="user-456",
-        status=CaseStatus.ACTIVE,
+        status=CaseStatus.CONSULTING,
         priority=CasePriority.MEDIUM
     )
     case.add_participant("user-456", ParticipantRole.OWNER)
@@ -155,7 +158,7 @@ class TestCaseCreation:
         assert case.title == "Test Case"
         assert case.description is None
         assert case.owner_id is None
-        assert case.status == CaseStatus.ACTIVE
+        assert case.status == CaseStatus.CONSULTING
         assert case.priority == CasePriority.MEDIUM
         mock_case_store.create_case.assert_called_once()
     
@@ -212,7 +215,7 @@ class TestCaseCreation:
             CaseSummary(
                 case_id=f"case-{i}",
                 title=f"Case {i}",
-                status=CaseStatus.ACTIVE,
+                status=CaseStatus.CONSULTING,
                 priority=CasePriority.MEDIUM,
                 owner_id="user-123",
                 created_at=datetime.utcnow(),
@@ -723,7 +726,7 @@ class TestCaseListingAndSearch:
             CaseSummary(
                 case_id="case-1",
                 title="Case 1",
-                status=CaseStatus.ACTIVE,
+                status=CaseStatus.CONSULTING,
                 priority=CasePriority.MEDIUM,
                 owner_id="user-123",
                 created_at=datetime.utcnow(),
@@ -745,7 +748,7 @@ class TestCaseListingAndSearch:
     @pytest.mark.asyncio
     async def test_list_user_cases_with_filters(self, case_service, mock_case_store):
         """Test user case listing with filters"""
-        filters = CaseListFilter(status=CaseStatus.ACTIVE, limit=10)
+        filters = CaseListFilter(status=CaseStatus.CONSULTING, limit=10)
         
         await case_service.list_user_cases("user-123", filters)
         
@@ -774,14 +777,14 @@ class TestCaseListingAndSearch:
     @pytest.mark.asyncio
     async def test_search_cases_with_existing_filters(self, case_service, mock_case_store):
         """Test case search with existing filters"""
-        filters = CaseListFilter(status=CaseStatus.ACTIVE)
+        filters = CaseListFilter(status=CaseStatus.CONSULTING)
         search_request = CaseSearchRequest(query="error", filters=filters)
         
         await case_service.search_cases(search_request, user_id="user-123")
         
         # Should add user ID to existing filters
         assert search_request.filters.user_id == "user-123"
-        assert search_request.filters.status == CaseStatus.ACTIVE
+        assert search_request.filters.status == CaseStatus.CONSULTING
 
 
 class TestAnalyticsAndCleanup:

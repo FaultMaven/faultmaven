@@ -284,7 +284,7 @@ class TestContractCompliance:
         sample_case = CaseSummary(
             case_id="session-case-123",
             title="Session Case",
-            status=CaseStatus.ACTIVE,
+            status=CaseStatus.CONSULTING,
             priority=CasePriority.MEDIUM,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
@@ -542,7 +542,7 @@ class TestContractCompliance:
         case_summary = CaseSummary(
             case_id="atomic-case-123",
             title="Atomic Test Case",
-            status=CaseStatus.ACTIVE,
+            status=CaseStatus.CONSULTING,
             priority=CasePriority.MEDIUM,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
