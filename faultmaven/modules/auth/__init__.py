@@ -1,19 +1,65 @@
-"""Auth Module
+"""Auth Module - Vertical Slice
 
 Contains authentication, authorization, user management, session management,
 team management, and organization management.
 
+Public API:
+    From domain.models:
+        - User, Session, Role, Permission
+        - AuthToken, TokenPair, TokenClaims, DevUser
+        - DevLoginRequest, UserProfile, AuthTokenResponse
+
+    From domain.services (import directly to avoid circular imports):
+        - AuthService, AuthSessionService, UserService
+        - TeamService, OrganizationService
+
 Structure:
 - api/: API routes for auth endpoints
 - domain/: Domain models and services
-  - models/: Auth, User, Session, Team, Organization, RBAC models
-  - services/: Auth, Session, User, Team, Organization services
-- infrastructure/: Persistence layer
-  - repositories/: Repository implementations
-  - stores/: Store implementations
+- infrastructure/: Persistence layer (repositories, stores)
 """
 
-# Don't eagerly import api to avoid circular imports
-# API routes will be imported by the main app router
+# Domain models (already eagerly imported in domain/models/__init__.py)
+from faultmaven.modules.auth.domain.models import (
+    # RBAC
+    Role,
+    Permission,
+    # User & Session
+    User,
+    Session,
+    # Auth
+    AuthToken,
+    TokenPair,
+    TokenClaims,
+    TokenStatus,
+    DevUser,
+    # API Auth
+    DevLoginRequest,
+    UserProfile,
+    AuthTokenResponse,
+    LogoutResponse,
+)
 
-__all__ = []
+# Domain services - import directly to avoid circular imports:
+# from faultmaven.modules.auth.domain.services.auth_service import AuthService
+# from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService
+
+__all__ = [
+    # Models - RBAC
+    "Role",
+    "Permission",
+    # Models - User & Session
+    "User",
+    "Session",
+    # Models - Auth
+    "AuthToken",
+    "TokenPair",
+    "TokenClaims",
+    "TokenStatus",
+    "DevUser",
+    # Models - API Auth
+    "DevLoginRequest",
+    "UserProfile",
+    "AuthTokenResponse",
+    "LogoutResponse",
+]

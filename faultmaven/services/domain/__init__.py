@@ -1,10 +1,10 @@
 """Domain Services Package
 
 Provides core business domain services for cases, data processing,
-knowledge management, and strategic planning.
+and strategic planning.
 
-Note: SessionService has been moved to modules/session/domain/services/
-Import from there directly.
+Note: SessionService has been moved to modules/auth/domain/services/
+Import AuthSessionService from faultmaven.modules.auth.domain.services.auth_session_service
 """
 
 from .case_service import CaseService
