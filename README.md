@@ -53,8 +53,8 @@ Visit **<http://localhost:8000>** - you're running FaultMaven!
 
 > **Troubleshooting:** See `docs/runbooks/` and `docs/how-to/operational-configuration.md` for common issues and solutions.
 
-> **Note (Local defaults)**: Local is defined by **who controls infrastructure** (you). Defaults are minimal:
-> SQLite + local filesystem evidence storage + in-memory cache/sessions + Chroma (single-node). Postgres/Redis/hosted-Chroma are optional self-host upgrades and still “Local”.
+> **Note (Local defaults)**: Local is defined by **who controls the app/infra** (you). Defaults are minimal:
+> SQLite + local filesystem evidence storage + in-memory cache/sessions + Chroma (single-node).
 
 ---
 
@@ -123,8 +123,8 @@ FaultMaven is built as a **monolithic application** with clean separation of con
          │                    │                    │
          ▼                    ▼                    ▼
     ┌────────┐          ┌─────────┐         ┌──────────┐
-    │ Redis  │          │ChromaDB │         │ SQLite/  │
-    │(Cache) │          │(Vectors)│         │PostgreSQL│
+    │ Redis  │          │ChromaDB │         │ SQLite   │
+    │(Cache) │          │(Vectors)│         │(Local)   │
     └────────┘          └─────────┘         └──────────┘
 ```
 
@@ -155,51 +155,16 @@ See [architecture/](docs/architecture/) for detailed architecture documentation.
 
 ---
 
-## Installation Modes
+## Local vs Cloud
 
-FaultMaven offers two installation modes optimized for different use cases:
+FaultMaven provides **two deployment options**:
 
-### Community Edition (Zero Dependencies)
+- **Local (self-hosted)**: users download and run FaultMaven themselves. This public repository documents and supports **Local**.
+  - **Default Local stack**: **SQLite** (local file DB), **filesystem** evidence storage, **in-memory** cache/sessions, **Chroma** (single-node).
+  - Local is intentionally kept simple in the public repo docs: **SQLite is the Local default**.
+- **Cloud (SaaS)**: FaultMaven runs a provider-operated, managed SaaS. Users **subscribe**; they do not deploy the cloud platform from this repo.
 
-Perfect for local development, testing, and community users. **No external services required.**
-
-```bash
-pip install faultmaven
-```
-
-**Included**:
-
-- ✅ **FastAPI REST API server**
-- ✅ **Multi-LLM support** (7 providers)
-- ✅ **Agentic framework** with autonomous reasoning
-- ✅ **Knowledge base** (ChromaDB with RAG)
-- ✅ **SQLite database** (local file storage)
-- ✅ **In-memory sessions** (no external cache needed)
-- ✅ **Local file storage** (no cloud dependencies)
-- ✅ **All API endpoints** (full REST API)
-- ✅ **JWT authentication**
-- ✅ **Case management**
-- ✅ **Evidence processing**
-
-### Enterprise Edition (Full Features)
-
-Production-ready with observability, security, and distributed infrastructure.
-
-```bash
-pip install faultmaven[enterprise]
-```
-
-**Adds**:
-
-- ✅ **Opik tracing** - LLM call tracing and performance monitoring
-- ✅ **Prometheus metrics** - Production-grade metrics export
-- ✅ **PII redaction** - Presidio-powered sensitive data protection
-- ✅ **Redis sessions** - Distributed session management
-- ✅ **PostgreSQL support** - Production database support
-- ✅ **Cloud storage** - AWS S3 and Azure Blob support
-- ✅ **Advanced observability** - Detailed tracing and monitoring
-
-See **[Installation Guide](docs/installation/INSTALLATION_GUIDE.md)** for comprehensive setup instructions.
+See **[Installation Guide](docs/installation/INSTALLATION_GUIDE.md)** for Local setup.
 
 ---
 
@@ -263,7 +228,7 @@ cp .env.example .env
 **Key configuration areas:**
 
 - **LLM Providers** - OpenAI, Anthropic, Fireworks, Gemini, etc.
-- **Database** - SQLite (dev) or PostgreSQL (production)
+ - **Database** - SQLite (Local default)
 - **Session Management** - Timeout, cleanup intervals, memory limits
 - **File Upload** - Size limits, allowed MIME types
 - **Vector Search** - ChromaDB configuration
@@ -428,8 +393,4 @@ We welcome contributions! See `docs/CONTRIBUTING.md` for:
 
 ---
 
-**Architecture**: Monolith (Single Repository)
-**Main Application**: `faultmaven/main.py`
-**Default Port**: 8000
-**Database**: SQLite (dev), PostgreSQL (production)
-**Status**: ✅ Production Ready
+*** End of README***
