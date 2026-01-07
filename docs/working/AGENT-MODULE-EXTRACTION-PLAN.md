@@ -758,6 +758,38 @@ faultmaven/integrations/
 
 ---
 
+## Module Dependencies
+
+### What Agent Module Depends On (Imports From)
+
+| Module/Layer | Usage | Files |
+|--------------|-------|-------|
+| **core/investigation/** | OODA loop, phases, strategies, milestone engine | 7 files (stays as shared infrastructure) |
+| **infrastructure/llm/** | LLM provider abstractions | OpenAI, Anthropic, etc. |
+| **integrations/llm_client.py** | LLM client wrapper | LLM operations |
+| **modules/case/** | Case context for investigations | `Case` model, `CaseRepository` |
+| **modules/evidence/** | Evidence retrieval for tools | `EvidenceArtifactService` |
+| **modules/knowledge/** | Knowledge base access for tools | Knowledge search, vector search |
+
+### What Depends on Agent Module (Imports From Agent)
+
+**Nothing** - Agent is a **leaf module**. No other modules should depend on it.
+
+**Rationale:**
+
+- Agent module sits at top of dependency graph
+- Provides user-facing investigation capabilities
+- Consumes services from other modules
+- No other modules need agent functionality
+
+**Communication Pattern:**
+
+- If Case module needs agent status: Use **domain events** (not direct imports)
+- Agent publishes events: `InvestigationStarted`, `InvestigationCompleted`
+- Case module subscribes to events if needed
+
+---
+
 ## Phased Implementation Roadmap (SIMPLIFIED)
 
 **Total Duration: 2-3 weeks** (down from 5 weeks)
@@ -812,17 +844,24 @@ faultmaven/integrations/
    - Services import from `core/investigation/` (stays as-is)
    - Services import from `infrastructure/llm/` (stays as-is)
    - Services import models from `modules/agent/domain/models/`
-3. **Update DI container:**
+3. **Create backward-compatible re-exports** (temporary, for safer migration):
+   - In `services/__init__.py`, add:
+     ```python
+     # Backward compatibility - remove after migration complete
+     from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
+     ```
+   - Similar re-exports for investigation services in `services/domain/__init__.py`
+4. **Update DI container:**
    - Register Agent services in container
    - Update service factory methods
-4. **Update imports** using grep to find all references:
+5. **Update imports** using grep to find all references:
 
    ```bash
    grep -r "from faultmaven.services.agent_orchestration" --include="*.py" -l
    ```
 
-5. **Run unit tests** for services
-6. **Commit changes** (services extraction)
+6. **Run unit tests** for services
+7. **Commit changes** (services extraction with re-exports)
 
 **Deliverable:** Agent services extracted with passing unit tests
 
@@ -848,17 +887,25 @@ faultmaven/integrations/
      - `list_evidence_tool.py`, `read_file_tool.py`, `case_evidence_qa.py`
      - `knowledge_base.py`, `user_kb_qa.py`, `global_kb_qa.py`, `document_qa_tool.py`
      - `web_search.py`
-3. **Update tool imports:**
+3. **Create backward-compatible re-exports for tools** (temporary):
+   - In `tools/__init__.py`, add re-exports pointing to new locations:
+     ```python
+     # Backward compatibility - remove after migration complete
+     from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+     from faultmaven.modules.agent.tools.registry import ToolRegistry
+     # ... etc for all tools
+     ```
+4. **Update tool imports:**
    - Tools import from Evidence module services (e.g., `EvidenceArtifactService`)
    - Tools import from Knowledge module services
    - Update tool registry to find tools in new location
-4. **Move API routes:**
+5. **Move API routes:**
    - `api/routes/agent.py` → `modules/agent/api/routes.py`
    - Create `modules/agent/api/streaming.py` for SSE utilities
    - Create `modules/agent/api/dependencies.py` for FastAPI dependencies
-5. **Update main app routing** to include Agent module routes
-6. **Run integration tests**
-7. **Commit changes** (API, tools, repositories)
+6. **Update main app routing** to include Agent module routes
+7. **Run integration tests**
+8. **Commit changes** (API, tools, repositories)
 
 **Deliverable:** Agent API routes, all tools, and repositories extracted
 
@@ -894,23 +941,39 @@ faultmaven/integrations/
    - Remove `services/domain/investigation_service.py`
    - Remove `models/agent_execution.py`, `models/agentic.py`, `models/investigation.py`
    - Remove `api/routes/agent.py`
-   - Remove `tools/` directory
+   - Remove `tools/` directory (entire directory)
    - Remove `infrastructure/persistence/agent_execution_repository.py`
-5. **Update central imports:**
-   - Remove agent imports from `services/__init__.py`
+5. **Remove backward-compatible re-exports:**
+   - Remove agent re-exports from `services/__init__.py`
+   - Remove agent re-exports from `services/domain/__init__.py`
+   - Remove all re-exports from `tools/__init__.py` (or delete file if empty)
+   - Verify no code still uses old import paths
+6. **Update central imports:**
    - Remove agent imports from `models/__init__.py`
    - Update API routing
-6. **Documentation:**
+7. **Documentation:**
    - Create `modules/agent/README.md`
    - Update `MODULE-EXTRACTION-STATUS.md` (71% → 86%)
    - Document future improvements (tool distribution)
-7. **Final verification:**
+8. **Final verification:**
    - All imports updated
    - No circular dependencies
    - All tests passing
    - Code review
 
 **Deliverable:** Fully extracted Agent module, all tests passing, documentation complete
+
+---
+
+## Week-by-Week Timeline Overview
+
+| Week | Focus | Phases | Key Deliverables |
+|------|-------|--------|------------------|
+| **Week 1** | Structure + Services | Phases 1-2 | Module structure, models, events, services extracted |
+| **Week 2** | API + Tools | Phase 3 | API routes, all tools, repositories migrated |
+| **Week 3** | Testing + Cleanup | Phase 4 | All tests passing, old code removed, documentation complete |
+
+**Overlap Opportunity:** Phase 4 can start overlapping with Phase 3 once API routes are stable (e.g., start test migration while finishing tool migration).
 
 ---
 
@@ -1097,40 +1160,79 @@ If Agent module extraction fails or creates critical issues:
 
 ## Success Criteria
 
-### Functional Criteria
+### Functional Verification
 
-- [ ] All Agent services successfully extracted and working
-- [ ] All Agent models extracted with passing validation
-- [ ] Agent API routes functional with streaming support
-- [ ] Tool system working with distributed pattern
-- [ ] Investigation Core library extracted and functional
-- [ ] All integration flows working (Case → Agent → Evidence/Knowledge)
+- [ ] **All agent functionality accessible via `modules/agent/`**
+  - Agent orchestration service works
+  - Investigation orchestrator works
+  - Investigation service works
+  - All API endpoints functional
 
-### Technical Criteria
+- [ ] **`core/investigation/` remains untouched as shared infrastructure**
+  - No files moved or modified
+  - All investigation engines still accessible
+  - OODA loop, milestone engine, hypothesis engine working
 
-- [ ] Zero circular dependencies
-- [ ] All imports updated (no references to old locations)
-- [ ] Module structure follows established pattern
-- [ ] Clear module boundaries defined
-- [ ] 85%+ test coverage maintained
-- [ ] No performance regressions (< 5% slowdown acceptable)
+- [ ] **All tools functional after migration**
+  - Evidence tools (list, read, case_evidence_qa) working
+  - Knowledge tools (knowledge_base, user_kb_qa, global_kb_qa, document_qa) working
+  - Web search tool working
+  - Tool registry discovering all tools
 
-### Quality Criteria
+- [ ] **API endpoints work identically**
+  - `/api/v1/cases/{case_id}/sessions/{session_id}/execute` works
+  - Streaming endpoints working
+  - Non-streaming endpoints working
+  - All existing API contracts maintained
 
-- [ ] All unit tests passing (100%)
-- [ ] All integration tests passing (95%+)
-- [ ] Performance benchmarks meeting targets
-- [ ] Security tests passing
-- [ ] Code review approved
-- [ ] Documentation complete
+### Technical Verification
 
-### Documentation Criteria
+- [ ] **No circular dependencies**
+  - Agent → Case (one-way only)
+  - Agent → Evidence (one-way only)
+  - Agent → Knowledge (one-way only)
+  - No Case → Agent or Evidence → Agent dependencies
 
-- [ ] Agent module README created
-- [ ] Architecture decisions documented
-- [ ] API documentation updated
-- [ ] Migration guide for developers
-- [ ] Platform Evolution status updated (71% → 86%)
+- [ ] **All imports updated**
+  - No references to old `services/agent_orchestration_service.py`
+  - No references to old `services/domain/investigation_*.py`
+  - No references to old `tools/` directory
+  - No references to old `models/agent_*.py`
+
+- [ ] **Module structure follows established pattern**
+  - `modules/agent/api/` - API routes
+  - `modules/agent/domain/` - Services and models
+  - `modules/agent/infrastructure/` - Repositories
+  - `modules/agent/tools/` - All agent tools
+  - No eager imports in `__init__.py` files
+
+- [ ] **Full test suite passes**
+  - All unit tests passing (100%)
+  - All integration tests passing (95%+)
+  - No test regressions
+  - Test imports updated correctly
+
+### Quality & Documentation
+
+- [ ] **Code quality maintained**
+  - No performance regressions (< 5% slowdown acceptable)
+  - Code review approved
+  - No new linting errors
+  - All type hints preserved
+
+- [ ] **Documentation complete**
+  - `modules/agent/README.md` created
+  - Architecture decisions documented
+  - Future improvements documented (tool distribution)
+  - Migration guide for developers
+  - Platform Evolution status updated (71% → 86%)
+
+### Rollback Capability
+
+- [ ] **Clean git history**
+  - Each phase committed separately
+  - Clear commit messages
+  - Easy to rollback individual phases if needed
 
 ---
 
