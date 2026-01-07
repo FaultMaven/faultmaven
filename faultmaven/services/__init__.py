@@ -26,6 +26,10 @@ from .analytics import (
 )
 from .base import BaseService
 
+# Backward compatibility - Agent services moved to modules/agent/domain/services/
+# TODO: Remove after full migration complete (Phase 4)
+from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
+
 __all__ = [
     # Base
     "BaseService",
@@ -37,4 +41,6 @@ __all__ = [
     # Analytics Services
     "AnalyticsDashboardService",
     "ConfidenceService",
+    # Agent Services (backward compatibility)
+    "AgentOrchestrationService",
 ]
