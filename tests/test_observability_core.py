@@ -195,7 +195,7 @@ class TestObservabilityIntegration:
         from faultmaven.api.v1.routes.data import upload_data
         # REMOVED: agent routes deprecated - using case routes instead
         from faultmaven.api.v1.routes.knowledge import upload_document, search_documents
-        from faultmaven.modules.session.api.routes import create_session
+        from faultmaven.modules.auth.api.session import create_session
 
         # Check that key endpoints have been wrapped with @trace
         assert hasattr(upload_data, "__wrapped__")

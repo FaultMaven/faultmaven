@@ -60,7 +60,7 @@ from faultmaven.api.v1.auth_dependencies import (
     check_auth_services_health
 )
 from faultmaven.api.v1.dependencies import get_session_service
-from faultmaven.modules.session.domain.services.session_service import SessionService
+from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
 
 
 # Authentication endpoints

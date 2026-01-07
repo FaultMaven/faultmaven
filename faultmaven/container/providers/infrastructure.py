@@ -205,13 +205,13 @@ async def create_redis_client(settings: FaultMavenSettings) -> Any | None:
 def create_session_store(redis_client: Any | None, settings: FaultMavenSettings) -> Any:
     """Create session store (Redis or InMemory)."""
     if redis_client and not settings.server.skip_service_checks:
-        from faultmaven.modules.session.infrastructure.persistence.stores.redis import RedisSessionStore
+        from faultmaven.modules.auth.infrastructure.stores.redis_session_store import RedisSessionStore
 
         store = RedisSessionStore(redis_client)
         logger.info("✅ Session store: Redis")
         return store
     else:
-        from faultmaven.modules.session.infrastructure.persistence.stores.inmemory import InMemorySessionStore
+        from faultmaven.modules.auth.infrastructure.stores.inmemory_session_store import InMemorySessionStore
 
         store = InMemorySessionStore()
         logger.debug("Session store: InMemory (RAM)")

@@ -26,9 +26,9 @@ from faultmaven.models.interfaces import (
 )
 # WorkflowContext removed - using dict instead
 from faultmaven.exceptions import ServiceException, ValidationException
-from faultmaven.modules.session.domain.services.session_service import SessionService
+from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
 from faultmaven.services.domain.case_service import CaseService
-from faultmaven.modules.session.infrastructure.persistence.stores.redis import RedisSessionStore
+from faultmaven.modules.auth.infrastructure.stores.redis_session_store import RedisSessionStore
 
 # Configure pytest-asyncio to fix deprecation warnings
 pytest_asyncio.asyncio_default_fixture_loop_scope = "function"
@@ -741,7 +741,7 @@ async def session_service() -> SessionService:
     Does NOT clean Redis - tests work with existing data to simulate
     production environment where FLUSHDB may be disabled.
     """
-    from faultmaven.modules.session.infrastructure.persistence.stores.redis import RedisSessionStore
+    from faultmaven.modules.auth.infrastructure.stores.redis_session_store import RedisSessionStore
 
     # Create RedisSessionStore - it will use create_redis_client() from .env
     session_store = RedisSessionStore()

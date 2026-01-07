@@ -183,7 +183,7 @@ def create_session_service(
         return minimal_factory()
 
     try:
-        from faultmaven.modules.session.domain.services.session_service import SessionService
+        from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
 
         service = SessionService(
             session_store=session_store,

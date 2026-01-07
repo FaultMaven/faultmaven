@@ -75,7 +75,7 @@ from faultmaven.api.v1.auth_dependencies import (
     get_current_user_id
 )
 from faultmaven.models.auth import DevUser
-from faultmaven.modules.session.domain.services.session_service import SessionService
+from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
 from faultmaven.services.converters import CaseConverter
 from fastapi import Request
 from faultmaven.infrastructure.observability.tracing import trace
