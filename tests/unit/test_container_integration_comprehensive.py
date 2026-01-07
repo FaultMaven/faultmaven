@@ -19,7 +19,7 @@ import pytest
 import asyncio
 import logging
 
-from faultmaven.container import DIContainer
+from faultmaven.container import BaseDIContainer
 from faultmaven.config.settings import get_settings, reset_settings
 
 
@@ -45,7 +45,7 @@ except ImportError:
 def reset_container_before_test():
     """Reset container and settings before each test."""
     # Reset container singleton
-    DIContainer._instance = None
+    BaseDIContainer._instance = None
     reset_settings()
     
     # Set test environment variables
@@ -54,7 +54,7 @@ def reset_container_before_test():
     yield
     
     # Reset after test
-    DIContainer._instance = None
+    BaseDIContainer._instance = None
     reset_settings()
 
 
@@ -144,21 +144,21 @@ class TestContainerSingleton:
     
     def test_container_singleton_pattern(self):
         """Test that container follows singleton pattern."""
-        container1 = DIContainer()
-        container2 = DIContainer()
+        container1 = BaseDIContainer()
+        container2 = BaseDIContainer()
         
         assert container1 is container2
-        assert DIContainer._instance is container1
+        assert BaseDIContainer._instance is container1
     
     def test_container_reset_creates_new_instance(self):
         """Test that reset creates a new container instance."""
-        container1 = DIContainer()
+        container1 = BaseDIContainer()
         original_id = id(container1)
         
         # Reset
-        DIContainer._instance = None
+        BaseDIContainer._instance = None
         
-        container2 = DIContainer()
+        container2 = BaseDIContainer()
         new_id = id(container2)
         
         assert container1 is not container2
@@ -166,7 +166,7 @@ class TestContainerSingleton:
     
     def test_container_initialization_state(self):
         """Test container initialization state management."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Should start uninitialized
         assert not container._initialized
@@ -175,7 +175,7 @@ class TestContainerSingleton:
     
     def test_container_prevent_reentrant_initialization(self):
         """Test prevention of reentrant initialization."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock initialization to track calls
         with patch.object(container, '_create_infrastructure_layer') as mock_infra:
@@ -197,7 +197,7 @@ class TestContainerInitialization:
     
     def test_successful_initialization(self, clean_env):
         """Test successful container initialization."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         with patch.object(container, '_create_infrastructure_layer') as mock_infra, \
              patch.object(container, '_create_tools_layer') as mock_tools, \
@@ -216,7 +216,7 @@ class TestContainerInitialization:
     
     def test_initialization_with_settings_error(self, clean_env):
         """Test initialization with settings system error."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         with patch('faultmaven.container.get_settings', side_effect=Exception("Settings error")):
             with pytest.raises(Exception) as exc_info:
@@ -228,7 +228,7 @@ class TestContainerInitialization:
     
     def test_initialization_with_infrastructure_error(self, clean_env):
         """Test initialization with infrastructure layer error."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         with patch.object(container, '_create_infrastructure_layer', side_effect=Exception("Infra error")):
             # Should not raise exception but should log error and fail to initialize
@@ -240,7 +240,7 @@ class TestContainerInitialization:
     
     def test_initialization_already_initialized(self, clean_env):
         """Test initialization when container is already initialized."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Initialize once
         with patch.object(container, '_create_infrastructure_layer') as mock_infra:
@@ -272,7 +272,7 @@ class TestContainerInitialization:
             from faultmaven.config.settings import reset_settings
             reset_settings()
             
-            container = DIContainer()
+            container = BaseDIContainer()
             container.initialize()
             
             assert container.settings is not None
@@ -307,7 +307,7 @@ class TestServiceLifecycleManagement:
     @patch('faultmaven.container.INTERFACES_AVAILABLE', True)
     def test_infrastructure_layer_creation(self, clean_env, mock_services):
         """Test infrastructure layer service creation."""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.settings = get_settings()
         
         # Mock the infrastructure components by patching their import locations
@@ -331,7 +331,7 @@ class TestServiceLifecycleManagement:
     @patch('faultmaven.container.INTERFACES_AVAILABLE', True)
     def test_tools_layer_creation(self, clean_env, mock_services):
         """Test tools layer creation."""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.settings = get_settings()
         container.vector_store = mock_services['vector_store']
         
@@ -348,7 +348,7 @@ class TestServiceLifecycleManagement:
     @patch('faultmaven.container.INTERFACES_AVAILABLE', True)
     def test_service_layer_creation(self, clean_env, mock_services):
         """Test service layer creation."""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.settings = get_settings()
         
         # Set up infrastructure dependencies
@@ -383,7 +383,7 @@ class TestServiceLifecycleManagement:
     
     def test_graceful_degradation_without_interfaces(self, clean_env):
         """Test graceful degradation when interfaces are not available."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         with patch('faultmaven.container.INTERFACES_AVAILABLE', False):
             # Should initialize without error even without interfaces
@@ -399,7 +399,7 @@ class TestInterfaceResolutionAndInjection:
     @patch('faultmaven.container.INTERFACES_AVAILABLE', True)
     def test_service_getter_methods(self, clean_env, mock_services):
         """Test service getter methods."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock services
         container.agent_service = mock_services['llm_provider']  # Use as placeholder
@@ -417,7 +417,7 @@ class TestInterfaceResolutionAndInjection:
     
     def test_service_getter_with_initialization(self, clean_env):
         """Test service getters trigger initialization if needed."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         with patch.object(container, 'initialize') as mock_init, \
              patch.object(container, 'agent_service', create=True, new=Mock()) as mock_service:
@@ -429,7 +429,7 @@ class TestInterfaceResolutionAndInjection:
     
     def test_infrastructure_provider_getters(self, clean_env, mock_services):
         """Test infrastructure provider getter methods."""
-        container = DIContainer()
+        container = BaseDIContainer()
         container._initialized = True  # Prevent automatic initialization
         
         # Set up infrastructure
@@ -450,7 +450,7 @@ class TestInterfaceResolutionAndInjection:
     
     def test_dependency_injection_chain(self, clean_env, mock_services):
         """Test that services receive their dependencies correctly."""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.settings = get_settings()
         
         # Mock service creation with dependency tracking
@@ -480,7 +480,7 @@ class TestContainerHealthAndDiagnostics:
     
     def test_health_check_all_services_healthy(self, clean_env, mock_services):
         """Test health check when all services are healthy."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Set up healthy services
         container._llm_provider = mock_services['llm_provider']
@@ -500,7 +500,7 @@ class TestContainerHealthAndDiagnostics:
     
     def test_health_check_with_unhealthy_service(self, clean_env, mock_services):
         """Test health check when some services are unhealthy."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Set up services with one unhealthy
         healthy_llm = mock_services['llm_provider']
@@ -519,7 +519,7 @@ class TestContainerHealthAndDiagnostics:
     
     def test_container_reset_method(self, clean_env):
         """Test container reset method."""
-        container = DIContainer()
+        container = BaseDIContainer()
         container._initialized = True
         container.llm_provider = Mock()
         container.settings = Mock()
@@ -533,7 +533,7 @@ class TestContainerHealthAndDiagnostics:
     
     def test_health_check_method(self, clean_env):
         """Test health check method that actually exists."""
-        container = DIContainer()
+        container = BaseDIContainer()
         container._initialized = True
         container.settings = get_settings()
         
@@ -559,7 +559,7 @@ class TestContainerHealthAndDiagnostics:
     
     def test_service_availability_via_health_check(self, clean_env, mock_services):
         """Test service availability checking via health_check method."""
-        container = DIContainer()
+        container = BaseDIContainer()
         container._initialized = True
         
         # Set up all required attributes for health_check
@@ -589,7 +589,7 @@ class TestIsolationBetweenTestRuns:
     def test_container_state_isolation(self, clean_env):
         """Test that container state is properly isolated between tests."""
         # This test verifies the fixture works correctly
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Should start with clean state
         assert not container._initialized
@@ -601,7 +601,7 @@ class TestIsolationBetweenTestRuns:
         # Set environment variable
         os.environ['TEST_ISOLATION'] = 'test1'
 
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
 
         # Should see the environment variable
@@ -625,7 +625,7 @@ class TestErrorHandlingAndGracefulFallbacks:
 
     def test_interface_unavailable_fallback(self, clean_env):
         """Test fallback when interfaces are unavailable."""
-        container = DIContainer()
+        container = BaseDIContainer()
 
         with patch('faultmaven.container.INTERFACES_AVAILABLE', False):
             # Should initialize without interfaces
@@ -635,7 +635,7 @@ class TestErrorHandlingAndGracefulFallbacks:
 
     def test_settings_error_recovery(self, clean_env):
         """Test recovery from settings system errors."""
-        container = DIContainer()
+        container = BaseDIContainer()
 
         # Mock settings to fail initially then succeed
         call_count = 0
@@ -664,7 +664,7 @@ class TestDependencyGraphResolution:
 
     def test_circular_dependency_prevention(self, clean_env):
         """Test prevention of circular dependencies."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # This is more of a design test - our current architecture
         # should not have circular dependencies
@@ -680,7 +680,7 @@ class TestDependencyGraphResolution:
     
     def test_lazy_dependency_resolution(self, clean_env):
         """Test lazy dependency resolution."""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Services should not be created until first access
         assert not hasattr(container, '_agent_service') or getattr(container, '_agent_service', None) is None

@@ -1,4 +1,4 @@
-"""DIContainer Foundation Tests
+"""BaseDIContainer Foundation Tests
 
 Purpose: Test core container functionality according to interface-based architecture.
 
@@ -25,28 +25,28 @@ import threading
 import time
 from typing import Any, Dict
 
-from faultmaven.container import DIContainer, GlobalContainer
+from faultmaven.container import BaseDIContainer
 
 
 @pytest.fixture(autouse=True)  
 def reset_container():
     """Reset container between tests to ensure isolation"""
     # Clear singleton instance
-    DIContainer._instance = None
+    BaseDIContainer._instance = None
     yield
     # Clean up after test
-    if DIContainer._instance:
-        DIContainer._instance.reset()
-    DIContainer._instance = None
+    if BaseDIContainer._instance:
+        BaseDIContainer._instance.reset()
+    BaseDIContainer._instance = None
 
 
 class TestDIContainerSingleton:
-    """Test DIContainer singleton pattern implementation"""
+    """Test BaseDIContainer singleton pattern implementation"""
     
     def test_singleton_pattern_basic(self):
         """Verify container follows singleton pattern correctly"""
-        container1 = DIContainer()
-        container2 = DIContainer()
+        container1 = BaseDIContainer()
+        container2 = BaseDIContainer()
         
         # Should be the same instance
         assert container1 is container2
@@ -54,7 +54,7 @@ class TestDIContainerSingleton:
     
     def test_singleton_across_multiple_calls(self):
         """Test singleton persistence across multiple instantiation calls"""
-        containers = [DIContainer() for _ in range(5)]
+        containers = [BaseDIContainer() for _ in range(5)]
         
         # All should be the same instance
         first_container = containers[0]
@@ -69,7 +69,7 @@ class TestDIContainerSingleton:
         
         def create_container():
             try:
-                container = DIContainer()
+                container = BaseDIContainer()
                 containers.append(container)
             except Exception as e:
                 errors.append(e)
@@ -96,11 +96,11 @@ class TestDIContainerSingleton:
     
     def test_singleton_state_persistence(self):
         """Test that singleton state persists across calls"""
-        container1 = DIContainer()
+        container1 = BaseDIContainer()
         container1.initialize()
         
         # State should persist in new references
-        container2 = DIContainer()
+        container2 = BaseDIContainer()
         assert container2._initialized is True
         assert container1._initialized is True
         assert container1 is container2
@@ -111,7 +111,7 @@ class TestDIContainerInitialization:
     
     def test_lazy_initialization_default(self):
         """Test that container starts uninitialized (lazy loading)"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Should not be initialized by default
         assert not container._initialized
@@ -119,7 +119,7 @@ class TestDIContainerInitialization:
     
     def test_explicit_initialization(self):
         """Test explicit initialization process"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Before initialization
         assert not container._initialized
@@ -133,7 +133,7 @@ class TestDIContainerInitialization:
     
     def test_initialization_idempotency(self):
         """Test that multiple initialization calls are safe"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Initialize multiple times
         container.initialize()
@@ -147,7 +147,7 @@ class TestDIContainerInitialization:
     
     def test_lazy_initialization_on_access(self):
         """Test that accessing services triggers initialization"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Should not be initialized yet
         assert not container._initialized
@@ -159,7 +159,7 @@ class TestDIContainerInitialization:
     
     def test_initialization_prevents_reentrance(self):
         """Test that initialization prevents re-entrant calls"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         with patch.object(container, '_create_infrastructure_layer') as mock_infra:
             def slow_init():
@@ -186,7 +186,7 @@ class TestDIContainerComponentCreation:
     
     def test_infrastructure_layer_creation(self):
         """Test infrastructure layer components are created properly"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         # Should have all infrastructure components
@@ -205,7 +205,7 @@ class TestDIContainerComponentCreation:
     
     def test_tools_layer_creation(self):
         """Test tools layer components are created properly"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         # Should have tools list
@@ -219,7 +219,7 @@ class TestDIContainerComponentCreation:
     
     def test_service_layer_creation(self):
         """Test service layer components are created with dependencies"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         # Should have all service components
@@ -239,7 +239,7 @@ class TestDIContainerComponentCreation:
     
     def test_optional_components_handling(self):
         """Test that optional components are handled gracefully"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         # Vector store and session store are optional
@@ -260,7 +260,7 @@ class TestDIContainerGetterMethods:
     
     def test_all_getter_methods_exist(self):
         """Test that all expected getter methods exist and are callable"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         expected_getters = [
             'get_agent_service', 'get_data_service', 'get_knowledge_service',
@@ -276,7 +276,7 @@ class TestDIContainerGetterMethods:
     
     def test_getter_lazy_initialization(self):
         """Test that getters trigger initialization when needed"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Should not be initialized
         assert not container._initialized
@@ -288,7 +288,7 @@ class TestDIContainerGetterMethods:
     
     def test_getter_consistency(self):
         """Test that getters return consistent instances"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Multiple calls to same getter should return same instance
         agent_service1 = container.get_agent_service()
@@ -305,7 +305,7 @@ class TestDIContainerGetterMethods:
     
     def test_getter_warning_for_uninitialized_access(self):
         """Test that getters log warnings for uninitialized access"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         with patch('logging.getLogger') as mock_get_logger:
             mock_logger = MagicMock()
@@ -330,7 +330,7 @@ class TestDIContainerHealthCheck:
     
     def test_health_check_uninitialized(self):
         """Test health check on uninitialized container"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         health = container.health_check()
         
@@ -340,7 +340,7 @@ class TestDIContainerHealthCheck:
     
     def test_health_check_initialized(self):
         """Test health check on initialized container"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         health = container.health_check()
@@ -365,7 +365,7 @@ class TestDIContainerHealthCheck:
     
     def test_health_check_component_details(self):
         """Test health check provides detailed component information"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         health = container.health_check()
@@ -392,7 +392,7 @@ class TestDIContainerHealthCheck:
     
     def test_health_status_determination(self):
         """Test health status is determined correctly"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         health = container.health_check()
@@ -421,7 +421,7 @@ class TestDIContainerReset:
     
     def test_reset_clears_initialization_state(self):
         """Test that reset clears initialization state"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         # Verify initialized
@@ -436,7 +436,7 @@ class TestDIContainerReset:
     
     def test_reset_clears_components(self):
         """Test that reset clears all cached components"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         # Verify components exist
@@ -453,7 +453,7 @@ class TestDIContainerReset:
     
     def test_reset_allows_reinitialization(self):
         """Test that reset allows clean reinitialization"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Initialize first time
         container.initialize()
@@ -470,14 +470,14 @@ class TestDIContainerReset:
     
     def test_reset_maintains_singleton(self):
         """Test that reset maintains singleton pattern"""
-        container1 = DIContainer()
+        container1 = BaseDIContainer()
         container1.initialize()
         
         # Reset
         container1.reset()
         
         # New reference should still be same singleton
-        container2 = DIContainer()
+        container2 = BaseDIContainer()
         assert container1 is container2
         assert not container2._initialized  # Should reflect reset state
 
@@ -487,7 +487,7 @@ class TestDIContainerErrorHandling:
     
     def test_initialization_error_with_interfaces_available(self):
         """Test initialization error handling when interfaces are available"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         with patch('faultmaven.container.INTERFACES_AVAILABLE', True):
             with patch.object(container, '_create_infrastructure_layer', 
@@ -501,7 +501,7 @@ class TestDIContainerErrorHandling:
     
     def test_initialization_fallback_without_interfaces(self):
         """Test initialization fallback when interfaces are not available"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         with patch('faultmaven.container.INTERFACES_AVAILABLE', False):
             with patch.object(container, '_create_infrastructure_layer', 
@@ -520,7 +520,7 @@ class TestDIContainerErrorHandling:
     
     def test_service_creation_partial_failure(self):
         """Test graceful handling of partial service creation failures"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock failure in knowledge service creation
         with patch('faultmaven.core.knowledge.ingestion.KnowledgeIngester',
@@ -542,7 +542,7 @@ class TestDIContainerErrorHandling:
     
     def test_optional_component_failure_handling(self):
         """Test handling of optional component initialization failures"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock vector store failure
         with patch('faultmaven.infrastructure.persistence.chromadb_store.ChromaDBVectorStore',
@@ -563,19 +563,19 @@ class TestDIContainerErrorHandling:
 
 
 class TestGlobalContainerProxy:
-    """Test GlobalContainer proxy behavior"""
+    """Test BaseDIContainer proxy behavior"""
     
     def test_global_container_proxy_delegation(self):
-        """Test that GlobalContainer properly delegates to singleton"""
-        global_container = GlobalContainer()
-        direct_container = DIContainer()
+        """Test that BaseDIContainer properly delegates to singleton"""
+        global_container = BaseDIContainer()
+        direct_container = BaseDIContainer()
         
         # Should delegate to same singleton instance
         assert global_container() is direct_container
     
     def test_global_container_attribute_access(self):
-        """Test GlobalContainer attribute access delegation"""
-        global_container = GlobalContainer()
+        """Test BaseDIContainer attribute access delegation"""
+        global_container = BaseDIContainer()
         
         # Should delegate method calls
         assert hasattr(global_container, 'initialize')
@@ -584,23 +584,23 @@ class TestGlobalContainerProxy:
         
         # Should delegate to current singleton instance
         global_container.initialize()
-        direct_container = DIContainer()
+        direct_container = BaseDIContainer()
         assert direct_container._initialized
     
     def test_global_container_identity_comparison(self):
-        """Test GlobalContainer identity comparison with DIContainer"""
-        global_container = GlobalContainer()
-        direct_container = DIContainer()
+        """Test BaseDIContainer identity comparison with BaseDIContainer"""
+        global_container = BaseDIContainer()
+        direct_container = BaseDIContainer()
         
-        # GlobalContainer should compare equal to current singleton
+        # BaseDIContainer should compare equal to current singleton
         assert global_container == direct_container
         
         # But they are not the same object (proxy vs real)
         assert global_container is not direct_container
     
     def test_global_container_isinstance_compatibility(self):
-        """Test GlobalContainer isinstance compatibility"""
+        """Test BaseDIContainer isinstance compatibility"""
         from faultmaven.container import container as global_container
         
         # Should work with isinstance checks via __class__ property
-        assert global_container.__class__ == DIContainer
+        assert global_container.__class__ == BaseDIContainer

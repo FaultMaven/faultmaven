@@ -47,19 +47,19 @@ except ImportError as e:
     IConfiguration = Any
     INTERFACES_AVAILABLE = False
 
-from faultmaven.container import DIContainer
+from faultmaven.container import BaseDIContainer
 
 
 @pytest.fixture(autouse=True)
 def reset_container():
     """Reset container between tests for isolation"""
     # Clear any existing singleton instance
-    DIContainer._instance = None
+    BaseDIContainer._instance = None
     yield
     # Clean up after test
-    if DIContainer._instance:
-        DIContainer._instance.reset()
-    DIContainer._instance = None
+    if BaseDIContainer._instance:
+        BaseDIContainer._instance.reset()
+    BaseDIContainer._instance = None
 
 
 class TestInterfaceCompliance:
@@ -67,7 +67,7 @@ class TestInterfaceCompliance:
     
     def test_llm_provider_interface_compliance(self):
         """Test that LLM provider implements ILLMProvider interface"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         llm_provider = container.get_llm_provider()
@@ -88,7 +88,7 @@ class TestInterfaceCompliance:
     
     def test_sanitizer_interface_compliance(self):
         """Test that sanitizer implements ISanitizer interface"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         sanitizer = container.get_sanitizer()
@@ -105,7 +105,7 @@ class TestInterfaceCompliance:
     
     def test_tracer_interface_compliance(self):
         """Test that tracer implements ITracer interface"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         tracer = container.get_tracer()
@@ -122,7 +122,7 @@ class TestInterfaceCompliance:
     
     def test_data_classifier_interface_compliance(self):
         """Test that data classifier implements IDataClassifier interface"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         classifier = container.get_data_classifier()
@@ -139,7 +139,7 @@ class TestInterfaceCompliance:
     
     def test_log_processor_interface_compliance(self):
         """Test that log processor implements ILogProcessor interface"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         processor = container.get_log_processor()
@@ -156,7 +156,7 @@ class TestInterfaceCompliance:
     
     def test_vector_store_interface_compliance(self):
         """Test that vector store implements IVectorStore interface"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         vector_store = container.get_vector_store()
@@ -178,7 +178,7 @@ class TestInterfaceCompliance:
     
     def test_session_store_interface_compliance(self):
         """Test that session store implements ISessionStore interface"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         session_store = container.get_session_store()
@@ -201,7 +201,7 @@ class TestInterfaceCompliance:
     
     def test_tools_interface_compliance(self):
         """Test that all tools implement BaseTool interface"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         tools = container.get_tools()
@@ -230,7 +230,7 @@ class TestInterfaceContractValidation:
         if not INTERFACES_AVAILABLE:
             pytest.skip("Interfaces not available - testing contract satisfaction requires full environment")
         
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         llm_provider = container.get_llm_provider()
         
@@ -244,7 +244,7 @@ class TestInterfaceContractValidation:
     
     def test_sanitizer_contract(self):
         """Test ISanitizer contract validation"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         sanitizer = container.get_sanitizer()
         
@@ -258,7 +258,7 @@ class TestInterfaceContractValidation:
     
     def test_tracer_contract(self):
         """Test ITracer contract validation"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         tracer = container.get_tracer()
         
@@ -272,7 +272,7 @@ class TestInterfaceContractValidation:
     @pytest.mark.asyncio
     async def test_data_classifier_contract(self):
         """Test IDataClassifier contract validation"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         classifier = container.get_data_classifier()
         
@@ -295,7 +295,7 @@ class TestInterfaceContractValidation:
     @pytest.mark.asyncio
     async def test_log_processor_contract(self):
         """Test ILogProcessor contract validation"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         processor = container.get_log_processor()
         
@@ -321,7 +321,7 @@ class TestInterfaceDependencyInjection:
     
     def test_agent_service_uses_interfaces(self):
         """Test that AgentService receives interface implementations"""
-        container = DIContainer()
+        container = BaseDIContainer()
         agent_service = container.get_agent_service()
         
         # Verify agent service has interface-based dependencies
@@ -336,7 +336,7 @@ class TestInterfaceDependencyInjection:
     
     def test_data_service_uses_interfaces(self):
         """Test that DataService receives interface implementations"""
-        container = DIContainer()
+        container = BaseDIContainer()
         data_service = container.get_data_service()
         
         # Verify data service has interface-based dependencies
@@ -351,7 +351,7 @@ class TestInterfaceDependencyInjection:
     
     def test_knowledge_service_uses_interfaces(self):
         """Test that KnowledgeService receives interface implementations"""
-        container = DIContainer()
+        container = BaseDIContainer()
         knowledge_service = container.get_knowledge_service()
         
         # Knowledge service is optional but should have proper dependencies if present
@@ -374,7 +374,7 @@ class TestInterfaceGracefulDegradation:
     
     def test_container_handles_missing_vector_store(self):
         """Test container gracefully handles missing vector store"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         # Vector store may be None if ChromaDB is unavailable
@@ -389,7 +389,7 @@ class TestInterfaceGracefulDegradation:
     
     def test_container_handles_missing_session_store(self):
         """Test container gracefully handles missing session store"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         # Session store may be None if Redis is unavailable
@@ -406,7 +406,7 @@ class TestInterfaceGracefulDegradation:
         """Test that minimal container (testing mode) still provides interface compliance"""
         # Force minimal container mode
         with patch('faultmaven.container.INTERFACES_AVAILABLE', False):
-            container = DIContainer()
+            container = BaseDIContainer()
             container.initialize()
             
             # Should create minimal versions of all components
@@ -423,7 +423,7 @@ class TestInterfaceGracefulDegradation:
     
     def test_interface_contract_with_failures(self):
         """Test interface contracts are maintained even when implementations fail"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Mock infrastructure creation failures
         with patch.object(container, '_create_infrastructure_layer') as mock_infra:
@@ -472,7 +472,7 @@ class TestInterfaceValidationMetrics:
     
     def test_container_interface_health_metrics(self):
         """Test that container provides interface health metrics"""
-        container = DIContainer()
+        container = BaseDIContainer()
         container.initialize()
         
         health = container.health_check()
@@ -499,7 +499,7 @@ class TestInterfaceValidationMetrics:
     
     def test_interface_implementation_consistency(self):
         """Test that interface implementations are consistent across container lifecycle"""
-        container = DIContainer()
+        container = BaseDIContainer()
         
         # Get initial implementations
         container.initialize()

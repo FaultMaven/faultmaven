@@ -39,9 +39,13 @@ from faultmaven.container.providers import (
     register_tools,
 )
 
+# Global singleton instance
+container = BaseDIContainer()
+
 __all__ = [
     # Base
     "BaseDIContainer",
+    "container",
     # Registry
     "DependencyRegistry",
     "ServiceInfo",
