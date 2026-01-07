@@ -6,7 +6,6 @@
 **Related Documents**:
 
 - [ADR-001: Monolith Evolution Strategy](decisions/ADR-001-MONOLITH-EVOLUTION-STRATEGY.md)
-- [Deployment Strategy v2](deployment-strategy-v2.md)
 - [Import Linter Baseline](IMPORT-LINTER-BASELINE.md)
 - [Platform Evolution Strategy](../FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md)
 
@@ -76,43 +75,50 @@ FaultMaven Core must remain **agnostic to where it runs** (local dev, Docker, Ku
 ┌─────────────────────────────────────────────────────────────────┐
 │                   Composition Root                               │
 │                                                                  │
-│  Reads environment variables, selects provider implementations   │
+│  Loads settings once (settings-only env reads), wires providers  │
 │  • TENANT_PROVIDER=single → SingleTenantProvider                │
 │  • STORAGE_BACKEND=s3 → S3StorageBackend                        │
-│  • VECTOR_BACKEND=chromadb → ChromaDBVectorStore                │
+│  • VECTOR_BACKEND=chroma → ChromaVectorStore                    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Provider Examples
 
-**Community Edition** (Local Deployment):
+**Local preset** (Local Deployment):
 
 ```bash
-# Zero external dependencies
-DATABASE_URL=sqlite:///./data/faultmaven.db
-SESSION_STORAGE_TYPE=inmemory
-VECTOR_STORAGE_TYPE=inmemory
-STORAGE_BACKEND=filesystem
+# Zero-config defaults (local dev / self-host)
+CONFIG_PRESET=local
+
+# Optional explicit selectors (advanced / diagnostics)
+DATABASE_URL=sqlite+aiosqlite:///./faultmaven.db
 TENANT_PROVIDER=single
+STORAGE_BACKEND=filesystem
+VECTOR_BACKEND=chroma
+METRICS_ENABLED=false
+METRICS_EXPORTER=none
+TRACING_ENABLED=false
 ```
 
-**Enterprise Edition** (Production Deployment):
+**Enterprise preset** (Production Deployment):
 
 ```bash
 # Full infrastructure stack
+CONFIG_PRESET=enterprise
 DATABASE_URL=postgresql+asyncpg://user:pass@postgres:5432/faultmaven
 SESSION_STORAGE_TYPE=redis
 VECTOR_STORAGE_TYPE=chromadb
 STORAGE_BACKEND=s3
 TENANT_PROVIDER=multi
 OPIK_ENABLED=true
-PROMETHEUS_ENABLED=true
+METRICS_ENABLED=true
+METRICS_EXPORTER=prometheus_http
 PROTECTION_ENABLED=true
 ```
 
 **Key Insight**: Both configurations run the **SAME codebase** with **ZERO conditional logic** in business services.
 
-**Related Document**: [Deployment Strategy v2](deployment-strategy-v2.md)
+**Related Document**: Deployment-agnostic architecture specifications (Enterprise internal documentation).
 
 ---
 
@@ -198,7 +204,7 @@ All external dependencies (LLM providers, databases, vector stores, file storage
 | `IVectorStore` | Vector search | ChromaDB, InMemory, Pinecone (future) |
 | `ISessionStore` | Session management | Redis, InMemory, Memcached (future) |
 | `IStorageBackend` | File storage | S3, Azure Blob, Local Filesystem |
-| `ITenantProvider` | Multi-tenancy | SingleTenant, MultiTenant |
+| `TenantProvider` | Multi-tenancy | SingleTenant, MultiTenant |
 | `ICaseRepository` | Case persistence | PostgreSQL Hybrid, InMemory |
 | `IUserRepository` | User persistence | PostgreSQL, InMemory |
 
@@ -303,15 +309,9 @@ class KnowledgeSearchService:
     def __init__(
         self,
         knowledge_repo: IKnowledgeRepository,
-        embedding_service: IEmbeddingService = None,
-        vector_store: IVectorStore = None
+        embedding_service: IEmbeddingService,
+        vector_store: IVectorStore,
     ):
-        # Fall back to DI container if not provided
-        if embedding_service is None:
-            embedding_service = ServiceContainer.get(IEmbeddingService)
-        if vector_store is None:
-            vector_store = ServiceContainer.get(IVectorStore)
-
         self.knowledge_repo = knowledge_repo
         self.embedding_service = embedding_service
         self.vector_store = vector_store
@@ -570,7 +570,6 @@ Always use version control move operations (`git mv`) rather than copy-delete to
 
 - **[ADR-001: Monolith Evolution Strategy](decisions/ADR-001-MONOLITH-EVOLUTION-STRATEGY.md)** - Strategic decision to evolve vs. rewrite
 - **[Platform Evolution Strategy](../FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md)** - Detailed implementation roadmap
-- **[Deployment Strategy v2](deployment-strategy-v2.md)** - Technical design for Deployment Agnostic Architecture
 - **[Import Linter Baseline](IMPORT-LINTER-BASELINE.md)** - Architectural boundary enforcement configuration
 
 ### Supporting Documents
