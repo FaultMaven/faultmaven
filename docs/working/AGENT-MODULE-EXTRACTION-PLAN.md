@@ -1355,55 +1355,72 @@ After Agent module extraction is complete:
 
 ## Appendix A: File Listing
 
-### Production Files to Move (35-40 files)
+### Production Files to Move (~23-24 files)
 
-**Services (4 files):**
+**Services (3 files):**
 1. `services/agent_orchestration_service.py`
 2. `services/domain/investigation_orchestrator.py`
 3. `services/domain/investigation_service.py`
-4. `services/investigation_session_service.py`
 
 **Models (3 files):**
-5. `models/agent_execution.py`
-6. `models/agentic.py`
-7. `models/investigation.py`
+4. `models/agent_execution.py`
+5. `models/agentic.py`
+6. `models/investigation.py` (if not in core/)
 
 **API (1 file):**
-8. `api/routes/agent.py`
+7. `api/routes/agent.py`
 
-**Infrastructure (3 files):**
-9. `infrastructure/persistence/agent_execution_repository.py`
-10. `infrastructure/persistence/investigation_session_repository.py`
-11. `domain/events.py` (partial - agent events only)
+**Infrastructure (2 files):**
+8. `infrastructure/persistence/agent_execution_repository.py`
+9. `domain/events.py` (partial - extract agent events only to `modules/agent/domain/events/execution_events.py`)
 
 **Tools (13 files):**
-12. `tools/agent_tools.py`
-13. `tools/registry.py`
-14. `tools/list_evidence_tool.py`
-15. `tools/read_file_tool.py`
-16. `tools/knowledge_base.py`
-17. `tools/user_kb_qa.py`
-18. `tools/global_kb_qa.py`
-19. `tools/case_evidence_qa.py`
-20. `tools/document_qa_tool.py`
-21. `tools/web_search.py`
-22. `tools/kb_configs/user_kb_config.py`
-23. `tools/kb_configs/global_kb_config.py`
-24. `tools/kb_configs/case_evidence_config.py`
+10. `tools/agent_tools.py` (base classes)
+11. `tools/registry.py`
+12. `tools/list_evidence_tool.py`
+13. `tools/read_file_tool.py`
+14. `tools/knowledge_base.py`
+15. `tools/user_kb_qa.py`
+16. `tools/global_kb_qa.py`
+17. `tools/case_evidence_qa.py`
+18. `tools/document_qa_tool.py`
+19. `tools/web_search.py`
+20. `tools/kb_configs/user_kb_config.py`
+21. `tools/kb_configs/global_kb_config.py`
+22. `tools/kb_configs/case_evidence_config.py`
 
-**Core Investigation (7 files):**
-25. `core/investigation/investigation_coordinator.py`
-26. `core/investigation/milestone_engine.py`
-27. `core/investigation/hypothesis_manager.py`
-28. `core/investigation/ooda_engine.py`
-29. `core/investigation/phases.py`
-30. `core/investigation/strategy_selector.py`
-31. `core/investigation/working_conclusion_generator.py`
+**Supporting (~1-2 files):**
+23-24. Tool configuration and utilities
 
-**Supporting (5+ files):**
-32-36. Various utilities and helpers
+---
 
-### Test Files to Move (49 files)
+### Files That DO NOT Move (Stay as Shared Infrastructure)
+
+**❌ Core Investigation (7 files) - STAYS IN PLACE:**
+- `core/investigation/investigation_coordinator.py`
+- `core/investigation/milestone_engine.py`
+- `core/investigation/hypothesis_manager.py`
+- `core/investigation/ooda_engine.py`
+- `core/investigation/phases.py`
+- `core/investigation/strategy_selector.py`
+- `core/investigation/working_conclusion_generator.py`
+
+**Rationale:** These are shared investigation patterns used by Agent module. No benefit to moving them. Agent services import from existing location.
+
+**❌ LLM Infrastructure - STAYS IN PLACE:**
+- `infrastructure/llm/providers/` (all provider implementations)
+- `integrations/llm_client.py`
+
+**Rationale:** Other modules may need LLM (Report, Knowledge). Keep as shared infrastructure.
+
+**❌ Investigation Session Repository - EVALUATE:**
+- `infrastructure/persistence/investigation_session_repository.py`
+
+**Decision Needed:** If `InvestigationSession` model stays in Case module, repository may stay shared or move to Agent.
+
+---
+
+### Test Files to Move (~40-45 files)
 
 **Unit Tests (15+ files)**
 **Integration Tests (11+ files)**
