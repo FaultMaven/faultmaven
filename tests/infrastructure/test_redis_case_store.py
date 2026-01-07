@@ -32,7 +32,7 @@ from faultmaven.models import (
     CaseListFilter,
     CaseSearchRequest,
     CaseSummary,
-    CaseSeverity as CasePriority
+    CaseSeverity,
 )
 from faultmaven.exceptions import ServiceException
 
@@ -97,7 +97,7 @@ def sample_case():
         description="Test case for Redis storage",
         owner_id="user-456",
         status=CaseStatus.CONSULTING,
-        priority=CasePriority.MEDIUM,
+        priority=CaseSeverity.MEDIUM,
         tags=["redis", "test"]
     )
     case.add_participant("user-456", ParticipantRole.OWNER)
@@ -227,7 +227,7 @@ class TestCaseSerialization:
         assert case.case_id == "case-123"
         assert case.title == "Test Case"
         assert case.status == CaseStatus.CONSULTING
-        assert case.priority == CasePriority.MEDIUM
+        assert case.priority == CaseSeverity.MEDIUM
         assert isinstance(case.created_at, datetime)
         assert isinstance(case.session_ids, set)
         assert "session-1" in case.session_ids
@@ -830,7 +830,7 @@ class TestCaseSearch:
                 case_id="case-1",
                 title="Database Connection Issue",
                 status=CaseStatus.CONSULTING,
-                priority=CasePriority.HIGH,
+                priority=CaseSeverity.HIGH,
                 owner_id="user-1",
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
@@ -843,7 +843,7 @@ class TestCaseSearch:
                 case_id="case-2",
                 title="Network Timeout Problem",
                 status=CaseStatus.SOLVED,
-                priority=CasePriority.MEDIUM,
+                priority=CaseSeverity.MEDIUM,
                 owner_id="user-2",
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
@@ -871,7 +871,7 @@ class TestCaseSearch:
                 case_id="case-1",
                 title="Connection Issue",
                 status=CaseStatus.CONSULTING,
-                priority=CasePriority.HIGH,
+                priority=CaseSeverity.HIGH,
                 owner_id="user-1",
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
@@ -907,7 +907,7 @@ class TestCaseSearch:
                 case_id="case-1",
                 title="Database Issue",
                 status=CaseStatus.CONSULTING,
-                priority=CasePriority.HIGH,
+                priority=CaseSeverity.HIGH,
                 owner_id="user-1",
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),

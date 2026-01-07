@@ -22,7 +22,7 @@ from fastapi import status
 # Import the FastAPI app
 from faultmaven.main import app
 from faultmaven.container import container
-from faultmaven.models.case import Case as CaseEntity, CaseStatus, CasePriority
+from faultmaven.models.case import Case as CaseEntity, CaseStatus, CaseSeverity
 from faultmaven.models.api import Case, CaseResponse, CaseSummary
 
 
@@ -285,7 +285,7 @@ class TestContractCompliance:
             case_id="session-case-123",
             title="Session Case",
             status=CaseStatus.CONSULTING,
-            priority=CasePriority.MEDIUM,
+            priority=CaseSeverity.MEDIUM,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             message_count=1,
@@ -543,7 +543,7 @@ class TestContractCompliance:
             case_id="atomic-case-123",
             title="Atomic Test Case",
             status=CaseStatus.CONSULTING,
-            priority=CasePriority.MEDIUM,
+            priority=CaseSeverity.MEDIUM,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             message_count=1,

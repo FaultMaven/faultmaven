@@ -21,7 +21,7 @@ from faultmaven.services.domain.case_service import CaseService
 from faultmaven.models.case import (
     Case,
     CaseStatus,
-    CasePriority,
+    CaseSeverity,
     MessageType,
     ParticipantRole,
 )
@@ -100,7 +100,7 @@ def sample_case():
         description="Test case description",
         owner_id="user-456",
         status=CaseStatus.CONSULTING,
-        priority=CasePriority.MEDIUM
+        priority=CaseSeverity.MEDIUM
     )
     case.add_participant("user-456", ParticipantRole.OWNER)
     return case
@@ -159,7 +159,7 @@ class TestCaseCreation:
         assert case.description is None
         assert case.owner_id is None
         assert case.status == CaseStatus.CONSULTING
-        assert case.priority == CasePriority.MEDIUM
+        assert case.priority == CaseSeverity.MEDIUM
         mock_case_store.create_case.assert_called_once()
     
     @pytest.mark.asyncio
@@ -216,7 +216,7 @@ class TestCaseCreation:
                 case_id=f"case-{i}",
                 title=f"Case {i}",
                 status=CaseStatus.CONSULTING,
-                priority=CasePriority.MEDIUM,
+                priority=CaseSeverity.MEDIUM,
                 owner_id="user-123",
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),
@@ -337,7 +337,7 @@ class TestCaseUpdate:
             "title": "Updated Title",
             "description": "Updated description",
             "status": CaseStatus.INVESTIGATING.value,
-            "priority": CasePriority.HIGH.value
+            "priority": CaseSeverity.HIGH.value
         }
         
         result = await case_service.update_case("case-123", updates, user_id="user-456")
@@ -727,7 +727,7 @@ class TestCaseListingAndSearch:
                 case_id="case-1",
                 title="Case 1",
                 status=CaseStatus.CONSULTING,
-                priority=CasePriority.MEDIUM,
+                priority=CaseSeverity.MEDIUM,
                 owner_id="user-123",
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow(),

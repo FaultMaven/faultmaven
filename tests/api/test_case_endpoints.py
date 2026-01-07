@@ -27,7 +27,7 @@ from faultmaven.main import app
 from faultmaven.models.case import (
     Case as CaseEntity,
     CaseStatus,
-    CasePriority,
+    CaseSeverity,
     MessageType,
     ParticipantRole
 )

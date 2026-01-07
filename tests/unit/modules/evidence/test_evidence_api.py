@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
-from faultmaven.modules.evidence.domain.models import Evidence, EvidenceListFilter
+from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceListFilter
 
 from .conftest import create_sample_evidence
 
@@ -26,7 +26,7 @@ class MockEvidenceServiceForAPI:
     """Mock EvidenceService for API testing."""
 
     def __init__(self):
-        self._storage: dict[str, Evidence] = {}
+        self._storage: dict[str, EvidenceArtifact] = {}
         self.upload_evidence = AsyncMock(side_effect=self._upload)
         self.get_evidence = AsyncMock(side_effect=self._get)
         self.list_evidence = AsyncMock(side_effect=self._list)
@@ -44,10 +44,10 @@ class MockEvidenceServiceForAPI:
         self._storage[str(evidence.id)] = evidence
         return evidence
 
-    async def _get(self, evidence_id: UUID) -> Optional[Evidence]:
+    async def _get(self, evidence_id: UUID) -> Optional[EvidenceArtifact]:
         return self._storage.get(str(evidence_id))
 
-    async def _list(self, filters: EvidenceListFilter) -> Tuple[List[Evidence], int]:
+    async def _list(self, filters: EvidenceListFilter) -> Tuple[List[EvidenceArtifact], int]:
         results = list(self._storage.values())
         return results[filters.offset:filters.offset + filters.limit], len(results)
 
@@ -58,7 +58,7 @@ class MockEvidenceServiceForAPI:
             return True
         return False
 
-    async def _link(self, evidence_id: UUID, case_id: UUID) -> Evidence:
+    async def _link(self, evidence_id: UUID, case_id: UUID) -> EvidenceArtifact:
         evidence = self._storage.get(str(evidence_id))
         if not evidence:
             raise ValueError(f"Evidence {evidence_id} not found")
