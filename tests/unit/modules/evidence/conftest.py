@@ -1,4 +1,4 @@
-"""Fixtures for Evidence Service module tests (PR #46c)."""
+"""Fixtures for EvidenceArtifact Service module tests (PR #46c)."""
 import pytest
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 from faultmaven.modules.evidence.domain.models import (
-    Evidence,
+    EvidenceArtifact,
     EvidenceListFilter,
     EvidenceLinkRequest,
     EvidenceUploadRequest,
@@ -27,9 +27,9 @@ def create_sample_evidence(
     description: Optional[str] = "Test evidence file",
     tags: Optional[List[str]] = None,
     linked_cases: Optional[List[UUID]] = None,
-) -> Evidence:
-    """Create a sample Evidence object for testing."""
-    return Evidence(
+) -> EvidenceArtifact:
+    """Create a sample EvidenceArtifact object for testing."""
+    return EvidenceArtifact(
         id=evidence_id or uuid4(),
         filename=filename,
         content_type=content_type,
@@ -79,7 +79,7 @@ class MockEvidenceRepository:
     """Mock repository for testing EvidenceService."""
 
     def __init__(self):
-        self._storage: dict[str, Evidence] = {}
+        self._storage: dict[str, EvidenceArtifact] = {}
         self.create = AsyncMock(side_effect=self._create)
         self.get = AsyncMock(side_effect=self._get)
         self.list = AsyncMock(side_effect=self._list)
@@ -95,7 +95,7 @@ class MockEvidenceRepository:
         uploaded_by: UUID,
         description: Optional[str] = None,
         tags: Optional[List[str]] = None,
-    ) -> Evidence:
+    ) -> EvidenceArtifact:
         evidence = create_sample_evidence(
             filename=filename,
             content_type=content_type,
@@ -108,10 +108,10 @@ class MockEvidenceRepository:
         self._storage[str(evidence.id)] = evidence
         return evidence
 
-    async def _get(self, evidence_id: UUID) -> Optional[Evidence]:
+    async def _get(self, evidence_id: UUID) -> Optional[EvidenceArtifact]:
         return self._storage.get(str(evidence_id))
 
-    async def _list(self, filters: EvidenceListFilter) -> Tuple[List[Evidence], int]:
+    async def _list(self, filters: EvidenceListFilter) -> Tuple[List[EvidenceArtifact], int]:
         results = list(self._storage.values())
 
         # Apply filters
@@ -135,7 +135,7 @@ class MockEvidenceRepository:
             return True
         return False
 
-    async def _link_to_case(self, evidence_id: UUID, case_id: UUID) -> Optional[Evidence]:
+    async def _link_to_case(self, evidence_id: UUID, case_id: UUID) -> Optional[EvidenceArtifact]:
         evidence = self._storage.get(str(evidence_id))
         if evidence:
             if case_id not in evidence.linked_cases:
@@ -170,14 +170,14 @@ class MockUploadFile:
 # =============================================================================
 
 @pytest.fixture
-def sample_evidence() -> Evidence:
-    """Create a sample Evidence object."""
+def sample_evidence() -> EvidenceArtifact:
+    """Create a sample EvidenceArtifact object."""
     return create_sample_evidence()
 
 
 @pytest.fixture
-def sample_evidence_list() -> List[Evidence]:
-    """Create multiple sample Evidence objects."""
+def sample_evidence_list() -> List[EvidenceArtifact]:
+    """Create multiple sample EvidenceArtifact objects."""
     user_id = uuid4()
     return [
         create_sample_evidence(

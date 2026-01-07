@@ -28,7 +28,7 @@ from fastapi.responses import RedirectResponse
 from faultmaven.models.auth import DevUser
 from faultmaven.api.v1.dependencies import get_current_user
 from faultmaven.modules.evidence.domain.models import (
-    Evidence,
+    EvidenceArtifact,
     EvidenceListFilter,
     EvidenceLinkRequest,
 )
@@ -49,7 +49,7 @@ def get_evidence_service() -> EvidenceService:
     return container.get_evidence_service()
 
 
-@router.post("", response_model=Evidence, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=EvidenceArtifact, status_code=status.HTTP_201_CREATED)
 async def upload_evidence(
     file: UploadFile = File(...),
     description: Optional[str] = Form(None),
@@ -57,7 +57,7 @@ async def upload_evidence(
     case_id: Optional[UUID] = Form(None),
     current_user: DevUser = Depends(get_current_user),
     service: EvidenceService = Depends(get_evidence_service),
-) -> Evidence:
+) -> EvidenceArtifact:
     """Upload evidence file.
 
     Args:
@@ -86,12 +86,12 @@ async def upload_evidence(
 
 # NOTE: /case/{case_id} must be defined BEFORE /{evidence_id} routes
 # to avoid FastAPI matching "case" as an evidence_id
-@router.get("/case/{case_id}", response_model=List[Evidence])
+@router.get("/case/{case_id}", response_model=List[EvidenceArtifact])
 async def get_evidence_for_case(
     case_id: UUID,
     current_user: DevUser = Depends(get_current_user),
     service: EvidenceService = Depends(get_evidence_service),
-) -> List[Evidence]:
+) -> List[EvidenceArtifact]:
     """Get all evidence linked to a specific case.
 
     Args:
@@ -107,12 +107,12 @@ async def get_evidence_for_case(
     return evidence_list
 
 
-@router.get("/{evidence_id}", response_model=Evidence)
+@router.get("/{evidence_id}", response_model=EvidenceArtifact)
 async def get_evidence(
     evidence_id: UUID,
     current_user: DevUser = Depends(get_current_user),
     service: EvidenceService = Depends(get_evidence_service),
-) -> Evidence:
+) -> EvidenceArtifact:
     """Get evidence details by ID.
 
     Args:
@@ -189,7 +189,7 @@ async def delete_evidence(
         )
 
 
-@router.get("", response_model=List[Evidence])
+@router.get("", response_model=List[EvidenceArtifact])
 async def list_evidence(
     case_id: Optional[UUID] = None,
     uploaded_by: Optional[UUID] = None,
@@ -199,7 +199,7 @@ async def list_evidence(
     offset: int = 0,
     current_user: DevUser = Depends(get_current_user),
     service: EvidenceService = Depends(get_evidence_service),
-) -> List[Evidence]:
+) -> List[EvidenceArtifact]:
     """List evidence with optional filters.
 
     Args:
@@ -232,13 +232,13 @@ async def list_evidence(
     return evidence_list
 
 
-@router.post("/{evidence_id}/link", response_model=Evidence)
+@router.post("/{evidence_id}/link", response_model=EvidenceArtifact)
 async def link_evidence_to_case(
     evidence_id: UUID,
     link_request: EvidenceLinkRequest,
     current_user: DevUser = Depends(get_current_user),
     service: EvidenceService = Depends(get_evidence_service),
-) -> Evidence:
+) -> EvidenceArtifact:
     """Link evidence to a case.
 
     Args:

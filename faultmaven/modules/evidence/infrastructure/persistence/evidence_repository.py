@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.infrastructure.persistence.models import StandaloneEvidenceModel
 from faultmaven.modules.evidence.domain.models import (
-    Evidence,
+    EvidenceArtifact,
     EvidenceListFilter,
 )
 
@@ -41,7 +41,7 @@ class EvidenceRepository:
         uploaded_by: UUID,
         description: Optional[str] = None,
         tags: Optional[List[str]] = None,
-    ) -> Evidence:
+    ) -> EvidenceArtifact:
         """Create evidence record.
 
         Args:
@@ -77,14 +77,14 @@ class EvidenceRepository:
 
         return self._to_domain(evidence)
 
-    async def get(self, evidence_id: UUID) -> Optional[Evidence]:
+    async def get(self, evidence_id: UUID) -> Optional[EvidenceArtifact]:
         """Get evidence by ID.
 
         Args:
             evidence_id: Evidence UUID
 
         Returns:
-            Evidence domain model or None
+            EvidenceArtifact domain model or None
         """
         stmt = select(StandaloneEvidenceModel).where(
             StandaloneEvidenceModel.id == str(evidence_id)
@@ -96,7 +96,7 @@ class EvidenceRepository:
 
     async def list(
         self, filters: EvidenceListFilter
-    ) -> Tuple[List[Evidence], int]:
+    ) -> Tuple[List[EvidenceArtifact], int]:
         """List evidence with filters.
 
         Args:
@@ -177,7 +177,7 @@ class EvidenceRepository:
 
     async def link_to_case(
         self, evidence_id: UUID, case_id: UUID
-    ) -> Optional[Evidence]:
+    ) -> Optional[EvidenceArtifact]:
         """Link evidence to a case.
 
         Args:
@@ -185,7 +185,7 @@ class EvidenceRepository:
             case_id: Case UUID
 
         Returns:
-            Updated evidence domain model or None if not found
+            Updated EvidenceArtifact domain model or None if not found
         """
         stmt = select(StandaloneEvidenceModel).where(
             StandaloneEvidenceModel.id == str(evidence_id)
@@ -207,21 +207,21 @@ class EvidenceRepository:
 
         return self._to_domain(evidence)
 
-    def _to_domain(self, evidence: StandaloneEvidenceModel) -> Evidence:
+    def _to_domain(self, evidence: StandaloneEvidenceModel) -> EvidenceArtifact:
         """Convert SQLAlchemy model to domain model.
 
         Args:
             evidence: SQLAlchemy model
 
         Returns:
-            Evidence domain model
+            EvidenceArtifact domain model
         """
         # Parse JSON fields
         tags = json.loads(evidence.tags or "[]")
         linked_cases_str = json.loads(evidence.linked_cases or "[]")
         metadata = json.loads(evidence.evidence_metadata or "{}")
 
-        return Evidence(
+        return EvidenceArtifact(
             id=UUID(evidence.id),
             filename=evidence.filename,
             content_type=evidence.content_type,
