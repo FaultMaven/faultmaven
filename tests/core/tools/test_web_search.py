@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 
-from faultmaven.tools.web_search import WebSearchTool
+from faultmaven.modules.agent.tools.web_search import WebSearchTool
 
 
 class TestWebSearchTool:

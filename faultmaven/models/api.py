@@ -9,7 +9,7 @@ from faultmaven.utils.serialization import to_json_compatible
 # Import for type annotations (avoid circular imports)
 if TYPE_CHECKING:
     # SuggestedAction moved to agentic.py (used by OODA framework)
-    from faultmaven.models.agentic import SuggestedAction
+    from faultmaven.modules.agent.domain.models.agentic import SuggestedAction
 
 # Import evidence-centric models
 from faultmaven.models.evidence import (

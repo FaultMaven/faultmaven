@@ -84,7 +84,7 @@ def create_investigation_service(
         return None
 
     try:
-        from faultmaven.services.domain.investigation_service import InvestigationService
+        from faultmaven.modules.agent.domain.services.investigation_service import InvestigationService
 
         service = InvestigationService(
             milestone_engine=milestone_engine,
@@ -107,7 +107,7 @@ def create_investigation_orchestrator(
         return None
 
     try:
-        from faultmaven.services.domain.investigation_orchestrator import InvestigationOrchestrator
+        from faultmaven.modules.agent.domain.services.investigation_orchestrator import InvestigationOrchestrator
 
         orchestrator = InvestigationOrchestrator(
             hypothesis_repo=hypothesis_repository,

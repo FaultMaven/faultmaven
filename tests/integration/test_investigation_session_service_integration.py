@@ -31,7 +31,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     DatabaseAgentExecutionRepository,
     InMemoryAgentExecutionRepository,
 )
@@ -39,7 +39,7 @@ from faultmaven.services.investigation_session_service import APIInvestigationSe
 from faultmaven.services.case_service import APICaseService
 from faultmaven.models.case import Case, CaseStatus, CaseSeverity, InvestigationStrategy
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
+from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
 from faultmaven.exceptions import (
     NotFoundError,
     AuthorizationError,

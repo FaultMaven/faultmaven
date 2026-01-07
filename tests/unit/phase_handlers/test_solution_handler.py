@@ -15,7 +15,7 @@ import pytest
 from unittest.mock import AsyncMock, Mock, patch
 
 from faultmaven.services.agentic.phase_handlers.solution_handler import SolutionHandler
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
     InvestigationPhase,
     InvestigationStrategy,

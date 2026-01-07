@@ -28,7 +28,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     DatabaseAgentExecutionRepository,
 )
 from faultmaven.infrastructure.persistence.repository_factory import (
@@ -39,7 +39,7 @@ from faultmaven.models.investigation_session import (
     InvestigationSession,
     SessionStatus,
 )
-from faultmaven.models.agent_execution import (
+from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,

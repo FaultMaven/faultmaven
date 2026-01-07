@@ -8,7 +8,7 @@ Design Reference:
 - docs/architecture/investigation-phases-and-ooda-integration.md (v3.0 Degraded Mode)
 """
 
-from faultmaven.models.investigation import DegradedModeType, get_confidence_cap
+from faultmaven.modules.agent.domain.models.investigation import DegradedModeType, get_confidence_cap
 
 
 def get_degraded_mode_prompt(

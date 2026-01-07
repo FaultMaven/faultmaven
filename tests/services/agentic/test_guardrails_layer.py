@@ -9,7 +9,7 @@ from unittest.mock import Mock, AsyncMock, patch
 import asyncio
 
 from faultmaven.services.agentic.safety.guardrails_layer import GuardrailsPolicyLayer
-from faultmaven.models.agentic import (
+from faultmaven.modules.agent.domain.models.agentic import (
     SecurityBoundary, ContentPolicy, ComplianceResult, PIIDetectionResult,
     ValidationRequest, ValidationResult, SecurityLevel, PolicyViolation
 )

@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 from uuid import uuid4
 import time
 
-from faultmaven.models.agent_execution import (
+from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     InMemoryAgentExecutionRepository,
 )
 

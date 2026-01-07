@@ -6,7 +6,7 @@ Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
 from typing import Dict, Any
-from faultmaven.models.investigation import InvestigationStrategy
+from faultmaven.modules.agent.domain.models.investigation import InvestigationStrategy
 
 
 # =============================================================================

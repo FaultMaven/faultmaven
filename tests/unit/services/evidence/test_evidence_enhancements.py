@@ -11,7 +11,7 @@ from datetime import datetime
 import pytest
 
 from faultmaven.models.api import DataType, PreprocessedData
-from faultmaven.models.investigation import HypothesisStatus
+from faultmaven.modules.agent.domain.models.investigation import HypothesisStatus
 from faultmaven.services.evidence.evidence_enhancements import (
     extract_timeline_events,
     should_populate_timeline,

@@ -10,14 +10,14 @@ from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
-from faultmaven.tools.agent_tools import (
+from faultmaven.modules.agent.tools.agent_tools import (
     AgentTool,
     AgentToolRegistry,
     ToolContext,
     agent_tool_registry,
 )
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.domain.events import Tool
+from faultmaven.modules.agent.domain.events.execution_events import Tool
 
 
 # =============================================================================

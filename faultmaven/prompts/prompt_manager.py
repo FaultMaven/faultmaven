@@ -348,7 +348,7 @@ class PromptManager:
         Returns:
             Enhanced prompt with v3.0 context injected
         """
-        from faultmaven.models.investigation import InvestigationPhase
+        from faultmaven.modules.agent.domain.models.investigation import InvestigationPhase
 
         enhanced_prompt = base_prompt
         current_phase = investigation_state.lifecycle.current_phase

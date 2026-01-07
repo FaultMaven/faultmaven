@@ -17,7 +17,7 @@ from unittest.mock import Mock, AsyncMock, patch
 from datetime import datetime
 
 from faultmaven.services.agentic.orchestration.phase_orchestrator import PhaseOrchestrator
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationPhase,
     InvestigationState,
     EngagementMode,
@@ -108,7 +108,7 @@ class TestOODAWorkflowIntegration:
         investigation_state.metadata.engagement_mode = EngagementMode.LEAD_INVESTIGATOR
 
         # Mock problem confirmation
-        from faultmaven.models.investigation import ProblemConfirmation
+        from faultmaven.modules.agent.domain.models.investigation import ProblemConfirmation
         investigation_state.problem_confirmation = ProblemConfirmation(
             problem_detected=True,
             problem_statement="API returning 500 errors",
@@ -157,7 +157,7 @@ class TestOODAWorkflowIntegration:
         investigation_state.lifecycle.investigation_strategy = InvestigationStrategy.ACTIVE_INCIDENT
 
         # Create AnomalyFrame from previous phases
-        from faultmaven.models.investigation import AnomalyFrame
+        from faultmaven.modules.agent.domain.models.investigation import AnomalyFrame
         investigation_state.ooda_engine.anomaly_frame = AnomalyFrame(
             statement="Database connection pool exhausted",
             affected_components=["api-service", "database"],
@@ -199,7 +199,7 @@ class TestOODAWorkflowIntegration:
 
         # Create multiple hypotheses (potential anchoring scenario)
         from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
-        from faultmaven.models.investigation import HypothesisStatus
+        from faultmaven.modules.agent.domain.models.investigation import HypothesisStatus
 
         hypothesis_manager = create_hypothesis_manager()
 
@@ -246,7 +246,7 @@ class TestOODAWorkflowIntegration:
 
         # Add validated hypothesis
         from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
-        from faultmaven.models.investigation import HypothesisStatus
+        from faultmaven.modules.agent.domain.models.investigation import HypothesisStatus
 
         hypothesis_manager = create_hypothesis_manager()
         validated_hypothesis = hypothesis_manager.create_hypothesis(
@@ -283,7 +283,7 @@ class TestOODAWorkflowIntegration:
         investigation_state.lifecycle.case_status = "resolved"
 
         # Add complete investigation data
-        from faultmaven.models.investigation import AnomalyFrame, HypothesisStatus
+        from faultmaven.modules.agent.domain.models.investigation import AnomalyFrame, HypothesisStatus
         from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 
         investigation_state.ooda_engine.anomaly_frame = AnomalyFrame(

@@ -229,7 +229,7 @@ class TestServiceIndependenceViolationsFixed:
         # This would have been violations:
         # - agent_orchestration_service → investigation_session_service
         # - agent_orchestration_service → evidence_artifact_service
-        from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
+        from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
 
         # Create mock instances
         mock_session_instance = Mock()

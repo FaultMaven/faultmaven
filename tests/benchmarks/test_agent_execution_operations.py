@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from faultmaven.models.case import Case, CaseStatus, InvestigationStrategy
-from faultmaven.models.agent_execution import (
+from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,
@@ -28,7 +28,7 @@ from faultmaven.models.agent_execution import (
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     DatabaseAgentExecutionRepository,
 )
 

@@ -116,24 +116,6 @@ from .case import UrgencyLevel
 # Import session model
 from .session import Session
 
-# Backward compatibility - Agent models moved to modules/agent/domain/models/
-# TODO: Remove after full migration complete (Phase 4)
-from faultmaven.modules.agent.domain.models.agent_execution import (
-    AgentExecution,
-    AgentToolCall,
-    ExecutionStatus,
-)
-from faultmaven.modules.agent.domain.models.investigation import (
-    # Re-export investigation models from new location for backward compatibility
-    InvestigationState,
-    InvestigationStrategy,
-    HypothesisStatus,
-    Hypothesis,
-    WorkingConclusion,
-    InvestigationPhase,
-    OODAStep,
-)
-
 # Utility functions are now imported from legacy.py
 
 # Re-export everything

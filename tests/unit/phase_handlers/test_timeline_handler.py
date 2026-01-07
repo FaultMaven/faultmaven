@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, Mock
 
 from faultmaven.services.agentic.phase_handlers.timeline_handler import TimelineHandler
 from faultmaven.services.agentic.phase_handlers.base import PhaseHandlerResult
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
     InvestigationPhase,
     EngagementMode,

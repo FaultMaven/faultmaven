@@ -38,7 +38,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     EvidenceArtifactRepository,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     AgentExecutionRepository,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
@@ -184,8 +184,8 @@ class ServiceFactory:
         Returns:
             AgentOrchestrationService instance with injected dependencies
         """
-        from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
-        from faultmaven.tools.agent_tools import agent_tool_registry
+        from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
+        from faultmaven.modules.agent.tools.agent_tools import agent_tool_registry
 
         return AgentOrchestrationService(
             session_service=self.create_investigation_session_service(),

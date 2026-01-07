@@ -18,7 +18,7 @@ from faultmaven.services.agentic.phase_handlers.intake_handler import IntakeHand
 from faultmaven.services.agentic.phase_handlers.blast_radius_handler import BlastRadiusHandler
 from faultmaven.services.agentic.phase_handlers.hypothesis_handler import HypothesisHandler
 from faultmaven.services.agentic.phase_handlers.validation_handler import ValidationHandler
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
     InvestigationPhase,
     EngagementMode,
@@ -388,7 +388,7 @@ class TestLongInvestigation:
         )
 
         # Simulate 10 turns of investigation
-        from faultmaven.models.investigation import OODAIteration, OODAStep
+        from faultmaven.modules.agent.domain.models.investigation import OODAIteration, OODAStep
 
         for turn in range(1, 11):
             iteration = OODAIteration(
@@ -419,7 +419,7 @@ class TestLongInvestigation:
         self, handlers, mock_llm_provider
     ):
         """Test anchoring bias detection during validation phase"""
-        from faultmaven.models.investigation import Hypothesis
+        from faultmaven.modules.agent.domain.models.investigation import Hypothesis
 
         state = InvestigationState(
             metadata=InvestigationMetadata(

@@ -10,7 +10,7 @@ import asyncio
 from datetime import datetime
 
 from faultmaven.services.agentic.engines.response_synthesizer import ResponseSynthesizer
-from faultmaven.models.agentic import (
+from faultmaven.modules.agent.domain.models.agentic import (
     ProcessingResult, QualityMetrics, ResponseTemplate, ResponseSource,
     SynthesisRequest, SynthesisResult, ContentFormat, QualityAssessment
 )

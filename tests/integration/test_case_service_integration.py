@@ -32,7 +32,7 @@ from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
     InMemoryEvidenceArtifactRepository,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     DatabaseAgentExecutionRepository,
     InMemoryAgentExecutionRepository,
 )
@@ -41,7 +41,7 @@ from faultmaven.services.service_factory import ServiceFactory
 from faultmaven.models.case import Case, CaseStatus, CaseSeverity
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceArtifactType, StorageBackend
-from faultmaven.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
+from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
 from faultmaven.exceptions import (
     NotFoundError,
     AuthorizationError,

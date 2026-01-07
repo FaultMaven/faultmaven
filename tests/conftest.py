@@ -86,8 +86,8 @@ sys.modules.setdefault(
     ),
 )
 
-from faultmaven.tools.knowledge_base import KnowledgeBaseTool
-from faultmaven.tools.web_search import WebSearchTool
+from faultmaven.modules.agent.tools.knowledge_base import KnowledgeBaseTool
+from faultmaven.modules.agent.tools.web_search import WebSearchTool
 # from faultmaven.services.preprocessing.classifier import DataClassifier  # May need heavy deps
 # from faultmaven.core.processing.log_analyzer import LogProcessor
 from faultmaven.infrastructure.llm.router import LLMRouter

@@ -1,30 +1,9 @@
 """FaultMaven domain module.
 
-This module contains domain entities, events, and value objects for the
-agent orchestration and investigation workflows.
+This module contains domain entities, events, and value objects.
+
+Note: Agent-related events have been moved to modules/agent/domain/events/
+Import them from there directly.
 """
 
-# Backward compatibility - Events moved to modules/agent/domain/events/
-# TODO: Remove after full migration complete (Phase 4)
-from faultmaven.modules.agent.domain.events.execution_events import (
-    ExecutionEvent,
-    ExecutionEventType,
-    LLMEvent,
-    LLMEventType,
-    AgentContext,
-    Message,
-    MessageRole,
-    ToolCall,
-    ToolResult,
-    Tool,
-)
-
-__all__ = [
-    "ExecutionEvent",
-    "ExecutionEventType",
-    "LLMEvent",
-    "LLMEventType",
-    "AgentContext",
-    "Message",
-    "MessageRole",
-]
+__all__ = []

@@ -28,7 +28,7 @@ import logging
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationStrategy,
     InvestigationPhase,
     ProblemConfirmation,

@@ -15,7 +15,7 @@ from faultmaven.core.investigation.working_conclusion_generator import (
     _determine_if_can_proceed,
     _should_enter_degraded_mode,
 )
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
     InvestigationLifecycle,
     InvestigationPhase,

@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, Mock, patch, MagicMock
 
 from fastapi.testclient import TestClient
 
-from faultmaven.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
+from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 from faultmaven.models.case import Case, CaseStatus
 from faultmaven.models.auth import AuthenticatedUser
@@ -447,7 +447,7 @@ def test_get_messages_max_limit(client):
 
 def test_chat_success_non_streaming(client, mock_agent_service, sample_session):
     """Test non-streaming chat returns complete response."""
-    from faultmaven.domain.events import ExecutionEvent, ExecutionEventType
+    from faultmaven.modules.agent.domain.events.execution_events import ExecutionEvent, ExecutionEventType
 
     # Setup mock agent to yield events
     async def mock_execute(*args, **kwargs):
@@ -485,7 +485,7 @@ def test_chat_success_non_streaming(client, mock_agent_service, sample_session):
 
 def test_chat_auto_create_session(client, mock_agent_service, mock_session_service, sample_session):
     """Test chat auto-creates session when session_id is not provided."""
-    from faultmaven.domain.events import ExecutionEvent
+    from faultmaven.modules.agent.domain.events.execution_events import ExecutionEvent
 
     # Setup mock agent to yield events
     async def mock_execute(*args, **kwargs):
@@ -619,7 +619,7 @@ def test_chat_message_validation(client):
 
 def test_chat_streaming_mode(client, mock_agent_service, sample_session):
     """Test streaming chat returns SSE response."""
-    from faultmaven.domain.events import ExecutionEvent
+    from faultmaven.modules.agent.domain.events.execution_events import ExecutionEvent
 
     # Setup mock agent to yield events
     async def mock_execute(*args, **kwargs):
@@ -659,7 +659,7 @@ def test_chat_streaming_mode(client, mock_agent_service, sample_session):
 
 def test_e2e_chat_and_retrieve(client, mock_factory, mock_agent_service, mock_session_service, sample_session):
     """Test chat followed by message retrieval shows the conversation."""
-    from faultmaven.domain.events import ExecutionEvent
+    from faultmaven.modules.agent.domain.events.execution_events import ExecutionEvent
 
     # First, send a chat message
     async def mock_execute(*args, **kwargs):
@@ -699,7 +699,7 @@ def test_e2e_chat_and_retrieve(client, mock_factory, mock_agent_service, mock_se
 
 def test_e2e_session_continuity(client, mock_factory, mock_agent_service, sample_session):
     """Test that session_id maintains conversation context."""
-    from faultmaven.domain.events import ExecutionEvent
+    from faultmaven.modules.agent.domain.events.execution_events import ExecutionEvent
 
     session_id = "sess-123"
 

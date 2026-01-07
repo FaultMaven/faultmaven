@@ -46,7 +46,7 @@ def create_registry_tools(
     Returns:
         List of tool instances
     """
-    from faultmaven.tools.registry import tool_registry
+    from faultmaven.modules.agent.tools.registry import tool_registry
 
     # Import tools to trigger registration
     import faultmaven.tools.knowledge_base
@@ -91,9 +91,9 @@ def create_document_qa_tools(
         return result
 
     try:
-        from faultmaven.tools.case_evidence_qa import AnswerFromCaseEvidence
-        from faultmaven.tools.user_kb_qa import AnswerFromUserKB
-        from faultmaven.tools.global_kb_qa import AnswerFromGlobalKB
+        from faultmaven.modules.agent.tools.case_evidence_qa import AnswerFromCaseEvidence
+        from faultmaven.modules.agent.tools.user_kb_qa import AnswerFromUserKB
+        from faultmaven.modules.agent.tools.global_kb_qa import AnswerFromGlobalKB
 
         # Tool 1: Case Evidence (case-scoped forensic analysis)
         result["case_evidence_qa_tool"] = AnswerFromCaseEvidence(

@@ -15,7 +15,7 @@ from faultmaven.core.investigation.workflow_progression_detector import (
     should_suggest_mark_complete,
     should_suggest_escalation,
 )
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
     InvestigationPhase,
     InvestigationLifecycle,

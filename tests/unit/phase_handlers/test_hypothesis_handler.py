@@ -13,7 +13,7 @@ import pytest
 from unittest.mock import AsyncMock, Mock
 
 from faultmaven.services.agentic.phase_handlers.hypothesis_handler import HypothesisHandler
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
     InvestigationPhase,
     InvestigationStrategy,

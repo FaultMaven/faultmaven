@@ -17,7 +17,7 @@ from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
     create_hypothesis_manager,
 )
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     Hypothesis,
     HypothesisStatus,
 )

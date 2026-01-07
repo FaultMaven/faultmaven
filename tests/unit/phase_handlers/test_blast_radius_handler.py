@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, Mock
 
 from faultmaven.services.agentic.phase_handlers.blast_radius_handler import BlastRadiusHandler
 from faultmaven.services.agentic.phase_handlers.base import PhaseHandlerResult
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
     InvestigationPhase,
     InvestigationStrategy,

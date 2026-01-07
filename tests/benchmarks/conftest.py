@@ -17,7 +17,7 @@ from faultmaven.infrastructure.persistence.session_repository import DatabaseSes
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     DatabaseAgentExecutionRepository,
 )
 from faultmaven.infrastructure.persistence.investigation_session_repository import (

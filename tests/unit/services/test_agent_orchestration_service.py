@@ -12,19 +12,19 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from faultmaven.services.agent_orchestration_service import (
+from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
     AgentOrchestrationService,
     AGENT_SYSTEM_PROMPTS,
 )
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.models.agent_execution import (
+from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,
     ExecutionStatus,
 )
 from faultmaven.models.case import Case, CaseStatus
-from faultmaven.domain.events import (
+from faultmaven.modules.agent.domain.events.execution_events import (
     AgentContext,
     ExecutionEvent,
     ExecutionEventType,
@@ -33,7 +33,7 @@ from faultmaven.domain.events import (
     Message,
     ToolCall,
 )
-from faultmaven.tools.agent_tools import AgentToolRegistry, ToolContext
+from faultmaven.modules.agent.tools.agent_tools import AgentToolRegistry, ToolContext
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.exceptions import (
     NotFoundError,
@@ -682,7 +682,7 @@ class TestBuildAgentContext:
         mock_case_repo.get.return_value = sample_case
         mock_execution_repo.list_executions_by_case.return_value = ([], 0)
 
-        from faultmaven.domain.events import Tool
+        from faultmaven.modules.agent.domain.events.execution_events import Tool
 
         mock_tools = [
             Tool(name="read_file", description="Read a file", parameters={"type": "object"}),

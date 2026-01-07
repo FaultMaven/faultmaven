@@ -19,7 +19,7 @@ from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from faultmaven.models.case import UrgencyLevel
-    from faultmaven.models.investigation import InvestigationState, InvestigationStrategy
+    from faultmaven.modules.agent.domain.models.investigation import InvestigationState, InvestigationStrategy
 
 
 class InterventionType(str, Enum):
@@ -148,7 +148,7 @@ class InvestigationCoordinator:
         Returns:
             True if phase complete, False otherwise
         """
-        from faultmaven.models.investigation import InvestigationPhase
+        from faultmaven.modules.agent.domain.models.investigation import InvestigationPhase
 
         current_phase = state.lifecycle.current_phase
 

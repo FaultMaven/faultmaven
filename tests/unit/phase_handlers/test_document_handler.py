@@ -22,7 +22,7 @@ from datetime import datetime
 
 from faultmaven.services.agentic.phase_handlers.document_handler import DocumentHandler
 from faultmaven.services.agentic.phase_handlers.base import PhaseHandlerResult
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
     InvestigationPhase,
     EngagementMode,

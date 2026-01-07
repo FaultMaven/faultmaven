@@ -13,7 +13,7 @@ import pytest
 from unittest.mock import AsyncMock, Mock
 
 from faultmaven.services.agentic.phase_handlers.validation_handler import ValidationHandler
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
     InvestigationPhase,
     InvestigationStrategy,
@@ -201,7 +201,7 @@ class TestValidationHandlerV3:
     @pytest.mark.asyncio
     async def test_degraded_mode_exception_at_cap(self, validation_handler, investigation_state_phase4):
         """Test v3.1: Can advance in degraded mode at confidence cap"""
-        from faultmaven.models.investigation import (
+        from faultmaven.modules.agent.domain.models.investigation import (
             EscalationState,
             DegradedModeType,
             WorkingConclusion,
@@ -237,7 +237,7 @@ class TestValidationHandlerV3:
     @pytest.mark.asyncio
     async def test_degraded_mode_below_cap_not_complete(self, validation_handler, investigation_state_phase4):
         """Test v3.1: Cannot advance in degraded mode below cap"""
-        from faultmaven.models.investigation import (
+        from faultmaven.modules.agent.domain.models.investigation import (
             EscalationState,
             DegradedModeType,
             WorkingConclusion,
@@ -291,7 +291,7 @@ class TestValidationHandlerV3:
     @pytest.mark.asyncio
     async def test_working_conclusion_used_in_completion(self, validation_handler, investigation_state_phase4):
         """Test v3.0: Working conclusion is used in completion check"""
-        from faultmaven.models.investigation import WorkingConclusion, ConfidenceLevel
+        from faultmaven.modules.agent.domain.models.investigation import WorkingConclusion, ConfidenceLevel
 
         # Set working conclusion
         investigation_state_phase4.lifecycle.working_conclusion = WorkingConclusion(

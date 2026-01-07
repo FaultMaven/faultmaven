@@ -22,23 +22,23 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import statistics
 
-from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
+from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.models.agent_execution import (
+from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentType,
     ExecutionStatus,
 )
 from faultmaven.models.case import Case, CaseStatus, CaseSeverity
 from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceArtifactType
-from faultmaven.domain.events import (
+from faultmaven.modules.agent.domain.events.execution_events import (
     LLMEvent,
     LLMEventType,
     ToolCall,
 )
-from faultmaven.tools.agent_tools import AgentToolRegistry
-from faultmaven.tools.read_file_tool import ReadFileTool
-from faultmaven.tools.list_evidence_tool import ListEvidenceTool
+from faultmaven.modules.agent.tools.agent_tools import AgentToolRegistry
+from faultmaven.modules.agent.tools.read_file_tool import ReadFileTool
+from faultmaven.modules.agent.tools.list_evidence_tool import ListEvidenceTool
 
 
 # =============================================================================
@@ -455,7 +455,7 @@ class TestToolExecutionPerformance:
         sample_evidence,
     ):
         """Benchmark read_file tool latency (target: p95 < 300ms)."""
-        from faultmaven.tools.agent_tools import ToolContext
+        from faultmaven.modules.agent.tools.agent_tools import ToolContext
 
         context = ToolContext(
             session_id="session_bench",
@@ -507,8 +507,8 @@ class TestParallelToolExecutionPerformance:
         sample_session,
     ):
         """Benchmark parallel tool execution (target: p95 < 500ms for 3 tools)."""
-        from faultmaven.domain.events import ToolCall as DomainToolCall
-        from faultmaven.tools.agent_tools import ToolContext
+        from faultmaven.modules.agent.domain.events.execution_events import ToolCall as DomainToolCall
+        from faultmaven.modules.agent.tools.agent_tools import ToolContext
 
         tool_calls = [
             DomainToolCall(

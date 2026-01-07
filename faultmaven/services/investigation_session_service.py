@@ -29,7 +29,7 @@ from faultmaven.models.investigation_session import (
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     AgentExecutionRepository,
 )
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository

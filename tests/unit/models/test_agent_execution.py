@@ -7,7 +7,7 @@ import pytest
 from datetime import datetime, timezone, timedelta
 import time
 
-from faultmaven.models.agent_execution import (
+from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,

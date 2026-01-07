@@ -29,7 +29,7 @@ from faultmaven.api.dependencies import (
 )
 from faultmaven.api.middleware.auth import get_current_user
 from faultmaven.api.models import ExecutionEventSSE
-from faultmaven.domain.events import ExecutionEventType
+from faultmaven.modules.agent.domain.events.execution_events import ExecutionEventType
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -38,7 +38,7 @@ from faultmaven.exceptions import (
     ServiceError,
     ValidationException,
 )
-from faultmaven.models.agent_execution import AgentType, ExecutionStatus
+from faultmaven.modules.agent.domain.models.agent_execution import AgentType, ExecutionStatus
 from faultmaven.models.api_messages import (
     ChatRequest,
     ChatMessageResponse,
@@ -49,7 +49,7 @@ from faultmaven.models.api_messages import (
     PaginationInfo,
 )
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
+from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
 from faultmaven.services.investigation_session_service import APIInvestigationSessionService
 from faultmaven.services.service_factory import ServiceFactory
 

@@ -35,7 +35,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     EvidenceArtifactRepository,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     AgentExecutionRepository,
 )
 from faultmaven.providers.tenancy.base import TenantProvider

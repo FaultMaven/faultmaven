@@ -15,7 +15,7 @@ Design Reference:
 """
 
 from typing import List, Dict, Optional, Any
-from faultmaven.models.investigation import InvestigationState
+from faultmaven.modules.agent.domain.models.investigation import InvestigationState
 
 
 # =============================================================================

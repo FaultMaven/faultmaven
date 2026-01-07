@@ -20,7 +20,7 @@ from faultmaven.core.investigation.memory_manager import (
     create_memory_manager,
     initialize_memory,
 )
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     HierarchicalMemory,
     MemorySnapshot,
     OODAIteration,

@@ -26,7 +26,7 @@ from faultmaven.prompts.investigation.phase3_structured_output import (
     get_structured_output_schema_prompt,
     get_structured_output_example,
 )
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
     InvestigationLifecycle,
     InvestigationPhase,

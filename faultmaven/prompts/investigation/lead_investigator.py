@@ -11,7 +11,7 @@ Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
 from typing import Dict, Any, Optional
-from faultmaven.models.investigation import InvestigationPhase, InvestigationStrategy
+from faultmaven.modules.agent.domain.models.investigation import InvestigationPhase, InvestigationStrategy
 from faultmaven.prompts.investigation.ooda_guidance import get_complete_ooda_prompt
 
 

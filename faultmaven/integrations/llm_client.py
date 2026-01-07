@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
-from faultmaven.domain.events import (
+from faultmaven.modules.agent.domain.events.execution_events import (
     AgentContext,
     LLMEvent,
     LLMEventType,

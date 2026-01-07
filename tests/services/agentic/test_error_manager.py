@@ -10,7 +10,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 from faultmaven.services.agentic.safety.error_manager import ErrorFallbackManager
-from faultmaven.models.agentic import (
+from faultmaven.modules.agent.domain.models.agentic import (
     ErrorContext, ErrorType, ErrorSeverity, RecoveryStrategy, CircuitBreakerState,
     HealthStatus, AlertLevel, ErrorClassification, RecoveryResult, FallbackConfig
 )

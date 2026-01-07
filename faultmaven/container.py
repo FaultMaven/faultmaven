@@ -59,7 +59,7 @@ try:
         ErrorFallbackManager,
         BusinessLogicWorkflowEngine
     )
-    from faultmaven.models.agentic import (
+    from faultmaven.modules.agent.domain.models.agentic import (
         IAgentStateManager,
         IToolSkillBroker,
         IGuardrailsPolicyLayer,

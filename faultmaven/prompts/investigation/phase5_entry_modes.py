@@ -8,7 +8,7 @@ Design Reference:
 - docs/architecture/investigation-phases-and-ooda-integration.md (v3.0 Phase 5)
 """
 
-from faultmaven.models.investigation import InvestigationState
+from faultmaven.modules.agent.domain.models.investigation import InvestigationState
 
 
 def get_phase5_entry_mode_context(

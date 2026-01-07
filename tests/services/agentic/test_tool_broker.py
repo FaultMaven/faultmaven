@@ -10,7 +10,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 from faultmaven.services.agentic.management.tool_broker import ToolSkillBroker
-from faultmaven.models.agentic import (
+from faultmaven.modules.agent.domain.models.agentic import (
     AgentCapabilities, ToolExecutionRequest, ToolExecutionResult,
     SafetyAssessment, PerformanceMetrics, CapabilityDiscovery
 )

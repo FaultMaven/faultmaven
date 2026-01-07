@@ -24,7 +24,7 @@ from faultmaven.infrastructure.persistence.database import reset_engine
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     DatabaseAgentExecutionRepository,
     InMemoryAgentExecutionRepository,
 )
@@ -35,7 +35,7 @@ from faultmaven.infrastructure.persistence.repository_factory import (
     STORAGE_TYPE_DATABASE,
 )
 from faultmaven.models.case import Case, CaseStatus, InvestigationStrategy
-from faultmaven.models.agent_execution import (
+from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,

@@ -10,7 +10,7 @@ import asyncio
 from datetime import datetime
 
 from faultmaven.services.agentic.engines.workflow_engine import BusinessLogicWorkflowEngine
-from faultmaven.models.agentic import (
+from faultmaven.modules.agent.domain.models.agentic import (
     QueryInput, AgentCapabilities, ExecutionPlan, ExecutionStep, PlanNode,
     SecurityBoundary, QualityMetrics, AgentResponse, ProcessingResult,
     QueryClassification, QueryIntent, QueryComplexity, QueryDomain, QueryUrgency
@@ -314,7 +314,7 @@ class TestBusinessLogicWorkflowEngine:
         assert workflow_engine.error_manager is not None
         
         # Verify components implement correct interfaces
-        from faultmaven.models.agentic import (
+        from faultmaven.modules.agent.domain.models.agentic import (
             IAgentStateManager, IQueryClassificationEngine, IToolSkillBroker,
             IGuardrailsPolicyLayer, IResponseSynthesizer, IErrorFallbackManager
         )

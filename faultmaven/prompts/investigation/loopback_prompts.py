@@ -9,7 +9,7 @@ Design Reference:
 """
 
 from typing import Dict, List
-from faultmaven.models.investigation import InvestigationState, InvestigationPhase
+from faultmaven.modules.agent.domain.models.investigation import InvestigationState, InvestigationPhase
 
 
 def get_hypothesis_refutation_loopback_prompt(

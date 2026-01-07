@@ -23,7 +23,7 @@ from fastapi import status
 from fastapi.testclient import TestClient
 
 from faultmaven.api.app import create_app
-from faultmaven.domain.events import ExecutionEvent, ExecutionEventType
+from faultmaven.modules.agent.domain.events.execution_events import ExecutionEvent, ExecutionEventType
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -32,7 +32,7 @@ from faultmaven.exceptions import (
     ServiceError,
 )
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.models.agent_execution import (
+from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,

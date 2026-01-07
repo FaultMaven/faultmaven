@@ -45,7 +45,7 @@ from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
     InMemoryEvidenceArtifactRepository,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     AgentExecutionRepository,
     DatabaseAgentExecutionRepository,
     InMemoryAgentExecutionRepository,

@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from faultmaven.api.models import ExecutionEventSSE
-from faultmaven.domain.events import ExecutionEvent, ExecutionEventType
+from faultmaven.modules.agent.domain.events.execution_events import ExecutionEvent, ExecutionEventType
 
 
 # ============================================================

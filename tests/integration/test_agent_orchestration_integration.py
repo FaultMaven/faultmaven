@@ -11,11 +11,11 @@ from typing import Any, AsyncGenerator, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
+from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
 from faultmaven.services.investigation_session_service import APIInvestigationSessionService
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.models.agent_execution import (
+from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,
@@ -23,16 +23,16 @@ from faultmaven.models.agent_execution import (
 )
 from faultmaven.models.case import Case, CaseStatus, CaseSeverity
 from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceArtifactType
-from faultmaven.domain.events import (
+from faultmaven.modules.agent.domain.events.execution_events import (
     ExecutionEvent,
     ExecutionEventType,
     LLMEvent,
     LLMEventType,
     ToolCall,
 )
-from faultmaven.tools.agent_tools import AgentToolRegistry
-from faultmaven.tools.read_file_tool import ReadFileTool
-from faultmaven.tools.list_evidence_tool import ListEvidenceTool, SearchKnowledgeTool
+from faultmaven.modules.agent.tools.agent_tools import AgentToolRegistry
+from faultmaven.modules.agent.tools.read_file_tool import ReadFileTool
+from faultmaven.modules.agent.tools.list_evidence_tool import ListEvidenceTool, SearchKnowledgeTool
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.exceptions import (
     NotFoundError,

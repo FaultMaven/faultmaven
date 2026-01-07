@@ -19,7 +19,7 @@ from faultmaven.integrations.llm_client import (
     BaseLLMClient,
     create_llm_client,
 )
-from faultmaven.domain.events import (
+from faultmaven.modules.agent.domain.events.execution_events import (
     LLMEvent,
     LLMEventType,
     Message,

@@ -7,7 +7,7 @@ Design Reference:
 - docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from faultmaven.models.investigation import InvestigationPhase, PHASE_OODA_WEIGHTS
+from faultmaven.modules.agent.domain.models.investigation import InvestigationPhase, PHASE_OODA_WEIGHTS
 from faultmaven.core.investigation.iteration_strategy import PhaseIterationStrategy
 
 

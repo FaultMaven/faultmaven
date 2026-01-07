@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import json
 
 from faultmaven.services.agentic.management.state_manager import AgentStateManager
-from faultmaven.models.agentic import (
+from faultmaven.modules.agent.domain.models.agentic import (
     AgentExecutionState,
     ConversationMemory,
     ExecutionPlan

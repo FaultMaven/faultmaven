@@ -19,7 +19,7 @@ from faultmaven.core.investigation.ooda_engine import (
     AdaptiveIntensityController,
     create_ooda_engine,
 )
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
     InvestigationPhase,
     OODAStep,

@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from faultmaven.tools.knowledge_base import KnowledgeBaseTool
+from faultmaven.modules.agent.tools.knowledge_base import KnowledgeBaseTool
 
 
 class TestKnowledgeBaseTool:

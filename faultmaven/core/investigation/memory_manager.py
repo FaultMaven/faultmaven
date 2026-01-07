@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 import json
 
-from faultmaven.models.investigation import (
+from faultmaven.modules.agent.domain.models.investigation import (
     HierarchicalMemory,
     MemorySnapshot,
     OODAIteration,

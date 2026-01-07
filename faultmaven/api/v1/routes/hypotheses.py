@@ -44,7 +44,7 @@ from faultmaven.api.v1.dependencies import (
     get_tenant_provider,
 )
 from faultmaven.providers.tenancy.base import TenantProvider
-from faultmaven.services.domain.investigation_orchestrator import InvestigationOrchestrator
+from faultmaven.modules.agent.domain.services.investigation_orchestrator import InvestigationOrchestrator
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import (
     ValidationException,

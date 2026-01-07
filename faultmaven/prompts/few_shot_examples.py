@@ -11,7 +11,7 @@ that integrate with the intelligent prompt system.
 
 from typing import List, Dict, Optional
 from faultmaven.models.api import ResponseType
-from faultmaven.models.agentic import QueryIntent
+from faultmaven.modules.agent.domain.models.agentic import QueryIntent
 
 # =============================================================================
 # OPTIMIZED PATTERN TEMPLATES (Phase 3 - Token Efficiency)

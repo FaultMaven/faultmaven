@@ -31,13 +31,13 @@ from faultmaven.infrastructure.persistence.database_case_repository import Datab
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InMemoryInvestigationSessionRepository,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     InMemoryAgentExecutionRepository,
 )
 from faultmaven.services.investigation_session_service import APIInvestigationSessionService
 from faultmaven.models.case import Case, CaseStatus, InvestigationStrategy
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
+from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
 
 
 # ============================================================

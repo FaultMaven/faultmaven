@@ -9,7 +9,7 @@ Design Reference:
 - docs/architecture/investigation-phases-and-ooda-integration.md (v3.0 Phase 1)
 """
 
-from faultmaven.models.investigation import InvestigationState, AnomalyFrame
+from faultmaven.modules.agent.domain.models.investigation import InvestigationState, AnomalyFrame
 
 
 def get_routing_confirmation_prompt(

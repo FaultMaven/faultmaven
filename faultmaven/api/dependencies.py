@@ -240,7 +240,7 @@ async def get_agent_orchestration_service(
             ):
                 yield event
     """
-    from faultmaven.services.agent_orchestration_service import AgentOrchestrationService
+    from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
     return factory.create_agent_orchestration_service()
 
 

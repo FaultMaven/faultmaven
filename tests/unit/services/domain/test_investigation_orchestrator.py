@@ -21,7 +21,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime, timezone
 
-from faultmaven.services.domain.investigation_orchestrator import InvestigationOrchestrator
+from faultmaven.modules.agent.domain.services.investigation_orchestrator import InvestigationOrchestrator
 from faultmaven.exceptions import (
     ValidationException,
     NotFoundError,
