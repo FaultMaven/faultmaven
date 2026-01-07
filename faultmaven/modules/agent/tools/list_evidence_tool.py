@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.tools.agent_tools import AgentTool, ToolContext, agent_tool_registry
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +282,7 @@ class SearchKnowledgeTool(AgentTool):
 def register_list_evidence_tool() -> None:
     """Register the list_evidence tool with the agent tool registry."""
     try:
-        agent_tool_registry.register(ListEvidenceTool())
+        tool_registry.register(ListEvidenceTool())
     except ValueError:
         # Already registered
         pass
@@ -291,7 +291,7 @@ def register_list_evidence_tool() -> None:
 def register_search_knowledge_tool() -> None:
     """Register the search_knowledge tool with the agent tool registry."""
     try:
-        agent_tool_registry.register(SearchKnowledgeTool())
+        tool_registry.register(SearchKnowledgeTool())
     except ValueError:
         # Already registered
         pass
@@ -299,7 +299,7 @@ def register_search_knowledge_tool() -> None:
 
 def register_all_agent_tools() -> None:
     """Register all agent tools with the agent tool registry."""
-    from faultmaven.tools.read_file_tool import register_read_file_tool
+    from faultmaven.modules.agent.tools.read_file_tool import register_read_file_tool
 
     register_read_file_tool()
     register_list_evidence_tool()

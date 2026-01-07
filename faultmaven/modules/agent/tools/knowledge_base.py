@@ -36,7 +36,7 @@ from pydantic import PrivateAttr
 
 from faultmaven.core.knowledge.ingestion import KnowledgeIngester
 from faultmaven.models.interfaces import BaseTool as IBaseTool, ToolResult
-from faultmaven.tools.registry import register_tool
+from faultmaven.modules.agent.tools.registry import register_tool
 
 
 @register_tool("knowledge_base")

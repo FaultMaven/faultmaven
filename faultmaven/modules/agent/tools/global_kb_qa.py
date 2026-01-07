@@ -5,8 +5,8 @@ Wrapper for DocumentQATool configured for Global Knowledge Base.
 Provides system-wide access to troubleshooting documentation and best practices.
 """
 
-from faultmaven.tools.document_qa_tool import DocumentQATool
-from faultmaven.tools.kb_configs.global_kb_config import GlobalKBConfig
+from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
+from faultmaven.modules.agent.tools.kb_configs.global_kb_config import GlobalKBConfig
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.infrastructure.llm.router import LLMRouter
 

@@ -11,7 +11,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.tools.agent_tools import AgentTool, ToolContext, agent_tool_registry
+from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -372,7 +372,7 @@ class ReadFileTool(AgentTool):
 def register_read_file_tool() -> None:
     """Register the read_file tool with the agent tool registry."""
     try:
-        agent_tool_registry.register(ReadFileTool())
+        tool_registry.register(ReadFileTool())
     except ValueError:
         # Already registered
         pass

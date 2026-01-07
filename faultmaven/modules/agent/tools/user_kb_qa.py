@@ -5,8 +5,8 @@ Wrapper for DocumentQATool configured for User Knowledge Base.
 Provides user-scoped access to personal runbooks and procedures.
 """
 
-from faultmaven.tools.document_qa_tool import DocumentQATool
-from faultmaven.tools.kb_configs.user_kb_config import UserKBConfig
+from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
+from faultmaven.modules.agent.tools.kb_configs.user_kb_config import UserKBConfig
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.infrastructure.llm.router import LLMRouter
 

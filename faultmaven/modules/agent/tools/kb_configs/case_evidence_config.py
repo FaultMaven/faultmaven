@@ -5,7 +5,7 @@ KB-specific configuration for case-scoped forensic evidence (logs, configs, metr
 """
 
 from typing import Optional
-from faultmaven.tools.kb_config import KBConfig
+from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 
 class CaseEvidenceConfig(KBConfig):

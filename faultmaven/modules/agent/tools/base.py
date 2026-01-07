@@ -282,4 +282,4 @@ class AgentToolRegistry:
 
 
 # Global agent tool registry instance
-agent_tool_registry = AgentToolRegistry()
+tool_registry = AgentToolRegistry()

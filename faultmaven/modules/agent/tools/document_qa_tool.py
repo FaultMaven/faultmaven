@@ -16,7 +16,7 @@ import logging
 from langchain.tools import BaseTool as LangChainBaseTool
 from pydantic import PrivateAttr
 
-from faultmaven.tools.kb_config import KBConfig
+from faultmaven.modules.agent.tools.kb_config import KBConfig
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.config.settings import get_settings
