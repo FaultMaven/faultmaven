@@ -1,6 +1,6 @@
 """Unit Tests for Agent Tool Registry (TASK-015)
 
-This module tests the AgentToolRegistry, AgentTool base class,
+This module tests the ToolRegistry, AgentTool base class,
 and tool infrastructure for agent execution.
 
 Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
@@ -10,11 +10,13 @@ from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
-from faultmaven.modules.agent.tools.agent_tools import (
+from faultmaven.modules.agent.tools.base import (
     AgentTool,
-    AgentToolRegistry,
     ToolContext,
-    agent_tool_registry,
+)
+from faultmaven.modules.agent.tools.registry import (
+    ToolRegistry,
+    tool_registry,
 )
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.domain.events.execution_events import Tool
@@ -82,8 +84,8 @@ def sample_context():
 
 @pytest.fixture
 def fresh_registry():
-    """Create a fresh AgentToolRegistry for testing."""
-    return AgentToolRegistry()
+    """Create a fresh ToolRegistry for testing."""
+    return ToolRegistry()
 
 
 # =============================================================================
@@ -208,12 +210,12 @@ class TestAgentTool:
 
 
 # =============================================================================
-# Test: AgentToolRegistry
+# Test: ToolRegistry
 # =============================================================================
 
 
-class TestAgentToolRegistry:
-    """Tests for AgentToolRegistry."""
+class TestToolRegistry:
+    """Tests for ToolRegistry."""
 
     def test_registry_register_tool(self, fresh_registry):
         """Test registering a tool."""
@@ -388,16 +390,16 @@ class TestAgentToolRegistry:
 
 
 class TestGlobalRegistry:
-    """Tests for the global agent_tool_registry."""
+    """Tests for the global tool_registry."""
 
     def test_global_registry_exists(self):
         """Test that global registry exists."""
-        assert agent_tool_registry is not None
-        assert isinstance(agent_tool_registry, AgentToolRegistry)
+        assert tool_registry is not None
+        assert isinstance(tool_registry, ToolRegistry)
 
     def test_global_registry_has_methods(self):
         """Test that global registry has expected methods."""
-        assert hasattr(agent_tool_registry, "register")
-        assert hasattr(agent_tool_registry, "get")
-        assert hasattr(agent_tool_registry, "list_tools")
-        assert hasattr(agent_tool_registry, "execute_tool")
+        assert hasattr(tool_registry, "register")
+        assert hasattr(tool_registry, "get")
+        assert hasattr(tool_registry, "list_tools")
+        assert hasattr(tool_registry, "execute_tool")

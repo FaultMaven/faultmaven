@@ -5,7 +5,7 @@ KB-specific configuration for system-wide documentation and best practices.
 """
 
 from typing import Optional
-from faultmaven.tools.kb_config import KBConfig
+from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 
 class GlobalKBConfig(KBConfig):

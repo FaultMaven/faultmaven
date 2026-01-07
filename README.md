@@ -210,21 +210,19 @@ See **[Installation Guide](docs/installation/INSTALLATION_GUIDE.md)** for compre
 ```
 faultmaven/                  # Single repository
 ├── faultmaven/              # Backend application
-│   ├── api/                # FastAPI routers and dependencies
-│   ├── services/           # Business logic orchestration
-│   │   ├── domain/         # Domain services
-│   │   └── agentic/        # Investigation framework
-│   ├── core/               # Core domain logic
-│   │   ├── agent/          # AI reasoning engine
-│   │   ├── knowledge/      # Knowledge base operations
-│   │   └── processing/     # Data classification
-│   ├── infrastructure/     # External integrations
-│   │   ├── llm/           # Multi-provider LLM routing
-│   │   ├── security/      # PII redaction
-│   │   └── persistence/   # Redis, ChromaDB, databases
-│   ├── tools/             # Agent tools (KB, web search)
-│   ├── models/            # Data models and interfaces
-│   └── main.py            # FastAPI application
+│   ├── main.py             # FastAPI app + lifespan startup
+│   ├── api/                # Shared API plumbing (middleware, shared deps)
+│   ├── modules/            # Vertical slices (feature modules)
+│   │   ├── auth/           # Users, sessions, orgs/teams, RBAC
+│   │   ├── case/           # Cases + investigation sessions
+│   │   ├── evidence/       # Evidence artifacts + storage adapter
+│   │   ├── knowledge/      # Embeddings + vector search + knowledge items
+│   │   ├── agent/          # Investigation orchestration + tools
+│   │   └── report/         # Report generation/recommendations
+│   ├── config/             # settings.py (single env-read point) + presets
+│   ├── container/          # DI container wiring
+│   ├── infrastructure/     # Shared adapters (persistence/observability/etc.)
+│   └── providers/          # Provider abstractions (tenancy, etc.)
 ├── tests/                  # Test suite (341 tests)
 ├── docs/                   # Documentation
 ├── scripts/               # Utility scripts

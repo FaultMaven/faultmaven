@@ -5,7 +5,7 @@ KB-specific configuration for user-scoped personal runbooks and procedures.
 """
 
 from typing import Optional
-from faultmaven.tools.kb_config import KBConfig
+from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 
 class UserKBConfig(KBConfig):
