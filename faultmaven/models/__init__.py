@@ -114,7 +114,7 @@ from faultmaven.modules.agent.domain.models.agentic import SuggestedAction
 from .case import UrgencyLevel
 
 # Import session model
-from .session import Session
+from faultmaven.modules.session.domain.models.session import Session
 
 # Utility functions are now imported from legacy.py
 

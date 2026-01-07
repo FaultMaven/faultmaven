@@ -10,7 +10,7 @@ Features:
 - Support for both in-memory and database backends
 
 Usage:
-    from faultmaven.infrastructure.persistence.session_repository import (
+    from faultmaven.modules.session.infrastructure.persistence.repository import (
         DatabaseSessionRepository,
         InMemorySessionRepository,
     )
@@ -35,7 +35,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import select, delete, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.models.session import Session
+from faultmaven.modules.session.domain.models.session import Session
 from faultmaven.infrastructure.persistence.models import SessionModel
 
 logger = logging.getLogger(__name__)

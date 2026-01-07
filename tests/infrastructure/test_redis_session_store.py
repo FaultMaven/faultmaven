@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Dict, Optional
 from datetime import datetime
 
-from faultmaven.infrastructure.persistence.redis_session_store import RedisSessionStore
+from faultmaven.modules.session.infrastructure.persistence.stores.redis import RedisSessionStore
 from faultmaven.models.interfaces import ISessionStore
 
 

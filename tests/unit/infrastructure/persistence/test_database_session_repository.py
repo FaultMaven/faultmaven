@@ -20,12 +20,12 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from faultmaven.infrastructure.persistence.models import Base, SessionModel
-from faultmaven.infrastructure.persistence.session_repository import (
+from faultmaven.modules.session.infrastructure.persistence.repository import (
     DatabaseSessionRepository,
     InMemorySessionRepository,
     SessionRepositoryException,
 )
-from faultmaven.models.session import Session
+from faultmaven.modules.session.domain.models.session import Session
 
 
 # ============================================================

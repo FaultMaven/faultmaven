@@ -35,7 +35,7 @@ from faultmaven.infrastructure.persistence.case_repository import (
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.infrastructure.persistence.session_repository import (
+from faultmaven.modules.session.infrastructure.persistence.repository import (
     SessionRepository,
     DatabaseSessionRepository,
     InMemorySessionRepository,

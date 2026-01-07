@@ -16,8 +16,8 @@ import time
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
-from faultmaven.models.session import Session
-from faultmaven.infrastructure.persistence.session_repository import DatabaseSessionRepository
+from faultmaven.modules.session.domain.models.session import Session
+from faultmaven.modules.session.infrastructure.persistence.repository import DatabaseSessionRepository
 
 
 @pytest.mark.benchmark

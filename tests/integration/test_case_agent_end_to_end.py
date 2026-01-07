@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 
 from faultmaven.services.agentic.orchestration.agent_service import AgentService
-from faultmaven.services.domain.session_service import SessionService
+from faultmaven.modules.session.domain.services.session_service import SessionService
 from faultmaven.models import QueryRequest, AgentResponse, ResponseType, ViewState, Source, SourceType, SessionContext
 from faultmaven.models.case import (
     Case,

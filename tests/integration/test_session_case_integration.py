@@ -27,7 +27,7 @@ from faultmaven.infrastructure.persistence.database import reset_engine
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.infrastructure.persistence.session_repository import (
+from faultmaven.modules.session.infrastructure.persistence.repository import (
     DatabaseSessionRepository,
     InMemorySessionRepository,
 )
@@ -43,7 +43,7 @@ from faultmaven.models.case import (
     CaseStatus,
     InvestigationStrategy,
 )
-from faultmaven.models.session import Session
+from faultmaven.modules.session.domain.models.session import Session
 
 
 # ============================================================

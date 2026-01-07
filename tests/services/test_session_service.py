@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
 
-from faultmaven.services.domain.session_service import SessionService
+from faultmaven.modules.session.domain.services.session_service import SessionService
 from faultmaven.models import AgentState, SessionContext
 # SessionManager has been replaced by SessionService architecture
 # from faultmaven.session_management import SessionManager

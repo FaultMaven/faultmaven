@@ -4,7 +4,7 @@ This module defines the Session domain model for tracking user sessions
 and their association with cases.
 
 Usage:
-    from faultmaven.models.session import Session
+    from faultmaven.modules.session.domain.models.session import Session
 
     session = Session(
         session_id="550e8400-e29b-41d4-a716-446655440000",

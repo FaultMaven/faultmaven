@@ -19,7 +19,7 @@ from faultmaven.services.agentic.management.context_manager import (
     ContextBudget,
     ConversationSummarizer,
 )
-from faultmaven.services.domain.session_service import SessionService
+from faultmaven.modules.session.domain.services.session_service import SessionService
 from faultmaven.models.case import (
     CaseStatus,
 )

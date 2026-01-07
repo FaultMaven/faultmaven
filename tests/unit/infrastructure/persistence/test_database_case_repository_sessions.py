@@ -22,7 +22,7 @@ from faultmaven.infrastructure.persistence.models import Base, SessionModel
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.infrastructure.persistence.session_repository import (
+from faultmaven.modules.session.infrastructure.persistence.repository import (
     DatabaseSessionRepository,
 )
 from faultmaven.infrastructure.persistence.case_repository import RepositoryException
@@ -31,7 +31,7 @@ from faultmaven.models.case import (
     CaseStatus,
     InvestigationStrategy,
 )
-from faultmaven.models.session import Session
+from faultmaven.modules.session.domain.models.session import Session
 
 
 # ============================================================

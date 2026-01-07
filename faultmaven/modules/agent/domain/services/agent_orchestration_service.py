@@ -28,7 +28,7 @@ from uuid import uuid4
 
 from faultmaven.services.base import BaseService
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.models.agent_execution import (
+from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,

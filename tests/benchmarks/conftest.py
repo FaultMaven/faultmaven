@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
-from faultmaven.infrastructure.persistence.session_repository import DatabaseSessionRepository
+from faultmaven.modules.session.infrastructure.persistence.repository import DatabaseSessionRepository
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
 )

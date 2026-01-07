@@ -16,7 +16,7 @@ import pytest
 from datetime import datetime, timezone
 from typing import Optional
 
-from faultmaven.services.domain.session_service import SessionService
+from faultmaven.modules.session.domain.services.session_service import SessionService
 from faultmaven.services.domain.case_service import CaseService
 from faultmaven.models.common import SessionContext
 from faultmaven.models.case import Case
