@@ -80,7 +80,7 @@ FIREWORKS_API_KEY=fw-your-fireworks-key-here
 
 ```bash
 # Start FaultMaven
-python -m faultmaven
+python -m faultmaven.main
 
 # Or use uvicorn directly (recommended for development)
 uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000

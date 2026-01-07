@@ -2,8 +2,6 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python Version](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/downloads/)
-[![Tests](https://img.shields.io/badge/Tests-341%20passing-brightgreen)](https://github.com/FaultMaven/faultmaven)
-[![Coverage](https://img.shields.io/badge/Coverage-71%25-brightgreen)](https://github.com/FaultMaven/faultmaven)
 [![Architecture](https://img.shields.io/badge/Architecture-Monolith-blue)](docs/architecture/)
 
 **AI-Powered Troubleshooting Copilot for SRE and DevOps Teams**
@@ -14,12 +12,14 @@ FaultMaven correlates your live telemetry with your runbooks, docs, and past fix
 
 ## 🚀 Quick Start
 
-Deploy FaultMaven Core locally in under 5 minutes.
+Run FaultMaven locally as a Python process in a few minutes.
 
 ### Prerequisites
 
 - **Python 3.11+** installed
-- **LLM API Key** (OpenAI, Anthropic, or other [supported providers](#4-multi-llm-support))
+- **An LLM provider**:
+  - **Cloud LLM**: OpenAI / Anthropic / Fireworks (requires API key)
+  - **Local LLM**: Ollama (optional, no API key)
 
 ### Installation
 
@@ -40,7 +40,7 @@ cp .env.example .env
 # Edit .env and add your OPENAI_API_KEY or ANTHROPIC_API_KEY
 
 # 5. Start FaultMaven
-python -m faultmaven
+uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Visit **<http://localhost:8000>** - you're running FaultMaven!
@@ -51,7 +51,10 @@ Visit **<http://localhost:8000>** - you're running FaultMaven!
 - **API Docs**: <http://localhost:8000/docs> - Interactive API documentation
 - **Health Check**: <http://localhost:8000/health> - Service health status
 
-> **Troubleshooting:** See [deploy/troubleshooting/](deploy/troubleshooting/) for common issues and solutions
+> **Troubleshooting:** See `docs/runbooks/` and `docs/how-to/operational-configuration.md` for common issues and solutions.
+
+> **Note (Local defaults)**: Local is defined by **who controls infrastructure** (you). Defaults are minimal:
+> SQLite + local filesystem evidence storage + in-memory cache/sessions + Chroma (single-node). Postgres/Redis/hosted-Chroma are optional self-host upgrades and still “Local”.
 
 ---
 
@@ -244,12 +247,7 @@ pytest --cov=faultmaven tests/
 
 ### Contributing
 
-See [Development Setup](docs/development/setup.md) for:
-
-- Local development setup
-- Development patterns
-- Testing guidelines
-- Code quality standards
+See `docs/CONTRIBUTING.md` (includes development setup).
 
 ---
 
@@ -307,14 +305,12 @@ For detailed configuration and adding new providers, see: [How to Add Providers]
 cp .env.example .env
 # Edit .env with your API keys
 
-# 2. Start with Docker Compose
-docker compose up -d
+# 2. Build the Docker image
+docker build -t faultmaven:local .
 
-# 3. Verify services
-docker ps
+# 3. Run the container
+docker run --rm -p 8000:8000 --env-file .env faultmaven:local
 ```
-
-Database migrations run automatically on startup. No manual initialization needed!
 
 ### Local Development
 
@@ -331,13 +327,13 @@ cp .env.example .env
 # Edit .env with your API keys
 
 # 4. Start FaultMaven
-python -m faultmaven
+uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 For detailed deployment instructions, see:
 
-- **[Deployment Guide](docs/operations/deployment.md)** - Production deployment
-- **[Development Setup](docs/development/setup.md)** - Local development environment
+- **[Installation Guide](docs/installation/INSTALLATION_GUIDE.md)** - Installation and local infra options
+- **[Contributing](docs/CONTRIBUTING.md)** - Development setup and contribution guidelines
 
 ---
 
@@ -392,16 +388,13 @@ Web-based dashboard for proactive management:
 **Essential Documents:**
 
 - **[architecture/](docs/architecture/)** - System architecture and design
-- **[Development Setup](docs/development/setup.md)** - Development setup and workflows
-- **[Deployment Guide](docs/operations/deployment.md)** - Production deployment guide
 - **[API Documentation](docs/api/)** - Auto-generated OpenAPI specs
 
 **Additional Resources:**
 
-- [Testing Strategy](docs/development/testing-strategy.md) - Testing approach
-- [Security Guidelines](docs/operations/security.md) - Security guidelines
-- [Troubleshooting](docs/operations/troubleshooting.md) - Common issues and solutions
-- [FAQ](docs/reference/faq.md) - Frequently asked questions
+- [Testing Standards](docs/testing/REBUILT_TESTING_STANDARDS.md) - Testing approach and quality gates
+- [Security](docs/security/) - Security design and implementation guides
+- [Runbooks](docs/runbooks/) - Operational runbooks for common issues
 
 See [docs/README.md](docs/README.md) for complete documentation organized by role and task.
 
@@ -415,7 +408,7 @@ Apache 2.0 - See [LICENSE](LICENSE) for details.
 
 ## How to Contribute
 
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for:
+We welcome contributions! See `docs/CONTRIBUTING.md` for:
 
 - **What to work on** - Priority-ordered critical gaps and high-priority tasks
 - **Development setup** - How to get started
@@ -424,8 +417,7 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 
 **Quick Links**:
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) - **Start here for contribution guidelines**
-- [Development Setup](docs/development/setup.md) - Development environment setup
+- [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) - **Start here for contribution guidelines**
 - [architecture/](docs/architecture/) - System architecture
 
 ---
