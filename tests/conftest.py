@@ -354,33 +354,32 @@ def test_config():
 @pytest.fixture
 def sample_case():
     """Sample case for testing case persistence functionality."""
-    from faultmaven.models.case import Case, CaseStatus, CasePriority, ParticipantRole
-    
-    case = Case(
-        case_id="test-case-123",
+    from faultmaven.models.case import Case, CaseStatus
+
+    return Case(
+        case_id="case_test12345678",
         title="Test Case for Persistence",
         description="A sample case for testing case persistence features",
-        owner_id="test-user-456",
-        status=CaseStatus.ACTIVE,
-        priority=CasePriority.MEDIUM,
-        tags=["test", "persistence", "sample"]
+        user_id="test-user-456",
+        organization_id="test-org-123",
+        status=CaseStatus.CONSULTING,
     )
-    case.add_participant("test-user-456", ParticipantRole.OWNER)
-    return case
 
 
 @pytest.fixture
 def sample_case_message():
     """Sample case message for testing."""
-    from faultmaven.models.case import CaseMessage, MessageType
-    
+    from faultmaven.models.api_models import CaseMessage
+    from datetime import datetime, timezone
+
     return CaseMessage(
         message_id="test-msg-123",
-        case_id="test-case-123",
-        session_id="test-session-789",
-        author_id="test-user-456",
-        message_type=MessageType.USER_QUERY,
+        case_id="case_test12345678",
+        turn_number=1,
+        role="user",
         content="This is a test message for case persistence testing",
+        created_at=datetime.now(timezone.utc),
+        author_id="test-user-456",
         metadata={"test": True, "source": "pytest"}
     )
 
@@ -388,66 +387,38 @@ def sample_case_message():
 @pytest.fixture
 def sample_case_participant():
     """Sample case participant for testing."""
-    from faultmaven.models.case import CaseParticipant, ParticipantRole
-    
+    from faultmaven.models.api_models import CaseParticipant
+    from datetime import datetime, timezone
+
     return CaseParticipant(
         user_id="test-collaborator-789",
-        role=ParticipantRole.COLLABORATOR,
+        role="collaborator",
+        added_at=datetime.now(timezone.utc),
         added_by="test-user-456"
-    )
-
-
-@pytest.fixture
-def sample_case_context():
-    """Sample case context for testing."""
-    from faultmaven.models.case import CaseContext
-    
-    return CaseContext(
-        problem_description="Test problem for case persistence",
-        system_info={
-            "os": "Linux",
-            "version": "Ubuntu 20.04",
-            "memory": "16GB"
-        },
-        environment_details={
-            "env": "test",
-            "region": "local"
-        },
-        uploaded_files=["test.log", "error.log"],
-        log_snippets=[
-            {
-                "timestamp": "2024-01-01T12:00:00Z",
-                "level": "ERROR",
-                "message": "Test error message"
-            }
-        ],
-        error_patterns=["connection timeout", "memory allocation error"],
-        blast_radius_defined=True,
-        timeline_established=False,
-        hypothesis_formulated=["Network connectivity issue", "Memory leak"],
-        root_causes=["Insufficient connection pool"],
-        recommendations=["Increase pool size", "Add monitoring"]
     )
 
 
 @pytest.fixture
 def sample_case_summary():
     """Sample case summary for testing list operations."""
-    from faultmaven.models.case import CaseSummary, CaseStatus, CasePriority
-    from datetime import datetime
-    
+    from faultmaven.models.api_models import CaseSummary
+    from faultmaven.models.case import CaseStatus
+    from datetime import datetime, timezone
+
     return CaseSummary(
-        case_id="test-case-123",
+        case_id="case_test12345678",
         title="Test Case Summary",
-        status=CaseStatus.ACTIVE,
-        priority=CasePriority.MEDIUM,
-        owner_id="test-user-456",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-        last_activity_at=datetime.utcnow(),
-        message_count=5,
-        participant_count=2,
-        tags=["test", "summary"]
+        status=CaseStatus.CONSULTING,
+        user_id="test-user-456",
+        organization_id="test-org-123",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        last_activity_at=datetime.now(timezone.utc),
+        current_turn=0,
+        milestones_completed=0,
+        total_milestones=8,
+        is_stuck=False,
+        is_terminal=False,
     )
 
 
@@ -555,91 +526,93 @@ def case_search_request_data():
 @pytest.fixture
 def multiple_cases():
     """Multiple sample cases for testing list and search operations."""
-    from faultmaven.models.case import Case, CaseStatus, CasePriority, ParticipantRole
-    from datetime import datetime, timedelta
-    
+    from faultmaven.models.case import Case, CaseStatus
+
     cases = []
     for i in range(5):
         case = Case(
-            case_id=f"test-case-{i+1:03d}",
+            case_id=f"case_{i+1:012x}",
             title=f"Test Case {i+1}",
             description=f"Description for test case {i+1}",
-            owner_id=f"test-user-{i+1}",
-            status=CaseStatus.ACTIVE if i % 2 == 0 else CaseStatus.INVESTIGATING,
-            priority=CasePriority.MEDIUM if i % 3 == 0 else CasePriority.HIGH,
-            created_at=datetime.utcnow() - timedelta(days=i),
-            tags=[f"tag-{i}", "test"]
+            user_id=f"test-user-{i+1}",
+            organization_id="test-org-123",
+            status=CaseStatus.CONSULTING if i % 2 == 0 else CaseStatus.INVESTIGATING,
         )
-        case.add_participant(f"test-user-{i+1}", ParticipantRole.OWNER)
         cases.append(case)
-    
+
     return cases
 
 
 @pytest.fixture
 def case_with_conversation():
     """Sample case with a full conversation for testing context generation."""
-    from faultmaven.models.case import Case, CaseMessage, MessageType, ParticipantRole
-    from datetime import datetime, timedelta
-    
-    case = Case(
-        case_id="test-case-conversation",
+    from faultmaven.models.case import Case, CaseStatus
+    from datetime import datetime, timezone, timedelta
+    from uuid import uuid4
+
+    now = datetime.now(timezone.utc)
+    case_id = "case_conversation1"
+
+    # Create messages as dicts per case-storage-design.md Section 4.7
+    messages = [
+        {
+            "message_id": str(uuid4()),
+            "case_id": case_id,
+            "turn_number": 1,
+            "role": "user",
+            "content": "My application is crashing when users try to login",
+            "created_at": (now - timedelta(minutes=60)).isoformat(),
+        },
+        {
+            "message_id": str(uuid4()),
+            "case_id": case_id,
+            "turn_number": 1,
+            "role": "assistant",
+            "content": "I'll help you troubleshoot the login crashes. Can you provide the error logs?",
+            "created_at": (now - timedelta(minutes=59)).isoformat(),
+        },
+        {
+            "message_id": str(uuid4()),
+            "case_id": case_id,
+            "turn_number": 2,
+            "role": "user",
+            "content": "Here are the application logs from the past 24 hours",
+            "created_at": (now - timedelta(minutes=55)).isoformat(),
+        },
+        {
+            "message_id": str(uuid4()),
+            "case_id": case_id,
+            "turn_number": 2,
+            "role": "assistant",
+            "content": "I can see authentication service timeouts in the logs. Let me check the database connection pool.",
+            "created_at": (now - timedelta(minutes=50)).isoformat(),
+        },
+        {
+            "message_id": str(uuid4()),
+            "case_id": case_id,
+            "turn_number": 3,
+            "role": "user",
+            "content": "I've restarted the auth service but the issue persists",
+            "created_at": (now - timedelta(minutes=30)).isoformat(),
+        },
+        {
+            "message_id": str(uuid4()),
+            "case_id": case_id,
+            "turn_number": 3,
+            "role": "assistant",
+            "content": "The database connection pool seems to be exhausted. Try increasing the pool size from 10 to 50 connections.",
+            "created_at": (now - timedelta(minutes=25)).isoformat(),
+        }
+    ]
+
+    return Case(
+        case_id=case_id,
         title="Case with Full Conversation",
         description="Testing conversation context generation",
-        owner_id="test-user-456"
+        user_id="test-user-456",
+        organization_id="test-org-123",
+        status=CaseStatus.INVESTIGATING,
+        messages=messages,
+        message_count=len(messages),
+        current_turn=3,
     )
-    case.add_participant("test-user-456", ParticipantRole.OWNER)
-    
-    # Add conversation messages
-    messages = [
-        CaseMessage(
-            case_id=case.case_id,
-            session_id="test-session-1",
-            author_id="test-user-456",
-            message_type=MessageType.USER_QUERY,
-            content="My application is crashing when users try to login",
-            timestamp=datetime.utcnow() - timedelta(minutes=60)
-        ),
-        CaseMessage(
-            case_id=case.case_id,
-            session_id="test-session-1",
-            message_type=MessageType.AGENT_RESPONSE,
-            content="I'll help you troubleshoot the login crashes. Can you provide the error logs?",
-            timestamp=datetime.utcnow() - timedelta(minutes=59)
-        ),
-        CaseMessage(
-            case_id=case.case_id,
-            session_id="test-session-1",
-            author_id="test-user-456",
-            message_type=MessageType.DATA_UPLOAD,
-            content="Here are the application logs from the past 24 hours",
-            timestamp=datetime.utcnow() - timedelta(minutes=55)
-        ),
-        CaseMessage(
-            case_id=case.case_id,
-            session_id="test-session-1",
-            message_type=MessageType.AGENT_RESPONSE,
-            content="I can see authentication service timeouts in the logs. Let me check the database connection pool.",
-            timestamp=datetime.utcnow() - timedelta(minutes=50)
-        ),
-        CaseMessage(
-            case_id=case.case_id,
-            session_id="test-session-2",
-            author_id="test-user-456",
-            message_type=MessageType.USER_QUERY,
-            content="I've restarted the auth service but the issue persists",
-            timestamp=datetime.utcnow() - timedelta(minutes=30)
-        ),
-        CaseMessage(
-            case_id=case.case_id,
-            session_id="test-session-2",
-            message_type=MessageType.AGENT_RESPONSE,
-            content="The database connection pool seems to be exhausted. Try increasing the pool size from 10 to 50 connections.",
-            timestamp=datetime.utcnow() - timedelta(minutes=25)
-        )
-    ]
-    
-    for message in messages:
-        case.add_message(message)
-    
-    return case

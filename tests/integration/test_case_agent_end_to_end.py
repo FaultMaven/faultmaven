@@ -17,9 +17,9 @@ from faultmaven.models import QueryRequest, AgentResponse, ResponseType, ViewSta
 from faultmaven.models.case import (
     Case,
     CaseStatus,
+    CaseSeverity,
     MessageType,
 )
-from faultmaven.models import CaseSeverity as CasePriority  # Backward compat alias
 from faultmaven.models.api import User, Case as APICase
 from faultmaven.exceptions import ValidationException, ServiceException
 from faultmaven.infrastructure.observability.tracing import OpikTracer
@@ -108,8 +108,8 @@ def mock_case_service():
         case = Mock()
         case.case_id = case_id
         case.title = f"Test Case {case_id}"
-        case.status = CaseStatus.ACTIVE
-        case.priority = CasePriority.MEDIUM
+        case.status = CaseStatus.CONSULTING
+        case.priority = CaseSeverity.MEDIUM
         case.owner_id = user_id or "test-user"
         case.message_count = 0
         case.created_at = datetime.utcnow()

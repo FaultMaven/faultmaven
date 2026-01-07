@@ -876,58 +876,51 @@ class DIContainer(BaseDIContainer):
         """Create a minimal case service for testing environments"""
         from datetime import datetime
         import uuid
-        from faultmaven.models.case import Case, CaseStatus, CasePriority
-        
+        from faultmaven.models.case import Case, CaseStatus
+
         class MinimalCaseService:
             def __init__(self):
                 self.cases = {}  # Store cases in memory for testing
                 self.case_messages = {}  # Store messages per case: {case_id: [messages]}
-                
-            async def create_case(self, title=None, description=None, owner_id=None, session_id=None, initial_message=None, initial_query=None, priority=None, user_id=None, metadata=None):
-                case_id = str(uuid.uuid4())
-                
+
+            async def create_case(self, title=None, description=None, owner_id=None, session_id=None, initial_message=None, initial_query=None, priority=None, user_id=None, organization_id=None, metadata=None):
+                # Generate case_id matching required pattern ^case_[a-f0-9]{12}$
+                case_id = f"case_{uuid.uuid4().hex[:12]}"
+
                 # Create case with proper Case model structure
                 # Default to "anonymous" if no owner specified (API contract compliance)
-                final_owner_id = user_id or owner_id or "anonymous"
-                
+                final_user_id = user_id or owner_id or "anonymous"
+                final_org_id = organization_id or "default-org"
+
                 # Phase 2: Handle initial_message transactionally
                 current_time = datetime.now(timezone.utc)
                 message_count = 0
-                
+
                 # Phase 2: If initial_message provided, set message_count=1 and update timestamp
                 if initial_message and initial_message.strip():
                     message_count = 1
                     current_time = datetime.now(timezone.utc)  # Refresh timestamp for message creation
-                
-                # Phase 3: Handle auto-title generation - set title_manually_set flag
+
+                # Phase 3: Handle auto-title generation
                 provided_title = title or "New Chat"
-                title_manually_set = bool(title and title.strip() and title.strip() != "New Chat")  # True if user explicitly provided a non-default title
-                
+
                 # Phase 3: Auto-title generation after first committed message
-                # Debug: Check if conditions are met
-                should_auto_title = (initial_message and initial_message.strip() and 
-                    provided_title == "New Chat" and not title_manually_set)
-                
+                should_auto_title = (initial_message and initial_message.strip() and
+                    provided_title == "New Chat")
+
                 if should_auto_title:
                     # Generate auto-title: chat-<UTC ISO 8601 Z>
                     provided_title = f"chat-{current_time.isoformat()}Z"
-                
+
                 case = Case(
                     case_id=case_id,
                     title=provided_title,
                     description=description or "",
-                    status=CaseStatus.CONSULTING,  # Use enum value
-                    priority=CasePriority(priority) if priority else CasePriority.MEDIUM,  # Use enum value
-                    owner_id=final_owner_id,
+                    user_id=final_user_id,
+                    organization_id=final_org_id,
+                    status=CaseStatus.CONSULTING,
                     message_count=message_count,
-                    created_at=current_time,
-                    updated_at=current_time,
-                    title_manually_set=title_manually_set
                 )
-                
-                # Store session relationship in metadata for tracking
-                if session_id:
-                    case.metadata["session_id"] = session_id
                 
                 self.cases[case_id] = case
                 
@@ -1391,9 +1384,6 @@ class DIContainer(BaseDIContainer):
                                 f"Invalid case status '{status_value}'. Valid statuses: {valid_statuses}"
                             )
                         case.status = CaseStatus(status_value)
-                if 'priority' in updates:
-                    case.priority = CasePriority(updates['priority']) if updates['priority'] else case.priority
-                
                 # Always update timestamp when any field is modified
                 case.updated_at = current_time
                 

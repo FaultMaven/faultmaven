@@ -9,7 +9,7 @@ from uuid import UUID
 from fastapi import UploadFile
 
 from faultmaven.modules.evidence.domain.models import (
-    Evidence,
+    EvidenceArtifact,
     EvidenceListFilter,
     EvidenceLinkRequest,
 )
@@ -37,7 +37,7 @@ class EvidenceService:
         description: Optional[str] = None,
         tags: Optional[List[str]] = None,
         case_id: Optional[UUID] = None,
-    ) -> Evidence:
+    ) -> EvidenceArtifact:
         """Upload evidence file.
 
         Args:
@@ -48,7 +48,7 @@ class EvidenceService:
             case_id: Optional case to auto-link
 
         Returns:
-            Evidence: Created evidence record
+            EvidenceArtifact: Created evidence record
         """
         # Store file
         storage_path = await self.storage.store_file(
@@ -73,20 +73,20 @@ class EvidenceService:
         logger.info(f"Evidence {evidence.id} uploaded: {file.filename}")
         return evidence
 
-    async def get_evidence(self, evidence_id: UUID) -> Optional[Evidence]:
+    async def get_evidence(self, evidence_id: UUID) -> Optional[EvidenceArtifact]:
         """Get evidence by ID.
 
         Args:
             evidence_id: Evidence UUID
 
         Returns:
-            Evidence or None if not found
+            EvidenceArtifact or None if not found
         """
         return await self.repository.get(evidence_id)
 
     async def list_evidence(
         self, filters: EvidenceListFilter
-    ) -> tuple[List[Evidence], int]:
+    ) -> tuple[List[EvidenceArtifact], int]:
         """List evidence with filters.
 
         Args:
@@ -121,7 +121,7 @@ class EvidenceService:
 
     async def link_to_case(
         self, evidence_id: UUID, case_id: UUID
-    ) -> Evidence:
+    ) -> EvidenceArtifact:
         """Link evidence to a case.
 
         Args:

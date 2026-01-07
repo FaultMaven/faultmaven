@@ -23,8 +23,7 @@ from faultmaven.prompts.investigation.phase1_routing_prompts import (
     parse_user_routing_response,
 )
 from faultmaven.prompts.investigation.phase3_structured_output import (
-    get_structured_output_schema_prompt,
-    get_structured_output_example,
+    get_phase3_structured_output_template,
 )
 from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationState,
@@ -366,35 +365,26 @@ class TestPhase1RoutingPrompts:
 class TestPhase3StructuredOutput:
     """Test Phase 3 structured output prompts"""
 
-    def test_structured_output_schema_prompt(self):
-        """Test structured output schema prompt"""
-        prompt = get_structured_output_schema_prompt()
+    def test_phase3_structured_output_template(self):
+        """Test Phase 3 structured output template"""
+        template = get_phase3_structured_output_template()
 
-        assert prompt is not None
-        assert "json" in prompt.lower()
-        assert "required_evidence" in prompt
-        assert "priority" in prompt.lower()
-        assert "acquisition_guidance" in prompt.lower()
-        assert "2-4 hypotheses" in prompt or "2-5 evidence items" in prompt
+        assert template is not None
+        assert "json" in template.lower()
+        assert "required_evidence" in template
+        assert "priority" in template.lower()
+        assert "acquisition_guidance" in template.lower()
+        # Template includes examples and requirements
+        assert "2-4 hypotheses" in template or "2-5 evidence items" in template
+        assert "hypotheses" in template
+        # Should contain JSON structure
+        assert "{" in template and "}" in template
 
-    def test_structured_output_example(self):
-        """Test structured output example"""
-        example = get_structured_output_example()
-
-        assert example is not None
-        assert "hypotheses" in example
-        # Should be valid JSON-like structure
-        assert "{" in example and "}" in example
-        assert "required_evidence" in example
-        assert "priority" in example
-        assert "critical" in example.lower() or "important" in example.lower()
-
-    def test_example_has_all_required_fields(self):
-        """Test example contains all required fields"""
-        example = get_structured_output_example()
+    def test_template_has_all_required_fields(self):
+        """Test template contains all required fields in examples"""
+        template = get_phase3_structured_output_template()
 
         required_fields = [
-            "hypothesis_id",
             "statement",
             "likelihood",
             "category",
@@ -402,11 +392,11 @@ class TestPhase3StructuredOutput:
             "priority",
             "source_type",
             "query_pattern",
-            "interpretation_guidance",
+            "interpretation",
         ]
 
         for field in required_fields:
-            assert field in example, f"Missing required field: {field}"
+            assert field in template, f"Missing required field: {field}"
 
 
 class TestPromptIntegration:

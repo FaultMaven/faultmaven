@@ -26,16 +26,17 @@ from fastapi import status
 from faultmaven.main import app
 from faultmaven.models.case import (
     Case as CaseEntity,
+    CaseStatus,
+    CaseSeverity,
+    MessageType,
+    ParticipantRole
+)
+from faultmaven.models.api_models import (
     CaseCreateRequest,
     CaseUpdateRequest,
-    CaseShareRequest,
     CaseSearchRequest,
     CaseListFilter,
     CaseSummary,
-    CaseStatus,
-    CasePriority,
-    MessageType,
-    ParticipantRole
 )
 from faultmaven.models.api import Case, CaseResponse, ErrorResponse, ErrorDetail
 from faultmaven.models.interfaces_case import ICaseService
@@ -94,18 +95,22 @@ def sample_case():
 @pytest.fixture
 def sample_case_summary():
     """Fixture providing sample case summary"""
+    from faultmaven.models.api_models import CaseSummary
+    from datetime import timezone
     return CaseSummary(
-        case_id="case-123",
+        case_id="case_test12345678",
         title="Test API Case",
-        status=CaseStatus.ACTIVE,
-        priority=CasePriority.MEDIUM,
-        owner_id="user-456",
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-        last_activity_at=datetime.utcnow(),
-        message_count=5,
-        participant_count=1,
-        tags=["api", "test"]
+        status=CaseStatus.CONSULTING,
+        user_id="user-456",
+        organization_id="test-org-123",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        last_activity_at=datetime.now(timezone.utc),
+        current_turn=0,
+        milestones_completed=0,
+        total_milestones=8,
+        is_stuck=False,
+        is_terminal=False,
     )
 
 
