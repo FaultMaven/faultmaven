@@ -16,7 +16,7 @@ from faultmaven.models.evidence import (
     EvidenceRequest,
     CaseStatus as EvidenceCaseStatus,
 )
-from faultmaven.models.investigation import InvestigationStrategy
+from faultmaven.modules.agent.domain.models.investigation import InvestigationStrategy
 
 # --- Enumerations for Explicit Contracts ---
 

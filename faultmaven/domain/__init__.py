@@ -4,7 +4,9 @@ This module contains domain entities, events, and value objects for the
 agent orchestration and investigation workflows.
 """
 
-from faultmaven.domain.events import (
+# Backward compatibility - Events moved to modules/agent/domain/events/
+# TODO: Remove after full migration complete (Phase 4)
+from faultmaven.modules.agent.domain.events.execution_events import (
     ExecutionEvent,
     ExecutionEventType,
     LLMEvent,
@@ -12,6 +14,9 @@ from faultmaven.domain.events import (
     AgentContext,
     Message,
     MessageRole,
+    ToolCall,
+    ToolResult,
+    Tool,
 )
 
 __all__ = [
