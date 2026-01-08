@@ -70,58 +70,17 @@ def _is_test_environment() -> bool:
         
     return False
 
-# Import API routes
-# NOTE: Most routes moved to modules or faultmaven/api/routes/
-# data -> modules/case (data ingestion)
-# knowledge -> modules/knowledge/api/routes.py
-# session -> modules/auth (session management)
-# auth -> faultmaven/api/routes/auth.py
-
-# Import case routes (always available in production)
-try:
-    from .api.v1.routes import case
-    CASE_ROUTES_AVAILABLE = True
-except ImportError:
-    CASE_ROUTES_AVAILABLE = False
-    case = None
-    logger.warning("Case routes not available")
-
-# Import user KB routes
-try:
-    from .api.v1.routes import user_kb
-    USER_KB_ROUTES_AVAILABLE = True
-except ImportError:
-    USER_KB_ROUTES_AVAILABLE = False
-    user_kb = None
-    logger.warning("User KB routes not available")
-
-# Import jobs routes
-try:
-    from .api.v1.routes import jobs
-    JOBS_ROUTES_AVAILABLE = True
-except ImportError:
-    JOBS_ROUTES_AVAILABLE = False
-    jobs = None
-    logger.warning("Jobs routes not available")
-
-# Import organization and team routes
-try:
-    from .api.v1.routes import organizations, teams
-    ORG_TEAM_ROUTES_AVAILABLE = True
-except ImportError:
-    ORG_TEAM_ROUTES_AVAILABLE = False
-    organizations = None
-    teams = None
-    logger.warning("Organization/Team routes not available")
-
-# Import reports routes (TASK-024)
-try:
-    from .api.v1.routes import reports
-    REPORTS_ROUTES_AVAILABLE = True
-except ImportError:
-    REPORTS_ROUTES_AVAILABLE = False
-    reports = None
-    logger.warning("Reports routes not available")
+# Import API routes from modules
+# All routes now in modules following vertical slice architecture
+from .modules.agent.api.routes import router as agent_router
+from .modules.auth.api.auth import router as auth_router
+from .modules.auth.api.organizations import router as organizations_router
+from .modules.auth.api.session import router as session_router
+from .modules.auth.api.teams import router as teams_router
+from .modules.case.api.routes import router as case_router
+from .modules.evidence.api.routes import router as evidence_router
+from .modules.knowledge.api.routes import router as knowledge_router
+from .modules.report.api.routes import router as report_router
 
 from .infrastructure.observability.tracing import init_opik_tracing
 from .api.middleware.logging import LoggingMiddleware
@@ -598,69 +557,33 @@ setup_middleware()
 # REMOVED: auth.router - moved to faultmaven/api/routes/auth.py
 # REMOVED: agent.router - replaced by case routes with real AgentService integration
 
-# Case persistence routes (conditionally included)
-if CASE_ROUTES_AVAILABLE and case:
-    app.include_router(case.router, prefix="/api/v1", tags=["case_persistence"])
-    logger.info("✅ Case persistence endpoints added")
+# Register all module routers
+app.include_router(agent_router, prefix="/api/v1")
+logger.info("✅ Agent endpoints added")
 
-# User KB routes
-if USER_KB_ROUTES_AVAILABLE and user_kb:
-    app.include_router(user_kb.router, prefix="/api/v1", tags=["user_kb"])
-    logger.info("✅ User KB endpoints added")
+app.include_router(auth_router, prefix="/api/v1")
+logger.info("✅ Auth endpoints added")
 
-# Jobs management routes
-if JOBS_ROUTES_AVAILABLE and jobs:
-    app.include_router(jobs.router, prefix="/api/v1", tags=["job_management"])
-    logger.info("✅ Job management endpoints added")
+app.include_router(case_router, prefix="/api/v1")
+logger.info("✅ Case endpoints added")
 
-# Organization management routes
-if ORG_TEAM_ROUTES_AVAILABLE and organizations:
-    app.include_router(organizations.router, prefix="/api/v1", tags=["organizations"])
-    logger.info("✅ Organization management endpoints added")
+app.include_router(evidence_router, prefix="/api/v1")
+logger.info("✅ Evidence endpoints added")
 
-# Team management routes
-if ORG_TEAM_ROUTES_AVAILABLE and teams:
-    app.include_router(teams.router, prefix="/api/v1", tags=["teams"])
-    logger.info("✅ Team management endpoints added")
+app.include_router(knowledge_router, prefix="/api/v1")
+logger.info("✅ Knowledge endpoints added")
 
-# Report management routes (TASK-024)
-if REPORTS_ROUTES_AVAILABLE and reports:
-    app.include_router(reports.router, prefix="/api/v1", tags=["reports"])
-    logger.info("✅ Report management endpoints added")
+app.include_router(organizations_router, prefix="/api/v1")
+logger.info("✅ Organization endpoints added")
 
-# Hypothesis & Solution management routes (TASK-026)
-try:
-    from .api.v1.routes import hypotheses
-    HYPOTHESES_ROUTES_AVAILABLE = True
-except ImportError:
-    HYPOTHESES_ROUTES_AVAILABLE = False
-    hypotheses = None
-    logger.warning("Hypotheses routes not available")
+app.include_router(report_router, prefix="/api/v1")
+logger.info("✅ Report endpoints added")
 
-if HYPOTHESES_ROUTES_AVAILABLE and hypotheses:
-    app.include_router(hypotheses.router, prefix="/api/v1", tags=["hypotheses", "solutions"])
-    logger.info("✅ Hypothesis & Solution management endpoints added")
+app.include_router(session_router, prefix="/api/v1")
+logger.info("✅ Session endpoints added")
 
-# Session Messages & Agent Chat routes (TASK-027)
-try:
-    from .api.v1.routes import messages
-    MESSAGES_ROUTES_AVAILABLE = True
-except ImportError:
-    MESSAGES_ROUTES_AVAILABLE = False
-    messages = None
-    logger.warning("Messages routes not available")
-
-if MESSAGES_ROUTES_AVAILABLE and messages:
-    app.include_router(messages.router, prefix="/api/v1", tags=["messages", "agent_chat"])
-    logger.info("✅ Session Messages & Agent Chat endpoints added")
-
-# Evidence module routes (PR #46b)
-try:
-    from .modules.evidence.api.routes import router as evidence_router
-    app.include_router(evidence_router, prefix="/api/v1", tags=["evidence"])
-    logger.info("✅ Evidence management endpoints added")
-except ImportError as e:
-    logger.warning(f"Evidence routes not available: {e}")
+app.include_router(teams_router, prefix="/api/v1")
+logger.info("✅ Team endpoints added")
 
 # Prometheus metrics endpoint (PR #5 - observability neutrality)
 # Only mounted when METRICS_EXPORTER=prometheus_http
@@ -766,14 +689,7 @@ async def debug_llm_providers():
         }
 
 # Modular monolith pivot: keep only core endpoints; advanced routes disabled
-
-# Protection system monitoring endpoints
-try:
-    from .api.v1.routes import protection
-    app.include_router(protection.router, prefix="/api/v1", tags=["protection"])
-    logger.info("✅ Protection monitoring endpoints added")
-except Exception as e:
-    logger.warning(f"Failed to add protection monitoring endpoints: {e}")
+# Protection monitoring is now handled by middleware and health endpoints
 
 
 

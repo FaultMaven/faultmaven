@@ -78,7 +78,7 @@ async def get_case_service() -> Optional[ICaseService]:
 
 async def get_investigation_service():
     """Get InvestigationService instance from container (v2.0 milestone-based)"""
-    from ...services.domain.investigation_service import InvestigationService
+    from ...modules.agent.domain.services.investigation_service import InvestigationService
     service = container.get_investigation_service()
     if service is None:
         raise HTTPException(
@@ -90,7 +90,7 @@ async def get_investigation_service():
 
 async def get_investigation_orchestrator():
     """Get InvestigationOrchestrator instance from container (TASK-026)"""
-    from ...services.domain.investigation_orchestrator import InvestigationOrchestrator
+    from ...modules.agent.domain.services.investigation_orchestrator import InvestigationOrchestrator
     orchestrator = container.get_investigation_orchestrator()
     if orchestrator is None:
         raise HTTPException(
