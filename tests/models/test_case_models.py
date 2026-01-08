@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     # Core models
     Case,
     CaseStatus,

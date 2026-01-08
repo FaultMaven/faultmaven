@@ -23,7 +23,7 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.models.case import Case, CaseStatus
+from faultmaven.modules.case.domain.models import Case, CaseStatus
 from faultmaven.modules.agent.domain.events.execution_events import (
     AgentContext,
     ExecutionEvent,
@@ -33,7 +33,7 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     Message,
     ToolCall,
 )
-from faultmaven.modules.agent.tools.agent_tools import AgentToolRegistry, ToolContext
+from faultmaven.modules.agent.tools.base import AgentToolRegistry, ToolContext
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.exceptions import (
     NotFoundError,

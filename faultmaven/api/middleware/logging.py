@@ -17,7 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
 from faultmaven.infrastructure.logging.config import get_logger
-from faultmaven.container import DIContainer
+from faultmaven.container import BaseDIContainer
 
 
 logger = get_logger(__name__)
@@ -326,8 +326,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         """
         try:
             # Get SessionService from a DI container instance.
-            # Using DIContainer() allows tests to patch DIContainer.__new__ and inject a mock.
-            container_instance = DIContainer()
+            # Using BaseDIContainer() allows tests to patch BaseDIContainer.__new__ and inject a mock.
+            container_instance = BaseDIContainer()
             session_service = container_instance.get_session_service()
             
             # Look up session (non-validating to avoid exceptions)

@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationProgress,

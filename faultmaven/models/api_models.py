@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from faultmaven.models.case import Case, CaseStatus, InvestigationStage
+from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStage
 
 
 # ============================================================

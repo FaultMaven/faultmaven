@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 from fastapi import status
 
 from faultmaven.main import app
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     UploadedFile,

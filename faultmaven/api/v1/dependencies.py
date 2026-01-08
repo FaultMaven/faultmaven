@@ -12,7 +12,7 @@ Key Features:
 - Request validation dependencies
 """
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from fastapi import Depends, HTTPException, Request
 
@@ -21,16 +21,20 @@ from ...models import SessionContext
 from ...models.interfaces_case import ICaseService
 from ...models.interfaces_report import IReportStore
 from ...models.interfaces import IJobService
-from ...services import DataService, SessionService
-from ...modules.knowledge.domain.services.knowledge_service import KnowledgeService
+# Lazy import to avoid circular dependency - DataService, SessionService, KnowledgeService imported in functions or TYPE_CHECKING
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
 from ...services.preprocessing import PreprocessingService
 from ...providers.tenancy.base import TenantProvider
 
+# Type hints for lazy imports
+if TYPE_CHECKING:
+    from ...services import DataService, SessionService
+    from ...modules.knowledge.domain.services.knowledge_service import KnowledgeService
+
 
 # Service Dependencies
 
-async def get_session_service() -> SessionService:
+async def get_session_service():
     """Get SessionService instance from container"""
     return container.get_session_service()
 
@@ -78,7 +82,7 @@ async def get_case_service() -> Optional[ICaseService]:
 
 async def get_investigation_service():
     """Get InvestigationService instance from container (v2.0 milestone-based)"""
-    from ...services.domain.investigation_service import InvestigationService
+    from ...modules.agent.domain.services.investigation_service import InvestigationService
     service = container.get_investigation_service()
     if service is None:
         raise HTTPException(
@@ -90,7 +94,7 @@ async def get_investigation_service():
 
 async def get_investigation_orchestrator():
     """Get InvestigationOrchestrator instance from container (TASK-026)"""
-    from ...services.domain.investigation_orchestrator import InvestigationOrchestrator
+    from ...modules.agent.domain.services.investigation_orchestrator import InvestigationOrchestrator
     orchestrator = container.get_investigation_orchestrator()
     if orchestrator is None:
         raise HTTPException(
@@ -225,12 +229,12 @@ async def get_orchestration_service():
     return container.get_orchestration_service()
 
 
-async def get_data_service() -> DataService:
+async def get_data_service():
     """Get DataService instance from container"""
     return container.get_data_service()
 
 
-async def get_knowledge_service() -> KnowledgeService:
+async def get_knowledge_service() -> "KnowledgeService":
     """Get KnowledgeService instance from container"""
     return container.get_knowledge_service()
 
@@ -256,7 +260,7 @@ async def get_protection_system(request: Request):
 
 async def get_current_session(
     session_id: str,
-    session_service: SessionService = Depends(get_session_service),
+    session_service = Depends(get_session_service),
 ) -> SessionContext:
     """
     Get and validate current session
@@ -279,7 +283,7 @@ async def get_current_session(
 
 async def get_optional_session(
     session_id: Optional[str] = None,
-    session_service: SessionService = Depends(get_session_service),
+    session_service = Depends(get_session_service),
 ) -> Optional[SessionContext]:
     """
     Get optional session if ID provided

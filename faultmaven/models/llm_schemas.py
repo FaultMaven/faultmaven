@@ -441,7 +441,7 @@ def get_response_schema_for_status(status: str) -> type[BaseModel]:
     Returns:
         Response schema class
     """
-    from faultmaven.models.case import CaseStatus
+    from faultmaven.modules.case.domain.models import CaseStatus
 
     schema_map = {
         CaseStatus.CONSULTING: ConsultingResponse,

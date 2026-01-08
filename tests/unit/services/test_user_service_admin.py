@@ -33,14 +33,14 @@ from faultmaven.services.user_service import UserService
 
 
 @pytest.fixture
-def mock_user_store():
-    """Create mock user store."""
-    store = MagicMock()
-    store.list_users = AsyncMock()
-    store.get_user = AsyncMock()
-    store.update_user = AsyncMock()
-    store.create_user = AsyncMock()
-    return store
+def mock_user_repo():
+    """Create mock user repository."""
+    repo = MagicMock()
+    repo.list_users = AsyncMock()
+    repo.get_user = AsyncMock()
+    repo.update_user = AsyncMock()
+    repo.create_user = AsyncMock()
+    return repo
 
 
 @pytest.fixture
@@ -52,10 +52,10 @@ def mock_auth_service():
 
 
 @pytest.fixture
-def user_service(mock_user_store, mock_auth_service):
+def user_service(mock_user_repo, mock_auth_service):
     """Create UserService with mocked dependencies."""
     return UserService(
-        user_store=mock_user_store,
+        user_repo=mock_user_repo,
         auth_service=mock_auth_service,
     )
 
@@ -138,10 +138,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_returns_all_users_in_organization(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Returns all users in organization."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -149,14 +149,14 @@ class TestListUsers:
 
         assert len(users) == 4
         assert total == 4
-        mock_user_store.list_users.assert_called_once()
+        mock_user_repo.list_users.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_pagination_works(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Pagination works (limit, offset)."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -169,10 +169,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_pagination_offset(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Pagination offset works correctly."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -185,10 +185,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_filter_by_is_active_true(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Filter by is_active=True returns only active users."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -201,10 +201,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_filter_by_is_active_false(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Filter by is_active=False returns only inactive users."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -217,10 +217,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_filter_by_role_admin(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Filter by role 'admin' returns only admins."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -233,10 +233,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_filter_by_role_member(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Filter by role 'member' returns only members."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -249,10 +249,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_filter_by_role_viewer(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Filter by role 'viewer' returns only viewers."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -265,10 +265,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_search_by_email_case_insensitive(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Search by email (case-insensitive, partial match)."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -280,10 +280,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_search_by_full_name_case_insensitive(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Search by full_name (case-insensitive, partial match)."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -295,10 +295,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_search_partial_match(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Search with partial match works."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -309,10 +309,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_combined_filters(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Combined filters (active + role + search) work."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -328,7 +328,7 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_results_sorted_by_created_at_desc(
-        self, user_service, mock_user_store
+        self, user_service, mock_user_repo
     ):
         """Results sorted by created_at DESC (newest first)."""
         now = datetime.now(timezone.utc)
@@ -350,7 +350,7 @@ class TestListUsers:
             is_active=True,
             roles=["member"],
         )
-        mock_user_store.list_users.return_value = [old_user, new_user]
+        mock_user_repo.list_users.return_value = [old_user, new_user]
 
         users, total = await user_service.list_users(organization_id="org-123")
 
@@ -359,10 +359,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_returns_tuple(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Returns (users, total_count) tuple."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         result = await user_service.list_users(organization_id="org-123")
 
@@ -373,10 +373,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_empty_list_when_no_matches(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Empty list when no matches."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -388,10 +388,10 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     async def test_limit_capped_at_100(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Limit is capped at 100."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -412,10 +412,10 @@ class TestGetUserWithMetadata:
 
     @pytest.mark.asyncio
     async def test_returns_user_with_all_fields(
-        self, user_service, mock_user_store, admin_user
+        self, user_service, mock_user_repo, admin_user
     ):
         """Returns user with all fields."""
-        mock_user_store.get_user.return_value = admin_user
+        mock_user_repo.get_user.return_value = admin_user
 
         result = await user_service.get_user_with_metadata(
             user_id="user-1",
@@ -431,10 +431,10 @@ class TestGetUserWithMetadata:
 
     @pytest.mark.asyncio
     async def test_includes_derived_permissions_from_roles(
-        self, user_service, mock_user_store, admin_user
+        self, user_service, mock_user_repo, admin_user
     ):
         """Includes derived permissions from roles."""
-        mock_user_store.get_user.return_value = admin_user
+        mock_user_repo.get_user.return_value = admin_user
 
         result = await user_service.get_user_with_metadata(
             user_id="user-1",
@@ -448,10 +448,10 @@ class TestGetUserWithMetadata:
 
     @pytest.mark.asyncio
     async def test_includes_metadata(
-        self, user_service, mock_user_store, admin_user
+        self, user_service, mock_user_repo, admin_user
     ):
         """Includes metadata (login_count, failed_attempts)."""
-        mock_user_store.get_user.return_value = admin_user
+        mock_user_repo.get_user.return_value = admin_user
 
         result = await user_service.get_user_with_metadata(
             user_id="user-1",
@@ -464,10 +464,10 @@ class TestGetUserWithMetadata:
 
     @pytest.mark.asyncio
     async def test_returns_none_if_user_not_found(
-        self, user_service, mock_user_store
+        self, user_service, mock_user_repo
     ):
         """Returns None if user not found."""
-        mock_user_store.get_user.return_value = None
+        mock_user_repo.get_user.return_value = None
 
         result = await user_service.get_user_with_metadata(
             user_id="nonexistent",
@@ -487,10 +487,10 @@ class TestActivateUser:
 
     @pytest.mark.asyncio
     async def test_activates_deactivated_user(
-        self, user_service, mock_user_store, inactive_user
+        self, user_service, mock_user_repo, inactive_user
     ):
         """Activates deactivated user (is_active=False → True)."""
-        mock_user_store.get_user.return_value = inactive_user
+        mock_user_repo.get_user.return_value = inactive_user
         inactive_user_copy = DevUser(
             user_id=inactive_user.user_id,
             username=inactive_user.username,
@@ -500,7 +500,7 @@ class TestActivateUser:
             is_active=True,  # Activated
             roles=inactive_user.roles,
         )
-        mock_user_store.update_user.return_value = inactive_user_copy
+        mock_user_repo.update_user.return_value = inactive_user_copy
 
         result = await user_service.activate_user(
             user_id="user-4",
@@ -508,14 +508,14 @@ class TestActivateUser:
         )
 
         assert result.is_active is True
-        mock_user_store.update_user.assert_called_once()
+        mock_user_repo.update_user.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_not_found_error_if_user_doesnt_exist(
-        self, user_service, mock_user_store
+        self, user_service, mock_user_repo
     ):
         """NotFoundError if user doesn't exist."""
-        mock_user_store.get_user.return_value = None
+        mock_user_repo.get_user.return_value = None
 
         with pytest.raises(NotFoundError):
             await user_service.activate_user(
@@ -525,10 +525,10 @@ class TestActivateUser:
 
     @pytest.mark.asyncio
     async def test_conflict_error_if_already_active(
-        self, user_service, mock_user_store, admin_user
+        self, user_service, mock_user_repo, admin_user
     ):
         """ConflictError if already active."""
-        mock_user_store.get_user.return_value = admin_user  # Already active
+        mock_user_repo.get_user.return_value = admin_user  # Already active
 
         with pytest.raises(ConflictError) as exc_info:
             await user_service.activate_user(
@@ -549,10 +549,10 @@ class TestDeactivateUser:
 
     @pytest.mark.asyncio
     async def test_deactivates_active_user(
-        self, user_service, mock_user_store, mock_auth_service, member_user
+        self, user_service, mock_user_repo, mock_auth_service, member_user
     ):
         """Deactivates active user (is_active=True → False)."""
-        mock_user_store.get_user.return_value = member_user
+        mock_user_repo.get_user.return_value = member_user
         deactivated_user = DevUser(
             user_id=member_user.user_id,
             username=member_user.username,
@@ -562,7 +562,7 @@ class TestDeactivateUser:
             is_active=False,  # Deactivated
             roles=member_user.roles,
         )
-        mock_user_store.update_user.return_value = deactivated_user
+        mock_user_repo.update_user.return_value = deactivated_user
 
         result = await user_service.deactivate_user(
             user_id="user-2",
@@ -571,14 +571,14 @@ class TestDeactivateUser:
         )
 
         assert result.is_active is False
-        mock_user_store.update_user.assert_called_once()
+        mock_user_repo.update_user.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_revokes_all_jwt_tokens(
-        self, user_service, mock_user_store, mock_auth_service, member_user
+        self, user_service, mock_user_repo, mock_auth_service, member_user
     ):
         """Revokes all JWT tokens (calls AuthService.revoke_user_tokens)."""
-        mock_user_store.get_user.return_value = member_user
+        mock_user_repo.get_user.return_value = member_user
         deactivated_user = DevUser(
             user_id=member_user.user_id,
             username=member_user.username,
@@ -588,7 +588,7 @@ class TestDeactivateUser:
             is_active=False,
             roles=member_user.roles,
         )
-        mock_user_store.update_user.return_value = deactivated_user
+        mock_user_repo.update_user.return_value = deactivated_user
 
         await user_service.deactivate_user(
             user_id="user-2",
@@ -600,10 +600,10 @@ class TestDeactivateUser:
 
     @pytest.mark.asyncio
     async def test_not_found_error_if_user_doesnt_exist(
-        self, user_service, mock_user_store
+        self, user_service, mock_user_repo
     ):
         """NotFoundError if user doesn't exist."""
-        mock_user_store.get_user.return_value = None
+        mock_user_repo.get_user.return_value = None
 
         with pytest.raises(NotFoundError):
             await user_service.deactivate_user(
@@ -614,10 +614,10 @@ class TestDeactivateUser:
 
     @pytest.mark.asyncio
     async def test_authorization_error_if_self_deactivation(
-        self, user_service, mock_user_store, admin_user
+        self, user_service, mock_user_repo, admin_user
     ):
         """AuthorizationError if admin_user_id == user_id (self-deactivation)."""
-        mock_user_store.get_user.return_value = admin_user
+        mock_user_repo.get_user.return_value = admin_user
 
         with pytest.raises(AuthorizationError) as exc_info:
             await user_service.deactivate_user(
@@ -630,10 +630,10 @@ class TestDeactivateUser:
 
     @pytest.mark.asyncio
     async def test_conflict_error_if_already_deactivated(
-        self, user_service, mock_user_store, inactive_user
+        self, user_service, mock_user_repo, inactive_user
     ):
         """ConflictError if already deactivated."""
-        mock_user_store.get_user.return_value = inactive_user
+        mock_user_repo.get_user.return_value = inactive_user
 
         with pytest.raises(ConflictError) as exc_info:
             await user_service.deactivate_user(
@@ -655,10 +655,10 @@ class TestAssignRole:
 
     @pytest.mark.asyncio
     async def test_assigns_admin_role(
-        self, user_service, mock_user_store, mock_auth_service, member_user
+        self, user_service, mock_user_repo, mock_auth_service, member_user
     ):
         """Assigns admin role."""
-        mock_user_store.get_user.return_value = member_user
+        mock_user_repo.get_user.return_value = member_user
         updated_user = DevUser(
             user_id=member_user.user_id,
             username=member_user.username,
@@ -668,7 +668,7 @@ class TestAssignRole:
             is_active=True,
             roles=["admin"],  # New role
         )
-        mock_user_store.update_user.return_value = updated_user
+        mock_user_repo.update_user.return_value = updated_user
 
         result = await user_service.assign_role(
             user_id="user-2",
@@ -681,10 +681,10 @@ class TestAssignRole:
 
     @pytest.mark.asyncio
     async def test_assigns_member_role(
-        self, user_service, mock_user_store, mock_auth_service, viewer_user
+        self, user_service, mock_user_repo, mock_auth_service, viewer_user
     ):
         """Assigns member role."""
-        mock_user_store.get_user.return_value = viewer_user
+        mock_user_repo.get_user.return_value = viewer_user
         updated_user = DevUser(
             user_id=viewer_user.user_id,
             username=viewer_user.username,
@@ -694,7 +694,7 @@ class TestAssignRole:
             is_active=True,
             roles=["member"],  # New role
         )
-        mock_user_store.update_user.return_value = updated_user
+        mock_user_repo.update_user.return_value = updated_user
 
         result = await user_service.assign_role(
             user_id="user-3",
@@ -707,10 +707,10 @@ class TestAssignRole:
 
     @pytest.mark.asyncio
     async def test_assigns_viewer_role(
-        self, user_service, mock_user_store, mock_auth_service, admin_user
+        self, user_service, mock_user_repo, mock_auth_service, admin_user
     ):
         """Assigns viewer role."""
-        mock_user_store.get_user.return_value = admin_user
+        mock_user_repo.get_user.return_value = admin_user
         updated_user = DevUser(
             user_id=admin_user.user_id,
             username=admin_user.username,
@@ -720,7 +720,7 @@ class TestAssignRole:
             is_active=True,
             roles=["viewer"],  # New role
         )
-        mock_user_store.update_user.return_value = updated_user
+        mock_user_repo.update_user.return_value = updated_user
 
         result = await user_service.assign_role(
             user_id="user-1",
@@ -733,10 +733,10 @@ class TestAssignRole:
 
     @pytest.mark.asyncio
     async def test_replaces_existing_roles(
-        self, user_service, mock_user_store, mock_auth_service, member_user
+        self, user_service, mock_user_repo, mock_auth_service, member_user
     ):
         """Replaces existing roles (single role per user)."""
-        mock_user_store.get_user.return_value = member_user
+        mock_user_repo.get_user.return_value = member_user
         updated_user = DevUser(
             user_id=member_user.user_id,
             username=member_user.username,
@@ -746,7 +746,7 @@ class TestAssignRole:
             is_active=True,
             roles=["admin"],
         )
-        mock_user_store.update_user.return_value = updated_user
+        mock_user_repo.update_user.return_value = updated_user
 
         result = await user_service.assign_role(
             user_id="user-2",
@@ -756,15 +756,15 @@ class TestAssignRole:
         )
 
         # Verify the user object passed to update_user has the new role
-        call_args = mock_user_store.update_user.call_args[0][0]
+        call_args = mock_user_repo.update_user.call_args[0][0]
         assert call_args.roles == ["admin"]
 
     @pytest.mark.asyncio
     async def test_revokes_all_jwt_tokens(
-        self, user_service, mock_user_store, mock_auth_service, member_user
+        self, user_service, mock_user_repo, mock_auth_service, member_user
     ):
         """Revokes all JWT tokens (calls AuthService.revoke_user_tokens)."""
-        mock_user_store.get_user.return_value = member_user
+        mock_user_repo.get_user.return_value = member_user
         updated_user = DevUser(
             user_id=member_user.user_id,
             username=member_user.username,
@@ -774,7 +774,7 @@ class TestAssignRole:
             is_active=True,
             roles=["admin"],
         )
-        mock_user_store.update_user.return_value = updated_user
+        mock_user_repo.update_user.return_value = updated_user
 
         await user_service.assign_role(
             user_id="user-2",
@@ -787,10 +787,10 @@ class TestAssignRole:
 
     @pytest.mark.asyncio
     async def test_not_found_error_if_user_doesnt_exist(
-        self, user_service, mock_user_store
+        self, user_service, mock_user_repo
     ):
         """NotFoundError if user doesn't exist."""
-        mock_user_store.get_user.return_value = None
+        mock_user_repo.get_user.return_value = None
 
         with pytest.raises(NotFoundError):
             await user_service.assign_role(
@@ -802,10 +802,10 @@ class TestAssignRole:
 
     @pytest.mark.asyncio
     async def test_authorization_error_if_self_modification(
-        self, user_service, mock_user_store, admin_user
+        self, user_service, mock_user_repo, admin_user
     ):
         """AuthorizationError if admin_user_id == user_id (self-modification)."""
-        mock_user_store.get_user.return_value = admin_user
+        mock_user_repo.get_user.return_value = admin_user
 
         with pytest.raises(AuthorizationError) as exc_info:
             await user_service.assign_role(
@@ -819,10 +819,10 @@ class TestAssignRole:
 
     @pytest.mark.asyncio
     async def test_validation_error_on_invalid_role(
-        self, user_service, mock_user_store, member_user
+        self, user_service, mock_user_repo, member_user
     ):
         """ValidationException on invalid role."""
-        mock_user_store.get_user.return_value = member_user
+        mock_user_repo.get_user.return_value = member_user
 
         with pytest.raises(ValidationException) as exc_info:
             await user_service.assign_role(
@@ -836,10 +836,10 @@ class TestAssignRole:
 
     @pytest.mark.asyncio
     async def test_conflict_error_if_already_has_role(
-        self, user_service, mock_user_store, admin_user
+        self, user_service, mock_user_repo, admin_user
     ):
         """ConflictError if already has this role."""
-        mock_user_store.get_user.return_value = admin_user
+        mock_user_repo.get_user.return_value = admin_user
 
         with pytest.raises(ConflictError) as exc_info:
             await user_service.assign_role(
@@ -862,10 +862,10 @@ class TestRemoveRole:
 
     @pytest.mark.asyncio
     async def test_removes_admin_role_downgrades_to_viewer(
-        self, user_service, mock_user_store, mock_auth_service, admin_user
+        self, user_service, mock_user_repo, mock_auth_service, admin_user
     ):
         """Removes admin role, downgrades to viewer."""
-        mock_user_store.get_user.return_value = admin_user
+        mock_user_repo.get_user.return_value = admin_user
         downgraded_user = DevUser(
             user_id=admin_user.user_id,
             username=admin_user.username,
@@ -875,7 +875,7 @@ class TestRemoveRole:
             is_active=True,
             roles=["viewer"],  # Downgraded
         )
-        mock_user_store.update_user.return_value = downgraded_user
+        mock_user_repo.update_user.return_value = downgraded_user
 
         result = await user_service.remove_role(
             user_id="user-1",
@@ -888,10 +888,10 @@ class TestRemoveRole:
 
     @pytest.mark.asyncio
     async def test_removes_member_role_downgrades_to_viewer(
-        self, user_service, mock_user_store, mock_auth_service, member_user
+        self, user_service, mock_user_repo, mock_auth_service, member_user
     ):
         """Removes member role, downgrades to viewer."""
-        mock_user_store.get_user.return_value = member_user
+        mock_user_repo.get_user.return_value = member_user
         downgraded_user = DevUser(
             user_id=member_user.user_id,
             username=member_user.username,
@@ -901,7 +901,7 @@ class TestRemoveRole:
             is_active=True,
             roles=["viewer"],  # Downgraded
         )
-        mock_user_store.update_user.return_value = downgraded_user
+        mock_user_repo.update_user.return_value = downgraded_user
 
         result = await user_service.remove_role(
             user_id="user-2",
@@ -914,10 +914,10 @@ class TestRemoveRole:
 
     @pytest.mark.asyncio
     async def test_revokes_all_jwt_tokens(
-        self, user_service, mock_user_store, mock_auth_service, admin_user
+        self, user_service, mock_user_repo, mock_auth_service, admin_user
     ):
         """Revokes all JWT tokens."""
-        mock_user_store.get_user.return_value = admin_user
+        mock_user_repo.get_user.return_value = admin_user
         downgraded_user = DevUser(
             user_id=admin_user.user_id,
             username=admin_user.username,
@@ -927,7 +927,7 @@ class TestRemoveRole:
             is_active=True,
             roles=["viewer"],
         )
-        mock_user_store.update_user.return_value = downgraded_user
+        mock_user_repo.update_user.return_value = downgraded_user
 
         await user_service.remove_role(
             user_id="user-1",
@@ -940,10 +940,10 @@ class TestRemoveRole:
 
     @pytest.mark.asyncio
     async def test_not_found_error_if_user_doesnt_exist(
-        self, user_service, mock_user_store
+        self, user_service, mock_user_repo
     ):
         """NotFoundError if user doesn't exist."""
-        mock_user_store.get_user.return_value = None
+        mock_user_repo.get_user.return_value = None
 
         with pytest.raises(NotFoundError):
             await user_service.remove_role(
@@ -955,10 +955,10 @@ class TestRemoveRole:
 
     @pytest.mark.asyncio
     async def test_not_found_error_if_user_doesnt_have_role(
-        self, user_service, mock_user_store, viewer_user
+        self, user_service, mock_user_repo, viewer_user
     ):
         """NotFoundError if user doesn't have this role."""
-        mock_user_store.get_user.return_value = viewer_user
+        mock_user_repo.get_user.return_value = viewer_user
 
         with pytest.raises(NotFoundError):
             await user_service.remove_role(
@@ -970,10 +970,10 @@ class TestRemoveRole:
 
     @pytest.mark.asyncio
     async def test_authorization_error_if_self_modification(
-        self, user_service, mock_user_store, admin_user
+        self, user_service, mock_user_repo, admin_user
     ):
         """AuthorizationError if admin_user_id == user_id (self-modification)."""
-        mock_user_store.get_user.return_value = admin_user
+        mock_user_repo.get_user.return_value = admin_user
 
         with pytest.raises(AuthorizationError) as exc_info:
             await user_service.remove_role(
@@ -987,10 +987,10 @@ class TestRemoveRole:
 
     @pytest.mark.asyncio
     async def test_validation_error_when_removing_viewer_role(
-        self, user_service, mock_user_store, viewer_user
+        self, user_service, mock_user_repo, viewer_user
     ):
         """ValidationException when removing viewer role (minimum privilege)."""
-        mock_user_store.get_user.return_value = viewer_user
+        mock_user_repo.get_user.return_value = viewer_user
 
         with pytest.raises(ValidationException) as exc_info:
             await user_service.remove_role(
@@ -1004,10 +1004,10 @@ class TestRemoveRole:
 
     @pytest.mark.asyncio
     async def test_validation_error_on_invalid_role(
-        self, user_service, mock_user_store, member_user
+        self, user_service, mock_user_repo, member_user
     ):
         """ValidationException on invalid role."""
-        mock_user_store.get_user.return_value = member_user
+        mock_user_repo.get_user.return_value = member_user
 
         with pytest.raises(ValidationException) as exc_info:
             await user_service.remove_role(
@@ -1030,10 +1030,10 @@ class TestListOrganizationUsers:
 
     @pytest.mark.asyncio
     async def test_returns_only_active_users(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Returns only active users (is_active=True)."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_organization_users(
             organization_id="org-123",
@@ -1044,10 +1044,10 @@ class TestListOrganizationUsers:
 
     @pytest.mark.asyncio
     async def test_pagination_works(
-        self, user_service, mock_user_store, sample_users
+        self, user_service, mock_user_repo, sample_users
     ):
         """Pagination works."""
-        mock_user_store.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = sample_users
 
         users, total = await user_service.list_organization_users(
             organization_id="org-123",
@@ -1069,14 +1069,14 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_user_service_without_auth_service(
-        self, mock_user_store, member_user
+        self, mock_user_repo, member_user
     ):
         """UserService works without auth_service (no token revocation)."""
         user_service = UserService(
-            user_store=mock_user_store,
+            user_store=mock_user_repo,
             auth_service=None,  # No auth service
         )
-        mock_user_store.get_user.return_value = member_user
+        mock_user_repo.get_user.return_value = member_user
         deactivated_user = DevUser(
             user_id=member_user.user_id,
             username=member_user.username,
@@ -1086,7 +1086,7 @@ class TestEdgeCases:
             is_active=False,
             roles=member_user.roles,
         )
-        mock_user_store.update_user.return_value = deactivated_user
+        mock_user_repo.update_user.return_value = deactivated_user
 
         # Should not raise even without auth_service
         result = await user_service.deactivate_user(
@@ -1099,7 +1099,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_user_with_none_roles(
-        self, user_service, mock_user_store
+        self, user_service, mock_user_repo
     ):
         """Handles user with None roles (defaults to ['admin'] for dev)."""
         now = datetime.now(timezone.utc)
@@ -1112,7 +1112,7 @@ class TestEdgeCases:
             is_active=True,
             roles=None,  # None roles
         )
-        mock_user_store.list_users.return_value = [user_with_none_roles]
+        mock_user_repo.list_users.return_value = [user_with_none_roles]
 
         users, total = await user_service.list_users(
             organization_id="org-123",

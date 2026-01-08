@@ -35,7 +35,7 @@ def create_case_service(
         return minimal_factory()
 
     try:
-        from faultmaven.services.domain.case_service import CaseService
+        from faultmaven.modules.case.domain.services.case_service import CaseService
 
         service = CaseService(
             case_repository=case_repository,
@@ -206,11 +206,11 @@ def create_data_service(
     settings: FaultMavenSettings,
 ) -> Any:
     """Create data service for data processing and analysis."""
-    from faultmaven.services.domain.data_service import DataService, SimpleStorageBackend
+    from faultmaven.modules.case.domain.services.case_data_ingestion_service import CaseDataIngestionService, SimpleStorageBackend
 
     storage_backend = SimpleStorageBackend(settings=settings)
 
-    return DataService(
+    return CaseDataIngestionService(
         data_classifier=data_classifier,
         log_processor=log_processor,
         sanitizer=sanitizer,
@@ -252,7 +252,7 @@ def create_organization_service(
         return None, None
 
     try:
-        from faultmaven.services.domain.organization_service import OrganizationService
+        from faultmaven.modules.auth.domain.services.organization_service import OrganizationService
         from faultmaven.infrastructure.persistence.organization_repository import PostgreSQLOrganizationRepository
 
         repository = PostgreSQLOrganizationRepository(db_session)
@@ -279,7 +279,7 @@ def create_team_service(
         return None
 
     try:
-        from faultmaven.services.domain.team_service import TeamService
+        from faultmaven.modules.auth.domain.services.team_service import TeamService
         from faultmaven.infrastructure.persistence.team_repository import PostgreSQLTeamRepository
 
         team_repository = PostgreSQLTeamRepository(db_session)

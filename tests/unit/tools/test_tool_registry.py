@@ -19,7 +19,8 @@ from faultmaven.modules.agent.tools.registry import (
     tool_registry,
 )
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.domain.events.execution_events import Tool
+# Import Tool from the correct location used by AgentTool.to_tool()
+from faultmaven.domain.events import Tool
 
 
 # =============================================================================

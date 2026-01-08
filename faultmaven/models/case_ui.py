@@ -12,7 +12,7 @@ from typing import Annotated, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     CaseStatus,
     ConfidenceLevel,
     HypothesisStatus,

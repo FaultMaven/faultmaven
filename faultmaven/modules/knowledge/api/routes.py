@@ -36,12 +36,20 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, R
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.auth import DevUser
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.api.v1.dependencies import get_knowledge_service
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
 from faultmaven.api.v1.role_dependencies import require_admin
 from faultmaven.modules.knowledge.domain.services.knowledge_service import KnowledgeService
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
+
+
+# Local dependency function to avoid circular imports
+# Cannot import from api.v1.dependencies due to circular dependency chain:
+# api.v1.dependencies → services → case → persistence → knowledge → api/routes → api.v1.dependencies
+async def get_knowledge_service() -> KnowledgeService:
+    """Get KnowledgeService instance from container (local implementation)"""
+    from faultmaven.container import container
+    return container.get_knowledge_service()
 
 # Canonical document types (authoritative)
 ALLOWED_DOCUMENT_TYPES = {"playbook", "troubleshooting_guide", "reference", "how_to"}

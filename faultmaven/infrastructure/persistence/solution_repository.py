@@ -40,7 +40,7 @@ from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.models.case import Solution
+from faultmaven.modules.case.domain.models import Solution
 from faultmaven.infrastructure.persistence.models import SolutionModel
 
 logger = logging.getLogger(__name__)

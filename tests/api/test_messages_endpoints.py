@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.models.case import Case, CaseStatus
+from faultmaven.modules.case.domain.models import Case, CaseStatus
 from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.exceptions import NotFoundError, AuthorizationError
 from faultmaven.main import app

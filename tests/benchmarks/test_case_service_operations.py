@@ -34,7 +34,7 @@ from faultmaven.modules.agent.infrastructure.persistence.agent_execution_reposit
     InMemoryAgentExecutionRepository,
 )
 from faultmaven.services.case_service import APICaseService
-from faultmaven.models.case import CaseSeverity
+from faultmaven.modules.case.domain.models import CaseSeverity
 
 
 # ============================================================

@@ -9,7 +9,7 @@ and maintaining clear separation between persistence and presentation layers.
 from typing import List, Optional, Union
 from datetime import datetime, timezone
 from uuid import uuid4
-from faultmaven.models.case import Case as CaseEntity
+from faultmaven.modules.case.domain.models import Case as CaseEntity
 from faultmaven.models.api_models import CaseSummary
 from faultmaven.models.api import Case as CaseAPI
 from faultmaven.utils.serialization import to_json_compatible

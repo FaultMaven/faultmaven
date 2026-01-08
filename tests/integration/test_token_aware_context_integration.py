@@ -20,7 +20,7 @@ from faultmaven.services.agentic.management.context_manager import (
     ConversationSummarizer,
 )
 from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     CaseStatus,
 )
 

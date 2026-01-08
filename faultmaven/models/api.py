@@ -12,10 +12,8 @@ if TYPE_CHECKING:
     from faultmaven.modules.agent.domain.models.agentic import SuggestedAction
 
 # Import evidence-centric models
-from faultmaven.models.evidence import (
-    EvidenceRequest,
-    CaseStatus as EvidenceCaseStatus,
-)
+from faultmaven.models.llm_schemas import EvidenceRequestToAdd as EvidenceRequest
+from faultmaven.modules.case.domain.models import CaseStatus as EvidenceCaseStatus
 from faultmaven.modules.agent.domain.models.investigation import InvestigationStrategy
 
 # --- Enumerations for Explicit Contracts ---

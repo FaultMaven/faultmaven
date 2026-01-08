@@ -490,8 +490,9 @@ class TestAddMember:
     ):
         """Owner can add members with any role."""
         mock_organization_service.get_member_role.side_effect = [
-            ROLE_OWNER,  # Check requester role
-            None,  # Target not already a member
+            ROLE_OWNER,  # _require_org_admin check
+            ROLE_OWNER,  # Get requester role for permission check
+            None,  # Target user not already a member
         ]
         mock_organization_service.get_organization.return_value = sample_organization
         mock_organization_service.list_organization_members.return_value = []
@@ -523,7 +524,8 @@ class TestAddMember:
     ):
         """Admin can add members (not admin role)."""
         mock_organization_service.get_member_role.side_effect = [
-            ROLE_ADMIN,  # Check requester role
+            ROLE_ADMIN,  # _require_org_admin check
+            ROLE_ADMIN,  # Get requester role for permission check
             None,  # Target not already a member
         ]
         mock_organization_service.get_organization.return_value = sample_organization
@@ -595,7 +597,8 @@ class TestAddMember:
         sample_organization.max_members = len(sample_members)
 
         mock_organization_service.get_member_role.side_effect = [
-            ROLE_OWNER,  # Check requester role
+            ROLE_OWNER,  # _require_org_admin check
+            ROLE_OWNER,  # Get requester role for permission check
             None,  # Target not already a member
         ]
         mock_organization_service.get_organization.return_value = sample_organization
@@ -643,7 +646,8 @@ class TestAddMember:
     ):
         """User cannot already be member (raises ConflictError)."""
         mock_organization_service.get_member_role.side_effect = [
-            ROLE_OWNER,  # Check requester role
+            ROLE_OWNER,  # _require_org_admin check
+            ROLE_OWNER,  # Get requester role for permission check
             ROLE_MEMBER,  # Target already a member
         ]
 
@@ -677,8 +681,9 @@ class TestRemoveMember:
     ):
         """Owner can remove any member (except self)."""
         mock_organization_service.get_member_role.side_effect = [
-            ROLE_OWNER,  # Requester is owner
-            ROLE_MEMBER,  # Target is member
+            ROLE_OWNER,  # _require_org_admin check
+            ROLE_MEMBER,  # Get target role
+            ROLE_OWNER,  # Get requester role
         ]
         mock_organization_service.remove_member.return_value = True
 
@@ -697,8 +702,9 @@ class TestRemoveMember:
     ):
         """Admin can remove members (not owner, not other admins)."""
         mock_organization_service.get_member_role.side_effect = [
-            ROLE_ADMIN,  # Requester is admin
-            ROLE_MEMBER,  # Target is member
+            ROLE_ADMIN,  # _require_org_admin check
+            ROLE_MEMBER,  # Get target role
+            ROLE_ADMIN,  # Get requester role
         ]
         mock_organization_service.remove_member.return_value = True
 
@@ -716,8 +722,9 @@ class TestRemoveMember:
     ):
         """Admin cannot remove other admins (raises AuthorizationError)."""
         mock_organization_service.get_member_role.side_effect = [
-            ROLE_ADMIN,  # Requester is admin
-            ROLE_ADMIN,  # Target is also admin
+            ROLE_ADMIN,  # _require_org_admin check
+            ROLE_ADMIN,  # Get target role
+            ROLE_ADMIN,  # Get requester role
         ]
 
         with pytest.raises(AuthorizationError):

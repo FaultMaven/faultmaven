@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from faultmaven.models.case import Case, CaseStatus, InvestigationStrategy
+from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,

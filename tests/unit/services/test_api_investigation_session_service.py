@@ -23,7 +23,7 @@ import pytest
 
 from faultmaven.services.investigation_session_service import APIInvestigationSessionService
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.models.case import Case, CaseStatus, InvestigationStrategy
+from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
 from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
 from faultmaven.exceptions import (
     NotFoundError,

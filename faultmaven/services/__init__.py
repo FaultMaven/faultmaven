@@ -1,27 +1,25 @@
 """Services Package
 
-This package contains the service layer components that orchestrate
-business logic and coordinate between different parts of the system.
+This package contains legacy service layer components and backward compatibility re-exports.
 
-The services are organized into logical groups:
+After module extraction, most services have moved to modules/:
+- CaseService, DataService → modules/case/domain/services/
+- SessionService → modules/auth/domain/services/
+- PlanningService → REMOVED (no longer exists)
+
+Remaining services in this package:
 - agentic/: Complete agentic framework with orchestration, engines, management, and safety
-- domain/: Core business domain services (cases, data, planning)
 - analytics/: ML and analytics services (dashboard, confidence scoring)
 - base.py: Base service class for consistent patterns
 - converters/: Data transformation utilities
-
-Note: SessionService has been moved to modules/auth/domain/services/
-Import AuthSessionService from faultmaven.modules.auth.domain.services.auth_session_service
 """
 
-# Import from new organized structure
+# Import from modules (after module extraction)
 # Note: AgentService import removed to avoid circular dependency
 # Import AgentService directly from faultmaven.services.agentic if needed
-from .domain import (
-    CaseService,
-    DataService,
-    PlanningService
-)
+from faultmaven.modules.case.domain.services.case_service import CaseService
+from faultmaven.modules.case.domain.services.case_data_ingestion_service import CaseDataIngestionService as DataService
+
 from .analytics import (
     AnalyticsDashboardService,
     ConfidenceService
@@ -37,8 +35,7 @@ __all__ = [
     # Domain Services
     "CaseService",
     "SessionService",  # Re-exported from modules/auth
-    "DataService",
-    "PlanningService",
+    "DataService",  # Re-exported as CaseDataIngestionService
     # Analytics Services
     "AnalyticsDashboardService",
     "ConfidenceService",

@@ -17,7 +17,7 @@ from fastapi import status
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app
-from faultmaven.models.case import Case as CaseEntity
+from faultmaven.modules.case.domain.models import Case as CaseEntity
 from faultmaven.models.api import SessionResponse
 
 

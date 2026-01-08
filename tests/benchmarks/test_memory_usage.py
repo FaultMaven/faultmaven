@@ -16,7 +16,7 @@ import os
 import psutil
 import pytest
 
-from faultmaven.models.case import Case, CaseStatus, InvestigationStrategy
+from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
 from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
 
 from .conftest import generate_case_id

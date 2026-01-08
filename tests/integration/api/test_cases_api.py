@@ -28,7 +28,7 @@ from fastapi.testclient import TestClient
 
 from faultmaven.api.app import create_app
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.models.case import Case, CaseSeverity, CaseStatus
+from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseStatus
 
 
 @pytest.fixture

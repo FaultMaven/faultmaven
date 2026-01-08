@@ -45,6 +45,7 @@ dependencies = [
     # Database (SQLite in base, PostgreSQL drivers in enterprise)
     "sqlalchemy>=2.0.0",
     "alembic>=1.13.0",
+    "aiosqlite>=0.19.0",
 
     # Core utilities and validation
     "pydantic>=2.6,<2.10",

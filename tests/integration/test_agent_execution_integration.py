@@ -34,7 +34,7 @@ from faultmaven.infrastructure.persistence.repository_factory import (
     STORAGE_TYPE_INMEMORY,
     STORAGE_TYPE_DATABASE,
 )
-from faultmaven.models.case import Case, CaseStatus, InvestigationStrategy
+from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,

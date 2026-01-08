@@ -7,9 +7,11 @@ from uuid import UUID, uuid4
 
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
+    EvidenceArtifactType,
     EvidenceListFilter,
     EvidenceLinkRequest,
     EvidenceUploadRequest,
+    StorageBackend,
 )
 
 
@@ -18,29 +20,56 @@ from faultmaven.modules.evidence.domain.models import (
 # =============================================================================
 
 def create_sample_evidence(
-    evidence_id: Optional[UUID] = None,
-    filename: str = "test_file.log",
-    content_type: str = "text/plain",
-    size_bytes: int = 1024,
-    storage_path: str = "evidence/standalone-abc123/2025-01-02/uuid_test_file.log",
-    uploaded_by: Optional[UUID] = None,
+    evidence_id: Optional[str] = None,
+    case_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    organization_id: str = "org_test123",
+    original_filename: str = "test_file.log",
+    stored_filename: Optional[str] = None,
+    file_path: str = "evidence/standalone-abc123/2025-01-02/uuid_test_file.log",
+    evidence_type: EvidenceArtifactType = EvidenceArtifactType.LOG_FILE,
+    mime_type: str = "text/plain",
+    file_size: int = 1024,
+    storage_backend: StorageBackend = StorageBackend.LOCAL_FILESYSTEM,
     description: Optional[str] = "Test evidence file",
-    tags: Optional[List[str]] = None,
-    linked_cases: Optional[List[UUID]] = None,
+    metadata: Optional[dict] = None,
+    # Backward compatibility: Accept old parameter names
+    filename: Optional[str] = None,
+    uploaded_by: Optional[str] = None,
+    tags: Optional[list] = None,
 ) -> EvidenceArtifact:
-    """Create a sample EvidenceArtifact object for testing."""
+    """Create a sample EvidenceArtifact object for testing.
+
+    Supports both new field names (evidence_id, user_id, original_filename)
+    and old field names (id, uploaded_by, filename) for backward compatibility.
+    """
+    # Handle backward compatibility parameters
+    if filename is not None:
+        original_filename = filename
+    if uploaded_by is not None:
+        user_id = uploaded_by
+    if tags is not None:
+        if metadata is None:
+            metadata = {}
+        metadata["tags"] = tags
+
+    eid = evidence_id or str(uuid4())
     return EvidenceArtifact(
-        id=evidence_id or uuid4(),
-        filename=filename,
-        content_type=content_type,
-        size_bytes=size_bytes,
-        storage_path=storage_path,
-        uploaded_by=uploaded_by or uuid4(),
-        uploaded_at=datetime.now(timezone.utc),
+        evidence_id=eid,
+        case_id=case_id or str(uuid4()),
+        user_id=user_id or str(uuid4()),
+        organization_id=organization_id,
+        original_filename=original_filename,
+        stored_filename=stored_filename or f"{eid}_{original_filename}",
+        file_path=file_path,
+        evidence_type=evidence_type,
+        mime_type=mime_type,
+        file_size=file_size,
+        storage_backend=storage_backend,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
         description=description,
-        tags=tags or ["test", "sample"],
-        linked_cases=linked_cases or [],
-        metadata={},
+        metadata=metadata or {},
     )
 
 
@@ -88,58 +117,80 @@ class MockEvidenceRepository:
 
     async def _create(
         self,
-        filename: str,
-        content_type: str,
-        size_bytes: int,
-        storage_path: str,
-        uploaded_by: UUID,
+        # Accept both old and new parameter names
+        original_filename: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        file_size: Optional[int] = None,
+        file_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        case_id: Optional[str] = None,
+        organization_id: str = "org_test123",
         description: Optional[str] = None,
+        # Old parameter names for backward compatibility
+        filename: Optional[str] = None,
+        content_type: Optional[str] = None,
+        size_bytes: Optional[int] = None,
+        storage_path: Optional[str] = None,
+        uploaded_by: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        **kwargs
     ) -> EvidenceArtifact:
+        # Map old params to new params
         evidence = create_sample_evidence(
-            filename=filename,
-            content_type=content_type,
-            size_bytes=size_bytes,
-            storage_path=storage_path,
-            uploaded_by=uploaded_by,
+            original_filename=original_filename or filename or "test.log",
+            mime_type=mime_type or content_type or "text/plain",
+            file_size=file_size or size_bytes or 1024,
+            file_path=file_path or storage_path or "evidence/test.log",
+            user_id=user_id or (str(uploaded_by) if uploaded_by else None) or str(uuid4()),
+            case_id=case_id or "standalone",
+            organization_id=organization_id,
             description=description,
-            tags=tags or [],
+            metadata={"tags": tags or []} if tags else {},
         )
-        self._storage[str(evidence.id)] = evidence
+        self._storage[evidence.evidence_id] = evidence
         return evidence
 
-    async def _get(self, evidence_id: UUID) -> Optional[EvidenceArtifact]:
-        return self._storage.get(str(evidence_id))
+    async def _get(self, evidence_id) -> Optional[EvidenceArtifact]:
+        # Accept both UUID and str
+        key = str(evidence_id) if not isinstance(evidence_id, str) else evidence_id
+        return self._storage.get(key)
 
     async def _list(self, filters: EvidenceListFilter) -> Tuple[List[EvidenceArtifact], int]:
         results = list(self._storage.values())
 
         # Apply filters
         if filters.uploaded_by:
-            results = [e for e in results if e.uploaded_by == filters.uploaded_by]
+            results = [e for e in results if e.user_id == str(filters.uploaded_by)]
         if filters.case_id:
-            results = [e for e in results if filters.case_id in e.linked_cases]
+            results = [e for e in results if e.case_id == str(filters.case_id)]
         if filters.tags:
-            results = [e for e in results if any(t in e.tags for t in filters.tags)]
+            # Tags are in metadata
+            results = [
+                e for e in results
+                if e.metadata and any(tag in e.metadata.get("tags", []) for tag in filters.tags)
+            ]
         if filters.filename_contains:
-            results = [e for e in results if filters.filename_contains.lower() in e.filename.lower()]
+            results = [e for e in results if filters.filename_contains.lower() in e.original_filename.lower()]
 
         total = len(results)
         results = results[filters.offset : filters.offset + filters.limit]
         return results, total
 
-    async def _delete(self, evidence_id: UUID) -> bool:
-        key = str(evidence_id)
+    async def _delete(self, evidence_id) -> bool:
+        # Accept both UUID and str
+        key = str(evidence_id) if not isinstance(evidence_id, str) else evidence_id
         if key in self._storage:
             del self._storage[key]
             return True
         return False
 
-    async def _link_to_case(self, evidence_id: UUID, case_id: UUID) -> Optional[EvidenceArtifact]:
-        evidence = self._storage.get(str(evidence_id))
+    async def _link_to_case(self, evidence_id, case_id) -> Optional[EvidenceArtifact]:
+        # Accept both UUID and str
+        key = str(evidence_id) if not isinstance(evidence_id, str) else evidence_id
+        evidence = self._storage.get(key)
         if evidence:
-            if case_id not in evidence.linked_cases:
-                evidence.linked_cases.append(case_id)
+            # Update case_id if needed
+            evidence.case_id = str(case_id) if not isinstance(case_id, str) else case_id
             return evidence
         return None
 
@@ -178,12 +229,14 @@ def sample_evidence() -> EvidenceArtifact:
 @pytest.fixture
 def sample_evidence_list() -> List[EvidenceArtifact]:
     """Create multiple sample EvidenceArtifact objects."""
-    user_id = uuid4()
+    user_id = str(uuid4())
+    case_id = str(uuid4())
     return [
         create_sample_evidence(
-            filename=f"file_{i}.log",
-            uploaded_by=user_id,
-            tags=[f"tag{i}", "common"],
+            original_filename=f"file_{i}.log",
+            user_id=user_id,
+            case_id=case_id,
+            metadata={"tags": [f"tag{i}"]},  # Add unique tag for each
         )
         for i in range(5)
     ]

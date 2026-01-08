@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
-from faultmaven.models.case import Case, CaseStatus, InvestigationStrategy
+from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
 from faultmaven.models.investigation_session import (
     InvestigationSession,
     SessionStatus,

@@ -26,7 +26,7 @@ from faultmaven.modules.auth.infrastructure.repositories.session_repository impo
     DatabaseSessionRepository,
 )
 from faultmaven.infrastructure.persistence.case_repository import RepositoryException
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationStrategy,

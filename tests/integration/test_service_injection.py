@@ -98,7 +98,7 @@ class TestLowerLevelServiceInjection:
         service2 = ServiceContainer.get(AuthService)
         assert service is service2
 
-    @patch('faultmaven.services.embedding_service.EmbeddingService.__init__', return_value=None)
+    @patch('faultmaven.modules.knowledge.domain.services.embedding_service.EmbeddingService.__init__', return_value=None)
     def test_embedding_service_injection(self, mock_init, mock_settings):
         """Test that EmbeddingService can be created via DI container."""
         from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
@@ -168,7 +168,7 @@ class TestMidLevelServiceInjection:
 class TestServiceIndependenceViolationsFixed:
     """Test that the 6 service independence violations have been fixed."""
 
-    @patch('faultmaven.services.embedding_service.EmbeddingService')
+    @patch('faultmaven.modules.knowledge.domain.services.embedding_service.EmbeddingService')
     @patch('faultmaven.services.vector_store_service.VectorStoreService')
     def test_knowledge_search_service_uses_di(self, mock_vector, mock_embedding, mock_settings):
         """Test that KnowledgeSearchService uses DI instead of direct imports."""
@@ -323,7 +323,7 @@ class TestServiceLifecycle:
 class TestBackwardCompatibility:
     """Test that DI refactoring maintains backward compatibility."""
 
-    @patch('faultmaven.services.embedding_service.EmbeddingService')
+    @patch('faultmaven.modules.knowledge.domain.services.embedding_service.EmbeddingService')
     @patch('faultmaven.services.vector_store_service.VectorStoreService')
     def test_manual_dependency_injection_still_works(self, mock_vector, mock_embedding, mock_settings):
         """Test that manually providing dependencies still works (backward compatibility)."""

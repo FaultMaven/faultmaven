@@ -6,7 +6,7 @@ Contains all authentication, authorization, user, session, and organization mode
 from .rbac import Role, Permission
 from .user import User
 from .session import Session
-from .auth import AuthToken, TokenPair, TokenClaims, TokenStatus, DevUser
+from .auth import AuthToken, TokenPair, TokenClaims, TokenStatus, DevUser, TokenValidationResult, AuthenticatedUser
 from .api_auth import (
     DevLoginRequest,
     UserProfile,
@@ -37,6 +37,8 @@ __all__ = [
     "TokenClaims",
     "TokenStatus",
     "DevUser",
+    "TokenValidationResult",
+    "AuthenticatedUser",
     # API Auth
     "DevLoginRequest",
     "UserProfile",

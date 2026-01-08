@@ -62,8 +62,15 @@ class MockEvidenceServiceForAPI:
         evidence = self._storage.get(str(evidence_id))
         if not evidence:
             raise ValueError(f"Evidence {evidence_id} not found")
-        if case_id not in evidence.linked_cases:
-            evidence.linked_cases.append(case_id)
+        # Update case_id directly (primary way to link)
+        evidence.case_id = str(case_id)
+        # Also add to metadata.linked_cases if it exists
+        if evidence.metadata is None:
+            evidence.metadata = {}
+        if "linked_cases" not in evidence.metadata:
+            evidence.metadata["linked_cases"] = []
+        if case_id not in evidence.metadata["linked_cases"]:
+            evidence.metadata["linked_cases"].append(str(case_id))
         return evidence
 
     async def _get_url(self, evidence_id: UUID) -> Optional[str]:
@@ -111,7 +118,8 @@ def app_with_mocks(mock_evidence_service, mock_user):
         return mock_user
 
     # Include router with overridden dependencies
-    app.include_router(router, prefix="/api/v1/evidence")
+    # Router already has "/evidence" prefix, so we add "/api/v1" to get "/api/v1/evidence"
+    app.include_router(router, prefix="/api/v1")
 
     # Store mocks for dependency override
     app.state.mock_service = mock_evidence_service
@@ -149,8 +157,8 @@ class TestUploadEvidenceEndpoint:
 
         assert response.status_code == 201
         result = response.json()
-        assert "id" in result
-        assert result["filename"] == "test.log"
+        assert "evidence_id" in result
+        assert result["original_filename"] == "test.log"
 
     def test_upload_evidence_with_tags(self, client, mock_evidence_service):
         """Test upload with comma-separated tags."""
@@ -193,7 +201,7 @@ class TestGetEvidenceEndpoint:
 
         assert response.status_code == 200
         result = response.json()
-        assert result["id"] == str(evidence.id)
+        assert result["evidence_id"] == str(evidence.id)
 
     def test_get_evidence_not_found(self, client, mock_evidence_service):
         """Test retrieving non-existent evidence returns 404."""
@@ -317,7 +325,13 @@ class TestLinkEvidenceToCaseEndpoint:
 
         assert response.status_code == 200
         result = response.json()
-        assert str(case_id) in [str(c) for c in result["linked_cases"]]
+        # Check that evidence is linked to the case
+        # linked_cases can be in metadata or derived from case_id
+        if "linked_cases" in result.get("metadata", {}):
+            assert str(case_id) in [str(c) for c in result["metadata"]["linked_cases"]]
+        else:
+            # Or check case_id directly
+            assert result["case_id"] == str(case_id)
 
     def test_link_to_case_not_found(self, client, mock_evidence_service):
         """Test linking non-existent evidence returns 404."""

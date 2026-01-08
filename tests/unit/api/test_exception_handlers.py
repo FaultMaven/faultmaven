@@ -62,8 +62,8 @@ class TestNotFoundExceptionHandler:
         exc = NotFoundError("Case", "case_123")
         response = await not_found_exception_handler(mock_request, exc)
         body = response.body.decode()
-        assert '"error": "Not Found"' in body
-        assert '"status_code": 404' in body
+        assert '"error":"Not Found"' in body
+        assert '"status_code":404' in body
         assert "case_123" in body
 
     @pytest.mark.asyncio
@@ -107,8 +107,8 @@ class TestAuthorizationExceptionHandler:
         exc = AuthorizationError("Not authorized to access this resource")
         response = await authorization_exception_handler(mock_request, exc)
         body = response.body.decode()
-        assert '"error": "Forbidden"' in body
-        assert '"status_code": 403' in body
+        assert '"error":"Forbidden"' in body
+        assert '"status_code":403' in body
 
     @pytest.mark.asyncio
     async def test_includes_error_message(self, mock_request):
@@ -137,11 +137,11 @@ class TestValidationExceptionHandler:
 
     @pytest.mark.asyncio
     async def test_returns_400_status(self, mock_request):
-        """Test handler returns 400 status code."""
+        """Test handler returns 422 status code (Unprocessable Entity)."""
         exc = ValidationException("Invalid input")
         response = await validation_exception_handler(mock_request, exc)
         assert isinstance(response, JSONResponse)
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
     @pytest.mark.asyncio
     async def test_response_format(self, mock_request):
@@ -149,8 +149,8 @@ class TestValidationExceptionHandler:
         exc = ValidationException("Title is required")
         response = await validation_exception_handler(mock_request, exc)
         body = response.body.decode()
-        assert '"error": "Validation Error"' in body
-        assert '"status_code": 400' in body
+        assert '"error":"Validation Error"' in body
+        assert '"status_code":422' in body
 
     @pytest.mark.asyncio
     async def test_includes_validation_details(self, mock_request):
@@ -192,8 +192,8 @@ class TestConflictExceptionHandler:
         exc = ConflictError("Case already closed")
         response = await conflict_exception_handler(mock_request, exc)
         body = response.body.decode()
-        assert '"error": "Conflict"' in body
-        assert '"status_code": 409' in body
+        assert '"error":"Conflict"' in body
+        assert '"status_code":409' in body
 
     @pytest.mark.asyncio
     async def test_includes_conflict_details(self, mock_request):
@@ -244,8 +244,8 @@ class TestServiceErrorHandler:
         exc = ServiceError("Internal error occurred")
         response = await service_error_handler(mock_request, exc)
         body = response.body.decode()
-        assert '"error": "Internal Server Error"' in body
-        assert '"status_code": 500' in body
+        assert '"error":"Internal Server Error"' in body
+        assert '"status_code":500' in body
 
     @pytest.mark.asyncio
     async def test_hides_internal_details(self, mock_request):

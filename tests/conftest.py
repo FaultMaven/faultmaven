@@ -58,7 +58,8 @@ import pytest
 sys.modules.setdefault("sklearn", SimpleNamespace())
 sys.modules.setdefault("sklearn.ensemble", SimpleNamespace(IsolationForest=Mock))
 sys.modules.setdefault("sklearn.preprocessing", SimpleNamespace(StandardScaler=Mock))
-sys.modules.setdefault("chromadb", SimpleNamespace())
+# NOTE: chromadb stub removed - tests need real ChromaDB
+# If chromadb is not installed, tests using it will fail as expected
 sys.modules.setdefault("pypdf", SimpleNamespace())
 
 sys.modules.setdefault(
@@ -354,7 +355,7 @@ def test_config():
 @pytest.fixture
 def sample_case():
     """Sample case for testing case persistence functionality."""
-    from faultmaven.models.case import Case, CaseStatus
+    from faultmaven.modules.case.domain.models import Case, CaseStatus
 
     return Case(
         case_id="case_test12345678",
@@ -402,7 +403,7 @@ def sample_case_participant():
 def sample_case_summary():
     """Sample case summary for testing list operations."""
     from faultmaven.models.api_models import CaseSummary
-    from faultmaven.models.case import CaseStatus
+    from faultmaven.modules.case.domain.models import CaseStatus
     from datetime import datetime, timezone
 
     return CaseSummary(
@@ -526,7 +527,7 @@ def case_search_request_data():
 @pytest.fixture
 def multiple_cases():
     """Multiple sample cases for testing list and search operations."""
-    from faultmaven.models.case import Case, CaseStatus
+    from faultmaven.modules.case.domain.models import Case, CaseStatus
 
     cases = []
     for i in range(5):
@@ -546,7 +547,7 @@ def multiple_cases():
 @pytest.fixture
 def case_with_conversation():
     """Sample case with a full conversation for testing context generation."""
-    from faultmaven.models.case import Case, CaseStatus
+    from faultmaven.modules.case.domain.models import Case, CaseStatus
     from datetime import datetime, timezone, timedelta
     from uuid import uuid4
 

@@ -315,13 +315,47 @@ The **[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** b
 
 See the [Copilot repository](https://github.com/FaultMaven/faultmaven-copilot) for installation and development.
 
-### Dashboard (Coming Soon)
+### Dashboard (Knowledge Base management UI)
 
-Web-based dashboard for proactive management:
+The **FaultMaven Dashboard** is a separate frontend application for:
 
 - Knowledge base management
 - Case history and analytics
 - Configuration and settings
+
+Repository: **[`faultmaven-dashboard`](https://github.com/FaultMaven/faultmaven-dashboard)**.
+
+#### Local setup (recommended)
+
+1) **Run the backend** (FaultMaven monolith):
+
+```bash
+uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+2) **Run the dashboard dev server** (in the dashboard repo):
+
+```bash
+cd /path/to/faultmaven-dashboard
+pnpm install
+VITE_API_URL=http://localhost:8000 pnpm dev
+```
+
+Then open `http://localhost:5173`.
+
+#### Optional: run the dashboard as a container
+
+The dashboard container serves static files via Nginx and injects the backend URL at startup:
+
+```bash
+docker run --rm -p 3000:80 \
+  -e VITE_API_URL=http://localhost:8000 \
+  faultmaven/faultmaven-dashboard:latest
+```
+
+Then open `http://localhost:3000`.
+
+> The dashboard is a **frontend artifact** (a web UI). It communicates with FaultMaven through the backend’s HTTP APIs (e.g., Knowledge module endpoints under `/api/v1/knowledge/*`), not via a special “dashboard module” inside the backend.
 
 ---
 

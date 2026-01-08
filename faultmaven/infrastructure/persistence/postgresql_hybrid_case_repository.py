@@ -27,7 +27,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationProgress,

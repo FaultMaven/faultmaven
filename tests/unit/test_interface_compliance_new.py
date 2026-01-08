@@ -47,28 +47,29 @@ except ImportError as e:
     IConfiguration = Any
     INTERFACES_AVAILABLE = False
 
-from faultmaven.container import BaseDIContainer
+from faultmaven.container import DIContainer
 
 
 @pytest.fixture(autouse=True)
 def reset_container():
     """Reset container between tests for isolation"""
     # Clear any existing singleton instance
-    BaseDIContainer._instance = None
+    DIContainer._instance = None
     yield
     # Clean up after test
-    if BaseDIContainer._instance:
-        BaseDIContainer._instance.reset()
-    BaseDIContainer._instance = None
+    if DIContainer._instance:
+        DIContainer._instance.reset()
+    DIContainer._instance = None
 
 
 class TestInterfaceCompliance:
     """Validate all container-provided implementations comply with interfaces"""
     
-    def test_llm_provider_interface_compliance(self):
+    @pytest.mark.asyncio
+    async def test_llm_provider_interface_compliance(self):
         """Test that LLM provider implements ILLMProvider interface"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         
         llm_provider = container.get_llm_provider()
         assert llm_provider is not None
@@ -86,10 +87,11 @@ class TestInterfaceCompliance:
             assert generate_method is not None, "LLM provider must have generate method"
             assert callable(generate_method), "Generate method must be callable"
     
-    def test_sanitizer_interface_compliance(self):
+    @pytest.mark.asyncio
+    async def test_sanitizer_interface_compliance(self):
         """Test that sanitizer implements ISanitizer interface"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         
         sanitizer = container.get_sanitizer()
         assert sanitizer is not None
@@ -103,10 +105,11 @@ class TestInterfaceCompliance:
             assert hasattr(sanitizer, 'sanitize'), "Sanitizer must have 'sanitize' method"
             assert callable(sanitizer.sanitize), "'sanitize' must be callable"
     
-    def test_tracer_interface_compliance(self):
+    @pytest.mark.asyncio
+    async def test_tracer_interface_compliance(self):
         """Test that tracer implements ITracer interface"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         
         tracer = container.get_tracer()
         assert tracer is not None
@@ -120,10 +123,11 @@ class TestInterfaceCompliance:
             assert hasattr(tracer, 'trace'), "Tracer must have 'trace' method"
             assert callable(tracer.trace), "'trace' must be callable"
     
-    def test_data_classifier_interface_compliance(self):
+    @pytest.mark.asyncio
+    async def test_data_classifier_interface_compliance(self):
         """Test that data classifier implements IDataClassifier interface"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         
         classifier = container.get_data_classifier()
         assert classifier is not None
@@ -137,10 +141,11 @@ class TestInterfaceCompliance:
             assert hasattr(classifier, 'classify'), "Classifier must have 'classify' method"
             assert callable(classifier.classify), "'classify' must be callable"
     
-    def test_log_processor_interface_compliance(self):
+    @pytest.mark.asyncio
+    async def test_log_processor_interface_compliance(self):
         """Test that log processor implements ILogProcessor interface"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         
         processor = container.get_log_processor()
         assert processor is not None
@@ -154,10 +159,11 @@ class TestInterfaceCompliance:
             assert hasattr(processor, 'process'), "Processor must have 'process' method"
             assert callable(processor.process), "'process' must be callable"
     
-    def test_vector_store_interface_compliance(self):
+    @pytest.mark.asyncio
+    async def test_vector_store_interface_compliance(self):
         """Test that vector store implements IVectorStore interface"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         
         vector_store = container.get_vector_store()
         # Vector store is optional and may be None if ChromaDB is unavailable
@@ -176,10 +182,11 @@ class TestInterfaceCompliance:
                 assert hasattr(vector_store, 'add_documents') or hasattr(vector_store, 'search'), \
                     "Vector store should have basic methods"
     
-    def test_session_store_interface_compliance(self):
+    @pytest.mark.asyncio
+    async def test_session_store_interface_compliance(self):
         """Test that session store implements ISessionStore interface"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         
         session_store = container.get_session_store()
         # Session store is optional and may be None if Redis is unavailable
@@ -199,10 +206,11 @@ class TestInterfaceCompliance:
                 has_basic_methods = any(hasattr(session_store, method) for method in basic_methods)
                 assert has_basic_methods, "Session store should have basic methods"
     
-    def test_tools_interface_compliance(self):
+    @pytest.mark.asyncio
+    async def test_tools_interface_compliance(self):
         """Test that all tools implement BaseTool interface"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         
         tools = container.get_tools()
         assert isinstance(tools, list), "Tools should be a list"
@@ -230,8 +238,8 @@ class TestInterfaceContractValidation:
         if not INTERFACES_AVAILABLE:
             pytest.skip("Interfaces not available - testing contract satisfaction requires full environment")
         
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         llm_provider = container.get_llm_provider()
         
         # Mock the actual LLM call to avoid external dependencies
@@ -242,10 +250,11 @@ class TestInterfaceContractValidation:
             mock_generate.assert_called_once_with("test prompt")
             assert isinstance(result, str), "generate() should return string"
     
-    def test_sanitizer_contract(self):
+    @pytest.mark.asyncio
+    async def test_sanitizer_contract(self):
         """Test ISanitizer contract validation"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         sanitizer = container.get_sanitizer()
         
         # Test basic sanitization contract
@@ -256,10 +265,11 @@ class TestInterfaceContractValidation:
         assert result is not None, "sanitize() should not return None"
         assert isinstance(result, (str, type(test_data))), "sanitize() should return string or same type"
     
-    def test_tracer_contract(self):
+    @pytest.mark.asyncio
+    async def test_tracer_contract(self):
         """Test ITracer contract validation"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         tracer = container.get_tracer()
         
         # Test tracing context manager contract
@@ -272,8 +282,8 @@ class TestInterfaceContractValidation:
     @pytest.mark.asyncio
     async def test_data_classifier_contract(self):
         """Test IDataClassifier contract validation"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         classifier = container.get_data_classifier()
         
         # Test classification contract
@@ -295,8 +305,8 @@ class TestInterfaceContractValidation:
     @pytest.mark.asyncio
     async def test_log_processor_contract(self):
         """Test ILogProcessor contract validation"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         processor = container.get_log_processor()
         
         # Test processing contract
@@ -321,7 +331,7 @@ class TestInterfaceDependencyInjection:
     
     def test_agent_service_uses_interfaces(self):
         """Test that AgentService receives interface implementations"""
-        container = BaseDIContainer()
+        container = DIContainer()
         agent_service = container.get_agent_service()
         
         # Verify agent service has interface-based dependencies
@@ -336,7 +346,7 @@ class TestInterfaceDependencyInjection:
     
     def test_data_service_uses_interfaces(self):
         """Test that DataService receives interface implementations"""
-        container = BaseDIContainer()
+        container = DIContainer()
         data_service = container.get_data_service()
         
         # Verify data service has interface-based dependencies
@@ -351,7 +361,7 @@ class TestInterfaceDependencyInjection:
     
     def test_knowledge_service_uses_interfaces(self):
         """Test that KnowledgeService receives interface implementations"""
-        container = BaseDIContainer()
+        container = DIContainer()
         knowledge_service = container.get_knowledge_service()
         
         # Knowledge service is optional but should have proper dependencies if present
@@ -372,10 +382,11 @@ class TestInterfaceDependencyInjection:
 class TestInterfaceGracefulDegradation:
     """Test graceful degradation when dependencies are unavailable"""
     
-    def test_container_handles_missing_vector_store(self):
+    @pytest.mark.asyncio
+    async def test_container_handles_missing_vector_store(self):
         """Test container gracefully handles missing vector store"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         
         # Vector store may be None if ChromaDB is unavailable
         vector_store = container.get_vector_store()
@@ -387,10 +398,11 @@ class TestInterfaceGracefulDegradation:
         health = container.health_check()
         assert health["status"] in ["healthy", "degraded", "not_initialized"]
     
-    def test_container_handles_missing_session_store(self):
+    @pytest.mark.asyncio
+    async def test_container_handles_missing_session_store(self):
         """Test container gracefully handles missing session store"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         
         # Session store may be None if Redis is unavailable
         session_store = container.get_session_store()
@@ -402,12 +414,13 @@ class TestInterfaceGracefulDegradation:
         health = container.health_check()
         assert health["status"] in ["healthy", "degraded", "not_initialized"]
     
-    def test_minimal_container_interface_compliance(self):
+    @pytest.mark.asyncio
+    async def test_minimal_container_interface_compliance(self):
         """Test that minimal container (testing mode) still provides interface compliance"""
         # Force minimal container mode
         with patch('faultmaven.container.INTERFACES_AVAILABLE', False):
-            container = BaseDIContainer()
-            container.initialize()
+            container = DIContainer()
+            await container.initialize()
             
             # Should create minimal versions of all components
             assert hasattr(container, 'llm_provider')
@@ -421,16 +434,17 @@ class TestInterfaceGracefulDegradation:
             assert hasattr(container.tracer, 'trace')
             assert callable(container.tracer.trace)
     
-    def test_interface_contract_with_failures(self):
+    @pytest.mark.asyncio
+    async def test_interface_contract_with_failures(self):
         """Test interface contracts are maintained even when implementations fail"""
-        container = BaseDIContainer()
+        container = DIContainer()
         
         # Mock infrastructure creation failures
         with patch.object(container, '_create_infrastructure_layer') as mock_infra:
             mock_infra.side_effect = Exception("Infrastructure unavailable")
             
             # Should still initialize with minimal components
-            container.initialize()
+            await container.initialize()
             
             # Should have some form of each component (minimal or mock)
             llm_provider = container.get_llm_provider()
@@ -470,10 +484,11 @@ class TestInterfaceValidationMetrics:
             has_test = any(interface in method_name for method_name in test_methods)
             assert has_test, f"Missing test coverage for {interface} interface"
     
-    def test_container_interface_health_metrics(self):
+    @pytest.mark.asyncio
+    async def test_container_interface_health_metrics(self):
         """Test that container provides interface health metrics"""
-        container = BaseDIContainer()
-        container.initialize()
+        container = DIContainer()
+        await container.initialize()
         
         health = container.health_check()
         
@@ -497,19 +512,20 @@ class TestInterfaceValidationMetrics:
             if isinstance(health_value, (int, float)):
                 assert health_value >= 0, f"{component} health should be non-negative"
     
-    def test_interface_implementation_consistency(self):
+    @pytest.mark.asyncio
+    async def test_interface_implementation_consistency(self):
         """Test that interface implementations are consistent across container lifecycle"""
-        container = BaseDIContainer()
+        container = DIContainer()
         
         # Get initial implementations
-        container.initialize()
+        await container.initialize()
         initial_llm = container.get_llm_provider()
         initial_sanitizer = container.get_sanitizer()
         initial_tracer = container.get_tracer()
         
         # Reset and re-initialize
         container.reset()
-        container.initialize()
+        await container.initialize()
         
         # Get new implementations
         new_llm = container.get_llm_provider()

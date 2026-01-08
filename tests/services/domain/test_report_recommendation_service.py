@@ -19,7 +19,7 @@ from faultmaven.models.report import (
     RunbookSource,
     RunbookMetadata
 )
-from faultmaven.models.case import Case, CaseStatus
+from faultmaven.modules.case.domain.models import Case, CaseStatus
 
 
 @pytest.fixture

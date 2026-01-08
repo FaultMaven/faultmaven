@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from typing import List, Dict, Any
 
 from faultmaven.infrastructure.persistence.redis_case_store import RedisCaseStore
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     MessageType,

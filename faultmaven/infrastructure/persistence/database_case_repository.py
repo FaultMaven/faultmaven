@@ -44,7 +44,7 @@ from faultmaven.infrastructure.persistence.models import (
     CaseStatusTransitionModel,
     CaseTagModel,
 )
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationProgress,
@@ -858,38 +858,38 @@ class DatabaseCaseRepository(CaseRepository):
 
     def _case_to_model(self, case: Case) -> CaseModel:
         """Convert Case domain model to CaseModel ORM model."""
-        # Serialize complex fields to JSON
-        consulting_json = json.dumps(case.consulting.model_dump()) if case.consulting else "{}"
-        progress_json = json.dumps(case.progress.model_dump()) if case.progress else "{}"
-        documentation_json = json.dumps(case.documentation.model_dump()) if case.documentation else "{}"
+        # Serialize complex fields to JSON (use mode='json' to serialize datetime objects)
+        consulting_json = json.dumps(case.consulting.model_dump(mode='json')) if case.consulting else "{}"
+        progress_json = json.dumps(case.progress.model_dump(mode='json')) if case.progress else "{}"
+        documentation_json = json.dumps(case.documentation.model_dump(mode='json')) if case.documentation else "{}"
 
         # Optional JSONB fields
         problem_verification_json = (
-            json.dumps(case.problem_verification.model_dump())
+            json.dumps(case.problem_verification.model_dump(mode='json'))
             if case.problem_verification else None
         )
         working_conclusion_json = (
-            json.dumps(case.working_conclusion.model_dump())
+            json.dumps(case.working_conclusion.model_dump(mode='json'))
             if case.working_conclusion else None
         )
         root_cause_conclusion_json = (
-            json.dumps(case.root_cause_conclusion.model_dump())
+            json.dumps(case.root_cause_conclusion.model_dump(mode='json'))
             if case.root_cause_conclusion else None
         )
         path_selection_json = (
-            json.dumps(case.path_selection.model_dump())
+            json.dumps(case.path_selection.model_dump(mode='json'))
             if case.path_selection else None
         )
         degraded_mode_json = (
-            json.dumps(case.degraded_mode.model_dump())
+            json.dumps(case.degraded_mode.model_dump(mode='json'))
             if case.degraded_mode else None
         )
         escalation_state_json = (
-            json.dumps(case.escalation_state.model_dump())
+            json.dumps(case.escalation_state.model_dump(mode='json'))
             if case.escalation_state else None
         )
 
-        # Build metadata
+        # Build metadata (use mode='json' to serialize datetime objects)
         metadata = {
             "description": case.description,
             "investigation_strategy": case.investigation_strategy.value,
@@ -897,11 +897,11 @@ class DatabaseCaseRepository(CaseRepository):
             "turns_without_progress": case.turns_without_progress,
             "message_count": case.message_count,
             "closure_reason": case.closure_reason,
-            "turn_history": [t.model_dump() for t in case.turn_history],
-            "uploaded_files": [f.model_dump() for f in case.uploaded_files],
-            "evidence": [e.model_dump() for e in case.evidence],
-            "hypotheses": {k: v.model_dump() for k, v in case.hypotheses.items()},
-            "solutions": [s.model_dump() for s in case.solutions],
+            "turn_history": [t.model_dump(mode='json') for t in case.turn_history],
+            "uploaded_files": [f.model_dump(mode='json') for f in case.uploaded_files],
+            "evidence": [e.model_dump(mode='json') for e in case.evidence],
+            "hypotheses": {k: v.model_dump(mode='json') for k, v in case.hypotheses.items()},
+            "solutions": [s.model_dump(mode='json') for s in case.solutions],
             "resolved_at": case.resolved_at.isoformat() if case.resolved_at else None,
             "closed_at": case.closed_at.isoformat() if case.closed_at else None,
             "last_activity_at": case.last_activity_at.isoformat() if case.last_activity_at else None,

@@ -3,86 +3,50 @@ Tool Registry for dynamic tool registration.
 
 This module provides a registry pattern for tools to self-register,
 enabling dynamic tool discovery and instantiation.
+
+CONSOLIDATION NOTE (2026-01-08):
+The canonical ToolRegistry implementation is AgentToolRegistry in base.py.
+This module re-exports it for backward compatibility.
+See docs/working/DESIGN-ToolRegistry-Consolidation.md for details.
 """
 
-from typing import Dict, List, Type, Optional
+from typing import Optional
 import logging
-from faultmaven.models.interfaces import BaseTool
 
+# Import the canonical registry implementation
+from faultmaven.modules.agent.tools.base import AgentToolRegistry
 
-class ToolRegistry:
-    """Registry for dynamically registering and managing tools"""
-    
-    _instance = None
-    _tools: Dict[str, Type[BaseTool]] = {}
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-    
-    @classmethod
-    def register(cls, name: str, tool_class: Type[BaseTool]):
-        """
-        Register a tool class.
-        
-        Args:
-            name: Unique name for the tool
-            tool_class: Tool class implementing BaseTool
-        """
-        if not issubclass(tool_class, BaseTool):
-            raise ValueError(f"{tool_class} must implement BaseTool interface")
-        
-        cls._tools[name] = tool_class
-        logging.getLogger(__name__).debug(f"Registered tool: {name}")
-    
-    @classmethod
-    def get_tool(cls, name: str) -> Optional[Type[BaseTool]]:
-        """Get a registered tool class by name"""
-        return cls._tools.get(name)
-    
-    @classmethod
-    def list_tools(cls) -> List[str]:
-        """List all registered tool names"""
-        return list(cls._tools.keys())
-    
-    @classmethod
-    def create_all_tools(cls, **kwargs) -> List[BaseTool]:
-        """
-        Create instances of all registered tools.
-        
-        Args:
-            **kwargs: Arguments to pass to tool constructors
-            
-        Returns:
-            List of instantiated tools
-        """
-        tools = []
-        for name, tool_class in cls._tools.items():
-            try:
-                tool = tool_class(**kwargs)
-                tools.append(tool)
-                logging.getLogger(__name__).debug(f"Created tool: {name}")
-            except Exception as e:
-                logging.getLogger(__name__).warning(f"Failed to create tool {name}: {e}")
-        
-        return tools
-
+# Re-export as ToolRegistry for backward compatibility
+ToolRegistry = AgentToolRegistry
 
 # Global registry instance
 tool_registry = ToolRegistry()
 
+logger = logging.getLogger(__name__)
+
 
 def register_tool(name: str):
     """
-    Decorator for registering tools.
-    
+    Decorator for registering tool instances.
+
     Usage:
         @register_tool("knowledge_base")
-        class KnowledgeBaseTool(BaseTool):
+        class KnowledgeBaseTool(AgentTool):
             ...
+
+    Note: This is a legacy decorator. New code should register
+    tool instances directly with tool_registry.register(tool_instance).
     """
     def decorator(cls):
-        tool_registry.register(name, cls)
+        try:
+            # Instantiate the tool and register it
+            tool_instance = cls()
+            tool_registry.register(tool_instance)
+            logger.debug(f"Registered tool via decorator: {name}")
+        except Exception as e:
+            logger.warning(f"Failed to register tool {name}: {e}")
         return cls
     return decorator
+
+
+__all__ = ['ToolRegistry', 'tool_registry', 'register_tool']
