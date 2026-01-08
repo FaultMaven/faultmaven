@@ -87,16 +87,23 @@ def sample_case() -> Case:
 @pytest.fixture
 def sample_case_with_data() -> Case:
     """Create a case with more data for testing."""
+    # Create ConsultingData with all required fields for INVESTIGATING status
+    consulting = ConsultingData()
+    consulting.proposed_problem_statement = "API experiencing high latency and errors"
+    consulting.problem_statement_confirmed = True
+    consulting.decided_to_investigate = True
+    consulting.quick_suggestions = ["Check logs", "Verify deployment"]
+
     case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="test-user-002",
         organization_id="test-org-001",
         title="Test Case with Data",
-        description="Case with consulting data and progress",
+        description="API experiencing high latency and errors",
         status=CaseStatus.INVESTIGATING,
         investigation_strategy=InvestigationStrategy.ACTIVE_INCIDENT,
+        consulting=consulting,
     )
-    case.consulting.quick_suggestions = ["Check logs", "Verify deployment"]
     case.progress.symptom_verified = True
     case.progress.scope_assessed = True
     case.current_turn = 3
@@ -161,6 +168,13 @@ async def test_update_case(repository: DatabaseCaseRepository, sample_case: Case
 
     # Modify the case
     sample_case.title = "Updated Title"
+    sample_case.description = "API slowness investigation"
+    # Create new ConsultingData with all required fields for INVESTIGATING status
+    consulting = ConsultingData()
+    consulting.proposed_problem_statement = "API slowness investigation"
+    consulting.problem_statement_confirmed = True
+    consulting.decided_to_investigate = True
+    sample_case.consulting = consulting
     sample_case.status = CaseStatus.INVESTIGATING
     sample_case.current_turn = 5
 
@@ -251,13 +265,29 @@ async def test_list_cases_by_status(repository: DatabaseCaseRepository):
 
     # Create cases with different statuses
     for status in [CaseStatus.CONSULTING, CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]:
-        case = Case(
-            case_id=f"case_{uuid4().hex[:12]}",
-            user_id=user_id,
-            organization_id="test-org",
-            title=f"Test Case - {status.value}",
-            status=status,
-        )
+        if status == CaseStatus.INVESTIGATING:
+            # Create ConsultingData with all required fields for INVESTIGATING status
+            consulting = ConsultingData()
+            consulting.proposed_problem_statement = "Test problem statement"
+            consulting.problem_statement_confirmed = True
+            consulting.decided_to_investigate = True
+            case = Case(
+                case_id=f"case_{uuid4().hex[:12]}",
+                user_id=user_id,
+                organization_id="test-org",
+                title=f"Test Case - {status.value}",
+                description="Test problem statement",
+                status=status,
+                consulting=consulting,
+            )
+        else:
+            case = Case(
+                case_id=f"case_{uuid4().hex[:12]}",
+                user_id=user_id,
+                organization_id="test-org",
+                title=f"Test Case - {status.value}",
+                status=status,
+            )
         await repository.save(case)
 
     # Act
@@ -429,6 +459,13 @@ async def test_status_transition(repository: DatabaseCaseRepository, sample_case
         reason="Starting investigation",
     )
     sample_case.status_history.append(transition)
+    # Set required fields for INVESTIGATING status
+    sample_case.description = "Starting formal investigation"
+    consulting = ConsultingData()
+    consulting.proposed_problem_statement = "Starting formal investigation"
+    consulting.problem_statement_confirmed = True
+    consulting.decided_to_investigate = True
+    sample_case.consulting = consulting
     sample_case.status = CaseStatus.INVESTIGATING
 
     # Act
@@ -522,24 +559,35 @@ async def test_update_activity_timestamp_nonexistent(repository: DatabaseCaseRep
 async def test_cleanup_expired(repository: DatabaseCaseRepository):
     """Test cleaning up expired cases."""
     # Arrange
-    # Create old closed case
+    # Create old closed case (closed 100 days ago)
+    old_closed_time = datetime.now(timezone.utc) - timedelta(days=100)
+    old_created_time = old_closed_time - timedelta(days=10)
     old_case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="test-user",
         organization_id="test-org",
         title="Old Closed Case",
         status=CaseStatus.CLOSED,
+        created_at=old_created_time,
+        updated_at=old_closed_time,
+        closed_at=old_closed_time,
+        closure_reason="abandoned",
     )
-    old_case.updated_at = datetime.now(timezone.utc) - timedelta(days=100)
     await repository.save(old_case)
 
-    # Create recent closed case
+    # Create recent closed case (closed today)
+    recent_closed_time = datetime.now(timezone.utc)
+    recent_created_time = recent_closed_time - timedelta(days=1)
     recent_case = Case(
         case_id=f"case_{uuid4().hex[:12]}",
         user_id="test-user",
         organization_id="test-org",
         title="Recent Closed Case",
         status=CaseStatus.CLOSED,
+        created_at=recent_created_time,
+        updated_at=recent_closed_time,
+        closed_at=recent_closed_time,
+        closure_reason="other",
     )
     await repository.save(recent_case)
 
@@ -666,6 +714,13 @@ async def test_case_lifecycle(repository: DatabaseCaseRepository):
 
     # Update
     case.title = "Updated Lifecycle Case"
+    case.description = "Updated case description for investigation"
+    # Create ConsultingData with all required fields for INVESTIGATING status
+    consulting = ConsultingData()
+    consulting.proposed_problem_statement = "Updated case description for investigation"
+    consulting.problem_statement_confirmed = True
+    consulting.decided_to_investigate = True
+    case.consulting = consulting
     case.status = CaseStatus.INVESTIGATING
     await repository.save(case)
 
