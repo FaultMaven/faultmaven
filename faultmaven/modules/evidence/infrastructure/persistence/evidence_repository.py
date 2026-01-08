@@ -15,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from faultmaven.infrastructure.persistence.models import StandaloneEvidenceModel
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
+    EvidenceArtifactType,
     EvidenceListFilter,
+    StorageBackend,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,8 @@ class EvidenceRepository:
             Created evidence domain model
         """
         evidence_id = uuid4()
+        # Store tags in both the tags column and metadata for compatibility
+        metadata = {"tags": tags or []}
         evidence = StandaloneEvidenceModel(
             id=str(evidence_id),
             filename=filename,
@@ -68,7 +72,7 @@ class EvidenceRepository:
             description=description,
             tags=json.dumps(tags or []),
             linked_cases=json.dumps([]),
-            evidence_metadata=json.dumps({}),
+            evidence_metadata=json.dumps(metadata),
         )
 
         self.session.add(evidence)
@@ -198,10 +202,14 @@ class EvidenceRepository:
 
         # Parse JSON, add case_id, serialize back
         linked_cases = json.loads(evidence.linked_cases or "[]")
+        metadata = json.loads(evidence.evidence_metadata or "{}")
         case_id_str = str(case_id)
         if case_id_str not in linked_cases:
             linked_cases.append(case_id_str)
             evidence.linked_cases = json.dumps(linked_cases)
+            # Also update metadata to include linked_cases for backward compatibility
+            metadata["linked_cases"] = linked_cases
+            evidence.evidence_metadata = json.dumps(metadata)
             await self.session.commit()
             await self.session.refresh(evidence)
 
@@ -217,20 +225,60 @@ class EvidenceRepository:
             EvidenceArtifact domain model
         """
         # Parse JSON fields
-        tags = json.loads(evidence.tags or "[]")
         linked_cases_str = json.loads(evidence.linked_cases or "[]")
+        tags = json.loads(evidence.tags or "[]")
         metadata = json.loads(evidence.evidence_metadata or "{}")
 
+        # Ensure tags and linked_cases are in metadata for backward compatibility
+        if "tags" not in metadata:
+            metadata["tags"] = tags
+        if "linked_cases" not in metadata:
+            metadata["linked_cases"] = linked_cases_str
+
+        # Map old schema to new domain model
+        # Use first linked case as primary case_id, or generate a standalone marker
+        case_id = linked_cases_str[0] if linked_cases_str else "standalone"
+
+        # Infer evidence type from content_type
+        evidence_type = self._infer_evidence_type(evidence.content_type)
+
+        # Extract organization_id from metadata or use default
+        organization_id = metadata.get("organization_id", "default_org")
+
         return EvidenceArtifact(
-            id=UUID(evidence.id),
-            filename=evidence.filename,
-            content_type=evidence.content_type,
-            size_bytes=evidence.size_bytes,
-            storage_path=evidence.storage_path,
-            uploaded_by=UUID(evidence.uploaded_by),
-            uploaded_at=evidence.uploaded_at,
+            evidence_id=evidence.id,
+            case_id=case_id,
+            user_id=evidence.uploaded_by,
+            organization_id=organization_id,
+            original_filename=evidence.filename,
+            stored_filename=evidence.filename,  # Assume same for now
+            file_path=evidence.storage_path,
+            evidence_type=evidence_type,
+            mime_type=evidence.content_type,
+            file_size=evidence.size_bytes,
+            storage_backend=StorageBackend.LOCAL_FILESYSTEM,
+            created_at=evidence.uploaded_at,
+            updated_at=evidence.uploaded_at,
             description=evidence.description,
-            tags=tags,
-            linked_cases=[UUID(cid) for cid in linked_cases_str],
             metadata=metadata,
         )
+
+    def _infer_evidence_type(self, content_type: str) -> EvidenceArtifactType:
+        """Infer evidence type from MIME type.
+
+        Args:
+            content_type: MIME type
+
+        Returns:
+            EvidenceArtifactType enum value
+        """
+        if content_type.startswith("image/"):
+            return EvidenceArtifactType.SCREENSHOT
+        elif content_type.startswith("video/"):
+            return EvidenceArtifactType.VIDEO_RECORDING
+        elif "json" in content_type or content_type.startswith("text/"):
+            return EvidenceArtifactType.LOG_FILE
+        elif "application/x-har" in content_type:
+            return EvidenceArtifactType.HAR_FILE
+        else:
+            return EvidenceArtifactType.OTHER
