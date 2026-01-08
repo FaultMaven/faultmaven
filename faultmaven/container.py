@@ -593,11 +593,11 @@ class DIContainer(BaseDIContainer):
     
     def get_sanitizer(self):
         """Get the data sanitizer interface implementation."""
-        return self.get_service("sanitizer", required=True)
+        return getattr(self, 'sanitizer', None)
 
     def get_tracer(self):
         """Get the tracer interface implementation."""
-        return self.get_service("tracer", required=True)
+        return getattr(self, 'tracer', None)
 
     def get_tools(self):
         """Get list of available tools."""
@@ -605,11 +605,11 @@ class DIContainer(BaseDIContainer):
 
     def get_data_classifier(self):
         """Get the data classifier interface implementation."""
-        return self.get_service("data_classifier", required=True)
-    
+        return getattr(self, 'data_classifier', None)
+
     def get_log_processor(self):
         """Get the log processor interface implementation."""
-        return self.get_service("log_processor", required=True)
+        return getattr(self, 'log_processor', None)
 
     def get_preprocessing_service(self):
         """Get the preprocessing service (new Phase 1 pipeline)."""
@@ -617,15 +617,15 @@ class DIContainer(BaseDIContainer):
 
     def get_vector_store(self):
         """Get the vector store interface implementation."""
-        return self.get_service("vector_store")
+        return getattr(self, 'vector_store', None)
 
     def get_knowledge_ingester(self):
         """Get the knowledge ingester interface implementation."""
-        return self.get_service("knowledge_ingester")
+        return getattr(self, 'knowledge_ingester', None)
 
     def get_session_store(self):
         """Get the session store interface implementation."""
-        return self.get_service("session_store")
+        return getattr(self, 'session_store', None)
 
     def get_session_service(self):
         """Get the session service implementation."""
@@ -1681,9 +1681,16 @@ class DIContainer(BaseDIContainer):
 
         Delegates to BaseDIContainer.reset() which clears the registry.
         """
-        # Clear tools separately (not in registry)
-        if hasattr(self, 'tools'):
-            delattr(self, 'tools')
+        # Clear common attributes that might not be in registry
+        common_attrs = [
+            'tools', 'llm_provider', 'sanitizer', 'tracer',
+            'data_classifier', 'log_processor', 'vector_store',
+            'session_store', 'agent_service', 'data_service',
+            'knowledge_service', 'session_service', 'case_service'
+        ]
+        for attr in common_attrs:
+            if hasattr(self, attr):
+                delattr(self, attr)
 
         # Clear settings
         self.settings = None

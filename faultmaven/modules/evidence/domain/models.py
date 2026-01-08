@@ -289,3 +289,113 @@ class EvidenceListFilter(BaseModel):
     filename_contains: Optional[str] = None
     limit: int = PydanticField(default=50, le=200)
     offset: int = PydanticField(default=0, ge=0)
+
+
+class EvidenceArtifactResponse(BaseModel):
+    """API response model for EvidenceArtifact with backward compatibility.
+
+    Includes both new field names and legacy aliases for backward compatibility.
+    """
+
+    # New field names (canonical)
+    evidence_id: str
+    case_id: str
+    user_id: str
+    organization_id: str
+    original_filename: str
+    stored_filename: str
+    file_path: str
+    evidence_type: EvidenceArtifactType
+    mime_type: str
+    file_size: int
+    storage_backend: StorageBackend = StorageBackend.LOCAL_FILESYSTEM
+    created_at: datetime
+    updated_at: datetime
+    metadata: Dict[str, Any] = PydanticField(default_factory=dict)
+    description: Optional[str] = None
+    is_primary: bool = False
+
+    # Computed fields for backward compatibility
+    @property
+    def id(self) -> UUID:
+        """Backward compatibility: id -> evidence_id."""
+        return UUID(self.evidence_id) if isinstance(self.evidence_id, str) else self.evidence_id
+
+    @property
+    def filename(self) -> str:
+        """Backward compatibility: filename -> original_filename."""
+        return self.original_filename
+
+    @property
+    def content_type(self) -> str:
+        """Backward compatibility: content_type -> mime_type."""
+        return self.mime_type
+
+    @property
+    def size_bytes(self) -> int:
+        """Backward compatibility: size_bytes -> file_size."""
+        return self.file_size
+
+    @property
+    def storage_path(self) -> str:
+        """Backward compatibility: storage_path -> file_path."""
+        return self.file_path
+
+    @property
+    def uploaded_by(self) -> UUID:
+        """Backward compatibility: uploaded_by -> user_id."""
+        return UUID(self.user_id) if isinstance(self.user_id, str) else self.user_id
+
+    @property
+    def uploaded_at(self) -> datetime:
+        """Backward compatibility: uploaded_at -> created_at."""
+        return self.created_at
+
+    @property
+    def tags(self) -> List[str]:
+        """Backward compatibility: tags from metadata."""
+        return self.metadata.get("tags", []) if self.metadata else []
+
+    @property
+    def linked_cases(self) -> List[UUID]:
+        """Backward compatibility: linked_cases from metadata or case_id."""
+        if self.metadata and "linked_cases" in self.metadata:
+            cases = self.metadata["linked_cases"]
+            return [UUID(c) if isinstance(c, str) else c for c in cases]
+        if self.case_id != "standalone":
+            try:
+                return [UUID(self.case_id) if isinstance(self.case_id, str) else self.case_id]
+            except (ValueError, AttributeError):
+                return [self.case_id]
+        return []
+
+    model_config = {
+        "from_attributes": True,
+        # Include computed properties in serialization
+        "json_encoders": {
+            datetime: lambda v: v.isoformat(),
+            UUID: lambda v: str(v),
+        },
+    }
+
+    @classmethod
+    def from_domain(cls, evidence: EvidenceArtifact) -> "EvidenceArtifactResponse":
+        """Convert domain model to response model."""
+        return cls(
+            evidence_id=evidence.evidence_id,
+            case_id=evidence.case_id,
+            user_id=evidence.user_id,
+            organization_id=evidence.organization_id,
+            original_filename=evidence.original_filename,
+            stored_filename=evidence.stored_filename,
+            file_path=evidence.file_path,
+            evidence_type=evidence.evidence_type,
+            mime_type=evidence.mime_type,
+            file_size=evidence.file_size,
+            storage_backend=evidence.storage_backend,
+            created_at=evidence.created_at,
+            updated_at=evidence.updated_at,
+            metadata=evidence.metadata or {},
+            description=evidence.description,
+            is_primary=evidence.is_primary,
+        )
