@@ -206,11 +206,11 @@ def create_data_service(
     settings: FaultMavenSettings,
 ) -> Any:
     """Create data service for data processing and analysis."""
-    from faultmaven.modules.case.domain.services.case_data_ingestion_service import DataService, SimpleStorageBackend
+    from faultmaven.modules.case.domain.services.case_data_ingestion_service import CaseDataIngestionService, SimpleStorageBackend
 
     storage_backend = SimpleStorageBackend(settings=settings)
 
-    return DataService(
+    return CaseDataIngestionService(
         data_classifier=data_classifier,
         log_processor=log_processor,
         sanitizer=sanitizer,
