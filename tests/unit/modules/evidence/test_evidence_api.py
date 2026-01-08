@@ -111,7 +111,8 @@ def app_with_mocks(mock_evidence_service, mock_user):
         return mock_user
 
     # Include router with overridden dependencies
-    app.include_router(router, prefix="/api/v1/evidence")
+    # Router already has "/evidence" prefix, so we add "/api/v1" to get "/api/v1/evidence"
+    app.include_router(router, prefix="/api/v1")
 
     # Store mocks for dependency override
     app.state.mock_service = mock_evidence_service

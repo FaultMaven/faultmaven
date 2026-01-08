@@ -58,19 +58,8 @@ import pytest
 sys.modules.setdefault("sklearn", SimpleNamespace())
 sys.modules.setdefault("sklearn.ensemble", SimpleNamespace(IsolationForest=Mock))
 sys.modules.setdefault("sklearn.preprocessing", SimpleNamespace(StandardScaler=Mock))
-# ChromaDB stub needs config.Settings for imports to work
-sys.modules.setdefault(
-    "chromadb.config",
-    SimpleNamespace(Settings=Mock)
-)
-sys.modules.setdefault(
-    "chromadb",
-    SimpleNamespace(
-        config=sys.modules["chromadb.config"],
-        PersistentClient=Mock,
-        HttpClient=Mock,
-    )
-)
+# NOTE: chromadb stub removed - tests need real ChromaDB
+# If chromadb is not installed, tests using it will fail as expected
 sys.modules.setdefault("pypdf", SimpleNamespace())
 
 sys.modules.setdefault(

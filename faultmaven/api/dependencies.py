@@ -37,6 +37,41 @@ from faultmaven.services.file_storage_service import FileStorageService
 
 
 # ============================================================
+# Re-exports from v1.dependencies
+# ============================================================
+# These functions are defined in api.v1.dependencies but re-exported
+# here to provide a canonical import path for all API dependencies.
+# This maintains backward compatibility while establishing
+# faultmaven.api.dependencies as the single source for dependency injection.
+#
+# NOTE: We avoid re-exporting functions that cause circular imports
+# (e.g., get_knowledge_service) - import those directly from v1.dependencies.
+
+from faultmaven.api.v1.dependencies import (
+    get_current_user,
+    require_authenticated_user,
+    get_user_id,
+    get_session_id,
+)
+
+__all__ = [
+    # Service Factory Dependencies (TASK-011/012/013)
+    "get_async_db_session",
+    "get_service_factory",
+    "get_api_case_service",
+    "get_investigation_session_service",
+    "get_file_storage_service",
+    "get_evidence_artifact_service",
+    "get_agent_orchestration_service",
+    # Re-exported from v1.dependencies (legacy)
+    "get_current_user",
+    "require_authenticated_user",
+    "get_user_id",
+    "get_session_id",
+]
+
+
+# ============================================================
 # Database Session Dependencies
 # ============================================================
 

@@ -89,7 +89,7 @@ class TestVectorStoreInitialization:
 
     def test_initialization_with_invalid_path(self):
         """Test initialization with ChromaDB failure raises error."""
-        with patch("faultmaven.services.vector_store_service.chromadb.PersistentClient") as mock_client:
+        with patch("faultmaven.modules.knowledge.domain.services.vector_store_service.chromadb.PersistentClient") as mock_client:
             mock_client.side_effect = Exception("Failed to initialize ChromaDB")
             with pytest.raises(VectorStoreConnectionError):
                 VectorStoreService(
