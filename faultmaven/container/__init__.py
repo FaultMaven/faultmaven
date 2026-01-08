@@ -11,6 +11,10 @@ Usage:
     from faultmaven.container import container
     await container.initialize()
     llm = container.get_service("llm_provider", required=True)
+
+IMPORTANT: This package consolidates all DI container exports.
+The main DIContainer implementation is in faultmaven._container_impl
+and re-exported here for clean imports.
 """
 
 from faultmaven.container.registry import (
@@ -39,48 +43,17 @@ from faultmaven.container.providers import (
     register_tools,
 )
 
-# Global singleton instance
-# Note: Will be replaced with DIContainer instance at runtime
-# BaseDIContainer is the base class, DIContainer adds initialize()
-container = BaseDIContainer()
-
-# Check if interfaces are available for test compatibility
-try:
-    from faultmaven.models.interfaces import ILLMProvider
-    INTERFACES_AVAILABLE = True
-except ImportError:
-    INTERFACES_AVAILABLE = False
-
-# Lazy import DIContainer to avoid circular dependency
-# DIContainer is defined in ../container.py (sibling file)
-def _get_dicontainer():
-    """Lazy loader for DIContainer class"""
-    # Import from parent module's container.py file (not this package)
-    import importlib.util
-    import os
-    spec = importlib.util.spec_from_file_location(
-        "faultmaven._container_impl",
-        os.path.join(os.path.dirname(__file__), "..", "container.py")
-    )
-    if spec and spec.loader:
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module.DIContainer
-    return BaseDIContainer
-
-# Export for easy access
-try:
-    DIContainer = _get_dicontainer()
-except Exception:
-    # Fallback to BaseDIContainer if loading fails
-    DIContainer = BaseDIContainer
+# Import the full DIContainer implementation and singleton from the impl module
+# This ensures all code importing from faultmaven.container gets the proper DIContainer
+from faultmaven._container_impl import DIContainer, GlobalContainer, container
 
 __all__ = [
+    # Main container classes and singleton
+    "DIContainer",
+    "GlobalContainer",
+    "container",
     # Base
     "BaseDIContainer",
-    "DIContainer",  # Added
-    "container",
-    "INTERFACES_AVAILABLE",
     # Registry
     "DependencyRegistry",
     "ServiceInfo",

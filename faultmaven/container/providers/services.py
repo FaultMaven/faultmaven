@@ -296,6 +296,47 @@ def create_team_service(
         return None
 
 
+def create_auth_service(
+    redis_client: Any | None,
+    settings: FaultMavenSettings,
+) -> Any:
+    """Create authentication service for JWT token operations.
+
+    Args:
+        redis_client: Redis client for token revocation tracking
+        settings: Application settings
+
+    Returns:
+        AuthService instance (with or without Redis depending on availability)
+    """
+    try:
+        from faultmaven.services.auth_service import AuthService
+
+        # Load keys from settings if available
+        private_key = None
+        public_key = None
+        if settings.security.jwt_private_key:
+            private_key = settings.security.jwt_private_key.get_secret_value()
+        if settings.security.jwt_public_key:
+            public_key = settings.security.jwt_public_key
+
+        service = AuthService(
+            redis_client=redis_client,
+            private_key=private_key,
+            public_key=public_key,
+        )
+        if redis_client:
+            logger.info("✅ AuthService initialized with Redis (token revocation enabled)")
+        else:
+            logger.info("✅ AuthService initialized without Redis (token revocation disabled)")
+        return service
+    except Exception as e:
+        logger.warning(f"AuthService initialization failed: {e}")
+        # Return a minimal AuthService without Redis
+        from faultmaven.services.auth_service import AuthService
+        return AuthService()
+
+
 def create_tenant_provider(
     db_session: Any | None,
     organization_repository: Any | None,
@@ -337,6 +378,12 @@ def register_services(container: BaseDIContainer) -> None:
     db_session = getattr(container, "db_session", None)
     vector_store = container.get_service("vector_store")
     knowledge_ingester = getattr(container, "knowledge_ingester", None)
+    redis_client = getattr(container, "redis_client", None)
+
+    # Auth Service (JWT token operations with optional Redis for revocation)
+    auth_service = create_auth_service(redis_client, settings)
+    container.auth_service = auth_service
+    container._register_service("auth_service", auth_service)
 
     # Case Service
     case_service = create_case_service(

@@ -41,10 +41,9 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
             request_id = str(uuid4())
             
         # Store request ID in request state for access by other components
+        # Note: We use request.state instead of mutating headers, as Starlette's
+        # Headers object is immutable and mutating internal _list is fragile.
         request.state.request_id = request_id
-        
-        # Add to request headers for downstream processing
-        request.headers.__dict__["_list"].append((b"x-request-id", request_id.encode()))
         
         # Process request
         start_time = time.time()

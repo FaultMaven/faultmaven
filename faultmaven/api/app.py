@@ -1,29 +1,38 @@
 """FastAPI Application Setup (TASK-014, TASK-017)
 
-Purpose: FastAPI application factory for the FaultMaven REST API.
+DEPRECATED: This module is deprecated in favor of faultmaven.main.
+Use `faultmaven.main:app` as the canonical entrypoint for the application.
 
-This module provides:
+Example:
+    # Use the canonical entrypoint
+    uvicorn.run("faultmaven.main:app", host="0.0.0.0", port=8000)
+
+This legacy module is maintained for backward compatibility with existing
+code that imports from faultmaven.api.app. New code should use faultmaven.main
+which provides:
+- Proper DI container initialization via lifespan
+- Enhanced middleware (observability, rate limiting, protection)
+- Unified configuration via settings system
+- Production-ready security configuration
+
+Legacy module provides (DO NOT USE FOR NEW CODE):
 - Application factory with CORS and exception handlers
 - Router registration for cases, sessions, evidence, agent, and auth
 - JWT authentication support (TASK-017)
 - Health check endpoint
 - OpenAPI documentation configuration
 
-Usage:
-    from faultmaven.api.app import create_app, app
-
-    # Run with uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-
-Endpoints:
-    /api/docs       - Swagger UI documentation
-    /api/redoc      - ReDoc documentation
-    /api/openapi.json - OpenAPI specification
-    /health         - Health check endpoint
-    /api/v1/auth/*  - Authentication endpoints (TASK-017)
-
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
+
+import warnings
+
+warnings.warn(
+    "faultmaven.api.app is deprecated. Use 'faultmaven.main:app' as the canonical entrypoint. "
+    "This module will be removed in a future version.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 from typing import Any, Dict
 
