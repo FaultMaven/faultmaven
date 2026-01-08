@@ -212,8 +212,11 @@ class TestCaseResponse:
         mock_case.title = "Test Case"
         mock_case.description = "Description"
         mock_case.status = CaseStatus.INVESTIGATING
+        mock_case.assigned_to = None
         mock_case.created_at = datetime.now(timezone.utc)
         mock_case.updated_at = datetime.now(timezone.utc)
+        mock_case.closed_at = None
+        mock_case.resolution = None
         mock_case.problem_verification = None
         mock_case.closure_reason = None
         mock_case.metadata = None
@@ -232,8 +235,11 @@ class TestCaseResponse:
         mock_case.title = "Test Case"
         mock_case.description = "Description"
         mock_case.status = CaseStatus.CONSULTING
+        mock_case.assigned_to = None
         mock_case.created_at = datetime.now(timezone.utc)
         mock_case.updated_at = datetime.now(timezone.utc)
+        mock_case.closed_at = None
+        mock_case.resolution = None
         mock_case.problem_verification = None
         mock_case.closure_reason = None
         mock_case.metadata = None

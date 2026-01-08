@@ -305,7 +305,7 @@ class TestConvertToEvidenceRequests:
         evidence_requests = _convert_to_evidence_requests(ooda_response)
 
         assert len(evidence_requests) == 1
-        assert evidence_requests[0].category == EvidenceCategory.SYMPTOMS  # logs -> SYMPTOMS
+        assert evidence_requests[0].category == EvidenceCategory.SYMPTOM_EVIDENCE  # logs -> SYMPTOM_EVIDENCE
         assert evidence_requests[0].description == "Application logs needed"
         assert "journalctl -u myapp" in evidence_requests[0].guidance.commands
         assert evidence_requests[0].label == "Logs"
@@ -363,7 +363,7 @@ class TestConvertToEvidenceRequests:
         evidence_requests = _convert_to_evidence_requests(ooda_response)
 
         assert len(evidence_requests) == 1
-        assert evidence_requests[0].category == EvidenceCategory.METRICS
+        assert evidence_requests[0].category == EvidenceCategory.SYMPTOM_EVIDENCE  # metrics now maps to SYMPTOM_EVIDENCE
 
     def test_convert_config_evidence_type(self):
         """Test converting config evidence type"""
@@ -380,7 +380,7 @@ class TestConvertToEvidenceRequests:
         evidence_requests = _convert_to_evidence_requests(ooda_response)
 
         assert len(evidence_requests) == 1
-        assert evidence_requests[0].category == EvidenceCategory.CONFIGURATION
+        assert evidence_requests[0].category == EvidenceCategory.SYMPTOM_EVIDENCE  # configuration now maps to SYMPTOM_EVIDENCE
 
 
 class TestEdgeCases:
