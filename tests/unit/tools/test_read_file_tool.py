@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.modules.agent.tools.read_file_tool import ReadFileTool, MAX_TEXT_SIZE, TEXT_MIME_TYPES
-from faultmaven.modules.agent.tools.agent_tools import ToolContext
+from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceArtifactType
 
 

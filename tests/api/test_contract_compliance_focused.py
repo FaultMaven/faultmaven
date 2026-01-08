@@ -22,7 +22,7 @@ from fastapi import status
 # Import the FastAPI app
 from faultmaven.main import app
 from faultmaven.container import container
-from faultmaven.models.case import Case as CaseEntity, CaseStatus, CaseSeverity
+from faultmaven.modules.case.domain.models import Case as CaseEntity, CaseStatus, CaseSeverity
 from faultmaven.models.api import Case, CaseResponse, CaseSummary
 
 

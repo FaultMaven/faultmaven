@@ -25,7 +25,7 @@ from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
 from faultmaven.infrastructure.persistence.case_repository import RepositoryException
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationProgress,
@@ -421,7 +421,7 @@ async def test_status_transition(repository: DatabaseCaseRepository, sample_case
     await repository.save(sample_case)
 
     # Add status transition
-    from faultmaven.models.case import CaseStatusTransition
+    from faultmaven.modules.case.domain.models import CaseStatusTransition
     transition = CaseStatusTransition(
         from_status=CaseStatus.CONSULTING,
         to_status=CaseStatus.INVESTIGATING,

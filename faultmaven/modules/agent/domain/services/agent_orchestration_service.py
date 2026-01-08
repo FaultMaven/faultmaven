@@ -34,7 +34,7 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.infrastructure.persistence.agent_execution_repository import (
+from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     AgentExecutionRepository,
 )
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
@@ -50,10 +50,10 @@ from faultmaven.domain.events import (
     ToolCall,
     ToolResult as DomainToolResult,
 )
-from faultmaven.tools.agent_tools import (
+from faultmaven.modules.agent.tools.base import (
     AgentToolRegistry,
     ToolContext,
-    agent_tool_registry,
+    tool_registry as agent_tool_registry,
 )
 from faultmaven.integrations.llm_client import LLMClient, LLMProvider, create_llm_client
 from faultmaven.exceptions import (

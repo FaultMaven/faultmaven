@@ -194,7 +194,7 @@ def _convert_to_evidence_requests(ooda_response: OODAResponse) -> list[APIEviden
             evidence_requests.append(APIEvidenceRequest(
                 label=action.description[:100],  # Truncate to max_length
                 description=action.description[:500],  # Truncate to max_length
-                category=EvidenceCategory.SYMPTOMS,  # Default category
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,  # Default category
                 guidance=guidance,
                 created_at_turn=0,
             ))
@@ -205,16 +205,16 @@ def _convert_to_evidence_requests(ooda_response: OODAResponse) -> list[APIEviden
 def _map_evidence_category(evidence_type: str) -> EvidenceCategory:
     """Map OODA evidence types to EvidenceCategory enum."""
     mapping = {
-        "logs": EvidenceCategory.SYMPTOMS,
-        "metrics": EvidenceCategory.METRICS,
-        "config": EvidenceCategory.CONFIGURATION,
-        "configuration": EvidenceCategory.CONFIGURATION,
-        "scope": EvidenceCategory.SCOPE,
-        "timeline": EvidenceCategory.TIMELINE,
-        "test_result": EvidenceCategory.SYMPTOMS,
-        "implementation_proof": EvidenceCategory.ENVIRONMENT,
+        "logs": EvidenceCategory.SYMPTOM_EVIDENCE,
+        "metrics": EvidenceCategory.SYMPTOM_EVIDENCE,
+        "config": EvidenceCategory.SYMPTOM_EVIDENCE,
+        "configuration": EvidenceCategory.SYMPTOM_EVIDENCE,
+        "scope": EvidenceCategory.SYMPTOM_EVIDENCE,
+        "timeline": EvidenceCategory.SYMPTOM_EVIDENCE,
+        "test_result": EvidenceCategory.CAUSAL_EVIDENCE,
+        "implementation_proof": EvidenceCategory.RESOLUTION_EVIDENCE,
     }
-    return mapping.get(evidence_type.lower(), EvidenceCategory.SYMPTOMS)
+    return mapping.get(evidence_type.lower(), EvidenceCategory.SYMPTOM_EVIDENCE)
 
 
 def _is_evidence_action(action: Any) -> bool:

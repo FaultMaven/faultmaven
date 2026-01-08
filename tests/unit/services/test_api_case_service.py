@@ -21,7 +21,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.services.case_service import APICaseService
-from faultmaven.models.case import Case, CaseStatus, CaseSeverity, InvestigationStrategy
+from faultmaven.modules.case.domain.models import Case, CaseStatus, CaseSeverity, InvestigationStrategy
 from faultmaven.exceptions import (
     NotFoundError,
     AuthorizationError,

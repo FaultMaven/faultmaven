@@ -43,7 +43,7 @@ from faultmaven.models.case_ui import (
     FileToHypothesisRelationship,
 )
 
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     CaseStatus,
     InvestigationStage,
     HypothesisStatus,

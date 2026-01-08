@@ -30,7 +30,7 @@ from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
 )
 from faultmaven.services.file_storage_service import FileStorageService
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
-from faultmaven.models.case import Case, CaseStatus, InvestigationStrategy
+from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,

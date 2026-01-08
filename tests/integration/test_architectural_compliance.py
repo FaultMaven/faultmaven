@@ -19,7 +19,7 @@ from typing import Optional
 from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
 from faultmaven.services.domain.case_service import CaseService
 from faultmaven.models.common import SessionContext
-from faultmaven.models.case import Case
+from faultmaven.modules.case.domain.models import Case
 from faultmaven.exceptions import ValidationException
 
 

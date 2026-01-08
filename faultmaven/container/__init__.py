@@ -40,12 +40,22 @@ from faultmaven.container.providers import (
 )
 
 # Global singleton instance
+# Note: Will be replaced with DIContainer instance at runtime
+# BaseDIContainer is the base class, DIContainer adds initialize()
 container = BaseDIContainer()
+
+# Check if interfaces are available for test compatibility
+try:
+    from faultmaven.models.interfaces import ILLMProvider
+    INTERFACES_AVAILABLE = True
+except ImportError:
+    INTERFACES_AVAILABLE = False
 
 __all__ = [
     # Base
     "BaseDIContainer",
     "container",
+    "INTERFACES_AVAILABLE",
     # Registry
     "DependencyRegistry",
     "ServiceInfo",

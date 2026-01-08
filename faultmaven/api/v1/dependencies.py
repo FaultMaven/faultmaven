@@ -12,7 +12,7 @@ Key Features:
 - Request validation dependencies
 """
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from fastapi import Depends, HTTPException, Request
 
@@ -21,16 +21,20 @@ from ...models import SessionContext
 from ...models.interfaces_case import ICaseService
 from ...models.interfaces_report import IReportStore
 from ...models.interfaces import IJobService
-from ...services import DataService, SessionService
+# Lazy import to avoid circular dependency - DataService and SessionService imported in functions
 from ...modules.knowledge.domain.services.knowledge_service import KnowledgeService
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
 from ...services.preprocessing import PreprocessingService
 from ...providers.tenancy.base import TenantProvider
 
+# Type hints for lazy imports
+if TYPE_CHECKING:
+    from ...services import DataService, SessionService
+
 
 # Service Dependencies
 
-async def get_session_service() -> SessionService:
+async def get_session_service():
     """Get SessionService instance from container"""
     return container.get_session_service()
 
@@ -225,7 +229,7 @@ async def get_orchestration_service():
     return container.get_orchestration_service()
 
 
-async def get_data_service() -> DataService:
+async def get_data_service():
     """Get DataService instance from container"""
     return container.get_data_service()
 
@@ -256,7 +260,7 @@ async def get_protection_system(request: Request):
 
 async def get_current_session(
     session_id: str,
-    session_service: SessionService = Depends(get_session_service),
+    session_service = Depends(get_session_service),
 ) -> SessionContext:
     """
     Get and validate current session
@@ -279,7 +283,7 @@ async def get_current_session(
 
 async def get_optional_session(
     session_id: Optional[str] = None,
-    session_service: SessionService = Depends(get_session_service),
+    session_service = Depends(get_session_service),
 ) -> Optional[SessionContext]:
     """
     Get optional session if ID provided

@@ -44,7 +44,7 @@ from faultmaven.infrastructure.persistence.case_repository import (
     CaseRepository,
     InMemoryCaseRepository,
 )
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseStatusTransition,

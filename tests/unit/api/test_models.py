@@ -32,7 +32,7 @@ from faultmaven.api.models import (
     SessionUpdateRequest,
     ValidationErrorResponse,
 )
-from faultmaven.models.case import CaseSeverity, CaseStatus
+from faultmaven.modules.case.domain.models import CaseSeverity, CaseStatus
 from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
 from faultmaven.models.investigation_session import SessionStatus
 

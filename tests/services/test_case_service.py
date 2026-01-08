@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from typing import List, Optional
 
 from faultmaven.services.domain.case_service import CaseService
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseSeverity,

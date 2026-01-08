@@ -25,7 +25,7 @@ from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifactType,
     StorageBackend,
 )
-from faultmaven.models.case import Case, CaseStatus
+from faultmaven.modules.case.domain.models import Case, CaseStatus
 from faultmaven.exceptions import (
     NotFoundError,
     AuthorizationError,

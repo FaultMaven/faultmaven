@@ -36,6 +36,7 @@ class BaseDIContainer:
             cls._instance._initializing = False
             cls._instance._registry = DependencyRegistry()
             cls._instance._logger = logging.getLogger(__name__)
+            cls._instance.settings = None  # Will be set during initialization
         return cls._instance
 
     @property
@@ -47,6 +48,19 @@ class BaseDIContainer:
     def is_initialized(self) -> bool:
         """Check if container is initialized."""
         return self._initialized
+
+    def initialize(self) -> None:
+        """Synchronous initialization stub for base container.
+
+        For full async initialization, use DIContainer.initialize() instead.
+        This method just marks the container as initialized for testing.
+        """
+        if self._initialized:
+            self._logger.debug("Container already initialized")
+            return
+
+        self._initialized = True
+        self._logger.info("Base container initialized (stub)")
 
     def _register_service(
         self,
@@ -164,6 +178,18 @@ class BaseDIContainer:
             "ready_services": ready,
             "failed_services": [name for name, _ in failed],
         }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Alias for get_health() for backward compatibility."""
+        return self.get_health()
+
+    def get_agent_service(self) -> Any:
+        """Get the agent service.
+
+        Returns:
+            Agent service instance or None if not available
+        """
+        return self.get_service("agent_service", required=False)
 
     def reset(self) -> None:
         """Reset container state.

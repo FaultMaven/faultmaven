@@ -38,7 +38,7 @@ from faultmaven.modules.agent.infrastructure.persistence.agent_execution_reposit
 )
 from faultmaven.services.case_service import APICaseService
 from faultmaven.services.service_factory import ServiceFactory
-from faultmaven.models.case import Case, CaseStatus, CaseSeverity
+from faultmaven.modules.case.domain.models import Case, CaseStatus, CaseSeverity
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceArtifactType, StorageBackend
 from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus

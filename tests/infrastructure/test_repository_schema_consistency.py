@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     UploadedFile,

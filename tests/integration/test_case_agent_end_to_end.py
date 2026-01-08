@@ -14,7 +14,7 @@ from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from faultmaven.services.agentic.orchestration.agent_service import AgentService
 from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
 from faultmaven.models import QueryRequest, AgentResponse, ResponseType, ViewState, Source, SourceType, SessionContext
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseSeverity,

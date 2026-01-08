@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient
 from fastapi import status
 
 from faultmaven.main import app
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case as CaseEntity,
     CaseStatus,
     CaseSeverity,
@@ -131,7 +131,7 @@ class TestCaseCreation:
         mock_get_case_service.return_value = mock_case_service
         
         # Mock the service to return a CaseEntity (internal model)
-        from faultmaven.models.case import Case as CaseEntity
+        from faultmaven.modules.case.domain.models import Case as CaseEntity
         mock_entity = CaseEntity(
             case_id="case-123",
             title="Test API Case",
@@ -170,7 +170,7 @@ class TestCaseCreation:
         mock_get_case_service.return_value = mock_case_service
         
         # Mock minimal case entity
-        from faultmaven.models.case import Case as CaseEntity
+        from faultmaven.modules.case.domain.models import Case as CaseEntity
         mock_entity = CaseEntity(
             case_id="case-minimal",
             title="Minimal Case",

@@ -151,7 +151,7 @@ class TestAnchoringPrevention:
                 initial_likelihood=0.7,
                 created_at_turn=1,
                 last_updated_turn=1,
-                status=HypothesisStatus.TESTING,
+                status=HypothesisStatus.ACTIVE,
             )
             for i in range(4)
         ]
@@ -199,7 +199,7 @@ class TestAnchoringPrevention:
                 initial_likelihood=0.7,
                 created_at_turn=1,
                 last_updated_turn=1,
-                status=HypothesisStatus.TESTING,
+                status=HypothesisStatus.ACTIVE,
             ),
             Hypothesis(
                 statement="Config issue",
@@ -208,7 +208,7 @@ class TestAnchoringPrevention:
                 initial_likelihood=0.6,
                 created_at_turn=1,
                 last_updated_turn=1,
-                status=HypothesisStatus.TESTING,
+                status=HypothesisStatus.ACTIVE,
             ),
             Hypothesis(
                 statement="Infrastructure issue",
@@ -217,7 +217,7 @@ class TestAnchoringPrevention:
                 initial_likelihood=0.5,
                 created_at_turn=1,
                 last_updated_turn=1,
-                status=HypothesisStatus.TESTING,
+                status=HypothesisStatus.ACTIVE,
             ),
         ]
 
@@ -306,7 +306,7 @@ class TestOODAStepExecution:
                 initial_likelihood=0.7,
                 created_at_turn=3,
                 last_updated_turn=4,
-                status=HypothesisStatus.TESTING,
+                status=HypothesisStatus.ACTIVE,
             )
         )
 
@@ -339,7 +339,7 @@ class TestOODAStepExecution:
                 initial_likelihood=0.8,
                 created_at_turn=3,
                 last_updated_turn=3,
-                status=HypothesisStatus.PENDING,
+                status=HypothesisStatus.CAPTURED,
             )
         )
 
@@ -401,7 +401,7 @@ class TestShouldContinueIterations:
                 initial_likelihood=0.6,
                 created_at_turn=2,
                 last_updated_turn=3,
-                status=HypothesisStatus.TESTING,
+                status=HypothesisStatus.ACTIVE,
             )
         )
 

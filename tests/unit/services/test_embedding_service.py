@@ -27,7 +27,7 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import EMBEDDING_
 @pytest.fixture
 def mock_openai_client():
     """Create mock OpenAI client."""
-    with patch("faultmaven.services.embedding_service.AsyncOpenAI") as mock:
+    with patch("faultmaven.modules.knowledge.domain.services.embedding_service.AsyncOpenAI") as mock:
         client = MagicMock()
         mock.return_value = client
         yield client
