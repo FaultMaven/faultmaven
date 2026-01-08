@@ -45,35 +45,45 @@ logger = logging.getLogger(__name__)
 # HTTP Bearer security scheme for OpenAPI documentation
 bearer_scheme = HTTPBearer(auto_error=False)
 
-# Module-level auth service instance (lazy initialization)
-_auth_service: Optional[AuthService] = None
-
 
 def get_auth_service() -> AuthService:
-    """Get or create AuthService instance.
+    """Get AuthService instance from DI container.
 
     Returns:
-        AuthService singleton instance
+        AuthService instance from container (properly configured with Redis if available)
 
     Note:
-        Redis client should be injected for production use.
-        This creates a service without Redis for development.
+        Uses the DI container which is initialized at app startup.
+        Falls back to creating a new instance if container is not initialized.
     """
-    global _auth_service
-    if _auth_service is None:
-        # TODO: Inject Redis client for production
-        _auth_service = AuthService()
-    return _auth_service
+    try:
+        from faultmaven.container import container
+        auth_service = container.get_auth_service()
+        if auth_service is not None:
+            return auth_service
+    except Exception as e:
+        logger.warning(f"Failed to get AuthService from container: {e}")
+
+    # Fallback: create a minimal AuthService without Redis
+    logger.debug("Creating fallback AuthService (no Redis for token revocation)")
+    return AuthService()
 
 
 def set_auth_service(service: AuthService) -> None:
-    """Set the AuthService instance (for testing/DI).
+    """Set the AuthService instance in the DI container (for testing/DI).
 
     Args:
         service: AuthService instance to use
+
+    Note:
+        This sets the auth_service attribute on the container for testing purposes.
     """
-    global _auth_service
-    _auth_service = service
+    try:
+        from faultmaven.container import container
+        container.auth_service = service
+        logger.debug("AuthService set in DI container")
+    except Exception as e:
+        logger.warning(f"Failed to set AuthService in container: {e}")
 
 
 async def get_current_user(

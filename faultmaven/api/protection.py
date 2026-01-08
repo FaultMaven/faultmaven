@@ -420,25 +420,25 @@ class ProtectionSystem:
 
 
 # Legacy compatibility functions
-def setup_protection_middleware(
+async def setup_protection_middleware_async(
     app: FastAPI,
     settings: Optional[ProtectionSettings] = None,
     environment: str = "development",
     session_store: Optional[ISessionStore] = None
 ) -> Dict[str, Any]:
     """
-    Legacy compatibility function for basic protection middleware setup
-    
+    Async version of protection middleware setup (recommended).
+
     Args:
         app: FastAPI application instance
         settings: Protection settings (if None, loads from environment)
         environment: Environment name (development/production/testing)
         session_store: Optional session store for intelligent protection
-        
+
     Returns:
         Dictionary with setup status and middleware information
     """
-    
+
     # If session store is provided, use unified protection system
     if session_store is not None:
         # Get settings for the protection system
@@ -447,18 +447,16 @@ def setup_protection_middleware(
             protection_settings = get_settings()
         except Exception:
             protection_settings = None
-        
+
         protection_system = ProtectionSystem(app, session_store, settings=protection_settings)
         protection_system.environment = environment
-        
+
         # Override basic config if settings provided
         if settings is not None:
             protection_system.basic_config = settings
-        
-        # Setup and return comprehensive status
-        import asyncio
-        loop = asyncio.get_event_loop()
-        setup_results = loop.run_until_complete(protection_system.setup_protection_system())
+
+        # Setup asynchronously (properly awaited)
+        setup_results = await protection_system.setup_protection_system()
         
         # Transform to legacy format for compatibility
         legacy_result = {
@@ -556,6 +554,49 @@ def setup_protection_middleware(
             raise
     
     return setup_info
+
+
+def setup_protection_middleware(
+    app: FastAPI,
+    settings: Optional[ProtectionSettings] = None,
+    environment: str = "development",
+    session_store: Optional[ISessionStore] = None
+) -> Dict[str, Any]:
+    """
+    DEPRECATED: Use setup_protection_middleware_async() instead.
+
+    This sync wrapper exists for backward compatibility but will fail
+    if called from within an already-running event loop (e.g., ASGI/Uvicorn).
+
+    For FastAPI applications, prefer using the async version in your lifespan
+    or startup event handler.
+    """
+    import warnings
+    import asyncio
+
+    warnings.warn(
+        "setup_protection_middleware() is deprecated. "
+        "Use 'await setup_protection_middleware_async()' in your async startup handler.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+
+    # Try to run in existing loop or create new one
+    try:
+        loop = asyncio.get_running_loop()
+        # If we're in a running loop, we cannot use run_until_complete
+        # This typically happens under ASGI servers like Uvicorn
+        raise RuntimeError(
+            "Cannot call sync setup_protection_middleware() from within a running event loop. "
+            "Use 'await setup_protection_middleware_async()' instead."
+        )
+    except RuntimeError as e:
+        if "no running event loop" in str(e).lower():
+            # No running loop, safe to create one
+            return asyncio.run(
+                setup_protection_middleware_async(app, settings, environment, session_store)
+            )
+        raise
 
 
 def create_timeout_handler(settings: Optional[ProtectionSettings] = None) -> TimeoutHandler:

@@ -44,7 +44,14 @@ class ValidationException(FaultMavenException):
 
 
 class NotFoundException(FaultMavenException):
-    """Raised when a requested resource is not found."""
+    """Raised when a requested resource is not found.
+
+    DEPRECATED: Prefer using NotFoundError for new code, which provides
+    structured resource_type and resource_id fields.
+
+    This class is maintained for backward compatibility with code that uses
+    simple message-based initialization.
+    """
     pass
 
 
@@ -167,16 +174,43 @@ class NotFoundError(ServiceError):
 
     Raised when a requested resource (case, session, etc.) does not exist.
 
+    This is the preferred exception class for "not found" errors in service code.
+    It provides structured resource_type and resource_id fields for better error
+    handling and logging.
+
     Attributes:
         resource_type: Type of the resource (e.g., "Case", "Session")
         resource_id: ID of the resource that was not found
+
+    Usage:
+        # Structured initialization (preferred)
+        raise NotFoundError("Case", "case_123")
+
+        # Message-only initialization (for simpler cases)
+        raise NotFoundError(message="Document not found in knowledge base")
     """
 
-    def __init__(self, resource_type: str, resource_id: str):
+    def __init__(
+        self,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        message: Optional[str] = None
+    ):
         self.resource_type = resource_type
         self.resource_id = resource_id
+
+        # Support both structured and message-only initialization
+        if message:
+            error_message = message
+        elif resource_type and resource_id:
+            error_message = f"{resource_type} not found: {resource_id}"
+        elif resource_type:
+            error_message = f"{resource_type} not found"
+        else:
+            error_message = "Resource not found"
+
         super().__init__(
-            f"{resource_type} not found: {resource_id}",
+            error_message,
             details={"resource_type": resource_type, "resource_id": resource_id}
         )
 
