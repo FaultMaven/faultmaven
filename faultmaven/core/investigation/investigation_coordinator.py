@@ -18,7 +18,7 @@ from enum import Enum
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from faultmaven.models.case import UrgencyLevel
+    from faultmaven.modules.case.domain.models import UrgencyLevel
     from faultmaven.modules.agent.domain.models.investigation import InvestigationState, InvestigationStrategy
 
 
@@ -180,7 +180,7 @@ class InvestigationCoordinator:
         Returns:
             UrgencyLevel (NORMAL if not set)
         """
-        from faultmaven.models.case import UrgencyLevel
+        from faultmaven.modules.case.domain.models import UrgencyLevel
 
         # InvestigationState.lifecycle.urgency_level is a string
         # Convert to UrgencyLevel enum

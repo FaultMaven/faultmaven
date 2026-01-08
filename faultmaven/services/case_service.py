@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from faultmaven.services.base import BaseService
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseSeverity,

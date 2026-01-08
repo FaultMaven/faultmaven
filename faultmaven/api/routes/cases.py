@@ -33,7 +33,7 @@ from faultmaven.api.models import (
 )
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.models.case import CaseSeverity, CaseStatus
+from faultmaven.modules.case.domain.models import CaseSeverity, CaseStatus
 from faultmaven.services.case_service import APICaseService
 
 

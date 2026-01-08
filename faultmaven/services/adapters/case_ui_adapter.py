@@ -18,7 +18,7 @@ Architecture:
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from faultmaven.models.case import Case, CaseStatus, HypothesisStatus, InvestigationPath
+from faultmaven.modules.case.domain.models import Case, CaseStatus, HypothesisStatus, InvestigationPath
 from faultmaven.models.case_ui import (
     CaseUIResponse,
     CaseUIResponse_Consulting,
@@ -190,7 +190,7 @@ def _transform_consulting(case: Case) -> CaseUIResponse_Consulting:
     # Defensive: Ensure consulting object exists (should never be None from repository)
     # If somehow None, initialize with default to satisfy API contract requirement
     if case.consulting is None:
-        from faultmaven.models.case import ConsultingData
+        from faultmaven.modules.case.domain.models import ConsultingData
         case.consulting = ConsultingData()
 
     # Build nested consulting data

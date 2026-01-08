@@ -1,12 +1,15 @@
 """API Routes Package
 """
 
-# Import routes  
+# NOTE: Most routes have been moved to modules (faultmaven/modules/*/api/routes.py)
+# or to faultmaven/api/routes/*
+# This file now only handles optional/conditional route imports
+
 # REMOVED: agent - replaced by case routes with real AgentService integration
-from . import data
-from . import knowledge
-from . import session
-from . import auth
+# REMOVED: data - functionality moved to modules/case (data ingestion)
+# REMOVED: knowledge - moved to modules/knowledge/api/routes.py
+# REMOVED: session - moved to modules/auth (session management)
+# REMOVED: auth - moved to faultmaven/api/routes/auth.py
 
 # Import case persistence routes
 try:
@@ -36,13 +39,7 @@ except ImportError:
 
 """Locked spec excludes enhanced_agent, orchestration, monitoring routes."""
 
-__all__ = [
-    # "agent",  # REMOVED: replaced by case routes with real AgentService integration
-    "data",
-    "knowledge",
-    "session",
-    "auth",
-]
+__all__ = []
 
 # Add case routes if available
 if CASE_ROUTES_AVAILABLE:

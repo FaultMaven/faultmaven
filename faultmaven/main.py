@@ -71,20 +71,48 @@ def _is_test_environment() -> bool:
     return False
 
 # Import API routes
-from .api.v1.routes import data, knowledge, session, auth
+# NOTE: Most routes moved to modules or faultmaven/api/routes/
+# data -> modules/case (data ingestion)
+# knowledge -> modules/knowledge/api/routes.py
+# session -> modules/auth (session management)
+# auth -> faultmaven/api/routes/auth.py
 
 # Import case routes (always available in production)
-from .api.v1.routes import case
-CASE_ROUTES_AVAILABLE = True
+try:
+    from .api.v1.routes import case
+    CASE_ROUTES_AVAILABLE = True
+except ImportError:
+    CASE_ROUTES_AVAILABLE = False
+    case = None
+    logger.warning("Case routes not available")
 
 # Import user KB routes
-from .api.v1.routes import user_kb
+try:
+    from .api.v1.routes import user_kb
+    USER_KB_ROUTES_AVAILABLE = True
+except ImportError:
+    USER_KB_ROUTES_AVAILABLE = False
+    user_kb = None
+    logger.warning("User KB routes not available")
 
 # Import jobs routes
-from .api.v1.routes import jobs
+try:
+    from .api.v1.routes import jobs
+    JOBS_ROUTES_AVAILABLE = True
+except ImportError:
+    JOBS_ROUTES_AVAILABLE = False
+    jobs = None
+    logger.warning("Jobs routes not available")
 
 # Import organization and team routes
-from .api.v1.routes import organizations, teams
+try:
+    from .api.v1.routes import organizations, teams
+    ORG_TEAM_ROUTES_AVAILABLE = True
+except ImportError:
+    ORG_TEAM_ROUTES_AVAILABLE = False
+    organizations = None
+    teams = None
+    logger.warning("Organization/Team routes not available")
 
 # Import reports routes (TASK-024)
 try:
@@ -564,36 +592,36 @@ def setup_middleware():
 setup_middleware()
 
 # Include API routers (only those in locked spec)
-app.include_router(data.router, prefix="/api/v1", tags=["data_ingestion"])
-
+# REMOVED: data.router - moved to modules/case (data ingestion)
+# REMOVED: knowledge.router - moved to modules/knowledge/api/routes.py
+# REMOVED: session.router - moved to modules/auth (session management)
+# REMOVED: auth.router - moved to faultmaven/api/routes/auth.py
 # REMOVED: agent.router - replaced by case routes with real AgentService integration
 
-app.include_router(knowledge.router, prefix="/api/v1", tags=["knowledge_base"])
-
-app.include_router(session.router, prefix="/api/v1", tags=["session_management"])
-
-# Authentication routes (auth.router already has prefix="/api/v1/auth")
-app.include_router(auth.router, tags=["authentication"])
-
-# Case persistence routes (always included in production)
-app.include_router(case.router, prefix="/api/v1", tags=["case_persistence"])
-logger.info("✅ Case persistence endpoints added")
+# Case persistence routes (conditionally included)
+if CASE_ROUTES_AVAILABLE and case:
+    app.include_router(case.router, prefix="/api/v1", tags=["case_persistence"])
+    logger.info("✅ Case persistence endpoints added")
 
 # User KB routes
-app.include_router(user_kb.router, prefix="/api/v1", tags=["user_kb"])
-logger.info("✅ User KB endpoints added")
+if USER_KB_ROUTES_AVAILABLE and user_kb:
+    app.include_router(user_kb.router, prefix="/api/v1", tags=["user_kb"])
+    logger.info("✅ User KB endpoints added")
 
 # Jobs management routes
-app.include_router(jobs.router, prefix="/api/v1", tags=["job_management"])
-logger.info("✅ Job management endpoints added")
+if JOBS_ROUTES_AVAILABLE and jobs:
+    app.include_router(jobs.router, prefix="/api/v1", tags=["job_management"])
+    logger.info("✅ Job management endpoints added")
 
 # Organization management routes
-app.include_router(organizations.router, prefix="/api/v1", tags=["organizations"])
-logger.info("✅ Organization management endpoints added")
+if ORG_TEAM_ROUTES_AVAILABLE and organizations:
+    app.include_router(organizations.router, prefix="/api/v1", tags=["organizations"])
+    logger.info("✅ Organization management endpoints added")
 
 # Team management routes
-app.include_router(teams.router, prefix="/api/v1", tags=["teams"])
-logger.info("✅ Team management endpoints added")
+if ORG_TEAM_ROUTES_AVAILABLE and teams:
+    app.include_router(teams.router, prefix="/api/v1", tags=["teams"])
+    logger.info("✅ Team management endpoints added")
 
 # Report management routes (TASK-024)
 if REPORTS_ROUTES_AVAILABLE and reports:

@@ -44,7 +44,7 @@ from faultmaven.infrastructure.persistence.models import (
     CaseStatusTransitionModel,
     CaseTagModel,
 )
-from faultmaven.models.case import (
+from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationProgress,

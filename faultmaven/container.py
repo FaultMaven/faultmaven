@@ -876,7 +876,7 @@ class DIContainer(BaseDIContainer):
         """Create a minimal case service for testing environments"""
         from datetime import datetime
         import uuid
-        from faultmaven.models.case import Case, CaseStatus
+        from faultmaven.modules.case.domain.models import Case, CaseStatus
 
         class MinimalCaseService:
             def __init__(self):
