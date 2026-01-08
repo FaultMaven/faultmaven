@@ -687,11 +687,18 @@ class CaseSettings(BaseSettings):
 class SecuritySettings(BaseSettings):
     """Security and authentication configuration"""
     # JWT configuration (RS256 for production-ready asymmetric encryption)
+    # For development/testing, HS256 with jwt_secret_key is also supported
     jwt_algorithm: str = Field(default="RS256", env="JWT_ALGORITHM")
     jwt_private_key_path: Optional[str] = Field(default=None, env="JWT_PRIVATE_KEY_PATH")
     jwt_public_key_path: Optional[str] = Field(default=None, env="JWT_PUBLIC_KEY_PATH")
     jwt_private_key: Optional[SecretStr] = Field(default=None, env="JWT_PRIVATE_KEY")
     jwt_public_key: Optional[str] = Field(default=None, env="JWT_PUBLIC_KEY")
+    # HS256 fallback secret key (for development/testing when RSA keys are not configured)
+    jwt_secret_key: Optional[SecretStr] = Field(
+        default=None,
+        env="JWT_SECRET_KEY",
+        description="Secret key for HS256 algorithm. Only used as fallback when RS256 keys are not configured."
+    )
     jwt_access_token_expire_minutes: int = Field(default=15, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
     jwt_refresh_token_expire_days: int = Field(default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS")
     jwt_issuer: str = Field(default="faultmaven-api", env="JWT_ISSUER")

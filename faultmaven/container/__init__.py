@@ -11,6 +11,10 @@ Usage:
     from faultmaven.container import container
     await container.initialize()
     llm = container.get_service("llm_provider", required=True)
+
+IMPORTANT: This package consolidates all DI container exports.
+The main DIContainer implementation is in faultmaven._container_impl
+and re-exported here for clean imports.
 """
 
 from faultmaven.container.registry import (
@@ -39,13 +43,17 @@ from faultmaven.container.providers import (
     register_tools,
 )
 
-# Global singleton instance
-container = BaseDIContainer()
+# Import the full DIContainer implementation and singleton from the impl module
+# This ensures all code importing from faultmaven.container gets the proper DIContainer
+from faultmaven._container_impl import DIContainer, GlobalContainer, container
 
 __all__ = [
+    # Main container classes and singleton
+    "DIContainer",
+    "GlobalContainer",
+    "container",
     # Base
     "BaseDIContainer",
-    "container",
     # Registry
     "DependencyRegistry",
     "ServiceInfo",

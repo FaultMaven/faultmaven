@@ -649,93 +649,106 @@ except Exception as e:
     logger.warning(f"Prometheus metrics endpoint initialization failed (non-critical): {e}")
 
 
-# Debug endpoints (present in locked API spec)
-@app.get("/debug/routes")
-async def debug_routes():
-    """List all registered routes (path + methods)."""
-    routes_info = []
-    for route in app.routes:
-        path = getattr(route, "path", None)
-        methods = list(getattr(route, "methods", []) or [])
-        if path:
-            routes_info.append({"path": path, "methods": methods})
-    return {"routes": routes_info, "count": len(routes_info), "timestamp": to_json_compatible(datetime.now(timezone.utc))}
+# Debug endpoints - ONLY available in development/testing environments
+# These endpoints expose internal state and should never be enabled in production
+def _is_debug_enabled() -> bool:
+    """Check if debug endpoints should be enabled based on environment."""
+    env = os.getenv("ENVIRONMENT", "development").lower()
+    # Only enable in development or when explicitly requested for testing
+    return env in ("development", "testing", "test") or os.getenv("ENABLE_DEBUG_ENDPOINTS", "").lower() == "true"
 
 
-@app.get("/debug/health")
-async def debug_health():
-    """Minimal debug health endpoint."""
-    return {"status": "ok", "timestamp": to_json_compatible(datetime.now(timezone.utc))}
+if _is_debug_enabled():
+    logger.info("🔧 Debug endpoints enabled (ENVIRONMENT=%s)", os.getenv("ENVIRONMENT", "development"))
+
+    @app.get("/debug/routes")
+    async def debug_routes():
+        """List all registered routes (path + methods)."""
+        routes_info = []
+        for route in app.routes:
+            path = getattr(route, "path", None)
+            methods = list(getattr(route, "methods", []) or [])
+            if path:
+                routes_info.append({"path": path, "methods": methods})
+        return {"routes": routes_info, "count": len(routes_info), "timestamp": to_json_compatible(datetime.now(timezone.utc))}
 
 
-@app.get("/debug/config")
-async def debug_config():
-    """Get current configuration summary including active preset.
-
-    Returns information about:
-    - Active configuration preset (if any)
-    - Environment settings
-    - Storage backend types
-    - LLM provider configuration
-    - Protection settings
-
-    Useful for debugging configuration issues and verifying preset application.
-    """
-    try:
-        from .config.settings import get_settings
-        from .config.presets import get_preset_info, list_available_presets
-
-        settings = get_settings()
-
-        return {
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-            "configuration": settings.get_configuration_summary(),
-            "available_presets": list_available_presets(),
-        }
-    except Exception as e:
-        logger.error(f"Failed to get configuration info: {e}")
-        return {
-            "error": f"Failed to get configuration: {e}",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc))
-        }
+    @app.get("/debug/health")
+    async def debug_health():
+        """Minimal debug health endpoint."""
+        return {"status": "ok", "timestamp": to_json_compatible(datetime.now(timezone.utc))}
 
 
-@app.get("/debug/llm-providers")
-async def debug_llm_providers():
-    """Get current LLM provider status and fallback chain."""
-    try:
-        from .container import container
+    @app.get("/debug/config")
+    async def debug_config():
+        """Get current configuration summary including active preset.
 
-        # Get the LLM provider (router) from the container
-        llm_provider = container.get_llm_provider()
+        Returns information about:
+        - Active configuration preset (if any)
+        - Environment settings
+        - Storage backend types
+        - LLM provider configuration
+        - Protection settings
 
-        # Get provider status
-        provider_status = llm_provider.get_provider_status()
+        Useful for debugging configuration issues and verifying preset application.
+        """
+        try:
+            from .config.settings import get_settings
+            from .config.presets import get_preset_info, list_available_presets
 
-        # Get fallback chain
-        fallback_chain = llm_provider.registry.get_fallback_chain()
+            settings = get_settings()
 
-        # Get available providers
-        available_providers = llm_provider.registry.get_available_providers()
+            return {
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+                "configuration": settings.get_configuration_summary(),
+                "available_presets": list_available_presets(),
+            }
+        except Exception as e:
+            logger.error(f"Failed to get configuration info: {e}")
+            return {
+                "error": f"Failed to get configuration: {e}",
+                "timestamp": to_json_compatible(datetime.now(timezone.utc))
+            }
 
-        # Check if strict mode is enabled
-        strict_mode = os.getenv("STRICT_PROVIDER_MODE", "false").lower() == "true"
 
-        return {
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-            "primary_provider": fallback_chain[0] if fallback_chain else "none",
-            "strict_mode": strict_mode,
-            "fallback_chain": fallback_chain,
-            "available_providers": available_providers,
-            "provider_details": provider_status
-        }
+    @app.get("/debug/llm-providers")
+    async def debug_llm_providers():
+        """Get current LLM provider status and fallback chain."""
+        try:
+            from .container import container
 
-    except Exception as e:
-        logger.error(f"Failed to get LLM provider status: {e}")
-        return {
-            "error": f"Failed to get LLM provider status: {e}",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc))
-        }
+            # Get the LLM provider (router) from the container
+            llm_provider = container.get_llm_provider()
+
+            # Get provider status
+            provider_status = llm_provider.get_provider_status()
+
+            # Get fallback chain
+            fallback_chain = llm_provider.registry.get_fallback_chain()
+
+            # Get available providers
+            available_providers = llm_provider.registry.get_available_providers()
+
+            # Check if strict mode is enabled
+            strict_mode = os.getenv("STRICT_PROVIDER_MODE", "false").lower() == "true"
+
+            return {
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+                "primary_provider": fallback_chain[0] if fallback_chain else "none",
+                "strict_mode": strict_mode,
+                "fallback_chain": fallback_chain,
+                "available_providers": available_providers,
+                "provider_details": provider_status
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get LLM provider status: {e}")
+            return {
+                "error": f"Failed to get LLM provider status: {e}",
+                "timestamp": to_json_compatible(datetime.now(timezone.utc))
+            }
+else:
+    logger.info("🔒 Debug endpoints disabled in production (ENVIRONMENT=%s)", os.getenv("ENVIRONMENT", "development"))
 
 # Modular monolith pivot: keep only core endpoints; advanced routes disabled
 

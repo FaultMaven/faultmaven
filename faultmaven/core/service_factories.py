@@ -61,15 +61,21 @@ def register_services(redis_client=None) -> None:
     from faultmaven.services.file_storage_service import FileStorageService
 
     # AuthService - Used by UserService
+    # Note: AuthService gets JWT settings internally from get_settings(),
+    # so we only pass redis_client and optional keys here.
     def create_auth_service():
         logger.debug("Creating AuthService via DI container")
+        # Load keys from settings if needed
+        private_key = None
+        public_key = None
+        if settings.security.jwt_private_key:
+            private_key = settings.security.jwt_private_key.get_secret_value()
+        if settings.security.jwt_public_key:
+            public_key = settings.security.jwt_public_key
         return AuthService(
             redis_client=redis_client,
-            jwt_algorithm=settings.security.jwt_algorithm,
-            jwt_access_token_expire_minutes=settings.security.jwt_access_token_expire_minutes,
-            jwt_refresh_token_expire_minutes=settings.security.jwt_refresh_token_expire_minutes,
-            jwt_issuer=settings.security.jwt_issuer,
-            jwt_audience=settings.security.jwt_audience,
+            private_key=private_key,
+            public_key=public_key,
         )
 
     ServiceContainer.register_factory(AuthService, create_auth_service)

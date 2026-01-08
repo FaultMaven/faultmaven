@@ -189,7 +189,6 @@ class DIContainer(BaseDIContainer):
             # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
                 logger.warning("Agent service requested but container not initialized - this should not happen after startup")
-                self.initialize()
         return getattr(self, 'agent_service', None)
     
     def get_data_service(self):
@@ -199,7 +198,6 @@ class DIContainer(BaseDIContainer):
             # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
                 logger.warning("Data service requested but container not initialized - this should not happen after startup")
-                self.initialize()
         return getattr(self, 'data_service', None)
 
     def get_preprocessing_service(self):
@@ -209,7 +207,6 @@ class DIContainer(BaseDIContainer):
             # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
                 logger.warning("Preprocessing service requested but container not initialized")
-                self.initialize()
         return getattr(self, 'preprocessing_service', None)
 
     def get_knowledge_service(self):
@@ -219,7 +216,6 @@ class DIContainer(BaseDIContainer):
             # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
                 logger.warning("Knowledge service requested but container not initialized - this should not happen after startup")
-                self.initialize()
         knowledge_service = getattr(self, 'knowledge_service', None)
         if knowledge_service is None:
             return self._create_minimal_knowledge_service()
@@ -231,7 +227,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Metrics collector requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'metrics_collector', None)
     
     def get_intelligent_cache(self):
@@ -240,7 +236,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Intelligent cache requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'intelligent_cache', None)
     
     def get_analytics_dashboard_service(self):
@@ -249,7 +245,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Analytics dashboard service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'analytics_dashboard_service', None)
     
     def get_sla_monitor(self):
@@ -258,7 +254,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("SLA monitor requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'sla_monitor', None)
     
     def get_performance_monitor(self):
@@ -267,7 +263,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Performance monitor requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'performance_monitor', None)
     
     # Phase 2: Advanced Intelligence Services Getters
@@ -278,7 +274,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Memory service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         # Memory service functionality is now provided by AgentStateManager
         return getattr(self, 'agent_state_manager', None)
     
@@ -288,7 +284,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Planning service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         # Planning service functionality is now provided by BusinessLogicWorkflowEngine
         return getattr(self, 'business_logic_workflow_engine', None)
     
@@ -298,7 +294,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Enhanced agent service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         enhanced_service = getattr(self, 'enhanced_agent_service', None)
         if enhanced_service is None:
             # Fallback to standard agent service
@@ -311,7 +307,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Orchestration service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'orchestration_service', None)
     
     
@@ -573,7 +569,6 @@ class DIContainer(BaseDIContainer):
             # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
                 logger.warning("LLM provider requested but container not initialized - this should not happen after startup")
-                self.initialize()
         
         # Ensure we always return a valid implementation, even if initialization failed
         llm_provider = getattr(self, 'llm_provider', None)
@@ -641,7 +636,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Investigation service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'investigation_service', None)
 
     def get_investigation_orchestrator(self):
@@ -650,7 +645,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Investigation orchestrator requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'investigation_orchestrator', None)
 
     def get_evidence_service(self):
@@ -659,7 +654,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Evidence service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'evidence_service', None)
 
     def get_organization_service(self):
@@ -668,7 +663,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Organization service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'organization_service', None)
 
     def get_team_service(self):
@@ -677,7 +672,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Team service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'team_service', None)
 
     def get_milestone_engine(self):
@@ -686,49 +681,49 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Milestone engine requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'milestone_engine', None)
 
     def get_case_store(self) -> Optional[ICaseStore]:
         """Get the case store implementation (optional feature)"""
         if not self._initialized:
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'case_store', None)
 
     def get_report_store(self) -> Optional[IReportStore]:
         """Get the report store implementation (optional feature)"""
         if not self._initialized:
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'report_store', None)
 
     def get_tenant_provider(self):
         """Get the tenant provider for multi-tenant isolation (TASK-023/024)"""
         if not self._initialized:
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'tenant_provider', None)
 
     def get_report_generation_service(self):
         """Get the report generation service (TASK-024)"""
         if not self._initialized:
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'report_generation_service', None)
 
     def get_report_recommendation_service(self):
         """Get the report recommendation service (TASK-024)"""
         if not self._initialized:
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'report_recommendation_service', None)
 
     def get_config(self):
         """Get the configuration manager instance"""
         if not self._initialized:
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'config', None)
     
     def _create_minimal_session_service(self):
@@ -1402,7 +1397,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Pattern learner requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'pattern_learner', None)
     
     def get_enhanced_data_classifier(self):
@@ -1411,7 +1406,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Enhanced data classifier requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         enhanced_classifier = getattr(self, 'enhanced_data_classifier', None)
         if enhanced_classifier is None:
             # Fallback to standard classifier
@@ -1424,7 +1419,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Enhanced log processor requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         enhanced_processor = getattr(self, 'enhanced_log_processor', None)
         if enhanced_processor is None:
             # Fallback to standard processor
@@ -1437,7 +1432,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Enhanced security assessment requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'enhanced_security_assessment', None)
     
     def get_enhanced_data_service(self):
@@ -1446,7 +1441,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Enhanced data service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         enhanced_service = getattr(self, 'enhanced_data_service', None)
         if enhanced_service is None:
             # Fallback to standard data service
@@ -1461,7 +1456,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Confidence service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'confidence_service', None)
     
     def get_decision_recorder(self):
@@ -1470,7 +1465,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Decision recorder requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'decision_recorder', None)
     
     def get_microservice_session_service(self):
@@ -1479,7 +1474,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Microservice session service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         enhanced_service = getattr(self, 'microservice_session_service', None)
         if enhanced_service is None:
             # Fallback to standard session service
@@ -1492,7 +1487,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Policy service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'policy_service', None)
     
     def get_unified_retrieval_service(self):
@@ -1501,7 +1496,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Unified retrieval service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'unified_retrieval_service', None)
     
     # Phase B: Orchestration and Coordination Services Getters
@@ -1512,7 +1507,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Gateway service requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'gateway_service', None)
     
     def get_loop_guard_service(self):
@@ -1529,7 +1524,6 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             if not getattr(self, '_initializing', False):
                 logger.warning("Redis client requested but container not initialized")
-                self.initialize()
         return getattr(self, 'redis_client', None)
     
     def get_job_service(self):
@@ -1538,7 +1532,6 @@ class DIContainer(BaseDIContainer):
         if not self._initialized:
             if not getattr(self, '_initializing', False):
                 logger.warning("Job service requested but container not initialized")
-                self.initialize()
         
         # Create job service if not already created
         if not hasattr(self, '_job_service'):
@@ -1564,7 +1557,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Business Logic Workflow Engine requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'business_logic_workflow_engine', None)
     
     def get_agent_state_manager(self) -> Optional[IAgentStateManager]:
@@ -1573,14 +1566,14 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Agent State Manager requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'agent_state_manager', None)
     
         if not self._initialized:
             logger = logging.getLogger(__name__)
             logger.warning("Query Classification Engine requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'query_classification_engine', None)
     
     def get_tool_skill_broker(self) -> Optional[IToolSkillBroker]:
@@ -1589,7 +1582,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Tool Skill Broker requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'tool_skill_broker', None)
     
     def get_guardrails_policy_layer(self) -> Optional[IGuardrailsPolicyLayer]:
@@ -1598,7 +1591,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Guardrails Policy Layer requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'guardrails_policy_layer', None)
     
     def get_response_synthesizer(self) -> Optional[IResponseSynthesizer]:
@@ -1607,7 +1600,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Response Synthesizer requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'response_synthesizer', None)
     
     def get_error_fallback_manager(self) -> Optional[IErrorFallbackManager]:
@@ -1616,7 +1609,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Error Fallback Manager requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'error_fallback_manager', None)
 
     # Authentication Services
@@ -1627,7 +1620,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("Token manager requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'token_manager', None)
 
     def get_user_store(self):
@@ -1636,7 +1629,7 @@ class DIContainer(BaseDIContainer):
             logger = logging.getLogger(__name__)
             logger.warning("User store requested but container not initialized")
             if not getattr(self, '_initializing', False):
-                self.initialize()
+                pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'user_store', None)
 
     def health_check(self) -> dict:
