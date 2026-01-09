@@ -263,7 +263,7 @@ class TestConfigPurity:
     @pytest.fixture(scope="class")
     def project_root(self) -> Path:
         """Get the project root directory."""
-        return Path(__file__).parent.parent.parent
+        return Path(__file__).parent.parent.parent.parent
 
     @pytest.fixture(scope="class")
     def purity_scanner(self, project_root: Path) -> ConfigPurityScanner:
@@ -377,7 +377,7 @@ class TestConfigPurityAllowlist:
     @pytest.fixture(scope="class")
     def project_root(self) -> Path:
         """Get the project root directory."""
-        return Path(__file__).parent.parent.parent
+        return Path(__file__).parent.parent.parent.parent
 
     @pytest.mark.architecture
     def test_allowed_files_exist(self, project_root: Path):

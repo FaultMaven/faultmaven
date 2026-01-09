@@ -211,6 +211,7 @@ def get_mark_complete_prompt(
     solution_summary: str,
     verification_details: str,
     confidence_level: float,
+    completeness_assessment: str = "UNKNOWN",
 ) -> str:
     """Get confirmation to mark investigation as complete (Phase 5 → RESOLVED)
 
@@ -222,6 +223,7 @@ def get_mark_complete_prompt(
         solution_summary: Solution that was applied
         verification_details: How solution was verified
         confidence_level: Confidence in root cause (0.0-1.0)
+        completeness_assessment: Assessment of investigation completeness (FULL, HIGH, PARTIAL, etc.)
 
     Returns:
         Confirmation prompt explaining completion
@@ -240,6 +242,8 @@ def get_mark_complete_prompt(
 {verification_details}
 
 **Confidence Level**: {confidence_level:.0%} (validated root cause)
+
+**Completeness Assessment**: {completeness_assessment}
 
 ## What Happens Next
 

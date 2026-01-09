@@ -187,6 +187,38 @@ class BaseDIContainer:
         """
         return self.get_service("agent_service", required=False)
 
+    def get_llm_provider(self) -> Any:
+        """Get the LLM provider.
+
+        Returns:
+            LLM provider instance or None if not available
+        """
+        return self.get_service("llm_provider", required=False)
+
+    def get_sanitizer(self) -> Any:
+        """Get the sanitizer service.
+
+        Returns:
+            Sanitizer instance or None if not available
+        """
+        return self.get_service("sanitizer", required=False)
+
+    def get_tracer(self) -> Any:
+        """Get the tracer service.
+
+        Returns:
+            Tracer instance or None if not available
+        """
+        return self.get_service("tracer", required=False)
+
+    def health_check(self) -> Dict[str, Any]:
+        """Alias for get_health() for backward compatibility.
+
+        Returns:
+            Dict with status and component details
+        """
+        return self.get_health()
+
     def reset(self) -> None:
         """Reset container state.
 

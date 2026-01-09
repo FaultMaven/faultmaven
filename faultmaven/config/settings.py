@@ -315,27 +315,6 @@ class LLMSettings(BaseSettings):
                 "classifier": self.cohere_classifier_model,
                 "code": self.cohere_code_model,
             },
-            LLMProvider.GEMINI: {
-                "chat": self.gemini_chat_model,
-                "multimodal": self.gemini_multimodal_model,
-                "synthesis": self.gemini_synthesis_model,
-                "classifier": self.gemini_classifier_model,
-                "code": self.gemini_code_model,
-            },
-            LLMProvider.HUGGINGFACE: {
-                "chat": self.huggingface_chat_model,
-                "multimodal": self.huggingface_multimodal_model,
-                "synthesis": self.huggingface_synthesis_model,
-                "classifier": self.huggingface_classifier_model,
-                "code": self.huggingface_code_model,
-            },
-            LLMProvider.OPENROUTER: {
-                "chat": self.openrouter_chat_model,
-                "multimodal": self.openrouter_multimodal_model,
-                "synthesis": self.openrouter_synthesis_model,
-                "classifier": self.openrouter_classifier_model,
-                "code": self.openrouter_code_model,
-            },
             LLMProvider.GROQ: {
                 "chat": self.groq_chat_model,
                 "multimodal": self.groq_multimodal_model,
