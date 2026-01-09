@@ -433,3 +433,258 @@ class TestUserModel:
         assert user.timezone == "UTC"
         assert user.locale == "en-US"
         assert user.roles == []
+
+
+# ============================================================
+# Bug Fix Tests: Email Uniqueness and Immutability (Priority 1)
+# ============================================================
+
+class TestEmailUniquenessEnforcement:
+    """Tests for email uniqueness enforcement (BUGFIX: Priority 1).
+
+    These tests verify that the repository prevents duplicate emails
+    (case-insensitive) and that the InMemory repository stores immutable
+    copies to prevent external modifications.
+    """
+
+    @pytest.mark.asyncio
+    async def test_create_enforces_email_uniqueness(self, user_repo):
+        """Create should prevent duplicate emails (case-insensitive)."""
+        now = datetime.now(timezone.utc)
+
+        # Create first user
+        user1 = User(
+            user_id="user-001",
+            username="alice",
+            email="alice@example.com",
+            display_name="Alice",
+            created_at=now,
+            updated_at=now,
+        )
+        await user_repo.create(user1)
+
+        # Attempt to create second user with same email (different case)
+        user2 = User(
+            user_id="user-002",
+            username="bob",
+            email="ALICE@example.com",  # Same email, different case
+            display_name="Bob",
+            created_at=now,
+            updated_at=now,
+        )
+
+        with pytest.raises(ConflictError) as exc_info:
+            await user_repo.create(user2)
+
+        assert "Email already registered" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_create_enforces_email_uniqueness_exact_match(self, user_repo):
+        """Create should prevent duplicate emails (exact match)."""
+        now = datetime.now(timezone.utc)
+
+        # Create first user
+        user1 = User(
+            user_id="user-001",
+            username="alice",
+            email="alice@example.com",
+            display_name="Alice",
+            created_at=now,
+            updated_at=now,
+        )
+        await user_repo.create(user1)
+
+        # Attempt to create second user with exact same email
+        user2 = User(
+            user_id="user-002",
+            username="bob",
+            email="alice@example.com",  # Exact same email
+            display_name="Bob",
+            created_at=now,
+            updated_at=now,
+        )
+
+        with pytest.raises(ConflictError) as exc_info:
+            await user_repo.create(user2)
+
+        assert "Email already registered" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_update_enforces_email_uniqueness(self, user_repo):
+        """Update should prevent changing email to existing email."""
+        now = datetime.now(timezone.utc)
+
+        # Create two users
+        user1 = User(
+            user_id="user-001",
+            username="alice",
+            email="alice@example.com",
+            display_name="Alice",
+            created_at=now,
+            updated_at=now,
+        )
+        await user_repo.create(user1)
+
+        user2 = User(
+            user_id="user-002",
+            username="bob",
+            email="bob@example.com",
+            display_name="Bob",
+            created_at=now,
+            updated_at=now,
+        )
+        await user_repo.create(user2)
+
+        # Attempt to update user2's email to user1's email
+        user2.email = "ALICE@example.com"  # Different case
+
+        with pytest.raises(ConflictError) as exc_info:
+            await user_repo.update(user2)
+
+        assert "Email already in use" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_update_allows_same_user_email_change_case(self, user_repo):
+        """Update should allow changing own email case."""
+        now = datetime.now(timezone.utc)
+
+        # Create user
+        user = User(
+            user_id="user-001",
+            username="alice",
+            email="alice@example.com",
+            display_name="Alice",
+            created_at=now,
+            updated_at=now,
+        )
+        await user_repo.create(user)
+
+        # Update to different case (same user)
+        user.email = "ALICE@example.com"
+        updated = await user_repo.update(user)
+
+        assert updated.email == "ALICE@example.com"
+
+        # Verify can still find by original case
+        found = await user_repo.get_by_email("alice@example.com")
+        assert found is not None
+        assert found.user_id == user.user_id
+
+    @pytest.mark.asyncio
+    async def test_save_stores_immutable_copies(self, user_repo):
+        """Save should store deep copies to prevent external modifications.
+
+        This test verifies the fix for Bug #2: InMemory repository was storing
+        object references instead of deep copies, allowing external modifications
+        to affect stored data.
+        """
+        now = datetime.now(timezone.utc)
+
+        # Create and save user
+        user = User(
+            user_id="user-001",
+            username="alice",
+            email="alice@example.com",
+            display_name="Alice",
+            created_at=now,
+            updated_at=now,
+        )
+        saved = await user_repo.save(user)
+
+        # Modify the user object externally
+        user.email = "hacker@example.com"
+        user.username = "hacked"
+        user.display_name = "Hacked User"
+
+        # Retrieve the stored user
+        retrieved = await user_repo.get(user.user_id)
+
+        # Verify stored user is NOT affected by external modifications
+        assert retrieved.email == "alice@example.com"
+        assert retrieved.username == "alice"
+        assert retrieved.display_name == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_save_prevents_email_index_corruption(self, user_repo):
+        """Save should maintain email index integrity with immutable copies.
+
+        This verifies that external modifications to user objects don't corrupt
+        the email index, which could lead to duplicate email bypass.
+        """
+        now = datetime.now(timezone.utc)
+
+        # Create and save first user
+        user1 = User(
+            user_id="user-001",
+            username="alice",
+            email="alice@example.com",
+            display_name="Alice",
+            created_at=now,
+            updated_at=now,
+        )
+        await user_repo.save(user1)
+
+        # Modify user1 externally (simulating malicious or buggy code)
+        user1.email = "different@example.com"
+
+        # Create second user with original email
+        user2 = User(
+            user_id="user-002",
+            username="bob",
+            email="alice@example.com",  # Same as user1's ORIGINAL email
+            display_name="Bob",
+            created_at=now,
+            updated_at=now,
+        )
+
+        # This should fail due to email conflict (email index integrity)
+        with pytest.raises(ConflictError) as exc_info:
+            await user_repo.create(user2)
+
+        assert "Email already registered" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_update_detects_changes_correctly_with_immutable_storage(self, user_repo):
+        """Update should correctly detect changes when using immutable storage.
+
+        This test ensures that the immutable copy fix doesn't break the
+        update() method's ability to detect email/username changes.
+        """
+        now = datetime.now(timezone.utc)
+
+        # Create user
+        user = User(
+            user_id="user-001",
+            username="alice",
+            email="alice@example.com",
+            display_name="Alice",
+            created_at=now,
+            updated_at=now,
+        )
+        await user_repo.create(user)
+
+        # Retrieve user to get stored copy
+        retrieved = await user_repo.get(user.user_id)
+
+        # Create a NEW user object with updated fields (not modifying retrieved)
+        # This is the correct pattern to avoid mutating stored objects
+        updated_user = retrieved.model_copy(deep=True)
+        updated_user.email = "newemail@example.com"
+        updated_user.username = "newalice"
+
+        # Update should succeed
+        updated = await user_repo.update(updated_user)
+
+        assert updated.email == "newemail@example.com"
+        assert updated.username == "newalice"
+
+        # Verify old email/username are not in index
+        assert await user_repo.get_by_email("alice@example.com") is None
+        assert await user_repo.get_by_username("alice") is None
+
+        # Verify new email/username are in index
+        found_by_email = await user_repo.get_by_email("newemail@example.com")
+        assert found_by_email.user_id == user.user_id
+
+        found_by_username = await user_repo.get_by_username("newalice")
+        assert found_by_username.user_id == user.user_id

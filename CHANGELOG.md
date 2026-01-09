@@ -11,16 +11,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session-level tools documentation in `docs/tools/`
 - MCP (Model Context Protocol) integration guide
 - Comprehensive tool catalog and developer guide
+- Email uniqueness constraint migration (008_email_uniqueness_constraint)
+- Database migration scripts for data integrity:
+  - `scripts/check_duplicate_emails.py` - Check for duplicate email addresses
+  - `scripts/resolve_duplicate_emails.py` - Resolve duplicate emails (auto/interactive modes)
+  - `scripts/backfill_closed_at_timestamps.py` - Backfill missing closed_at timestamps
 
 ### Changed
+
 - Documentation reorganization: cleaner folder structure
 - Renamed `guides/` to `how-to/` for clarity
 - Moved historical docs to `archive/`
 - Consolidated specifications into `architecture/specifications/`
 
+### Fixed
+
+- **CRITICAL**: Email uniqueness not enforced in database (Security Bug)
+  - Added explicit UNIQUE constraint on users.email (case-insensitive)
+  - InMemoryUserRepository now stores deep copies to prevent mutable reference bugs
+  - Prevents authentication bypass via duplicate email accounts
+  - Migration: `20250109_1000_008_add_email_uniqueness_constraint.py`
+- **CRITICAL**: Case cleanup using wrong timestamp (Data Integrity Bug)
+  - DatabaseCaseRepository.cleanup_expired() now uses closed_at from metadata
+  - Previously used updated_at, causing premature deletion of recently-updated closed cases
+  - Added backfill script for missing closed_at timestamps
+  - Prevents database bloat and incorrect case aging
+
 ### Removed
+
 - Obsolete `_temp/` folder from architecture docs
 - Redundant planning documents
+
+### Security
+
+- Email uniqueness enforcement prevents duplicate account creation (authentication bypass risk)
+- Added comprehensive unit tests for email uniqueness and immutability
 
 ## [2.0.0] - 2025-10-04
 
