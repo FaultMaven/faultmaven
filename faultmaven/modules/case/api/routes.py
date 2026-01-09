@@ -74,8 +74,8 @@ from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional,
     get_current_user_id
 )
-from faultmaven.modules.auth.domain.models.auth import DevUser
-from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.auth.contracts import UserDTO, ISessionService
 from faultmaven.services.converters import CaseConverter
 from fastapi import Request
 from faultmaven.infrastructure.observability.tracing import trace
@@ -179,7 +179,7 @@ async def _di_get_session_id_dependency(request: Request) -> Optional[str]:
     return await _get_session_id(request)
 
 
-async def _di_get_session_service_dependency() -> AuthSessionService:
+async def _di_get_session_service_dependency() -> ISessionService:
     """Runtime wrapper so patched dependency is honored in tests."""
     from faultmaven.api.v1.dependencies import get_session_service as _getter
     return await _getter()
@@ -200,7 +200,7 @@ def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseS
 async def delete_case(
     case_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """
     Permanently delete a case and all associated data.
@@ -249,8 +249,8 @@ async def create_case(
     request: CaseCreateRequest,
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    session_service: AuthSessionService = Depends(_di_get_session_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    session_service: ISessionService = Depends(_di_get_session_service_dependency),
+    current_user: UserDTO = Depends(require_authentication)
 ) -> CaseSummary:
     """
     Create a new troubleshooting case (v2.0 milestone-based)
@@ -327,7 +327,7 @@ async def create_case(
 async def list_cases(
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication),
+    current_user: UserDTO = Depends(require_authentication),
     status: Optional[CaseStatus] = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
@@ -420,7 +420,7 @@ async def get_case(
     case_id: str,
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ) -> CaseDetail:
     """
     Get a specific case by ID (v2.0 milestone-based)
@@ -471,7 +471,7 @@ async def get_case_ui(
     case_id: str,
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ) -> CaseUIResponse:
     """
     Get phase-adaptive UI-optimized case response.
@@ -530,7 +530,7 @@ async def update_case(
     request: CaseUpdateRequest,
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """
     Update case details
@@ -618,7 +618,7 @@ async def generate_case_title(
     request_body: Optional[Dict[str, Any]] = Body(None, description="Optional request parameters"),
     force: bool = Query(False, description="Only overwrite non-default titles when true"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ) -> TitleResponse:
     """
     Generate a concise, case-specific title from case messages and metadata.
@@ -1075,7 +1075,7 @@ async def _generate_title_with_llm(context_text: str, case, max_words: int = 8, 
 async def search_cases(
     request: CaseSearchRequest,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ) -> List[CaseSummary]:
     """
     Search cases by content
@@ -1104,7 +1104,7 @@ async def search_cases(
 async def get_case_analytics(
     case_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ) -> Dict[str, Any]:
     """
     Get case analytics and metrics
@@ -1143,7 +1143,7 @@ async def get_case_messages_enhanced(
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     include_debug: bool = Query(False, description="Include debug information for troubleshooting"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ) -> CaseMessagesResponse:
     """
     Retrieve conversation messages for a case with enhanced debugging info.
@@ -1202,8 +1202,8 @@ async def create_case_for_session(
     title: Optional[str] = Query(None, description="Case title (optional, auto-generated if not provided)"),
     force_new: bool = Query(False, description="Force creation of new case"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    session_service: AuthSessionService = Depends(_di_get_session_service_dependency),
-    current_user: Optional[DevUser] = Depends(get_current_user_optional)
+    session_service: ISessionService = Depends(_di_get_session_service_dependency),
+    current_user: Optional[UserDTO] = Depends(get_current_user_optional)
 ) -> Dict[str, Any]:
     """
     Create or get case for a session
@@ -1289,7 +1289,7 @@ async def resume_case_in_session(
     session_id: str,
     case_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ) -> Dict[str, Any]:
     """
     Resume an existing case in a session
@@ -1336,8 +1336,8 @@ async def submit_case_query(
     fastapi_request: Request,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     investigation_service = Depends(get_investigation_service),
-    session_service: AuthSessionService = Depends(_di_get_session_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    session_service: ISessionService = Depends(_di_get_session_service_dependency),
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """
     Submit user message to advance the investigation (milestone-based).
@@ -1464,7 +1464,7 @@ async def list_case_queries(
     limit: int = Query(50, le=100, ge=1),
     offset: int = Query(0, ge=0),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """
     List queries for a specific case with pagination.
@@ -1567,7 +1567,7 @@ async def list_case_data(
     limit: int = Query(50, ge=1, le=200, description="Maximum number of items to return"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ) -> JSONResponse:
     """
     List data files associated with a case.
@@ -1617,7 +1617,7 @@ async def get_case_data(
     case_id: str,
     data_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ) -> Dict[str, Any]:
     """Get specific data file details for a case."""
     case_service = check_case_service_available(case_service)
@@ -1670,7 +1670,7 @@ async def upload_case_data(
     data_service = Depends(get_data_service),
     investigation_service = Depends(get_investigation_service),
     case_vector_store = Depends(get_case_vector_store),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ) -> DataUploadResponse:
     """
     Upload data file to a specific case (case-scoped endpoint).
@@ -1827,7 +1827,7 @@ async def delete_case_data(
     case_id: str,
     data_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """Remove data file from a case. Returns 204 No Content on success."""
     case_service = check_case_service_available(case_service)
@@ -1865,7 +1865,7 @@ async def delete_case_data(
 async def get_report_recommendations(
     case_id: str,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """
     Get intelligent report recommendations for a resolved case.
@@ -1894,6 +1894,10 @@ async def get_report_recommendations(
         404: Case not found or access denied
         500: Internal server error
     """
+    # TODO: Refactor to use IReportQuery via dependency injection (Principle 2)
+    # Current: Direct service instantiation violates vertical module boundaries
+    # Target: Inject IReportQuery and use get_recommendations() method
+    # Note: Domain imports kept temporarily until DI is implemented
     from faultmaven.modules.report.domain.models import ReportRecommendation
     from faultmaven.modules.report.domain.services.report_recommendation_service import ReportRecommendationService
     from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
@@ -1968,9 +1972,13 @@ async def generate_case_reports(
     case_id: str,
     request_body: Dict[str, Any] = Body(...),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """Generate case documentation reports."""
+    # TODO: Refactor to use IReportCommand via dependency injection (Principle 2)
+    # Current: Direct service instantiation violates vertical module boundaries
+    # Target: Inject IReportCommand and use generate_report() method
+    # Note: Domain imports kept temporarily until DI is implemented
     from faultmaven.modules.report.domain.models import ReportGenerationRequest, ReportType
     from faultmaven.modules.report.domain.services.report_generation_service import ReportGenerationService
     from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
@@ -2014,7 +2022,7 @@ async def get_case_reports(
     include_history: bool = Query(default=False),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     report_store: Optional[IReportStore] = Depends(get_report_store),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """
     Retrieve generated reports for a case.
@@ -2071,7 +2079,7 @@ async def download_case_report(
     format: str = Query(default="markdown"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     report_store: Optional[IReportStore] = Depends(get_report_store),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """
     Download case report in specified format.
@@ -2163,7 +2171,7 @@ async def close_case(
     request_body: Optional[Dict[str, Any]] = Body(default=None),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     report_store: Optional[IReportStore] = Depends(get_report_store),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """
     Close case and archive with reports.
@@ -2174,6 +2182,8 @@ async def close_case(
     Returns:
         CaseClosureResponse with list of archived reports
     """
+    # TODO: Refactor to use contracts DTOs via dependency injection (Principle 2)
+    # Note: Domain imports kept temporarily until DI is implemented
     from faultmaven.modules.report.domain.models import CaseClosureResponse, ArchivedReport
 
     case_service = check_case_service_available(case_service)
@@ -2273,7 +2283,7 @@ async def list_uploaded_files(
     sort_by: str = Query("uploaded_at_turn", description="Sort field: uploaded_at_turn | filename | size"),
     sort_order: str = Query("desc", description="Sort direction: asc | desc"),
     case_service = Depends(get_case_service),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """
     List uploaded files for a case with pagination.
@@ -2331,7 +2341,7 @@ async def get_uploaded_file_details(
     case_id: str,
     file_id: str,
     case_service = Depends(get_case_service),
-    current_user: DevUser = Depends(require_authentication)
+    current_user: UserDTO = Depends(require_authentication)
 ):
     """
     Get detailed information about a specific uploaded file.

@@ -175,6 +175,40 @@ class IAuthCommand(Protocol):
         ...
 
 
+@runtime_checkable
+class ISessionService(Protocol):
+    """Session service interface for cross-module use.
+
+    Provides session operations needed by other modules (e.g., case module).
+    This is the public contract for session management.
+    """
+
+    async def get_session(
+        self, session_id: str, validate: bool = True
+    ) -> Optional[SessionDTO]:
+        """Get session by ID with optional validation.
+
+        Args:
+            session_id: The session's unique identifier
+            validate: Whether to validate session is active and not expired
+
+        Returns:
+            SessionDTO if found (and valid if validate=True), None otherwise
+        """
+        ...
+
+    async def validate_session(self, session_id: str) -> bool:
+        """Check if session is valid and not expired.
+
+        Args:
+            session_id: The session's unique identifier
+
+        Returns:
+            True if session is valid and active, False otherwise
+        """
+        ...
+
+
 # ============================================
 # Re-exports for convenience
 # ============================================
@@ -202,6 +236,7 @@ __all__ = [
     # Protocols
     "IAuthQuery",
     "IAuthCommand",
+    "ISessionService",
     # Exceptions
     "AuthException",
     "AuthenticationError",

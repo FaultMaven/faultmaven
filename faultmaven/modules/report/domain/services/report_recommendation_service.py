@@ -19,7 +19,8 @@ from faultmaven.modules.report.domain.models import (
     SimilarRunbook,
     CaseReport
 )
-from faultmaven.modules.case.domain.models import Case
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import CaseDTO
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.observability.tracing import trace
 
@@ -60,7 +61,7 @@ class ReportRecommendationService(BaseService):
     @trace("get_available_report_types")
     async def get_available_report_types(
         self,
-        case: Case,
+        case: CaseDTO,
     ) -> ReportRecommendation:
         """
         Determine which report types to offer for case.
@@ -71,7 +72,7 @@ class ReportRecommendationService(BaseService):
         - Runbook: CONDITIONAL (check for existing similar runbooks)
 
         Args:
-            case: Case object with investigation context
+            case: CaseDTO object with investigation context
 
         Returns:
             ReportRecommendation with available types and runbook suggestion
@@ -116,7 +117,7 @@ class ReportRecommendationService(BaseService):
 
     async def _find_similar_runbooks(
         self,
-        case: Case,
+        case: CaseDTO,
     ) -> List[SimilarRunbook]:
         """
         Find existing runbooks similar to current case.
@@ -128,7 +129,7 @@ class ReportRecommendationService(BaseService):
         - Domain/technology tags
 
         Args:
-            case: Case object
+            case: CaseDTO object
 
         Returns:
             List of similar runbooks sorted by similarity score (descending)
@@ -174,7 +175,7 @@ class ReportRecommendationService(BaseService):
             # Return empty list on error - fail gracefully
             return []
 
-    async def _create_case_embedding(self, case: Case) -> List[float]:
+    async def _create_case_embedding(self, case: CaseDTO) -> List[float]:
         """
         Create semantic embedding for case.
 
@@ -185,7 +186,7 @@ class ReportRecommendationService(BaseService):
         - Technology/domain keywords
 
         Args:
-            case: Case object
+            case: CaseDTO object
 
         Returns:
             Embedding vector (list of floats)

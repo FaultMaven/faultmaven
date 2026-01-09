@@ -24,7 +24,8 @@ from faultmaven.modules.report.domain.models import (
     ReportGenerationRequest,
     ReportGenerationResponse
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import CaseDTO, CaseStatusDTODTO
 from faultmaven.models.interfaces_report import IReportStore
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.concurrency import ReportLockManager, LockAcquisitionError
@@ -79,14 +80,14 @@ class ReportGenerationService(BaseService):
     @trace("generate_reports")
     async def generate_reports(
         self,
-        case: Case,
+        case: CaseDTO,
         report_types: List[ReportType]
     ) -> ReportGenerationResponse:
         """
         Generate requested reports for a case with concurrency control.
 
         Args:
-            case: Case object with investigation context
+            case: CaseDTO object with investigation context
             report_types: List of report types to generate
 
         Returns:
@@ -127,14 +128,14 @@ class ReportGenerationService(BaseService):
 
     async def _generate_reports_locked(
         self,
-        case: Case,
+        case: CaseDTO,
         report_types: List[ReportType]
     ) -> ReportGenerationResponse:
         """
         Internal method: Generate reports with lock already acquired.
 
         Args:
-            case: Case object with investigation context
+            case: CaseDTO object with investigation context
             report_types: List of report types to generate
 
         Returns:
@@ -197,7 +198,7 @@ class ReportGenerationService(BaseService):
 
     async def _generate_single_report(
         self,
-        case: Case,
+        case: CaseDTO,
         report_type: ReportType
     ) -> CaseReport:
         """Generate a single report using LLM."""
@@ -253,7 +254,7 @@ class ReportGenerationService(BaseService):
 
     async def _generate_incident_report(
         self,
-        case: Case,
+        case: CaseDTO,
         context: Dict[str, Any]
     ) -> str:
         """Generate incident report using LLM."""
@@ -298,7 +299,7 @@ Keep it professional, concise, and actionable. Focus on facts and outcomes."""
 
     async def _generate_runbook(
         self,
-        case: Case,
+        case: CaseDTO,
         context: Dict[str, Any]
     ) -> str:
         """Generate runbook using LLM."""
@@ -325,7 +326,7 @@ Make it actionable - someone should be able to follow this runbook without prior
 
     async def _generate_post_mortem(
         self,
-        case: Case,
+        case: CaseDTO,
         context: Dict[str, Any]
     ) -> str:
         """Generate post-mortem using LLM."""
@@ -444,14 +445,14 @@ Key learnings available in case context."""
 
         return "# Report\n\nReport content generated from case data."
 
-    def _extract_case_context(self, case: Case) -> Dict[str, Any]:
+    def _extract_case_context(self, case: CaseDTO) -> Dict[str, Any]:
         """Extract relevant context from case for report generation."""
         context = {
             "title": case.title,
             "description": case.description,
             "status": case.status.value,
             "created_at": to_json_compatible(case.created_at) if case.created_at else None,
-            "resolved_at": to_json_compatible(case.updated_at) if case.status == CaseStatus.RESOLVED else None,
+            "resolved_at": to_json_compatible(case.updated_at) if case.status == CaseStatusDTO.RESOLVED else None,
             "duration": self._calculate_duration(case),
             "message_count": case.message_count,
             "tags": case.tags,
@@ -468,7 +469,7 @@ Key learnings available in case context."""
 
         return context
 
-    def _calculate_duration(self, case: Case) -> str:
+    def _calculate_duration(self, case: CaseDTO) -> str:
         """Calculate case duration in human-readable format."""
         if case.resolution_time_hours:
             hours = case.resolution_time_hours
@@ -481,12 +482,12 @@ Key learnings available in case context."""
                 return f"{days:.1f} days"
         return "Unknown"
 
-    def _validate_case_for_report_generation(self, case: Case) -> None:
+    def _validate_case_for_report_generation(self, case: CaseDTO) -> None:
         """Validate case is in valid state for report generation."""
         valid_states = [
-            CaseStatus.RESOLVED,
-            CaseStatus.SOLVED,
-            CaseStatus.DOCUMENTING
+            CaseStatusDTO.RESOLVED,
+            CaseStatusDTO.SOLVED,
+            CaseStatusDTO.DOCUMENTING
         ]
 
         if case.status not in valid_states:
@@ -495,7 +496,7 @@ Key learnings available in case context."""
                 f"Cannot generate reports from {case.status.value} state. Case must be resolved first."
             )
 
-    async def _index_generated_runbook(self, report: CaseReport, case: Case) -> None:
+    async def _index_generated_runbook(self, report: CaseReport, case: CaseDTO) -> None:
         """Auto-index generated runbook for similarity search."""
         if not self.runbook_kb:
             return

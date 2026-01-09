@@ -17,7 +17,8 @@ from faultmaven.utils.serialization import to_json_compatible
 from faultmaven.services.base import BaseService
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
-from faultmaven.modules.case.domain.models import Case, CaseStatus
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import CaseDTO, CaseStatusDTODTO
 from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
 from faultmaven.exceptions import NotFoundError, PermissionDeniedException, ServiceException
 from faultmaven.infrastructure.observability.tracing import trace
@@ -239,7 +240,7 @@ class InvestigationService(BaseService):
         case_id: str,
         user_id: str,
         confirmed_description: str
-    ) -> Case:
+    ) -> CaseDTO:
         """
         Transition case from CONSULTING to INVESTIGATING.
 
@@ -271,7 +272,7 @@ class InvestigationService(BaseService):
                 )
 
             # Validate current status
-            if case.status != CaseStatus.CONSULTING:
+            if case.status != CaseStatusDTO.CONSULTING:
                 raise ServiceException(
                     f"Cannot transition to INVESTIGATING: case is in {case.status} status"
                 )
@@ -291,7 +292,7 @@ class InvestigationService(BaseService):
 
             # Update case
             case.description = confirmed_description
-            case.status = CaseStatus.INVESTIGATING
+            case.status = CaseStatusDTO.INVESTIGATING
 
             # Save
             updated_case = await self.repository.save(case)
@@ -315,7 +316,7 @@ class InvestigationService(BaseService):
         case_id: str,
         user_id: str,
         closure_reason: str
-    ) -> Case:
+    ) -> CaseDTO:
         """
         Close a case.
 
@@ -348,7 +349,7 @@ class InvestigationService(BaseService):
             now = datetime.now(timezone.utc)
             updated_case_data = case.model_copy(
                 update={
-                    "status": CaseStatus.CLOSED,
+                    "status": CaseStatusDTO.CLOSED,
                     "closure_reason": closure_reason,
                     "closed_at": now
                 },
