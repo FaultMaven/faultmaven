@@ -247,6 +247,22 @@ class CaseRepository(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_by_ids(self, case_ids: List[str]) -> List[Case]:
+        """
+        Bulk retrieve cases by IDs - prevents N+1 queries.
+
+        Args:
+            case_ids: List of case identifiers
+
+        Returns:
+            List of cases (may be fewer than requested if some not found)
+
+        Raises:
+            RepositoryException: If retrieval fails
+        """
+        pass
+
     async def begin_transaction(self):
         """
         Begin a transaction context (optional feature).
@@ -473,6 +489,10 @@ class InMemoryCaseRepository(CaseRepository):
     def clear(self):
         """Clear all cases (testing utility)."""
         self._cases.clear()
+
+    async def get_by_ids(self, case_ids: List[str]) -> List[Case]:
+        """Bulk retrieve cases by IDs from memory."""
+        return [self._cases[cid] for cid in case_ids if cid in self._cases]
 
 
 # ============================================================
@@ -878,6 +898,20 @@ class PostgreSQLCaseRepository(CaseRepository):
         await self.db.commit()
 
         return result.rowcount
+
+    async def get_by_ids(self, case_ids: List[str]) -> List[Case]:
+        """Bulk retrieve cases by IDs from PostgreSQL - prevents N+1 queries."""
+        from sqlalchemy import text
+
+        if not case_ids:
+            return []
+
+        # Use ANY for efficient bulk lookup
+        query = text("SELECT * FROM cases WHERE case_id = ANY(:case_ids)")
+        result = await self.db.execute(query, {"case_ids": case_ids})
+        rows = result.fetchall()
+
+        return [self._row_to_case(row) for row in rows]
 
     def _row_to_case(self, row) -> Case:
         """Convert database row to Case domain model."""

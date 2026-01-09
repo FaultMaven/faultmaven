@@ -225,6 +225,19 @@ class UserRepository(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_by_ids(self, user_ids: List[str]) -> List[User]:
+        """
+        Bulk retrieve users by IDs - prevents N+1 queries.
+
+        Args:
+            user_ids: List of user identifiers
+
+        Returns:
+            List of users (may be fewer than requested if some not found)
+        """
+        pass
+
 
 # ============================================================
 # In-Memory Implementation (for Testing/Development)
@@ -371,6 +384,10 @@ class InMemoryUserRepository(UserRepository):
         # Remove user
         del self._users[user_id]
         return True
+
+    async def get_by_ids(self, user_ids: List[str]) -> List[User]:
+        """Bulk retrieve users by IDs from memory."""
+        return [self._users[uid] for uid in user_ids if uid in self._users]
 
 
 # ============================================================
@@ -739,3 +756,40 @@ class PostgreSQLUserRepository(UserRepository):
         await self.db.commit()
 
         return result.rowcount > 0
+
+    async def get_by_ids(self, user_ids: List[str]) -> List[User]:
+        """Bulk retrieve users by IDs from PostgreSQL - prevents N+1 queries."""
+        from sqlalchemy import text
+
+        if not user_ids:
+            return []
+
+        # Use ANY for efficient bulk lookup
+        query = text("SELECT * FROM users WHERE user_id = ANY(:user_ids)")
+        result = await self.db.execute(query, {"user_ids": user_ids})
+        rows = result.fetchall()
+
+        return [
+            User(
+                user_id=row.user_id,
+                username=row.username,
+                email=row.email,
+                display_name=row.display_name,
+                avatar_url=row.avatar_url,
+                timezone=row.timezone,
+                locale=row.locale,
+                hashed_password=row.hashed_password,
+                is_active=row.is_active,
+                is_email_verified=row.is_email_verified,
+                email_verified_at=row.email_verified_at,
+                sso_provider=row.sso_provider,
+                sso_provider_id=row.sso_provider_id,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+                last_login_at=row.last_login_at,
+                last_password_change_at=row.last_password_change_at,
+                deleted_at=row.deleted_at,
+                roles=row.roles.split(',') if row.roles else []
+            )
+            for row in rows
+        ]
