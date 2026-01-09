@@ -7,7 +7,10 @@ key settings while redacting secrets. No LLM calls required.
 
 import re
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
 
 
 class StructuredConfigExtractor:

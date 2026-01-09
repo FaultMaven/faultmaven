@@ -164,17 +164,25 @@ class BaseDIContainer:
             status = "degraded"
         elif ready_count == total and total > 0:
             status = "healthy"
+        elif self._initializing:
+            status = "initializing"
+        elif not self._initialized:
+            status = "not_initialized"
         else:
-            status = "initializing" if self._initializing else "unknown"
+            status = "healthy"  # Initialized but no services is still healthy
+
+        # Create service info dict
+        services_info = {
+            "total": total,
+            "ready": ready_count,
+            "failed": failed_count,
+        }
 
         return {
             "status": status,
             "initialized": self._initialized,
-            "services": {
-                "total": total,
-                "ready": ready_count,
-                "failed": failed_count,
-            },
+            "services": services_info,
+            "components": services_info,  # Backward compatibility alias
             "ready_services": ready,
             "failed_services": [name for name, _ in failed],
         }
@@ -185,6 +193,9 @@ class BaseDIContainer:
         Returns:
             Agent service instance or None if not available
         """
+        # Trigger lazy initialization if needed (for tests)
+        if hasattr(self, '_ensure_initialized_for_getter'):
+            self._ensure_initialized_for_getter()
         return self.get_service("agent_service", required=False)
 
     def get_llm_provider(self) -> Any:
@@ -193,6 +204,9 @@ class BaseDIContainer:
         Returns:
             LLM provider instance or None if not available
         """
+        # Trigger lazy initialization if needed (for tests)
+        if hasattr(self, '_ensure_initialized_for_getter'):
+            self._ensure_initialized_for_getter()
         return self.get_service("llm_provider", required=False)
 
     def get_sanitizer(self) -> Any:
@@ -201,6 +215,9 @@ class BaseDIContainer:
         Returns:
             Sanitizer instance or None if not available
         """
+        # Trigger lazy initialization if needed (for tests)
+        if hasattr(self, '_ensure_initialized_for_getter'):
+            self._ensure_initialized_for_getter()
         return self.get_service("sanitizer", required=False)
 
     def get_tracer(self) -> Any:
@@ -209,7 +226,22 @@ class BaseDIContainer:
         Returns:
             Tracer instance or None if not available
         """
+        # Trigger lazy initialization if needed (for tests)
+        if hasattr(self, '_ensure_initialized_for_getter'):
+            self._ensure_initialized_for_getter()
         return self.get_service("tracer", required=False)
+
+    def get_tools(self) -> List[Any]:
+        """Get the list of tools.
+
+        Returns:
+            List of tool instances
+        """
+        # Trigger lazy initialization if needed (for tests)
+        if hasattr(self, '_ensure_initialized_for_getter'):
+            self._ensure_initialized_for_getter()
+        tools = self.get_service("tools", required=False)
+        return tools if tools is not None else []
 
     def health_check(self) -> Dict[str, Any]:
         """Alias for get_health() for backward compatibility.

@@ -9,7 +9,7 @@ Design Reference: Phase 3, Week 14-15 - DI Container Implementation
 import pytest
 from unittest.mock import Mock, patch
 from faultmaven.core.container import ServiceContainer
-from faultmaven.core.service_factories import register_services, clear_service_instances
+from faultmaven.bootstrap.service_factories import register_services, clear_service_instances
 
 
 # ============================================================================
@@ -28,7 +28,7 @@ def setup_di_container():
 @pytest.fixture
 def mock_settings():
     """Mock settings for service creation."""
-    with patch('faultmaven.core.service_factories.get_settings') as mock:
+    with patch('faultmaven.bootstrap.service_factories.get_settings') as mock:
         settings = Mock()
         settings.security.jwt_algorithm = "HS256"
         settings.security.jwt_access_token_expire_minutes = 30

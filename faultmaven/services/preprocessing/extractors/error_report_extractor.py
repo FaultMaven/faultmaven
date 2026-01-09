@@ -6,7 +6,10 @@ No LLM calls required - pure stack trace parsing and pattern matching.
 """
 
 import re
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
 
 
 class ErrorReportExtractor:

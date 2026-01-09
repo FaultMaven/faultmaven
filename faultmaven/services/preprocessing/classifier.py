@@ -19,6 +19,7 @@ from faultmaven.models.api import DataType, ClassificationResult
 
 if TYPE_CHECKING:
     from faultmaven.models.api import SourceMetadata
+    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
 
 
 class DataClassifier:

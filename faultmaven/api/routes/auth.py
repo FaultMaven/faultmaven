@@ -152,16 +152,27 @@ def get_user_service():
     """Get UserService instance.
 
     Creates a UserService with InMemoryUserRepository for development.
-    In production, this would use PostgreSQLUserRepository.
+    In production, this would use PostgreSQLUserRepository or get from DI container.
 
     Returns:
         UserService instance
     """
-    from faultmaven.infrastructure.persistence.user_repository import InMemoryUserRepository
     from faultmaven.services.user_service import UserService
 
     # Use singleton repositories for development
     if not hasattr(get_user_service, "_instance"):
+        # Try to get from DI container first
+        try:
+            from faultmaven.container import container
+            user_service = getattr(container, 'user_service', None)
+            if user_service:
+                get_user_service._instance = user_service
+                return user_service
+        except Exception:
+            pass
+
+        # Fallback: Create manually (only import infrastructure layer when needed)
+        from faultmaven.infrastructure.persistence.user_repository import InMemoryUserRepository
         user_repo = InMemoryUserRepository()
         auth_service = get_auth_service()
         get_user_service._instance = UserService(

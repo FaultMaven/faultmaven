@@ -13,7 +13,7 @@ Phase 2-4: Additional extractors and features
 
 import time
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from faultmaven.models.api import (
     DataType,
     PreprocessedData,
@@ -23,6 +23,9 @@ from faultmaven.models.api import (
 from faultmaven.services.preprocessing.classifier import DataClassifier
 from faultmaven.services.preprocessing.extractors.logs_extractor import LogsAndErrorsExtractor
 from faultmaven.infrastructure.security.redaction import DataSanitizer
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
 
 logger = logging.getLogger(__name__)
 

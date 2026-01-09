@@ -8,7 +8,7 @@ injected lazily (e.g., EmbeddingService, VectorStoreService, FileStorageService)
 
 Usage:
     # On application startup
-    from faultmaven.core.service_factories import register_services
+    from faultmaven.bootstrap.service_factories import register_services
     register_services()
 
     # Services will now use DI container

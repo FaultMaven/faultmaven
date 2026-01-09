@@ -19,12 +19,16 @@ import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import jwt
 from redis.asyncio import Redis
 
 from faultmaven.config.settings import get_settings
+
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,

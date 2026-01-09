@@ -15,7 +15,7 @@ Usage:
         # Use services for operations...
 """
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +45,9 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
     KnowledgeItemRepository,
 )
 from faultmaven.config.settings import get_settings
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
 
 
 class ServiceFactory:

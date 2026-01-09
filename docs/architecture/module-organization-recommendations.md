@@ -13,6 +13,14 @@
 
 This document provides specific recommendations for which FaultMaven components should use **vertical slicing** (domain boundaries) versus **horizontal layering** (cross-cutting infrastructure). The recommendations optimize for maintainability, testability, and future microservice extraction while respecting the principle that **not all modules need domain boundaries**.
 
+### Architectural Transition
+
+**What Happened**: The system underwent vertical slicing, resulting in 6 vertical modules (auth, case, evidence, knowledge, agent, report).
+
+**What Will Happen**: Schema verification revealed that only 3 modules truly own domain data. Evidence, Agent, and Report will be moved back to horizontal layers (Domain Services structure). **Only 3 vertical modules remain**: Auth, Case, and Knowledge.
+
+This transition corrects the initial over-modularization and aligns the architecture with actual data ownership patterns.
+
 ### Quick Reference: Minimum Criteria
 
 A module is **VERTICAL** (business domain) if and only if it meets **ALL THREE** criteria:
@@ -1170,8 +1178,8 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 1.0 | 2026-01-09 | Initial recommendations with 6 vertical modules |
-| 2.0 | 2026-01-09 | **Schema-verified revision** - Only 3 vertical modules (Case, Auth, Knowledge) after reviewing `case-storage-design.md` and `data-storage-design.md`. Evidence, Agent, and Report reclassified as Domain Services. |
+| 1.0 | 2026-01-09 | Initial vertical slicing resulted in 6 vertical modules (auth, case, evidence, knowledge, agent, report) |
+| 2.0 | 2026-01-09 | **Schema-verified revision** - After reviewing `case-storage-design.md` and `data-storage-design.md`, only 3 modules truly own domain data. Evidence, Agent, and Report are being moved back to horizontal layers (Domain Services) - only 3 vertical modules remain (Case, Auth, Knowledge). |
 
 ### Key Changes in v2.0
 
@@ -1184,7 +1192,7 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 | Auth | ✅ Vertical | ✅ Vertical | Owns users and organizations tables (schema verified) |
 | Knowledge | ✅ Vertical | ✅ Vertical | Owns kb_documents + ChromaDB collections (schema verified) |
 
-**Impact**: Document now accurately reflects actual schema ownership, not assumptions. This prevents architectural misalignment and clarifies that only 3 modules truly own domain data.
+**Impact**: Document reflects the architectural transition: system previously had 6 vertical modules after vertical slicing, but schema verification revealed only 3 truly own domain data. Evidence, Agent, and Report are being moved back to horizontal layers (Domain Services structure), leaving only 3 vertical modules (Case, Auth, Knowledge) that meet all criteria.
 
 ---
 

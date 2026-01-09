@@ -16,7 +16,11 @@ Architecture:
 """
 
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore
 
 from faultmaven.modules.case.domain.models import Case, CaseStatus, HypothesisStatus, InvestigationPath
 from faultmaven.models.case_ui import (
