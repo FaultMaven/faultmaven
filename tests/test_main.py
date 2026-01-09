@@ -152,10 +152,8 @@ def test_environment_configuration_handling():
     # Phase 3: Test with active feature flags only (deprecated migration flags removed)
     
     with patch.dict(os.environ, {
-        'ENABLE_LEGACY_COMPATIBILITY': 'true',
-        'ENABLE_EXPERIMENTAL_FEATURES': 'false',
-        'ENABLE_PERFORMANCE_MONITORING': 'true',
-        'ENABLE_DETAILED_TRACING': 'false'
+        "ENABLE_PERFORMANCE_MONITORING": "true",
+        "ENABLE_DETAILED_TRACING": "false",
     }):
         # The app should remain functional with Phase 3 configuration
         assert isinstance(app, FastAPI)
@@ -365,14 +363,10 @@ class TestPhase3MainApplicationValidation:
         # Test with different active feature flag combinations
         flag_combinations = [
             {
-                "ENABLE_LEGACY_COMPATIBILITY": "true",
-                "ENABLE_EXPERIMENTAL_FEATURES": "false",
                 "ENABLE_PERFORMANCE_MONITORING": "true",
                 "ENABLE_DETAILED_TRACING": "false"
             },
             {
-                "ENABLE_LEGACY_COMPATIBILITY": "false", 
-                "ENABLE_EXPERIMENTAL_FEATURES": "true",
                 "ENABLE_PERFORMANCE_MONITORING": "false",
                 "ENABLE_DETAILED_TRACING": "true"
             }

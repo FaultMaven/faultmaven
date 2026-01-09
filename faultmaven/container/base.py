@@ -179,10 +179,6 @@ class BaseDIContainer:
             "failed_services": [name for name, _ in failed],
         }
 
-    def health_check(self) -> Dict[str, Any]:
-        """Alias for get_health() for backward compatibility."""
-        return self.get_health()
-
     def get_agent_service(self) -> Any:
         """Get the agent service.
 

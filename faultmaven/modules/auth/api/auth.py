@@ -70,7 +70,7 @@ from faultmaven.modules.auth.domain.services.auth_session_service import AuthSes
 async def dev_login(
     request: DevLoginRequest,
     response: Response,
-    session_service: SessionService = Depends(get_session_service)
+    session_service: AuthSessionService = Depends(get_session_service)
 ) -> AuthTokenResponse:
     """Development login endpoint
 
@@ -203,7 +203,7 @@ async def dev_login(
 async def dev_register(
     request: DevLoginRequest,
     response: Response,
-    session_service: SessionService = Depends(get_session_service)
+    session_service: AuthSessionService = Depends(get_session_service)
 ) -> AuthTokenResponse:
     """Development registration endpoint
 

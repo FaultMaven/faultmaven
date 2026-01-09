@@ -19,7 +19,7 @@ from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.modules.case.domain.models import Case, CaseStatus
 from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
-from faultmaven.exceptions import NotFoundException, PermissionDeniedException, ServiceException
+from faultmaven.exceptions import NotFoundError, PermissionDeniedException, ServiceException
 from faultmaven.infrastructure.observability.tracing import trace
 
 
@@ -74,7 +74,7 @@ class InvestigationService(BaseService):
             CaseQueryResponse with agent response, milestones, and progress
 
         Raises:
-            NotFoundException: If case not found
+            NotFoundError: If case not found
             PermissionDeniedException: If user not authorized
             ServiceException: If turn processing fails
         """
@@ -82,7 +82,7 @@ class InvestigationService(BaseService):
             # 1. Retrieve case
             case = await self.repository.get(case_id)
             if not case:
-                raise NotFoundException(f"Case {case_id} not found")
+                raise NotFoundError("Case", case_id)
 
             # 2. Check permissions (simple owner check)
             if case.user_id != user_id:
@@ -169,7 +169,7 @@ class InvestigationService(BaseService):
 
             return response
 
-        except (NotFoundException, PermissionDeniedException):
+        except (NotFoundError, PermissionDeniedException):
             raise
         except Exception as e:
             self.logger.error(f"Failed to process turn for case {case_id}: {e}")
@@ -192,14 +192,14 @@ class InvestigationService(BaseService):
             - current_turn, is_stuck, degraded_mode
 
         Raises:
-            NotFoundException: If case not found
+            NotFoundError: If case not found
             PermissionDeniedException: If user not authorized
         """
         try:
             # Retrieve case
             case = await self.repository.get(case_id)
             if not case:
-                raise NotFoundException(f"Case {case_id} not found")
+                raise NotFoundError("Case", case_id)
 
             # Check permissions
             if case.user_id != user_id:
@@ -227,7 +227,7 @@ class InvestigationService(BaseService):
                 )
             }
 
-        except (NotFoundException, PermissionDeniedException):
+        except (NotFoundError, PermissionDeniedException):
             raise
         except Exception as e:
             self.logger.error(f"Failed to get progress for case {case_id}: {e}")
@@ -254,7 +254,7 @@ class InvestigationService(BaseService):
             Updated case
 
         Raises:
-            NotFoundException: If case not found
+            NotFoundError: If case not found
             PermissionDeniedException: If user not authorized
             ServiceException: If transition fails or invalid state
         """
@@ -262,7 +262,7 @@ class InvestigationService(BaseService):
             # Retrieve case
             case = await self.repository.get(case_id)
             if not case:
-                raise NotFoundException(f"Case {case_id} not found")
+                raise NotFoundError("Case", case_id)
 
             # Check permissions
             if case.user_id != user_id:
@@ -303,7 +303,7 @@ class InvestigationService(BaseService):
 
             return updated_case
 
-        except (NotFoundException, PermissionDeniedException, ServiceException):
+        except (NotFoundError, PermissionDeniedException, ServiceException):
             raise
         except Exception as e:
             self.logger.error(f"Failed to transition case {case_id} to INVESTIGATING: {e}")
@@ -329,14 +329,14 @@ class InvestigationService(BaseService):
             Updated case
 
         Raises:
-            NotFoundException: If case not found
+            NotFoundError: If case not found
             PermissionDeniedException: If user not authorized
         """
         try:
             # Retrieve case
             case = await self.repository.get(case_id)
             if not case:
-                raise NotFoundException(f"Case {case_id} not found")
+                raise NotFoundError("Case", case_id)
 
             # Check permissions
             if case.user_id != user_id:
@@ -362,7 +362,7 @@ class InvestigationService(BaseService):
 
             return updated_case
 
-        except (NotFoundException, PermissionDeniedException):
+        except (NotFoundError, PermissionDeniedException):
             raise
         except Exception as e:
             self.logger.error(f"Failed to close case {case_id}: {e}")

@@ -280,16 +280,16 @@ The system provides comprehensive alerting for:
 ### Basic Setup
 
 ```python
-from faultmaven.api.protection import setup_protection_middleware
+from faultmaven.api.protection import setup_protection_middleware_async
 
-# Basic protection only
-protection_info = setup_protection_middleware(app)
+# Basic protection only (async)
+protection_info = await setup_protection_middleware_async(app)
 
 # With session store for intelligent protection
 from faultmaven.models.interfaces import ISessionStore
 
 session_store = get_session_store()  # Your implementation
-protection_info = setup_protection_middleware(
+protection_info = await setup_protection_middleware_async(
     app, 
     session_store=session_store
 )

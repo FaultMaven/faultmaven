@@ -36,7 +36,7 @@ from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.exceptions import (
     ValidationException,
     ServiceException,
-    NotFoundException,
+    NotFoundError,
     PermissionDeniedException,
     NotFoundError,
     AuthorizationError,

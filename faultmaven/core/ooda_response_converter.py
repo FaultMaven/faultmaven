@@ -13,11 +13,7 @@ from faultmaven.models.responses import (
     OODAEvidenceRequest,
 )
 from faultmaven.models.api import AgentResponse, ResponseType, Source, SourceType
-from faultmaven.models.evidence import (
-    EvidenceRequest as APIEvidenceRequest,
-    EvidenceCategory,
-    AcquisitionGuidance,
-)
+from faultmaven.models.llm_schemas import EvidenceRequestToAdd
 
 
 def ooda_to_agent_response(
@@ -58,8 +54,6 @@ def ooda_to_agent_response(
         sources=sources,
         view_state=view_state,
         evidence_requests=evidence_requests,
-        # Deprecated fields set to None for backward compatibility
-        suggested_actions=None,
     )
 
     return agent_response
@@ -142,11 +136,9 @@ def _extract_sources(ooda_response: OODAResponse) -> list[Source]:
     return sources
 
 
-def _convert_to_evidence_requests(ooda_response: OODAResponse) -> list[APIEvidenceRequest]:
+def _convert_to_evidence_requests(ooda_response: OODAResponse) -> list[EvidenceRequestToAdd]:
     """
-    Convert OODA evidence requests to API EvidenceRequest format.
-
-    Maps internal framework evidence requests to API evidence.py format.
+    Convert OODA evidence requests to canonical EvidenceRequestToAdd.
     """
     evidence_requests = []
 
@@ -154,67 +146,46 @@ def _convert_to_evidence_requests(ooda_response: OODAResponse) -> list[APIEviden
     if isinstance(ooda_response, LeadInvestigatorResponse) and ooda_response.evidence_request:
         ev_req = ooda_response.evidence_request
 
-        # Map OODA evidence request to API format
-        category = _map_evidence_category(ev_req.evidence_type)
+        urgency = getattr(ev_req, "urgency", "normal") or "normal"
+        priority_map = {
+            "immediate": "high",
+            "high": "high",
+            "normal": "medium",
+            "low": "low",
+        }
+        priority = priority_map.get(str(urgency).lower(), "medium")
 
-        # Extract commands from collection_method (string field)
-        commands = []
-        if hasattr(ev_req, 'collection_method') and ev_req.collection_method:
-            # Split collection_method by newlines or semicolons to get commands
-            commands = [
-                cmd.strip()
-                for cmd in ev_req.collection_method.replace('\n', ';').split(';')
-                if cmd.strip()
-            ][:3]  # Max 3 commands
+        request_text_parts = [ev_req.description]
+        if getattr(ev_req, "collection_method", None):
+            request_text_parts.append(f"How to collect: {ev_req.collection_method}")
+        if getattr(ev_req, "expected_result", None):
+            request_text_parts.append(f"Expected result: {ev_req.expected_result}")
 
-        guidance = AcquisitionGuidance(
-            commands=commands,
-            file_locations=[],
-            ui_locations=[],
+        request_text = "\n".join([p for p in request_text_parts if p]).strip()[:500]
+        purpose = (ev_req.description or "Evidence requested for investigation").strip()[:500]
+
+        evidence_requests.append(
+            EvidenceRequestToAdd(
+                request_text=request_text,
+                purpose=purpose,
+                priority=priority,  # type: ignore[arg-type]
+            )
         )
-
-        evidence_requests.append(APIEvidenceRequest(
-            label=ev_req.evidence_type.replace("_", " ").title(),
-            description=ev_req.description,
-            category=category,
-            guidance=guidance,
-            created_at_turn=0,  # Default turn number
-        ))
 
     # Convert suggested_actions to evidence requests (if they request data)
     for action in (ooda_response.suggested_actions or []):
         if _is_evidence_action(action):
-            commands = _extract_commands_from_action(action)
-            guidance = AcquisitionGuidance(
-                commands=commands,
-                file_locations=[],
-                ui_locations=[],
+            description = getattr(action, "description", "") or ""
+            request_text = description.strip()[:500] or "Please provide additional diagnostic evidence."
+            evidence_requests.append(
+                EvidenceRequestToAdd(
+                    request_text=request_text,
+                    purpose="Gather additional diagnostic evidence",
+                    priority="medium",
+                )
             )
 
-            evidence_requests.append(APIEvidenceRequest(
-                label=action.description[:100],  # Truncate to max_length
-                description=action.description[:500],  # Truncate to max_length
-                category=EvidenceCategory.SYMPTOM_EVIDENCE,  # Default category
-                guidance=guidance,
-                created_at_turn=0,
-            ))
-
     return evidence_requests
-
-
-def _map_evidence_category(evidence_type: str) -> EvidenceCategory:
-    """Map OODA evidence types to EvidenceCategory enum."""
-    mapping = {
-        "logs": EvidenceCategory.SYMPTOM_EVIDENCE,
-        "metrics": EvidenceCategory.SYMPTOM_EVIDENCE,
-        "config": EvidenceCategory.SYMPTOM_EVIDENCE,
-        "configuration": EvidenceCategory.SYMPTOM_EVIDENCE,
-        "scope": EvidenceCategory.SYMPTOM_EVIDENCE,
-        "timeline": EvidenceCategory.SYMPTOM_EVIDENCE,
-        "test_result": EvidenceCategory.CAUSAL_EVIDENCE,
-        "implementation_proof": EvidenceCategory.RESOLUTION_EVIDENCE,
-    }
-    return mapping.get(evidence_type.lower(), EvidenceCategory.SYMPTOM_EVIDENCE)
 
 
 def _is_evidence_action(action: Any) -> bool:
@@ -226,18 +197,3 @@ def _is_evidence_action(action: Any) -> bool:
     ]
     desc_lower = action.description.lower()
     return any(keyword in desc_lower for keyword in evidence_keywords)
-
-
-def _extract_commands_from_action(action: Any) -> list[str]:
-    """Extract executable commands from a suggested action."""
-    commands = []
-
-    # Check for explicit command field
-    if hasattr(action, 'command') and action.command:
-        commands.append(action.command)
-
-    # Check for commands list
-    if hasattr(action, 'commands') and action.commands:
-        commands.extend(action.commands)
-
-    return commands

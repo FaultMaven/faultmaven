@@ -37,25 +37,35 @@ def create_registry_tools(
     ingester: Any | None,
     settings: FaultMavenSettings,
 ) -> List[Any]:
-    """Create all tools from the tool registry.
+    """Create tools (no decorator/registry side effects).
 
-    Args:
-        ingester: Knowledge ingester instance
-        settings: Application settings
-
-    Returns:
-        List of tool instances
+    We intentionally avoid any self-registration decorators or global registries.
+    Tools should be constructed explicitly with their required dependencies.
     """
-    from faultmaven.modules.agent.tools.registry import tool_registry
+    tools: List[Any] = []
 
-    # Import tools to trigger registration
-    import faultmaven.tools.knowledge_base
-    import faultmaven.tools.web_search
+    # Knowledge base tools require the ingester. If it is unavailable, skip.
+    if ingester is not None:
+        try:
+            from faultmaven.modules.agent.tools.knowledge_base import (
+                KnowledgeBaseTool,
+                KnowledgeBaseFilteredTool,
+            )
 
-    return tool_registry.create_all_tools(
-        knowledge_ingester=ingester,
-        settings=settings,
-    )
+            tools.append(KnowledgeBaseTool(knowledge_ingester=ingester))
+            tools.append(KnowledgeBaseFilteredTool(knowledge_ingester=ingester))
+        except Exception as e:
+            logger.warning(f"Knowledge base tool creation failed: {e}")
+
+    # Web search tool is optional (may be disabled if API key is missing).
+    try:
+        from faultmaven.modules.agent.tools.web_search import WebSearchTool
+
+        tools.append(WebSearchTool(settings=settings))
+    except Exception as e:
+        logger.warning(f"Web search tool creation failed: {e}")
+
+    return tools
 
 
 def create_document_qa_tools(

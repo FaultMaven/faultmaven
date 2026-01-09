@@ -21,7 +21,8 @@ from typing import Any, Dict, List, Optional
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
 
 from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
-from faultmaven.models import AgentState, SessionContext
+from faultmaven.models.common import AgentStateEnum as AgentState
+from faultmaven.models import SessionContext
 # SessionManager has been replaced by SessionService architecture
 # from faultmaven.session_management import SessionManager
 from faultmaven.exceptions import ValidationException, ServiceException

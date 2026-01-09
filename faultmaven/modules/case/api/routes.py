@@ -82,7 +82,7 @@ from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import (
     ValidationException,
     ServiceException,
-    NotFoundException,
+    NotFoundError,
     PermissionDeniedException
 )
 
@@ -179,7 +179,7 @@ async def _di_get_session_id_dependency(request: Request) -> Optional[str]:
     return await _get_session_id(request)
 
 
-async def _di_get_session_service_dependency() -> SessionService:
+async def _di_get_session_service_dependency() -> AuthSessionService:
     """Runtime wrapper so patched dependency is honored in tests."""
     from faultmaven.api.v1.dependencies import get_session_service as _getter
     return await _getter()
@@ -249,7 +249,7 @@ async def create_case(
     request: CaseCreateRequest,
     response: Response,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    session_service: SessionService = Depends(_di_get_session_service_dependency),
+    session_service: AuthSessionService = Depends(_di_get_session_service_dependency),
     current_user: DevUser = Depends(require_authentication)
 ) -> CaseSummary:
     """
@@ -1202,7 +1202,7 @@ async def create_case_for_session(
     title: Optional[str] = Query(None, description="Case title (optional, auto-generated if not provided)"),
     force_new: bool = Query(False, description="Force creation of new case"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    session_service: SessionService = Depends(_di_get_session_service_dependency),
+    session_service: AuthSessionService = Depends(_di_get_session_service_dependency),
     current_user: Optional[DevUser] = Depends(get_current_user_optional)
 ) -> Dict[str, Any]:
     """
@@ -1336,7 +1336,7 @@ async def submit_case_query(
     fastapi_request: Request,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     investigation_service = Depends(get_investigation_service),
-    session_service: SessionService = Depends(_di_get_session_service_dependency),
+    session_service: AuthSessionService = Depends(_di_get_session_service_dependency),
     current_user: DevUser = Depends(require_authentication)
 ):
     """
@@ -1428,7 +1428,7 @@ async def submit_case_query(
                 headers={"x-correlation-id": correlation_id}
             )
 
-    except NotFoundException as e:
+    except NotFoundError as e:
         raise HTTPException(
             status_code=404,
             detail=str(e),
@@ -2316,7 +2316,7 @@ async def list_uploaded_files(
             offset=offset
         )
 
-    except NotFoundException as e:
+    except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionDeniedException as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -2387,7 +2387,7 @@ async def get_uploaded_file_details(
 
     except HTTPException:
         raise
-    except NotFoundException as e:
+    except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionDeniedException as e:
         raise HTTPException(status_code=403, detail=str(e))

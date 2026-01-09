@@ -317,61 +317,6 @@ class TestServiceLifecycle:
 
 
 # ============================================================================
-# Test Backward Compatibility
-# ============================================================================
-
-class TestBackwardCompatibility:
-    """Test that DI refactoring maintains backward compatibility."""
-
-    @patch('faultmaven.modules.knowledge.domain.services.embedding_service.EmbeddingService')
-    @patch('faultmaven.services.vector_store_service.VectorStoreService')
-    def test_manual_dependency_injection_still_works(self, mock_vector, mock_embedding, mock_settings):
-        """Test that manually providing dependencies still works (backward compatibility)."""
-        from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
-        from faultmaven.infrastructure.persistence.repository_factory import (
-            get_knowledge_repository,
-            STORAGE_TYPE_MEMORY,
-        )
-
-        # Create manual dependencies
-        manual_embedding = Mock()
-        manual_vector = Mock()
-
-        # Create service with manual dependencies
-        knowledge_repo = get_knowledge_repository(storage_type=STORAGE_TYPE_MEMORY)
-        service = KnowledgeSearchService(
-            knowledge_repo=knowledge_repo,
-            embedding_service=manual_embedding,  # Manually provided
-            vector_store_service=manual_vector,   # Manually provided
-        )
-
-        # Should use manual dependencies, NOT DI container
-        assert service.embedding_service is manual_embedding
-        assert service.vector_store_service is manual_vector
-
-    @patch('faultmaven.services.auth_service.AuthService')
-    def test_mixed_injection_pattern(self, mock_auth, mock_settings):
-        """Test mixed pattern: some dependencies manual, some via DI."""
-        from faultmaven.services.user_service import UserService
-        from faultmaven.infrastructure.persistence.repository_factory import (
-            get_user_repository,
-            STORAGE_TYPE_MEMORY,
-        )
-
-        # Provide one dependency manually, let DI handle the other
-        manual_auth = Mock()
-
-        user_repo = get_user_repository(storage_type=STORAGE_TYPE_MEMORY)
-        service = UserService(
-            user_repo=user_repo,
-            auth_service=manual_auth,  # Manual
-        )
-
-        # Should use manual dependency
-        assert service.auth_service is manual_auth
-
-
-# ============================================================================
 # Test Testing Support
 # ============================================================================
 

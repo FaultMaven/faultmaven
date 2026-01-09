@@ -32,7 +32,7 @@ from faultmaven.api.v1.auth_dependencies import (
 from faultmaven.exceptions import (
     ValidationException,
     ServiceException,
-    NotFoundException,
+    NotFoundError,
     PermissionDeniedException
 )
 from faultmaven.container import container

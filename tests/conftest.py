@@ -92,7 +92,8 @@ from faultmaven.modules.agent.tools.web_search import WebSearchTool
 # from faultmaven.services.preprocessing.classifier import DataClassifier  # May need heavy deps
 # from faultmaven.core.processing.log_analyzer import LogProcessor
 from faultmaven.infrastructure.llm.router import LLMRouter
-from faultmaven.models import AgentState, DataType, SessionContext
+from faultmaven.models.common import AgentStateEnum as AgentState
+from faultmaven.models import DataType, SessionContext
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 # SessionManager has been replaced by SessionService
 # from faultmaven.session_management import SessionManager

@@ -17,7 +17,8 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, Mock, patch
 from typing import List, Optional
 
-from faultmaven.services.domain.case_service import CaseService
+# Legacy services/domain/* was removed; use extracted module path.
+from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,

@@ -39,10 +39,8 @@ from faultmaven.services.file_storage_service import FileStorageService
 # ============================================================
 # Re-exports from v1.dependencies
 # ============================================================
-# These functions are defined in api.v1.dependencies but re-exported
-# here to provide a canonical import path for all API dependencies.
-# This maintains backward compatibility while establishing
-# faultmaven.api.dependencies as the single source for dependency injection.
+# These functions are defined in api.v1.dependencies but re-exported here to
+# provide a canonical import path for all API dependencies.
 #
 # NOTE: We avoid re-exporting functions that cause circular imports
 # (e.g., get_knowledge_service) - import those directly from v1.dependencies.

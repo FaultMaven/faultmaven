@@ -57,20 +57,21 @@ class EvidenceService:
 
         # Create evidence record
         evidence = await self.repository.create(
-            filename=file.filename,
-            content_type=file.content_type,
-            size_bytes=file.size,
-            storage_path=storage_path,
-            uploaded_by=uploaded_by,
+            original_filename=file.filename,
+            mime_type=file.content_type,
+            file_size=file.size,
+            file_path=storage_path,
+            user_id=str(uploaded_by),
+            case_id=str(case_id) if case_id else "standalone",
             description=description,
             tags=tags or [],
         )
 
         # Auto-link to case if provided
         if case_id:
-            await self.link_to_case(evidence.id, case_id)
+            await self.link_to_case(UUID(evidence.evidence_id), case_id)
 
-        logger.info(f"Evidence {evidence.id} uploaded: {file.filename}")
+        logger.info(f"Evidence {evidence.evidence_id} uploaded: {file.filename}")
         return evidence
 
     async def get_evidence(self, evidence_id: UUID) -> Optional[EvidenceArtifact]:
@@ -111,7 +112,7 @@ class EvidenceService:
             return False
 
         # Delete file from storage
-        await self.storage.delete_file(evidence.storage_path)
+        await self.storage.delete_file(evidence.file_path)
 
         # Delete database record
         await self.repository.delete(evidence_id)
@@ -154,4 +155,4 @@ class EvidenceService:
         if not evidence:
             return None
 
-        return await self.storage.get_download_url(evidence.storage_path)
+        return await self.storage.get_download_url(evidence.file_path)

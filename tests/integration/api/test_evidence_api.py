@@ -25,7 +25,7 @@ import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 
-from faultmaven.api.app import create_app
+from faultmaven.main import app as main_app
 from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
 
@@ -71,7 +71,7 @@ def mock_evidence_service():
 @pytest.fixture
 def app(mock_evidence_service, mock_user):
     """Create test application with mocked dependencies."""
-    app = create_app()
+    app = main_app
 
     async def get_mock_evidence_service():
         return mock_evidence_service

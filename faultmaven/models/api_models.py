@@ -370,11 +370,6 @@ class CaseQueryResponse(BaseModel):
     is_stuck: bool
 
 
-# Legacy aliases for backward compatibility (deprecated)
-CreateTurnRequest = CaseQueryRequest
-CreateTurnResponse = CaseQueryResponse
-
-
 # ============================================================
 # Messages and Conversation History
 # ============================================================

@@ -43,18 +43,6 @@ class ValidationException(FaultMavenException):
     pass
 
 
-class NotFoundException(FaultMavenException):
-    """Raised when a requested resource is not found.
-
-    DEPRECATED: Prefer using NotFoundError for new code, which provides
-    structured resource_type and resource_id fields.
-
-    This class is maintained for backward compatibility with code that uses
-    simple message-based initialization.
-    """
-    pass
-
-
 class PermissionDeniedException(FaultMavenException):
     """Raised when user lacks permission for an operation."""
     pass

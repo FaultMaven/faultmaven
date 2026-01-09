@@ -35,7 +35,7 @@ BRIEF_PROMPT = CORE_IDENTITY + "\n\n" + BRIEF_METHODOLOGY
 # Tier 2: Standard (for moderate troubleshooting - 210 tokens)
 STANDARD_PROMPT = CORE_IDENTITY + "\n\n" + DETAILED_METHODOLOGY
 
-# PRIMARY_SYSTEM_PROMPT - default (Tier 2 for backward compatibility)
+# PRIMARY_SYSTEM_PROMPT - default
 PRIMARY_SYSTEM_PROMPT = STANDARD_PROMPT
 CONCISE_SYSTEM_PROMPT = BRIEF_PROMPT  # Tier 1
 

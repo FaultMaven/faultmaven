@@ -26,8 +26,6 @@ def create_tenant_provider(
     - "single": SingleTenantProvider (local, community, development)
     - "multi": MultiTenantProvider (cloud, enterprise, production)
 
-    Legacy support: DEPLOYMENT_MODE is mapped to TENANT_PROVIDER with deprecation warning.
-
     Args:
         organization_repository: Organization repository for persistence
 
@@ -36,7 +34,6 @@ def create_tenant_provider(
 
     Environment Variables:
         TENANT_PROVIDER: "single" | "multi" (default: "single")
-        DEPLOYMENT_MODE: DEPRECATED - use TENANT_PROVIDER instead
 
     Design Notes:
         - Defaults to single-tenant for local development ease

@@ -142,9 +142,11 @@ def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
     Returns:
         Tuple of (vector_store, is_disabled)
     """
-    vector_storage_type = settings.database.vector_storage_type.lower()
+    vector_storage_type = (settings.database.vector_storage_type or "").lower()
+    # Accept common synonyms for ChromaDB to avoid config drift (e.g. "chroma")
+    is_chroma = vector_storage_type in {"chromadb", "chroma", "chroma_db", "chroma-db"}
 
-    if vector_storage_type == "chromadb":
+    if is_chroma:
         if not settings.server.skip_service_checks:
             from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 
@@ -283,9 +285,10 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         else:
             container._register_service("vector_store", vector_store)
     except Exception as e:
-        logger.warning(f"Vector store failed, using fallback: {e}")
-        from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
-        container._register_service("vector_store", InMemoryVectorStore())
+        # Vector store is optional; if it fails to initialize, keep it unavailable
+        # rather than masking the failure with an in-memory fallback.
+        logger.warning(f"Vector store initialization failed: {e}")
+        container._register_failed("vector_store", str(e))
 
     # Case vector store
     case_vector_store = create_case_vector_store(settings)

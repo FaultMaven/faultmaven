@@ -65,6 +65,17 @@ class HypothesisManager:
         """Initialize hypothesis manager"""
         self.logger = logging.getLogger(__name__)
 
+    @staticmethod
+    def calculate_evidence_ratio(hypothesis: Hypothesis) -> float:
+        """Compute supporting/(supporting+refuting) evidence ratio.
+
+        Returns 0.0 when there is no linked evidence.
+        """
+        supporting = len(hypothesis.supporting_evidence)
+        refuting = len(hypothesis.refuting_evidence)
+        total = supporting + refuting
+        return (supporting / total) if total > 0 else 0.0
+
     def create_hypothesis(
         self,
         statement: str,
@@ -105,7 +116,6 @@ class HypothesisManager:
             captured_at_turn=current_turn,
             promoted_to_active_at_turn=current_turn if status == HypothesisStatus.ACTIVE else None,
             triggering_observation=triggering_observation,
-            created_at_turn=current_turn,
             last_updated_turn=current_turn,
             last_progress_at_turn=current_turn,
         )
@@ -174,10 +184,6 @@ class HypothesisManager:
             hypothesis: Hypothesis to update
             turn: Current turn number
         """
-        from faultmaven.services.agentic.hypothesis.opportunistic_capture import (
-            calculate_evidence_ratio,
-        )
-
         supporting_count = len(hypothesis.supporting_evidence)
         refuting_count = len(hypothesis.refuting_evidence)
 
@@ -208,7 +214,7 @@ class HypothesisManager:
                 "hypothesis_id": hypothesis.hypothesis_id,
                 "supporting": supporting_count,
                 "refuting": refuting_count,
-                "evidence_ratio": calculate_evidence_ratio(hypothesis),
+                "evidence_ratio": self.calculate_evidence_ratio(hypothesis),
             },
         )
 

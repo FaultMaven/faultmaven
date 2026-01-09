@@ -22,7 +22,7 @@ import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 
-from faultmaven.api.app import create_app
+from faultmaven.main import app as main_app
 from faultmaven.modules.agent.domain.events.execution_events import ExecutionEvent, ExecutionEventType
 from faultmaven.exceptions import (
     AuthorizationError,
@@ -121,7 +121,7 @@ def mock_agent_service():
 @pytest.fixture
 def app(mock_agent_service, mock_user):
     """Create test application with mocked dependencies."""
-    app = create_app()
+    app = main_app
 
     async def get_mock_agent_service():
         return mock_agent_service

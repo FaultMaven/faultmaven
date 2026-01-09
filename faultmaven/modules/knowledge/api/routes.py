@@ -54,9 +54,7 @@ async def get_knowledge_service() -> KnowledgeService:
 # Canonical document types (authoritative)
 ALLOWED_DOCUMENT_TYPES = {"playbook", "troubleshooting_guide", "reference", "how_to"}
 
-# Removed kb_router - no backward compatibility, use /knowledge/ only
-
-
+# (No legacy router paths)
 @router.post("/documents", status_code=201)
 @trace("api_upload_document")
 async def upload_document(

@@ -59,8 +59,7 @@ class EvidenceRepository:
             Created evidence domain model
         """
         evidence_id = uuid4()
-        # Store tags in both the tags column and metadata for compatibility
-        metadata = {"tags": tags or []}
+        metadata = {}
         evidence = StandaloneEvidenceModel(
             id=str(evidence_id),
             filename=filename,
@@ -207,8 +206,6 @@ class EvidenceRepository:
         if case_id_str not in linked_cases:
             linked_cases.append(case_id_str)
             evidence.linked_cases = json.dumps(linked_cases)
-            # Also update metadata to include linked_cases for backward compatibility
-            metadata["linked_cases"] = linked_cases
             evidence.evidence_metadata = json.dumps(metadata)
             await self.session.commit()
             await self.session.refresh(evidence)
@@ -228,12 +225,6 @@ class EvidenceRepository:
         linked_cases_str = json.loads(evidence.linked_cases or "[]")
         tags = json.loads(evidence.tags or "[]")
         metadata = json.loads(evidence.evidence_metadata or "{}")
-
-        # Ensure tags and linked_cases are in metadata for backward compatibility
-        if "tags" not in metadata:
-            metadata["tags"] = tags
-        if "linked_cases" not in metadata:
-            metadata["linked_cases"] = linked_cases_str
 
         # Map old schema to new domain model
         # Use first linked case as primary case_id, or generate a standalone marker
@@ -261,6 +252,8 @@ class EvidenceRepository:
             updated_at=evidence.uploaded_at,
             description=evidence.description,
             metadata=metadata,
+            tags=tags,
+            linked_case_ids=linked_cases_str,
         )
 
     def _infer_evidence_type(self, content_type: str) -> EvidenceArtifactType:

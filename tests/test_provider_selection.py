@@ -87,15 +87,6 @@ class TestTenantProviderSelection:
         settings = get_settings()
         assert settings.providers.tenant_provider == TenantProvider.MULTI
 
-    def test_deployment_mode_derived_from_tenant_provider(self, clean_env, reset_settings_cache):
-        """Test deployment_mode property derives from tenant_provider."""
-        os.environ["TENANT_PROVIDER"] = "multi"
-
-        from faultmaven.config.settings import get_settings
-
-        settings = get_settings()
-        assert settings.deployment_mode == "multi-tenant"
-
 
 # =============================================================================
 # Database Backend Selection Tests

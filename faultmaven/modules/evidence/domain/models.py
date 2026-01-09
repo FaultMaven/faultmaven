@@ -99,6 +99,8 @@ class EvidenceArtifact:
     metadata: Optional[Dict[str, Any]] = None
     description: Optional[str] = None
     is_primary: bool = False
+    tags: List[str] = field(default_factory=list)
+    linked_case_ids: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Validate evidence artifact data."""
@@ -182,74 +184,6 @@ class EvidenceArtifact:
         """Update the updated_at timestamp to current time."""
         self.updated_at = datetime.now(timezone.utc)
 
-    # Backward compatibility properties for old field names
-    @property
-    def id(self):
-        """Backward compatibility: id -> evidence_id."""
-        from uuid import UUID
-        try:
-            return UUID(self.evidence_id) if isinstance(self.evidence_id, str) else self.evidence_id
-        except (ValueError, AttributeError):
-            return self.evidence_id
-
-    @property
-    def filename(self):
-        """Backward compatibility: filename -> original_filename."""
-        return self.original_filename
-
-    @property
-    def content_type(self):
-        """Backward compatibility: content_type -> mime_type."""
-        return self.mime_type
-
-    @property
-    def size_bytes(self):
-        """Backward compatibility: size_bytes -> file_size."""
-        return self.file_size
-
-    @property
-    def storage_path(self):
-        """Backward compatibility: storage_path -> file_path."""
-        return self.file_path
-
-    @property
-    def uploaded_by(self):
-        """Backward compatibility: uploaded_by -> user_id."""
-        from uuid import UUID
-        try:
-            return UUID(self.user_id) if isinstance(self.user_id, str) else self.user_id
-        except (ValueError, AttributeError):
-            return self.user_id
-
-    @property
-    def uploaded_at(self):
-        """Backward compatibility: uploaded_at -> created_at."""
-        return self.created_at
-
-    @property
-    def tags(self):
-        """Backward compatibility: tags from metadata."""
-        if self.metadata:
-            return self.metadata.get("tags", [])
-        return []
-
-    @property
-    def linked_cases(self):
-        """Backward compatibility: linked_cases as list with case_id."""
-        from uuid import UUID
-        # Always get linked_cases from metadata if available
-        if self.metadata and "linked_cases" in self.metadata:
-            cases = self.metadata["linked_cases"]
-            # Convert strings to UUIDs
-            return [UUID(c) if isinstance(c, str) else c for c in cases]
-        # Fallback to case_id if not standalone
-        if self.case_id != "standalone":
-            try:
-                return [UUID(self.case_id) if isinstance(self.case_id, str) else self.case_id]
-            except (ValueError, AttributeError):
-                return [self.case_id]
-        return []
-
     def __repr__(self) -> str:
         return (
             f"EvidenceArtifact(evidence_id={self.evidence_id!r}, "
@@ -292,10 +226,7 @@ class EvidenceListFilter(BaseModel):
 
 
 class EvidenceArtifactResponse(BaseModel):
-    """API response model for EvidenceArtifact with backward compatibility.
-
-    Includes both new field names and legacy aliases for backward compatibility.
-    """
+    """API response model for EvidenceArtifact."""
 
     # New field names (canonical)
     evidence_id: str
@@ -314,60 +245,8 @@ class EvidenceArtifactResponse(BaseModel):
     metadata: Dict[str, Any] = PydanticField(default_factory=dict)
     description: Optional[str] = None
     is_primary: bool = False
-
-    # Computed fields for backward compatibility
-    @property
-    def id(self) -> UUID:
-        """Backward compatibility: id -> evidence_id."""
-        return UUID(self.evidence_id) if isinstance(self.evidence_id, str) else self.evidence_id
-
-    @property
-    def filename(self) -> str:
-        """Backward compatibility: filename -> original_filename."""
-        return self.original_filename
-
-    @property
-    def content_type(self) -> str:
-        """Backward compatibility: content_type -> mime_type."""
-        return self.mime_type
-
-    @property
-    def size_bytes(self) -> int:
-        """Backward compatibility: size_bytes -> file_size."""
-        return self.file_size
-
-    @property
-    def storage_path(self) -> str:
-        """Backward compatibility: storage_path -> file_path."""
-        return self.file_path
-
-    @property
-    def uploaded_by(self) -> UUID:
-        """Backward compatibility: uploaded_by -> user_id."""
-        return UUID(self.user_id) if isinstance(self.user_id, str) else self.user_id
-
-    @property
-    def uploaded_at(self) -> datetime:
-        """Backward compatibility: uploaded_at -> created_at."""
-        return self.created_at
-
-    @property
-    def tags(self) -> List[str]:
-        """Backward compatibility: tags from metadata."""
-        return self.metadata.get("tags", []) if self.metadata else []
-
-    @property
-    def linked_cases(self) -> List[UUID]:
-        """Backward compatibility: linked_cases from metadata or case_id."""
-        if self.metadata and "linked_cases" in self.metadata:
-            cases = self.metadata["linked_cases"]
-            return [UUID(c) if isinstance(c, str) else c for c in cases]
-        if self.case_id != "standalone":
-            try:
-                return [UUID(self.case_id) if isinstance(self.case_id, str) else self.case_id]
-            except (ValueError, AttributeError):
-                return [self.case_id]
-        return []
+    tags: List[str] = PydanticField(default_factory=list)
+    linked_case_ids: List[str] = PydanticField(default_factory=list)
 
     model_config = {
         "from_attributes": True,
@@ -398,4 +277,6 @@ class EvidenceArtifactResponse(BaseModel):
             metadata=evidence.metadata or {},
             description=evidence.description,
             is_primary=evidence.is_primary,
+            tags=evidence.tags,
+            linked_case_ids=evidence.linked_case_ids,
         )

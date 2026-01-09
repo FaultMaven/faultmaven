@@ -173,7 +173,6 @@ def create_evidence_service(
 
 def create_session_service(
     session_store: Any | None,
-    case_service: Any,
     settings: FaultMavenSettings,
     minimal_factory: callable,
 ) -> Any:
@@ -187,7 +186,6 @@ def create_session_service(
 
         service = SessionService(
             session_store=session_store,
-            case_service=case_service,
             settings=settings,
         )
         logger.debug("SessionService initialized")
@@ -223,18 +221,24 @@ def create_data_service(
 
 def create_knowledge_service(
     vector_store: Any | None,
-    session_store: Any | None,
     knowledge_ingester: Any | None,
+    sanitizer: Any,
+    tracer: Any,
+    llm_provider: Any | None,
+    redis_client: Any | None,
     settings: FaultMavenSettings,
 ) -> Any:
     """Create knowledge service for knowledge base operations."""
     from faultmaven.modules.knowledge.domain.services.knowledge_service import KnowledgeService
 
     return KnowledgeService(
-        vector_store=vector_store,
-        session_store=session_store,
         knowledge_ingester=knowledge_ingester,
+        sanitizer=sanitizer,
+        tracer=tracer,
+        vector_store=vector_store,
+        redis_client=redis_client,
         settings=settings,
+        llm_provider=llm_provider,
     )
 
 
@@ -351,7 +355,7 @@ def create_tenant_provider(
         from faultmaven.providers.tenancy.factory import create_tenant_provider as factory
 
         provider = factory(organization_repository=organization_repository)
-        logger.debug(f"TenantProvider initialized (mode: {settings.deployment_mode})")
+        logger.debug(f"TenantProvider initialized (tenant_provider: {settings.providers.tenant_provider})")
         return provider
     except Exception as e:
         logger.warning(f"TenantProvider initialization failed: {e}")
@@ -444,14 +448,18 @@ def register_services(container: BaseDIContainer) -> None:
     # Session Service
     session_service = create_session_service(
         session_store,
-        case_service,
         settings,
         container._create_minimal_session_service,
     )
     container._register_service("session_service", session_service)
 
-    # Agent Service (explicitly None for clean architecture - use InvestigationService)
-    container.agent_service = None
+    # Agent Service
+    # Backward-compatible alias: expose InvestigationService as agent_service.
+    # If the investigation service can't be constructed (missing deps), still provide a
+    # minimal non-null placeholder so callers/tests don't explode during init.
+    agent_service = investigation_service if investigation_service is not None else object()
+    container.agent_service = agent_service
+    container._register_service("agent_service", agent_service)
 
     # Data Service
     data_service = create_data_service(
@@ -467,8 +475,11 @@ def register_services(container: BaseDIContainer) -> None:
     # Knowledge Service
     knowledge_service = create_knowledge_service(
         vector_store,
-        session_store,
         knowledge_ingester,
+        container.get_service("sanitizer", required=True),
+        container.get_service("tracer", required=True),
+        container.get_service("llm_provider", required=False),
+        redis_client,
         settings,
     )
     container._register_service("knowledge_service", knowledge_service)

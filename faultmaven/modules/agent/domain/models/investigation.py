@@ -471,9 +471,8 @@ class Hypothesis(BaseModel):
         description="(turn, confidence) history"
     )
 
-    # Legacy fields (backward compatibility)
-    created_at_turn: int = Field(..., description="Legacy: same as captured_at_turn")
-    last_updated_turn: int = Field(..., description="Last modification turn")
+    # Lifecycle metadata
+    last_updated_turn: int = Field(..., description="Turn of last modification")
 
     # Evidence linkage
     supporting_evidence: List[str] = Field(default_factory=list, description="Evidence IDs")
@@ -502,7 +501,7 @@ class Hypothesis(BaseModel):
         Returns:
             Updated likelihood after decay
         """
-        turns_since_progress = current_turn - (self.last_progress_at_turn or self.created_at_turn)
+        turns_since_progress = current_turn - (self.last_progress_at_turn or self.captured_at_turn)
 
         if turns_since_progress >= 2:
             decay_factor = 0.85 ** self.iterations_without_progress

@@ -33,7 +33,7 @@ from faultmaven.models.report import (
     RunbookSource,
 )
 from faultmaven.models.auth import DevUser
-from faultmaven.exceptions import ValidationException, ServiceException, NotFoundException
+from faultmaven.exceptions import ValidationException, ServiceException, NotFoundError
 
 
 class MockTenantProvider:

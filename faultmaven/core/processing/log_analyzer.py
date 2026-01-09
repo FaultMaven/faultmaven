@@ -45,7 +45,8 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
-from faultmaven.models import AgentState, DataInsightsResponse, DataType
+from faultmaven.models.common import AgentStateEnum as AgentState
+from faultmaven.models import DataInsightsResponse, DataType
 from faultmaven.models.interfaces import ILogProcessor, IMemoryService, ConversationContext
 from faultmaven.infrastructure.observability.tracing import trace
 
@@ -157,7 +158,7 @@ class EnhancedLogProcessor(ILogProcessor):
             "aws_key": re.compile(r"AKIA[0-9A-Z]{16}"),
         }
 
-        # Standard log patterns (for backward compatibility)
+        # Standard log patterns for parsing
         self.log_patterns = {
             "timestamp": [pattern for pattern, _ in self.enhanced_log_patterns["timestamp"]],
             "log_level": [pattern for pattern, _ in self.enhanced_log_patterns["log_level"]],
@@ -1027,34 +1028,21 @@ class EnhancedLogProcessor(ILogProcessor):
 
         return min(1.0, max(0.0, confidence))
     
-    # Legacy interface compatibility
-    @trace("enhanced_log_processor_process_legacy")
     async def process(self, content: str, data_type: Optional[DataType] = None) -> Dict[str, Any]:
+        """Process logs and return extracted insights (ILogProcessor contract).
+
+        This is implemented on the enhanced processor for direct use via the
+        `ILogProcessor` interface, while still delegating to the richer
+        `process_with_context()` method internally.
         """
-        Legacy processing method for backward compatibility
-        
-        Args:
-            content: Raw log content
-            data_type: Optional data type for processing hints
-            
-        Returns:
-            Dictionary with extracted insights (legacy format)
-        """
-        # Use enhanced processing but return simplified format
         result = await self.process_with_context(
             content=content,
-            session_id="legacy",
+            session_id="session",
             data_type=data_type,
-            context=None
+            context=None,
         )
-        
-        # Convert to legacy format
-        return {
-            **result.insights,
-            "anomalies": result.anomalies,
-            "processing_time_ms": result.processing_time_ms,
-            "confidence_score": result.confidence_score
-        }
+        # Return only the interface-required insights dict.
+        return result.insights
 
 
 class LogProcessor(ILogProcessor):

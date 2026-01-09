@@ -206,7 +206,11 @@ async def deactivate_user(
     try:
         user_service = get_user_service()
 
-        updated_user = await user_service.deactivate_user(user_id=user_id)
+        updated_user = await user_service.deactivate_user_admin(
+            user_id=user_id,
+            organization_id=current_user.organization_id,
+            admin_user_id=current_user.user_id,
+        )
 
         return UserStatusResponse(
             user_id=updated_user.user_id,
@@ -252,7 +256,11 @@ async def activate_user(
     try:
         user_service = get_user_service()
 
-        updated_user = await user_service.activate_user(user_id=user_id)
+        updated_user = await user_service.activate_user_admin(
+            user_id=user_id,
+            organization_id=current_user.organization_id,
+            admin_user_id=current_user.user_id,
+        )
 
         return UserStatusResponse(
             user_id=updated_user.user_id,
@@ -307,6 +315,7 @@ async def assign_role(
         updated_user = await user_service.assign_role(
             user_id=user_id,
             role=request.role,
+            organization_id=current_user.organization_id,
             admin_user_id=current_user.user_id,
         )
 
@@ -375,6 +384,7 @@ async def remove_role(
         updated_user = await user_service.remove_role(
             user_id=user_id,
             role=role,
+            organization_id=current_user.organization_id,
             admin_user_id=current_user.user_id,
         )
 
