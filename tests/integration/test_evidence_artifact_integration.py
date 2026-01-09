@@ -14,7 +14,6 @@ import os
 import pytest
 from datetime import datetime, timezone
 from typing import AsyncGenerator
-from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
@@ -35,6 +34,7 @@ from faultmaven.infrastructure.persistence.repository_factory import (
 )
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
 from faultmaven.modules.evidence.domain.models import (
+from tests.utils import generate_case_id, generate_evidence_id
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,
@@ -44,16 +44,6 @@ from faultmaven.modules.evidence.domain.models import (
 # ============================================================
 # Test Fixtures
 # ============================================================
-
-
-def generate_case_id() -> str:
-    """Generate a valid case ID."""
-    return f"case_{uuid4().hex[:12]}"
-
-
-def generate_evidence_id() -> str:
-    """Generate a valid evidence ID."""
-    return f"ev_{uuid4().hex[:12]}"
 
 
 @pytest.fixture(scope="function")

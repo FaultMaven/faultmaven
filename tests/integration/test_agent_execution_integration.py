@@ -36,6 +36,7 @@ from faultmaven.infrastructure.persistence.repository_factory import (
 )
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
 from faultmaven.modules.agent.domain.models.agent_execution import (
+from tests.utils import generate_case_id
     AgentExecution,
     AgentToolCall,
     AgentType,
@@ -46,11 +47,6 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
 # ============================================================
 # Test Fixtures
 # ============================================================
-
-
-def generate_case_id() -> str:
-    """Generate a valid case ID."""
-    return f"case_{uuid4().hex[:12]}"
 
 
 def generate_execution_id() -> str:

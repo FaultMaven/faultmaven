@@ -31,11 +31,7 @@ from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
 )
 
 from .conftest import generate_case_id
-
-
-def generate_evidence_id() -> str:
-    """Generate a valid evidence ID."""
-    return f"ev_{uuid4().hex[:12]}"
+from tests.utils import generate_evidence_id
 
 
 def create_sample_evidence(

@@ -5,7 +5,6 @@ Tests both InMemoryInvestigationSessionRepository and the repository interface.
 
 import pytest
 from datetime import datetime, timezone, timedelta
-from uuid import uuid4
 
 from faultmaven.models.investigation_session import (
     InvestigationSession,
@@ -14,16 +13,7 @@ from faultmaven.models.investigation_session import (
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InMemoryInvestigationSessionRepository,
 )
-
-
-def generate_session_id() -> str:
-    """Generate a valid test session ID."""
-    return f"sess_{uuid4().hex[:12]}"
-
-
-def generate_case_id() -> str:
-    """Generate a valid test case ID."""
-    return f"case_{uuid4().hex[:9]}"
+from tests.utils import generate_case_id, generate_session_id
 
 
 def create_sample_session(
