@@ -148,7 +148,7 @@ class TestHealth:
 
         health = container.get_health()
 
-        assert health["status"] == "unknown"
+        assert health["status"] == "not_initialized"
         assert health["services"]["total"] == 0
 
     def test_get_health_with_ready_services(self):

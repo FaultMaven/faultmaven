@@ -22,10 +22,6 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional
 
-# Load environment variables first
-from dotenv import load_dotenv
-load_dotenv()
-
 
 # Available jobs registry
 AVAILABLE_JOBS: Dict[str, str] = {
@@ -134,6 +130,10 @@ def main(args: Optional[List[str]] = None) -> int:
     Returns:
         Exit code (0 for success, 1 for failure)
     """
+    # Load environment variables at function level, not module level
+    from dotenv import load_dotenv
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
         description="Run FaultMaven background jobs",
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -7,7 +7,10 @@ detection - no LLM calls required.
 """
 
 import re
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, TYPE_CHECKING
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
 
 
 class UnstructuredTextExtractor:

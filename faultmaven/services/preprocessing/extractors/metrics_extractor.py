@@ -7,8 +7,11 @@ anomalies using statistical methods. No LLM calls required.
 
 import re
 import json
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 from datetime import datetime
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
 
 
 class MetricsAndPerformanceExtractor:

@@ -21,10 +21,13 @@ import aiofiles
 import aiofiles.os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from faultmaven.services.base import BaseService
 from faultmaven.exceptions import ValidationException, ServiceError
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
 
 
 class FileStorageService(BaseService):

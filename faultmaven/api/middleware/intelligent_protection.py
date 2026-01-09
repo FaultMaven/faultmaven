@@ -11,11 +11,10 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
-from faultmaven.infrastructure.protection.protection_coordinator import (
-    ProtectionCoordinator, ProtectionConfig
-)
 from faultmaven.models.behavioral import RiskLevel, ProtectionDecision
 from faultmaven.models.interfaces import ISessionStore
+
+# No direct imports from infrastructure layer - all dependencies via DI
 
 
 class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
@@ -33,20 +32,28 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
         app: ASGIApp,
-        config: Optional[ProtectionConfig] = None,
+        coordinator: Optional[Any] = None,
+        config: Optional[Any] = None,
         session_store: Optional[ISessionStore] = None,
         enabled: bool = True
     ):
         super().__init__(app)
         self.enabled = enabled
         self.logger = logging.getLogger(__name__)
-        
+
         if not self.enabled:
             self.logger.info("Intelligent Protection Middleware disabled")
             return
-        
-        # Initialize intelligent protection coordinator
-        self.coordinator = ProtectionCoordinator(config, session_store)
+
+        # Initialize intelligent protection coordinator via DI
+        if coordinator is not None:
+            self.coordinator = coordinator
+        else:
+            # No fallback - coordinator must be injected via DI
+            raise ValueError(
+                "ProtectionCoordinator must be provided via dependency injection. "
+                "Ensure the DI container is properly initialized."
+            )
         self.initialization_task: Optional[asyncio.Task] = None
         self.initialized = False
         
