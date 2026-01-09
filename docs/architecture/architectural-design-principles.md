@@ -1,7 +1,7 @@
 # FaultMaven Architectural Design Principles
 
-**Version**: 1.0
-**Date**: 2026-01-05
+**Version**: 2.0
+**Date**: 2026-01-09
 **Status**: Active
 **Related Documents**:
 
@@ -15,27 +15,63 @@
 
 This document defines the **core architectural design principles** that guide FaultMaven's evolution from a battle-tested monolith to a modern, modular architecture.
 
-**Key Principles**:
+### Core Philosophy
 
-1. **Deployment Agnostic Architecture** - Infrastructure as deployment-time decisions, not code-time constraints
-2. **Vertical Slicing** - Domain-based modules over horizontal layers
-3. **Interface-Based Design** - Protocols and ABCs for all external dependencies
-4. **Dependency Injection** - Service composition via DI container
-5. **Architectural Boundary Enforcement** - Import-linter for compile-time safety
-6. **Test Safety Net** - Zero regressions via comprehensive test suite
-7. **Incremental Refactoring** - Evolutionary architecture over big rewrites
+> **"Enforce what matters. Escape what you must. Sunset what you escape."**
+
+These principles optimize for a small team (<15) building an AI-powered SRE tool. They prioritize debuggability over abstraction, and measurable outcomes over theoretical purity.
+
+### The 10 Principles
+
+| # | Principle | One-Line Rule |
+|---|-----------|---------------|
+| 1 | Deployment Agnostic | Infrastructure choices are deployment-time decisions, not code-time |
+| 2 | Vertical Modules | Organize by domain; modules communicate via explicit contracts |
+| 3 | Database Boundaries | Modules own their tables; no cross-module JOINs |
+| 4 | Interface-Based Design | Protocols for swappable boundaries; concrete classes internally |
+| 5 | Composition Root | All DI wiring in `main.py`; services never touch container |
+| 6 | Errors as Domain Concepts | Every module defines its exception hierarchy |
+| 7 | Observability by Default | Correlation IDs, structured logs, traces on external calls |
+| 8 | Boundary Enforcement | Import-linter enforces rules at build time |
+| 9 | Test Safety Net | 70% code coverage floor + 85% AI evaluation benchmarks |
+| 10 | Bounded AI Complexity | LangGraph owns state; LLM adapters are stateless |
+
+### Principle Hierarchy
+
+```
+CRITICAL (Violations block deployment)
+├── 5. Composition Root
+├── 6. Errors as Domain Concepts
+└── 10. Bounded AI Complexity
+
+IMPORTANT (Violations require documented exception)
+├── 1. Deployment Agnostic
+├── 2. Vertical Modules with Contracts
+├── 3. Database Boundaries
+├── 7. Observability by Default
+└── 8. Boundary Enforcement
+
+RECOMMENDED (Apply judgment)
+├── 4. Interface-Based Design
+└── 9. Test Safety Net
+```
 
 ---
 
 ## Table of Contents
 
-1. [Design Principle 1: Deployment Agnostic Architecture](#1-deployment-agnostic-architecture)
-2. [Design Principle 2: Vertical Slicing](#2-vertical-slicing)
-3. [Design Principle 3: Interface-Based Design](#3-interface-based-design)
-4. [Design Principle 4: Dependency Injection](#4-dependency-injection)
-5. [Design Principle 5: Architectural Boundary Enforcement](#5-architectural-boundary-enforcement)
-6. [Design Principle 6: Test Safety Net](#6-test-safety-net)
-7. [Design Principle 7: Incremental Refactoring](#7-incremental-refactoring)
+1. [Deployment Agnostic Architecture](#1-deployment-agnostic-architecture)
+2. [Vertical Modules with Contracts](#2-vertical-modules-with-contracts)
+3. [Database-Per-Module Boundaries](#3-database-per-module-boundaries)
+4. [Interface-Based Design](#4-interface-based-design)
+5. [Composition Root](#5-composition-root)
+6. [Errors as Domain Concepts](#6-errors-as-domain-concepts)
+7. [Observability by Default](#7-observability-by-default)
+8. [Architectural Boundary Enforcement](#8-architectural-boundary-enforcement)
+9. [Test Safety Net](#9-test-safety-net)
+10. [Bounded Complexity for AI Integration](#10-bounded-complexity-for-ai-integration)
+11. [Incremental Refactoring](#11-incremental-refactoring)
+12. [Escape Hatches](#12-escape-hatches)
 
 ---
 
@@ -53,58 +89,87 @@ FaultMaven Core must remain **agnostic to where it runs** (local dev, Docker, Ku
 |------|----------------------------|
 | ✅ **Single codebase & artifact** | One repository and one build artifact runs everywhere |
 | ✅ **Business logic stays neutral** | No deployment-specific branching in services/domain/API handlers |
-| ✅ **Provider selection is explicit** | Provider factories / composition root choose implementations from env selectors |
-| ✅ **Operational neutrality** | Metrics/tracing/jobs are exposed as hooks/entrypoints; runtime decides exporters/schedulers |
+| ✅ **Provider selection is explicit** | Composition root chooses implementations from env selectors |
+| ✅ **Operational neutrality** | Metrics/tracing/jobs are exposed as hooks; runtime decides exporters |
+| ✅ **Fail-fast configuration** | Crash at startup if config is invalid (see below) |
 | ❌ **No separate "local"/"cloud" packages** | No parallel app trees like `faultmaven/local/` or `faultmaven/cloud/` |
-| ❌ **No infra coupling in business logic** | No direct vendor calls (S3/Pinecone/Redis) from core services; use interfaces |
+| ❌ **No infra coupling in business logic** | No direct vendor calls (S3/Redis/ChromaDB) from domain services |
 
-### Architecture
+### Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Application Code                              │
 │                                                                  │
 │  Business logic uses interfaces only (no deployment branching)   │
-│  • CaseService calls TenantProvider (organization context)       │
-│  • KnowledgeService calls VectorStore (vector search)            │
-│  • EvidenceService calls StorageBackend (file storage)           │
+│  • CaseService calls ICaseRepository                             │
+│  • KnowledgeService calls IVectorStore                           │
+│  • EvidenceService calls IStorageBackend                         │
 └─────────────────────────────────────────────────────────────────┘
                               ▲
                               │ depends on interfaces
                               │
 ┌─────────────────────────────────────────────────────────────────┐
-│                   Composition Root                               │
+│                   Composition Root (main.py)                     │
 │                                                                  │
-│  Loads settings once (settings-only env reads), wires providers  │
-│  • TENANT_PROVIDER=single → SingleTenantProvider                │
+│  Loads settings once, validates config, wires providers          │
 │  • STORAGE_BACKEND=s3 → S3StorageBackend                        │
 │  • VECTOR_BACKEND=chroma → ChromaVectorStore                    │
+│  • LLM_PROVIDER=openai → OpenAIProvider                         │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Fail-Fast Configuration
+
+```python
+# main.py lifespan
+async def startup():
+    settings = Settings()  # Pydantic validates types
+
+    # Capability checks - crash with actionable message
+    if settings.llm_provider == "openai":
+        if not settings.openai_api_key:
+            raise StartupError(
+                "OPENAI_API_KEY required when LLM_PROVIDER=openai. "
+                "Set the key or use LLM_PROVIDER=local for offline mode."
+            )
+
+    # Connectivity checks with timeout
+    try:
+        await asyncio.wait_for(
+            verify_chromadb_health(settings.chromadb_url),
+            timeout=5.0
+        )
+    except TimeoutError:
+        raise StartupError(
+            f"ChromaDB at {settings.chromadb_url} not reachable. "
+            "Start ChromaDB or set VECTOR_BACKEND=inmemory."
+        )
+```
+
+**For an SRE Tool, This Is Non-Negotiable**: FaultMaven should never return 500s because Redis is down. If it can't do its job, it shouldn't start.
+
 ### Provider Examples
 
-**Local preset** (Local Deployment):
+**Local preset** (Development / Self-Host):
 
 ```bash
-# Zero-config defaults (local dev / self-host)
 CONFIG_PRESET=local
 
-# Optional explicit selectors (advanced / diagnostics)
+# Implied defaults:
 DATABASE_URL=sqlite+aiosqlite:///./faultmaven.db
 TENANT_PROVIDER=single
 STORAGE_BACKEND=filesystem
 VECTOR_BACKEND=chroma
 METRICS_ENABLED=false
-METRICS_EXPORTER=none
 TRACING_ENABLED=false
 ```
 
-**Enterprise preset** (Production Deployment):
+**Enterprise preset** (Production):
 
 ```bash
-# Full infrastructure stack
 CONFIG_PRESET=enterprise
+
 DATABASE_URL=postgresql+asyncpg://user:pass@postgres:5432/faultmaven
 SESSION_STORAGE_TYPE=redis
 VECTOR_STORAGE_TYPE=chromadb
@@ -113,24 +178,21 @@ TENANT_PROVIDER=multi
 OPIK_ENABLED=true
 METRICS_ENABLED=true
 METRICS_EXPORTER=prometheus_http
-PROTECTION_ENABLED=true
 ```
 
 **Key Insight**: Both configurations run the **SAME codebase** with **ZERO conditional logic** in business services.
 
-**Related Document**: Deployment-agnostic architecture specifications (Enterprise internal documentation).
-
 ---
 
-## 2. Vertical Slicing
+## 2. Vertical Modules with Contracts
 
 ### Principle
 
-> **"Organize code by domain capability (vertical slices), not technical layer (horizontal slices)."**
+> **"Organize code by domain capability. Modules communicate only through explicit contracts."**
 
-Instead of organizing code by technical concern (controllers, services, repositories), organize by **domain capability** (auth, session, case, knowledge, evidence, agent).
+Instead of organizing by technical layer (controllers, services, repositories), organize by **domain capability** (auth, case, knowledge, evidence, agent).
 
-### Before: Horizontal Layering (Monolith)
+### Before: Horizontal Layering
 
 ```
 faultmaven/
@@ -141,77 +203,171 @@ faultmaven/
 └── utils/                   # All utilities together
 ```
 
-**Problem**: Changes to a single feature (e.g., "add case sharing") require touching files across 4-5 directories.
+**Problem**: Changes to "add case sharing" require touching files across 4-5 directories.
 
-### After: Vertical Slicing (Modular Monolith)
+### After: Vertical Modules
 
 ```
 faultmaven/
 ├── modules/
-│   ├── auth/                # Authentication module
-│   │   ├── api/             # Auth API endpoints
-│   │   ├── domain/          # Auth business logic
-│   │   └── infrastructure/  # Auth persistence
+│   ├── auth/
+│   │   ├── contracts.py      # ← Public interface (DTOs, protocols)
+│   │   ├── api/              # Auth endpoints
+│   │   ├── domain/           # Auth business logic (PRIVATE)
+│   │   └── infrastructure/   # Auth persistence (PRIVATE)
 │   │
-│   ├── case/                # Case management module
-│   │   ├── api/             # Case API endpoints
-│   │   ├── domain/          # Case business logic
-│   │   └── infrastructure/  # Case persistence
+│   ├── case/
+│   │   ├── contracts.py      # ← What case module EXPOSES
+│   │   ├── api/
+│   │   ├── domain/
+│   │   └── infrastructure/
 │   │
-│   ├── knowledge/           # Knowledge base module
-│   │   ├── api/             # KB API endpoints
-│   │   ├── domain/          # KB business logic (search, RAG)
-│   │   └── infrastructure/  # KB persistence (ChromaDB)
+│   ├── knowledge/
+│   │   ├── contracts.py
+│   │   ├── api/
+│   │   ├── domain/
+│   │   └── infrastructure/
 │   │
-│   └── ...                  # Evidence, Session, Agent modules
+│   └── ...
 │
-└── core/                    # Shared infrastructure
-    ├── container.py         # DI container
-    ├── interfaces/          # Shared protocols
-    └── providers/           # Infrastructure providers
+├── _shared/                  # Cross-cutting utilities (NOT business logic)
+│   ├── exceptions.py
+│   └── logging.py
+│
+└── core/                     # Shared infrastructure
+    ├── container/            # DI wiring
+    └── interfaces/           # External provider protocols
 ```
 
-**Benefit**: Changes to a single feature (e.g., "add case sharing") touch files within **one module directory**.
+### The Contract Rule
+
+```python
+# ✅ ALLOWED: Import from contracts
+from faultmaven.modules.case.contracts import CaseDTO, ICaseQuery
+
+# ❌ FORBIDDEN: Import from internal domain
+from faultmaven.modules.case.domain.models import Case
+```
 
 ### Benefits
 
-1. **Reduced Cognitive Load**: Developers only need to understand one domain at a time
-2. **Clear Ownership**: Each module has clear boundaries and responsibilities
-3. **Independent Development**: Teams can work on different modules in parallel
-4. **Easier Testing**: Test all aspects of a feature within one module
-5. **Simplified Debugging**: Feature-related code is co-located
-
-**Related Documents**:
-
-- [ADR-001: Monolith Evolution Strategy](decisions/ADR-001-MONOLITH-EVOLUTION-STRATEGY.md)
-- [Knowledge Module Architecture](../working/KNOWLEDGE-MODULE-ARCHITECTURE.md)
+1. **Reduced Cognitive Load**: Developers understand one domain at a time
+2. **Clear Ownership**: Each module has defined boundaries
+3. **Independent Development**: Teams work on modules in parallel
+4. **Easier Testing**: All aspects of a feature are co-located
+5. **Future Extraction**: Modules can become microservices if needed
 
 ---
 
-## 3. Interface-Based Design
+## 3. Database-Per-Module Boundaries
 
 ### Principle
 
-> **"Depend on abstractions (interfaces), not concrete implementations."**
+> **"Modules own their tables. Cross-module data flows through services, not JOINs."**
 
-All external dependencies (LLM providers, databases, vector stores, file storage) are accessed through **Protocol** (structural typing) or **ABC** (abstract base class) interfaces.
+### Table Naming Convention
+
+```sql
+-- Each module prefixes its tables
+case_cases, case_investigations, case_evidence
+knowledge_items, knowledge_embeddings
+auth_users, auth_sessions, auth_tokens
+```
+
+### Cross-Module Data Access
+
+```python
+# ❌ WRONG: Report module queries case tables directly
+async def generate_report(case_id):
+    case = await db.execute("SELECT * FROM case_cases WHERE id = ?", case_id)
+
+# ✅ RIGHT: Report module calls case service via contract
+async def generate_report(case_id):
+    case = await self.case_query.get_case(case_id)
+```
+
+### Preventing N+1 Problems
+
+When modules can't JOIN, naive implementations create N+1 patterns. **Contracts must include bulk methods**:
+
+```python
+# modules/case/contracts.py
+class ICaseQuery(Protocol):
+    """Public contract for case queries."""
+
+    async def get_case(self, case_id: str) -> CaseDTO:
+        """Single case lookup."""
+        ...
+
+    async def get_cases_by_ids(self, case_ids: list[str]) -> list[CaseDTO]:
+        """Bulk lookup - prevents N+1."""
+        ...
+
+    async def get_cases_for_user(
+        self,
+        user_id: str,
+        limit: int = 100,
+        cursor: str | None = None
+    ) -> PaginatedResult[CaseDTO]:
+        """Paginated query - prevents unbounded results."""
+        ...
+```
+
+```python
+# ❌ N+1 ANTI-PATTERN
+async def generate_bulk_report(case_ids: list[str]):
+    cases = []
+    for case_id in case_ids:  # 100 cases = 100 queries
+        cases.append(await case_query.get_case(case_id))
+
+# ✅ BULK PATTERN
+async def generate_bulk_report(case_ids: list[str]):
+    cases = await case_query.get_cases_by_ids(case_ids)  # 1 query
+```
+
+### Contract Design Rules
+
+1. Every entity query contract includes a bulk variant
+2. List endpoints are always paginated (no unbounded `get_all()`)
+3. Contracts expose filtering to push predicates to the owning module
+
+---
+
+## 4. Interface-Based Design
+
+### Principle
+
+> **"Depend on abstractions for external boundaries. Use concrete classes internally."**
+
+### When to Use Protocols
+
+| Component | Multiple Implementations? | Use Protocol? |
+|-----------|---------------------------|---------------|
+| LLM providers | Yes (7 providers) | ✅ Yes |
+| Vector stores | Yes (ChromaDB, InMemory) | ✅ Yes |
+| Storage backends | Yes (S3, filesystem) | ✅ Yes |
+| Module contracts | Yes (for cross-module calls) | ✅ Yes |
+| CaseService | No (one implementation) | ❌ No |
+| ReportGenerator | No (one implementation) | ❌ No |
+
+### IDE Navigation Rule
+
+If "Go to Definition" takes you to a Protocol instead of real code, ask: **"Will this ever have two implementations?"** If no, delete the Protocol.
 
 ### Key Interfaces
 
 | Interface | Purpose | Implementations |
-|-----------|---------|--------------------|
-| `ILLMProvider` | LLM integration | OpenAI, Anthropic, Fireworks, Gemini, Groq, HuggingFace, Local |
-| `IVectorStore` | Vector search | ChromaDB, InMemory, Pinecone (future) |
-| `ISessionStore` | Session management | Redis, InMemory, Memcached (future) |
-| `IStorageBackend` | File storage | S3, Azure Blob, Local Filesystem |
-| `TenantProvider` | Multi-tenancy | SingleTenant, MultiTenant |
-| `ICaseRepository` | Case persistence | PostgreSQL Hybrid, InMemory |
-| `IUserRepository` | User persistence | PostgreSQL, InMemory |
+|-----------|---------|-----------------|
+| `ILLMProvider` | LLM integration | OpenAI, Anthropic, Fireworks, Gemini, Local |
+| `IVectorStore` | Vector search | ChromaDB, InMemory |
+| `ISessionStore` | Session management | Redis, InMemory |
+| `IStorageBackend` | File storage | S3, Azure Blob, Filesystem |
+| `ICaseQuery` | Cross-module case access | CaseQueryService |
 
 ### Example: IVectorStore Protocol
 
 ```python
-from typing import Protocol, List, Dict, Any
+from typing import Protocol
 
 class IVectorStore(Protocol):
     """Interface for vector storage backends."""
@@ -219,9 +375,9 @@ class IVectorStore(Protocol):
     async def add_documents(
         self,
         collection_name: str,
-        documents: List[str],
-        metadatas: List[Dict[str, Any]],
-        ids: List[str]
+        documents: list[str],
+        metadatas: list[dict],
+        ids: list[str]
     ) -> None:
         """Add documents to vector store."""
         ...
@@ -231,226 +387,223 @@ class IVectorStore(Protocol):
         collection_name: str,
         query_text: str,
         n_results: int = 5
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict]:
         """Search for similar documents."""
         ...
 ```
 
-**Implementations**:
+---
+
+## 5. Composition Root
+
+### Principle
+
+> **"All dependency wiring happens in one place. Services never resolve their own dependencies."**
+
+This is the **most critical principle**. Services must be pure—they receive dependencies via constructor, never via container lookup.
+
+### ❌ Anti-Pattern: Service Locator
 
 ```python
-# Community Edition
-class InMemoryVectorStore:
-    """Implements IVectorStore without external dependencies."""
-    async def add_documents(...): ...
-    async def search(...): ...
-
-# Enterprise Edition
-class ChromaDBVectorStore:
-    """Implements IVectorStore using ChromaDB."""
-    async def add_documents(...): ...
-    async def search(...): ...
+# WRONG: Service pulls its own dependencies (hidden global state)
+class CaseService:
+    def __init__(self):
+        self.auth = ServiceContainer.get(IAuthService)  # Hidden dependency!
+        self.repo = ServiceContainer.get(ICaseRepository)
 ```
 
-**Business Service** (deployment-agnostic):
+**Problems**:
+- Dependencies are hidden (not visible in constructor)
+- Hard to test (must mock global container)
+- Circular dependencies surface at runtime, not startup
+
+### ✅ Correct: Composition Root
 
 ```python
-class KnowledgeSearchService:
-    def __init__(self, vector_store: IVectorStore):
-        self.vector_store = vector_store  # Accepts any IVectorStore implementation
+# main.py - ALL wiring happens here
+async def startup():
+    # Create infrastructure
+    redis_store = RedisSessionStore(settings.redis_url)
+    case_repo = PostgresCaseRepository(db_session)
+    auth_service = AuthService(token_store=redis_store)
 
-    async def search_knowledge_base(self, query: str) -> List[Document]:
-        results = await self.vector_store.search("kb_collection", query)
-        return [self._parse_result(r) for r in results]
+    # Wire services with explicit dependencies
+    case_service = CaseService(
+        auth=auth_service,
+        repo=case_repo,
+    )
+
+    # Attach to app state for route access
+    app.state.case_service = case_service
+
+
+# services/case_service.py - NO container knowledge
+class CaseService:
+    def __init__(self, auth: IAuthService, repo: ICaseRepository):
+        self.auth = auth  # Injected, not resolved
+        self.repo = repo
 ```
 
 ### Benefits
 
-1. **Testability**: Mock implementations for unit tests
-2. **Flexibility**: Swap implementations without changing business logic
-3. **Deployment Agnostic**: Same code works with different providers
-4. **Type Safety**: Static type checking via `mypy`
-
-**Related Document**: [Interface-Based Design](interface-based-design.md)
+- Unit tests run 10x faster (no global container to reset)
+- Dependency graph is visible in one file
+- Circular dependencies surface at startup, not runtime
+- Constructor signatures are the complete dependency manifest
 
 ---
 
-## 4. Dependency Injection
+## 6. Errors as Domain Concepts
 
 ### Principle
 
-> **"Services receive dependencies via constructor injection, not direct instantiation."**
+> **"Every module defines its exception hierarchy. Infrastructure errors are wrapped in domain terms."**
 
-Services **do not create their own dependencies**. Dependencies are **injected** via constructor parameters and managed by a **DI Container**.
-
-### Before: Direct Instantiation (Anti-Pattern)
+### Exception Hierarchy Per Module
 
 ```python
-# ❌ ANTI-PATTERN: Service creates its own dependencies
-class KnowledgeSearchService:
-    def __init__(self, knowledge_repo):
-        self.embedding_service = EmbeddingService()  # Direct instantiation
-        self.vector_store = ChromaDBVectorStore()     # Direct instantiation
-        self.knowledge_repo = knowledge_repo
+# modules/case/domain/exceptions.py
+class CaseError(Exception):
+    """Base for all case domain errors."""
+
+class CaseNotFoundError(CaseError):
+    def __init__(self, case_id: str):
+        self.case_id = case_id
+        super().__init__(f"Case {case_id} not found")
+
+class InvestigationQuotaExceeded(CaseError):
+    """User has hit their investigation limit."""
+
+class CaseAccessDenied(CaseError):
+    """User doesn't have permission to access this case."""
 ```
 
-**Problems**:
-
-- ❌ Tight coupling to concrete implementations
-- ❌ Hard to test (can't mock dependencies)
-- ❌ Violates Deployment Agnostic Architecture (hardcoded to ChromaDB)
-- ❌ Service-to-service import violations (import-linter fails)
-
-### After: Dependency Injection (Correct Pattern)
+### Wrapping Infrastructure Errors
 
 ```python
-# ✅ CORRECT: Dependencies injected via constructor
-class KnowledgeSearchService:
-    def __init__(
-        self,
-        knowledge_repo: IKnowledgeRepository,
-        embedding_service: IEmbeddingService,
-        vector_store: IVectorStore,
-    ):
-        self.knowledge_repo = knowledge_repo
-        self.embedding_service = embedding_service
-        self.vector_store = vector_store
+# modules/case/infrastructure/repository.py
+async def get_case(self, case_id: str) -> Case:
+    try:
+        result = await self.db.fetch_one(...)
+    except DatabaseError as e:
+        # Wrap infrastructure error in domain terms
+        raise CaseError(f"Failed to retrieve case: {e}") from e
+    if not result:
+        raise CaseNotFoundError(case_id)
+    return Case.from_row(result)
 ```
 
-**Benefits**:
-
-- ✅ Loose coupling (depends on interfaces)
-- ✅ Testable (inject mocks)
-- ✅ Deployment-agnostic (any IVectorStore works)
-- ✅ No service-to-service imports (import-linter passes)
-
-### DI Container
-
-**Registration** (at application startup):
+### API Layer Translation
 
 ```python
-# faultmaven/core/service_factories.py
-from faultmaven.core.container import ServiceContainer
+# api/exception_handlers.py
+@app.exception_handler(CaseNotFoundError)
+async def handle_case_not_found(request, exc):
+    return JSONResponse(
+        status_code=404,
+        content={"error": "case_not_found", "case_id": exc.case_id}
+    )
 
-def register_services(config: AppConfig):
-    # Register vector store based on configuration
-    if config.vector_storage_type == "chromadb":
-        ServiceContainer.register(IVectorStore, ChromaDBVectorStore)
-    else:
-        ServiceContainer.register(IVectorStore, InMemoryVectorStore)
-
-    # Register embedding service
-    ServiceContainer.register(IEmbeddingService, EmbeddingService)
-
-    # Register knowledge search service
-    ServiceContainer.register(KnowledgeSearchService, KnowledgeSearchService)
+@app.exception_handler(CaseAccessDenied)
+async def handle_access_denied(request, exc):
+    return JSONResponse(
+        status_code=403,
+        content={"error": "access_denied", "message": str(exc)}
+    )
 ```
-
-**Consumption** (in API handlers):
-
-```python
-# faultmaven/modules/knowledge/api/routes.py
-from faultmaven.core.container import ServiceContainer
-
-@router.get("/knowledge/search")
-async def search_knowledge(query: str):
-    # Get service from DI container
-    search_service = ServiceContainer.get(KnowledgeSearchService)
-    results = await search_service.search_knowledge_base(query)
-    return results
-```
-
-**Related Document**: [Dependency Injection System](dependency-injection-system.md)
 
 ---
 
-## 5. Architectural Boundary Enforcement
+## 7. Observability by Default
+
+### Principle
+
+> **"Structured logs with correlation IDs. Traces on every external call. Metrics with consistent naming."**
+
+### Correlation ID Middleware
+
+```python
+@app.middleware("http")
+async def correlation_middleware(request, call_next):
+    correlation_id = request.headers.get("X-Correlation-ID", str(uuid4()))
+    structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
+    response = await call_next(request)
+    response.headers["X-Correlation-ID"] = correlation_id
+    return response
+```
+
+### Structured Logging
+
+```python
+# All logs include context automatically
+logger.info("investigation_started",
+    case_id=case.id,
+    phase="initial_triage",
+    llm_provider=provider.name
+)
+# Output: {"event": "investigation_started", "case_id": "...", "correlation_id": "..."}
+```
+
+### Metric Naming Convention
+
+```
+faultmaven_{module}_{operation}_{unit}
+
+Examples:
+faultmaven_case_investigation_started_total
+faultmaven_llm_request_duration_seconds
+faultmaven_knowledge_search_results_count
+```
+
+---
+
+## 8. Architectural Boundary Enforcement
 
 ### Principle
 
 > **"Architectural rules must be enforced at build time, not code review time."**
 
-FaultMaven uses **import-linter** to automatically detect and prevent architectural violations. This ensures that clean architecture boundaries are **enforced by the compiler**, not just documented in guidelines.
+FaultMaven uses **import-linter** to automatically detect and prevent violations.
 
 ### Enforced Contracts
 
-| Contract | Rule | Status |
-|----------|------|--------|
-| **Service Independence** | Services cannot import other services directly | ✅ Enforced |
-| **Layer Separation** | Services cannot import from API layer | ✅ Enforced |
-| **Model Isolation** | Models cannot import from service layer | ✅ Enforced |
+| Contract | Rule | Enforcement |
+|----------|------|-------------|
+| **Module Boundaries** | Modules import only from `contracts.py` | `forbidden` type |
+| **Layer Separation** | Services cannot import from API layer | `forbidden` type |
+| **Model Isolation** | Models cannot import from service layer | `forbidden` type |
+| **Knowledge Layers** | API → Domain → Infrastructure | `layers` type |
 
-### Contract 1: Service Independence
-
-**Rule**: Services should not directly import from each other. Dependencies must go through DI container.
-
-**Why**: Prevents tight coupling between services, enables independent testing and deployment.
-
-**Before** (Violation):
-
-```python
-# ❌ VIOLATION: Direct service-to-service import
-from faultmaven.services.embedding_service import EmbeddingService
-
-class KnowledgeSearchService:
-    def __init__(self):
-        self.embedding_service = EmbeddingService()  # Violation!
-```
-
-**After** (Compliant):
-
-```python
-# ✅ COMPLIANT: Dependency injection via container
-from faultmaven.core.container import ServiceContainer
-
-class KnowledgeSearchService:
-    def __init__(self, embedding_service=None):
-        if embedding_service is None:
-            embedding_service = ServiceContainer.get(IEmbeddingService)
-        self.embedding_service = embedding_service
-```
-
-### Contract 2: Layer Separation
-
-**Rule**: Service layer must not import from API layer.
-
-**Why**: Prevents circular dependencies. API depends on services, not vice versa.
-
-**Enforcement**:
+### Import-Linter Configuration
 
 ```ini
 # .importlinter
-[importlinter:contract:2]
-name = Services cannot import API layer
+[importlinter]
+root_package = faultmaven
+
+[importlinter:contract:module_boundaries]
+name = Module internals are private
 type = forbidden
 source_modules =
-    faultmaven.services
+    faultmaven.modules.*.domain
+    faultmaven.modules.*.infrastructure
 forbidden_modules =
-    faultmaven.api
+    faultmaven.modules
+
+[importlinter:contract:layer_separation]
+name = Services cannot import API layer
+type = forbidden
+source_modules = faultmaven.services
+forbidden_modules = faultmaven.api
+
+[importlinter:contract:model_isolation]
+name = Models cannot import services
+type = forbidden
+source_modules = faultmaven.models
+forbidden_modules = faultmaven.services
 ```
 
-### Contract 3: Model Isolation
-
-**Rule**: Model classes (data structures, DTOs, entities) must not import service layer.
-
-**Why**: Keeps models as pure data structures without business logic dependencies.
-
-### Build-Time Enforcement
-
-```bash
-# CI/CD pipeline runs import-linter on every PR
-lint-imports
-
-# Output on success:
-✅ All 3 contracts KEPT (0 violations)
-
-# Output on failure:
-❌ Contract "Service Independence" BROKEN (2 violations)
-  faultmaven/services/knowledge_search_service.py imports:
-    faultmaven.services.embedding_service
-```
-
-**CI/CD Integration**:
+### CI/CD Integration
 
 ```yaml
 # .github/workflows/ci.yml
@@ -460,107 +613,256 @@ lint-imports
     lint-imports
 ```
 
-**Related Document**: [Import Linter Baseline](IMPORT-LINTER-BASELINE.md)
-
 ---
 
-## 6. Test Safety Net
+## 9. Test Safety Net
 
 ### Principle
 
-> **"Never merge code that decreases test coverage or breaks existing tests."**
+> **"70% code coverage floor, plus evaluation benchmarks for AI behavior."**
 
-A comprehensive test suite is essential for safe refactoring. Tests act as a safety net that catches regressions immediately, enabling aggressive architectural changes with confidence.
+### Two Testing Dimensions
 
-### Test Categories Required
+| Dimension | What It Tests | Target |
+|-----------|---------------|--------|
+| **Code Coverage** | Lines executed | ≥70% |
+| **AI Evaluation** | Output accuracy | ≥85% on benchmark |
 
-1. **Unit Tests**
-   - Service layer logic
-   - Domain models
-   - Infrastructure providers
+### Code Coverage by Layer
 
-2. **Integration Tests**
-   - API endpoint behavior
-   - Database interactions
-   - External service integration
+| Layer | Target | Test Type |
+|-------|--------|-----------|
+| Domain services | 85% | Unit (mocked infra) |
+| API routes | 70% | Integration |
+| Infrastructure | 60% | Contract tests |
 
-3. **Performance Tests**
-   - Response time benchmarks
-   - Resource usage limits
-   - Scalability thresholds
+### AI Evaluation Strategy
 
-4. **Security Tests**
-   - Authentication and authorization
-   - Data protection
-   - Input validation
+```python
+# tests/evaluation/test_investigation_accuracy.py
+"""
+Benchmark: 50 real incidents with known root causes.
+"""
 
-### Test-Driven Refactoring Process
+@pytest.mark.evaluation
+@pytest.mark.parametrize("incident", load_benchmark_incidents())
+async def test_root_cause_identification(incident, agent):
+    result = await agent.investigate(incident.symptoms)
 
-1. **Baseline**: Run full test suite (all tests must pass)
-2. **Refactor**: Perform code changes (move files, update imports, restructure)
-3. **Verify**: Run full test suite (all tests must still pass)
-4. **Coverage**: Check test coverage (must maintain or improve)
-5. **Commit**: Only commit if all tests pass and coverage is maintained
+    # Semantic similarity to known root cause
+    similarity = compute_similarity(result.conclusion, incident.known_root_cause)
+    assert similarity >= 0.85
+
+    # Must not hallucinate non-existent services
+    for service in result.mentioned_services:
+        assert service in incident.known_services, f"Hallucinated: {service}"
+```
+
+### Test Commands
+
+```bash
+# Fast: Code tests only
+pytest -m "not evaluation"
+
+# Full: Include AI evaluation
+pytest -m "evaluation" --benchmark
+```
 
 ### Quality Gates
 
 - ✅ All tests must pass before merging
-- ✅ Test coverage cannot decrease
-- ✅ No regressions allowed
+- ✅ Coverage cannot drop below 70%
+- ✅ AI evaluation accuracy ≥85%
 - ✅ CI/CD pipeline enforces all rules
-
-**Related Document**: [Testing Guide](testing-guide.md)
 
 ---
 
-## 7. Incremental Refactoring
+## 10. Bounded Complexity for AI Integration
+
+### Principle
+
+> **"LLM calls are stateless pure functions. Orchestration handles state, retries, and fallbacks."**
+
+### Architecture Layers
+
+```
+┌─────────────────────────────────────────────────┐
+│      Orchestration Layer (Stateful)              │
+│                                                  │
+│  Owns: Investigation state, memory, retries     │
+│  Tech: LangGraph state machines                 │
+│                                                  │
+│  • InvestigationOrchestrator                    │
+│  • MemoryManager (64% token reduction)          │
+│  • OODAEngine (adaptive investigation)          │
+│  • FallbackChain (provider switching)           │
+└─────────────────────────────────────────────────┘
+                      │
+                      │ Delegates stateless calls
+                      ▼
+┌─────────────────────────────────────────────────┐
+│      LLM Adapter Layer (Stateless)               │
+│                                                  │
+│  Owns: Provider protocol, request formatting    │
+│  Rule: Pure functions, no retry logic           │
+│                                                  │
+│  • ILLMProvider implementations                 │
+│  • Token counting (BEFORE call)                 │
+│  • Response parsing                             │
+└─────────────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────┐
+│      External LLM APIs                           │
+│  OpenAI, Anthropic, Fireworks, Ollama            │
+└─────────────────────────────────────────────────┘
+```
+
+### Layer Responsibilities
+
+| Concern | Orchestration (LangGraph) | LLM Adapter |
+|---------|---------------------------|-------------|
+| State management | ✅ Owns | ❌ None |
+| Retry logic | ✅ Owns | ❌ None |
+| Provider fallback | ✅ Owns | ❌ None |
+| Token counting | ❌ Delegates | ✅ Owns |
+| Request formatting | ❌ Delegates | ✅ Owns |
+
+### LLM Adapter Contract (Stateless)
+
+```python
+class ILLMAdapter(Protocol):
+    """Stateless LLM call interface."""
+
+    async def complete(
+        self,
+        messages: list[Message],
+        max_tokens: int,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
+        """
+        Pure function: (messages, config) → response
+
+        - No retries (orchestration handles)
+        - No state (orchestration handles)
+        - Validates tokens BEFORE calling
+        """
+        ...
+
+    def count_tokens(self, messages: list[Message]) -> int:
+        """Synchronous token counting."""
+        ...
+```
+
+### Orchestration Handles Retries
+
+```python
+# orchestration/investigation_runner.py
+async def run_phase(self, phase: Phase) -> PhaseResult:
+    for attempt in range(3):
+        try:
+            # LLM adapter is stateless - just makes the call
+            return await self.llm_adapter.complete(phase.prompt)
+        except RateLimitError:
+            await asyncio.sleep(2 ** attempt)
+        except ProviderError:
+            self.llm_adapter = self.fallback_chain.next()
+    raise InvestigationFailed("All LLM providers exhausted")
+```
+
+---
+
+## 11. Incremental Refactoring
 
 ### Principle
 
 > **"Prefer incremental refactoring over big rewrites."**
 
-Evolve the architecture incrementally rather than attempting a complete rewrite. This approach reduces risk, preserves working code, and maintains business value delivery.
-
 ### Why Big Rewrites Fail
 
-Industry research shows that 80% of rewrites fail or take 2-3x longer than expected because:
+Industry research shows 80% of rewrites fail or take 2-3x longer because:
 
-- **Lost Knowledge**: Rewrites miss critical edge cases captured in original code
+- **Lost Knowledge**: Rewrites miss edge cases captured in original code
 - **Discovery Tax**: Teams rediscover already-solved problems
-- **Stalled Delivery**: Business value delivery stops during rewrite
+- **Stalled Delivery**: Business value stops during rewrite
 - **Test Loss**: Existing test suites become obsolete
 
 ### The Incremental Approach
 
 **Key Insight**: Most refactoring involves **moving code** and **updating references**, not rewriting logic.
 
-**Benefits**:
-
-1. **Lower Risk**: Changes are small, isolated, and reversible
-2. **Continuous Delivery**: Business value continues throughout refactoring
-3. **Preserved Knowledge**: Tests and edge case handling remain intact
-4. **Faster Feedback**: Issues discovered quickly in small increments
-
 ### Refactoring Process
 
-1. **Identify**: Choose a small, well-bounded area to refactor
+1. **Identify**: Choose a small, well-bounded area
 2. **Plan**: Design the target structure
-3. **Move**: Relocate code using version control (e.g., `git mv` to preserve history)
+3. **Move**: Use `git mv` to preserve history
 4. **Update**: Fix references and imports
 5. **Test**: Verify all tests pass
-6. **Document**: Update relevant documentation
+6. **Document**: Update relevant docs
 7. **Merge**: Integrate changes
 8. **Repeat**: Continue with next increment
 
 ### Git History Preservation
 
-Always use version control move operations (`git mv`) rather than copy-delete to preserve:
+Always use `git mv` rather than copy-delete to preserve:
 
 - File history and blame information
 - Author contributions
 - Evolution and context of changes
 
-**Related Document**: [ADR-001: Monolith Evolution Strategy](decisions/ADR-001-MONOLITH-EVOLUTION-STRATEGY.md)
+---
+
+## 12. Escape Hatches
+
+### Principle
+
+> **"Architectural exceptions are allowed but tracked, counted, and time-limited."**
+
+### Exception Format
+
+```python
+# ARCHITECTURE-EXCEPTION
+# Violation: Direct import from case domain (violates Principle 2)
+# Reason: Report PDF generation needs deep case structure access
+# Ticket: FMVN-1234
+# Approved: @jane on 2026-01-15
+# Sunset: 2026-04-15 (90 days)
+from faultmaven.modules.case.domain.models import Case, Investigation
+```
+
+### Automated Enforcement
+
+```python
+# scripts/check_architecture_exceptions.py
+def check_exceptions():
+    exceptions = find_all_exceptions()
+
+    # Count check: Alert if too many
+    if len(exceptions) > 10:
+        warn(f"Exception count ({len(exceptions)}) exceeds threshold")
+
+    # Sunset check: Fail if expired
+    for exc in exceptions:
+        if exc.sunset_date < date.today():
+            fail(f"Expired exception in {exc.file}")
+
+    print(f"Active exceptions: {len(exceptions)}")
+```
+
+### CI Integration
+
+```yaml
+- name: Check architecture exceptions
+  run: python scripts/check_architecture_exceptions.py
+```
+
+### Quarterly Review
+
+1. Export all active exceptions
+2. For each exception older than 90 days:
+   - Fix the underlying issue, OR
+   - Renew with new sunset date (requires re-approval)
+3. Track trend: exception count should decrease
 
 ---
 
@@ -568,19 +870,40 @@ Always use version control move operations (`git mv`) rather than copy-delete to
 
 ### Core Documents
 
-- **[ADR-001: Monolith Evolution Strategy](decisions/ADR-001-MONOLITH-EVOLUTION-STRATEGY.md)** - Strategic decision to evolve vs. rewrite
-- **[Platform Evolution Strategy](../FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md)** - Detailed implementation roadmap
-- **[Import Linter Baseline](IMPORT-LINTER-BASELINE.md)** - Architectural boundary enforcement configuration
+- **[ADR-001: Monolith Evolution Strategy](decisions/ADR-001-MONOLITH-EVOLUTION-STRATEGY.md)**
+- **[Platform Evolution Strategy](../FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md)**
+- **[Import Linter Baseline](IMPORT-LINTER-BASELINE.md)**
 
 ### Supporting Documents
 
-- **[Dependency Injection System](dependency-injection-system.md)** - DI Container implementation details
-- **[Interface-Based Design](interface-based-design.md)** - Protocol and ABC patterns
-- **[Testing Guide](testing-guide.md)** - Test strategy and coverage targets
-- **[Knowledge Module Architecture](../working/KNOWLEDGE-MODULE-ARCHITECTURE.md)** - Example of vertical slice implementation
+- **[Dependency Injection System](dependency-injection-system.md)**
+- **[Interface-Based Design](interface-based-design.md)**
+- **[Testing Guide](testing-guide.md)**
 
 ---
 
-**Last Updated**: 2026-01-05
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0 | 2026-01-05 | Original 7 principles |
+| 2.0 | 2026-01-09 | Consolidated to 10 principles with enforcement mechanisms |
+
+### Key Changes in v2.0
+
+| Area | v1.0 | v2.0 |
+|------|------|------|
+| DI Pattern | Service Locator example | Pure Composition Root |
+| Module Communication | Implicit | Explicit contracts |
+| Database Access | Not addressed | Per-module boundaries, N+1 prevention |
+| Error Handling | Not addressed | Domain exception hierarchies |
+| Observability | Not addressed | Correlation IDs, structured logs |
+| Testing | "Don't decrease coverage" | 70% floor + 85% AI evaluation |
+| AI Architecture | Implicit | Explicit LangGraph/adapter boundary |
+| Exceptions | Not addressed | 90-day sunsets with automation |
+
+---
+
 **Document Owner**: Engineering Leadership
-**Status**: Active Design Principles
+**Status**: Active
+**Last Updated**: 2026-01-09
