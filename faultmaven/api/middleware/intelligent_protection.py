@@ -14,12 +14,7 @@ from starlette.types import ASGIApp
 from faultmaven.models.behavioral import RiskLevel, ProtectionDecision
 from faultmaven.models.interfaces import ISessionStore
 
-# Import types at module level for type hints, but instantiate via DI
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from faultmaven.infrastructure.protection.protection_coordinator import (
-        ProtectionCoordinator, ProtectionConfig
-    )
+# No direct imports from infrastructure layer - all dependencies via DI
 
 
 class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
@@ -54,9 +49,11 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
         if coordinator is not None:
             self.coordinator = coordinator
         else:
-            # Fallback: create coordinator if not injected (for backward compatibility)
-            from faultmaven.infrastructure.protection.protection_coordinator import ProtectionCoordinator
-            self.coordinator = ProtectionCoordinator(config, session_store)
+            # No fallback - coordinator must be injected via DI
+            raise ValueError(
+                "ProtectionCoordinator must be provided via dependency injection. "
+                "Ensure the DI container is properly initialized."
+            )
         self.initialization_task: Optional[asyncio.Task] = None
         self.initialized = False
         

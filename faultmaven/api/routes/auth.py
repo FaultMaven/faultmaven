@@ -168,17 +168,13 @@ def get_user_service():
             if user_service:
                 get_user_service._instance = user_service
                 return user_service
-        except Exception:
-            pass
+        except Exception as e:
+            # No fallback - service must be available via DI
+            raise RuntimeError(
+                "UserService not available from DI container. "
+                "Ensure the container is properly initialized."
+            ) from e
 
-        # Fallback: Create manually (only import infrastructure layer when needed)
-        from faultmaven.infrastructure.persistence.user_repository import InMemoryUserRepository
-        user_repo = InMemoryUserRepository()
-        auth_service = get_auth_service()
-        get_user_service._instance = UserService(
-            user_repo=user_repo,
-            auth_service=auth_service,
-        )
     return get_user_service._instance
 
 

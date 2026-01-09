@@ -53,14 +53,42 @@ class BaseDIContainer:
         """Synchronous initialization stub for base container.
 
         For full async initialization, use DIContainer.initialize() instead.
-        This method just marks the container as initialized for testing.
+        This method creates minimal mock services for testing.
         """
         if self._initialized:
             self._logger.debug("Container already initialized")
             return
 
+        # Create minimal mock services for testing
+        from unittest.mock import MagicMock
+
+        # Infrastructure layer mocks
+        llm_provider = MagicMock()
+        llm_provider.generate = MagicMock(return_value="Mock LLM response")
+        llm_provider.generate_response = MagicMock(return_value="Mock LLM response")
+        self._register_service("llm_provider", llm_provider)
+
+        sanitizer = MagicMock()
+        sanitizer.sanitize = MagicMock(return_value="sanitized data")
+        self._register_service("sanitizer", sanitizer)
+
+        tracer = MagicMock()
+        tracer.trace = MagicMock()
+        self._register_service("tracer", tracer)
+
+        # Tools layer
+        self._register_service("tools", [])
+
+        # Service layer mocks
+        agent_service = MagicMock()
+        agent_service._llm = llm_provider
+        agent_service._tools = []
+        agent_service._tracer = tracer
+        agent_service._sanitizer = sanitizer
+        self._register_service("agent_service", agent_service)
+
         self._initialized = True
-        self._logger.info("Base container initialized (stub)")
+        self._logger.info("Base container initialized with mock services")
 
     def _register_service(
         self,
@@ -187,6 +215,16 @@ class BaseDIContainer:
             "failed_services": [name for name, _ in failed],
         }
 
+    def _ensure_initialized_for_getter(self) -> None:
+        """Ensure container is initialized before returning services.
+
+        This method is called by getter methods to trigger initialization
+        if it hasn't happened yet. Base implementation just calls initialize().
+        Subclasses can override with async-aware logic.
+        """
+        if not self._initialized and not getattr(self, '_initializing', False):
+            self.initialize()
+
     def get_agent_service(self) -> Any:
         """Get the agent service.
 
@@ -194,8 +232,7 @@ class BaseDIContainer:
             Agent service instance or None if not available
         """
         # Trigger lazy initialization if needed (for tests)
-        if hasattr(self, '_ensure_initialized_for_getter'):
-            self._ensure_initialized_for_getter()
+        self._ensure_initialized_for_getter()
         return self.get_service("agent_service", required=False)
 
     def get_llm_provider(self) -> Any:
@@ -205,8 +242,7 @@ class BaseDIContainer:
             LLM provider instance or None if not available
         """
         # Trigger lazy initialization if needed (for tests)
-        if hasattr(self, '_ensure_initialized_for_getter'):
-            self._ensure_initialized_for_getter()
+        self._ensure_initialized_for_getter()
         return self.get_service("llm_provider", required=False)
 
     def get_sanitizer(self) -> Any:
@@ -216,8 +252,7 @@ class BaseDIContainer:
             Sanitizer instance or None if not available
         """
         # Trigger lazy initialization if needed (for tests)
-        if hasattr(self, '_ensure_initialized_for_getter'):
-            self._ensure_initialized_for_getter()
+        self._ensure_initialized_for_getter()
         return self.get_service("sanitizer", required=False)
 
     def get_tracer(self) -> Any:
@@ -227,8 +262,7 @@ class BaseDIContainer:
             Tracer instance or None if not available
         """
         # Trigger lazy initialization if needed (for tests)
-        if hasattr(self, '_ensure_initialized_for_getter'):
-            self._ensure_initialized_for_getter()
+        self._ensure_initialized_for_getter()
         return self.get_service("tracer", required=False)
 
     def get_tools(self) -> List[Any]:
@@ -238,8 +272,7 @@ class BaseDIContainer:
             List of tool instances
         """
         # Trigger lazy initialization if needed (for tests)
-        if hasattr(self, '_ensure_initialized_for_getter'):
-            self._ensure_initialized_for_getter()
+        self._ensure_initialized_for_getter()
         tools = self.get_service("tools", required=False)
         return tools if tools is not None else []
 
