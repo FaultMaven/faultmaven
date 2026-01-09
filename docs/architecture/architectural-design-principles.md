@@ -192,6 +192,15 @@ METRICS_EXPORTER=prometheus_http
 
 Instead of organizing by technical layer (controllers, services, repositories), organize by **domain capability** (auth, case, knowledge, evidence, agent).
 
+**Important**: Vertical slicing applies **only to business domains**, not to all modules. Cross-cutting infrastructure (logging, observability, LLM providers, storage backends) should remain horizontal layers.
+
+**Minimum Criteria for Vertical Modules**: A module is vertical if and only if it meets ALL THREE criteria:
+1. ✅ Owns domain data (database tables representing business entities)
+2. ✅ Implements business logic (business rules and domain constraints)
+3. ✅ Represents a domain capability (distinct business capability)
+
+See [Module Organization Recommendations](module-organization-recommendations.md) for detailed criteria, examples, and edge case handling.
+
 ### Before: Horizontal Layering
 
 ```
@@ -248,6 +257,30 @@ from faultmaven.modules.case.contracts import CaseDTO, ICaseQuery
 # ❌ FORBIDDEN: Import from internal domain
 from faultmaven.modules.case.domain.models import Case
 ```
+
+### When to Use Vertical Slicing
+
+Vertical slicing should be applied to modules that meet **ALL THREE** minimum criteria:
+
+1. ✅ **Own domain data** - Have database tables representing business entities
+2. ✅ **Implement business logic** - Enforce business rules and domain constraints
+3. ✅ **Represent domain capability** - Distinct business capability
+
+**Examples of Vertical Modules**: `auth/`, `case/`, `evidence/`, `knowledge/`, `agent/`, `report/`
+
+**Important**: All vertical modules are **structural peers** (equal structure, equal status). Vertical modules CAN depend on other vertical modules via contracts - high fan-in does NOT change categorization. See [Module Organization Recommendations](module-organization-recommendations.md#vertical-modules-peer-status-and-dependencies) for details.
+
+### When to Keep Horizontal
+
+Components should remain horizontal when they fail **ANY** of the three criteria above. Common patterns:
+
+1. ❌ **No domain data** - Only technical state or no state
+2. ❌ **No business logic** - Only technical integration
+3. ❌ **No domain capability** - Provides technical capability, not business capability
+
+**Examples of Horizontal Infrastructure**: `infrastructure/llm/`, `infrastructure/logging/`, `infrastructure/observability/`, `infrastructure/storage/`
+
+For complete recommendations, examples, and edge case handling, see [Module Organization Recommendations](module-organization-recommendations.md).
 
 ### Benefits
 
@@ -873,6 +906,7 @@ def check_exceptions():
 - **[ADR-001: Monolith Evolution Strategy](decisions/ADR-001-MONOLITH-EVOLUTION-STRATEGY.md)**
 - **[Platform Evolution Strategy](../FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md)**
 - **[Import Linter Baseline](IMPORT-LINTER-BASELINE.md)**
+- **[Module Organization Recommendations](module-organization-recommendations.md)** - Vertical vs horizontal module organization
 
 ### Supporting Documents
 

@@ -26,7 +26,7 @@ import toml
 @pytest.fixture
 def pyproject_path() -> Path:
     """Get path to pyproject.toml."""
-    return Path(__file__).parent.parent.parent / "pyproject.toml"
+    return Path(__file__).parent.parent.parent.parent.parent / "pyproject.toml"
 
 
 @pytest.fixture
