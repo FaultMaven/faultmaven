@@ -58,9 +58,13 @@ def get_auth_service() -> AuthService:
     """
     try:
         from faultmaven.container import container
+        # Check both the method and direct attribute (for testing)
         auth_service = container.get_auth_service()
         if auth_service is not None:
             return auth_service
+        # Also check direct attribute in case it was set manually (e.g., in tests)
+        if hasattr(container, 'auth_service') and container.auth_service is not None:
+            return container.auth_service
     except Exception as e:
         logger.warning(f"Failed to get AuthService from container: {e}")
 

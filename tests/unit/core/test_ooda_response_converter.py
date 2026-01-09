@@ -61,7 +61,7 @@ class TestOODAToAgentResponseConversion:
 
         assert agent_response.content == "I've detected a database connection issue"
         assert agent_response.response_type == ResponseType.CONFIRMATION_REQUEST
-        assert agent_response.suggested_actions is None  # Deprecated field
+        # Note: suggested_actions field was removed in v3.0 (backward compatibility removed)
 
     def test_convert_consultant_response_without_problem(self):
         """Test converting ConsultantResponse when no problem"""

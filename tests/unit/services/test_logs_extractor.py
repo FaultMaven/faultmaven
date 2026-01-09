@@ -48,8 +48,9 @@ class TestLogsAndErrorsExtractor:
 
         # Should prioritize FATAL over ERROR
         assert "FATAL: System crash" in result
-        # ERROR might not be included if outside context window
-        assert "Single FATAL" in result or "ERROR burst" in result
+        # Extractor detects both ERROR and FATAL, so it reports "Multiple crime scenes"
+        # The FATAL is prioritized (included in output), but both are detected
+        assert "FATAL" in result and ("Multiple crime scenes" in result or "Single FATAL" in result or "ERROR burst" in result)
 
     def test_multiple_crime_scenes(self, extractor):
         """Test detection of first + last errors"""

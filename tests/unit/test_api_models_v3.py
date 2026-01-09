@@ -138,7 +138,7 @@ class TestUploadedDataModel:
         data = UploadedData(
             id="data_123",
             name="error.log",
-            type=DataType.LOG_FILE,
+            type=DataType.LOGS_AND_ERRORS,
             size_bytes=2048,
             upload_timestamp="2024-01-01T12:00:00Z",
             processing_status=ProcessingStatus.COMPLETED
@@ -146,7 +146,7 @@ class TestUploadedDataModel:
         
         assert data.id == "data_123"
         assert data.name == "error.log"
-        assert data.type == DataType.LOG_FILE
+        assert data.type == DataType.LOGS_AND_ERRORS
         assert data.size_bytes == 2048
         assert data.upload_timestamp == "2024-01-01T12:00:00Z"
         assert data.processing_status == ProcessingStatus.COMPLETED
@@ -161,7 +161,7 @@ class TestUploadedDataModel:
         with pytest.raises(ValidationError):
             UploadedData(
                 name="test.log",
-                type=DataType.LOG_FILE,
+                type=DataType.LOGS_AND_ERRORS,
                 size_bytes=1024,
                 upload_timestamp="2024-01-01T12:00:00Z",
                 processing_status=ProcessingStatus.PENDING
@@ -171,7 +171,7 @@ class TestUploadedDataModel:
         with pytest.raises(ValidationError):
             UploadedData(
                 id="123",
-                type=DataType.LOG_FILE,
+                type=DataType.LOGS_AND_ERRORS,
                 size_bytes=1024,
                 upload_timestamp="2024-01-01T12:00:00Z",
                 processing_status=ProcessingStatus.PENDING
@@ -192,7 +192,7 @@ class TestUploadedDataModel:
             UploadedData(
                 id="123",
                 name="test.log",
-                type=DataType.LOG_FILE,
+                type=DataType.LOGS_AND_ERRORS,
                 upload_timestamp="2024-01-01T12:00:00Z",
                 processing_status=ProcessingStatus.PENDING
             )
@@ -202,7 +202,7 @@ class TestUploadedDataModel:
             UploadedData(
                 id="123",
                 name="test.log",
-                type=DataType.LOG_FILE,
+                type=DataType.LOGS_AND_ERRORS,
                 size_bytes=1024,
                 processing_status=ProcessingStatus.PENDING
             )
@@ -212,7 +212,7 @@ class TestUploadedDataModel:
             UploadedData(
                 id="123",
                 name="test.log",
-                type=DataType.LOG_FILE,
+                type=DataType.LOGS_AND_ERRORS,
                 size_bytes=1024,
                 upload_timestamp="2024-01-01T12:00:00Z"
             )
@@ -224,7 +224,7 @@ class TestUploadedDataModel:
         data = UploadedData(
             id="data_456",
             name="config.json",
-            type=DataType.CONFIG_FILE,
+            type=DataType.STRUCTURED_CONFIG,
             size_bytes=512,
             upload_timestamp="2024-01-01T12:00:00Z",
             processing_status=ProcessingStatus.COMPLETED,
@@ -249,14 +249,15 @@ class TestViewStateModel:
         
         case = Case(
             case_id="case_456",
-            title="Database Connection Issue"
+            title="Database Connection Issue",
+            owner_id="user_123"
         )
         
         uploaded_data = [
             UploadedData(
                 id="1",
                 name="log1.txt",
-                type=DataType.LOG_FILE,
+                type=DataType.LOGS_AND_ERRORS,
                 size_bytes=1024,
                 upload_timestamp="2024-01-01T12:00:00Z",
                 processing_status=ProcessingStatus.COMPLETED
@@ -264,7 +265,7 @@ class TestViewStateModel:
             UploadedData(
                 id="2",
                 name="log2.txt",
-                type=DataType.LOG_FILE,
+                type=DataType.LOGS_AND_ERRORS,
                 size_bytes=2048,
                 upload_timestamp="2024-01-01T12:01:00Z",
                 processing_status=ProcessingStatus.COMPLETED
@@ -333,8 +334,8 @@ class TestViewStateModel:
             name="Test User"
         )
         
-        case1 = Case(case_id="case_1", title="Issue 1")
-        case2 = Case(case_id="case_2", title="Issue 2")
+        case1 = Case(case_id="case_1", title="Issue 1", owner_id="user_123")
+        case2 = Case(case_id="case_2", title="Issue 2", owner_id="user_123")
         
         memory_context = {
             "conversation_history": ["greeting", "question"],
@@ -445,7 +446,8 @@ class TestAgentResponseModel:
         
         case = Case(
             case_id="case_456",
-            title="Database Connection Issue"
+            title="Database Connection Issue",
+            owner_id="user_123"
         )
         
         view_state = ViewState(
@@ -489,7 +491,8 @@ class TestAgentResponseModel:
         
         case = Case(
             case_id="case_456",
-            title="Database Connection Issue"
+            title="Database Connection Issue",
+            owner_id="user_123"
         )
         
         view_state = ViewState(
@@ -768,7 +771,8 @@ class TestModelSerialization:
         
         case = Case(
             case_id="case_456",
-            title="Serialization Test"
+            title="Serialization Test",
+            owner_id="user_123"
         )
         
         view_state = ViewState(
@@ -779,7 +783,7 @@ class TestModelSerialization:
                 UploadedData(
                     id="1",
                     name="test.log",
-                    type=DataType.LOG_FILE,
+                    type=DataType.LOGS_AND_ERRORS,
                     size_bytes=1024,
                     upload_timestamp="2024-01-01T12:00:00Z",
                     processing_status=ProcessingStatus.COMPLETED
@@ -972,7 +976,8 @@ class TestEdgeCases:
         
         case = Case(
             case_id="case_456",
-            title="Test with special chars: @#$%^&*()"
+            title="Test with special chars: @#$%^&*()",
+            owner_id="user_123"
         )
         
         view_state = ViewState(

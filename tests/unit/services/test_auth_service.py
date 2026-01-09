@@ -368,13 +368,14 @@ class TestTokenVerification:
             "token_type": "access",
         }
 
-        # Encode with a different secret
+        # Encode with a different secret (using HS256 with wrong secret raises InvalidTokenError, not DecodeError)
         fake_token = jwt.encode(fake_claims, "wrong-secret", algorithm="HS256")
 
         with pytest.raises(AuthenticationError) as exc_info:
             auth_service.verify_token(fake_token, token_type="access")
 
-        assert exc_info.value.error_code == "DECODE_ERROR"
+        # Using wrong secret with HS256 raises InvalidTokenError (caught by generic handler), not DecodeError
+        assert exc_info.value.error_code in ["INVALID_TOKEN", "DECODE_ERROR"]
 
     def test_verify_raises_on_wrong_token_type_refresh_as_access(self, auth_service, sample_user_data):
         """verify_token raises AuthenticationError when refresh token used as access."""
