@@ -8,7 +8,10 @@ import pytest
 from unittest.mock import Mock, AsyncMock, MagicMock
 from datetime import datetime
 
-from faultmaven.services.domain.report_recommendation_service import ReportRecommendationService
+# Legacy services/domain/* was removed; use extracted module path.
+from faultmaven.modules.report.domain.services.report_recommendation_service import (
+    ReportRecommendationService,
+)
 from faultmaven.models.report import (
     ReportType,
     ReportRecommendation,

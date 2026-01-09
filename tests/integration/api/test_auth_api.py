@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
-from faultmaven.api.app import create_app
+from faultmaven.main import app as main_app
 from faultmaven.api.middleware.auth import set_auth_service
 
 
@@ -34,7 +34,7 @@ from faultmaven.api.middleware.auth import set_auth_service
 @pytest.fixture
 def app() -> FastAPI:
     """Create test FastAPI application."""
-    return create_app()
+    return main_app
 
 
 @pytest.fixture

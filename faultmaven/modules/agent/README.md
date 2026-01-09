@@ -251,7 +251,7 @@ from faultmaven.modules.agent.domain.services.agent_orchestration_service import
 
 # Tools
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
-from faultmaven.modules.agent.tools.registry import ToolRegistry
+# Tools are constructed explicitly via DI during container initialization.
 ```
 
 ### Backward Compatibility

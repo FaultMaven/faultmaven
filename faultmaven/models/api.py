@@ -340,7 +340,6 @@ class DataUploadResponse(BaseModel):
         description="Classification confidence and metadata"
     )
 
-    # Legacy field for backward compatibility
     view_state: Optional[ViewState] = None
 
 # --- API Compliance Response Models ---

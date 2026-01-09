@@ -5,7 +5,7 @@ Tests the repository layer with in-memory SQLite database.
 import json
 import pytest
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import uuid4, UUID
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -76,10 +76,10 @@ class TestEvidenceRepositoryCreate:
         )
 
         assert result is not None
-        assert result.filename == "test.log"
-        assert result.content_type == "text/plain"
-        assert result.size_bytes == 1024
-        assert result.uploaded_by == sample_user_id
+        assert result.original_filename == "test.log"
+        assert result.mime_type == "text/plain"
+        assert result.file_size == 1024
+        assert result.user_id == str(sample_user_id)
         assert result.description == "Test file"
         assert "test" in result.tags
         assert "log" in result.tags
@@ -95,9 +95,9 @@ class TestEvidenceRepositoryCreate:
             uploaded_by=sample_user_id,
         )
 
-        assert result.id is not None
+        assert result.evidence_id is not None
         # Verify it's a valid UUID
-        assert len(str(result.id)) == 36
+        assert len(str(result.evidence_id)) == 36
 
     @pytest.mark.asyncio
     async def test_create_evidence_without_optional_fields(self, repository, sample_user_id):
@@ -116,7 +116,7 @@ class TestEvidenceRepositoryCreate:
 
     @pytest.mark.asyncio
     async def test_create_evidence_sets_uploaded_at(self, repository, sample_user_id):
-        """Test that uploaded_at is set automatically."""
+        """Test that created_at is set automatically."""
         before = datetime.now(timezone.utc)
 
         result = await repository.create(
@@ -129,13 +129,19 @@ class TestEvidenceRepositoryCreate:
 
         after = datetime.now(timezone.utc)
 
-        assert result.uploaded_at is not None
+        assert result.created_at is not None
+        created_at = result.created_at
+        # SQLite may return naive datetimes; normalize to UTC-aware for comparisons.
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+
         # Should be between before and after (allowing some tolerance)
-        assert result.uploaded_at >= before.replace(tzinfo=None) or result.uploaded_at >= before
+        assert created_at >= before
+        assert created_at <= after
 
     @pytest.mark.asyncio
     async def test_create_evidence_empty_linked_cases(self, repository, sample_user_id):
-        """Test that linked_cases starts empty."""
+        """Test that linked_case_ids starts empty."""
         result = await repository.create(
             filename="unlinked.log",
             content_type="text/plain",
@@ -144,7 +150,7 @@ class TestEvidenceRepositoryCreate:
             uploaded_by=sample_user_id,
         )
 
-        assert result.linked_cases == []
+        assert result.linked_case_ids == []
 
 
 class TestEvidenceRepositoryGet:
@@ -162,11 +168,11 @@ class TestEvidenceRepositoryGet:
             tags=["retrieve"],
         )
 
-        result = await repository.get(created.id)
+        result = await repository.get(UUID(created.evidence_id))
 
         assert result is not None
-        assert result.id == created.id
-        assert result.filename == "retrieve.log"
+        assert result.evidence_id == created.evidence_id
+        assert result.original_filename == "retrieve.log"
         assert "retrieve" in result.tags
 
     @pytest.mark.asyncio
@@ -191,11 +197,11 @@ class TestEvidenceRepositoryGet:
             tags=["tag1", "tag2", "tag3"],
         )
 
-        result = await repository.get(created.id)
+        result = await repository.get(UUID(created.evidence_id))
 
-        assert result.filename == "complete.log"
-        assert result.content_type == "application/json"
-        assert result.size_bytes == 2048
+        assert result.original_filename == "complete.log"
+        assert result.mime_type == "application/json"
+        assert result.file_size == 2048
         assert result.description == "Complete test"
         assert set(result.tags) == {"tag1", "tag2", "tag3"}
 
@@ -294,7 +300,7 @@ class TestEvidenceRepositoryList:
         results, total = await repository.list(filters)
 
         assert len(results) == 1
-        assert results[0].uploaded_by == user1
+        assert results[0].user_id == str(user1)
 
     @pytest.mark.asyncio
     async def test_list_filter_by_filename_contains(self, repository, sample_user_id):
@@ -318,7 +324,7 @@ class TestEvidenceRepositoryList:
         results, total = await repository.list(filters)
 
         assert len(results) == 1
-        assert "error" in results[0].filename.lower()
+        assert "error" in results[0].original_filename.lower()
 
     @pytest.mark.asyncio
     async def test_list_filter_by_tags(self, repository, sample_user_id):
@@ -361,12 +367,12 @@ class TestEvidenceRepositoryDelete:
             uploaded_by=sample_user_id,
         )
 
-        result = await repository.delete(created.id)
+        result = await repository.delete(UUID(created.evidence_id))
 
         assert result is True
 
         # Verify it's gone
-        retrieved = await repository.get(created.id)
+        retrieved = await repository.get(UUID(created.evidence_id))
         assert retrieved is None
 
     @pytest.mark.asyncio
@@ -395,10 +401,10 @@ class TestEvidenceRepositoryLinkToCase:
             uploaded_by=sample_user_id,
         )
 
-        result = await repository.link_to_case(created.id, case_id)
+        result = await repository.link_to_case(UUID(created.evidence_id), case_id)
 
         assert result is not None
-        assert case_id in result.linked_cases
+        assert str(case_id) in result.linked_case_ids
 
     @pytest.mark.asyncio
     async def test_link_to_case_multiple_cases(self, repository, sample_user_id):
@@ -414,12 +420,12 @@ class TestEvidenceRepositoryLinkToCase:
             uploaded_by=sample_user_id,
         )
 
-        await repository.link_to_case(created.id, case_id1)
-        result = await repository.link_to_case(created.id, case_id2)
+        await repository.link_to_case(UUID(created.evidence_id), case_id1)
+        result = await repository.link_to_case(UUID(created.evidence_id), case_id2)
 
-        assert case_id1 in result.linked_cases
-        assert case_id2 in result.linked_cases
-        assert len(result.linked_cases) == 2
+        assert str(case_id1) in result.linked_case_ids
+        assert str(case_id2) in result.linked_case_ids
+        assert len(result.linked_case_ids) == 2
 
     @pytest.mark.asyncio
     async def test_link_to_case_idempotent(self, repository, sample_user_id):
@@ -434,11 +440,11 @@ class TestEvidenceRepositoryLinkToCase:
             uploaded_by=sample_user_id,
         )
 
-        await repository.link_to_case(created.id, case_id)
-        result = await repository.link_to_case(created.id, case_id)
+        await repository.link_to_case(UUID(created.evidence_id), case_id)
+        result = await repository.link_to_case(UUID(created.evidence_id), case_id)
 
         # Should only appear once
-        assert result.linked_cases.count(case_id) == 1
+        assert result.linked_case_ids.count(str(case_id)) == 1
 
     @pytest.mark.asyncio
     async def test_link_to_case_not_found(self, repository):
@@ -468,13 +474,13 @@ class TestEvidenceRepositoryJsonSerialization:
             tags=tags,
         )
 
-        retrieved = await repository.get(created.id)
+        retrieved = await repository.get(UUID(created.evidence_id))
 
         assert set(retrieved.tags) == set(tags)
 
     @pytest.mark.asyncio
     async def test_linked_cases_json_serialization(self, repository, sample_user_id):
-        """Test linked_cases are properly serialized/deserialized as JSON."""
+        """Test linked_case_ids are properly serialized/deserialized as JSON."""
         case_ids = [uuid4(), uuid4(), uuid4()]
 
         created = await repository.create(
@@ -488,14 +494,14 @@ class TestEvidenceRepositoryJsonSerialization:
         # Link all cases
         result = created
         for case_id in case_ids:
-            result = await repository.link_to_case(result.id, case_id)
+            result = await repository.link_to_case(UUID(result.evidence_id), case_id)
 
         # Retrieve and verify
-        retrieved = await repository.get(created.id)
+        retrieved = await repository.get(UUID(created.evidence_id))
 
-        assert len(retrieved.linked_cases) == 3
+        assert len(retrieved.linked_case_ids) == 3
         for case_id in case_ids:
-            assert case_id in retrieved.linked_cases
+            assert str(case_id) in retrieved.linked_case_ids
 
     @pytest.mark.asyncio
     async def test_empty_tags_serialization(self, repository, sample_user_id):
@@ -509,6 +515,6 @@ class TestEvidenceRepositoryJsonSerialization:
             tags=[],
         )
 
-        retrieved = await repository.get(created.id)
+        retrieved = await repository.get(UUID(created.evidence_id))
 
         assert retrieved.tags == []

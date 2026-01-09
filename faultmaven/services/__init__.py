@@ -1,42 +1,67 @@
-"""Services Package
+"""Services package (legacy compatibility).
 
-This package contains legacy service layer components and backward compatibility re-exports.
+This package remains as a legacy compatibility surface after module extraction.
 
-After module extraction, most services have moved to modules/:
-- CaseService, DataService → modules/case/domain/services/
-- SessionService → modules/auth/domain/services/
-- PlanningService → REMOVED (no longer exists)
-
-Remaining services in this package:
-- agentic/: Complete agentic framework with orchestration, engines, management, and safety
-- analytics/: ML and analytics services (dashboard, confidence scoring)
-- base.py: Base service class for consistent patterns
-- converters/: Data transformation utilities
+IMPORTANT: Keep this module import-light.
+Python imports the package (`faultmaven.services`) before importing submodules
+like `faultmaven.services.base`, so importing extracted modules here can create
+circular imports.
 """
 
-# Import from modules (after module extraction)
-# Note: AgentService import removed to avoid circular dependency
-# Import AgentService directly from faultmaven.services.agentic if needed
-from faultmaven.modules.case.domain.services.case_service import CaseService
-from faultmaven.modules.case.domain.services.case_data_ingestion_service import CaseDataIngestionService as DataService
+from __future__ import annotations
 
-from .analytics import (
-    AnalyticsDashboardService,
-    ConfidenceService
-)
-from .base import BaseService
+from typing import TYPE_CHECKING, Any
 
-# Re-export SessionService from auth module for backward compatibility
-from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
+if TYPE_CHECKING:
+    from faultmaven.modules.auth.domain.services.auth_session_service import (
+        AuthSessionService as SessionService,
+    )
+    from faultmaven.modules.case.domain.services.case_data_ingestion_service import (
+        CaseDataIngestionService as DataService,
+    )
+    from faultmaven.modules.case.domain.services.case_service import CaseService
+
+    from .analytics import AnalyticsDashboardService, ConfidenceService
+    from .base import BaseService
 
 __all__ = [
-    # Base
     "BaseService",
-    # Domain Services
     "CaseService",
-    "SessionService",  # Re-exported from modules/auth
-    "DataService",  # Re-exported as CaseDataIngestionService
-    # Analytics Services
+    "SessionService",
+    "DataService",
     "AnalyticsDashboardService",
     "ConfidenceService",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazy attribute resolver for backward-compatible imports."""
+    if name == "BaseService":
+        from .base import BaseService as _BaseService
+        return _BaseService
+
+    if name == "AnalyticsDashboardService":
+        from .analytics import AnalyticsDashboardService as _AnalyticsDashboardService
+        return _AnalyticsDashboardService
+
+    if name == "ConfidenceService":
+        from .analytics import ConfidenceService as _ConfidenceService
+        return _ConfidenceService
+
+    if name == "CaseService":
+        from faultmaven.modules.case.domain.services.case_service import CaseService as _CaseService
+        return _CaseService
+
+    if name == "DataService":
+        from faultmaven.modules.case.domain.services.case_data_ingestion_service import (
+            CaseDataIngestionService as _DataService,
+        )
+        return _DataService
+
+    if name == "SessionService":
+        from faultmaven.modules.auth.domain.services.auth_session_service import (
+            AuthSessionService as _SessionService,
+        )
+        return _SessionService
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

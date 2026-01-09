@@ -20,11 +20,6 @@ from .common import (
 # Import DataType from api.py where it's currently defined
 from .api import DataType, KnowledgeBaseDocument
 
-# For backward compatibility, provide AgentState as the enum (most common usage)
-# and make the TypedDict available as AgentStateDict
-AgentState = AgentStateEnum
-AgentStateDict = AgentStateDict  # Keep this available for core agent tests
-
 # Import new v3.1.0 API models
 from .api import (
     ResponseType,

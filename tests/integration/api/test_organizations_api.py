@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from faultmaven.api.app import create_app
+from faultmaven.main import app as main_app
 from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.models.interfaces_user import Organization, OrganizationMember, OrgPlanTier
 from faultmaven.models.rbac import get_permissions_for_roles
@@ -36,7 +36,7 @@ from faultmaven.models.rbac import get_permissions_for_roles
 @pytest.fixture
 def app():
     """Create FastAPI test application."""
-    return create_app()
+    return main_app
 
 
 @pytest.fixture

@@ -419,7 +419,79 @@ class ProtectionSystem:
             self.logger.error(f"Error during protection system shutdown: {e}")
 
 
-# Legacy compatibility functions
+# Middleware setup
+def setup_protection_middleware(
+    app: FastAPI,
+    settings: Optional[ProtectionSettings] = None,
+    environment: str = "development",
+) -> Dict[str, Any]:
+    """Setup protection middleware (sync).
+
+    Starlette/FastAPI middleware must be added *before* the application starts.
+    This function is intentionally synchronous so it can be called at import-time
+    (module initialization) before lifespan/startup executes.
+    """
+    setup_info: Dict[str, Any] = {
+        "protection_enabled": False,
+        "middleware_added": [],
+        "settings_source": "none",
+        "validation": None,
+        "warnings": [],
+    }
+
+    try:
+        # Load settings if not provided
+        if settings is None:
+            if environment == "production":
+                settings = get_production_protection_settings()
+                setup_info["settings_source"] = "production_defaults"
+            elif environment == "development":
+                settings = get_development_protection_settings()
+                setup_info["settings_source"] = "development_defaults"
+            else:
+                settings = load_protection_settings()
+                setup_info["settings_source"] = "environment"
+        else:
+            setup_info["settings_source"] = "provided"
+
+        validation = validate_protection_settings(settings)
+        setup_info["validation"] = validation
+        if not validation["valid"]:
+            logger.error(f"Protection settings validation failed: {validation['errors']}")
+            return setup_info
+
+        if not settings.enabled:
+            return setup_info
+
+        setup_info["protection_enabled"] = True
+
+        # Add middleware in reverse order (FastAPI adds them as a stack)
+        # Last added = first executed
+        if settings.deduplication_enabled:
+            app.add_middleware(
+                DeduplicationMiddleware,
+                settings=settings,
+                redis_url=settings.redis_url,
+            )
+            setup_info["middleware_added"].append("deduplication")
+
+        if settings.rate_limiting_enabled:
+            app.add_middleware(
+                RateLimitMiddleware,
+                settings=settings,
+                redis_url=settings.redis_url,
+            )
+            setup_info["middleware_added"].append("rate_limiting")
+
+    except Exception as e:
+        logger.error(f"Failed to setup protection middleware: {e}")
+        setup_info["error"] = str(e)
+        if settings and not settings.fail_open_on_redis_error:
+            raise
+
+    return setup_info
+
+
 async def setup_protection_middleware_async(
     app: FastAPI,
     settings: Optional[ProtectionSettings] = None,
@@ -554,49 +626,6 @@ async def setup_protection_middleware_async(
             raise
     
     return setup_info
-
-
-def setup_protection_middleware(
-    app: FastAPI,
-    settings: Optional[ProtectionSettings] = None,
-    environment: str = "development",
-    session_store: Optional[ISessionStore] = None
-) -> Dict[str, Any]:
-    """
-    DEPRECATED: Use setup_protection_middleware_async() instead.
-
-    This sync wrapper exists for backward compatibility but will fail
-    if called from within an already-running event loop (e.g., ASGI/Uvicorn).
-
-    For FastAPI applications, prefer using the async version in your lifespan
-    or startup event handler.
-    """
-    import warnings
-    import asyncio
-
-    warnings.warn(
-        "setup_protection_middleware() is deprecated. "
-        "Use 'await setup_protection_middleware_async()' in your async startup handler.",
-        DeprecationWarning,
-        stacklevel=2
-    )
-
-    # Try to run in existing loop or create new one
-    try:
-        loop = asyncio.get_running_loop()
-        # If we're in a running loop, we cannot use run_until_complete
-        # This typically happens under ASGI servers like Uvicorn
-        raise RuntimeError(
-            "Cannot call sync setup_protection_middleware() from within a running event loop. "
-            "Use 'await setup_protection_middleware_async()' instead."
-        )
-    except RuntimeError as e:
-        if "no running event loop" in str(e).lower():
-            # No running loop, safe to create one
-            return asyncio.run(
-                setup_protection_middleware_async(app, settings, environment, session_store)
-            )
-        raise
 
 
 def create_timeout_handler(settings: Optional[ProtectionSettings] = None) -> TimeoutHandler:

@@ -1278,7 +1278,6 @@ class KnowledgeService(BaseService):
                 self.logger.info(f"Retrieved job {job_id} from store")
                 return job
                 
-            # Extract document ID from job ID for backward compatibility
             if job_id.startswith("job_"):
                 document_id = job_id[4:]
                 # Create a default job status

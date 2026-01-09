@@ -481,6 +481,7 @@ class UserService(BaseService):
         if not user.hashed_password or not verify_password(
             current_password, user.hashed_password
         ):
+            AuthenticationError = _get_authentication_error()
             raise AuthenticationError(
                 "Current password is incorrect",
                 error_code="INVALID_PASSWORD",
@@ -590,78 +591,65 @@ class UserService(BaseService):
         self,
         user_id: str,
     ) -> RepositoryUser:
-        """Deactivate user account (soft delete).
-
-        Args:
-            user_id: User's ID
-
-        Returns:
-            Deactivated User object
-
-        Raises:
-            NotFoundError: User not found
-
-        Workflow:
-            1. Get user by ID
-            2. Set is_active=False
-            3. Revoke all user's JWT tokens
-            4. Update updated_at timestamp
-            5. Save user record
-            6. Return deactivated user
-        """
+        """Deactivate user account (soft delete)."""
         self.logger.info(f"Deactivating user: {user_id}")
 
-        # Get user
         user = await self.user_repo.get(user_id)
         if not user:
             raise NotFoundError("User", user_id)
 
-        # Deactivate
         user.is_active = False
         user.deleted_at = datetime.now(timezone.utc)
         user.updated_at = datetime.now(timezone.utc)
 
-        # Save user
         deactivated_user = await self.user_repo.save(user)
-
-        # Revoke all user's JWT tokens
         await self.auth_service.revoke_user_tokens(user_id)
-
-        self.logger.info(f"User deactivated: {user_id}")
         return deactivated_user
+
+    async def deactivate_user_admin(
+        self,
+        user_id: str,
+        organization_id: str,
+        admin_user_id: str,
+    ) -> RepositoryUser:
+        """Deactivate user account (admin-only, soft delete)."""
+        if admin_user_id == user_id:
+            raise AuthorizationError("Cannot deactivate your own account")
+
+        user = await self.user_repo.get(user_id)
+        if not user:
+            raise NotFoundError("User", user_id)
+        if not user.is_active:
+            raise ConflictError("User already deactivated")
+
+        return await self.deactivate_user(user_id)
 
     async def activate_user(
         self,
         user_id: str,
     ) -> RepositoryUser:
-        """Reactivate user account.
-
-        Args:
-            user_id: User's ID
-
-        Returns:
-            Activated User object
-
-        Raises:
-            NotFoundError: User not found
-        """
+        """Reactivate user account."""
         self.logger.info(f"Activating user: {user_id}")
 
-        # Get user
         user = await self.user_repo.get(user_id)
         if not user:
             raise NotFoundError("User", user_id)
+        if user.is_active:
+            raise ConflictError("User already active")
 
-        # Activate
         user.is_active = True
         user.deleted_at = None
         user.updated_at = datetime.now(timezone.utc)
+        return await self.user_repo.save(user)
 
-        # Save user
-        activated_user = await self.user_repo.save(user)
-
-        self.logger.info(f"User activated: {user_id}")
-        return activated_user
+    async def activate_user_admin(
+        self,
+        user_id: str,
+        organization_id: str,
+        admin_user_id: str,
+    ) -> RepositoryUser:
+        """Reactivate user account (admin-only)."""
+        return await self.activate_user(user_id)
 
     # ============================================================
     # User Lookup
@@ -697,6 +685,7 @@ class UserService(BaseService):
 
     async def list_users(
         self,
+        organization_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
         is_active: Optional[bool] = None,
@@ -706,6 +695,7 @@ class UserService(BaseService):
         """List users with pagination and optional filtering.
 
         Args:
+            organization_id: Organization context for scoping (not yet enforced in in-memory repo)
             limit: Maximum results
             offset: Pagination offset
             is_active: Filter by active status
@@ -725,6 +715,10 @@ class UserService(BaseService):
         # Apply additional filters (TASK-019)
         filtered_users = []
         for user in users:
+            # Ensure is_active filtering even if repository doesn't apply it
+            if is_active is not None and user.is_active != is_active:
+                continue
+
             # Filter by role
             if role is not None:
                 user_roles = user.roles if user.roles else ["member"]
@@ -802,6 +796,7 @@ class UserService(BaseService):
         self,
         user_id: str,
         role: str,
+        organization_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Assign role to user (TASK-019).
@@ -809,6 +804,7 @@ class UserService(BaseService):
         Args:
             user_id: Target user ID
             role: Role to assign (admin, member, viewer)
+            organization_id: Organization context for authorization (required)
             admin_user_id: Admin performing the action (cannot be same as user_id)
 
         Returns:
@@ -862,6 +858,7 @@ class UserService(BaseService):
         self,
         user_id: str,
         role: str,
+        organization_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
         """Remove role from user (TASK-019).
@@ -871,6 +868,7 @@ class UserService(BaseService):
         Args:
             user_id: Target user ID
             role: Role to remove (admin, member)
+            organization_id: Organization context for authorization (required)
             admin_user_id: Admin performing the action (cannot be same as user_id)
 
         Returns:

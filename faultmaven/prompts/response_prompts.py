@@ -143,9 +143,8 @@ def assemble_intelligent_prompt(
             warnings.append("⚠️ User appears frustrated - be extra patient and clear.")
 
         clarifications = conversation_state.get("clarification_count", 0)
-        # Use centralized threshold from settings
         settings = get_settings()
-        max_clarifications = settings.thresholds.max_clarifications
+        max_clarifications = settings.ooda.max_clarifications
         if clarifications >= max_clarifications:
             warnings.append(f"⚠️ Asked {clarifications}x for clarification - make progress or suggest escalation.")
 

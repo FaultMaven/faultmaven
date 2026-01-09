@@ -21,7 +21,6 @@ from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     UploadedFile,
-    Message,
 )
 from faultmaven.infrastructure.persistence.case_repository import (
     InMemoryCaseRepository,
@@ -164,7 +163,8 @@ class TestMessageSchemaConsistency:
         """Test case service doesn't add session_id to messages"""
 
         # This is tested in case_service tests, but verify schema here
-        from faultmaven.services.domain.case_service import CaseService
+        # Legacy services/domain/* was removed; use extracted module path.
+        from faultmaven.modules.case.domain.services.case_service import CaseService
 
         # Mock dependencies
         mock_repo = MagicMock()

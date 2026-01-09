@@ -273,6 +273,7 @@ class APICaseService(BaseService):
             raise ValidationException("updates: At least one update field is required")
 
         try:
+            from pydantic import ValidationError as PydanticValidationError
             # Get current case
             case = await self.case_repo.get(case_id)
 
@@ -309,7 +310,10 @@ class APICaseService(BaseService):
                                 f"status: Invalid status '{value}'. Must be one of: "
                                 f"{[s.value for s in CaseStatus]}"
                             )
-                    case.status = value
+                    try:
+                        case.status = value
+                    except PydanticValidationError as e:
+                        raise ValidationException(str(e))
 
                 elif key == 'severity':
                     # Store severity in case metadata

@@ -5,7 +5,6 @@ Don't eagerly import to avoid circular imports.
 
 __all__ = [
     "base",
-    "registry",
     "list_evidence_tool",
     "read_file_tool",
     "case_evidence_qa",

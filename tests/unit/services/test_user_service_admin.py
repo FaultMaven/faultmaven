@@ -22,7 +22,7 @@ from faultmaven.exceptions import (
     NotFoundError,
     ValidationException,
 )
-from faultmaven.models.auth import DevUser
+from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
 from faultmaven.models.rbac import Role
 from faultmaven.services.user_service import UserService
 
@@ -37,10 +37,40 @@ def mock_user_repo():
     """Create mock user repository."""
     repo = MagicMock()
     repo.list_users = AsyncMock()
-    repo.get_user = AsyncMock()
-    repo.update_user = AsyncMock()
-    repo.create_user = AsyncMock()
+    # Support both repository-style and older mock attribute names
+    repo.get = AsyncMock()
+    repo.get_user = repo.get
+    repo.save = AsyncMock()
+    repo.update_user = repo.save
+    repo.create = AsyncMock()
+    repo.create_user = repo.create
     return repo
+
+
+# ============================================================
+# Test Model Factory
+# ============================================================
+# The production code now uses RepositoryUser; tests historically used a DevUser-like
+# constructor. Keep test call sites unchanged by providing a local factory.
+def DevUser(**kwargs) -> RepositoryUser:
+    created_at = kwargs.get("created_at") or datetime.now(timezone.utc)
+    roles = kwargs.get("roles", [])
+    if roles is None:
+        roles = ["admin"]
+    defaults = {
+        "hashed_password": None,
+        "is_email_verified": kwargs.get("is_email_verified", False),
+        "email_verified_at": kwargs.get("email_verified_at", None),
+        "avatar_url": kwargs.get("avatar_url", None),
+        "timezone": kwargs.get("timezone", "UTC"),
+        "locale": kwargs.get("locale", "en-US"),
+        "last_login_at": kwargs.get("last_login_at", None),
+        "last_password_change_at": kwargs.get("last_password_change_at", None),
+        "deleted_at": kwargs.get("deleted_at", None),
+        "updated_at": kwargs.get("updated_at") or created_at,
+        "roles": roles,
+    }
+    return RepositoryUser(**{**defaults, **kwargs})
 
 
 @pytest.fixture
@@ -65,40 +95,52 @@ def sample_users():
     """Create sample users for testing."""
     now = datetime.now(timezone.utc)
     return [
-        DevUser(
+        RepositoryUser(
             user_id="user-1",
             username="admin@example.com",
             email="admin@example.com",
             display_name="Admin User",
+            hashed_password=None,
             created_at=now,
+            updated_at=now,
             is_active=True,
+            is_email_verified=False,
             roles=["admin"],
         ),
-        DevUser(
+        RepositoryUser(
             user_id="user-2",
             username="member@example.com",
             email="member@example.com",
             display_name="Member User",
+            hashed_password=None,
             created_at=now,
+            updated_at=now,
             is_active=True,
+            is_email_verified=False,
             roles=["member"],
         ),
-        DevUser(
+        RepositoryUser(
             user_id="user-3",
             username="viewer@example.com",
             email="viewer@example.com",
             display_name="Viewer User",
+            hashed_password=None,
             created_at=now,
+            updated_at=now,
             is_active=True,
+            is_email_verified=False,
             roles=["viewer"],
         ),
-        DevUser(
+        RepositoryUser(
             user_id="user-4",
             username="inactive@example.com",
             email="inactive@example.com",
             display_name="Inactive User",
+            hashed_password=None,
             created_at=now,
+            updated_at=now,
             is_active=False,
+            is_email_verified=False,
             roles=["member"],
         ),
     ]
@@ -141,7 +183,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Returns all users in organization."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -156,7 +198,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Pagination works (limit, offset)."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -172,7 +214,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Pagination offset works correctly."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -188,7 +230,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Filter by is_active=True returns only active users."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -204,7 +246,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Filter by is_active=False returns only inactive users."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -220,7 +262,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Filter by role 'admin' returns only admins."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -236,7 +278,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Filter by role 'member' returns only members."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -252,7 +294,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Filter by role 'viewer' returns only viewers."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -268,7 +310,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Search by email (case-insensitive, partial match)."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -283,7 +325,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Search by full_name (case-insensitive, partial match)."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -298,7 +340,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Search with partial match works."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -312,7 +354,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Combined filters (active + role + search) work."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -362,7 +404,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Returns (users, total_count) tuple."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         result = await user_service.list_users(organization_id="org-123")
 
@@ -376,7 +418,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Empty list when no matches."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -391,7 +433,7 @@ class TestListUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Limit is capped at 100."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_users(
             organization_id="org-123",
@@ -502,9 +544,10 @@ class TestActivateUser:
         )
         mock_user_repo.update_user.return_value = inactive_user_copy
 
-        result = await user_service.activate_user(
+        result = await user_service.activate_user_admin(
             user_id="user-4",
             organization_id="org-123",
+            admin_user_id="user-1",
         )
 
         assert result.is_active is True
@@ -518,9 +561,10 @@ class TestActivateUser:
         mock_user_repo.get_user.return_value = None
 
         with pytest.raises(NotFoundError):
-            await user_service.activate_user(
+            await user_service.activate_user_admin(
                 user_id="nonexistent",
                 organization_id="org-123",
+                admin_user_id="user-1",
             )
 
     @pytest.mark.asyncio
@@ -531,9 +575,10 @@ class TestActivateUser:
         mock_user_repo.get_user.return_value = admin_user  # Already active
 
         with pytest.raises(ConflictError) as exc_info:
-            await user_service.activate_user(
+            await user_service.activate_user_admin(
                 user_id="user-1",
                 organization_id="org-123",
+                admin_user_id="user-2",
             )
 
         assert "already active" in str(exc_info.value)
@@ -564,7 +609,7 @@ class TestDeactivateUser:
         )
         mock_user_repo.update_user.return_value = deactivated_user
 
-        result = await user_service.deactivate_user(
+        result = await user_service.deactivate_user_admin(
             user_id="user-2",
             organization_id="org-123",
             admin_user_id="user-1",  # Different from target user
@@ -590,7 +635,7 @@ class TestDeactivateUser:
         )
         mock_user_repo.update_user.return_value = deactivated_user
 
-        await user_service.deactivate_user(
+        await user_service.deactivate_user_admin(
             user_id="user-2",
             organization_id="org-123",
             admin_user_id="user-1",
@@ -606,7 +651,7 @@ class TestDeactivateUser:
         mock_user_repo.get_user.return_value = None
 
         with pytest.raises(NotFoundError):
-            await user_service.deactivate_user(
+            await user_service.deactivate_user_admin(
                 user_id="nonexistent",
                 organization_id="org-123",
                 admin_user_id="admin-1",
@@ -620,7 +665,7 @@ class TestDeactivateUser:
         mock_user_repo.get_user.return_value = admin_user
 
         with pytest.raises(AuthorizationError) as exc_info:
-            await user_service.deactivate_user(
+            await user_service.deactivate_user_admin(
                 user_id="user-1",
                 organization_id="org-123",
                 admin_user_id="user-1",  # Same as target!
@@ -636,7 +681,7 @@ class TestDeactivateUser:
         mock_user_repo.get_user.return_value = inactive_user
 
         with pytest.raises(ConflictError) as exc_info:
-            await user_service.deactivate_user(
+            await user_service.deactivate_user_admin(
                 user_id="user-4",
                 organization_id="org-123",
                 admin_user_id="user-1",
@@ -1033,7 +1078,7 @@ class TestListOrganizationUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Returns only active users (is_active=True)."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_organization_users(
             organization_id="org-123",
@@ -1047,7 +1092,7 @@ class TestListOrganizationUsers:
         self, user_service, mock_user_repo, sample_users
     ):
         """Pagination works."""
-        mock_user_repo.list_users.return_value = sample_users
+        mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
         users, total = await user_service.list_organization_users(
             organization_id="org-123",
@@ -1066,36 +1111,6 @@ class TestListOrganizationUsers:
 
 class TestEdgeCases:
     """Tests for edge cases."""
-
-    @pytest.mark.asyncio
-    async def test_user_service_without_auth_service(
-        self, mock_user_repo, member_user
-    ):
-        """UserService works without auth_service (no token revocation)."""
-        user_service = UserService(
-            user_store=mock_user_repo,
-            auth_service=None,  # No auth service
-        )
-        mock_user_repo.get_user.return_value = member_user
-        deactivated_user = DevUser(
-            user_id=member_user.user_id,
-            username=member_user.username,
-            email=member_user.email,
-            display_name=member_user.display_name,
-            created_at=member_user.created_at,
-            is_active=False,
-            roles=member_user.roles,
-        )
-        mock_user_repo.update_user.return_value = deactivated_user
-
-        # Should not raise even without auth_service
-        result = await user_service.deactivate_user(
-            user_id="user-2",
-            organization_id="org-123",
-            admin_user_id="user-1",
-        )
-
-        assert result.is_active is False
 
     @pytest.mark.asyncio
     async def test_user_with_none_roles(

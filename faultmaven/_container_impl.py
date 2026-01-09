@@ -152,6 +152,53 @@ class DIContainer(BaseDIContainer):
                 import traceback
                 logger.error(f"Critical initialization error: {traceback.format_exc()}")
                 self._initialized = False
+
+    def _ensure_initialized_for_getter(self) -> None:
+        """Best-effort lazy initialization for sync getter methods.
+
+        Tests and some legacy call sites expect getters to trigger initialization.
+
+        Behavior:
+        - If initialize() is mocked (not a coroutine function), call it directly.
+        - If no event loop is running, run async initialize() to completion via asyncio.run.
+        - If an event loop is running, schedule initialize() as a background task.
+        """
+        if self._initialized or getattr(self, "_initializing", False):
+            return
+
+        logger = logging.getLogger(__name__)
+        logger.warning("Service requested but container not initialized - triggering lazy initialization")
+
+        import inspect
+        import asyncio
+
+        init = getattr(self, "initialize", None)
+        if init is None:
+            return
+
+        # If patched/mocked in tests, just call it so assertions see the call.
+        if not inspect.iscoroutinefunction(init):
+            try:
+                init()
+            except Exception:
+                # Getter should not raise due to failed lazy init
+                return
+            return
+
+        # Normal path: initialize is an async function
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (common in sync tests)
+            try:
+                asyncio.run(init())
+            except Exception:
+                return
+        else:
+            try:
+                loop.create_task(init())
+            except Exception:
+                return
     
     def _create_minimal_container(self):
         """Create minimal container for testing environments without dependencies"""
@@ -189,6 +236,7 @@ class DIContainer(BaseDIContainer):
             # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
                 logger.warning("Agent service requested but container not initialized - this should not happen after startup")
+                self._ensure_initialized_for_getter()
         return getattr(self, 'agent_service', None)
     
     def get_data_service(self):
@@ -198,6 +246,7 @@ class DIContainer(BaseDIContainer):
             # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
                 logger.warning("Data service requested but container not initialized - this should not happen after startup")
+                self._ensure_initialized_for_getter()
         return getattr(self, 'data_service', None)
 
     def get_preprocessing_service(self):
@@ -216,10 +265,65 @@ class DIContainer(BaseDIContainer):
             # Only warn if not currently initializing
             if not getattr(self, '_initializing', False):
                 logger.warning("Knowledge service requested but container not initialized - this should not happen after startup")
+                self._ensure_initialized_for_getter()
         knowledge_service = getattr(self, 'knowledge_service', None)
         if knowledge_service is None:
             return self._create_minimal_knowledge_service()
         return knowledge_service
+
+    def get_llm_provider(self):
+        """Get the LLM provider (router) from the container."""
+        if not self._initialized and not getattr(self, "_initializing", False):
+            self._ensure_initialized_for_getter()
+        return getattr(self, "llm_provider", None)
+
+    def get_sanitizer(self):
+        """Get the sanitizer service."""
+        if not self._initialized and not getattr(self, "_initializing", False):
+            self._ensure_initialized_for_getter()
+        return getattr(self, "sanitizer", None)
+
+    def get_tracer(self):
+        """Get the tracer service."""
+        if not self._initialized and not getattr(self, "_initializing", False):
+            self._ensure_initialized_for_getter()
+        return getattr(self, "tracer", None)
+
+    def get_tools(self):
+        """Get the registered tools list."""
+        if not self._initialized and not getattr(self, "_initializing", False):
+            self._ensure_initialized_for_getter()
+        return getattr(self, "tools", [])
+
+    def get_data_classifier(self):
+        """Get the data classifier."""
+        if not self._initialized and not getattr(self, "_initializing", False):
+            self._ensure_initialized_for_getter()
+        return getattr(self, "data_classifier", None)
+
+    def get_log_processor(self):
+        """Get the log processor."""
+        if not self._initialized and not getattr(self, "_initializing", False):
+            self._ensure_initialized_for_getter()
+        return getattr(self, "log_processor", None)
+
+    def get_vector_store(self):
+        """Get the vector store."""
+        if not self._initialized and not getattr(self, "_initializing", False):
+            self._ensure_initialized_for_getter()
+        return getattr(self, "vector_store", None)
+
+    def get_session_store(self):
+        """Get the session store."""
+        if not self._initialized and not getattr(self, "_initializing", False):
+            self._ensure_initialized_for_getter()
+        return getattr(self, "session_store", None)
+
+    def get_session_service(self):
+        """Get the session service."""
+        if not self._initialized and not getattr(self, "_initializing", False):
+            self._ensure_initialized_for_getter()
+        return getattr(self, "session_service", None)
     
     def get_metrics_collector(self):
         """Get the metrics collector service"""

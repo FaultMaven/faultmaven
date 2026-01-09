@@ -1119,6 +1119,12 @@ class OODASettings(BaseSettings):
     )
 
     # Context Management (merged from ConversationThresholds)
+    max_clarifications: int = Field(
+        default=3,
+        env="MAX_CLARIFICATIONS",
+        ge=0,
+        description="Maximum clarifying-question turns before suggesting escalation/progress",
+    )
     max_conversation_turns: int = Field(default=20, env="MAX_CONVERSATION_TURNS")
     max_conversation_tokens: int = Field(default=4000, env="MAX_CONVERSATION_TOKENS")
 
@@ -1176,81 +1182,16 @@ class OODASettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
-class ConversationThresholds(BaseSettings):
-    """DEPRECATED: Conversation management thresholds
-
-    This class is deprecated in v3.2.0 and replaced by OODASettings.
-    Kept for backward compatibility during migration.
-    Will be removed in v4.0.0.
-    """
-    # Conversation history limits
-    max_clarifications: int = Field(default=3, env="MAX_CLARIFICATIONS", deprecated=True)
-    max_conversation_turns: int = Field(default=20, env="MAX_CONVERSATION_TURNS", deprecated=True)
-    max_conversation_tokens: int = Field(default=4000, env="MAX_CONVERSATION_TOKENS", deprecated=True)
-
-    # Token budgets for prompt assembly
-    context_token_budget: int = Field(default=4000, env="CONTEXT_TOKEN_BUDGET", deprecated=True)
-
-    # Classification confidence thresholds (no longer used)
-    pattern_confidence_threshold: float = Field(default=0.7, env="PATTERN_CONFIDENCE_THRESHOLD", deprecated=True)
-    confidence_override_threshold: float = Field(default=0.4, env="CONFIDENCE_OVERRIDE_THRESHOLD", deprecated=True)
-    self_correction_min_confidence: float = Field(default=0.4, env="SELF_CORRECTION_MIN_CONFIDENCE", deprecated=True)
-    self_correction_max_confidence: float = Field(default=0.7, env="SELF_CORRECTION_MAX_CONFIDENCE", deprecated=True)
-
-    model_config = {"env_prefix": "", "extra": "ignore"}
-
-
-class PromptSettings(BaseSettings):
-    """DEPRECATED: Doctor/Patient prompt system configuration
-
-    This class is deprecated in v3.2.0 and replaced by OODA Consultant/Lead Investigator modes.
-    Kept for backward compatibility during migration.
-    Will be removed in v4.0.0.
-    """
-    # Prompt version selection
-    doctor_patient_version: str = Field(
-        default="standard",
-        env="DOCTOR_PATIENT_PROMPT_VERSION",
-        deprecated=True,
-        description="DEPRECATED: Prompt version (replaced by OODA modes)"
-    )
-
-    # Dynamic version selection (future enhancement)
-    enable_dynamic_version_selection: bool = Field(
-        default=False,
-        env="ENABLE_DYNAMIC_PROMPT_VERSION",
-        deprecated=True,
-        description="DEPRECATED: Dynamic selection (not applicable to OODA)"
-    )
-
-    # Version selection rules (when dynamic enabled)
-    minimal_threshold_tokens: int = Field(
-        default=50,
-        env="MINIMAL_PROMPT_THRESHOLD",
-        deprecated=True,
-        description="DEPRECATED: Threshold (not applicable to OODA)"
-    )
-    detailed_threshold_complexity: float = Field(
-        default=0.7,
-        env="DETAILED_PROMPT_THRESHOLD",
-        deprecated=True,
-        description="DEPRECATED: Complexity threshold (not applicable to OODA)"
-    )
-
-    model_config = {"env_prefix": "", "extra": "ignore"}
-
-
 class FeatureSettings(BaseSettings):
     """Feature flags and toggles"""
     use_di_container: bool = Field(default=True, env="USE_DI_CONTAINER")
     use_refactored_services: bool = Field(default=True, env="USE_REFACTORED_SERVICES")
     use_refactored_api: bool = Field(default=True, env="USE_REFACTORED_API")
-    enable_legacy_compatibility: bool = Field(default=False, env="ENABLE_LEGACY_COMPATIBILITY")
 
     # Token-Aware Context Management
     enable_token_aware_context: bool = Field(default=True, env="ENABLE_TOKEN_AWARE_CONTEXT")
     enable_conversation_summarization: bool = Field(default=True, env="ENABLE_CONVERSATION_SUMMARIZATION")
-    # Note: Token budgets and thresholds moved to ConversationThresholds class above
+    # Note: Token budgets and thresholds live under settings.ooda
 
     # DEPRECATED: Query Classification System (Replaced by OODA v3.2.0)
     # These settings are no longer used - OODA uses structured responses instead of classification
@@ -1686,17 +1627,6 @@ class FaultMavenSettings(BaseSettings):
     # Provider Selectors (PR #3 - doc-aligned vocabulary)
     providers: ProviderSettings = Field(default_factory=ProviderSettings)
 
-    @property
-    def deployment_mode(self) -> str:
-        """Get deployment mode derived from tenant_provider.
-
-        Convenience property that maps tenant_provider to deployment mode format.
-        Use settings.providers.tenant_provider for new code.
-        """
-        if self.providers.tenant_provider == TenantProvider.MULTI:
-            return "multi-tenant"
-        return "single-tenant"
-
     # Nested configuration sections
     server: ServerSettings = Field(default_factory=ServerSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
@@ -1710,10 +1640,6 @@ class FaultMavenSettings(BaseSettings):
 
     # OODA Framework v3.2.0
     ooda: OODASettings = Field(default_factory=OODASettings)
-
-    # DEPRECATED: Kept for backward compatibility
-    thresholds: ConversationThresholds = Field(default_factory=ConversationThresholds)
-    prompts: PromptSettings = Field(default_factory=PromptSettings)
 
     model_config = {
         "env_file": ".env",
@@ -1866,7 +1792,7 @@ class FaultMavenSettings(BaseSettings):
         return {
             "preset": get_preset_info(),
             "environment": self.server.environment.value,
-            "deployment_mode": self.deployment_mode,
+            "tenant_provider": self.providers.tenant_provider,
             "storage": {
                 "session": self.database.session_storage_type,
                 "vector": self.database.vector_storage_type,
@@ -1915,8 +1841,9 @@ def get_settings() -> FaultMavenSettings:
             from dotenv import load_dotenv
             import os
 
-            # Force load .env file with override to ensure fresh values
-            load_dotenv(override=True)
+            # Load .env without overriding existing environment variables.
+            # This preserves the standard precedence order: OS env > .env.
+            load_dotenv()
 
             # Apply preset defaults for zero-config experience
             # Presets are applied AFTER .env but BEFORE settings instantiation

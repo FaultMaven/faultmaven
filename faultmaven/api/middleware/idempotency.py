@@ -191,7 +191,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
     def _get_timestamp(self) -> str:
         """Get ISO timestamp for caching."""
         from datetime import datetime, timezone
-from faultmaven.utils.serialization import to_json_compatible
+        from faultmaven.utils.serialization import to_json_compatible
         return to_json_compatible(datetime.now(timezone.utc))
 
 

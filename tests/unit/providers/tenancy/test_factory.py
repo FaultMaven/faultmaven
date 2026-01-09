@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from faultmaven.providers.tenancy.factory import create_tenant_provider
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
-from faultmaven.config.settings import FaultMavenSettings
+from faultmaven.config.settings import TenantProvider
 
 
 @pytest.fixture
@@ -25,10 +25,11 @@ def mock_organization_repository():
 # ============================================================================
 
 def test_factory_creates_single_tenant_by_default(mock_organization_repository):
-    """Test factory creates SingleTenantProvider when no DEPLOYMENT_MODE set."""
+    """Test factory creates SingleTenantProvider when tenant_provider is single."""
     with patch('faultmaven.providers.tenancy.factory.get_settings') as mock_settings:
         settings = MagicMock()
-        settings.deployment_mode = "single-tenant"
+        settings.providers = MagicMock()
+        settings.providers.tenant_provider = TenantProvider.SINGLE
         mock_settings.return_value = settings
 
         provider = create_tenant_provider(
@@ -46,10 +47,11 @@ def test_factory_creates_single_tenant_by_default(mock_organization_repository):
 def test_factory_creates_single_tenant_when_mode_is_single_tenant(
     mock_organization_repository
 ):
-    """Test factory creates SingleTenantProvider when DEPLOYMENT_MODE=single-tenant."""
+    """Test factory creates SingleTenantProvider when TENANT_PROVIDER=single."""
     with patch('faultmaven.providers.tenancy.factory.get_settings') as mock_settings:
         settings = MagicMock()
-        settings.deployment_mode = "single-tenant"
+        settings.providers = MagicMock()
+        settings.providers.tenant_provider = TenantProvider.SINGLE
         mock_settings.return_value = settings
 
         provider = create_tenant_provider(
@@ -67,10 +69,11 @@ def test_factory_creates_single_tenant_when_mode_is_single_tenant(
 def test_factory_creates_multi_tenant_when_mode_is_multi_tenant(
     mock_organization_repository
 ):
-    """Test factory creates MultiTenantProvider when DEPLOYMENT_MODE=multi-tenant."""
+    """Test factory creates MultiTenantProvider when TENANT_PROVIDER=multi."""
     with patch('faultmaven.providers.tenancy.factory.get_settings') as mock_settings:
         settings = MagicMock()
-        settings.deployment_mode = "multi-tenant"
+        settings.providers = MagicMock()
+        settings.providers.tenant_provider = TenantProvider.MULTI
         mock_settings.return_value = settings
 
         provider = create_tenant_provider(
@@ -90,7 +93,8 @@ def test_factory_passes_repositories_to_providers(mock_organization_repository):
     with patch('faultmaven.providers.tenancy.factory.get_settings') as mock_settings:
         # Test SingleTenantProvider
         settings = MagicMock()
-        settings.deployment_mode = "single-tenant"
+        settings.providers = MagicMock()
+        settings.providers.tenant_provider = TenantProvider.SINGLE
         mock_settings.return_value = settings
 
         single_provider = create_tenant_provider(
@@ -100,7 +104,7 @@ def test_factory_passes_repositories_to_providers(mock_organization_repository):
         assert single_provider.organization_repository == mock_organization_repository
 
         # Test MultiTenantProvider
-        settings.deployment_mode = "multi-tenant"
+        settings.providers.tenant_provider = TenantProvider.MULTI
 
         multi_provider = create_tenant_provider(
             organization_repository=mock_organization_repository
@@ -114,11 +118,11 @@ def test_factory_passes_repositories_to_providers(mock_organization_repository):
 # ============================================================================
 
 def test_factory_handles_case_insensitive_mode(mock_organization_repository):
-    """Test factory handles deployment mode in different cases."""
+    """Test factory creates multi-tenant provider when tenant_provider is MULTI."""
     with patch('faultmaven.providers.tenancy.factory.get_settings') as mock_settings:
-        # Test uppercase
         settings = MagicMock()
-        settings.deployment_mode = "MULTI-TENANT"
+        settings.providers = MagicMock()
+        settings.providers.tenant_provider = TenantProvider.MULTI
         mock_settings.return_value = settings
 
         provider = create_tenant_provider(
@@ -135,11 +139,12 @@ def test_factory_handles_case_insensitive_mode(mock_organization_repository):
 def test_factory_defaults_to_single_tenant_for_unknown_modes(
     mock_organization_repository
 ):
-    """Test factory falls back to single-tenant for invalid/unknown deployment modes."""
+    """Test factory defaults to single-tenant for unknown tenant_provider values."""
     with patch('faultmaven.providers.tenancy.factory.get_settings') as mock_settings:
         settings = MagicMock()
-        # Invalid mode should default to single-tenant
-        settings.deployment_mode = "invalid-mode"
+        settings.providers = MagicMock()
+        # Invalid/unknown value should default to single-tenant
+        settings.providers.tenant_provider = "invalid-mode"
         mock_settings.return_value = settings
 
         provider = create_tenant_provider(

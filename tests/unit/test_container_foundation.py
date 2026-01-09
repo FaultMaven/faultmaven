@@ -32,6 +32,10 @@ import asyncio
 @pytest.fixture(autouse=True)
 def reset_container():
     """Reset container between tests to ensure isolation"""
+    # Reset settings singleton so env var changes in tests take effect
+    from faultmaven.config.settings import reset_settings
+    reset_settings()
+
     # Clear singleton instance
     DIContainer._instance = None
     yield
@@ -39,6 +43,7 @@ def reset_container():
     if DIContainer._instance:
         DIContainer._instance.reset()
     DIContainer._instance = None
+    reset_settings()
 
 
 class TestDIContainerSingleton:
@@ -143,10 +148,10 @@ class TestDIContainerInitialization:
         await container.initialize()
         assert container._initialized
         
-        container.initialize()  # Should not cause issues
+        await container.initialize()  # Should not cause issues
         assert container._initialized
         
-        container.initialize()  # Third time
+        await container.initialize()  # Third time
         assert container._initialized
     
     def test_lazy_initialization_on_access(self):
@@ -519,21 +524,25 @@ class TestDIContainerErrorHandling:
         container = DIContainer()
         
         # Mock vector store failure
-        with patch('faultmaven.infrastructure.persistence.chromadb_store.ChromaDBVectorStore',
-                   side_effect=Exception("ChromaDB unavailable")):
+        # Ensure the container is configured to use ChromaDB so the patch is exercised.
+        # Also set CHROMADB_URL to prevent zero-config preset auto-detection from forcing
+        # the "local" preset (which sets VECTOR_STORAGE_TYPE=inmemory).
+        with patch.dict("os.environ", {"VECTOR_STORAGE_TYPE": "chromadb", "CHROMADB_URL": "http://localhost:8001"}):
+            with patch('faultmaven.infrastructure.persistence.chromadb_store.ChromaDBVectorStore',
+                       side_effect=Exception("ChromaDB unavailable")):
             
-            await container.initialize()
+                await container.initialize()
             
-            # Should still be initialized
-            assert container._initialized
+                # Should still be initialized
+                assert container._initialized
             
-            # Vector store should be None
-            vector_store = container.get_vector_store()
-            assert vector_store is None
+                # Vector store should be None
+                vector_store = container.get_vector_store()
+                assert vector_store is None
             
-            # Health check should show degraded but functional
-            health = container.health_check()
-            assert health["status"] in ["healthy", "degraded"]
+                # Health check should show degraded but functional
+                health = container.health_check()
+                assert health["status"] in ["healthy", "degraded"]
 
 
 class TestGlobalContainerProxy:

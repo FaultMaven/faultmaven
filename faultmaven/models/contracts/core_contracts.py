@@ -6,7 +6,6 @@ consistent data exchange and schema validation across service boundaries.
 
 Design Principles:
 - Comprehensive field validation with Pydantic
-- Optional fields for backward compatibility
 - Rich metadata for observability and debugging
 - Budget tracking and resource management
 - Standardized error handling patterns

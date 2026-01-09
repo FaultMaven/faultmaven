@@ -35,7 +35,6 @@ class MultiTenantProvider(TenantProvider):
         Organization ID is typically extracted from:
         1. JWT claim (preferred for API requests)
         2. X-Organization-ID header (browser extensions)
-        3. Query parameter (legacy/compatibility)
     """
 
     def __init__(
@@ -76,9 +75,9 @@ class MultiTenantProvider(TenantProvider):
         if not organization_id:
             raise ValidationException(
                 "organization_id is required in multi-tenant mode. "
-                "Provide via JWT claim, X-Organization-ID header, or query parameter.",
+                "Provide via JWT claim or X-Organization-ID header.",
                 details={
-                    "deployment_mode": "multi-tenant",
+                    "tenant_provider": "multi",
                     "user_id": current_user.user_id,
                     "hint": "Add organization_id to request context"
                 }

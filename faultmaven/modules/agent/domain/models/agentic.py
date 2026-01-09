@@ -32,33 +32,12 @@ import uuid
 
 # Core Agentic Data Models
 
-class AgentExecutionPhase(str, Enum):
-    """Phases in the agentic execution loop (LEGACY)
-
-    NOTE: v3.2.0 uses InvestigationPhase (0-6) from investigation.py
-    This enum maintained for backward compatibility
-    """
-    INTAKE = "intake"
-    CLASSIFICATION = "classification"
-    PLANNING = "planning"
-    EXECUTION = "execution"
-    OBSERVATION = "observation"
-    ADAPTATION = "adaptation"
-    SYNTHESIS = "synthesis"
-    COMPLETION = "completion"
-
-
-# v3.2.0: Import investigation phase enums
-try:
-    from faultmaven.models.investigation import (
-        InvestigationPhase,
-        OODAStep,
-        EngagementMode,
-        InvestigationStrategy
-    )
-except ImportError:
-    # Fallback if investigation.py not yet available
-    pass
+from faultmaven.modules.agent.domain.models.investigation import (
+    EngagementMode,
+    InvestigationPhase,
+    InvestigationStrategy,
+    OODAStep,
+)
 
 
 class AgentRole(str, Enum):
@@ -101,7 +80,7 @@ class AgentExecutionState(BaseModel):
     """Represents the current execution state of an agentic workflow"""
     session_id: str
     agent_id: str = "faultmaven-agent"
-    current_phase: AgentExecutionPhase = AgentExecutionPhase.INTAKE
+    current_phase: InvestigationPhase = InvestigationPhase.INTAKE
     execution_context: Dict[str, Any] = Field(default_factory=dict)
     plan_stack: List[Dict[str, Any]] = Field(default_factory=list)
     observation_buffer: List[Dict[str, Any]] = Field(default_factory=list)
@@ -190,7 +169,7 @@ class ObservationData(BaseModel):
     """Data collected during execution observation"""
     observation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
-    phase: AgentExecutionPhase
+    phase: InvestigationPhase
     source: str
     observation_type: str
     data: Dict[str, Any] = Field(default_factory=dict)
@@ -493,7 +472,7 @@ class AgenticLangGraphState(BaseModel):
     correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     
     # Agentic execution state
-    current_phase: AgentExecutionPhase = AgentExecutionPhase.INTAKE
+    current_phase: InvestigationPhase = InvestigationPhase.INTAKE
     execution_state: Optional[AgentExecutionState] = None
     conversation_memory: Optional[ConversationMemory] = None
     

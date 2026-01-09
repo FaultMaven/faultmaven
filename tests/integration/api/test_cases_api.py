@@ -26,7 +26,7 @@ import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 
-from faultmaven.api.app import create_app
+from faultmaven.main import app as main_app
 from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseStatus
 
@@ -79,7 +79,7 @@ def mock_case_service():
 @pytest.fixture
 def app(mock_case_service, mock_user):
     """Create test application with mocked dependencies."""
-    app = create_app()
+    app = main_app
 
     # Override the case service dependency
     async def get_mock_case_service():
@@ -187,10 +187,10 @@ class TestCreateCase:
     def test_create_case_missing_authentication(self):
         """Test case creation without JWT authentication returns 401."""
         # Create app without auth override to test unauthenticated request
-        from faultmaven.api.app import create_app
+        from faultmaven.main import app as main_app
         from fastapi.testclient import TestClient
 
-        app = create_app()
+        app = main_app
         unauthenticated_client = TestClient(app)
 
         response = unauthenticated_client.post(
@@ -276,10 +276,10 @@ class TestGetCase:
     def test_get_case_missing_authentication(self):
         """Test get case without JWT authentication returns 401."""
         # Create app without auth override to test unauthenticated request
-        from faultmaven.api.app import create_app
+        from faultmaven.main import app as main_app
         from fastapi.testclient import TestClient
 
-        app = create_app()
+        app = main_app
         unauthenticated_client = TestClient(app)
 
         response = unauthenticated_client.get("/api/v1/cases/case_123")

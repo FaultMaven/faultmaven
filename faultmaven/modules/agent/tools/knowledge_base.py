@@ -36,10 +36,8 @@ from pydantic import PrivateAttr
 
 from faultmaven.core.knowledge.ingestion import KnowledgeIngester
 from faultmaven.models.interfaces import BaseTool as IBaseTool, ToolResult
-from faultmaven.modules.agent.tools.registry import register_tool
 
 
-@register_tool("knowledge_base")
 class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
     """Enhanced RAG tool for querying the knowledge base with contextual search"""
 
@@ -464,7 +462,6 @@ def create_knowledge_base_tool(knowledge_ingester: KnowledgeIngester) -> Tool:
     )
 
 
-@register_tool("knowledge_base_filtered")
 class KnowledgeBaseFilteredTool(LangChainBaseTool, IBaseTool):
     """RAG tool with advanced filtering capabilities"""
 

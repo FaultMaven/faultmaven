@@ -99,7 +99,7 @@ class TestCreateCase:
     async def test_create_case_success(self, case_service, mock_case_repo):
         """Test successful case creation."""
         mock_case_repo.save.return_value = Case(
-            case_id="case_abc123",
+            case_id="case_abc123def456",
             user_id="user_1",
             organization_id="org_1",
             title="New Case",
@@ -116,7 +116,7 @@ class TestCreateCase:
         )
 
         assert result is not None
-        assert result.case_id == "case_abc123"
+        assert result.case_id == "case_abc123def456"
         mock_case_repo.save.assert_called_once()
 
     @pytest.mark.asyncio
@@ -337,17 +337,15 @@ class TestUpdateCase:
 
     @pytest.mark.asyncio
     async def test_update_case_updates_status(self, case_service, mock_case_repo, sample_case):
-        """Test updating case status."""
+        """Updating status to INVESTIGATING without required consulting confirmations should fail."""
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.save.side_effect = lambda case: case
-
-        result = await case_service.update_case(
-            sample_case.case_id,
-            sample_case.organization_id,
-            {"status": CaseStatus.INVESTIGATING},
-        )
-
-        assert result.status == CaseStatus.INVESTIGATING
+        with pytest.raises(ValidationException):
+            await case_service.update_case(
+                sample_case.case_id,
+                sample_case.organization_id,
+                {"status": CaseStatus.INVESTIGATING},
+            )
 
     @pytest.mark.asyncio
     async def test_update_case_not_found_raises_not_found_error(self, case_service, mock_case_repo):
@@ -675,8 +673,12 @@ class TestCloseCase:
     @pytest.mark.asyncio
     async def test_close_case_already_closed_raises_conflict_error(self, case_service, mock_case_repo, sample_case):
         """Test that closing already-closed case raises ConflictError."""
-        sample_case.status = CaseStatus.RESOLVED
-        mock_case_repo.get.return_value = sample_case
+        closed_case = sample_case.model_copy(update={
+            "status": CaseStatus.RESOLVED,
+            "resolved_at": datetime.now(timezone.utc),
+            "closure_reason": "Already resolved",
+        })
+        mock_case_repo.get.return_value = closed_case
 
         with pytest.raises(ConflictError) as exc_info:
             await case_service.close_case(
@@ -714,8 +716,12 @@ class TestReopenCase:
     @pytest.mark.asyncio
     async def test_reopen_case_success(self, case_service, mock_case_repo, sample_case):
         """Test successful case reopening."""
-        sample_case.status = CaseStatus.RESOLVED
-        mock_case_repo.get.return_value = sample_case
+        resolved_case = sample_case.model_copy(update={
+            "status": CaseStatus.RESOLVED,
+            "resolved_at": datetime.now(timezone.utc),
+            "closure_reason": "Already resolved",
+        })
+        mock_case_repo.get.return_value = resolved_case
         mock_case_repo.save.side_effect = lambda case: case
 
         result = await case_service.reopen_case(
@@ -729,9 +735,11 @@ class TestReopenCase:
     @pytest.mark.asyncio
     async def test_reopen_case_clears_closed_at(self, case_service, mock_case_repo, sample_case):
         """Test that reopen_case clears closed_at timestamp."""
-        sample_case.status = CaseStatus.CLOSED
-        sample_case.closed_at = datetime.now(timezone.utc)
-        mock_case_repo.get.return_value = sample_case
+        closed_case = sample_case.model_copy(update={
+            "status": CaseStatus.CLOSED,
+            "closed_at": datetime.now(timezone.utc),
+        })
+        mock_case_repo.get.return_value = closed_case
         mock_case_repo.save.side_effect = lambda case: case
 
         result = await case_service.reopen_case(
@@ -794,9 +802,11 @@ class TestGetCaseStatistics:
     @pytest.mark.asyncio
     async def test_get_statistics_returns_avg_resolution_time(self, case_service, mock_case_repo, sample_case):
         """Test that statistics includes avg_resolution_time."""
-        sample_case.status = CaseStatus.RESOLVED
-        sample_case.resolved_at = sample_case.created_at + timedelta(hours=2)
-        mock_case_repo.list.return_value = ([sample_case], 1)
+        resolved_case = sample_case.model_copy(update={
+            "status": CaseStatus.RESOLVED,
+            "resolved_at": sample_case.created_at + timedelta(hours=2),
+        })
+        mock_case_repo.list.return_value = ([resolved_case], 1)
 
         result = await case_service.get_case_statistics("org_456")
 

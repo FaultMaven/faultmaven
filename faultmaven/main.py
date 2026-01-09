@@ -280,11 +280,8 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("ℹ️ In-process scheduler disabled (RUN_SCHEDULER=false). Use 'python -m faultmaven.jobs.run' for jobs.")
 
-    # Setup middleware now that DI container is initialized
-    # This ensures middleware has access to properly initialized services (e.g., Redis)
-    logger.info("Setting up middleware...")
-    setup_middleware()
-    logger.info("✅ Middleware configured")
+    # Middleware must be added before the app starts. It is configured at import time.
+    logger.info("✅ Middleware already configured")
 
     logger.info("🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!")
 
@@ -452,7 +449,10 @@ def setup_middleware():
     try:
         from .api.protection import setup_protection_middleware
         if not settings.server.skip_service_checks:
-            protection_info = setup_protection_middleware(app, environment=settings.server.environment)
+            protection_info = setup_protection_middleware(
+                app,
+                environment=settings.server.environment,
+            )
             if logging_enabled:
                 if protection_info.get("protection_enabled"):
                     middleware_names = protection_info.get("middleware_added", [])
@@ -553,8 +553,8 @@ def setup_middleware():
     if logging_enabled:
         logger.info(f"Final middleware stack: {[type(m).__name__ for m in app.user_middleware]}")
 
-# Note: setup_middleware() is called in lifespan context after DI container is initialized
-# This ensures middleware has access to properly configured services (e.g., Redis for IdempotencyMiddleware)
+# Configure middleware at import time (must run before app startup).
+setup_middleware()
 
 # Include API routers (only those in locked spec)
 # REMOVED: data.router - moved to modules/case (data ingestion)

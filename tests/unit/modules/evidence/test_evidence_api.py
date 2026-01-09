@@ -36,12 +36,13 @@ class MockEvidenceServiceForAPI:
 
     async def _upload(self, file, uploaded_by, description=None, tags=None, case_id=None):
         evidence = create_sample_evidence(
-            filename=file.filename,
-            uploaded_by=uploaded_by,
+            original_filename=file.filename,
+            user_id=str(uploaded_by),
+            case_id=str(case_id) if case_id else "standalone",
             description=description,
             tags=tags or [],
         )
-        self._storage[str(evidence.id)] = evidence
+        self._storage[evidence.evidence_id] = evidence
         return evidence
 
     async def _get(self, evidence_id: UUID) -> Optional[EvidenceArtifact]:
@@ -62,21 +63,18 @@ class MockEvidenceServiceForAPI:
         evidence = self._storage.get(str(evidence_id))
         if not evidence:
             raise ValueError(f"Evidence {evidence_id} not found")
-        # Update case_id directly (primary way to link)
-        evidence.case_id = str(case_id)
-        # Also add to metadata.linked_cases if it exists
-        if evidence.metadata is None:
-            evidence.metadata = {}
-        if "linked_cases" not in evidence.metadata:
-            evidence.metadata["linked_cases"] = []
-        if case_id not in evidence.metadata["linked_cases"]:
-            evidence.metadata["linked_cases"].append(str(case_id))
+        cid = str(case_id)
+        # Update primary case link
+        evidence.case_id = cid
+        # Track all links
+        if cid not in evidence.linked_case_ids:
+            evidence.linked_case_ids.append(cid)
         return evidence
 
     async def _get_url(self, evidence_id: UUID) -> Optional[str]:
         evidence = self._storage.get(str(evidence_id))
         if evidence:
-            return f"http://localhost:8000/api/v1/evidence/file/{evidence.storage_path}"
+            return f"http://localhost:8000/api/v1/evidence/file/{evidence.file_path}"
         return None
 
 
@@ -195,13 +193,13 @@ class TestGetEvidenceEndpoint:
         """Test retrieving existing evidence."""
         # Pre-populate service
         evidence = create_sample_evidence()
-        mock_evidence_service._storage[str(evidence.id)] = evidence
+        mock_evidence_service._storage[evidence.evidence_id] = evidence
 
-        response = client.get(f"/api/v1/evidence/{evidence.id}")
+        response = client.get(f"/api/v1/evidence/{evidence.evidence_id}")
 
         assert response.status_code == 200
         result = response.json()
-        assert result["evidence_id"] == str(evidence.id)
+        assert result["evidence_id"] == evidence.evidence_id
 
     def test_get_evidence_not_found(self, client, mock_evidence_service):
         """Test retrieving non-existent evidence returns 404."""
@@ -224,9 +222,9 @@ class TestDeleteEvidenceEndpoint:
     def test_delete_evidence_success(self, client, mock_evidence_service):
         """Test deleting existing evidence."""
         evidence = create_sample_evidence()
-        mock_evidence_service._storage[str(evidence.id)] = evidence
+        mock_evidence_service._storage[evidence.evidence_id] = evidence
 
-        response = client.delete(f"/api/v1/evidence/{evidence.id}")
+        response = client.delete(f"/api/v1/evidence/{evidence.evidence_id}")
 
         assert response.status_code == 204
 
@@ -253,8 +251,8 @@ class TestListEvidenceEndpoint:
         """Test listing returns evidence."""
         # Pre-populate
         for i in range(3):
-            evidence = create_sample_evidence(filename=f"file_{i}.log")
-            mock_evidence_service._storage[str(evidence.id)] = evidence
+            evidence = create_sample_evidence(original_filename=f"file_{i}.log")
+            mock_evidence_service._storage[evidence.evidence_id] = evidence
 
         response = client.get("/api/v1/evidence/")
 
@@ -265,8 +263,8 @@ class TestListEvidenceEndpoint:
     def test_list_evidence_with_pagination(self, client, mock_evidence_service):
         """Test listing with limit and offset."""
         for i in range(5):
-            evidence = create_sample_evidence(filename=f"file_{i}.log")
-            mock_evidence_service._storage[str(evidence.id)] = evidence
+            evidence = create_sample_evidence(original_filename=f"file_{i}.log")
+            mock_evidence_service._storage[evidence.evidence_id] = evidence
 
         response = client.get("/api/v1/evidence/?limit=2&offset=0")
 
@@ -315,23 +313,18 @@ class TestLinkEvidenceToCaseEndpoint:
     def test_link_to_case_success(self, client, mock_evidence_service):
         """Test linking evidence to a case."""
         evidence = create_sample_evidence()
-        mock_evidence_service._storage[str(evidence.id)] = evidence
+        mock_evidence_service._storage[evidence.evidence_id] = evidence
         case_id = uuid4()
 
         response = client.post(
-            f"/api/v1/evidence/{evidence.id}/link",
+            f"/api/v1/evidence/{evidence.evidence_id}/link",
             json={"case_id": str(case_id)},
         )
 
         assert response.status_code == 200
         result = response.json()
         # Check that evidence is linked to the case
-        # linked_cases can be in metadata or derived from case_id
-        if "linked_cases" in result.get("metadata", {}):
-            assert str(case_id) in [str(c) for c in result["metadata"]["linked_cases"]]
-        else:
-            # Or check case_id directly
-            assert result["case_id"] == str(case_id)
+        assert result["case_id"] == str(case_id)
 
     def test_link_to_case_not_found(self, client, mock_evidence_service):
         """Test linking non-existent evidence returns 404."""
@@ -348,10 +341,10 @@ class TestLinkEvidenceToCaseEndpoint:
     def test_link_to_case_invalid_body(self, client, mock_evidence_service):
         """Test linking with invalid request body returns 422."""
         evidence = create_sample_evidence()
-        mock_evidence_service._storage[str(evidence.id)] = evidence
+        mock_evidence_service._storage[evidence.evidence_id] = evidence
 
         response = client.post(
-            f"/api/v1/evidence/{evidence.id}/link",
+            f"/api/v1/evidence/{evidence.evidence_id}/link",
             json={"invalid_field": "value"},
         )
 
@@ -364,10 +357,10 @@ class TestDownloadEvidenceEndpoint:
     def test_download_evidence_redirects(self, client, mock_evidence_service):
         """Test download redirects to file URL."""
         evidence = create_sample_evidence()
-        mock_evidence_service._storage[str(evidence.id)] = evidence
+        mock_evidence_service._storage[evidence.evidence_id] = evidence
 
         response = client.get(
-            f"/api/v1/evidence/{evidence.id}/download",
+            f"/api/v1/evidence/{evidence.evidence_id}/download",
             follow_redirects=False,
         )
 

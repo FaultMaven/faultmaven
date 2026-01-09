@@ -50,7 +50,7 @@ from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import (
     ValidationException,
     ServiceException,
-    NotFoundException,
+    NotFoundError,
 )
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -334,7 +334,7 @@ async def generate_report(
         raise
     except ValidationException as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except NotFoundException as e:
+    except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ServiceException as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -421,7 +421,7 @@ async def get_report_recommendations(
             }
         )
 
-    except NotFoundException as e:
+    except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 

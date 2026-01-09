@@ -17,7 +17,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 from fastapi import status
 
-from faultmaven.api.app import create_app
+from faultmaven.main import app as main_app
 from faultmaven.models.auth import DevUser
 from faultmaven.models.common import SessionContext
 
@@ -60,7 +60,7 @@ def mock_session_service():
 @pytest.fixture
 def app(mock_session_service, mock_user):
     """Create test application with mocked dependencies."""
-    app = create_app()
+    app = main_app
 
     async def get_mock_session_service():
         return mock_session_service

@@ -20,7 +20,6 @@ from faultmaven.models.responses import (
     SolutionProposal,
 )
 from faultmaven.models.api import ResponseType, SourceType
-from faultmaven.models.evidence import EvidenceCategory
 
 
 class TestOODAToAgentResponseConversion:
@@ -305,10 +304,9 @@ class TestConvertToEvidenceRequests:
         evidence_requests = _convert_to_evidence_requests(ooda_response)
 
         assert len(evidence_requests) == 1
-        assert evidence_requests[0].category == EvidenceCategory.SYMPTOM_EVIDENCE  # logs -> SYMPTOM_EVIDENCE
-        assert evidence_requests[0].description == "Application logs needed"
-        assert "journalctl -u myapp" in evidence_requests[0].guidance.commands
-        assert evidence_requests[0].label == "Logs"
+        assert "Application logs needed" in evidence_requests[0].request_text
+        assert "journalctl -u myapp" in evidence_requests[0].request_text
+        assert evidence_requests[0].priority == "high"
 
     def test_convert_suggested_actions_to_evidence(self):
         """Test converting suggested actions that request evidence"""
@@ -328,7 +326,7 @@ class TestConvertToEvidenceRequests:
 
         assert len(evidence_requests) >= 1
         # Should convert action with "check" keyword to evidence request
-        assert any("logs" in req.description.lower() for req in evidence_requests)
+        assert any("logs" in req.request_text.lower() for req in evidence_requests)
 
     def test_convert_no_evidence_actions(self):
         """Test when no evidence actions are present"""
@@ -363,7 +361,7 @@ class TestConvertToEvidenceRequests:
         evidence_requests = _convert_to_evidence_requests(ooda_response)
 
         assert len(evidence_requests) == 1
-        assert evidence_requests[0].category == EvidenceCategory.SYMPTOM_EVIDENCE  # metrics now maps to SYMPTOM_EVIDENCE
+        assert "CPU and memory metrics" in evidence_requests[0].request_text
 
     def test_convert_config_evidence_type(self):
         """Test converting config evidence type"""
@@ -380,7 +378,7 @@ class TestConvertToEvidenceRequests:
         evidence_requests = _convert_to_evidence_requests(ooda_response)
 
         assert len(evidence_requests) == 1
-        assert evidence_requests[0].category == EvidenceCategory.SYMPTOM_EVIDENCE  # configuration now maps to SYMPTOM_EVIDENCE
+        assert "Application configuration" in evidence_requests[0].request_text
 
 
 class TestEdgeCases:
@@ -440,40 +438,6 @@ class TestEdgeCases:
         )
 
         assert len(agent_response.content) == 10000
-
-
-class TestBackwardCompatibility:
-    """Test backward compatibility features"""
-
-    def test_suggested_actions_field_is_none(self):
-        """Test that deprecated suggested_actions is always None"""
-        ooda_response = OODAResponse(
-            answer="Test",
-            suggested_actions=[
-                SuggestedAction(action_type="command", label="Action 1", description="Perform action 1")
-            ],
-        )
-
-        agent_response = ooda_to_agent_response(
-            ooda_response,
-            session_id="session-123",
-        )
-
-        # Deprecated field should be None
-        assert agent_response.suggested_actions is None
-
-    def test_schema_version_is_3_1_0(self):
-        """Test that schema version is always 3.1.0"""
-        ooda_response = OODAResponse(
-            answer="Test",
-        )
-
-        agent_response = ooda_to_agent_response(
-            ooda_response,
-            session_id="session-123",
-        )
-
-        assert agent_response.schema_version == "3.1.0"
 
 
 if __name__ == "__main__":

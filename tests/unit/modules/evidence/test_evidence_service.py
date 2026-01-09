@@ -39,7 +39,7 @@ class TestEvidenceServiceUpload:
         )
 
         assert result is not None
-        assert result.filename == mock_upload_file.filename
+        assert result.original_filename == mock_upload_file.filename
         assert "test" in result.tags
 
     @pytest.mark.asyncio
@@ -64,7 +64,7 @@ class TestEvidenceServiceUpload:
         )
 
         assert result is not None
-        assert result.filename == mock_upload_file.filename
+        assert result.original_filename == mock_upload_file.filename
 
     @pytest.mark.asyncio
     async def test_upload_stores_file_first(self, service, mock_upload_file, sample_user_id):
@@ -97,11 +97,11 @@ class TestEvidenceServiceGet:
         # Pre-populate the mock repository using evidence_id as key
         service.repository._storage[sample_evidence.evidence_id] = sample_evidence
 
-        result = await service.get_evidence(sample_evidence.id)
+        result = await service.get_evidence(sample_evidence.evidence_id)
 
         assert result is not None
-        assert result.id == sample_evidence.id
-        assert result.filename == sample_evidence.filename
+        assert result.evidence_id == sample_evidence.evidence_id
+        assert result.original_filename == sample_evidence.original_filename
 
     @pytest.mark.asyncio
     async def test_get_evidence_not_found(self, service):
@@ -200,7 +200,7 @@ class TestEvidenceServiceList:
         results, total = await service.list_evidence(filters)
 
         assert len(results) == 1
-        assert "file_2" in results[0].filename
+        assert "file_2" in results[0].original_filename
 
 
 class TestEvidenceServiceDelete:
@@ -219,7 +219,7 @@ class TestEvidenceServiceDelete:
         """Test successful evidence deletion."""
         service.repository._storage[sample_evidence.evidence_id] = sample_evidence
 
-        result = await service.delete_evidence(sample_evidence.id)
+        result = await service.delete_evidence(sample_evidence.evidence_id)
 
         assert result is True
         service.storage.delete_file.assert_called_once()
@@ -239,11 +239,11 @@ class TestEvidenceServiceDelete:
         """Test that both file and database record are deleted."""
         service.repository._storage[sample_evidence.evidence_id] = sample_evidence
 
-        await service.delete_evidence(sample_evidence.id)
+        await service.delete_evidence(sample_evidence.evidence_id)
 
         # Both storage and repository delete should be called
-        service.storage.delete_file.assert_called_once_with(sample_evidence.storage_path)
-        service.repository.delete.assert_called_once_with(sample_evidence.id)
+        service.storage.delete_file.assert_called_once_with(sample_evidence.file_path)
+        service.repository.delete.assert_called_once_with(sample_evidence.evidence_id)
 
 
 class TestEvidenceServiceLinkToCase:
@@ -262,10 +262,10 @@ class TestEvidenceServiceLinkToCase:
         """Test successful linking to a case."""
         service.repository._storage[sample_evidence.evidence_id] = sample_evidence
 
-        result = await service.link_to_case(sample_evidence.id, sample_case_id)
+        result = await service.link_to_case(sample_evidence.evidence_id, sample_case_id)
 
         assert result is not None
-        assert sample_case_id in result.linked_cases
+        assert str(sample_case_id) in result.linked_case_ids
 
     @pytest.mark.asyncio
     async def test_link_to_case_not_found_raises(self, service, sample_case_id):
@@ -281,11 +281,11 @@ class TestEvidenceServiceLinkToCase:
         service.repository._storage[sample_evidence.evidence_id] = sample_evidence
 
         # Link twice
-        await service.link_to_case(sample_evidence.id, sample_case_id)
-        result = await service.link_to_case(sample_evidence.id, sample_case_id)
+        await service.link_to_case(sample_evidence.evidence_id, sample_case_id)
+        result = await service.link_to_case(sample_evidence.evidence_id, sample_case_id)
 
         # Should only have one entry
-        assert result.linked_cases.count(sample_case_id) == 1
+        assert result.linked_case_ids.count(str(sample_case_id)) == 1
 
 
 class TestEvidenceServiceGetFileUrl:
@@ -304,7 +304,7 @@ class TestEvidenceServiceGetFileUrl:
         """Test getting download URL for existing evidence."""
         service.repository._storage[sample_evidence.evidence_id] = sample_evidence
 
-        result = await service.get_file_url(sample_evidence.id)
+        result = await service.get_file_url(sample_evidence.evidence_id)
 
         assert result is not None
         assert "http" in result or "/" in result
@@ -323,6 +323,6 @@ class TestEvidenceServiceGetFileUrl:
         """Test that URL generation delegates to storage adapter."""
         service.repository._storage[sample_evidence.evidence_id] = sample_evidence
 
-        await service.get_file_url(sample_evidence.id)
+        await service.get_file_url(sample_evidence.evidence_id)
 
-        service.storage.get_download_url.assert_called_once_with(sample_evidence.storage_path)
+        service.storage.get_download_url.assert_called_once_with(sample_evidence.file_path)

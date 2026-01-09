@@ -108,7 +108,7 @@ class OODAEvidenceRequest(BaseModel):
     """OODA-internal evidence request structure (LLM output format)
 
     NOTE: This is the OODA framework's internal representation.
-    For API/frontend use, see faultmaven.models.evidence.EvidenceRequest
+    For API/frontend use, see faultmaven.models.llm_schemas.EvidenceRequestToAdd
     This model exists solely for parsing LLM responses and is converted
     to the canonical EvidenceRequest by ooda_response_converter.py
     """

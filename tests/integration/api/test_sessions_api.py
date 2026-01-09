@@ -23,7 +23,7 @@ import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 
-from faultmaven.api.app import create_app
+from faultmaven.main import app as main_app
 from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.models.investigation_session import SessionStatus
 
@@ -73,7 +73,7 @@ def mock_session_service():
 @pytest.fixture
 def app(mock_session_service, mock_user):
     """Create test application with mocked dependencies."""
-    app = create_app()
+    app = main_app
 
     async def get_mock_session_service():
         return mock_session_service

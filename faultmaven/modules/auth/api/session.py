@@ -279,7 +279,7 @@ class SessionRestoreRequest(BaseModel):
 async def create_session(
     request: Optional[SessionCreateRequest] = Body(None),
     user_id: Optional[str] = Query(None),
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
     response: Response = Response(),
 ):
     """
@@ -317,7 +317,6 @@ async def create_session(
         if request:
             if request.session_type:
                 metadata["session_type"] = request.session_type
-                metadata["usage_type"] = request.session_type  # For backward compatibility
             if request.metadata:
                 metadata.update(request.metadata)
         
@@ -384,7 +383,7 @@ async def create_session(
 @router.get("/{session_id}", response_model=SessionResponse)
 async def get_session(
     session_id: str,
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
 ) -> SessionResponse:
     """
     Retrieve a specific session by ID.
@@ -432,10 +431,9 @@ async def get_session(
 async def list_sessions(
     user_id: Optional[str] = Query(None),
     session_type: Optional[str] = Query(None),
-    usage_type: Optional[str] = Query(None),  # For backward compatibility
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
 ):
     """
     List all sessions with optional filtering.
@@ -443,7 +441,6 @@ async def list_sessions(
     Args:
         user_id: Optional user ID filter
         session_type: Optional session type filter
-        usage_type: Optional usage type filter (alias for session_type)
         limit: Maximum number of sessions to return
         offset: Number of sessions to skip
 
@@ -455,8 +452,7 @@ async def list_sessions(
         all_sessions = await session_service.list_sessions(user_id=user_id)
         
         # Apply session type filtering
-        filter_type = session_type or usage_type
-        if filter_type:
+        if session_type:
             filtered_sessions = []
             for session in all_sessions:
                 try:
@@ -468,17 +464,15 @@ async def list_sessions(
                         session_data = await session_service.session_manager.session_store.get(session.session_id)
                     
                     if session_data:
-                        metadata_type = (session_data.get("session_type") or 
-                                       session_data.get("usage_type") or 
-                                       "troubleshooting")
-                        if metadata_type == filter_type:
+                        metadata_type = session_data.get("session_type") or "troubleshooting"
+                        if metadata_type == session_type:
                             filtered_sessions.append(session)
-                    elif filter_type == "troubleshooting":  # Default type
+                    elif session_type == "troubleshooting":  # Default type
                         filtered_sessions.append(session)
                 except Exception as e:
                     logger.warning(f"Failed to get session metadata for {session.session_id}: {e}")
                     # Include session if we can't determine its type and filter is for default type
-                    if filter_type == "troubleshooting":
+                    if session_type == "troubleshooting":
                         filtered_sessions.append(session)
             all_sessions = filtered_sessions
         
@@ -499,9 +493,7 @@ async def list_sessions(
                     session_data = await session_service.session_manager.session_store.get(session.session_id)
                 
                 if session_data:
-                    session_type_val = (session_data.get("session_type") or 
-                                      session_data.get("usage_type") or 
-                                      "troubleshooting")
+                    session_type_val = session_data.get("session_type") or "troubleshooting"
             except Exception as e:
                 logger.warning(f"Failed to get session metadata for display {session.session_id}: {e}")
             
@@ -512,7 +504,6 @@ async def list_sessions(
                 "last_activity": _safe_datetime_to_utc_string(session.last_activity),
                 "status": "consulting",
                 "session_type": session_type_val,
-                "usage_type": session_type_val,  # For backward compatibility
                 "data_uploads_count": len(session.data_uploads),
                 "case_history_count": len(session.case_history),
             })
@@ -540,7 +531,7 @@ async def list_session_cases(
     include_empty: bool = Query(False, description="Include cases with message_count == 0"),
     include_terminal: bool = Query(False, description="Include terminal state cases (resolved/closed)"),
     include_deleted: bool = Query(False, description="Include deleted cases (admin only)"),
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
     case_service = Depends(get_case_service),
     current_user: DevUser = Depends(require_authentication)
 ):
@@ -640,7 +631,7 @@ async def list_session_cases(
 @router.delete("/{session_id}", status_code=204)
 async def delete_session(
     session_id: str,
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
 ):
     """
     Delete a specific session.
@@ -683,7 +674,7 @@ async def delete_session(
 
 @router.post("/cleanup", status_code=200)
 async def cleanup_expired_sessions(
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
 ):
     """
     Manually trigger cleanup of expired sessions.
@@ -716,7 +707,7 @@ async def cleanup_expired_sessions(
 @router.post("/{session_id}/heartbeat")
 async def session_heartbeat(
     session_id: str,
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
 ):
     """
     Update session activity timestamp (heartbeat).
@@ -815,7 +806,7 @@ async def session_heartbeat(
 @router.get("/{session_id}/stats")
 async def get_session_stats(
     session_id: str,
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
 ):
     """
     Get session statistics and activity summary.
@@ -883,7 +874,7 @@ async def get_session_stats(
         logger.debug(f"Query operations: {total_cases}, Upload operations: {total_upload_operations}, Heartbeat operations: {total_heartbeat_operations}, Stats operations: {total_stats_operations}")
         logger.debug(f"Total requests: {total_requests}")
 
-        # For backward compatibility, also count unique data uploads
+    # Count unique data uploads as well
         total_uploads = len(session.data_uploads)
 
         # Get latest investigation confidence
@@ -923,7 +914,7 @@ async def get_session_stats(
 @router.post("/{session_id}/cleanup")
 async def cleanup_session(
     session_id: str,
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
 ):
     """
     Clean up session data and temporary files.
@@ -961,7 +952,7 @@ async def cleanup_session(
 @router.get("/{session_id}/recovery-info")
 async def get_session_recovery_info(
     session_id: str,
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
 ):
     """
     Get session recovery information for restoring lost sessions.
@@ -1015,7 +1006,7 @@ async def get_session_recovery_info(
 
 @router.post("/cleanup")
 async def cleanup_expired_sessions(
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
 ):
     """
     Clean up expired sessions (admin/testing endpoint).
@@ -1046,7 +1037,7 @@ async def cleanup_expired_sessions(
 async def restore_session(
     session_id: str,
     restore_request: SessionRestoreRequest,
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
 ):
     """
     Restore a session from backup or recovery state.
@@ -1096,7 +1087,7 @@ async def restore_session(
 async def update_session(
     session_id: str,
     updates: dict = Body(...),
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
     current_user: DevUser = Depends(require_authentication),
 ):
     """
@@ -1168,7 +1159,7 @@ async def update_session(
 @router.post("/search")
 async def search_sessions(
     search_params: dict = Body(...),
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
     current_user: DevUser = Depends(require_authentication),
 ):
     """
@@ -1236,7 +1227,7 @@ async def search_sessions(
 @router.post("/{session_id}/archive")
 async def archive_session(
     session_id: str,
-    session_service: SessionService = Depends(get_session_service),
+    session_service: AuthSessionService = Depends(get_session_service),
     current_user: DevUser = Depends(require_authentication),
 ):
     """

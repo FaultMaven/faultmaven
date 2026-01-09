@@ -12,10 +12,8 @@ import pytest
 
 from faultmaven.modules.agent.tools.base import (
     AgentTool,
+    AgentToolRegistry,
     ToolContext,
-)
-from faultmaven.modules.agent.tools.registry import (
-    ToolRegistry,
     tool_registry,
 )
 from faultmaven.models.interfaces import ToolResult
@@ -86,7 +84,7 @@ def sample_context():
 @pytest.fixture
 def fresh_registry():
     """Create a fresh ToolRegistry for testing."""
-    return ToolRegistry()
+    return AgentToolRegistry()
 
 
 # =============================================================================
@@ -396,7 +394,7 @@ class TestGlobalRegistry:
     def test_global_registry_exists(self):
         """Test that global registry exists."""
         assert tool_registry is not None
-        assert isinstance(tool_registry, ToolRegistry)
+        assert isinstance(tool_registry, AgentToolRegistry)
 
     def test_global_registry_has_methods(self):
         """Test that global registry has expected methods."""
