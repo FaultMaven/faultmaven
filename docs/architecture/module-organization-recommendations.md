@@ -1,9 +1,11 @@
-# Module Organization Recommendations: Vertical vs Horizontal
+# Module Organization Design: Vertical vs Horizontal
 
-**Version**: 1.0  
+**Version**: 2.0  
 **Date**: 2026-01-09  
-**Status**: Recommendation  
+**Status**: Schema-Verified Recommendation  
 **Related**: [Architectural Design Principles](architectural-design-principles.md)
+
+**Schema Verification**: This document has been verified against `case-storage-design.md` and `data-storage-design.md` (2026-01-09).
 
 ---
 
@@ -22,6 +24,21 @@ A module is **VERTICAL** (business domain) if and only if it meets **ALL THREE**
 **Decision Rule**: `IF (owns_domain_data AND implements_business_logic AND represents_domain_capability) THEN VERTICAL ELSE HORIZONTAL`
 
 **Stability**: These criteria are stable - normal code evolution (refactoring, adding features) does NOT require re-categorization.
+
+### Schema-Verified Classification (2026-01-09)
+
+**Based on review of `case-storage-design.md` and `data-storage-design.md`:**
+
+| Module | Schema Verification | Classification |
+|--------|-------------------|----------------|
+| **Case** | Owns 10 PostgreSQL tables (cases, evidence, hypotheses, solutions, messages, etc.) | ✅ **VERTICAL** |
+| **Auth** | Owns `users` and `organizations` PostgreSQL tables | ✅ **VERTICAL** |
+| **Knowledge** | Owns `kb_documents` PostgreSQL table + ChromaDB collections | ✅ **VERTICAL** |
+| **Evidence** | Evidence table has FK to `cases` → part of Case module's schema | ❌ **DOMAIN SERVICE** |
+| **Agent** | No agent_* tables; `agent_tool_calls` is case audit data | ❌ **DOMAIN SERVICE** |
+| **Report** | Redis + ChromaDB with TTL; no PostgreSQL tables; ephemeral artifacts | ❌ **DOMAIN SERVICE** |
+
+**Result**: Only **3 modules** are truly vertical (Case, Auth, Knowledge). Evidence, Agent, and Report are domain services that implement business logic but operate on data owned by other modules.
 
 ---
 
@@ -142,13 +159,14 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 ### Example 4: `modules/knowledge/` - ✅ VERTICAL
 
 **Criterion 1: Domain Data Ownership** ✅
-- Owns tables: `knowledge_items`, `knowledge_embeddings`, `knowledge_metadata`
-- These represent business entities (documents, knowledge items)
+- Owns table: `kb_documents` (PostgreSQL) + ChromaDB collections (`user_kb_{user_id}`, `global_kb`, `kb_shared`)
+- Schema reference: `data-storage-design.md` Section 5.5.2 and `004_kb_sharing_infrastructure.sql`
+- These represent business entities (knowledge documents, runbooks)
 - **Result**: PASS
 
 **Criterion 2: Business Logic Implementation** ✅
-- Implements business rules: "Documents must be indexed before search", "Embeddings must match document version", "Knowledge items belong to organizations"
-- Contains domain workflows (ingestion, indexing, retrieval)
+- Implements business rules: "Documents must be indexed before search", "Sharing visibility controls access", "Knowledge items belong to organizations"
+- Contains domain workflows (ingestion, indexing, retrieval, sharing)
 - **Result**: PASS
 
 **Criterion 3: Domain Capability** ✅
@@ -159,6 +177,81 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 **Decision**: ✅ **VERTICAL** (all 3 criteria met)
 
 **Note**: Even though `knowledge/` uses `infrastructure/vector/` (horizontal), it remains vertical because it owns the business logic and data.
+
+---
+
+### Example 5: `modules/evidence/` - ❌ DOMAIN SERVICE (Not Vertical)
+
+**Criterion 1: Domain Data Ownership** ❌
+- **Does NOT own** the `evidence` table
+- Evidence table has `case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE`
+- Schema verification: `case-storage-design.md` Section 4.3 - evidence is part of Case module's 10-table schema
+- Evidence is owned by Case module, not Evidence module
+- **Result**: FAIL
+
+**Criterion 2: Business Logic Implementation** ✅
+- Implements business rules: "Evidence must be validated", "Preprocessing required before storage", "Evidence linked to case"
+- Contains domain workflows (collection, validation, preprocessing)
+- **Result**: PASS
+
+**Criterion 3: Domain Capability** ✅
+- Business description: "Collects and processes investigation evidence"
+- Can be understood as a business capability
+- **Result**: PASS
+
+**Decision**: ❌ **DOMAIN SERVICE** (fails Criterion 1: no data ownership)
+
+**Key Insight**: Evidence module provides **collection logic** but operates on data owned by Case module. This makes it a domain service, not a vertical module.
+
+---
+
+### Example 6: `modules/agent/` - ❌ DOMAIN SERVICE (Not Vertical)
+
+**Criterion 1: Domain Data Ownership** ❌
+- **No `agent_*` tables** in the schema
+- Any `agent_tool_calls` table (if exists) stores case audit data, not agent state
+- Schema verification: `case-storage-design.md` Section 4.1 lists 10 tables, none are agent-owned
+- Agent's LangGraph state is ephemeral/in-memory
+- **Result**: FAIL
+
+**Criterion 2: Business Logic Implementation** ✅
+- Implements business rules: "Investigation workflows", "OODA loop orchestration", "Tool selection logic"
+- Contains complex domain workflows (LangGraph state machines)
+- **Result**: PASS
+
+**Criterion 3: Domain Capability** ✅
+- Business description: "Orchestrates AI-powered investigation workflows"
+- Can be understood as a business capability
+- **Result**: PASS
+
+**Decision**: ❌ **DOMAIN SERVICE** (fails Criterion 1: no data ownership)
+
+**Key Insight**: Agent module provides **orchestration logic** via LangGraph but all persistent state flows through Case module's repository.
+
+---
+
+### Example 7: `modules/report/` - ❌ DOMAIN SERVICE (Not Vertical)
+
+**Criterion 1: Domain Data Ownership** ❌
+- **No PostgreSQL tables** for reports
+- Reports stored in Redis (metadata) + ChromaDB (content) with TTL expiration
+- Schema verification: `data-storage-design.md` Section 8.2 - "Storage: Hybrid Redis + ChromaDB" (ephemeral)
+- Reports are cached artifacts, not owned domain entities
+- **Result**: FAIL
+
+**Criterion 2: Business Logic Implementation** ✅
+- Implements business rules: "Report generation from case data", "Versioning (max 5 versions)", "Auto-indexing runbooks"
+- Contains domain workflows (generation, templating, indexing)
+- **Result**: PASS
+
+**Criterion 3: Domain Capability** ✅
+- Business description: "Generates case reports, runbooks, and post-mortems"
+- Can be understood as a business capability
+- **Result**: PASS
+
+**Decision**: ❌ **DOMAIN SERVICE** (fails Criterion 1: no persistent domain data)
+
+**Key Insight**: Report module generates **ephemeral cached outputs** (similar to cached LLM responses), not first-class domain entities with persistent storage.
 
 ---
 
@@ -433,25 +526,111 @@ High fan-in **does** indicate a horizontal layer when:
 
 ---
 
-## Summary Table
+## Domain Services vs Vertical Modules
 
-| Module | Domain Data? | Business Logic? | Domain Capability? | Category | Fan-In |
-|--------|-------------|-----------------|-------------------|----------|--------|
-| `modules/auth/` | ✅ Yes | ✅ Yes | ✅ Yes | ✅ VERTICAL | High* |
-| `modules/case/` | ✅ Yes | ✅ Yes | ✅ Yes | ✅ VERTICAL | Medium |
-| `modules/evidence/` | ✅ Yes | ✅ Yes | ✅ Yes | ✅ VERTICAL | Low |
-| `modules/knowledge/` | ✅ Yes | ✅ Yes | ✅ Yes | ✅ VERTICAL | Low |
-| `modules/agent/` | ✅ Yes | ✅ Yes | ✅ Yes | ✅ VERTICAL | Medium |
-| `modules/report/` | ✅ Yes | ✅ Yes | ✅ Yes | ✅ VERTICAL | Low |
-| `infrastructure/llm/` | ❌ No | ❌ No | ❌ No | ❌ HORIZONTAL | High |
-| `infrastructure/vector/` | ❌ No | ❌ No | ❌ No | ❌ HORIZONTAL | Low |
-| `infrastructure/storage/` | ❌ No | ❌ No | ❌ No | ❌ HORIZONTAL | Medium |
-| `infrastructure/logging/` | ❌ No | ❌ No | ❌ No | ❌ HORIZONTAL | Very High |
-| `infrastructure/observability/` | ❌ No | ❌ No | ❌ No | ❌ HORIZONTAL | Very High |
-| `core/investigation/` | ❌ No* | ✅ Yes | ⚠️ Shared | ⚠️ SHARED | Medium |
+### The Critical Distinction
+
+**Vertical Modules** (Business Domains):
+- ✅ Own domain data (database tables)
+- ✅ Implement business logic
+- ✅ Represent domain capability
+- **Structure**: Full vertical slicing with `contracts.py`, `api/`, `domain/`, `infrastructure/`
+
+**Domain Services** (Business Logic Without Data Ownership):
+- ❌ Do NOT own domain data
+- ✅ Implement business logic
+- ✅ Represent domain capability
+- **Structure**: Domain logic + API, but delegate persistence to owning modules
+
+### Why Domain Services Exist
+
+Some modules implement **business logic** but operate on **data owned by other modules**:
+
+1. **Evidence Module**: Provides collection/validation logic but stores data in Case module's `evidence` table
+2. **Agent Module**: Provides LangGraph orchestration but all persistent state flows through Case module
+3. **Report Module**: Generates reports from Case data but stores ephemeral outputs (Redis + ChromaDB with TTL)
+
+### When to Use Domain Services
+
+Use domain services when:
+- ✅ Module implements complex business logic
+- ✅ Module represents a distinct capability
+- ❌ Module doesn't own domain data (data owned by another module)
+- ✅ Module operates on data through contracts (ICaseQuery, ICaseService)
+
+### Domain Service Structure
+
+```
+modules/evidence/           # Domain Service
+├── domain/                 # Evidence collection, validation logic
+│   ├── services/
+│   └── models/            # Domain models (not persistence)
+├── api/                    # Evidence endpoints
+└── NO infrastructure/      # Delegates to Case repository via contracts
+
+modules/case/               # Vertical Module (owns evidence data)
+├── contracts.py            # ICaseService (used by Evidence)
+├── domain/                 # Case business logic
+└── infrastructure/         # Case repository (includes evidence table)
+```
+
+### Contract Pattern for Domain Services
+
+```python
+# modules/evidence/domain/services/evidence_service.py
+class EvidenceService:
+    def __init__(self, case_service: ICaseService):  # Use Case contract
+        self.case_service = case_service
+    
+    async def collect_evidence(self, case_id: str, evidence_data: Evidence):
+        # Business logic: validation, preprocessing
+        validated = self.validate(evidence_data)
+        processed = await self.preprocess(validated)
+        
+        # Delegate persistence to Case module
+        case = await self.case_service.get_case(case_id)
+        case.evidence.append(processed)
+        await self.case_service.save_case(case)  # Case owns the data
+```
+
+### Migration Considerations
+
+**Evidence Module**: Consider merging into Case module since:
+- Evidence table is part of Case's schema
+- Evidence logic is purely operational on Case-owned data
+- No independent data lifecycle
+
+**Agent Module**: Keep separate because:
+- Complex LangGraph orchestration logic
+- Tool system (knowledge_base, web_search) is independent
+- Clear separation of concerns (orchestration vs data storage)
+
+**Report Module**: Keep separate because:
+- Report generation is complex business logic
+- Ephemeral storage pattern (Redis + ChromaDB) is distinct
+- Reports are derived outputs, not core entities
+
+---
+
+## Summary Table (Schema-Verified)
+
+| Module | Domain Data? | Business Logic? | Domain Capability? | Category | Schema Verification |
+|--------|-------------|-----------------|-------------------|----------|---------------------|
+| `modules/auth/` | ✅ Yes (`users`, `organizations`) | ✅ Yes | ✅ Yes | ✅ **VERTICAL** | `case-storage-design.md` Section 4.9 |
+| `modules/case/` | ✅ Yes (10 tables including `evidence`) | ✅ Yes | ✅ Yes | ✅ **VERTICAL** | `case-storage-design.md` Section 4.1 |
+| `modules/knowledge/` | ✅ Yes (`kb_documents` + ChromaDB) | ✅ Yes | ✅ Yes | ✅ **VERTICAL** | `data-storage-design.md` Section 5.5.2 |
+| `modules/evidence/` | ❌ No (data in Case tables) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | `case-storage-design.md` Section 4.3 |
+| `modules/agent/` | ❌ No (no agent tables) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | No agent tables in schema |
+| `modules/report/` | ❌ No (Redis + ChromaDB, ephemeral) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | `data-storage-design.md` Section 8.2 |
+| `infrastructure/llm/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Provider abstraction |
+| `infrastructure/vector/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Provider abstraction |
+| `infrastructure/storage/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Provider abstraction |
+| `infrastructure/logging/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Cross-cutting concern |
+| `infrastructure/observability/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Cross-cutting concern |
+| `core/investigation/` | ❌ No* | ✅ Yes | ⚠️ Shared | ⚠️ **SHARED** | Logic only, data in Case |
 
 *Data owned by `modules/case/`, not `core/`  
-*High fan-in doesn't change categorization - auth remains vertical
+**Result**: Only **3 modules** are truly vertical (Auth, Case, Knowledge). Evidence, Agent, and Report are domain services.
 
 ---
 
@@ -473,9 +652,10 @@ High fan-in **does** indicate a horizontal layer when:
 
 These modules implement **business capabilities** and should have full vertical slicing with contracts:
 
-#### 1. **`modules/auth/`** ✅ **KEEP VERTICAL**
+#### 1. **`modules/auth/`** ✅ **VERTICAL** (Schema-Verified)
 - **Business Logic**: User authentication, authorization, RBAC, session management
-- **Owns Data**: `auth_users`, `auth_sessions`, `auth_tokens`, `auth_organizations`, `auth_teams`
+- **Owns Data**: `users` and `organizations` PostgreSQL tables (see `case-storage-design.md` Section 4.9)
+- **Schema Reference**: Core tables include `users`, `organizations`, `sessions`
 - **Cross-Module Usage**: All modules depend on auth for access control
 - **Future Extraction**: Could become identity microservice
 - **Structure**:
@@ -484,13 +664,15 @@ These modules implement **business capabilities** and should have full vertical 
   ├── contracts.py          # IAuthService, IUserQuery, SessionDTO, etc.
   ├── api/                  # Auth endpoints
   ├── domain/               # Auth business logic
-  └── infrastructure/       # Auth persistence
+  └── infrastructure/       # Auth persistence (users, organizations tables)
   ```
 
-#### 2. **`modules/case/`** ✅ **KEEP VERTICAL**
+#### 2. **`modules/case/`** ✅ **VERTICAL** (Schema-Verified)
 - **Business Logic**: Case lifecycle, investigation sessions, case status management
-- **Owns Data**: `case_cases`, `case_investigations`, `case_sessions`
-- **Cross-Module Usage**: Report, Evidence, Agent modules depend on cases
+- **Owns Data**: **10 PostgreSQL tables** - `cases`, `evidence`, `hypotheses`, `solutions`, `case_messages`, `uploaded_files`, `case_status_transitions`, etc.
+- **Schema Reference**: See `case-storage-design.md` Section 4.1 (10-table hybrid schema)
+- **Key Insight**: Evidence table has `FK → cases(case_id) ON DELETE CASCADE` - evidence is owned by Case module
+- **Cross-Module Usage**: Evidence, Agent, Report services operate on Case data
 - **Future Extraction**: Core case management microservice
 - **Structure**:
   ```
@@ -498,27 +680,14 @@ These modules implement **business capabilities** and should have full vertical 
   ├── contracts.py          # ICaseQuery, ICaseService, CaseDTO
   ├── api/                  # Case endpoints
   ├── domain/               # Case business logic
-  └── infrastructure/       # Case persistence
+  └── infrastructure/       # Case persistence (10-table hybrid schema)
   ```
 
-#### 3. **`modules/evidence/`** ✅ **KEEP VERTICAL**
-- **Business Logic**: Evidence collection, validation, artifact management
-- **Owns Data**: `evidence_artifacts`, `evidence_metadata`
-- **Cross-Module Usage**: Case and Agent modules use evidence
-- **Future Extraction**: Evidence management microservice
-- **Structure**:
-  ```
-  modules/evidence/
-  ├── contracts.py          # IEvidenceService, EvidenceDTO
-  ├── api/                  # Evidence endpoints
-  ├── domain/               # Evidence business logic
-  └── infrastructure/       # Evidence persistence
-  ```
-
-#### 4. **`modules/knowledge/`** ✅ **KEEP VERTICAL**
+#### 3. **`modules/knowledge/`** ✅ **VERTICAL** (Schema-Verified)
 - **Business Logic**: Knowledge base management, RAG operations, document indexing
-- **Owns Data**: `knowledge_items`, `knowledge_embeddings`, `knowledge_metadata`
-- **Cross-Module Usage**: Agent module uses knowledge for RAG
+- **Owns Data**: `kb_documents` PostgreSQL table + ChromaDB collections (`user_kb_{user_id}`, `global_kb`, `kb_shared`)
+- **Schema Reference**: See `data-storage-design.md` Section 5.5.2 and `004_kb_sharing_infrastructure.sql`
+- **Cross-Module Usage**: Agent service uses knowledge for RAG
 - **Future Extraction**: Knowledge management microservice
 - **Structure**:
   ```
@@ -526,37 +695,61 @@ These modules implement **business capabilities** and should have full vertical 
   ├── contracts.py          # IKnowledgeService, IKnowledgeQuery
   ├── api/                  # Knowledge endpoints
   ├── domain/               # Knowledge business logic
-  └── infrastructure/       # Knowledge persistence (vector store)
+  └── infrastructure/       # Knowledge persistence (kb_documents + ChromaDB)
   ```
 
-#### 5. **`modules/agent/`** ✅ **KEEP VERTICAL**
-- **Business Logic**: AI agent orchestration, investigation workflows, OODA loops
-- **Owns Data**: `agent_investigations`, `agent_state`, `agent_memory`
-- **Cross-Module Usage**: Orchestrates Case, Evidence, Knowledge modules
-- **Future Extraction**: AI agent microservice
-- **Structure**:
+---
+
+### ⚠️ Domain Services (Business Logic Without Data Ownership)
+
+These modules implement **business logic** but **operate on data owned by other modules**. They are NOT vertical modules because they fail Criterion 1 (Domain Data Ownership).
+
+#### 1. **`modules/evidence/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
+- **Business Logic**: Evidence collection, validation, artifact management, preprocessing
+- **Data Ownership**: ❌ **NO** - Evidence table is part of Case module's 10-table schema
+- **Schema Verification**: `evidence` table has `case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE`
+- **Reference**: See `case-storage-design.md` Section 4.3
+- **Rationale**: Evidence provides collection logic but stores data in Case-owned tables
+- **Structure**: Keep as domain service (business logic only, no persistence ownership)
+  ```
+  modules/evidence/
+  ├── domain/               # Evidence collection, validation, preprocessing logic
+  └── api/                  # Evidence endpoints (delegate to Case repository)
+  ```
+
+**Note**: Consider merging Evidence domain logic into Case module since evidence is purely operational on Case-owned data.
+
+#### 2. **`modules/agent/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
+- **Business Logic**: AI agent orchestration via LangGraph, investigation workflows, OODA loops
+- **Data Ownership**: ❌ **NO** - No `agent_*` tables in schema
+- **Schema Verification**: `agent_tool_calls` table (if exists) stores case audit data, not agent state
+- **Reference**: See `case-storage-design.md` Section 4.1 (no agent tables listed in 10-table schema)
+- **Rationale**: Agent orchestrates investigations but all persistent state flows through Case module
+- **Structure**: Keep as domain service (LangGraph orchestration, operates on Case data)
   ```
   modules/agent/
-  ├── contracts.py          # IAgentService, InvestigationDTO
-  ├── api/                  # Agent query endpoints
-  ├── domain/               # Agent orchestration logic
-  ├── infrastructure/       # Agent state persistence
-  └── tools/                # Agent tools (knowledge_base, web_search, etc.)
+  ├── domain/               # LangGraph orchestration, investigation workflows
+  ├── tools/                # Agent tools (knowledge_base, web_search, etc.)
+  └── api/                  # Agent query endpoints
   ```
 
-#### 6. **`modules/report/`** ✅ **KEEP VERTICAL**
+**Note**: Agent's LangGraph state is ephemeral/in-memory. All persistent state (investigations, tool calls) is stored in Case module's tables.
+
+#### 3. **`modules/report/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
 - **Business Logic**: Report generation, runbook creation, post-mortem generation
-- **Owns Data**: `report_reports`, `report_versions`, `report_metadata`
-- **Cross-Module Usage**: Depends on Case module for case data
-- **Future Extraction**: Report generation microservice
-- **Structure**:
+- **Data Ownership**: ❌ **NO** - No PostgreSQL tables; reports stored in Redis + ChromaDB with TTL
+- **Schema Verification**: See `data-storage-design.md` Section 8.2 - "Storage: Hybrid Redis (metadata) + ChromaDB (content)" with ephemeral TTL
+- **Rationale**: Reports are generated artifacts (cached outputs), not owned domain entities
+- **Retention**: 90 days post-case-closure (ephemeral)
+- **Structure**: Keep as domain service (generates ephemeral content from Case data)
   ```
   modules/report/
-  ├── contracts.py          # IReportService, ReportDTO
-  ├── api/                  # Report endpoints
   ├── domain/               # Report generation logic
-  └── infrastructure/       # Report persistence
+  ├── api/                  # Report endpoints
+  └── infrastructure/       # Redis + ChromaDB storage (ephemeral)
   ```
+
+**Note**: Reports are derived/cached outputs, not first-class domain entities. They're similar to cached LLM responses.
 
 ---
 
@@ -716,43 +909,41 @@ These should remain in shared locations:
 
 ```
 faultmaven/
-├── modules/                          # Vertical business domains
-│   ├── auth/                         # ✅ Vertical
-│   │   ├── contracts.py
+├── modules/                          # Business domains and services
+│   │
+│   ├── auth/                         # ✅ Vertical (3 modules own domain data)
+│   │   ├── contracts.py              # IAuthService, IUserQuery, etc.
 │   │   ├── api/
 │   │   ├── domain/
-│   │   └── infrastructure/
+│   │   └── infrastructure/           # users, organizations tables
 │   │
-│   ├── case/                         # ✅ Vertical
-│   │   ├── contracts.py
+│   ├── case/                         # ✅ Vertical (owns 10 tables including evidence)
+│   │   ├── contracts.py              # ICaseService, ICaseQuery, CaseDTO
 │   │   ├── api/
 │   │   ├── domain/
-│   │   └── infrastructure/
+│   │   └── infrastructure/           # cases, evidence, hypotheses, solutions, etc.
 │   │
-│   ├── evidence/                     # ✅ Vertical
-│   │   ├── contracts.py
+│   ├── knowledge/                    # ✅ Vertical (owns kb_documents + ChromaDB)
+│   │   ├── contracts.py              # IKnowledgeService, IKnowledgeQuery
 │   │   ├── api/
 │   │   ├── domain/
-│   │   └── infrastructure/
+│   │   └── infrastructure/           # kb_documents table + ChromaDB
 │   │
-│   ├── knowledge/                    # ✅ Vertical
-│   │   ├── contracts.py
-│   │   ├── api/
-│   │   ├── domain/
-│   │   └── infrastructure/
+│   ├── evidence/                     # ❌ Domain Service (no data ownership)
+│   │   ├── domain/                   # Evidence collection, validation logic
+│   │   └── api/                      # Delegates persistence to Case module
+│   │   # NO infrastructure/          # Uses Case repository via contracts
 │   │
-│   ├── agent/                        # ✅ Vertical
-│   │   ├── contracts.py
-│   │   ├── api/
-│   │   ├── domain/
-│   │   ├── infrastructure/
-│   │   └── tools/                    # Agent tools
+│   ├── agent/                        # ❌ Domain Service (no data ownership)
+│   │   ├── domain/                   # LangGraph orchestration, workflows
+│   │   ├── tools/                    # Agent tools (knowledge_base, web_search)
+│   │   └── api/                      # Orchestrates via Case contracts
+│   │   # NO infrastructure/          # All state flows through Case module
 │   │
-│   └── report/                       # ✅ Vertical
-│       ├── contracts.py
+│   └── report/                       # ❌ Domain Service (ephemeral outputs)
+│       ├── domain/                   # Report generation logic
 │       ├── api/
-│       ├── domain/
-│       └── infrastructure/
+│       └── infrastructure/           # Redis + ChromaDB (ephemeral, TTL-based)
 │
 ├── infrastructure/                   # Horizontal cross-cutting infrastructure
 │   ├── llm/                          # ❌ Horizontal
@@ -950,12 +1141,12 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 
 | Component | Organization | Reason |
 |-----------|-------------|--------|
-| `modules/auth/` | ✅ Vertical | Business domain with own data |
-| `modules/case/` | ✅ Vertical | Business domain with own data |
-| `modules/evidence/` | ✅ Vertical | Business domain with own data |
-| `modules/knowledge/` | ✅ Vertical | Business domain with own data |
-| `modules/agent/` | ✅ Vertical | Business domain with own data |
-| `modules/report/` | ✅ Vertical | Business domain with own data |
+| `modules/auth/` | ✅ Vertical | Owns domain data (users, organizations tables) |
+| `modules/case/` | ✅ Vertical | Owns domain data (10 tables including evidence) |
+| `modules/knowledge/` | ✅ Vertical | Owns domain data (kb_documents + ChromaDB) |
+| `modules/evidence/` | ❌ Domain Service | Business logic only; data owned by Case module |
+| `modules/agent/` | ❌ Domain Service | Orchestration logic; no persistent state ownership |
+| `modules/report/` | ❌ Domain Service | Generation logic; ephemeral storage (Redis + ChromaDB) |
 | `infrastructure/llm/` | ❌ Horizontal | Provider abstraction, no business logic |
 | `infrastructure/vector/` | ❌ Horizontal | Provider abstraction, no business logic |
 | `infrastructure/storage/` | ❌ Horizontal | Provider abstraction, no business logic |
@@ -975,6 +1166,84 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 
 ---
 
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0 | 2026-01-09 | Initial recommendations with 6 vertical modules |
+| 2.0 | 2026-01-09 | **Schema-verified revision** - Only 3 vertical modules (Case, Auth, Knowledge) after reviewing `case-storage-design.md` and `data-storage-design.md`. Evidence, Agent, and Report reclassified as Domain Services. |
+
+### Key Changes in v2.0
+
+| Module | v1.0 Classification | v2.0 Classification | Reason |
+|--------|---------------------|---------------------|--------|
+| Evidence | ✅ Vertical | ❌ Domain Service | Evidence table has FK to cases - part of Case module's 10-table schema |
+| Agent | ✅ Vertical | ❌ Domain Service | No agent_* tables; agent_tool_calls is case audit data, not agent state |
+| Report | ✅ Vertical | ❌ Domain Service | No PostgreSQL tables; Redis + ChromaDB with TTL (ephemeral artifacts) |
+| Case | ✅ Vertical | ✅ Vertical | Owns 10 tables including evidence (schema verified) |
+| Auth | ✅ Vertical | ✅ Vertical | Owns users and organizations tables (schema verified) |
+| Knowledge | ✅ Vertical | ✅ Vertical | Owns kb_documents + ChromaDB collections (schema verified) |
+
+**Impact**: Document now accurately reflects actual schema ownership, not assumptions. This prevents architectural misalignment and clarifies that only 3 modules truly own domain data.
+
+---
+
+## Technical Debt
+
+### TD-001: Migrate Report Storage from Ephemeral to Persistent
+
+**Status**: Planned  
+**Priority**: Medium  
+**Related Modules**: Report (domain service), Case (vertical module)
+
+#### Current State
+- Reports stored in Redis (metadata) + ChromaDB (content) with TTL expiration
+- Reports are ephemeral cached artifacts that expire after case closure
+- Report module classified as Domain Service with ephemeral outputs
+
+#### Target State
+- Reports stored in PostgreSQL `reports` table with FK to `cases`
+- Reports persist for the lifetime of the case (like evidence)
+- Report module remains Domain Service, but data owned by Case module
+
+#### Rationale
+Reports are investigation **outputs** and should persist alongside the case, symmetric to evidence (investigation **inputs**). Both should have the same lifecycle tied to the case.
+
+#### Implementation Tasks
+
+1. **Schema Change** (case-storage-design.md)
+   - Add `reports` table to Case module's schema
+   - Include FK constraint: `case_id REFERENCES cases(case_id) ON DELETE CASCADE`
+   - Update Case module table count from 10 to 11
+
+2. **Storage Design Update** (data-storage-design.md)
+   - Update Report storage section from "Hybrid Redis + ChromaDB (ephemeral)" to "PostgreSQL (persistent, FK to cases)"
+   - Remove TTL-based expiration references
+
+3. **Code Migration**
+   - Add `reports` table migration script
+   - Update Report service to use Case repository for persistence
+   - Add `save_report()` and `get_reports()` methods to ICaseRepository contract
+   - Migrate existing cached reports to PostgreSQL (if applicable)
+
+4. **Documentation Update**
+   - Update this document's Report classification rationale
+   - Update schema verification references
+
+#### Dependencies
+- Case module must expose report persistence methods via contracts
+- Migration script must handle existing cached reports
+
+#### Acceptance Criteria
+- [ ] `reports` table exists in PostgreSQL with FK to cases
+- [ ] Reports persist after Redis TTL would have expired
+- [ ] Reports deleted when parent case is deleted (cascade)
+- [ ] Report service uses ICaseRepository for all persistence
+- [ ] Schema documentation updated in case-storage-design.md and data-storage-design.md
+
+---
+
 **Document Owner**: Engineering Leadership  
-**Status**: Active Recommendation  
-**Last Updated**: 2026-01-09
+**Status**: Schema-Verified Active Recommendation  
+**Last Updated**: 2026-01-09  
+**Schema Verification**: Verified against `case-storage-design.md` v3.1 and `data-storage-design.md` v2.0
