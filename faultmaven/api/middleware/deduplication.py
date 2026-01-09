@@ -3,20 +3,19 @@ Request deduplication middleware
 
 FastAPI middleware for detecting and preventing duplicate requests
 within configured time windows using content-based hashing.
+
+Principle 1 Compliance: Uses IDeduplicationStore interface instead of
+direct Redis imports, making it deployment-agnostic.
 """
 
 import time
 import logging
 import json
-from typing import Callable, Dict, Any, Optional, Tuple
-from datetime import datetime, timezone, timedelta
+from typing import Callable, Dict, Any, Optional, Tuple, TYPE_CHECKING
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
-
-import redis.asyncio as aioredis
-from redis.exceptions import RedisError
 
 from ...models.protection import (
     ProtectionSettings,
@@ -25,45 +24,64 @@ from ...models.protection import (
 )
 from ...infrastructure.protection import RequestHasher
 from ...utils.serialization import to_json_compatible
+from ...infrastructure.persistence.deduplication_store import (
+    IDeduplicationStore,
+    InMemoryDeduplicationStore,
+    get_deduplication_store,
+)
+
+if TYPE_CHECKING:
+    pass  # For type hints only
 
 
 class DeduplicationMiddleware(BaseHTTPMiddleware):
     """
     Request deduplication middleware
-    
+
     Features:
     - Content-based request hashing with normalization
     - Configurable TTL per endpoint type
-    - Redis-backed with in-memory fallback
+    - Backend-agnostic storage via IDeduplicationStore interface
     - Optional response caching for duplicates
     - Special handling for title generation requests
+
+    Principle 1 Compliance: Uses IDeduplicationStore interface instead of
+    direct redis imports, making it deployment-agnostic.
     """
-    
+
     def __init__(
         self,
         app,
         settings: ProtectionSettings,
-        redis_url: Optional[str] = None
+        dedup_store: Optional[IDeduplicationStore] = None,
+        redis_url: Optional[str] = None,
     ):
         super().__init__(app)
         self.settings = settings
         self.logger = logging.getLogger(__name__)
-        
+
         # Initialize request hasher
         self.hasher = RequestHasher(salt="faultmaven_dedup_2025")
-        
-        # Redis connection
+
+        # Use injected store or create from settings (Principle 1: Deployment Agnostic)
         effective_redis_url = redis_url or settings.redis_url
-        self.redis_url = effective_redis_url
         self.redis_key_prefix = f"{settings.redis_key_prefix}:dedup"
-        self._redis: Optional[aioredis.Redis] = None
-        self._redis_healthy = True
-        
-        # In-memory fallback
-        self._fallback_store: Dict[str, Tuple[float, Optional[str]]] = {}
-        self._fallback_cleanup_interval = 60
-        self._last_fallback_cleanup = time.time()
-        
+
+        if dedup_store is not None:
+            self._store = dedup_store
+            self.logger.info("Using injected deduplication store")
+        else:
+            # Fall back to factory for backwards compatibility
+            self._store = get_deduplication_store(
+                redis_url=effective_redis_url,
+                key_prefix=self.redis_key_prefix,
+                fallback_to_memory=settings.fail_open_on_redis_error,
+            )
+            self.logger.info("Using factory deduplication store")
+
+        # In-memory fallback store (used when primary store fails)
+        self._fallback_store = InMemoryDeduplicationStore()
+
         # Endpoint configurations
         self.endpoint_configs = {
             "/api/v1/data/upload": {
@@ -72,7 +90,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                 "special_handler": None
             }
         }
-        
+
         # Metrics
         self.metrics = {
             "requests_checked": 0,
@@ -81,58 +99,54 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             "errors": 0,
             "avg_check_duration": 0.0
         }
-        
-        self._initialized = False
+
+        self._initialized = True  # Now initialized during __init__
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Main middleware dispatch with deduplication"""
-        
+
         start_time = time.time()
-        
+
         try:
-            # Initialize if needed
-            if not self._initialized:
-                await self._initialize()
-            
             # Skip deduplication if disabled
             if not self.settings.deduplication_enabled:
                 return await call_next(request)
-            
+
             # Skip for certain request types
             if self._should_skip(request):
                 return await call_next(request)
-            
+
             # Check for duplicate
             is_duplicate, cached_response = await self._check_duplicate(request)
-            
+
             if is_duplicate:
                 check_duration = time.time() - start_time
                 self._update_metrics(check_duration, duplicate_found=True)
-                
+
                 if cached_response:
-                    self.logger.debug(f"Returning cached response for duplicate request")
+                    self.logger.debug("Returning cached response for duplicate request")
                     self.metrics["cache_hits"] += 1
                     return JSONResponse(content=json.loads(cached_response))
                 else:
                     return self._create_duplicate_response(request)
-            
+
             # Process request
             response = await call_next(request)
-            
+
             # Cache response if configured
             await self._cache_response(request, response)
-            
+
             # Update metrics
             check_duration = time.time() - start_time
             self._update_metrics(check_duration, duplicate_found=False)
-            
+
             return response
-            
+
         except DuplicateRequestError as e:
             check_duration = time.time() - start_time
             self._update_metrics(check_duration, duplicate_found=True)
             return self._create_duplicate_error_response(e, request)
-            
+
         except Exception as e:
             # Log the error cleanly without trying to serialize exception objects
             self.logger.error(
@@ -141,7 +155,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             )
             self.metrics["errors"] += 1
 
-            # Fail open - re-raise to let upstream handle it
+            # Fail open - continue processing request
             if self.settings.fail_open_on_redis_error:
                 return await call_next(request)
             else:
@@ -152,30 +166,6 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                         "message": "Deduplication service temporarily unavailable"
                     }
                 )
-    
-    async def _initialize(self) -> None:
-        """Initialize Redis connection"""
-        try:
-            self._redis = aioredis.from_url(
-                self.redis_url,
-                encoding="utf-8",
-                decode_responses=True,
-                socket_connect_timeout=5,
-                socket_timeout=5
-            )
-            
-            await self._redis.ping()
-            self._redis_healthy = True
-            self.logger.info("Request deduplication middleware initialized")
-            self._initialized = True
-            
-        except Exception as e:
-            self.logger.error(f"Failed to initialize deduplication Redis: {e}")
-            self._redis_healthy = False
-            self._initialized = True  # Continue with fallback
-            
-            if not self.settings.fail_open_on_redis_error:
-                raise
     
     def _should_skip(self, request: Request) -> bool:
         """Check if request should skip deduplication"""
@@ -275,160 +265,68 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         request_hash: str,
         endpoint: str
     ) -> Tuple[bool, Optional[str]]:
-        """Check if hash represents a duplicate request"""
-        
+        """Check if hash represents a duplicate request via IDeduplicationStore"""
+
         # Get TTL for this endpoint
         config = self.endpoint_configs.get(endpoint, {})
         ttl = config.get("ttl", self.settings.deduplication["default"].ttl)
-        
-        key = f"{self.redis_key_prefix}:{request_hash}"
-        
+
+        key = request_hash  # Store handles key prefixing
+
         try:
-            if self._redis and self._redis_healthy:
-                return await self._check_redis_duplicate(key, ttl)
-            else:
-                return await self._check_fallback_duplicate(key, ttl)
-                
-        except Exception as e:
-            self.logger.error(f"Duplicate check failed: {e}")
-            return False, None
-    
-    async def _check_redis_duplicate(
-        self,
-        key: str,
-        ttl: int
-    ) -> Tuple[bool, Optional[str]]:
-        """Check for duplicate using Redis"""
-        
-        # Lua script for atomic check-and-set with TTL
-        lua_script = """
-        local key = KEYS[1]
-        local ttl = tonumber(ARGV[1])
-        local timestamp = ARGV[2]
-        
-        local existing = redis.call('GET', key)
-        if existing then
-            return {1, existing}  -- duplicate found
-        end
-        
-        -- Store timestamp
-        redis.call('SETEX', key, ttl, timestamp)
-        return {0, nil}  -- not duplicate
-        """
-        
-        current_time = to_json_compatible(datetime.now(timezone.utc))
-        
-        try:
-            result = await self._redis.eval(
-                lua_script,
-                1,  # number of keys
-                key,
-                ttl,
-                current_time
-            )
-            
-            is_duplicate, cached_data = result
-            
+            # Use primary store (via IDeduplicationStore interface)
+            is_duplicate, cached_data = await self._store.check_and_set(key, ttl)
+
             if is_duplicate:
                 self.logger.debug(f"Duplicate request detected: {key}")
-                return True, cached_data
-            
-            return False, None
-            
-        except RedisError as e:
-            self.logger.warning(f"Redis duplicate check failed: {e}")
-            self._redis_healthy = False
-            return await self._check_fallback_duplicate(key, ttl)
-    
-    async def _check_fallback_duplicate(
-        self,
-        key: str,
-        ttl: int
-    ) -> Tuple[bool, Optional[str]]:
-        """Check for duplicate using in-memory store"""
-        
-        current_time = time.time()
-        
-        # Clean up expired entries periodically
-        if current_time - self._last_fallback_cleanup > self._fallback_cleanup_interval:
-            await self._cleanup_fallback_store()
-            self._last_fallback_cleanup = current_time
-        
-        # Check for existing entry
-        if key in self._fallback_store:
-            timestamp, cached_response = self._fallback_store[key]
-            
-            # Check if still valid
-            if current_time - timestamp < ttl:
-                self.logger.debug(f"Duplicate found in fallback store: {key}")
-                return True, cached_response
-            else:
-                # Expired, remove it
-                del self._fallback_store[key]
-        
-        # Store new entry
-        self._fallback_store[key] = (current_time, None)
-        return False, None
-    
-    async def _cleanup_fallback_store(self) -> None:
-        """Clean up expired entries from fallback store"""
-        
-        current_time = time.time()
-        expired_keys = []
-        
-        for key, (timestamp, _) in self._fallback_store.items():
-            # Use max TTL for cleanup (conservative approach)
-            max_ttl = max(config.get("ttl", 300) for config in self.endpoint_configs.values())
-            if current_time - timestamp > max_ttl:
-                expired_keys.append(key)
-        
-        for key in expired_keys:
-            del self._fallback_store[key]
-        
-        if expired_keys:
-            self.logger.debug(f"Cleaned up {len(expired_keys)} expired dedup entries")
+
+            return is_duplicate, cached_data
+
+        except Exception as e:
+            self.logger.warning(f"Primary store duplicate check failed: {e}")
+
+            # Fall back to in-memory store
+            try:
+                return await self._fallback_store.check_and_set(key, ttl)
+            except Exception as fallback_e:
+                self.logger.error(f"Fallback store also failed: {fallback_e}")
+                return False, None
     
     async def _cache_response(self, request: Request, response: Response) -> None:
-        """Cache response for future duplicate requests"""
-        
+        """Cache response for future duplicate requests via IDeduplicationStore"""
+
         # Only cache for certain endpoints and response codes
         if response.status_code != 200:
             return
-        
+
         endpoint = request.url.path
         config = self.endpoint_configs.get(endpoint, {})
-        
+
         if not config.get("cache_responses", False):
             return
-        
+
         try:
             # Generate hash again
             request_hash = await self._generate_request_hash(request)
             if not request_hash:
                 return
-            
+
             # Get response content
             if hasattr(response, 'body'):
                 response_content = response.body.decode('utf-8')
             else:
                 return  # Can't cache without content
-            
-            # Store in Redis or fallback
-            key = f"{self.redis_key_prefix}:{request_hash}"
+
+            # Store via IDeduplicationStore interface
+            key = f"{request_hash}:response"
             ttl = config.get("ttl", self.settings.deduplication["default"].ttl)
-            
-            if self._redis and self._redis_healthy:
-                await self._redis.setex(
-                    f"{key}:response",
-                    ttl,
-                    response_content
-                )
-            else:
-                # Store in fallback
-                if key in self._fallback_store:
-                    timestamp, _ = self._fallback_store[key]
-                    self._fallback_store[key] = (timestamp, response_content)
-        
+
+            try:
+                await self._store.set_value(key, response_content, ttl)
+            except Exception:
+                # Fall back to in-memory
+                await self._fallback_store.set_value(key, response_content, ttl)
+
         except Exception as e:
             self.logger.debug(f"Response caching failed: {e}")
     
@@ -526,21 +424,23 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
     
     async def get_metrics(self) -> Dict[str, Any]:
         """Get middleware metrics"""
-        
+
         duplicate_rate = 0.0
         if self.metrics["requests_checked"] > 0:
             duplicate_rate = self.metrics["duplicates_found"] / self.metrics["requests_checked"]
-        
+
+        # Get store health via interface
+        try:
+            store_health = await self._store.health_check()
+        except Exception:
+            store_health = {"status": "unknown", "error": "health_check_failed"}
+
         return {
             "middleware_metrics": {
                 **self.metrics,
                 "duplicate_rate": duplicate_rate,
-                "fallback_entries": len(self._fallback_store)
             },
-            "redis_health": {
-                "healthy": self._redis_healthy,
-                "initialized": self._initialized
-            },
+            "store_health": store_health,
             "configuration": {
                 "enabled": self.settings.deduplication_enabled,
                 "fail_open": self.settings.fail_open_on_redis_error,

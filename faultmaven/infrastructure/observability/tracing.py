@@ -57,25 +57,28 @@ except ImportError:
 
 
 # Prometheus metrics
+# Naming convention (Issue 24): faultmaven_{module}_{operation}_{unit}
 if PROMETHEUS_AVAILABLE:
-    # Request counters
+    # API module metrics
     REQUEST_COUNTER = Counter(
-        "faultmaven_requests_total",
-        "Total number of requests",
+        "faultmaven_api_requests_total",
+        "Total number of API requests",
         ["endpoint", "method", "status"],
     )
 
-    # Request duration histogram
     REQUEST_DURATION = Histogram(
-        "faultmaven_request_duration_seconds",
-        "Request duration in seconds",
+        "faultmaven_api_request_duration_seconds",
+        "API request duration in seconds",
         ["endpoint", "method"],
     )
 
-    # Active sessions gauge
-    ACTIVE_SESSIONS = Gauge("faultmaven_active_sessions", "Number of active sessions")
+    # Session module metrics
+    ACTIVE_SESSIONS = Gauge(
+        "faultmaven_session_active_count",
+        "Number of active sessions"
+    )
 
-    # LLM request metrics
+    # LLM module metrics
     LLM_REQUEST_COUNTER = Counter(
         "faultmaven_llm_requests_total",
         "Total number of LLM requests",
@@ -88,11 +91,36 @@ if PROMETHEUS_AVAILABLE:
         ["provider", "model"],
     )
 
-    # Generic function metrics
+    LLM_TOKEN_COUNTER = Counter(
+        "faultmaven_llm_tokens_total",
+        "Total number of LLM tokens used",
+        ["provider", "model", "direction"],  # direction: input/output
+    )
+
+    # Generic function/operation metrics
     GENERIC_FUNCTION_DURATION = Histogram(
-        "faultmaven_function_duration_seconds",
-        "Generic function duration in seconds",
+        "faultmaven_core_operation_duration_seconds",
+        "Core operation duration in seconds",
         ["function_name", "status"],
+    )
+
+    # Knowledge module metrics
+    KNOWLEDGE_SEARCH_COUNTER = Counter(
+        "faultmaven_knowledge_search_total",
+        "Total number of knowledge base searches",
+        ["status"],
+    )
+
+    KNOWLEDGE_SEARCH_DURATION = Histogram(
+        "faultmaven_knowledge_search_duration_seconds",
+        "Knowledge search duration in seconds",
+    )
+
+    # Case module metrics
+    CASE_OPERATION_COUNTER = Counter(
+        "faultmaven_case_operations_total",
+        "Total number of case operations",
+        ["operation", "status"],
     )
 
 
