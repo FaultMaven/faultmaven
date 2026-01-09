@@ -13,19 +13,6 @@
 
 This document provides specific recommendations for which FaultMaven components should use **vertical slicing** (domain boundaries) versus **horizontal layering** (cross-cutting infrastructure). The recommendations optimize for maintainability, testability, and future microservice extraction while respecting the principle that **not all modules need domain boundaries**.
 
-### Architectural Transition
-
-**What Happened**: The system underwent vertical slicing, resulting in 6 vertical modules (auth, case, evidence, knowledge, agent, report), each with full vertical structure (`contracts.py`, `api/`, `domain/`, `infrastructure/`).
-
-**What Will Happen**: Schema verification revealed that only 3 modules truly own domain data. Evidence, Agent, and Report are being **restructured as Domain Services** (removed vertical characteristics: no `contracts.py`, no `infrastructure/`). They remain in `modules/` for domain organization but are no longer vertical modules. **Only 3 vertical modules remain**: Auth, Case, and Knowledge.
-
-**Key Distinction**: 
-- **Vertical Modules** = Full vertical slice (contracts, api, domain, infrastructure)
-- **Domain Services** = Organized by domain (`modules/`) but without vertical structure (no contracts, no infrastructure)
-- **Layer Structure** = Organized by technical function (`services/`, `api/v1/routes/`)
-
-Evidence, Agent, and Report become **Domain Services** (not layer-structured, not vertical).
-
 ### Quick Reference: Minimum Criteria
 
 A module is **VERTICAL** (business domain) if and only if it meets **ALL THREE** criteria:
@@ -52,66 +39,6 @@ A module is **VERTICAL** (business domain) if and only if it meets **ALL THREE**
 | **Report** | Redis + ChromaDB with TTL; no PostgreSQL tables; ephemeral artifacts | ❌ **DOMAIN SERVICE** |
 
 **Result**: Only **3 modules** are truly vertical (Case, Auth, Knowledge). Evidence, Agent, and Report are domain services that implement business logic but operate on data owned by other modules.
-
----
-
-## Terminology Clarification: Vertical vs Domain Service vs Layer
-
-**Important**: There are **three** structure types, not two:
-
-### 1. **Vertical Module** (Full Vertical Slice)
-```
-modules/case/
-├── contracts.py          # ✅ Public interfaces (enforced boundaries)
-├── api/                  # ✅ Domain endpoints
-├── domain/               # ✅ Business logic (PRIVATE)
-└── infrastructure/       # ✅ Persistence (PRIVATE)
-```
-**Characteristic**: Has ALL four components (contracts, api, domain, infrastructure)
-
-### 2. **Domain Service** (Hybrid - Domain Organization Without Vertical Structure)
-```
-modules/evidence/
-├── domain/               # ✅ Business logic
-└── api/                  # ✅ Endpoints
-# NO contracts.py         # ❌ Don't own data, nothing to expose
-# NO infrastructure/      # ❌ Data owned by another module
-```
-**Characteristic**: Organized by domain (`modules/`) but WITHOUT full vertical structure
-
-**This is what Evidence, Agent, Report will be** - NOT vertical, NOT layer-structured
-
-### 3. **Layer Structure** (Horizontal Layers - Technical Organization)
-```
-services/
-├── evidence_service.py   # All services together
-├── agent_service.py
-└── report_service.py
-
-api/v1/routes/
-├── evidence.py           # All endpoints together
-├── agent.py
-└── report.py
-```
-**Characteristic**: Organized by technical function (services/, api/, infrastructure/)
-
-### Terminology Summary
-
-| Structure Type | Organization | Has contracts.py? | Has infrastructure/? | Location |
-|---------------|--------------|-------------------|----------------------|----------|
-| **Vertical Module** | By domain | ✅ Yes | ✅ Yes | `modules/{domain}/` |
-| **Domain Service** | By domain | ❌ No | ❌ No | `modules/{domain}/` |
-| **Layer Structure** | By technical function | N/A | N/A | `services/`, `api/v1/routes/` |
-
-**Key Point**: Evidence, Agent, Report become **Domain Services** (Option C), which means:
-- ✅ Still organized by domain (`modules/` - looks "vertical-like")
-- ❌ NOT vertical modules (missing contracts, infrastructure)
-- ❌ NOT layer-structured (still in `modules/`, not `services/`)
-
-**Why "Put Back to Layer" is Misleading**: 
-- They are NOT going back to horizontal layers (`services/`)
-- They ARE having vertical characteristics removed (contracts, infrastructure)
-- They remain in `modules/` as Domain Services (hybrid approach)
 
 ---
 
@@ -777,80 +704,52 @@ These modules implement **business capabilities** and should have full vertical 
 
 These modules implement **business logic** but **operate on data owned by other modules**. They are NOT vertical modules because they fail Criterion 1 (Domain Data Ownership).
 
-**Terminology Note**: These are called **"Domain Services"** (not "layer-structured"). They remain in `modules/` for domain organization but **do not have full vertical structure** (no `contracts.py`, no `infrastructure/`). They are a **hybrid** approach: organized by domain (like vertical) but without data ownership (like horizontal services).
-
 #### 1. **`modules/evidence/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
-
-**Not Vertical**: Missing `contracts.py` and `infrastructure/` (data owned by Case module)  
-**Not Layer-Structured**: Still organized by domain in `modules/`, not in `services/`  
-**Structure Type**: Domain Service (hybrid - domain organization without vertical structure)
-
 - **Business Logic**: Evidence collection, validation, artifact management, preprocessing
 - **Data Ownership**: ❌ **NO** - Evidence table is part of Case module's 10-table schema
 - **Schema Verification**: `evidence` table has `case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE`
 - **Reference**: See `case-storage-design.md` Section 4.3
 - **Rationale**: Evidence provides collection logic but stores data in Case-owned tables
-- **Structure**: Domain Service structure (business logic only, no persistence ownership)
+- **Structure**: Keep as domain service (business logic only, no persistence ownership)
   ```
   modules/evidence/
   ├── domain/               # Evidence collection, validation, preprocessing logic
   └── api/                  # Evidence endpoints (delegate to Case repository)
-  # NO contracts.py         # Don't own data, nothing to expose
-  # NO infrastructure/      # Use Case module's repository via contracts
   ```
-
-**Key Distinction**: This is **NOT** "put back to layer" - it's restructured as a **Domain Service** (removed vertical characteristics while maintaining domain organization).
 
 **Note**: Consider merging Evidence domain logic into Case module since evidence is purely operational on Case-owned data.
 
 #### 2. **`modules/agent/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
-
-**Not Vertical**: Missing `contracts.py` and `infrastructure/` (no persistent state ownership)  
-**Not Layer-Structured**: Still organized by domain in `modules/`, not in `services/`  
-**Structure Type**: Domain Service (hybrid - domain organization without vertical structure)
-
 - **Business Logic**: AI agent orchestration via LangGraph, investigation workflows, OODA loops
 - **Data Ownership**: ❌ **NO** - No `agent_*` tables in schema
 - **Schema Verification**: `agent_tool_calls` table (if exists) stores case audit data, not agent state
 - **Reference**: See `case-storage-design.md` Section 4.1 (no agent tables listed in 10-table schema)
 - **Rationale**: Agent orchestrates investigations but all persistent state flows through Case module
-- **Structure**: Domain Service structure (LangGraph orchestration, operates on Case data)
+- **Structure**: Keep as domain service (LangGraph orchestration, operates on Case data)
   ```
   modules/agent/
   ├── domain/               # LangGraph orchestration, investigation workflows
   ├── tools/                # Agent tools (knowledge_base, web_search, etc.)
   └── api/                  # Agent query endpoints
-  # NO contracts.py         # Orchestration logic, not data owner
-  # NO infrastructure/      # All persistent state via Case module
   ```
-
-**Key Distinction**: This is **NOT** "put back to layer" - it's restructured as a **Domain Service** (removed vertical characteristics while maintaining domain organization for agent capabilities).
 
 **Note**: Agent's LangGraph state is ephemeral/in-memory. All persistent state (investigations, tool calls) is stored in Case module's tables.
 
 #### 3. **`modules/report/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
-
-**Not Vertical**: Missing `contracts.py` (ephemeral artifacts, no persistent domain data)  
-**Not Layer-Structured**: Still organized by domain in `modules/`, not in `services/`  
-**Structure Type**: Domain Service (hybrid - domain organization without vertical structure)
-
 - **Business Logic**: Report generation, runbook creation, post-mortem generation
 - **Data Ownership**: ❌ **NO** - No PostgreSQL tables; reports stored in Redis + ChromaDB with TTL
 - **Schema Verification**: See `data-storage-design.md` Section 8.2 - "Storage: Hybrid Redis (metadata) + ChromaDB (content)" with ephemeral TTL
 - **Rationale**: Reports are generated artifacts (cached outputs), not owned domain entities
-- **Retention**: 90 days post-case-closure (ephemeral) - **Technical Debt (TD-001)**: Should migrate to PostgreSQL `reports` table owned by Case module
-- **Structure**: Domain Service structure (generates ephemeral content from Case data)
+- **Retention**: 90 days post-case-closure (ephemeral)
+- **Structure**: Keep as domain service (generates ephemeral content from Case data)
   ```
   modules/report/
   ├── domain/               # Report generation logic
   ├── api/                  # Report endpoints
-  └── infrastructure/       # Redis + ChromaDB storage (ephemeral, temporary)
-  # NO contracts.py         # Generates artifacts, doesn't own domain data
+  └── infrastructure/       # Redis + ChromaDB storage (ephemeral)
   ```
 
-**Key Distinction**: This is **NOT** "put back to layer" - it's restructured as a **Domain Service** (removed vertical characteristics while maintaining domain organization for report generation). After TD-001, `infrastructure/` will be removed (reports stored in Case module's tables).
-
-**Note**: Reports are derived/cached outputs, not first-class domain entities. They're similar to cached LLM responses. See Technical Debt section (TD-001) for migration plan.
+**Note**: Reports are derived/cached outputs, not first-class domain entities. They're similar to cached LLM responses.
 
 ---
 
@@ -1271,8 +1170,8 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 1.0 | 2026-01-09 | Initial vertical slicing resulted in 6 vertical modules (auth, case, evidence, knowledge, agent, report) |
-| 2.0 | 2026-01-09 | **Schema-verified revision** - After reviewing `case-storage-design.md` and `data-storage-design.md`, only 3 modules truly own domain data. Evidence, Agent, and Report are being restructured as **Domain Services** (removed vertical characteristics: no `contracts.py`, no `infrastructure/`). They remain in `modules/` for domain organization but are no longer vertical modules. Only 3 vertical modules remain (Case, Auth, Knowledge). |
+| 1.0 | 2026-01-09 | Initial recommendations with 6 vertical modules |
+| 2.0 | 2026-01-09 | **Schema-verified revision** - Only 3 vertical modules (Case, Auth, Knowledge) after reviewing `case-storage-design.md` and `data-storage-design.md`. Evidence, Agent, and Report reclassified as Domain Services. |
 
 ### Key Changes in v2.0
 
@@ -1285,7 +1184,7 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 | Auth | ✅ Vertical | ✅ Vertical | Owns users and organizations tables (schema verified) |
 | Knowledge | ✅ Vertical | ✅ Vertical | Owns kb_documents + ChromaDB collections (schema verified) |
 
-**Impact**: Document reflects the architectural transition: system previously had 6 vertical modules after vertical slicing, but schema verification revealed only 3 truly own domain data. Evidence, Agent, and Report are being moved back to horizontal layers (Domain Services structure), leaving only 3 vertical modules (Case, Auth, Knowledge) that meet all criteria.
+**Impact**: Document now accurately reflects actual schema ownership, not assumptions. This prevents architectural misalignment and clarifies that only 3 modules truly own domain data.
 
 ---
 
