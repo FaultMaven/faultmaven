@@ -111,5 +111,6 @@
   "test_architectural_compliance.py::TestArchitecturalCompliance::test_case_creation_requires_owner_id": true,
   "test_architectural_compliance.py::TestArchitecturalCompliance::test_case_creation_with_valid_owner_id": true,
   "test_architectural_compliance.py::TestArchitecturalCompliance::test_case_ownership_enforced_in_retrieval": true,
-  "test_architectural_compliance.py::TestArchitecturalCompliance::test_session_context_user_id_is_required": true
+  "test_architectural_compliance.py::TestArchitecturalCompliance::test_session_context_user_id_is_required": true,
+  "test_agent_orchestration_integration.py": true
 }
