@@ -12,6 +12,7 @@ from typing import List, Optional
 import aiohttp
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from faultmaven.exceptions import LLMException, ModelLoadingException
 
 
 class HuggingFaceProvider(BaseLLMProvider):
@@ -103,13 +104,16 @@ class HuggingFaceProvider(BaseLLMProvider):
             ) as response:
                 
                 if response.status == 503:
-                    # Model is loading, wait and retry once
-                    await self._handle_model_loading(session, url, headers, request_body)
-                    return await self._retry_request(session, url, headers, request_body, start_time, selected_model)
-                
+                    # Model is loading - raise ModelLoadingException for orchestration layer to handle
+                    raise ModelLoadingException(
+                        message=f"HuggingFace model '{selected_model}' is loading",
+                        retry_after=10,
+                        model_name=selected_model
+                    )
+
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(
+                    raise LLMException(
                         f"Hugging Face API request failed: {response.status} - {error_text}"
                     )
                 
@@ -138,52 +142,6 @@ class HuggingFaceProvider(BaseLLMProvider):
         tokens_used = self._estimate_tokens(content)
         
         # Calculate confidence based on model and response quality
-        confidence = self._calculate_confidence(selected_model, content, response_data)
-        
-        return LLMResponse(
-            content=content,
-            confidence=confidence,
-            provider=self.provider_name,
-            model=selected_model,
-            tokens_used=tokens_used,
-            response_time_ms=response_time_ms,
-            cached=False
-        )
-    
-    async def _handle_model_loading(self, session: aiohttp.ClientSession, url: str, headers: dict, request_body: dict):
-        """Handle model loading delay"""
-        # Wait a bit for model to load
-        import asyncio
-        await asyncio.sleep(10)
-    
-    async def _retry_request(self, session: aiohttp.ClientSession, url: str, headers: dict, request_body: dict, start_time: float, selected_model: str) -> LLMResponse:
-        """Retry request after model loading"""
-        async with session.post(
-            url,
-            headers=headers,
-            json=request_body,
-            timeout=aiohttp.ClientTimeout(total=self.config.timeout)
-        ) as response:
-            
-            if response.status != 200:
-                error_text = await response.text()
-                raise Exception(
-                    f"Hugging Face API request failed on retry: {response.status} - {error_text}"
-                )
-            
-            response_data = await response.json()
-        
-        # Extract content from retry response
-        content = ""
-        if isinstance(response_data, list) and len(response_data) > 0:
-            first_result = response_data[0]
-            if "generated_text" in first_result:
-                content = first_result["generated_text"]
-            elif "text" in first_result:
-                content = first_result["text"]
-        
-        response_time_ms = int((time.time() - start_time) * 1000)
-        tokens_used = self._estimate_tokens(content)
         confidence = self._calculate_confidence(selected_model, content, response_data)
         
         return LLMResponse(

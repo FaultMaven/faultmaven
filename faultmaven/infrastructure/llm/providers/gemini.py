@@ -12,6 +12,7 @@ from typing import List, Optional
 import aiohttp
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from faultmaven.exceptions import LLMException
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -134,7 +135,7 @@ class GeminiProvider(BaseLLMProvider):
                 
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(
+                    raise LLMException(
                         f"Gemini API request failed: {response.status} - {error_text}"
                     )
                 

@@ -56,28 +56,27 @@ class APIEvidenceArtifactService(BaseService):
         self,
         evidence_repo: EvidenceArtifactRepository,
         case_repo: CaseRepository,
-        file_storage: Optional[Any] = None,
+        file_storage: Any,
     ):
         """Initialize API evidence artifact service.
 
         Args:
             evidence_repo: Evidence artifact repository
             case_repo: Case repository (for authorization)
-            file_storage: File storage service (injected via DI if None)
+            file_storage: File storage service (required)
+
+        Raises:
+            ValueError: If required dependencies are not provided
         """
         super().__init__("api_evidence_artifact_service")
         self.evidence_repo = evidence_repo
         self.case_repo = case_repo
 
-        # Lazy injection via DI container (dynamic import to avoid import-linter violations)
+        # Require explicit dependency injection
         if file_storage is None:
-            import importlib
-            ServiceContainer = importlib.import_module('faultmaven.core.container').ServiceContainer
-            FileStorageService = importlib.import_module('faultmaven.services.file_storage_service').FileStorageService
+            raise ValueError("file_storage is required for APIEvidenceArtifactService")
 
-            self.file_storage = ServiceContainer.get(FileStorageService)
-        else:
-            self.file_storage = file_storage
+        self.file_storage = file_storage
 
     # ============================================================
     # Authorization Helpers

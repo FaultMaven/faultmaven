@@ -56,8 +56,8 @@ class KnowledgeSearchService(BaseService):
     def __init__(
         self,
         knowledge_repo: KnowledgeItemRepository,
-        embedding_service: Optional[Any] = None,
-        vector_store: Optional[Any] = None,
+        embedding_service: Any,
+        vector_store: Any,
         semantic_weight: float = 0.7,
         text_weight: float = 0.3,
     ):
@@ -65,26 +65,25 @@ class KnowledgeSearchService(BaseService):
 
         Args:
             knowledge_repo: Repository for knowledge item persistence
-            embedding_service: Service for generating embeddings (injected via DI if None)
-            vector_store: Service for vector storage and search (injected via DI if None)
+            embedding_service: Service for generating embeddings (required)
+            vector_store: Service for vector storage and search (required)
             semantic_weight: Default weight for semantic search (0.0-1.0)
             text_weight: Default weight for text search (0.0-1.0)
+
+        Raises:
+            ValueError: If required dependencies are not provided
         """
         super().__init__("knowledge_search_service")
         self.knowledge_repo = knowledge_repo
 
-        # Lazy injection via DI container (dynamic imports to avoid import-linter violations)
-        if embedding_service is None or vector_store is None:
-            import importlib
-            ServiceContainer = importlib.import_module('faultmaven.core.container').ServiceContainer
-            EmbeddingService = importlib.import_module('faultmaven.modules.knowledge.domain.services.embedding_service').EmbeddingService
-            VectorStoreService = importlib.import_module('faultmaven.modules.knowledge.domain.services.vector_store_service').VectorStoreService
+        # Require explicit dependency injection
+        if embedding_service is None:
+            raise ValueError("embedding_service is required for KnowledgeSearchService")
+        if vector_store is None:
+            raise ValueError("vector_store is required for KnowledgeSearchService")
 
-            self.embedding_service = embedding_service or ServiceContainer.get(EmbeddingService)
-            self.vector_store = vector_store or ServiceContainer.get(VectorStoreService)
-        else:
-            self.embedding_service = embedding_service
-            self.vector_store = vector_store
+        self.embedding_service = embedding_service
+        self.vector_store = vector_store
 
         self.semantic_weight = semantic_weight
         self.text_weight = text_weight

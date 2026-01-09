@@ -10,10 +10,12 @@ Note: This module no longer calls load_dotenv() at import time. Environment vari
 loading is handled by the settings system.
 """
 
+import asyncio
 import logging
 from typing import Dict, List, Optional, Type, Union
 
 from .base import BaseLLMProvider, ProviderConfig, LLMResponse
+from faultmaven.exceptions import ModelLoadingException
 from .fireworks_provider import FireworksProvider
 from .openai_provider import OpenAIProvider
 from .groq_provider import GroqProvider
@@ -397,13 +399,32 @@ class ProviderRegistry:
             try:
                 self.logger.info(f"Trying provider: {provider_name}")
 
-                response = await provider.generate(
-                    prompt=prompt,
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    **kwargs
-                )
+                # Retry loop for ModelLoadingException
+                max_model_loading_retries = 2
+                for retry_attempt in range(max_model_loading_retries + 1):
+                    try:
+                        response = await provider.generate(
+                            prompt=prompt,
+                            model=model,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            **kwargs
+                        )
+                        break  # Success, exit retry loop
+                    except ModelLoadingException as mle:
+                        if retry_attempt < max_model_loading_retries:
+                            self.logger.info(
+                                f"⏳ Model '{mle.model_name}' is loading, "
+                                f"waiting {mle.retry_after}s before retry "
+                                f"({retry_attempt + 1}/{max_model_loading_retries})"
+                            )
+                            await asyncio.sleep(mle.retry_after)
+                        else:
+                            self.logger.warning(
+                                f"⚠️ Model '{mle.model_name}' still loading after "
+                                f"{max_model_loading_retries} retries, trying next provider"
+                            )
+                            raise  # Re-raise to trigger fallback to next provider
 
                 # Check confidence threshold
                 if response.confidence >= confidence_threshold:
