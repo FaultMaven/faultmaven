@@ -27,7 +27,6 @@ import tempfile
 import time
 import pytest
 from datetime import datetime, timezone
-from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
@@ -42,16 +41,12 @@ from faultmaven.services.file_storage_service import FileStorageService
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
 from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
+from tests.utils import generate_case_id
 
 
 # ============================================================
 # Helper Functions
 # ============================================================
-
-
-def generate_case_id() -> str:
-    """Generate a valid case ID."""
-    return f"case_{uuid4().hex[:12]}"
 
 
 def generate_file_data(size_bytes: int) -> bytes:

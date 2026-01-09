@@ -6,7 +6,6 @@ minimal overhead from logging and other instrumentation.
 
 import asyncio
 from typing import AsyncGenerator
-from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -26,6 +25,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
 )
+from tests.utils import generate_case_id, generate_item_id, generate_org_id
 
 
 @pytest.fixture(scope="session")
@@ -112,18 +112,3 @@ async def investigation_session_repository(benchmark_session) -> DatabaseInvesti
 async def knowledge_item_repository(benchmark_session) -> DatabaseKnowledgeItemRepository:
     """Create knowledge item repository for benchmarks."""
     return DatabaseKnowledgeItemRepository(benchmark_session)
-
-
-def generate_case_id() -> str:
-    """Generate a valid case ID matching the pattern ^case_[a-f0-9]{12}$."""
-    return f"case_{uuid4().hex[:12]}"
-
-
-def generate_item_id() -> str:
-    """Generate a valid knowledge item ID."""
-    return f"ki_{uuid4().hex[:12]}"
-
-
-def generate_org_id() -> str:
-    """Generate a valid organization ID."""
-    return f"org_{uuid4().hex[:12]}"
