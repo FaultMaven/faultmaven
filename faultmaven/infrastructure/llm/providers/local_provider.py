@@ -11,6 +11,7 @@ import logging
 from typing import List, Optional
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from faultmaven.exceptions import LLMException
 
 
 class LocalProvider(BaseLLMProvider):
@@ -67,7 +68,7 @@ class LocalProvider(BaseLLMProvider):
                     return await self._call_llamacpp_api(prompt, effective_model, max_tokens, temperature, **kwargs)
                 except Exception as llamacpp_error:
                     # If both fail, raise the more informative error
-                    raise Exception(f"Local LLM server failed with both API formats. OpenAI-compatible: {openai_error}. Raw llama.cpp: {llamacpp_error}")
+                    raise LLMException(f"Local LLM server failed with both API formats. OpenAI-compatible: {openai_error}. Raw llama.cpp: {llamacpp_error}")
             else:
                 # For non-404 errors, re-raise the OpenAI error
                 raise openai_error
@@ -105,7 +106,7 @@ class LocalProvider(BaseLLMProvider):
 
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(
+                    raise LLMException(
                         f"Ollama API error {response.status}: {error_text}"
                     )
 
@@ -114,7 +115,7 @@ class LocalProvider(BaseLLMProvider):
                 # Extract response content
                 content = data.get("response")
                 if not content:
-                    raise Exception("Ollama API returned no response content")
+                    raise LLMException("Ollama API returned no response content")
 
                 content = self._validate_response_content(content)
 
@@ -176,7 +177,7 @@ class LocalProvider(BaseLLMProvider):
                         error_text = await response.text()
                         error_msg = f"Local OpenAI-compatible API error {response.status}: {error_text}"
                         self.logger.error(f"HTTP Error: {error_msg}")
-                        raise Exception(error_msg)
+                        raise LLMException(error_msg)
 
                     data = await response.json()
                     self.logger.debug(f"Response data: {data}")
@@ -185,7 +186,7 @@ class LocalProvider(BaseLLMProvider):
                     if not data.get("choices") or len(data["choices"]) == 0:
                         error_msg = "Local OpenAI-compatible API returned no choices"
                         self.logger.error(f"No choices: {error_msg}")
-                        raise Exception(error_msg)
+                        raise LLMException(error_msg)
 
                     content = data["choices"][0]["message"]["content"]
                     self.logger.debug(f"Raw content: {repr(content)}")
@@ -219,7 +220,7 @@ class LocalProvider(BaseLLMProvider):
                 self.logger.warning(f"Timeout after {response_time}ms (limit: {self.config.timeout * 1000}ms)")
                 self.logger.warning(f"Model: {model}, Max tokens: {max_tokens}, Temperature: {temperature}")
                 self.logger.debug(f"Timeout error: {e}")
-                raise Exception(f"Local LLM request timed out after {self.config.timeout} seconds")
+                raise LLMException(f"Local LLM request timed out after {self.config.timeout} seconds")
 
             except Exception as e:
                 response_time = self._get_response_time_ms()
@@ -260,7 +261,7 @@ class LocalProvider(BaseLLMProvider):
 
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(
+                    raise LLMException(
                         f"Raw llama.cpp server API error {response.status}: {error_text}"
                     )
 
@@ -269,7 +270,7 @@ class LocalProvider(BaseLLMProvider):
                 # Extract response content
                 content = data.get("content")
                 if not content:
-                    raise Exception("Raw llama.cpp server API returned no content")
+                    raise LLMException("Raw llama.cpp server API returned no content")
 
                 content = self._validate_response_content(content)
 

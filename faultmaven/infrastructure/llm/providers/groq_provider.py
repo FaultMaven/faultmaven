@@ -13,6 +13,7 @@ import json
 from typing import List, Optional, Dict, Any
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
+from faultmaven.exceptions import LLMException
 
 
 class GroqProvider(BaseLLMProvider):
@@ -102,7 +103,7 @@ class GroqProvider(BaseLLMProvider):
                 
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(
+                    raise LLMException(
                         f"Groq API error {response.status}: {error_text}"
                     )
                 
@@ -110,7 +111,7 @@ class GroqProvider(BaseLLMProvider):
 
                 # Extract response content (OpenAI-compatible format)
                 if not data.get("choices") or len(data["choices"]) == 0:
-                    raise Exception("Groq API returned no choices")
+                    raise LLMException("Groq API returned no choices")
 
                 message = data["choices"][0]["message"]
 

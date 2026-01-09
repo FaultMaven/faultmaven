@@ -83,28 +83,27 @@ class UserService(BaseService):
     def __init__(
         self,
         user_repo: UserRepository,
-        auth_service: Optional[Any] = None,
+        auth_service: Any,
         redis_client: Optional[Redis] = None,
     ):
         """Initialize user service.
 
         Args:
             user_repo: User repository for persistence
-            auth_service: Auth service for JWT token operations (injected via DI if None)
+            auth_service: Auth service for JWT token operations (required)
             redis_client: Redis client for token tracking (optional)
+
+        Raises:
+            ValueError: If required dependencies are not provided
         """
         super().__init__("user_service")
         self.user_repo = user_repo
 
-        # Lazy injection via DI container (dynamic import to avoid import-linter violations)
+        # Require explicit dependency injection
         if auth_service is None:
-            import importlib
-            ServiceContainer = importlib.import_module('faultmaven.core.container').ServiceContainer
-            AuthService = importlib.import_module('faultmaven.services.auth_service').AuthService
+            raise ValueError("auth_service is required for UserService")
 
-            self.auth_service = ServiceContainer.get(AuthService)
-        else:
-            self.auth_service = auth_service
+        self.auth_service = auth_service
 
         self.redis_client = redis_client
         self._settings = get_settings()

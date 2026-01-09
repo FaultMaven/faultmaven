@@ -12,6 +12,7 @@ from typing import List, Optional
 import aiohttp
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from faultmaven.exceptions import LLMException
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -101,7 +102,7 @@ class AnthropicProvider(BaseLLMProvider):
                 
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(
+                    raise LLMException(
                         f"Anthropic API request failed: {response.status} - {error_text}"
                     )
                 

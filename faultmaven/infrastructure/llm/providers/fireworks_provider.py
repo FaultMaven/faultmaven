@@ -9,6 +9,7 @@ import aiohttp
 from typing import Any, Dict, List, Optional
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from faultmaven.exceptions import LLMException
 
 
 class FireworksProvider(BaseLLMProvider):
@@ -80,7 +81,7 @@ class FireworksProvider(BaseLLMProvider):
                 
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(
+                    raise LLMException(
                         f"Fireworks API error {response.status}: {error_text}"
                     )
                 
@@ -88,7 +89,7 @@ class FireworksProvider(BaseLLMProvider):
 
                 # Extract response content
                 if not data.get("choices") or len(data["choices"]) == 0:
-                    raise Exception("Fireworks API returned no choices")
+                    raise LLMException("Fireworks API returned no choices")
 
                 message = data["choices"][0]["message"]
                 content = message.get("content") or ""

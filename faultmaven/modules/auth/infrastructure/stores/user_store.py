@@ -28,6 +28,7 @@ from typing import Optional, List
 from redis import Redis
 
 from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.exceptions import UserStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -72,23 +73,29 @@ class DevUserStore:
 
         Returns:
             DevUser if found, None otherwise
+
+        Raises:
+            UserStoreError: If database operation fails
         """
+        if not user_id:
+            return None
+
+        user_key = self.user_key_pattern.format(user_id)
+        user_data = await self._redis_get(user_key)
+
+        if not user_data:
+            return None
+
         try:
-            if not user_id:
-                return None
-
-            user_key = self.user_key_pattern.format(user_id)
-            user_data = await self._redis_get(user_key)
-
-            if not user_data:
-                return None
-
             user_dict = json.loads(user_data)
             return DevUser.from_dict(user_dict)
-
-        except Exception as e:
-            logger.error(f"Failed to get user {user_id}: {e}")
-            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse user data for {user_id}: {e}")
+            raise UserStoreError(
+                f"Failed to parse user data: {e}",
+                operation="get_user",
+                user_id=user_id
+            )
 
     async def get_user_by_username(self, username: str) -> Optional[DevUser]:
         """Get user by username
@@ -98,22 +105,20 @@ class DevUserStore:
 
         Returns:
             DevUser if found, None otherwise
+
+        Raises:
+            UserStoreError: If database operation fails
         """
-        try:
-            if not username:
-                return None
-
-            username_key = self.username_key_pattern.format(username.lower())
-            user_id = await self._redis_get(username_key)
-
-            if not user_id:
-                return None
-
-            return await self.get_user(user_id)
-
-        except Exception as e:
-            logger.error(f"Failed to get user by username {username}: {e}")
+        if not username:
             return None
+
+        username_key = self.username_key_pattern.format(username.lower())
+        user_id = await self._redis_get(username_key)
+
+        if not user_id:
+            return None
+
+        return await self.get_user(user_id)
 
     async def get_user_by_email(self, email: str) -> Optional[DevUser]:
         """Get user by email address
@@ -123,22 +128,20 @@ class DevUserStore:
 
         Returns:
             DevUser if found, None otherwise
+
+        Raises:
+            UserStoreError: If database operation fails
         """
-        try:
-            if not email:
-                return None
-
-            email_key = self.email_key_pattern.format(email.lower())
-            user_id = await self._redis_get(email_key)
-
-            if not user_id:
-                return None
-
-            return await self.get_user(user_id)
-
-        except Exception as e:
-            logger.error(f"Failed to get user by email {email}: {e}")
+        if not email:
             return None
+
+        email_key = self.email_key_pattern.format(email.lower())
+        user_id = await self._redis_get(email_key)
+
+        if not user_id:
+            return None
+
+        return await self.get_user(user_id)
 
     async def create_user(self, username: str, email: str = None, display_name: str = None) -> DevUser:
         """Create new development user
@@ -279,31 +282,29 @@ class DevUserStore:
             user_id: User identifier
 
         Returns:
-            True if user was deleted successfully
+            True if user was deleted, False if user not found
+
+        Raises:
+            UserStoreError: If database operation fails
         """
-        try:
-            user = await self.get_user(user_id)
-            if not user:
-                return False
-
-            # Remove from Redis
-            user_key = self.user_key_pattern.format(user_id)
-            username_key = self.username_key_pattern.format(user.username.lower())
-            email_key = self.email_key_pattern.format(user.email.lower())
-
-            await self._redis_delete(user_key)
-            await self._redis_delete(username_key)
-            await self._redis_delete(email_key)
-
-            # Remove from user list
-            await self._redis_srem(self.user_list_key, user_id)
-
-            logger.info(f"Deleted user {user_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to delete user {user_id}: {e}")
+        user = await self.get_user(user_id)
+        if not user:
             return False
+
+        # Remove from Redis
+        user_key = self.user_key_pattern.format(user_id)
+        username_key = self.username_key_pattern.format(user.username.lower())
+        email_key = self.email_key_pattern.format(user.email.lower())
+
+        await self._redis_delete(user_key)
+        await self._redis_delete(username_key)
+        await self._redis_delete(email_key)
+
+        # Remove from user list
+        await self._redis_srem(self.user_list_key, user_id)
+
+        logger.info(f"Deleted user {user_id}")
+        return True
 
     async def list_users(self, limit: int = 100, offset: int = 0) -> List[DevUser]:
         """List all users with pagination
@@ -314,36 +315,33 @@ class DevUserStore:
 
         Returns:
             List of DevUser objects
+
+        Raises:
+            UserStoreError: If database operation fails
         """
-        try:
-            user_ids = await self._redis_smembers(self.user_list_key)
+        user_ids = await self._redis_smembers(self.user_list_key)
 
-            # Apply pagination
-            paginated_ids = user_ids[offset:offset + limit]
+        # Apply pagination
+        paginated_ids = user_ids[offset:offset + limit]
 
-            users = []
-            for user_id in paginated_ids:
-                user = await self.get_user(user_id)
-                if user:
-                    users.append(user)
+        users = []
+        for user_id in paginated_ids:
+            user = await self.get_user(user_id)
+            if user:
+                users.append(user)
 
-            return users
-
-        except Exception as e:
-            logger.error(f"Failed to list users: {e}")
-            return []
+        return users
 
     async def count_users(self) -> int:
         """Get total number of users
 
         Returns:
             Total user count
+
+        Raises:
+            UserStoreError: If database operation fails
         """
-        try:
-            return await self._redis_scard(self.user_list_key)
-        except Exception as e:
-            logger.error(f"Failed to count users: {e}")
-            return 0
+        return await self._redis_scard(self.user_list_key)
 
     def _validate_username(self, username: str) -> bool:
         """Validate username format (allows email addresses and traditional usernames)"""
@@ -367,56 +365,108 @@ class DevUserStore:
 
     # Redis async wrapper methods (using async Redis client)
     async def _redis_set(self, key: str, value: str) -> None:
-        """Set Redis key"""
+        """Set Redis key
+
+        Raises:
+            UserStoreError: If Redis operation fails
+        """
         try:
             return await self.redis.set(key, value)
         except Exception as e:
             logger.error(f"Redis SET failed for key {key}: {e}")
-            raise
+            raise UserStoreError(
+                f"Redis SET failed: {e}",
+                operation="set"
+            )
 
     async def _redis_get(self, key: str) -> Optional[str]:
-        """Get Redis key value"""
+        """Get Redis key value
+
+        Raises:
+            UserStoreError: If Redis operation fails
+        """
         try:
             result = await self.redis.get(key)
             return result if result else None
         except Exception as e:
             logger.error(f"Redis GET failed for key {key}: {e}")
-            return None
+            raise UserStoreError(
+                f"Redis GET failed: {e}",
+                operation="get"
+            )
 
     async def _redis_delete(self, key: str) -> None:
-        """Delete Redis key"""
+        """Delete Redis key
+
+        Raises:
+            UserStoreError: If Redis operation fails
+        """
         try:
             return await self.redis.delete(key)
         except Exception as e:
             logger.error(f"Redis DELETE failed for key {key}: {e}")
+            raise UserStoreError(
+                f"Redis DELETE failed: {e}",
+                operation="delete"
+            )
 
     async def _redis_sadd(self, key: str, value: str) -> None:
-        """Add to Redis set"""
+        """Add to Redis set
+
+        Raises:
+            UserStoreError: If Redis operation fails
+        """
         try:
             return await self.redis.sadd(key, value)
         except Exception as e:
             logger.error(f"Redis SADD failed for key {key}: {e}")
+            raise UserStoreError(
+                f"Redis SADD failed: {e}",
+                operation="sadd"
+            )
 
     async def _redis_srem(self, key: str, value: str) -> None:
-        """Remove from Redis set"""
+        """Remove from Redis set
+
+        Raises:
+            UserStoreError: If Redis operation fails
+        """
         try:
             return await self.redis.srem(key, value)
         except Exception as e:
             logger.error(f"Redis SREM failed for key {key}: {e}")
+            raise UserStoreError(
+                f"Redis SREM failed: {e}",
+                operation="srem"
+            )
 
     async def _redis_smembers(self, key: str) -> List[str]:
-        """Get Redis set members"""
+        """Get Redis set members
+
+        Raises:
+            UserStoreError: If Redis operation fails
+        """
         try:
             members = await self.redis.smembers(key)
             return [str(member) for member in members]
         except Exception as e:
             logger.error(f"Redis SMEMBERS failed for key {key}: {e}")
-            return []
+            raise UserStoreError(
+                f"Redis SMEMBERS failed: {e}",
+                operation="smembers"
+            )
 
     async def _redis_scard(self, key: str) -> int:
-        """Get Redis set cardinality"""
+        """Get Redis set cardinality
+
+        Raises:
+            UserStoreError: If Redis operation fails
+        """
         try:
             return await self.redis.scard(key)
         except Exception as e:
             logger.error(f"Redis SCARD failed for key {key}: {e}")
-            return 0
+            raise UserStoreError(
+                f"Redis SCARD failed: {e}",
+                operation="scard"
+            )
