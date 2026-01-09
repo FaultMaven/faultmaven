@@ -5,7 +5,6 @@ Tests the InMemoryEvidenceArtifactRepository implementation.
 
 import pytest
 from datetime import datetime, timezone
-from uuid import uuid4
 
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
@@ -15,16 +14,7 @@ from faultmaven.modules.evidence.domain.models import (
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     InMemoryEvidenceArtifactRepository,
 )
-
-
-def generate_evidence_id() -> str:
-    """Generate a valid evidence ID."""
-    return f"ev_{uuid4().hex[:12]}"
-
-
-def generate_case_id() -> str:
-    """Generate a valid case ID."""
-    return f"case_{uuid4().hex[:12]}"
+from tests.utils import generate_case_id, generate_evidence_id
 
 
 def create_sample_evidence(

@@ -5,7 +5,6 @@ Tests both InMemoryKnowledgeItemRepository and the repository interface.
 
 import pytest
 from datetime import datetime, timezone, timedelta
-from uuid import uuid4
 
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
@@ -15,16 +14,7 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     InMemoryKnowledgeItemRepository,
 )
-
-
-def generate_item_id() -> str:
-    """Generate a valid test item ID."""
-    return f"ki_{uuid4().hex[:12]}"
-
-
-def generate_org_id() -> str:
-    """Generate a valid test organization ID."""
-    return f"org_{uuid4().hex[:12]}"
+from tests.utils import generate_item_id, generate_org_id
 
 
 def create_valid_embedding(value: float = 0.1) -> list:
