@@ -6,13 +6,16 @@ Follows clean architecture principles by centralizing transformation logic
 and maintaining clear separation between persistence and presentation layers.
 """
 
-from typing import List, Optional, Union
+from typing import List, Optional, Union, TYPE_CHECKING
 from datetime import datetime, timezone
 from uuid import uuid4
 from faultmaven.modules.case.domain.models import Case as CaseEntity
 from faultmaven.models.api_models import CaseSummary
 from faultmaven.models.api import Case as CaseAPI
 from faultmaven.utils.serialization import to_json_compatible
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
 
 
 class CaseConverter:

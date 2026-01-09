@@ -7,7 +7,10 @@ key information (functions, classes, imports, error handling). No LLM calls.
 
 import re
 import ast
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
 
 
 class SourceCodeExtractor:

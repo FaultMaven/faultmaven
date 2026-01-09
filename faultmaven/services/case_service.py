@@ -18,10 +18,14 @@ which handles internal case operations and conversation management.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from uuid import uuid4
 
 from faultmaven.services.base import BaseService
+
+# Interface imports for clean architecture compliance
+if TYPE_CHECKING:
+    from faultmaven.models.interfaces import IVectorStore
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
