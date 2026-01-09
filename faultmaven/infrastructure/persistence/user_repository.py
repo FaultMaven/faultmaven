@@ -248,8 +248,9 @@ class InMemoryUserRepository(UserRepository):
         # Auto-populate updated_at timestamp
         user.updated_at = datetime.now(timezone.utc)
 
-        # Store user
-        self._users[user.user_id] = user
+        # Store a copy to prevent external modifications from affecting stored data
+        # This is important for update() to detect changes correctly
+        self._users[user.user_id] = user.model_copy(deep=True)
 
         # Update indexes
         self._username_index[user.username.lower()] = user.user_id
@@ -332,23 +333,28 @@ class InMemoryUserRepository(UserRepository):
             from faultmaven.exceptions import NotFoundError
             raise NotFoundError("User", user.user_id)
 
+        # Store original values before they potentially get overwritten
+        # (user and existing might be the same object reference)
+        original_email = existing.email
+        original_username = existing.username
+
         # If email changed, check for conflicts
-        if existing.email.lower() != user.email.lower():
+        if original_email.lower() != user.email.lower():
             existing_with_email = self._email_index.get(user.email.lower())
             if existing_with_email and existing_with_email != user.user_id:
                 from faultmaven.exceptions import ConflictError
                 raise ConflictError("Email already in use")
             # Remove old email from index
-            self._email_index.pop(existing.email.lower(), None)
+            self._email_index.pop(original_email.lower(), None)
 
         # If username changed, check for conflicts
-        if existing.username.lower() != user.username.lower():
+        if original_username.lower() != user.username.lower():
             existing_with_username = self._username_index.get(user.username.lower())
             if existing_with_username and existing_with_username != user.user_id:
                 from faultmaven.exceptions import ConflictError
                 raise ConflictError("Username already taken")
             # Remove old username from index
-            self._username_index.pop(existing.username.lower(), None)
+            self._username_index.pop(original_username.lower(), None)
 
         return await self.save(user)
 

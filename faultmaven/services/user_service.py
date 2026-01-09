@@ -378,6 +378,9 @@ class UserService(BaseService):
         """
         self.logger.debug("Processing password reset")
 
+        # Lazy import of AuthenticationError
+        AuthenticationError = _get_authentication_error()
+
         # Verify reset token
         try:
             claims = self._verify_reset_token(reset_token)

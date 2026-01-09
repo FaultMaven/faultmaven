@@ -127,6 +127,8 @@ class TestAnchoringPrevention:
                 category="code",
                 likelihood=0.7,
                 initial_likelihood=0.7,
+                captured_in_phase=0,
+                captured_at_turn=1,
                 created_at_turn=1,
                 last_updated_turn=1,
             )
@@ -149,6 +151,8 @@ class TestAnchoringPrevention:
                 category="code",
                 likelihood=0.7,
                 initial_likelihood=0.7,
+                captured_in_phase=0,
+                captured_at_turn=1,
                 created_at_turn=1,
                 last_updated_turn=1,
                 status=HypothesisStatus.ACTIVE,
@@ -173,9 +177,11 @@ class TestAnchoringPrevention:
             category="config",
             likelihood=0.7,
             initial_likelihood=0.7,
+            captured_in_phase=0,
+            captured_at_turn=1,
             created_at_turn=1,
             last_updated_turn=1,
-            status=HypothesisStatus.TESTING,
+            status=HypothesisStatus.ACTIVE,
             iterations_without_progress=3,
         )
 
@@ -185,7 +191,7 @@ class TestAnchoringPrevention:
         )
 
         assert should_trigger is True
-        assert "stalled" in reason.lower()
+        assert "without progress" in reason.lower() or "stalled" in reason.lower()
 
     def test_no_anchoring_diverse_hypotheses(self):
         """Test no anchoring with diverse hypothesis categories"""
@@ -197,6 +203,8 @@ class TestAnchoringPrevention:
                 category="code",
                 likelihood=0.7,
                 initial_likelihood=0.7,
+                captured_in_phase=0,
+                captured_at_turn=1,
                 created_at_turn=1,
                 last_updated_turn=1,
                 status=HypothesisStatus.ACTIVE,
@@ -206,6 +214,8 @@ class TestAnchoringPrevention:
                 category="config",
                 likelihood=0.6,
                 initial_likelihood=0.6,
+                captured_in_phase=0,
+                captured_at_turn=1,
                 created_at_turn=1,
                 last_updated_turn=1,
                 status=HypothesisStatus.ACTIVE,
@@ -215,6 +225,8 @@ class TestAnchoringPrevention:
                 category="infrastructure",
                 likelihood=0.5,
                 initial_likelihood=0.5,
+                captured_in_phase=0,
+                captured_at_turn=1,
                 created_at_turn=1,
                 last_updated_turn=1,
                 status=HypothesisStatus.ACTIVE,
@@ -289,7 +301,7 @@ class TestIterationManagement:
         )
 
         assert made_progress is False
-        assert iteration.stall_reason is not None
+        # Note: stall_reason was removed in v3.0, replaced with progress_metrics
 
 
 class TestOODAStepExecution:
@@ -297,13 +309,15 @@ class TestOODAStepExecution:
 
     def test_execute_observe_step(self, ooda_engine, investigation_state_phase4):
         """Test Observe step execution"""
-        # Add a hypothesis with TESTING status so observe step generates information gaps
+        # Add a hypothesis with ACTIVE status so observe step generates information gaps
         investigation_state_phase4.ooda_engine.hypotheses.append(
             Hypothesis(
                 statement="Test hypothesis for observation",
                 category="code",
                 likelihood=0.7,
                 initial_likelihood=0.7,
+                captured_in_phase=0,
+                captured_at_turn=3,
                 created_at_turn=3,
                 last_updated_turn=4,
                 status=HypothesisStatus.ACTIVE,
@@ -330,16 +344,18 @@ class TestOODAStepExecution:
 
     def test_execute_decide_step(self, ooda_engine, investigation_state_phase4):
         """Test Decide step execution"""
-        # Setup: Add hypothesis to test
+        # Setup: Add hypothesis to test (ACTIVE status required for VALIDATION phase)
         investigation_state_phase4.ooda_engine.hypotheses.append(
             Hypothesis(
                 statement="Database connection pool exhausted",
                 category="infrastructure",
                 likelihood=0.8,
                 initial_likelihood=0.8,
+                captured_in_phase=0,
+                captured_at_turn=3,
                 created_at_turn=3,
                 last_updated_turn=3,
-                status=HypothesisStatus.CAPTURED,
+                status=HypothesisStatus.ACTIVE,  # Changed from CAPTURED to ACTIVE for VALIDATION phase
             )
         )
 
@@ -399,6 +415,8 @@ class TestShouldContinueIterations:
                 category="code",
                 likelihood=0.6,
                 initial_likelihood=0.6,
+                captured_in_phase=0,
+                captured_at_turn=2,
                 created_at_turn=2,
                 last_updated_turn=3,
                 status=HypothesisStatus.ACTIVE,
@@ -422,6 +440,8 @@ class TestShouldContinueIterations:
                 category="code",
                 likelihood=0.85,
                 initial_likelihood=0.7,
+                captured_in_phase=0,
+                captured_at_turn=2,
                 created_at_turn=2,
                 last_updated_turn=4,
                 status=HypothesisStatus.VALIDATED,

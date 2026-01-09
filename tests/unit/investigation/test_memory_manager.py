@@ -88,7 +88,7 @@ class TestMemoryInitialization:
         assert memory_manager.HOT_TIER_SIZE == 2
         assert memory_manager.WARM_TIER_SIZE == 3
         assert memory_manager.COLD_TIER_SIZE == 5
-        assert memory_manager.TOTAL_BUDGET == 1600
+        assert memory_manager.total_budget == 1000  # Default: 500 + 300 + 100 + 100 = 1000
 
 
 class TestMemoryUpdate:

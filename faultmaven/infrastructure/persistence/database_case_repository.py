@@ -561,26 +561,35 @@ class DatabaseCaseRepository(CaseRepository):
         try:
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
-            # Find expired cases
+            # Find expired cases - use closed_at from metadata
+            # Need to extract closed_at from JSONB metadata column
             stmt = (
-                select(CaseModel.case_id)
-                .where(
-                    and_(
-                        CaseModel.status == "closed",
-                        CaseModel.updated_at < cutoff_date,
-                    )
-                )
-                .limit(batch_size)
+                select(CaseModel.case_id, CaseModel.case_metadata)
+                .where(CaseModel.status == "closed")
+                .limit(batch_size * 2)  # Fetch more to filter by closed_at in Python
             )
 
             result = await self.db.execute(stmt)
-            case_ids = [row[0] for row in result.fetchall()]
+            rows = result.fetchall()
 
-            if not case_ids:
+            # Filter cases by closed_at timestamp from metadata
+            expired_case_ids = []
+            for row in rows:
+                case_id = row[0]
+                metadata = self._parse_json(row[1], {})
+                closed_at_str = metadata.get("closed_at")
+                if closed_at_str:
+                    closed_at = self._parse_datetime(closed_at_str)
+                    if closed_at and closed_at < cutoff_date:
+                        expired_case_ids.append(case_id)
+                        if len(expired_case_ids) >= batch_size:
+                            break
+
+            if not expired_case_ids:
                 return 0
 
             # Delete expired cases
-            delete_stmt = delete(CaseModel).where(CaseModel.case_id.in_(case_ids))
+            delete_stmt = delete(CaseModel).where(CaseModel.case_id.in_(expired_case_ids))
             result = await self.db.execute(delete_stmt)
             await self.db.commit()
 

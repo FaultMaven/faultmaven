@@ -108,7 +108,16 @@ class DatabaseCaseRepository(CaseRepository):
         """
         try:
             # Update timestamp
-            case.updated_at = datetime.now(timezone.utc)
+            # Don't overwrite updated_at if case is closed and closed_at is set
+            # (preserve the closed_at time for cleanup purposes)
+            if case.status == CaseStatus.CLOSED and case.closed_at:
+                # Preserve updated_at if it's already set to closed_at time
+                if not case.updated_at or case.updated_at != case.closed_at:
+                    # If updated_at doesn't match closed_at, use closed_at
+                    case.updated_at = case.closed_at
+            else:
+                # For non-closed cases or cases without closed_at, update to now
+                case.updated_at = datetime.now(timezone.utc)
 
             # Convert domain model to ORM model
             case_model = self._case_to_model(case)
@@ -562,6 +571,10 @@ class DatabaseCaseRepository(CaseRepository):
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
             # Find expired cases
+            # Note: cleanup_expired checks updated_at, but for closed cases we want to check closed_at
+            # Since closed_at is in JSON metadata, we'll use a simpler approach:
+            # Check updated_at for now (assuming save preserves closed_at time in updated_at when closing)
+            # The save method should preserve updated_at when closing a case
             stmt = (
                 select(CaseModel.case_id)
                 .where(
