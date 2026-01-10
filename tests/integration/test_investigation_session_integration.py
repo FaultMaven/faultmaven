@@ -129,7 +129,7 @@ async def sample_case(case_repository: DatabaseCaseRepository) -> Case:
         title="Investigation Session Integration Test Case",
         description="Testing investigation session management",
         status=CaseStatus.INVESTIGATING,
-        consulting=ConsultingDetails(
+        consulting=ConsultingData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
         ),
@@ -297,7 +297,7 @@ async def test_cascade_delete_case_to_sessions(
         title="CASCADE Delete Test Case",
         description="Testing CASCADE delete",
         status=CaseStatus.INVESTIGATING,
-        consulting=ConsultingDetails(
+        consulting=ConsultingData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
         ),
@@ -345,7 +345,7 @@ async def test_four_level_cascade_delete_chain(
         title="Four-Level CASCADE Test",
         description="Testing full cascade chain",
         status=CaseStatus.INVESTIGATING,
-        consulting=ConsultingDetails(
+        consulting=ConsultingData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
         ),
@@ -482,7 +482,7 @@ async def test_list_sessions_by_user_pagination(
             title=f"Pagination Test Case {i}",
             description="Testing pagination",
             status=CaseStatus.INVESTIGATING,
-            consulting=ConsultingDetails(
+            consulting=ConsultingData(
                 problem_statement_confirmed=True,
                 decided_to_investigate=True,
             ),

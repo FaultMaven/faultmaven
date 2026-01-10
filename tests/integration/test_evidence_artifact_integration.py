@@ -32,7 +32,7 @@ from faultmaven.infrastructure.persistence.repository_factory import (
     STORAGE_TYPE_INMEMORY,
     STORAGE_TYPE_DATABASE,
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy, ConsultingDetails
+from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy, ConsultingData
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
@@ -106,7 +106,7 @@ async def sample_case(case_repository: DatabaseCaseRepository) -> Case:
         title="Evidence Integration Test Case",
         description="Testing evidence management",
         status=CaseStatus.INVESTIGATING,
-        consulting=ConsultingDetails(
+        consulting=ConsultingData(
             problem_statement_confirmed=True,
             decided_to_investigate=True,
         ),
