@@ -42,116 +42,6 @@ A module is **VERTICAL** (business domain) if and only if it meets **ALL THREE**
 
 ---
 
-## Module Classification Taxonomy
-
-### Three Categories
-
-| Term | Owns Data? | Business Logic? | Examples |
-|------|-----------|----------------|----------|
-| **Vertical Module** | ✅ Yes | ✅ Yes | Case, Auth, Knowledge |
-| **Domain Service** | ❌ No | ✅ Yes | Evidence, Agent, Report |
-| **Horizontal Infrastructure** | ❌ No | ❌ No | LLM, Storage, Logging |
-
-**Key Point**: These categories are **mutually exclusive**. A module cannot be both Vertical and Domain Service.
-
-### Decision Tree
-
-```
-                    Owns Domain Data?
-                    /              \
-                  YES               NO
-                   |                 |
-            VERTICAL MODULE    Has Business Logic?
-           (Case, Auth, Knowledge)   /          \
-                                   YES           NO
-                                    |             |
-                             DOMAIN SERVICE   HORIZONTAL
-                           (Evidence, Agent,   INFRASTRUCTURE
-                                Report)       (LLM, Logging, Storage)
-```
-
----
-
-## Structure = Signal: Self-Documenting Code Organization
-
-**Critical Insight**: The folder structure should be **self-documenting**. One glance tells you what type of module it is. Structure signals characteristics immediately—no documentation needed.
-
-### Structure Patterns by Type
-
-| Type | Structure | Immediate Signal |
-|------|-----------|-----------------|
-| **Vertical Module** | Has `contracts.py` + `infrastructure/` | "I own data" |
-| **Domain Service** | Has `domain/` but NO `contracts.py`, NO `infrastructure/` | "I have logic but delegate data" |
-| **Horizontal Infrastructure** | Has `providers/` or `interfaces/`, NO `domain/` | "I'm technical plumbing" |
-
-### Visual Comparison
-
-**Vertical Module** (owns data):
-```
-modules/case/                    # ← Vertical Module
-├── contracts.py                 # ← "I expose interfaces"
-├── api/
-├── domain/
-└── infrastructure/              # ← "I own persistence"
-    └── case_repository.py
-```
-
-**Domain Service** (logic only, no data ownership):
-```
-modules/evidence/                # ← Domain Service
-├── domain/                      # ← "I have business logic"
-│   └── services/
-│       └── evidence_service.py
-└── api/
-    └── routes.py
-# NO contracts.py                # ← "Nothing to expose"
-# NO infrastructure/             # ← "I don't own data"
-```
-
-**Horizontal Infrastructure** (technical plumbing):
-```
-infrastructure/llm/              # ← Horizontal Infrastructure
-├── interfaces.py                # ← Technical interface
-├── providers/                   # ← Swappable implementations
-│   ├── openai.py
-│   └── anthropic.py
-└── router.py
-# NO domain/                     # ← "No business logic"
-# NO api/                        # ← "Not user-facing"
-```
-
-### The One-Glance Rule
-
-You can determine module type **without reading code or documentation**:
-
-| What You See | Type | Meaning |
-|-------------|------|---------|
-| `contracts.py` + `infrastructure/` | ✅ **Vertical Module** | Owns data |
-| `domain/` but no `infrastructure/` | ❌ **Domain Service** | Logic only, delegates data |
-| `providers/` but no `domain/` | ❌ **Horizontal Infrastructure** | Technical plumbing |
-
-**Rule**: **Structure tells the story. No documentation needed.**
-
-### Why Structure Matters
-
-The folder structure is the **first signal** developers encounter. When structure matches ownership reality:
-
-- ✅ **Onboarding**: New developer knows "Case owns evidence data" by seeing Case has `infrastructure/`, Evidence doesn't
-- ✅ **Refactoring**: Developer knows "change evidence schema → modify Case module" by seeing Case has `infrastructure/`
-- ✅ **Debugging**: Developer knows "evidence data issues → check Case repository" by seeing Evidence has no `infrastructure/`
-
-**Mismatched structure** (Evidence has `infrastructure/` but doesn't own data):
-- ❌ Developer thinks "Evidence owns data" → modifies wrong module
-- ❌ Schema changes happen in wrong place → drift between Evidence and Case models
-- ❌ Two repositories for one table → confusion about source of truth
-
-**Correct structure** (Evidence has `domain/` but no `infrastructure/`):
-- ✅ Developer knows "Evidence has logic, Case owns data" → schema changes in Case
-- ✅ Clear dependency: Evidence uses Case contracts → no confusion
-- ✅ One repository for evidence table → single source of truth
-
----
-
 ## Decision Framework
 
 ### Minimum Criteria for Vertical Modules
@@ -710,9 +600,8 @@ modules/agent/             # Domain Service (NOT vertical)
 
 modules/report/            # Domain Service (NOT vertical)
 ├── domain/                # Report generation
-└── api/                   # Endpoints
-# NO infrastructure/        # Storage in horizontal infrastructure (RedisReportStore)
-# Storage: infrastructure/persistence/redis_report_store.py (ephemeral until TD-001)
+├── api/                   # Endpoints
+└── infrastructure/        # ⚠️ TEMPORARY until TD-001 (Redis + ChromaDB)
 ```
 
 **Pros**: Maintains domain cohesion, extraction-ready, matches schema reality  
@@ -736,7 +625,7 @@ modules/report/            # Domain Service (NOT vertical)
 | **Domain cohesion** | ✅ High | ✅ High | ⚠️ Medium |
 | **Extraction ready** | ✅ Yes | ✅ Yes | ⚠️ Requires refactor |
 
-*Exception: Report storage is in horizontal infrastructure (`infrastructure/persistence/redis_report_store.py`) until TD-001 migration (ephemeral Redis + ChromaDB)
+*Exception: Report keeps `infrastructure/` temporarily until TD-001 migration
 
 ### Purpose Achievement: Domain Services vs Vertical
 
@@ -798,39 +687,21 @@ class AgentService:
 #### Report Service Pattern (Current - Pre-TD-001)
 
 ```python
-# modules/report/api/routes.py (API layer uses Case contracts)
-from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.models.interfaces_report import IReportStore
+# modules/report/domain/report_service.py
+from faultmaven.modules.case.contracts import ICaseService
 
-@router.post("/cases/{case_id}/reports")
-async def generate_reports(
-    case_id: str,
-    case_service: ICaseService = Depends(get_case_service),
-    report_store: IReportStore = Depends(get_report_store),
-):
-    # API layer gets Case via ICaseService
-    case = await case_service.get_case(case_id, user_id=current_user.user_id)
+class ReportService:
+    def __init__(self, case_service: ICaseService, llm_provider: ILLMProvider):
+        self.case_service = case_service
+        self.llm_provider = llm_provider
     
-    # Service receives Case object (doesn't query directly)
-    report = await report_service.generate_reports(case, report_types)
-    
-    # Storage via IReportStore (horizontal infrastructure: RedisReportStore)
-    await report_store.save_report(report)  # Redis + ChromaDB (ephemeral)
-    # TODO TD-001: await case_service.save_report(case_id, report)  # PostgreSQL
-
-# modules/report/domain/services/report_generation_service.py
-class ReportGenerationService:
-    def __init__(self, llm_router, report_store: IReportStore):
-        self.llm_router = llm_router
-        self.report_store = report_store  # Horizontal infrastructure
-    
-    async def generate_reports(self, case: Case, report_types: List[ReportType]):
-        # Receives Case object (no direct Case query needed)
+    async def generate_report(self, case_id: str, report_type: ReportType):
+        case = await self.case_service.get_case(case_id)
         report = await self._generate(case, report_type)
         
         # TEMPORARY: Ephemeral storage until TD-001
-        await self.report_store.save_report(report)  # Redis + ChromaDB
-        # TODO TD-001: Use Case repository for persistence
+        await self.report_cache.save(report)  # Redis + ChromaDB
+        # TODO TD-001: await self.case_service.save_report(case_id, report)
 ```
 
 #### Agent Tools: Exception to Domain Service Pattern
@@ -893,382 +764,6 @@ from faultmaven.modules.agent.domain.orchestrator import InvestigationOrchestrat
 - Only the composition root (`main.py`) imports Domain Service classes
 - Domain Services communicate via Vertical Module contracts only
 - API routes delegate to injected services, never import domain internals
-
-### Why This Matters: Real Benefits Beyond Meeting Specs
-
-The distinction between Vertical Modules and Domain Services isn't just about following design specifications—it provides **measurable, practical benefits** that prevent real problems.
-
-#### Real Benefits (Measurable)
-
-##### 1. Prevents Cross-Module Bugs
-
-**Problem**: When modules directly access each other's internal models, changes in one module break others unexpectedly.
-
-**Without boundaries** (fragile):
-```python
-# Evidence service directly accesses Case internals
-from modules.case.domain.models import Case
-case.evidence.append(data)  # Bypasses validation, breaks if Case model changes
-```
-
-**With boundaries** (resilient):
-```python
-# Evidence service uses Case contract
-from modules.case.contracts import ICaseRepository
-await case_repo.add_evidence(case_id, data)  # Validation enforced, contract stable
-```
-
-**Measurable**: Fewer bugs from "I changed X and Y broke unexpectedly"
-
-##### 2. Faster Onboarding
-
-**Without boundaries**: New developer must understand Case internals, Evidence internals, Agent internals to work on Reports  
-**With boundaries**: Only needs to understand Report module + contracts it uses
-
-**Measurable**: Days to productivity for new team members
-
-##### 3. Parallel Development
-
-**Without boundaries**: Constant merge conflicts, stepping on each other  
-**With boundaries**: Developer A owns Case, Developer B owns Report, contracts are stable
-
-**Measurable**: Fewer merge conflicts, less coordination overhead
-
-##### 4. Refactoring Confidence
-
-**Without boundaries**: Must grep entire codebase, hope you found everything when changing Case internals  
-**With boundaries**: Change Case internals, contract stays same, nothing else breaks
-
-**Measurable**: Time spent on refactoring, bugs introduced
-
-##### 5. Testing Speed
-
-**Without boundaries**: Must set up full database, Case module, Agent module to test Evidence  
-**With boundaries**: Mock `ICaseRepository`, test Evidence logic in isolation
-
-**Measurable**: Test suite runtime, test complexity
-
-#### The Practical Problem: False Ownership Claims
-
-**Current Structure Problem** (all modules look identical):
-
-```
-modules/case/                    modules/evidence/
-├── contracts.py                 ├── contracts.py        ← What does this expose?
-├── api/                         ├── api/
-├── domain/                      ├── domain/
-└── infrastructure/              └── infrastructure/     ← What table does this own?
-    └── case_repository.py           └── evidence_repository.py
-```
-
-They look identical, but **reality differs**:
-
-```python
-# modules/evidence/infrastructure/evidence_repository.py
-class EvidenceRepository:
-    async def save_evidence(self, case_id: str, evidence: Evidence):
-        # Where does this write to?
-        await self.db.execute(
-            "INSERT INTO evidence (case_id, ...) VALUES (...)",
-            case_id, ...
-        )
-```
-
-It writes to the `evidence` table, but **who owns that table?** Case module (it has FK to cases, cascade delete with cases).
-
-**The Problem Scenario**: Change Evidence Schema
-
-**Product requirement**: "Add `confidence_score` field to evidence"
-
-**With current structure** (Evidence looks vertical):
-1. Developer thinks: "Evidence module owns evidence, I'll change Evidence module"
-2. Changes `modules/evidence/infrastructure/evidence_repository.py`
-3. Changes `modules/evidence/domain/models.py`
-4. **But wait...** Case module also has evidence models (for loading case with evidence)
-5. Now there are **two places** defining evidence structure
-6. They drift. Bugs happen.
-
-**With Domain Service structure**:
-1. Developer knows: "Case module owns evidence table"
-2. Changes `modules/case/infrastructure/case_repository.py`
-3. Changes `modules/case/contracts.py` (EvidenceDTO)
-4. Evidence service automatically gets new field through contract
-5. **One source of truth**
-
-#### The Concrete Benefit: Clear Ownership
-
-**With Vertical Structure** (Problematic - False Ownership):
-```python
-# modules/evidence/contracts.py
-class IEvidenceRepository(Protocol):
-    async def save(self, evidence: Evidence): ...  # ← Pretends to own data
-
-# modules/case/contracts.py  
-class ICaseRepository(Protocol):
-    async def get_case_with_evidence(self, case_id: str): ...  # ← Actually owns data
-```
-
-**Problem**: Two contracts, two repositories, **one table**. Who's the source of truth?
-
-**With Domain Service Structure** (Correct - Clear Ownership):
-```python
-# modules/case/contracts.py
-class ICaseRepository(Protocol):
-    async def add_evidence(self, case_id: str, evidence: Evidence): ...
-    async def get_evidence(self, case_id: str) -> list[Evidence]: ...
-
-# modules/evidence/domain/evidence_service.py
-class EvidenceService:
-    def __init__(self, case_repo: ICaseRepository):  # ← Uses Case's contract
-        self.case_repo = case_repo
-    
-    async def collect_evidence(self, case_id: str, data: EvidenceInput):
-        validated = self.validate(data)  # ← Evidence owns validation logic
-        processed = await self.preprocess(validated)  # ← Evidence owns preprocessing
-        await self.case_repo.add_evidence(case_id, processed)  # ← Case owns persistence
-```
-
-**Benefit**: Clear who owns what. Schema changes happen in **one place**.
-
-#### The One-Line Test
-
-**Question**: "If I need to add a column to this module's data, which module's migration script do I write?"
-
-| Module | Migration Location | Verdict |
-|--------|-------------------|---------|
-| Evidence data | Case migration | ❌ **Not Vertical** |
-| Agent data | No migration (no persistent state) | ❌ **Not Vertical** |
-| Report data | Case migration (after TD-001) | ❌ **Not Vertical** |
-| Case data | Case migration | ✅ **Vertical** |
-| Auth data | Auth migration | ✅ **Vertical** |
-| Knowledge data | Knowledge migration | ✅ **Vertical** |
-
-**Rule**: If the answer isn't "this module", it's not vertical.
-
-#### Theoretical Benefits (Harder to Measure)
-
-These benefits are **not compelling reasons** to refactor if code already works:
-
-1. **Microservice Extraction**: "We might need to scale Case separately someday"
-   - **Reality**: Most projects never need this. If you do, you'll refactor anyway.
-
-2. **Team Scaling**: "When we have 50 engineers, we need clear boundaries"
-   - **Reality**: You don't have 50 engineers. Solve today's problems.
-
-3. **Architectural Purity**: "This is how proper systems are designed"
-   - **Reality**: Mental satisfaction, not business value.
-
-#### Summary: Why Different Treatment Matters
-
-| Module | Why Vertical | Why Domain Service |
-|--------|-------------|-------------------|
-| **Case** | Owns `cases`, `evidence`, `hypotheses` tables - schema changes here | - |
-| **Auth** | Owns `users`, `organizations` tables - schema changes here | - |
-| **Knowledge** | Owns `kb_documents` + ChromaDB - schema changes here | - |
-| **Evidence** | - | Validation/preprocessing logic only. Data in Case tables. |
-| **Agent** | - | Orchestration logic only. No persistent state. |
-| **Report** | - | Generation logic only. Data ephemeral (or in Case after TD-001). |
-
-The folder structure difference **reflects ownership reality**, not arbitrary design preference.
-
-#### Bottom Line
-
-The real question isn't **"does this match the design spec?"** but:
-
-> **"Will this prevent bugs and reduce confusion when someone (including future-you) modifies this code?"**
-
-**If the answer is yes** → implement it  
-**If the answer is "maybe someday"** → document it, don't implement it yet
-
-For Evidence/Agent/Report specifically: The main practical benefit is **clarity about data ownership**. When someone asks "where is evidence stored?", the answer is unambiguous: **Case module owns it**. That prevents bugs where someone tries to modify evidence through the wrong path.
-
-### Why This Matters: Real Benefits Beyond Meeting Specs
-
-The distinction between Vertical Modules and Domain Services isn't just about following design specifications—it provides **measurable, practical benefits** that prevent real problems.
-
-#### Real Benefits (Measurable)
-
-##### 1. Prevents Cross-Module Bugs
-
-**Problem**: When modules directly access each other's internal models, changes in one module break others unexpectedly.
-
-**Without boundaries** (fragile):
-```python
-# Evidence service directly accesses Case internals
-from modules.case.domain.models import Case
-case.evidence.append(data)  # Bypasses validation, breaks if Case model changes
-```
-
-**With boundaries** (resilient):
-```python
-# Evidence service uses Case contract
-from modules.case.contracts import ICaseRepository
-await case_repo.add_evidence(case_id, data)  # Validation enforced, contract stable
-```
-
-**Measurable**: Fewer bugs from "I changed X and Y broke unexpectedly"
-
-##### 2. Faster Onboarding
-
-**Without boundaries**: New developer must understand Case internals, Evidence internals, Agent internals to work on Reports  
-**With boundaries**: Only needs to understand Report module + contracts it uses
-
-**Measurable**: Days to productivity for new team members
-
-##### 3. Parallel Development
-
-**Without boundaries**: Constant merge conflicts, stepping on each other  
-**With boundaries**: Developer A owns Case, Developer B owns Report, contracts are stable
-
-**Measurable**: Fewer merge conflicts, less coordination overhead
-
-##### 4. Refactoring Confidence
-
-**Without boundaries**: Must grep entire codebase, hope you found everything when changing Case internals  
-**With boundaries**: Change Case internals, contract stays same, nothing else breaks
-
-**Measurable**: Time spent on refactoring, bugs introduced
-
-##### 5. Testing Speed
-
-**Without boundaries**: Must set up full database, Case module, Agent module to test Evidence  
-**With boundaries**: Mock `ICaseRepository`, test Evidence logic in isolation
-
-**Measurable**: Test suite runtime, test complexity
-
-#### The Practical Problem: False Ownership Claims
-
-**Current Structure Problem** (all modules look identical):
-
-```
-modules/case/                    modules/evidence/
-├── contracts.py                 ├── contracts.py        ← What does this expose?
-├── api/                         ├── api/
-├── domain/                      ├── domain/
-└── infrastructure/              └── infrastructure/     ← What table does this own?
-    └── case_repository.py           └── evidence_repository.py
-```
-
-They look identical, but **reality differs**:
-
-```python
-# modules/evidence/infrastructure/evidence_repository.py
-class EvidenceRepository:
-    async def save_evidence(self, case_id: str, evidence: Evidence):
-        # Where does this write to?
-        await self.db.execute(
-            "INSERT INTO evidence (case_id, ...) VALUES (...)",
-            case_id, ...
-        )
-```
-
-It writes to the `evidence` table, but **who owns that table?** Case module (it has FK to cases, cascade delete with cases).
-
-**The Problem Scenario**: Change Evidence Schema
-
-**Product requirement**: "Add `confidence_score` field to evidence"
-
-**With current structure** (Evidence looks vertical):
-1. Developer thinks: "Evidence module owns evidence, I'll change Evidence module"
-2. Changes `modules/evidence/infrastructure/evidence_repository.py`
-3. Changes `modules/evidence/domain/models.py`
-4. **But wait...** Case module also has evidence models (for loading case with evidence)
-5. Now there are **two places** defining evidence structure
-6. They drift. Bugs happen.
-
-**With Domain Service structure**:
-1. Developer knows: "Case module owns evidence table"
-2. Changes `modules/case/infrastructure/case_repository.py`
-3. Changes `modules/case/contracts.py` (EvidenceDTO)
-4. Evidence service automatically gets new field through contract
-5. **One source of truth**
-
-#### The Concrete Benefit: Clear Ownership
-
-**With Vertical Structure** (Problematic - False Ownership):
-```python
-# modules/evidence/contracts.py
-class IEvidenceRepository(Protocol):
-    async def save(self, evidence: Evidence): ...  # ← Pretends to own data
-
-# modules/case/contracts.py  
-class ICaseRepository(Protocol):
-    async def get_case_with_evidence(self, case_id: str): ...  # ← Actually owns data
-```
-
-**Problem**: Two contracts, two repositories, **one table**. Who's the source of truth?
-
-**With Domain Service Structure** (Correct - Clear Ownership):
-```python
-# modules/case/contracts.py
-class ICaseRepository(Protocol):
-    async def add_evidence(self, case_id: str, evidence: Evidence): ...
-    async def get_evidence(self, case_id: str) -> list[Evidence]: ...
-
-# modules/evidence/domain/evidence_service.py
-class EvidenceService:
-    def __init__(self, case_repo: ICaseRepository):  # ← Uses Case's contract
-        self.case_repo = case_repo
-    
-    async def collect_evidence(self, case_id: str, data: EvidenceInput):
-        validated = self.validate(data)  # ← Evidence owns validation logic
-        processed = await self.preprocess(validated)  # ← Evidence owns preprocessing
-        await self.case_repo.add_evidence(case_id, processed)  # ← Case owns persistence
-```
-
-**Benefit**: Clear who owns what. Schema changes happen in **one place**.
-
-#### The One-Line Test
-
-**Question**: "If I need to add a column to this module's data, which module's migration script do I write?"
-
-| Module | Migration Location | Verdict |
-|--------|-------------------|---------|
-| Evidence data | Case migration | ❌ **Not Vertical** |
-| Agent data | No migration (no persistent state) | ❌ **Not Vertical** |
-| Report data | Case migration (after TD-001) | ❌ **Not Vertical** |
-| Case data | Case migration | ✅ **Vertical** |
-| Auth data | Auth migration | ✅ **Vertical** |
-| Knowledge data | Knowledge migration | ✅ **Vertical** |
-
-**Rule**: If the answer isn't "this module", it's not vertical.
-
-#### Theoretical Benefits (Harder to Measure)
-
-These benefits are **not compelling reasons** to refactor if code already works:
-
-1. **Microservice Extraction**: "We might need to scale Case separately someday"
-   - **Reality**: Most projects never need this. If you do, you'll refactor anyway.
-
-2. **Team Scaling**: "When we have 50 engineers, we need clear boundaries"
-   - **Reality**: You don't have 50 engineers. Solve today's problems.
-
-3. **Architectural Purity**: "This is how proper systems are designed"
-   - **Reality**: Mental satisfaction, not business value.
-
-#### Summary: Why Different Treatment Matters
-
-| Module | Why Vertical | Why Domain Service |
-|--------|-------------|-------------------|
-| **Case** | Owns `cases`, `evidence`, `hypotheses` tables - schema changes here | - |
-| **Auth** | Owns `users`, `organizations` tables - schema changes here | - |
-| **Knowledge** | Owns `kb_documents` + ChromaDB - schema changes here | - |
-| **Evidence** | - | Validation/preprocessing logic only. Data in Case tables. |
-| **Agent** | - | Orchestration logic only. No persistent state. |
-| **Report** | - | Generation logic only. Data ephemeral (or in Case after TD-001). |
-
-The folder structure difference **reflects ownership reality**, not arbitrary design preference.
-
-#### Bottom Line
-
-The real question isn't **"does this match the design spec?"** but:
-
-> **"Will this prevent bugs and reduce confusion when someone (including future-you) modifies this code?"**
-
-**If the answer is yes** → implement it  
-**If the answer is "maybe someday"** → document it, don't implement it yet
-
-For Evidence/Agent/Report specifically: The main practical benefit is **clarity about data ownership**. When someone asks "where is evidence stored?", the answer is unambiguous: **Case module owns it**. That prevents bugs where someone tries to modify evidence through the wrong path.
 
 ### Migration Considerations
 
@@ -1422,11 +917,9 @@ These modules implement **business logic** but **operate on data owned by other 
   ```
   modules/report/
   ├── domain/               # Report generation logic
-  └── api/                  # Report endpoints
-  # NO infrastructure/      # Storage in horizontal infrastructure (RedisReportStore)
+  ├── api/                  # Report endpoints
+  └── infrastructure/       # Redis + ChromaDB storage (ephemeral)
   ```
-- **Storage**: Reports stored via `IReportStore` interface implemented by `RedisReportStore` in `infrastructure/persistence/redis_report_store.py` (horizontal infrastructure, ephemeral until TD-001)
-- **Case Access**: API routes use `ICaseService` to get Case data; service receives Case object as parameter
 
 **Note**: Reports are derived/cached outputs, not first-class domain entities. They're similar to cached LLM responses.
 
@@ -1621,8 +1114,8 @@ faultmaven/
 │   │
 │   └── report/                       # ❌ Domain Service (ephemeral outputs)
 │       ├── domain/                   # Report generation logic
-│       └── api/                      # Report endpoints
-│       # NO infrastructure/          # Storage in horizontal infrastructure (RedisReportStore)
+│       ├── api/
+│       └── infrastructure/           # Redis + ChromaDB (ephemeral, TTL-based)
 │
 ├── infrastructure/                   # Horizontal cross-cutting infrastructure
 │   ├── llm/                          # ❌ Horizontal
@@ -1724,13 +1217,10 @@ faultmaven/
 - ⏳ Add integration tests for contract compliance
 
 ### Phase 2.5: Restructure Domain Services
-- ✅ Remove `contracts.py` from Evidence, Agent, Report modules (they don't own data) - **COMPLETED**: None of these modules have contracts.py
-- ✅ Remove `infrastructure/` from Evidence, Agent modules (use Case repository) - **COMPLETED**: Neither module has infrastructure/persistence
-- ✅ Report storage in horizontal infrastructure (`infrastructure/persistence/redis_report_store.py`) - **VERIFIED**: Storage correctly in horizontal infrastructure, not module infrastructure/
+- ⏳ Remove `contracts.py` from Evidence, Agent, Report modules (they don't own data)
+- ⏳ Remove `infrastructure/` from Evidence, Agent modules (use Case repository)
+- ⏳ Keep Report `infrastructure/` temporarily until TD-001 migration (Redis + ChromaDB)
 - ⏳ Update Evidence, Agent, Report to use Case module's contracts (`ICaseRepository`, `ICaseService`)
-  - ✅ Report API routes already use `ICaseService` via dependency injection
-  - ⏳ Verify Evidence uses Case contracts (may need completion)
-  - ⏳ Verify Agent uses Case contracts
 - ⏳ Add import-linter rules for Domain Service boundaries (prevent vertical modules from importing domain service internals)
 - ⏳ Update composition root (`main.py`) to wire Domain Services with Case contracts
 - ⏳ Update API routes to use injected Domain Service instances
@@ -1864,7 +1354,6 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 | 1.0 | 2026-01-09 | Initial recommendations with 6 vertical modules |
 | 2.0 | 2026-01-09 | **Schema-verified revision** - Only 3 vertical modules (Case, Auth, Knowledge) after reviewing `case-storage-design.md` and `data-storage-design.md`. Evidence, Agent, and Report reclassified as Domain Services. |
 | 2.1 | 2026-01-10 | **Domain Service structural guidance** - Added detailed implementation patterns, structural options, boundary enforcement strategies, and migration steps (Phase 2.5) for Evidence, Agent, Report modules. Consolidated vertical-vs-layer structuring guidance into this document. |
-| 2.2 | 2026-01-10 | **Report module structure verification** - Clarified that Report module storage is correctly in horizontal infrastructure (`infrastructure/persistence/redis_report_store.py`), not in module `infrastructure/`. Updated Phase 2.5 status to reflect Report module correctly uses `ICaseService` in API routes. |
 
 ### Key Changes in v2.0
 

@@ -764,10 +764,9 @@ async def case_service() -> CaseService:
     Note: Uses services from dependency injection container.
     Does NOT clean Redis - tests work with existing data.
     """
-    from faultmaven.container import get_container
+    from faultmaven.container import container
 
-    # Get container and initialize case service
-    container = get_container()
+    # Container is already initialized
 
     # Return the case service from the container
     return container.case_service

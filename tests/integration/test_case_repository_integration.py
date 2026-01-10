@@ -123,6 +123,11 @@ def sample_case_with_evidence() -> Case:
         title="Case with Evidence",
         description="Testing evidence linking",
         status=CaseStatus.INVESTIGATING,
+        consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+        ),
     )
 
     # Add evidence
@@ -154,6 +159,11 @@ def sample_case_with_hypotheses() -> Case:
         title="Case with Hypotheses",
         description="Testing hypothesis tracking",
         status=CaseStatus.INVESTIGATING,
+        consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+        ),
     )
 
     # Add hypothesis
@@ -316,7 +326,13 @@ async def test_hypothesis_validation_flow(db_repository: DatabaseCaseRepository)
         user_id="hypothesis-test-user",
         organization_id="hypothesis-test-org",
         title="Hypothesis Validation Test",
+        description="Testing hypothesis validation flow",
         status=CaseStatus.INVESTIGATING,
+        consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+        ),
     )
 
     # Add hypothesis as proposed
@@ -534,11 +550,14 @@ async def test_complex_case_persistence(db_repository: DatabaseCaseRepository):
         description="Testing all fields",
         status=CaseStatus.INVESTIGATING,
         investigation_strategy=InvestigationStrategy.ACTIVE_INCIDENT,
+        consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+            quick_suggestions=["Check logs", "Restart service"],
+            consultation_turns=3,
+        ),
     )
-
-    # Add consulting data
-    case.consulting.quick_suggestions = ["Check logs", "Restart service"]
-    case.consulting.consultation_turns = 3
 
     # Add progress
     case.progress.symptom_verified = True

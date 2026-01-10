@@ -20,6 +20,8 @@ Key Components:
 
 from typing import List, Optional, Any
 import logging
+import os
+import sys
 from datetime import datetime, timezone
 from faultmaven.config.settings import FaultMavenSettings, get_settings
 from faultmaven.container.base import BaseDIContainer
@@ -151,6 +153,22 @@ class DIContainer(BaseDIContainer):
             else:
                 import traceback
                 logger.error(f"Critical initialization error: {traceback.format_exc()}")
+                
+                # Fail-fast in production for critical infrastructure
+                # Allow graceful degradation only in development/test environments
+                is_production = os.getenv("ENVIRONMENT", "").lower() in ("production", "prod")
+                skip_service_checks = os.getenv("SKIP_SERVICE_CHECKS", "").lower() == "true"
+                is_test = "pytest" in sys.modules
+                
+                if is_production and not skip_service_checks and not is_test:
+                    # Fail-fast: raise exception to prevent half-initialized state
+                    logger.critical("FAIL-FAST: Critical infrastructure initialization failed in production. Aborting startup.")
+                    raise RuntimeError(
+                        f"DI Container initialization failed in production: {e}. "
+                        "Critical infrastructure (database, LLM registry) must be available. "
+                        "Check logs for details."
+                    ) from e
+                
                 self._initialized = False
 
     def _ensure_initialized_for_getter(self) -> None:

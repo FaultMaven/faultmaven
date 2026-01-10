@@ -57,7 +57,10 @@ class TestUserKBFlow:
             metadata=ExtractionMetadata(
                 data_type=DataType.UNSTRUCTURED_TEXT,
                 processing_time_ms=50.0,
-                llm_calls_used=0
+                llm_calls_used=0,
+                extraction_strategy="direct",
+                confidence=0.95,
+                source="user_upload",
             ),
             original_size=1024,
             processed_size=256
