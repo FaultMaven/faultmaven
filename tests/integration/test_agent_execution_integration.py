@@ -36,6 +36,7 @@ from faultmaven.infrastructure.persistence.repository_factory import (
 )
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy, ConsultingData
 from faultmaven.modules.agent.domain.models.agent_execution import (
+from tests.utils import generate_case_id
     AgentExecution,
     AgentToolCall,
     AgentType,
