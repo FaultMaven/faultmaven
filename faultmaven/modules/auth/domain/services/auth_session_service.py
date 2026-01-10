@@ -162,7 +162,7 @@ class AuthSessionService(BaseService):
         if not self.session_store:
             raise ServiceException("Session store not configured")
 
-        session = await self.session_store.get(session_id)
+        session = await self.session_store.get_session(session_id)
         if not session:
             return None
 

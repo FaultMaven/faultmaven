@@ -275,14 +275,18 @@ class RedisSessionStore(ISessionStore):
         # Convert ISO strings back to datetime
         created_at = parse_utc_timestamp(session_data['created_at'])
         last_activity = parse_utc_timestamp(session_data['last_activity'])
+        updated_at = parse_utc_timestamp(session_data.get('updated_at', session_data['last_activity']))
+        expires_at = parse_utc_timestamp(session_data['expires_at']) if session_data.get('expires_at') else None
 
         return SessionContext(
             session_id=session_data['session_id'],
             user_id=session_data.get('user_id'),
+            client_id=session_data.get('client_id'),
+            session_resumed=session_data.get('session_resumed', False),
             created_at=created_at,
             last_activity=last_activity,
-            data_uploads=session_data.get('data_uploads', []),
-            case_history=session_data.get('case_history', []),
+            updated_at=updated_at,
+            expires_at=expires_at,
             metadata=session_data.get('metadata', {})
         )
 
