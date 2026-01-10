@@ -16,7 +16,6 @@ import tempfile
 import pytest
 from datetime import datetime, timezone
 from typing import AsyncGenerator
-from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
@@ -42,21 +41,12 @@ from faultmaven.exceptions import (
     ValidationException,
     ServiceError,
 )
+from tests.utils import generate_case_id, generate_evidence_id
 
 
 # ============================================================
 # Helper Functions
 # ============================================================
-
-
-def generate_case_id() -> str:
-    """Generate a valid case ID."""
-    return f"case_{uuid4().hex[:12]}"
-
-
-def generate_evidence_id() -> str:
-    """Generate a valid evidence ID."""
-    return f"evd_{uuid4().hex[:12]}"
 
 
 # ============================================================

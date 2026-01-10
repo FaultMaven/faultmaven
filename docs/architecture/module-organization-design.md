@@ -1,7 +1,7 @@
 # Module Organization Design: Vertical vs Horizontal
 
-**Version**: 2.0  
-**Date**: 2026-01-09  
+**Version**: 2.1  
+**Date**: 2026-01-10  
 **Status**: Schema-Verified Recommendation  
 **Related**: [Architectural Design Principles](architectural-design-principles.md)
 
@@ -558,40 +558,212 @@ Use domain services when:
 - ❌ Module doesn't own domain data (data owned by another module)
 - ✅ Module operates on data through contracts (ICaseQuery, ICaseService)
 
-### Domain Service Structure
+### Structural Options for Domain Services
+
+When a module is classified as a Domain Service (not vertical), there are two structural approaches:
+
+#### Option A: Horizontal Layer Structure
+
+Move to `services/` directory (traditional layered architecture):
 
 ```
-modules/evidence/           # Domain Service
-├── domain/                 # Evidence collection, validation logic
-│   ├── services/
-│   └── models/            # Domain models (not persistence)
-├── api/                    # Evidence endpoints
-└── NO infrastructure/      # Delegates to Case repository via contracts
+services/
+├── evidence_service.py   # Evidence business logic
+├── agent_service.py      # Agent business logic
+└── report_service.py     # Report business logic
 
-modules/case/               # Vertical Module (owns evidence data)
-├── contracts.py            # ICaseService (used by Evidence)
-├── domain/                 # Case business logic
-└── infrastructure/         # Case repository (includes evidence table)
+api/v1/routes/
+├── evidence.py           # Evidence endpoints
+├── agent.py              # Agent endpoints
+└── report.py             # Report endpoints
 ```
 
-### Contract Pattern for Domain Services
+**Pros**: Simple, fits traditional patterns  
+**Cons**: Loses domain cohesion, harder to extract as microservices
+
+#### Option B: Domain Service Structure (Recommended)
+
+Keep in `modules/` but remove vertical characteristics:
+
+```
+modules/evidence/          # Domain Service (NOT vertical)
+├── domain/                # Business logic
+└── api/                   # Endpoints
+# NO contracts.py          # Don't own data, nothing to expose
+# NO infrastructure/       # Uses Case repository
+
+modules/agent/             # Domain Service (NOT vertical)
+├── domain/                # LangGraph orchestration
+├── tools/                 # Agent-specific tools (exception - see below)
+└── api/                   # Endpoints
+# NO contracts.py, NO infrastructure/
+
+modules/report/            # Domain Service (NOT vertical)
+├── domain/                # Report generation
+├── api/                   # Endpoints
+└── infrastructure/        # ⚠️ TEMPORARY until TD-001 (Redis + ChromaDB)
+```
+
+**Pros**: Maintains domain cohesion, extraction-ready, matches schema reality  
+**Cons**: Hybrid structure requires documentation clarity
+
+### Recommended Approach: Domain Service Structure
+
+**Rationale**:
+1. **Preserves Domain Cohesion**: Logic organized by business domain
+2. **Removes False Boundaries**: No `contracts.py` since they don't own data
+3. **Correct Data Access**: Uses owning module's contracts (Case module)
+4. **Future Extraction**: Still organized for potential microservice extraction
+
+### Structural Comparison
+
+| Aspect | Vertical Module | Domain Service | Horizontal Layer |
+|--------|----------------|----------------|------------------|
+| **Location** | `modules/{name}/` | `modules/{name}/` | `services/` |
+| **Has contracts.py** | ✅ Yes | ❌ No | N/A |
+| **Has infrastructure/** | ✅ Yes | ❌ No* | N/A |
+| **Domain cohesion** | ✅ High | ✅ High | ⚠️ Medium |
+| **Extraction ready** | ✅ Yes | ✅ Yes | ⚠️ Requires refactor |
+
+*Exception: Report keeps `infrastructure/` temporarily until TD-001 migration
+
+### Purpose Achievement: Domain Services vs Vertical
+
+| Goal | Vertical Module | Domain Service |
+|------|----------------|----------------|
+| **Domain Cohesion** | ✅ High | ✅ High |
+| **Boundary Enforcement** | ✅ Enforced (contracts) | ⚠️ Conventions + linter |
+| **Independent Development** | ✅ Yes | ✅ Yes |
+| **Microservice Extraction** | ✅ Ready | ✅ Ready |
+| **Schema Alignment** | ✅ Owns data | ✅ Delegates to owner |
+
+### Domain Service Implementation Patterns
+
+#### Evidence Service Pattern
 
 ```python
-# modules/evidence/domain/services/evidence_service.py
+# modules/evidence/domain/evidence_service.py
+from faultmaven.modules.case.contracts import ICaseRepository
+
 class EvidenceService:
-    def __init__(self, case_service: ICaseService):  # Use Case contract
-        self.case_service = case_service
+    def __init__(self, case_repo: ICaseRepository):
+        self.case_repo = case_repo  # Uses Case contract
     
     async def collect_evidence(self, case_id: str, evidence_data: Evidence):
         # Business logic: validation, preprocessing
         validated = self.validate(evidence_data)
         processed = await self.preprocess(validated)
         
-        # Delegate persistence to Case module
-        case = await self.case_service.get_case(case_id)
-        case.evidence.append(processed)
-        await self.case_service.save_case(case)  # Case owns the data
+        # Delegate persistence to Case module (Case owns the table)
+        await self.case_repo.add_evidence(case_id, processed)
 ```
+
+#### Agent Service Pattern
+
+```python
+# modules/agent/domain/agent_service.py
+from faultmaven.modules.case.contracts import ICaseService
+from faultmaven.modules.knowledge.contracts import IKnowledgeService
+
+class AgentService:
+    def __init__(
+        self,
+        case_service: ICaseService,
+        knowledge_service: IKnowledgeService,
+        llm_provider: ILLMProvider
+    ):
+        self.case_service = case_service
+        self.knowledge_service = knowledge_service
+        self.llm_provider = llm_provider
+    
+    async def investigate(self, case_id: str, query: str):
+        # LangGraph orchestration (ephemeral state)
+        result = await self.orchestrate_investigation(case_id, query)
+        
+        # All persistent state via Case module
+        await self.case_service.add_investigation_result(case_id, result)
+```
+
+#### Report Service Pattern (Current - Pre-TD-001)
+
+```python
+# modules/report/domain/report_service.py
+from faultmaven.modules.case.contracts import ICaseService
+
+class ReportService:
+    def __init__(self, case_service: ICaseService, llm_provider: ILLMProvider):
+        self.case_service = case_service
+        self.llm_provider = llm_provider
+    
+    async def generate_report(self, case_id: str, report_type: ReportType):
+        case = await self.case_service.get_case(case_id)
+        report = await self._generate(case, report_type)
+        
+        # TEMPORARY: Ephemeral storage until TD-001
+        await self.report_cache.save(report)  # Redis + ChromaDB
+        # TODO TD-001: await self.case_service.save_report(case_id, report)
+```
+
+#### Agent Tools: Exception to Domain Service Pattern
+
+Agent keeps `tools/` directory because:
+
+- Tools are domain-specific to agent orchestration
+- Tools implement agent interfaces (BaseTool)
+- Tools are NOT shared infrastructure
+- Tools are NOT imported by other modules
+
+```
+modules/agent/
+├── domain/
+├── tools/           # ✅ Keep - domain-specific to agent
+│   ├── knowledge_base.py
+│   └── web_search.py
+└── api/
+```
+
+### Boundary Enforcement for Domain Services
+
+Without `contracts.py`, enforce boundaries via:
+
+#### 1. Import Linter Rules
+
+```yaml
+# pyproject.toml or .import-linter config
+forbidden_imports:
+  - from: modules.case
+    disallow:
+      - modules.evidence.domain
+      - modules.agent.domain
+      - modules.report.domain
+  - from: modules.auth
+    disallow:
+      - modules.evidence.domain
+      - modules.agent.domain
+      - modules.report.domain
+```
+
+#### 2. Allowed Import Patterns
+
+```python
+# ✅ CORRECT: Domain Service uses Vertical Module's contract
+from faultmaven.modules.case.contracts import ICaseRepository
+
+# ✅ CORRECT: Composition root imports Domain Service
+from faultmaven.modules.evidence.domain import EvidenceService
+
+# ❌ WRONG: Vertical Module imports Domain Service internals
+from faultmaven.modules.evidence.domain.validators import validate_evidence
+
+# ❌ WRONG: Domain Service imports another Domain Service's internals
+from faultmaven.modules.agent.domain.orchestrator import InvestigationOrchestrator
+```
+
+#### 3. Convention
+
+- Only the composition root (`main.py`) imports Domain Service classes
+- Domain Services communicate via Vertical Module contracts only
+- API routes delegate to injected services, never import domain internals
 
 ### Migration Considerations
 
@@ -607,7 +779,7 @@ class EvidenceService:
 
 **Report Module**: Keep separate because:
 - Report generation is complex business logic
-- Ephemeral storage pattern (Redis + ChromaDB) is distinct
+- Ephemeral storage pattern (Redis + ChromaDB) is distinct (temporary until TD-001)
 - Reports are derived outputs, not core entities
 
 ---
@@ -1044,6 +1216,15 @@ faultmaven/
 - ⏳ Migrate existing cross-module calls to use contracts
 - ⏳ Add integration tests for contract compliance
 
+### Phase 2.5: Restructure Domain Services
+- ⏳ Remove `contracts.py` from Evidence, Agent, Report modules (they don't own data)
+- ⏳ Remove `infrastructure/` from Evidence, Agent modules (use Case repository)
+- ⏳ Keep Report `infrastructure/` temporarily until TD-001 migration (Redis + ChromaDB)
+- ⏳ Update Evidence, Agent, Report to use Case module's contracts (`ICaseRepository`, `ICaseService`)
+- ⏳ Add import-linter rules for Domain Service boundaries (prevent vertical modules from importing domain service internals)
+- ⏳ Update composition root (`main.py`) to wire Domain Services with Case contracts
+- ⏳ Update API routes to use injected Domain Service instances
+
 ### Phase 3: Database Boundaries
 - ⏳ Prefix all tables with module name (`case_`, `auth_`, etc.)
 - ⏳ Remove cross-module JOINs
@@ -1172,6 +1353,7 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 |---------|------|---------|
 | 1.0 | 2026-01-09 | Initial recommendations with 6 vertical modules |
 | 2.0 | 2026-01-09 | **Schema-verified revision** - Only 3 vertical modules (Case, Auth, Knowledge) after reviewing `case-storage-design.md` and `data-storage-design.md`. Evidence, Agent, and Report reclassified as Domain Services. |
+| 2.1 | 2026-01-10 | **Domain Service structural guidance** - Added detailed implementation patterns, structural options, boundary enforcement strategies, and migration steps (Phase 2.5) for Evidence, Agent, Report modules. Consolidated vertical-vs-layer structuring guidance into this document. |
 
 ### Key Changes in v2.0
 

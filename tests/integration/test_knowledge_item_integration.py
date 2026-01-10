@@ -14,7 +14,6 @@ import os
 import pytest
 from datetime import datetime, timezone, timedelta
 from typing import AsyncGenerator
-from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
@@ -32,21 +31,12 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItemType,
     EMBEDDING_DIMENSIONS,
 )
+from tests.utils import generate_item_id, generate_org_id
 
 
 # ============================================================
 # Test Fixtures
 # ============================================================
-
-
-def generate_item_id() -> str:
-    """Generate a valid item ID."""
-    return f"ki_{uuid4().hex[:12]}"
-
-
-def generate_org_id() -> str:
-    """Generate a valid organization ID."""
-    return f"org_{uuid4().hex[:12]}"
 
 
 def create_valid_embedding(value: float = 0.1) -> list:

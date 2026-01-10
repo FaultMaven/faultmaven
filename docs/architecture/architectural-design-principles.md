@@ -199,7 +199,7 @@ Instead of organizing by technical layer (controllers, services, repositories), 
 2. ✅ Implements business logic (business rules and domain constraints)
 3. ✅ Represents a domain capability (distinct business capability)
 
-See [Module Organization Design](module-organization-recommendations.md) for detailed criteria, examples, and edge case handling.
+See [Module Organization Design](module-organization-design.md) for detailed criteria, examples, and edge case handling.
 
 ### Before: Horizontal Layering
 
@@ -268,9 +268,9 @@ Vertical slicing should be applied to modules that meet **ALL THREE** minimum cr
 
 **Examples of Vertical Modules**: `auth/`, `case/`, `knowledge/` (3 modules verified against schema)
 
-**Note**: `evidence/`, `agent/`, and `report/` are **Domain Services** (implement business logic but don't own data). See [Module Organization Design](module-organization-recommendations.md) for schema-verified classification.
+**Note**: `evidence/`, `agent/`, and `report/` are **Domain Services** (implement business logic but don't own data). See [Module Organization Design](module-organization-design.md) for schema-verified classification.
 
-**Important**: All vertical modules are **structural peers** (equal structure, equal status). Vertical modules CAN depend on other vertical modules via contracts - high fan-in does NOT change categorization. See [Module Organization Design](module-organization-recommendations.md#vertical-modules-peer-status-and-dependencies) for details.
+**Important**: All vertical modules are **structural peers** (equal structure, equal status). Vertical modules CAN depend on other vertical modules via contracts - high fan-in does NOT change categorization. See [Module Organization Design](module-organization-design.md#vertical-modules-peer-status-and-dependencies) for details.
 
 ### When to Keep Horizontal
 
@@ -282,7 +282,7 @@ Components should remain horizontal when they fail **ANY** of the three criteria
 
 **Examples of Horizontal Infrastructure**: `infrastructure/llm/`, `infrastructure/logging/`, `infrastructure/observability/`, `infrastructure/storage/`
 
-For complete recommendations, examples, and edge case handling, see [Module Organization Design](module-organization-recommendations.md).
+For complete recommendations, examples, and edge case handling, see [Module Organization Design](module-organization-design.md).
 
 ### Benefits
 
@@ -908,7 +908,7 @@ def check_exceptions():
 - **[ADR-001: Monolith Evolution Strategy](decisions/ADR-001-MONOLITH-EVOLUTION-STRATEGY.md)**
 - **[Platform Evolution Strategy](../FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md)**
 - **[Import Linter Baseline](IMPORT-LINTER-BASELINE.md)**
-- **[Module Organization Design](module-organization-recommendations.md)** - Vertical vs horizontal module organization
+- **[Module Organization Design](module-organization-design.md)** - Vertical vs horizontal module organization
 
 ### Supporting Documents
 

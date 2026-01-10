@@ -125,7 +125,7 @@ def register_services(redis_client=None) -> None:
         get_agent_execution_repository,
         get_case_repository,
         get_evidence_artifact_repository,
-        STORAGE_TYPE_MEMORY,
+        STORAGE_TYPE_INMEMORY,
     )
 
     # APIInvestigationSessionService - Used by AgentOrchestrationService
@@ -135,9 +135,9 @@ def register_services(redis_client=None) -> None:
         logger.debug("Creating APIInvestigationSessionService via DI container (in-memory)")
         # For DI container, use in-memory repositories as fallback
         # In production, ServiceFactory should be used with proper DB session
-        session_repo = get_investigation_session_repository(storage_type=STORAGE_TYPE_MEMORY)
-        execution_repo = get_agent_execution_repository(storage_type=STORAGE_TYPE_MEMORY)
-        case_repo = get_case_repository(storage_type=STORAGE_TYPE_MEMORY)
+        session_repo = get_investigation_session_repository(storage_type=STORAGE_TYPE_INMEMORY)
+        execution_repo = get_agent_execution_repository(storage_type=STORAGE_TYPE_INMEMORY)
+        case_repo = get_case_repository(storage_type=STORAGE_TYPE_INMEMORY)
 
         return APIInvestigationSessionService(
             session_repo=session_repo,
@@ -150,8 +150,8 @@ def register_services(redis_client=None) -> None:
     # APIEvidenceArtifactService - Used by AgentOrchestrationService
     def create_evidence_artifact_service():
         logger.debug("Creating APIEvidenceArtifactService via DI container (in-memory)")
-        evidence_repo = get_evidence_artifact_repository(storage_type=STORAGE_TYPE_MEMORY)
-        case_repo = get_case_repository(storage_type=STORAGE_TYPE_MEMORY)
+        evidence_repo = get_evidence_artifact_repository(storage_type=STORAGE_TYPE_INMEMORY)
+        case_repo = get_case_repository(storage_type=STORAGE_TYPE_INMEMORY)
 
         # FileStorageService will be injected via DI
         return APIEvidenceArtifactService(

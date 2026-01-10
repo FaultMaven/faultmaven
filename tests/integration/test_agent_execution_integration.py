@@ -34,23 +34,19 @@ from faultmaven.infrastructure.persistence.repository_factory import (
     STORAGE_TYPE_INMEMORY,
     STORAGE_TYPE_DATABASE,
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
+from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy, ConsultingData
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,
     ExecutionStatus,
 )
+from tests.utils import generate_case_id
 
 
 # ============================================================
 # Test Fixtures
 # ============================================================
-
-
-def generate_case_id() -> str:
-    """Generate a valid case ID."""
-    return f"case_{uuid4().hex[:12]}"
 
 
 def generate_execution_id() -> str:
@@ -123,6 +119,11 @@ async def sample_case(case_repository: DatabaseCaseRepository) -> Case:
         title="Agent Execution Integration Test Case",
         description="Testing agent execution management",
         status=CaseStatus.INVESTIGATING,
+        consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
+        ),
     )
     return await case_repository.save(case)
 

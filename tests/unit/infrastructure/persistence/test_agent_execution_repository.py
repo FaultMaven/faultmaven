@@ -17,6 +17,7 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
 from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
     InMemoryAgentExecutionRepository,
 )
+from tests.utils import generate_case_id
 
 
 def generate_execution_id() -> str:
@@ -27,11 +28,6 @@ def generate_execution_id() -> str:
 def generate_tool_call_id() -> str:
     """Generate a valid tool call ID."""
     return f"tc_{uuid4().hex[:12]}"
-
-
-def generate_case_id() -> str:
-    """Generate a valid case ID."""
-    return f"case_{uuid4().hex[:12]}"
 
 
 def create_sample_execution(

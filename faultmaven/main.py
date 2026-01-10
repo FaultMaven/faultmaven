@@ -131,6 +131,7 @@ async def lifespan(app: FastAPI):
         raise
 
     # Initialize the DI container first (before any services that depend on it)
+    # Container initialization includes service registration internally
     logger.info("Initializing DI container...")
     try:
         from .container import container
@@ -139,21 +140,18 @@ async def lifespan(app: FastAPI):
 
         # Make container available to app for access by other components
         app.extra["di_container"] = container
+    except RuntimeError as e:
+        # Container already logged the error and raised if it's a production fail-fast
+        # Re-raise to let FastAPI handle startup failure
+        raise
     except Exception as e:
         logger.error(f"DI container initialization failed: {e}")
-        # Don't fail startup - let services use fallback implementations
-        logger.warning("Continuing with fallback service implementations")
-
-    # Register service factories for dependency injection (resolves import-linter violations)
-    logger.info("Registering service factories...")
-    try:
-        from .core.service_factories import register_services
-        register_services()
-        logger.info("✅ Service factories registered successfully")
-    except Exception as e:
-        logger.error(f"Service factory registration failed: {e}")
-        # Don't fail startup - services will use default direct imports
-        logger.warning("Continuing with direct service imports")
+        # Only allow graceful degradation in non-production environments
+        is_production = os.getenv("ENVIRONMENT", "").lower() in ("production", "prod")
+        if is_production:
+            logger.critical("Production startup failed - cannot continue with incomplete container")
+            raise RuntimeError(f"Critical container initialization failed in production: {e}") from e
+        logger.warning("Continuing with fallback service implementations (non-production mode)")
 
     # Initialize core services with K8s support
     # SessionManager replaced by services.session.SessionService via DI container
@@ -794,11 +792,22 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(500) 
 async def internal_server_error_handler(request: Request, exc):
-    """Custom 500 handler for internal server errors"""
-    logger.error(f"Internal server error on {request.method} {request.url}: {exc}")
+    """Custom 500 handler for internal server errors with Request ID for correlation"""
+    # Extract Request ID from middleware (stored in request.state by RequestIdMiddleware)
+    request_id = getattr(request.state, "request_id", None)
+    
+    logger.error(
+        f"Internal server error on {request.method} {request.url}: {exc}",
+        extra={"request_id": request_id} if request_id else {}
+    )
+    
+    error_response = {"detail": "Internal server error"}
+    if request_id:
+        error_response["request_id"] = request_id
+    
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error"}
+        content=error_response
     )
 
 
