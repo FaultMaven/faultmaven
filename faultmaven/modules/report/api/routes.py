@@ -35,12 +35,12 @@ from faultmaven.modules.report.domain.models import (
     CaseClosureResponse,
 )
 from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.models.interfaces_report import IReportStore
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import (
     get_case_service,
-    get_report_store,
+    get_case_repository,
     get_tenant_provider,
     get_report_generation_service,
     get_report_recommendation_service,

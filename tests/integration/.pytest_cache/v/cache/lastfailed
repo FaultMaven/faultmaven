@@ -650,5 +650,6 @@
   "test_user_kb_flow.py::TestUserKBFlow::test_delete_user_kb_document": true,
   "test_user_kb_flow.py::TestUserKBFlow::test_get_user_kb_stats": true,
   "test_user_kb_flow.py::TestUserKBFlow::test_access_control_upload": true,
-  "test_user_kb_flow.py::TestUserKBFlow::test_access_control_list": true
+  "test_user_kb_flow.py::TestUserKBFlow::test_access_control_list": true,
+  "api/test_admin_api.py": true
 }

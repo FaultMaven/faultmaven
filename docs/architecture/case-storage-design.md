@@ -14,7 +14,8 @@
 | Component | Status | Location |
 |-----------|--------|----------|
 | ✅ Design | Approved | This document |
-| ✅ Migration Script | Complete | `/migrations/001_initial_hybrid_schema.sql` |
+| ✅ Migration Script | Complete | `docs/schema/001_initial_hybrid_schema.sql` |
+| ✅ Reports Migration | Complete | `docs/schema/005_add_reports_table.sql` (TD-001) |
 | ✅ Repository Code | Complete | `/faultmaven/infrastructure/persistence/postgresql_hybrid_case_repository.py` |
 | ⏳ Integration Tests | Pending | Not yet run against real PostgreSQL |
 | ⏳ Performance Validation | Pending | Benchmarks needed |
@@ -686,7 +687,7 @@ CREATE TABLE reports (
     -- ============================================================
     generation_status VARCHAR(20) NOT NULL,        -- generating | completed | failed
     generation_time_ms INTEGER NOT NULL CHECK (generation_time_ms >= 0 AND generation_time_ms <= 120000),
-    generated_by VARCHAR(255),                     -- user_id who triggered generation
+    generated_by VARCHAR(255),                     -- Optional: user_id who triggered generation (not in CaseReport model yet)
 
     -- ============================================================
     -- Runbook-Specific Metadata (JSONB for flexibility)
@@ -1186,7 +1187,8 @@ psql -U faultmaven -d faultmaven_cases -c "SELECT * FROM evidence WHERE case_id 
 
 ### ✅ Completed
 - [x] Design approved (this document)
-- [x] Migration script created (`migrations/001_initial_hybrid_schema.sql`)
+- [x] Migration script created (`docs/schema/001_initial_hybrid_schema.sql`)
+- [x] Reports migration script created (`docs/schema/005_add_reports_table.sql`) - TD-001
 - [x] Repository implementation (`postgresql_hybrid_case_repository.py`)
 - [x] Container.py wiring (`CASE_STORAGE_TYPE=postgres_hybrid`)
 

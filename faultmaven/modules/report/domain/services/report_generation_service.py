@@ -25,7 +25,7 @@ from faultmaven.modules.report.domain.models import (
     ReportGenerationResponse
 )
 from faultmaven.modules.case.domain.models import Case, CaseStatus
-from faultmaven.models.interfaces_report import IReportStore
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.concurrency import ReportLockManager, LockAcquisitionError
 from faultmaven.infrastructure.observability.tracing import trace
@@ -54,7 +54,7 @@ class ReportGenerationService(BaseService):
     def __init__(
         self,
         llm_router: Any,  # LLMRouter for generation
-        report_store: Optional[IReportStore] = None,
+        case_repository: Optional[CaseRepository] = None,
         runbook_kb: Optional[RunbookKnowledgeBase] = None,
         lock_manager: Optional[ReportLockManager] = None,
         pii_redactor: Optional[Any] = None
@@ -64,14 +64,14 @@ class ReportGenerationService(BaseService):
 
         Args:
             llm_router: LLM router for text generation
-            report_store: Report storage interface for persistence
+            case_repository: Case repository for report persistence (TD-001: migrated from IReportStore)
             runbook_kb: Optional RunbookKB for auto-indexing runbooks
             lock_manager: Optional lock manager for concurrency control
             pii_redactor: Optional PII redactor for sanitization
         """
         super().__init__("report_generation_service")
         self.llm_router = llm_router
-        self.report_store = report_store
+        self.case_repository = case_repository
         self.runbook_kb = runbook_kb
         self.lock_manager = lock_manager
         self.pii_redactor = pii_redactor
@@ -148,11 +148,11 @@ class ReportGenerationService(BaseService):
             try:
                 report = await self._generate_single_report(case, report_type)
 
-                # Persist report to storage
-                if self.report_store:
-                    await self.report_store.save_report(report)
+                # Persist report to storage via Case repository (TD-001: migrated from IReportStore)
+                if self.case_repository:
+                    await self.case_repository.add_report(case_id=case.case_id, report=report)
                     logger.info(
-                        f"Report persisted to storage",
+                        f"Report persisted to Case repository",
                         extra={"report_id": report.report_id, "case_id": case.case_id}
                     )
 
@@ -168,8 +168,9 @@ class ReportGenerationService(BaseService):
                     }
                 )
 
-                # Note: Runbook auto-indexing now happens in report_store.save_report()
-                # via RunbookKnowledgeBase integration
+                # Optional: Auto-index runbook in User KB for similarity search (separate from storage)
+                if report_type == ReportType.RUNBOOK and self.runbook_kb:
+                    await self._index_generated_runbook(report, case)
 
             except Exception as e:
                 logger.error(

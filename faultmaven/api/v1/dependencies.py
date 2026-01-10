@@ -12,14 +12,14 @@ Key Features:
 - Request validation dependencies
 """
 
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from fastapi import Depends, HTTPException, Request
 
 from ...container import container
 from ...models import SessionContext
 from ...models.interfaces_case import ICaseService
-from ...models.interfaces_report import IReportStore
+from ...models.interfaces_report import IReportStore  # Deprecated (TD-001: use Case repository instead)
 from ...models.interfaces import IJobService
 # Lazy import to avoid circular dependency - DataService, SessionService, KnowledgeService imported in functions or TYPE_CHECKING
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
@@ -105,11 +105,22 @@ async def get_investigation_orchestrator():
 
 
 async def get_report_store() -> Optional[IReportStore]:
-    """Get ReportStore instance from container"""
+    """Get ReportStore instance from container (DEPRECATED - TD-001: use get_case_repository instead)"""
     try:
         return container.get_report_store()
     except Exception:
         # Report store is optional - return None if not available
+        return None
+
+
+async def get_case_repository() -> Optional[Any]:
+    """Get CaseRepository instance from container (TD-001: use for report persistence)"""
+    from ...modules.case.infrastructure.case_repository import CaseRepository
+    try:
+        case_repo = getattr(container, "case_repository", None)
+        return case_repo
+    except Exception:
+        # Case repository is optional - return None if not available
         return None
 
 
