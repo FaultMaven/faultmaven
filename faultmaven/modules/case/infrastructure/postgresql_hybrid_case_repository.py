@@ -1123,7 +1123,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         now = datetime.now(timezone.utc)
         generated_at = datetime.fromisoformat(report.generated_at.replace('Z', '+00:00')) if isinstance(report.generated_at, str) else now
-        updated_at = now  # CaseReport doesn't have updated_at field, use current time
+        # Use report.updated_at if set, otherwise use generated_at (for new reports)
+        if report.updated_at:
+            updated_at = datetime.fromisoformat(report.updated_at.replace('Z', '+00:00')) if isinstance(report.updated_at, str) else now
+        else:
+            updated_at = generated_at  # New reports: updated_at same as generated_at (None -> use generated_at)
 
         await self.db.execute(insert_query, {
             "report_id": report.report_id,
@@ -1232,7 +1236,11 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         # Update report
         metadata_json = json.dumps(report.metadata.model_dump()) if report.metadata else '{}'
         now = datetime.now(timezone.utc)
-        updated_at = now  # CaseReport doesn't have updated_at field, use current time
+        # Use report.updated_at if set, otherwise use current time (for updates, always refresh)
+        if report.updated_at:
+            updated_at = datetime.fromisoformat(report.updated_at.replace('Z', '+00:00')) if isinstance(report.updated_at, str) else now
+        else:
+            updated_at = now  # Default to current time if not set
 
         update_query = text("""
             UPDATE reports
@@ -1297,9 +1305,30 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             except Exception:
                 pass
 
-        # Convert timestamps to ISO 8601 strings
-        generated_at = to_json_compatible(row.generated_at) if row.generated_at else to_json_compatible(datetime.now(timezone.utc))
-        # CaseReport doesn't have updated_at field, use generated_at
+        # Convert timestamps to ISO 8601 strings (ensuring UTC consistency)
+        # PostgreSQL TIMESTAMP WITH TIME ZONE is stored in UTC but may return in session timezone
+        # Normalize to UTC explicitly to avoid timezone jitter between implementations
+        if row.generated_at:
+            # Ensure UTC: if timezone-aware, convert to UTC; if naive, assume UTC
+            gen_dt = row.generated_at
+            if gen_dt.tzinfo is None:
+                gen_dt = gen_dt.replace(tzinfo=timezone.utc)
+            elif gen_dt.tzinfo != timezone.utc:
+                gen_dt = gen_dt.astimezone(timezone.utc)
+            generated_at = to_json_compatible(gen_dt)
+        else:
+            generated_at = to_json_compatible(datetime.now(timezone.utc))
+        
+        if row.updated_at:
+            # Ensure UTC: if timezone-aware, convert to UTC; if naive, assume UTC
+            upd_dt = row.updated_at
+            if upd_dt.tzinfo is None:
+                upd_dt = upd_dt.replace(tzinfo=timezone.utc)
+            elif upd_dt.tzinfo != timezone.utc:
+                upd_dt = upd_dt.astimezone(timezone.utc)
+            updated_at = to_json_compatible(upd_dt)
+        else:
+            updated_at = generated_at  # Fallback to generated_at if NULL
 
         return CaseReport(
             report_id=row.report_id,
@@ -1314,6 +1343,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             generation_status=ReportStatus(row.generation_status),
             generation_time_ms=row.generation_time_ms,
             generated_at=generated_at,
+            updated_at=updated_at,
             metadata=metadata
         )
 

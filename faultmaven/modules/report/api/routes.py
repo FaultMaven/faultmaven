@@ -553,6 +553,10 @@ async def update_report(
         updated_content = request.content if request.content else existing_report.content
 
         # Create updated report (new version)
+        # Note: When creating a new version via update, generated_at is set to current time
+        # updated_at will be set by repository's update_report method
+        now = datetime.now(timezone.utc)
+        generated_at_str = to_json_compatible(now)
         updated_report = CaseReport(
             report_id=existing_report.report_id,
             case_id=existing_report.case_id,
@@ -561,8 +565,9 @@ async def update_report(
             content=updated_content,
             format=existing_report.format,
             generation_status=existing_report.generation_status,
-            generated_at=to_json_compatible(datetime.now(timezone.utc)),
-            generation_time_ms=0,  # Not regenerated
+            generated_at=generated_at_str,  # New version generated now
+            updated_at=None,  # Will be set by repository.update_report to current time
+            generation_time_ms=0,  # Not regenerated (manual edit)
             is_current=True,
             version=existing_report.version + 1,
             linked_to_closure=existing_report.linked_to_closure,

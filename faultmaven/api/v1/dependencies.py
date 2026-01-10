@@ -19,7 +19,7 @@ from fastapi import Depends, HTTPException, Request
 from ...container import container
 from ...models import SessionContext
 from ...models.interfaces_case import ICaseService
-from ...models.interfaces_report import IReportStore  # Deprecated (TD-001: use Case repository instead)
+# TD-001: IReportStore removed - reports now stored via CaseRepository
 from ...models.interfaces import IJobService
 # Lazy import to avoid circular dependency - DataService, SessionService, KnowledgeService imported in functions or TYPE_CHECKING
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
@@ -104,13 +104,7 @@ async def get_investigation_orchestrator():
     return orchestrator
 
 
-async def get_report_store() -> Optional[IReportStore]:
-    """Get ReportStore instance from container (DEPRECATED - TD-001: use get_case_repository instead)"""
-    try:
-        return container.get_report_store()
-    except Exception:
-        # Report store is optional - return None if not available
-        return None
+# TD-001: get_report_store removed - reports now accessed via get_case_repository()
 
 
 async def get_case_repository() -> Optional[Any]:

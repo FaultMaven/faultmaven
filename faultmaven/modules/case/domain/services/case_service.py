@@ -33,7 +33,6 @@ from faultmaven.models.api_models import (
 )
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
-from faultmaven.models.interfaces_report import IReportStore
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.exceptions import ValidationException, ServiceException
@@ -48,7 +47,6 @@ class CaseService(BaseService, ICaseService):
         self,
         case_repository: CaseRepository,
         session_store: Optional[ISessionStore] = None,
-        report_store: Optional[IReportStore] = None,
         case_vector_store: Optional[Any] = None,
         settings: Optional[Any] = None,
         max_cases_per_user: int = 100
@@ -57,9 +55,8 @@ class CaseService(BaseService, ICaseService):
         Initialize the Case Service
 
         Args:
-            case_repository: Case repository for persistence
+            case_repository: Case repository for persistence (reports are handled via repository)
             session_store: Optional session store for integration
-            report_store: Optional report store for cascade deletion
             case_vector_store: Optional case vector store for Working Memory cleanup
             settings: Configuration settings for the service
             max_cases_per_user: Maximum cases per user
@@ -68,7 +65,6 @@ class CaseService(BaseService, ICaseService):
         self.repository = case_repository
         self.session_store = session_store
         self.case_vector_store = case_vector_store
-        self.report_store = report_store
         self._settings = settings
 
         # Use settings values if available, otherwise use parameter defaults
@@ -564,22 +560,8 @@ class CaseService(BaseService, ICaseService):
                     self.logger.warning(f"User {user_id} denied delete access to case {case_id} (not owner)")
                     return False
             
-            # Cascade delete reports BEFORE deleting case
-            # This ensures report cleanup happens even if case delete fails
-            if self.report_store:
-                try:
-                    await self.report_store.delete_case_reports(case_id)
-                    self.logger.info(
-                        f"Cascade deleted incident_reports and post_mortems for case {case_id} "
-                        f"(runbooks preserved independently)"
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Failed to cascade delete reports for case {case_id}: {e}"
-                    )
-                    # Continue with case deletion even if report cleanup fails
-
             # Perform hard delete through repository
+            # Note: Reports are automatically deleted via CASCADE FK constraint (TD-001: reports stored in PostgreSQL)
             success = await self.repository.delete(case_id)
 
             if success:
@@ -833,7 +815,6 @@ class CaseService(BaseService, ICaseService):
                 "service_status": "healthy",
                 "repository_connected": self.repository is not None,
                 "session_store_connected": self.session_store is not None,
-                "report_store_connected": self.report_store is not None,
                 "max_cases_per_user": self.max_cases_per_user
             }
 

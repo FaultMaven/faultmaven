@@ -55,7 +55,8 @@ from faultmaven.models.api_models import (
 from faultmaven.models.case_ui import CaseUIResponse
 from faultmaven.services.adapters.case_ui_adapter import transform_case_for_ui
 from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.models.interfaces_report import IReportStore
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+# TD-001: IReportStore removed - reports now accessed via CaseRepository
 from faultmaven.models.api import (
     ErrorResponse, ErrorDetail, CaseResponse, Case, Message, QueryJobStatus,
     AgentResponse, ViewState, User, ResponseType, TitleGenerateResponse,
@@ -64,7 +65,7 @@ from faultmaven.models.api import (
 )
 from faultmaven.api.v1.dependencies import (
     get_case_service, get_session_id, get_session_service,
-    get_preprocessing_service, get_report_store,
+    get_preprocessing_service, get_case_repository,  # TD-001: use case_repository for reports
     get_investigation_service,  # V2.0 milestone-based
     get_data_service,
     get_case_vector_store
@@ -2012,8 +2013,9 @@ async def generate_case_reports(
 async def get_case_reports(
     case_id: str,
     include_history: bool = Query(default=False),
+    report_type: Optional[str] = Query(default=None),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     current_user: DevUser = Depends(require_authentication)
 ):
     """
@@ -2022,6 +2024,7 @@ async def get_case_reports(
     Args:
         case_id: Case identifier
         include_history: If True, return all report versions; if False, only current
+        report_type: Optional filter by report type (incident_report, runbook, post_mortem)
 
     Returns:
         List of CaseReport objects
@@ -2034,15 +2037,18 @@ async def get_case_reports(
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
 
-        # Check if report_store is available
-        if not report_store:
-            logger.warning("Report store not available - returning empty list")
+        # Check if case_repository is available
+        if not case_repository:
+            logger.warning("Case repository not available - returning empty list")
             return []
 
-        # Retrieve reports from storage
-        reports = await report_store.get_case_reports(
+        # Retrieve reports from storage via CaseRepository (TD-001)
+        from faultmaven.modules.report.domain.models import ReportType
+        filter_type = ReportType(report_type) if report_type else None
+        reports = await case_repository.get_reports(
             case_id=case_id,
-            include_history=include_history
+            include_history=include_history,
+            report_type=filter_type
         )
 
         logger.info(
@@ -2070,7 +2076,7 @@ async def download_case_report(
     report_id: str,
     format: str = Query(default="markdown"),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     current_user: DevUser = Depends(require_authentication)
 ):
     """
@@ -2094,15 +2100,15 @@ async def download_case_report(
         if not case:
             raise HTTPException(status_code=404, detail="Case not found")
 
-        # Check if report_store is available
-        if not report_store:
+        # Check if case_repository is available
+        if not case_repository:
             raise HTTPException(
                 status_code=503,
-                detail="Report storage not available"
+                detail="Report storage not available (case repository not initialized)"
             )
 
-        # Retrieve report from storage
-        report = await report_store.get_report(report_id)
+        # Retrieve report from storage via CaseRepository (TD-001)
+        report = await case_repository.get_report(report_id)
 
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
@@ -2162,7 +2168,7 @@ async def close_case(
     case_id: str,
     request_body: Optional[Dict[str, Any]] = Body(default=None),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
-    report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     current_user: DevUser = Depends(require_authentication)
 ):
     """
@@ -2191,19 +2197,26 @@ async def close_case(
                 detail=f"Cannot close case in {case.status.value} state"
             )
 
-        # Get latest reports for closure (if report_store available)
+        # Get current reports for closure (TD-001: via CaseRepository)
         archived_reports = []
-        if report_store:
+        if case_repository:
             try:
-                latest_reports = await report_store.get_latest_reports_for_closure(case_id)
+                # Get only current reports (latest version of each type)
+                latest_reports = await case_repository.get_reports(
+                    case_id=case_id,
+                    only_current=True  # Only current reports (latest version per type)
+                )
 
                 if latest_reports:
-                    # Mark reports as linked to closure
-                    report_ids = [r.report_id for r in latest_reports]
-                    await report_store.mark_reports_linked_to_closure(case_id, report_ids)
-
-                    # Build archived reports list
+                    # Mark each report as linked to closure
                     for report in latest_reports:
+                        # Update report to mark as linked to closure
+                        updated_report = report.model_copy(update={
+                            "linked_to_closure": True
+                        })
+                        await case_repository.update_report(updated_report)
+
+                        # Build archived reports list
                         archived_reports.append(
                             ArchivedReport(
                                 report_id=report.report_id,
@@ -2214,8 +2227,8 @@ async def close_case(
                         )
 
                     logger.info(
-                        f"Linked {len(report_ids)} reports to case closure",
-                        extra={"case_id": case_id, "report_count": len(report_ids)}
+                        f"Linked {len(latest_reports)} reports to case closure",
+                        extra={"case_id": case_id, "report_count": len(latest_reports)}
                     )
                 else:
                     logger.info(

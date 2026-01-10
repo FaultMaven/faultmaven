@@ -237,6 +237,8 @@ class ReportGenerationService(BaseService):
                 llm_model="gpt-4"  # TODO: Get from llm_router
             )
 
+        now = datetime.now(timezone.utc)
+        generated_at_str = to_json_compatible(now)
         return CaseReport(
             case_id=case.case_id,
             report_type=report_type,
@@ -244,7 +246,8 @@ class ReportGenerationService(BaseService):
             content=content,
             format="markdown",
             generation_status=ReportStatus.COMPLETED,
-            generated_at=to_json_compatible(datetime.now(timezone.utc)),
+            generated_at=generated_at_str,
+            updated_at=None,  # Will be set by repository.add_report to generated_at (for new reports)
             generation_time_ms=generation_time_ms,
             is_current=True,
             version=case.report_generation_count + 1,

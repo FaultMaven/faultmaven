@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 def create_case_service(
     case_repository: Any | None,
     session_store: Any | None,
-    report_store: Any | None,
     case_vector_store: Any | None,
     settings: FaultMavenSettings,
     minimal_factory: callable,
@@ -40,7 +39,6 @@ def create_case_service(
         service = CaseService(
             case_repository=case_repository,
             session_store=session_store,
-            report_store=report_store,
             case_vector_store=case_vector_store,
             settings=settings,
         )
@@ -404,7 +402,6 @@ def register_services(container: BaseDIContainer) -> None:
     # Get dependencies from container
     case_repository = getattr(container, "case_repository", None)
     session_store = container.get_service("session_store")
-    report_store = getattr(container, "report_store", None)
     case_vector_store = getattr(container, "case_vector_store", None)
     hypothesis_repository = getattr(container, "hypothesis_repository", None)
     solution_repository = getattr(container, "solution_repository", None)
@@ -422,7 +419,6 @@ def register_services(container: BaseDIContainer) -> None:
     case_service = create_case_service(
         case_repository,
         session_store,
-        report_store,
         case_vector_store,
         settings,
         container._create_minimal_case_service,

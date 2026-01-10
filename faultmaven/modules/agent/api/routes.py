@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 router = APIRouter(
-    prefix="/api/v1/cases/{case_id}/sessions/{session_id}",
+    prefix="/cases/{case_id}/sessions/{session_id}",
     tags=["Agent Execution"],
 )
 

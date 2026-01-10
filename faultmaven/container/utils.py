@@ -126,7 +126,7 @@ def check_dependencies(*deps: str) -> Callable:
 
     Usage:
         @check_dependencies("redis_client", "vector_store")
-        def _create_report_store(self):
+        def _create_vector_store(self):
             ...
     """
     def decorator(method: Callable) -> Callable:

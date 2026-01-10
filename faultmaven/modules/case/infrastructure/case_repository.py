@@ -578,8 +578,10 @@ class InMemoryCaseRepository(CaseRepository):
                     existing_report.is_current):
                     existing_report.is_current = False
 
-        # Store report
-        report.updated_at = to_json_compatible(datetime.now(timezone.utc))
+        # Set updated_at if not already set (for new reports, same as generated_at)
+        if report.updated_at is None:
+            report.updated_at = report.generated_at
+
         self._reports[report.report_id] = report
 
         return report
@@ -634,8 +636,9 @@ class InMemoryCaseRepository(CaseRepository):
                     existing_report.is_current):
                     existing_report.is_current = False
 
-        # Update report
+        # Always update updated_at timestamp to reflect the modification
         report.updated_at = to_json_compatible(datetime.now(timezone.utc))
+
         self._reports[report.report_id] = report
 
         return report
