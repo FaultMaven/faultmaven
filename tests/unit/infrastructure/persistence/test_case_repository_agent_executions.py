@@ -459,6 +459,15 @@ async def test_create_agent_tool_call_duplicate_id_fails(inmemory_repository: In
 
 
 @pytest.mark.asyncio
+async def test_create_agent_tool_call_invalid_execution_fails(inmemory_repository: InMemoryCaseRepository):
+    """Test that creating tool call with invalid execution ID fails."""
+    tool_call = create_sample_tool_call("nonexistent-execution-id")
+    
+    with pytest.raises(ValueError, match="Execution .* not found"):
+        await inmemory_repository.create_agent_tool_call(tool_call)
+
+
+@pytest.mark.asyncio
 async def test_update_agent_tool_call_success(inmemory_repository: InMemoryCaseRepository):
     """Test updating agent tool call."""
     execution = create_sample_execution()
@@ -494,9 +503,13 @@ async def test_get_agent_tool_calls_for_execution(inmemory_repository: InMemoryC
     execution = create_sample_execution()
     await inmemory_repository.create_agent_execution(execution)
     
+    # Create another execution for tool_call3
+    other_execution = create_sample_execution()
+    await inmemory_repository.create_agent_execution(other_execution)
+    
     tool_call1 = create_sample_tool_call(execution.execution_id, "web_search")
     tool_call2 = create_sample_tool_call(execution.execution_id, "code_exec")
-    tool_call3 = create_sample_tool_call("other-execution-id", "web_search")  # Different execution
+    tool_call3 = create_sample_tool_call(other_execution.execution_id, "web_search")  # Different execution
     
     await inmemory_repository.create_agent_tool_call(tool_call1)
     await inmemory_repository.create_agent_tool_call(tool_call2)
@@ -509,6 +522,11 @@ async def test_get_agent_tool_calls_for_execution(inmemory_repository: InMemoryC
     assert tool_call1.tool_call_id in tool_call_ids
     assert tool_call2.tool_call_id in tool_call_ids
     assert tool_call3.tool_call_id not in tool_call_ids
+    
+    # Verify tool_call3 is associated with the other execution
+    other_tool_calls = await inmemory_repository.get_agent_tool_calls_for_execution(other_execution.execution_id)
+    assert len(other_tool_calls) == 1
+    assert other_tool_calls[0].tool_call_id == tool_call3.tool_call_id
 
 
 # ============================================================
