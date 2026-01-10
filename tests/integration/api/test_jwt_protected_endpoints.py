@@ -51,10 +51,9 @@ def reset_auth_service():
 def admin_token(client) -> str:
     """Get admin user JWT token."""
     response = client.post(
-        "/api/v1/auth/login",
+        "/api/v1/auth/dev-login",
         json={
-            "email": "admin@faultmaven.local",
-            "password": "password123",
+            "username": "admin@faultmaven.local",
         },
     )
     assert response.status_code == 200
@@ -65,10 +64,9 @@ def admin_token(client) -> str:
 def member_token(client) -> str:
     """Get member user JWT token."""
     response = client.post(
-        "/api/v1/auth/login",
+        "/api/v1/auth/dev-login",
         json={
-            "email": "member@faultmaven.local",
-            "password": "password123",
+            "username": "member@faultmaven.local",
         },
     )
     assert response.status_code == 200
@@ -79,10 +77,9 @@ def member_token(client) -> str:
 def viewer_token(client) -> str:
     """Get viewer user JWT token."""
     response = client.post(
-        "/api/v1/auth/login",
+        "/api/v1/auth/dev-login",
         json={
-            "email": "viewer@faultmaven.local",
-            "password": "password123",
+            "username": "viewer@faultmaven.local",
         },
     )
     assert response.status_code == 200
