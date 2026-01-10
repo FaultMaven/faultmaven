@@ -333,9 +333,9 @@ class TestInvestigationServiceTransitionToInvestigating:
         self, service, mock_case_repository, sample_case, sample_user_id
     ):
         """Test transition from non-CONSULTING status."""
-        # Pre-populate repository with case in OPEN status
+        # Pre-populate repository with case in INVESTIGATING status (cannot transition from non-CONSULTING)
         sample_case.user_id = sample_user_id
-        sample_case.status = CaseStatus.OPEN
+        sample_case.status = CaseStatus.INVESTIGATING
         await mock_case_repository.save(sample_case)
 
         with pytest.raises(ServiceException, match="Cannot transition"):
