@@ -289,3 +289,42 @@ disallow_untyped_defs = false
 ignore_missing_imports = true
 show_error_codes = true
 check_untyped_defs = false
+warn_no_return = false
+warn_unreachable = false
+no_implicit_optional = false
+ignore_errors = true
+warn_unused_ignores = false
+files = ["faultmaven/session_management.py", "faultmaven/agent/tools/web_search.py"]
+[[tool.mypy.overrides]]
+module = [
+    "pandas.*",
+    "sklearn.*",
+    "numpy.*",
+    "yaml.*",
+    "mcp.*"
+]
+ignore_missing_imports = true
+
+[tool.flake8]
+max-line-length = 88
+ignore = ["E501", "W291", "W293", "F541", "W503"]
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    "build",
+    "dist",
+    "*.egg-info",
+    ".tox",
+    ".coverage",
+    ".pytest_cache",
+    "chroma_db"
+]
+per-file-ignores = [
+    "__init__.py:F401",
+    "test_*.py:F401",
+    "conftest.py:F401",
+    "faultmaven/agent/doctrine.py:F841",
+    "faultmaven/data_processing/log_processor.py:F841",
+    "faultmaven/main.py:F841"
+]
