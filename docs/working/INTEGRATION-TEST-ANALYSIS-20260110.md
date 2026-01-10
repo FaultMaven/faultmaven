@@ -95,22 +95,31 @@ response = await client.post("/api/v1/auth/login", ...)
 
 ## Test Suite Status
 
-### Overall Integration Tests
+### Phase 8 Progress (Current)
+```
+300 passing (+5 from phase 7)
+293 failing (-13 from phase 7)
+6 errors (-37 from phase 7, 86% reduction!)
+---
+599 total (-45 deleted JWT tests)
+```
+
+### Phase 7 Status
+```
+295 passing
+306 failing
+43 errors
+---
+644 total
+```
+
+### Initial Status
 ```
 298 passing
 385 failing
 128 errors
 ---
 711 total
-```
-
-### API Integration Tests (`tests/integration/api/`)
-```
-68 passing
-200 failing
-86 errors
----
-354 total
 ```
 
 ### Test Files Status (Known)
