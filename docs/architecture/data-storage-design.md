@@ -72,7 +72,7 @@ This document defines the comprehensive data storage architecture for FaultMaven
 | **User Knowledge Base** | ChromaDB | PostgreSQL (metadata) | Indefinite | Per-user |
 | **Case Working Memory** | ChromaDB | - | Case lifetime + 7 days | Per-case |
 | **Global Knowledge Base** | ChromaDB | - | Indefinite | System-wide |
-| **Report & Analytics** | Redis + ChromaDB | - | 90 days post-closure | Per-case/system |
+| **Report & Analytics** | PostgreSQL | - | Persistent (linked to case lifecycle) | Per-case |
 | **Job Queue State** | Redis | - | 24 hours (TTL) | Per-job |
 | **ML Model Artifacts** | File system | PostgreSQL (metadata) | 3 versions retained | System-wide |
 | **Protection State** | Redis | PostgreSQL (archive) | Real-time + 30 days | Per-client |
@@ -102,9 +102,9 @@ This document defines the comprehensive data storage architecture for FaultMaven
              │    ├──> CaseVectorStore: ChromaDB (case_{case_id})
              │    └──> GlobalKBVectorStore: ChromaDB (global_kb)
              │
-             ├──> IReportStore Interface
-             │    ├──> Redis (metadata)
-             │    └──> ChromaDB (content)
+             ├──> ICaseRepository Interface (Report methods)
+             │    └──> PostgreSQL (reports table, FK to cases)
+             │         # TD-001: Migrated from Redis + ChromaDB (ephemeral)
              │
              ├──> IJobService Interface
              │    └──> Redis (job:{job_id})
@@ -134,7 +134,7 @@ This document defines the comprehensive data storage architecture for FaultMaven
 │ Redis Cluster:                                                        │
 │   - Session state (session:{id}, TTL: 30 min)                         │
 │   - Job queue (job:{id}, TTL: 24 hours)                               │
-│   - Report metadata (case:{id}:reports)                               │
+│   - Report metadata now in PostgreSQL (reports table)                 │
 │   - Protection state (reputation, rate limits)                        │
 │   - Cache L2 (multi-tier caching)                                     │
 │                                                                        │
@@ -142,7 +142,7 @@ This document defines the comprehensive data storage architecture for FaultMaven
 │   - User KB: user_kb_{user_id} (permanent)                           │
 │   - Case Working Memory: case_{case_id} (ephemeral)                  │
 │   - Global KB: global_kb (shared)                                     │
-│   - Report content storage                                            │
+│   - (Report content moved to PostgreSQL per TD-001)                   │
 │                                                                        │
 │ S3-Compatible Storage:                                                │
 │   - Raw uploaded files: artifacts/{case_id}/{file_id}                 │
@@ -1286,44 +1286,66 @@ async def update_global_kb(
 
 **Purpose**: Generated case reports, post-mortems, analytics dashboards
 
-**Storage**: Hybrid Redis (metadata) + ChromaDB (content)
-**Implementation**: `faultmaven/infrastructure/persistence/redis_report_store.py`
+**Storage**: PostgreSQL (persistent, FK to cases) - **TD-001 Migration Complete**
+**Implementation**: Case module repository (`ICaseRepository` with report methods)
+
+**Migration Note**: Previously stored in Redis + ChromaDB (ephemeral). Migrated to PostgreSQL per TD-001 for persistent storage linked to case lifecycle.
 
 ### 8.2 Storage Architecture
 
-**Two-Tier Design**:
+**PostgreSQL Table Design**:
 
-1. **Metadata Storage** (Redis)
+1. **reports Table** (PostgreSQL)
+   - Persistent storage with FK to `cases(case_id) ON DELETE CASCADE`
    - Report metadata, version tracking, timestamps
-   - Fast lookups and filtering
-   - Current report pointers
+   - Full markdown content stored in TEXT column
+   - Versioning support (up to 5 versions per report_type per case)
+   - `is_current` flag for latest version per type
+   - Full-text search index on title and content
+   - JSONB metadata column for runbook-specific fields
 
-2. **Content Storage** (ChromaDB)
-   - Full markdown report content
-   - Enables similarity search for related reports
-   - Automatic runbook indexing
+2. **Automatic Runbook Indexing** (ChromaDB - Optional)
+   - Runbooks can still be indexed in User KB for similarity search (optional)
+   - No longer required for storage - reports persist in PostgreSQL
 
-### 8.3 Redis Key Schema
+### 8.3 PostgreSQL Schema
 
-```python
-# Redis keys
-case:{case_id}:reports                    # Sorted set (all reports by timestamp)
-report:{report_id}:metadata               # Hash (report metadata)
-case:{case_id}:reports:{type}             # Sorted set (reports by type, version desc)
-case:{case_id}:reports:current            # Hash (type → current report_id)
+**Table**: `reports` (see `case-storage-design.md` Section 4.9 for full schema)
 
-# Example metadata
-{
-    "report_id": "rpt_abc123",
-    "case_id": "case_456",
-    "report_type": "post_mortem",
-    "version": 2,
-    "status": "published",
-    "created_at": "2025-01-15T10:30:00Z",
-    "created_by": "user_789",
-    "chromadb_doc_id": "doc_abc123"  # Reference to content
-}
+```sql
+CREATE TABLE reports (
+    report_id UUID PRIMARY KEY,
+    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    report_type VARCHAR(30) NOT NULL,  -- incident_report | runbook | post_mortem
+    version INTEGER NOT NULL DEFAULT 1,
+    is_current BOOLEAN NOT NULL DEFAULT TRUE,
+    linked_to_closure BOOLEAN NOT NULL DEFAULT FALSE,
+    title VARCHAR(200) NOT NULL,
+    content TEXT NOT NULL,              -- Full markdown content
+    format VARCHAR(20) NOT NULL DEFAULT 'markdown',
+    generation_status VARCHAR(20) NOT NULL,  -- generating | completed | failed
+    generation_time_ms INTEGER NOT NULL,
+    generated_by VARCHAR(255),
+    metadata JSONB DEFAULT '{}'::jsonb,  -- RunbookMetadata fields
+    generated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- Unique constraint: only one current version per report_type per case
+CREATE UNIQUE INDEX idx_reports_current_unique
+    ON reports(case_id, report_type) WHERE is_current = TRUE;
+
+-- Full-text search index
+CREATE INDEX idx_reports_content_search ON reports USING gin(
+    to_tsvector('english', title || ' ' || content)
+);
 ```
+
+**Key Features**:
+- Cascade delete when parent case is deleted
+- Versioning: up to 5 versions per report_type (enforced at application level)
+- Full-text search: PostgreSQL GIN index on title + content
+- JSONB metadata: Flexible storage for runbook-specific fields (source, domain, tags)
 
 ### 8.4 Report Types
 
@@ -1338,96 +1360,124 @@ class ReportType(str, Enum):
 
 ### 8.5 Report Structure
 
+**Pydantic Model**: `faultmaven.modules.report.domain.models.CaseReport`
+
 ```python
 class CaseReport(BaseModel):
-    report_id: str
-    case_id: str
-    report_type: ReportType
-    version: int
-    status: str  # draft, published, archived
+    report_id: str                    # UUID (primary key)
+    case_id: str                      # FK to cases (required)
+    report_type: ReportType           # incident_report | runbook | post_mortem
+    version: int                      # 1-5 (versioning)
+    is_current: bool                  # Latest version for this report_type
+    linked_to_closure: bool           # Linked during case closure
 
     # Content
-    title: str
-    content: str  # Markdown format
-    summary: str
+    title: str                        # Human-readable title
+    content: str                      # Full markdown content
+    format: Literal["markdown"]       # Report format
 
-    # Metadata
-    created_by: str
-    created_at: datetime
-    updated_at: datetime
+    # Generation Metadata
+    generation_status: ReportStatus   # generating | completed | failed
+    generation_time_ms: int           # Generation duration
+    generated_by: Optional[str]       # user_id who triggered generation
+    generated_at: datetime            # ISO 8601 timestamp
+    updated_at: datetime              # Last update timestamp
 
-    # Runbook-specific
-    runbook_source: Optional[str]  # "manual", "ai_generated"
-    auto_indexed: bool = False     # Auto-added to runbook KB?
+    # Runbook-Specific Metadata (JSONB)
+    metadata: Optional[RunbookMetadata]  # source, domain, tags, etc.
 ```
 
-### 8.6 Automatic Runbook Indexing
+### 8.6 Automatic Runbook Indexing (Optional)
 
-**Feature**: Generated runbooks automatically indexed for similarity search
+**Feature**: Generated runbooks can be optionally indexed for similarity search
+
+**Note**: Reports are now persisted in PostgreSQL. Runbook indexing in User KB is optional and separate from storage.
 
 ```python
-# Runbook generation and indexing
+# Runbook generation and storage
 async def generate_runbook(case: Case) -> CaseReport:
     # Generate runbook from case
     runbook = await runbook_generator.generate(case)
 
-    # Store in Redis + ChromaDB
+    # Store in PostgreSQL via Case repository
     report = CaseReport(
+        case_id=case.case_id,
         report_type=ReportType.RUNBOOK,
+        title=runbook.title,
         content=runbook.content,
-        runbook_source="ai_generated"
+        generation_status=ReportStatus.COMPLETED,
+        metadata=RunbookMetadata(
+            source=RunbookSource.INCIDENT_DRIVEN,
+            domain=case.domain,
+            tags=case.tags
+        )
     )
-    await report_store.save(report)
+    await case_repository.add_report(case_id=case.case_id, report=report)
 
-    # Auto-index in runbook KB for similarity search
-    if runbook_kb:
+    # Optional: Index in User KB for similarity search (separate from storage)
+    if runbook_kb and should_index_runbook(report):
         await runbook_kb.index_document(
             document_id=report.report_id,
             content=report.content,
-            metadata={"case_id": case.case_id, "auto_generated": True}
+            metadata={
+                "case_id": case.case_id,
+                "auto_generated": True,
+                "report_id": report.report_id
+            }
         )
-        report.auto_indexed = True
 
     return report
 ```
 
 ### 8.7 Report Versioning
 
-**Strategy**: Keep up to 5 versions per report type
+**Strategy**: Keep up to 5 versions per report_type per case (enforced at application level)
 
 ```python
-# Version management
+# Version management via Case repository
 async def save_report_version(case_id: str, report: CaseReport):
-    # Get current version count
-    versions = await report_store.list_versions(case_id, report.report_type)
+    # Get existing versions from PostgreSQL
+    existing_reports = await case_repository.get_reports(
+        case_id=case_id,
+        report_type=report.report_type,
+        include_history=True
+    )
 
-    if len(versions) >= 5:
-        # Delete oldest version
-        oldest = versions[0]
-        await report_store.delete(oldest.report_id)
+    if len(existing_reports) >= 5:
+        # Delete oldest version (sorted by version number)
+        oldest = sorted(existing_reports, key=lambda r: r.version)[0]
+        await case_repository.delete_report(oldest.report_id)
 
-    # Increment version
-    report.version = len(versions) + 1
-    await report_store.save(report)
+    # Mark previous current version as not current
+    current_reports = [r for r in existing_reports if r.is_current]
+    for current in current_reports:
+        current.is_current = False
+        await case_repository.update_report(current)
+
+    # Set new version
+    report.version = len(existing_reports) + 1
+    report.is_current = True
+    await case_repository.add_report(case_id=case_id, report=report)
 ```
 
 ### 8.8 Retention Policy
 
-**TTL**: 90 days post-case-closure
+**Lifecycle**: Reports persist for the lifetime of the case (symmetric to evidence)
+
+**Migration from TTL**: Previously ephemeral (90 days post-closure). Now persistent:
+- Reports deleted when parent case is deleted (CASCADE)
+- Reports persist as long as the case exists
+- No automatic expiration - lifecycle tied to case
 
 ```python
-# Cleanup job
-async def cleanup_expired_reports():
-    expired_cases = await case_repository.find_closed_before(
-        datetime.now(timezone.utc) - timedelta(days=90)
-    )
-
-    for case in expired_cases:
-        reports = await report_store.list_by_case(case.case_id)
-        for report in reports:
-            await report_store.delete(report.report_id)
-            logger.info(f"Deleted expired report: {report.report_id}")
+# Case deletion automatically deletes reports (CASCADE)
+async def delete_case(case_id: str):
+    # Delete case - reports automatically deleted via CASCADE
+    await case_repository.delete(case_id)
+    # ✅ All reports for this case are automatically deleted
 ```
+
+**Note**: If future cleanup policies are needed (e.g., archive old reports), implement at the case level, not report level.
 
 ---
 
@@ -2085,11 +2135,9 @@ class IVectorStore(ABC):
     async def search(self, query: str, k: int) -> List[Dict]
     async def delete_documents(self, ids: List[str]) -> None
 
-# Report storage
-class IReportStore(ABC):
-    async def save(self, report: CaseReport) -> CaseReport
-    async def get(self, report_id: str) -> Optional[CaseReport]
-    async def list_by_case(self, case_id: str) -> List[CaseReport]
+# Report storage (via Case repository - TD-001 migration)
+# Reports are now stored via ICaseRepository methods (see Case module contracts)
+# Legacy: IReportStore interface deprecated, use Case repository instead
 
 # Job queue
 class IJobService(ABC):
@@ -2116,7 +2164,7 @@ session_store = container.get_session_store()
 user_kb_store = container.get_user_kb_vector_store()
 case_vector_store = container.get_case_vector_store()
 global_kb_store = container.get_global_kb_vector_store()
-report_store = container.get_report_store()
+case_repository = container.get_case_repository()  # Use for reports (TD-001)
 job_service = container.get_job_service()
 confidence_service = container.get_confidence_service()
 ```
@@ -2137,7 +2185,7 @@ confidence_service = container.get_confidence_service()
 | **User Knowledge Base** | Indefinite | User-controlled deletion |
 | **Case Working Memory** | Case lifetime + 7 days | TTL-based cleanup after case closure |
 | **Global Knowledge Base** | Indefinite | Admin-controlled updates |
-| **Reports & Analytics** | 90 days post-closure | Automatic cleanup job |
+| **Reports & Analytics** | Persistent (linked to case lifecycle) | Cascade delete with case (TD-001) |
 | **Job Queue State** | 24 hours | Redis TTL expiration |
 | **ML Model Artifacts** | 3 versions retained | Version-based cleanup |
 | **Protection State** | Real-time + 30 days archive | Archive to PostgreSQL |

@@ -39,10 +39,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/evidence", tags=["evidence"])
 
 
-def get_evidence_service() -> EvidenceService:
+def get_evidence_service() -> Optional[EvidenceService]:
     """Get evidence service from DI container.
 
     TODO: Integrate with DI container when Evidence module is registered.
+    
+    Returns:
+        EvidenceService if available, None if service can't be created
     """
     from faultmaven.container import container
 
@@ -111,7 +114,7 @@ async def get_evidence_for_case(
 async def get_evidence(
     evidence_id: UUID,
     current_user: DevUser = Depends(get_current_user),
-    service: EvidenceService = Depends(get_evidence_service),
+    service: Optional[EvidenceService] = Depends(get_evidence_service),
 ) -> EvidenceArtifact:
     """Get evidence details by ID.
 
@@ -124,8 +127,13 @@ async def get_evidence(
         Evidence record
 
     Raises:
-        HTTPException: 404 if evidence not found
+        HTTPException: 404 if evidence not found, 503 if service unavailable
     """
+    if not service:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Evidence service unavailable",
+        )
     evidence = await service.get_evidence(evidence_id)
     if not evidence:
         raise HTTPException(
@@ -139,7 +147,7 @@ async def get_evidence(
 async def download_evidence(
     evidence_id: UUID,
     current_user: DevUser = Depends(get_current_user),
-    service: EvidenceService = Depends(get_evidence_service),
+    service: Optional[EvidenceService] = Depends(get_evidence_service),
 ):
     """Download evidence file.
 
@@ -152,8 +160,13 @@ async def download_evidence(
         Redirect to download URL
 
     Raises:
-        HTTPException: 404 if evidence not found
+        HTTPException: 404 if evidence not found, 503 if service unavailable
     """
+    if not service:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Evidence service unavailable",
+        )
     download_url = await service.get_file_url(evidence_id)
     if not download_url:
         raise HTTPException(
@@ -169,7 +182,7 @@ async def download_evidence(
 async def delete_evidence(
     evidence_id: UUID,
     current_user: DevUser = Depends(get_current_user),
-    service: EvidenceService = Depends(get_evidence_service),
+    service: Optional[EvidenceService] = Depends(get_evidence_service),
 ):
     """Delete evidence file and record.
 
@@ -179,8 +192,13 @@ async def delete_evidence(
         service: Evidence service
 
     Raises:
-        HTTPException: 404 if evidence not found
+        HTTPException: 404 if evidence not found, 503 if service unavailable
     """
+    if not service:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Evidence service unavailable",
+        )
     deleted = await service.delete_evidence(evidence_id)
     if not deleted:
         raise HTTPException(

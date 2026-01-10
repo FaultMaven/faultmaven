@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 def create_case_service(
     case_repository: Any | None,
     session_store: Any | None,
-    report_store: Any | None,
     case_vector_store: Any | None,
     settings: FaultMavenSettings,
     minimal_factory: callable,
@@ -40,7 +39,6 @@ def create_case_service(
         service = CaseService(
             case_repository=case_repository,
             session_store=session_store,
-            report_store=report_store,
             case_vector_store=case_vector_store,
             settings=settings,
         )
@@ -362,6 +360,35 @@ def create_tenant_provider(
         return None
 
 
+def create_report_generation_service(
+    llm_router: Any | None,
+    case_repository: Any | None,
+    runbook_kb: Any | None,
+    lock_manager: Any | None,
+    pii_redactor: Any | None,
+) -> Any | None:
+    """Create report generation service (TD-001: migrated from IReportStore to CaseRepository)."""
+    if not case_repository:
+        logger.debug("ReportGenerationService skipped (no case repository)")
+        return None
+
+    try:
+        from faultmaven.modules.report.domain.services.report_generation_service import ReportGenerationService
+
+        service = ReportGenerationService(
+            llm_router=llm_router,
+            case_repository=case_repository,
+            runbook_kb=runbook_kb,
+            lock_manager=lock_manager,
+            pii_redactor=pii_redactor,
+        )
+        logger.debug("ReportGenerationService initialized")
+        return service
+    except Exception as e:
+        logger.warning(f"ReportGenerationService initialization failed: {e}")
+        return None
+
+
 def register_services(container: BaseDIContainer) -> None:
     """Register all services with the container.
 
@@ -375,7 +402,6 @@ def register_services(container: BaseDIContainer) -> None:
     # Get dependencies from container
     case_repository = getattr(container, "case_repository", None)
     session_store = container.get_service("session_store")
-    report_store = getattr(container, "report_store", None)
     case_vector_store = getattr(container, "case_vector_store", None)
     hypothesis_repository = getattr(container, "hypothesis_repository", None)
     solution_repository = getattr(container, "solution_repository", None)
@@ -393,7 +419,6 @@ def register_services(container: BaseDIContainer) -> None:
     case_service = create_case_service(
         case_repository,
         session_store,
-        report_store,
         case_vector_store,
         settings,
         container._create_minimal_case_service,
@@ -483,5 +508,26 @@ def register_services(container: BaseDIContainer) -> None:
         settings,
     )
     container._register_service("knowledge_service", knowledge_service)
+
+    # Report Generation Service (TD-001: migrated from IReportStore to CaseRepository)
+    llm_provider = container.get_service("llm_provider")
+    runbook_kb = getattr(container, "runbook_kb", None)
+    lock_manager = getattr(container, "lock_manager", None)
+    pii_redactor = getattr(container, "pii_redactor", None)
+    report_generation_service = create_report_generation_service(
+        llm_router=llm_provider,
+        case_repository=case_repository,
+        runbook_kb=runbook_kb,
+        lock_manager=lock_manager,
+        pii_redactor=pii_redactor,
+    )
+    container.report_generation_service = report_generation_service
+    if report_generation_service:
+        container._register_service("report_generation_service", report_generation_service)
+
+    # Report Recommendation Service (optional - may not be implemented yet)
+    # TODO: Implement create_report_recommendation_service if needed
+    container.report_recommendation_service = None
+    container._register_service("report_recommendation_service", None)
 
     logger.info("✅ Service layer registered")

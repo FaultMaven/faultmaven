@@ -49,7 +49,7 @@ from tests.utils import generate_case_id, generate_evidence_id
 
 @pytest.fixture(scope="function")
 async def test_engine():
-    """Create test engine with in-memory SQLite."""
+    """Create test engine with in-memory SQLite with foreign key constraints enabled."""
     os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
     reset_engine()
 
@@ -57,6 +57,17 @@ async def test_engine():
         "sqlite+aiosqlite:///:memory:",
         echo=False,
     )
+
+    # Enable foreign key constraints for SQLite
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def set_sqlite_pragma(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

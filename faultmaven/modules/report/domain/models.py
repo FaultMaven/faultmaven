@@ -90,7 +90,11 @@ class CaseReport(BaseModel):
     generation_status: ReportStatus = Field(..., description="Generation status")
     generated_at: str = Field(
         default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)),
-        description="ISO 8601 timestamp"
+        description="ISO 8601 timestamp when report was first generated"
+    )
+    updated_at: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 timestamp when report was last updated (None for new reports, set on update)"
     )
     generation_time_ms: int = Field(..., ge=0, le=120000, description="Generation time (ms)")
     is_current: bool = Field(default=True, description="Latest version for this report_type")

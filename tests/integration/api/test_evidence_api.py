@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import status
-from fastapi.testclient import TestClient
+from httpx import AsyncClient, ASGITransport
 
 from faultmaven.main import app as main_app
 from faultmaven.models.auth import AuthenticatedUser
@@ -89,9 +89,10 @@ def app(mock_evidence_service, mock_user):
 
 
 @pytest.fixture
-def client(app):
-    """Create test client."""
-    return TestClient(app)
+async def client(app):
+    """Create async test client."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        yield client
 
 
 @pytest.fixture
@@ -114,13 +115,13 @@ def sample_file_content():
 class TestUploadEvidence:
     """Tests for POST /api/v1/cases/{case_id}/evidence endpoint."""
 
-    def test_upload_evidence_success(
+    async def test_upload_evidence_success(
         self, client, mock_evidence_service, mock_evidence, headers, sample_file_content
     ):
         """Test successful evidence upload."""
         mock_evidence_service.upload_evidence.return_value = mock_evidence
 
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/case_456def/evidence",
             headers=headers,
             files={"file": ("screenshot.png", io.BytesIO(sample_file_content), "image/png")},
@@ -133,13 +134,13 @@ class TestUploadEvidence:
         assert data["original_filename"] == "screenshot.png"
         mock_evidence_service.upload_evidence.assert_called_once()
 
-    def test_upload_evidence_with_description(
+    async def test_upload_evidence_with_description(
         self, client, mock_evidence_service, mock_evidence, headers, sample_file_content
     ):
         """Test evidence upload with description."""
         mock_evidence_service.upload_evidence.return_value = mock_evidence
 
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/case_456def/evidence",
             headers=headers,
             files={"file": ("error.log", io.BytesIO(sample_file_content), "text/plain")},
@@ -151,14 +152,14 @@ class TestUploadEvidence:
 
         assert response.status_code == status.HTTP_201_CREATED
 
-    def test_upload_evidence_as_primary(
+    async def test_upload_evidence_as_primary(
         self, client, mock_evidence_service, mock_evidence, headers, sample_file_content
     ):
         """Test uploading evidence as primary."""
         mock_evidence.is_primary = True
         mock_evidence_service.upload_evidence.return_value = mock_evidence
 
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/case_456def/evidence",
             headers=headers,
             files={"file": ("main.png", io.BytesIO(sample_file_content), "image/png")},
@@ -172,7 +173,7 @@ class TestUploadEvidence:
         data = response.json()
         assert data["is_primary"] is True
 
-    def test_upload_evidence_case_not_found(
+    async def test_upload_evidence_case_not_found(
         self, client, mock_evidence_service, headers, sample_file_content
     ):
         """Test upload to non-existent case."""
@@ -181,7 +182,7 @@ class TestUploadEvidence:
             "Case", "nonexistent"
         )
 
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/nonexistent/evidence",
             headers=headers,
             files={"file": ("test.png", io.BytesIO(sample_file_content), "image/png")},
@@ -190,9 +191,9 @@ class TestUploadEvidence:
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_upload_evidence_missing_file(self, client, headers):
+    async def test_upload_evidence_missing_file(self, client, headers):
         """Test upload without file."""
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/case_456def/evidence",
             headers=headers,
             data={"evidence_type": "screenshot"},
@@ -200,9 +201,9 @@ class TestUploadEvidence:
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
-    def test_upload_evidence_missing_type(self, client, headers, sample_file_content):
+    async def test_upload_evidence_missing_type(self, client, headers, sample_file_content):
         """Test upload without evidence type."""
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/case_456def/evidence",
             headers=headers,
             files={"file": ("test.png", io.BytesIO(sample_file_content), "image/png")},
@@ -210,9 +211,9 @@ class TestUploadEvidence:
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
-    def test_upload_evidence_invalid_type(self, client, headers, sample_file_content):
+    async def test_upload_evidence_invalid_type(self, client, headers, sample_file_content):
         """Test upload with invalid evidence type."""
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/case_456def/evidence",
             headers=headers,
             files={"file": ("test.png", io.BytesIO(sample_file_content), "image/png")},
@@ -221,7 +222,7 @@ class TestUploadEvidence:
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
-    def test_upload_evidence_all_types(
+    async def test_upload_evidence_all_types(
         self, client, mock_evidence_service, mock_evidence, headers, sample_file_content
     ):
         """Test uploading with all evidence types."""
@@ -243,7 +244,7 @@ class TestUploadEvidence:
         ]
 
         for etype in evidence_types:
-            response = client.post(
+            response = await client.post(
                 "/api/v1/cases/case_456def/evidence",
                 headers=headers,
                 files={"file": ("test.bin", io.BytesIO(sample_file_content), "application/octet-stream")},
@@ -251,9 +252,9 @@ class TestUploadEvidence:
             )
             assert response.status_code == status.HTTP_201_CREATED
 
-    def test_upload_evidence_missing_headers(self, client, sample_file_content):
+    async def test_upload_evidence_missing_headers(self, client, sample_file_content):
         """Test upload without required headers."""
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/case_456def/evidence",
             files={"file": ("test.png", io.BytesIO(sample_file_content), "image/png")},
             data={"evidence_type": "screenshot"},
@@ -270,11 +271,11 @@ class TestUploadEvidence:
 class TestGetEvidence:
     """Tests for GET /api/v1/cases/{case_id}/evidence/{evidence_id} endpoint."""
 
-    def test_get_evidence_success(self, client, mock_evidence_service, mock_evidence, headers):
+    async def test_get_evidence_success(self, client, mock_evidence_service, mock_evidence, headers):
         """Test successful evidence retrieval."""
         mock_evidence_service.get_evidence.return_value = mock_evidence
 
-        response = client.get(
+        response = await client.get(
             "/api/v1/cases/case_456def/evidence/evd_123abc",
             headers=headers,
         )
@@ -284,23 +285,23 @@ class TestGetEvidence:
         assert data["evidence_id"] == "evd_123abc"
         assert data["original_filename"] == "screenshot.png"
 
-    def test_get_evidence_not_found(self, client, mock_evidence_service, headers):
+    async def test_get_evidence_not_found(self, client, mock_evidence_service, headers):
         """Test evidence not found."""
         mock_evidence_service.get_evidence.return_value = None
 
-        response = client.get(
+        response = await client.get(
             "/api/v1/cases/case_456def/evidence/nonexistent",
             headers=headers,
         )
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_get_evidence_wrong_case(self, client, mock_evidence_service, mock_evidence, headers):
+    async def test_get_evidence_wrong_case(self, client, mock_evidence_service, mock_evidence, headers):
         """Test evidence retrieval with wrong case ID."""
         mock_evidence.case_id = "different_case"
         mock_evidence_service.get_evidence.return_value = mock_evidence
 
-        response = client.get(
+        response = await client.get(
             "/api/v1/cases/case_456def/evidence/evd_123abc",
             headers=headers,
         )
@@ -316,7 +317,7 @@ class TestGetEvidence:
 class TestDownloadEvidence:
     """Tests for GET /api/v1/cases/{case_id}/evidence/{evidence_id}/download endpoint."""
 
-    def test_download_evidence_success(
+    async def test_download_evidence_success(
         self, client, mock_evidence_service, mock_evidence, headers, sample_file_content
     ):
         """Test successful evidence download."""
@@ -327,7 +328,7 @@ class TestDownloadEvidence:
             "image/png",
         )
 
-        response = client.get(
+        response = await client.get(
             "/api/v1/cases/case_456def/evidence/evd_123abc/download",
             headers=headers,
         )
@@ -337,18 +338,18 @@ class TestDownloadEvidence:
         assert 'attachment; filename="screenshot.png"' in response.headers["content-disposition"]
         assert response.content == sample_file_content
 
-    def test_download_evidence_not_found(self, client, mock_evidence_service, headers):
+    async def test_download_evidence_not_found(self, client, mock_evidence_service, headers):
         """Test download of non-existent evidence."""
         mock_evidence_service.get_evidence.return_value = None
 
-        response = client.get(
+        response = await client.get(
             "/api/v1/cases/case_456def/evidence/nonexistent/download",
             headers=headers,
         )
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_download_evidence_various_mimetypes(
+    async def test_download_evidence_various_mimetypes(
         self, client, mock_evidence_service, mock_evidence, headers
     ):
         """Test download with various MIME types."""
@@ -366,7 +367,7 @@ class TestDownloadEvidence:
                 content, filename, mimetype
             )
 
-            response = client.get(
+            response = await client.get(
                 "/api/v1/cases/case_456def/evidence/evd_123abc/download",
                 headers=headers,
             )
@@ -383,11 +384,11 @@ class TestDownloadEvidence:
 class TestListEvidence:
     """Tests for GET /api/v1/cases/{case_id}/evidence endpoint."""
 
-    def test_list_evidence_success(self, client, mock_evidence_service, mock_evidence, headers):
+    async def test_list_evidence_success(self, client, mock_evidence_service, mock_evidence, headers):
         """Test successful evidence list."""
         mock_evidence_service.list_evidence_by_case.return_value = [mock_evidence]
 
-        response = client.get(
+        response = await client.get(
             "/api/v1/cases/case_456def/evidence",
             headers=headers,
         )
@@ -397,11 +398,11 @@ class TestListEvidence:
         assert len(data) == 1
         assert data[0]["evidence_id"] == "evd_123abc"
 
-    def test_list_evidence_empty(self, client, mock_evidence_service, headers):
+    async def test_list_evidence_empty(self, client, mock_evidence_service, headers):
         """Test empty evidence list."""
         mock_evidence_service.list_evidence_by_case.return_value = []
 
-        response = client.get(
+        response = await client.get(
             "/api/v1/cases/case_456def/evidence",
             headers=headers,
         )
@@ -409,13 +410,13 @@ class TestListEvidence:
         assert response.status_code == status.HTTP_200_OK
         assert response.json() == []
 
-    def test_list_evidence_with_type_filter(
+    async def test_list_evidence_with_type_filter(
         self, client, mock_evidence_service, mock_evidence, headers
     ):
         """Test evidence list with type filter."""
         mock_evidence_service.list_evidence_by_case.return_value = [mock_evidence]
 
-        response = client.get(
+        response = await client.get(
             "/api/v1/cases/case_456def/evidence?evidence_type=screenshot",
             headers=headers,
         )
@@ -424,11 +425,11 @@ class TestListEvidence:
         call_kwargs = mock_evidence_service.list_evidence_by_case.call_args.kwargs
         assert call_kwargs["evidence_type"] == EvidenceArtifactType.SCREENSHOT
 
-    def test_list_evidence_pagination(self, client, mock_evidence_service, headers):
+    async def test_list_evidence_pagination(self, client, mock_evidence_service, headers):
         """Test evidence list pagination."""
         mock_evidence_service.list_evidence_by_case.return_value = []
 
-        response = client.get(
+        response = await client.get(
             "/api/v1/cases/case_456def/evidence?limit=25&offset=10",
             headers=headers,
         )
@@ -438,14 +439,14 @@ class TestListEvidence:
         assert call_kwargs["limit"] == 25
         assert call_kwargs["offset"] == 10
 
-    def test_list_evidence_case_not_found(self, client, mock_evidence_service, headers):
+    async def test_list_evidence_case_not_found(self, client, mock_evidence_service, headers):
         """Test listing evidence for non-existent case."""
         from faultmaven.exceptions import NotFoundError
         mock_evidence_service.list_evidence_by_case.side_effect = NotFoundError(
             "Case", "nonexistent"
         )
 
-        response = client.get(
+        response = await client.get(
             "/api/v1/cases/nonexistent/evidence",
             headers=headers,
         )
@@ -461,7 +462,7 @@ class TestListEvidence:
 class TestUpdateEvidence:
     """Tests for PATCH /api/v1/cases/{case_id}/evidence/{evidence_id} endpoint."""
 
-    def test_update_evidence_success(
+    async def test_update_evidence_success(
         self, client, mock_evidence_service, mock_evidence, headers
     ):
         """Test successful evidence update."""
@@ -469,7 +470,7 @@ class TestUpdateEvidence:
         mock_evidence_service.get_evidence.return_value = mock_evidence
         mock_evidence_service.update_evidence.return_value = mock_evidence
 
-        response = client.patch(
+        response = await client.patch(
             "/api/v1/cases/case_456def/evidence/evd_123abc",
             json={"description": "Updated description"},
             headers=headers,
@@ -479,7 +480,7 @@ class TestUpdateEvidence:
         data = response.json()
         assert data["description"] == "Updated description"
 
-    def test_update_evidence_set_primary(
+    async def test_update_evidence_set_primary(
         self, client, mock_evidence_service, mock_evidence, headers
     ):
         """Test setting evidence as primary via update."""
@@ -487,7 +488,7 @@ class TestUpdateEvidence:
         mock_evidence_service.get_evidence.return_value = mock_evidence
         mock_evidence_service.update_evidence.return_value = mock_evidence
 
-        response = client.patch(
+        response = await client.patch(
             "/api/v1/cases/case_456def/evidence/evd_123abc",
             json={"is_primary": True},
             headers=headers,
@@ -495,11 +496,11 @@ class TestUpdateEvidence:
 
         assert response.status_code == status.HTTP_200_OK
 
-    def test_update_evidence_not_found(self, client, mock_evidence_service, headers):
+    async def test_update_evidence_not_found(self, client, mock_evidence_service, headers):
         """Test updating non-existent evidence."""
         mock_evidence_service.get_evidence.return_value = None
 
-        response = client.patch(
+        response = await client.patch(
             "/api/v1/cases/case_456def/evidence/nonexistent",
             json={"description": "Updated"},
             headers=headers,
@@ -507,13 +508,13 @@ class TestUpdateEvidence:
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_update_evidence_empty_request(
+    async def test_update_evidence_empty_request(
         self, client, mock_evidence_service, mock_evidence, headers
     ):
         """Test update with empty request."""
         mock_evidence_service.get_evidence.return_value = mock_evidence
 
-        response = client.patch(
+        response = await client.patch(
             "/api/v1/cases/case_456def/evidence/evd_123abc",
             json={},
             headers=headers,
@@ -530,37 +531,37 @@ class TestUpdateEvidence:
 class TestDeleteEvidence:
     """Tests for DELETE /api/v1/cases/{case_id}/evidence/{evidence_id} endpoint."""
 
-    def test_delete_evidence_success(self, client, mock_evidence_service, mock_evidence, headers):
+    async def test_delete_evidence_success(self, client, mock_evidence_service, mock_evidence, headers):
         """Test successful evidence deletion."""
         mock_evidence_service.get_evidence.return_value = mock_evidence
         mock_evidence_service.delete_evidence.return_value = True
 
-        response = client.delete(
+        response = await client.delete(
             "/api/v1/cases/case_456def/evidence/evd_123abc",
             headers=headers,
         )
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
-    def test_delete_evidence_not_found(self, client, mock_evidence_service, headers):
+    async def test_delete_evidence_not_found(self, client, mock_evidence_service, headers):
         """Test deleting non-existent evidence."""
         mock_evidence_service.get_evidence.return_value = None
 
-        response = client.delete(
+        response = await client.delete(
             "/api/v1/cases/case_456def/evidence/nonexistent",
             headers=headers,
         )
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_delete_evidence_wrong_case(
+    async def test_delete_evidence_wrong_case(
         self, client, mock_evidence_service, mock_evidence, headers
     ):
         """Test deleting evidence from wrong case."""
         mock_evidence.case_id = "different_case"
         mock_evidence_service.get_evidence.return_value = mock_evidence
 
-        response = client.delete(
+        response = await client.delete(
             "/api/v1/cases/case_456def/evidence/evd_123abc",
             headers=headers,
         )
@@ -576,13 +577,13 @@ class TestDeleteEvidence:
 class TestSetPrimaryEvidence:
     """Tests for POST /api/v1/cases/{case_id}/evidence/{evidence_id}/set-primary endpoint."""
 
-    def test_set_primary_success(self, client, mock_evidence_service, mock_evidence, headers):
+    async def test_set_primary_success(self, client, mock_evidence_service, mock_evidence, headers):
         """Test setting evidence as primary."""
         mock_evidence.is_primary = True
         mock_evidence_service.get_evidence.return_value = mock_evidence
         mock_evidence_service.set_primary_evidence.return_value = mock_evidence
 
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/case_456def/evidence/evd_123abc/set-primary",
             headers=headers,
         )
@@ -591,25 +592,25 @@ class TestSetPrimaryEvidence:
         data = response.json()
         assert data["is_primary"] is True
 
-    def test_set_primary_not_found(self, client, mock_evidence_service, headers):
+    async def test_set_primary_not_found(self, client, mock_evidence_service, headers):
         """Test setting primary on non-existent evidence."""
         mock_evidence_service.get_evidence.return_value = None
 
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/case_456def/evidence/nonexistent/set-primary",
             headers=headers,
         )
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_set_primary_wrong_case(
+    async def test_set_primary_wrong_case(
         self, client, mock_evidence_service, mock_evidence, headers
     ):
         """Test setting primary for evidence from wrong case."""
         mock_evidence.case_id = "different_case"
         mock_evidence_service.get_evidence.return_value = mock_evidence
 
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/case_456def/evidence/evd_123abc/set-primary",
             headers=headers,
         )
@@ -625,7 +626,7 @@ class TestSetPrimaryEvidence:
 class TestEvidenceAuthorization:
     """Tests for evidence authorization."""
 
-    def test_upload_evidence_forbidden(
+    async def test_upload_evidence_forbidden(
         self, client, mock_evidence_service, headers, sample_file_content
     ):
         """Test upload with wrong organization."""
@@ -634,7 +635,7 @@ class TestEvidenceAuthorization:
             "Case not accessible by organization"
         )
 
-        response = client.post(
+        response = await client.post(
             "/api/v1/cases/case_456def/evidence",
             headers=headers,
             files={"file": ("test.png", io.BytesIO(sample_file_content), "image/png")},
@@ -643,21 +644,21 @@ class TestEvidenceAuthorization:
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    def test_list_evidence_forbidden(self, client, mock_evidence_service, headers):
+    async def test_list_evidence_forbidden(self, client, mock_evidence_service, headers):
         """Test listing evidence with wrong organization."""
         from faultmaven.exceptions import AuthorizationError
         mock_evidence_service.list_evidence_by_case.side_effect = AuthorizationError(
             "Not authorized"
         )
 
-        response = client.get(
+        response = await client.get(
             "/api/v1/cases/case_456def/evidence",
             headers=headers,
         )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    def test_delete_evidence_forbidden(
+    async def test_delete_evidence_forbidden(
         self, client, mock_evidence_service, mock_evidence, headers
     ):
         """Test deleting evidence with wrong organization."""
@@ -667,7 +668,7 @@ class TestEvidenceAuthorization:
             "Not authorized"
         )
 
-        response = client.delete(
+        response = await client.delete(
             "/api/v1/cases/case_456def/evidence/evd_123abc",
             headers=headers,
         )

@@ -36,7 +36,7 @@ from faultmaven.container.providers import (
 try:
     from faultmaven.models.interfaces import ILLMProvider, ITracer, ISanitizer, BaseTool, IVectorStore, ISessionStore
     from faultmaven.models.interfaces_case import ICaseStore, ICaseService
-    from faultmaven.models.interfaces_report import IReportStore
+    # TD-001: IReportStore removed - reports now stored via CaseRepository
     INTERFACES_AVAILABLE = True
 except ImportError as e:
     logging.getLogger(__name__).warning(f"Interfaces not available: {e}")
@@ -49,7 +49,6 @@ except ImportError as e:
     ISessionStore = Any
     ICaseStore = Any
     ICaseService = Any
-    IReportStore = Any
     INTERFACES_AVAILABLE = False
 # Agentic Framework Components
 try:
@@ -812,13 +811,6 @@ class DIContainer(BaseDIContainer):
             if not getattr(self, '_initializing', False):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'case_store', None)
-
-    def get_report_store(self) -> Optional[IReportStore]:
-        """Get the report store implementation (optional feature)"""
-        if not self._initialized:
-            if not getattr(self, '_initializing', False):
-                pass  # Container must be initialized via await container.initialize() at startup
-        return getattr(self, 'report_store', None)
 
     def get_tenant_provider(self):
         """Get the tenant provider for multi-tenant isolation (TASK-023/024)"""

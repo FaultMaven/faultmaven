@@ -31,12 +31,12 @@ A module is **VERTICAL** (business domain) if and only if it meets **ALL THREE**
 
 | Module | Schema Verification | Classification |
 |--------|-------------------|----------------|
-| **Case** | Owns 10 PostgreSQL tables (cases, evidence, hypotheses, solutions, messages, etc.) | ✅ **VERTICAL** |
+| **Case** | Owns 11 PostgreSQL tables (cases, evidence, hypotheses, solutions, messages, reports, etc.) | ✅ **VERTICAL** |
 | **Auth** | Owns `users` and `organizations` PostgreSQL tables | ✅ **VERTICAL** |
 | **Knowledge** | Owns `kb_documents` PostgreSQL table + ChromaDB collections | ✅ **VERTICAL** |
 | **Evidence** | Evidence table has FK to `cases` → part of Case module's schema | ❌ **DOMAIN SERVICE** |
 | **Agent** | No agent_* tables; `agent_tool_calls` is case audit data | ❌ **DOMAIN SERVICE** |
-| **Report** | Redis + ChromaDB with TTL; no PostgreSQL tables; ephemeral artifacts | ❌ **DOMAIN SERVICE** |
+| **Report** | Reports stored in Case module's `reports` table (FK to cases) - TD-001 complete | ❌ **DOMAIN SERVICE** |
 
 **Result**: Only **3 modules** are truly vertical (Case, Auth, Knowledge). Evidence, Agent, and Report are domain services that implement business logic but operate on data owned by other modules.
 
@@ -230,13 +230,13 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 
 ---
 
-### Example 7: `modules/report/` - ❌ DOMAIN SERVICE (Not Vertical)
+### Example 7: `modules/report/` - ❌ DOMAIN SERVICE (Not Vertical, TD-001 Complete)
 
 **Criterion 1: Domain Data Ownership** ❌
-- **No PostgreSQL tables** for reports
-- Reports stored in Redis (metadata) + ChromaDB (content) with TTL expiration
-- Schema verification: `data-storage-design.md` Section 8.2 - "Storage: Hybrid Redis + ChromaDB" (ephemeral)
-- Reports are cached artifacts, not owned domain entities
+- **Does NOT own** the `reports` table
+- Reports stored in Case module's `reports` table with FK to `cases(case_id) ON DELETE CASCADE`
+- Schema verification: `case-storage-design.md` Section 4.9 - `reports` table is part of Case module's 11-table schema
+- Reports are owned by Case module, not Report module (same pattern as Evidence module)
 - **Result**: FAIL
 
 **Criterion 2: Business Logic Implementation** ✅
@@ -249,9 +249,9 @@ A component is **horizontal** (infrastructure) if it fails **ANY** of the three 
 - Can be understood as a business capability
 - **Result**: PASS
 
-**Decision**: ❌ **DOMAIN SERVICE** (fails Criterion 1: no persistent domain data)
+**Decision**: ❌ **DOMAIN SERVICE** (fails Criterion 1: no data ownership)
 
-**Key Insight**: Report module generates **ephemeral cached outputs** (similar to cached LLM responses), not first-class domain entities with persistent storage.
+**Key Insight**: Report module generates **investigation outputs** (symmetric to Evidence module's investigation inputs), but data is owned by Case module. Reports persist for the lifetime of the case, same lifecycle as evidence (TD-001 migration complete).
 
 ---
 
@@ -548,7 +548,7 @@ Some modules implement **business logic** but operate on **data owned by other m
 
 1. **Evidence Module**: Provides collection/validation logic but stores data in Case module's `evidence` table
 2. **Agent Module**: Provides LangGraph orchestration but all persistent state flows through Case module
-3. **Report Module**: Generates reports from Case data but stores ephemeral outputs (Redis + ChromaDB with TTL)
+3. **Report Module**: Generates reports from Case data but stores in Case module's `reports` table (FK to cases) - TD-001 complete
 
 ### When to Use Domain Services
 
@@ -598,10 +598,10 @@ modules/agent/             # Domain Service (NOT vertical)
 └── api/                   # Endpoints
 # NO contracts.py, NO infrastructure/
 
-modules/report/            # Domain Service (NOT vertical)
+modules/report/            # Domain Service (NOT vertical, TD-001 complete)
 ├── domain/                # Report generation
-├── api/                   # Endpoints
-└── infrastructure/        # ⚠️ TEMPORARY until TD-001 (Redis + ChromaDB)
+└── api/                   # Endpoints
+# NO infrastructure/       # Uses Case repository for persistence (TD-001 complete)
 ```
 
 **Pros**: Maintains domain cohesion, extraction-ready, matches schema reality  
@@ -625,7 +625,7 @@ modules/report/            # Domain Service (NOT vertical)
 | **Domain cohesion** | ✅ High | ✅ High | ⚠️ Medium |
 | **Extraction ready** | ✅ Yes | ✅ Yes | ⚠️ Requires refactor |
 
-*Exception: Report keeps `infrastructure/` temporarily until TD-001 migration
+*Note: Report module has no `infrastructure/` - uses Case repository for persistence (TD-001 complete)
 
 ### Purpose Achievement: Domain Services vs Vertical
 
@@ -684,24 +684,34 @@ class AgentService:
         await self.case_service.add_investigation_result(case_id, result)
 ```
 
-#### Report Service Pattern (Current - Pre-TD-001)
+#### Report Service Pattern (TD-001 Complete)
 
 ```python
-# modules/report/domain/report_service.py
-from faultmaven.modules.case.contracts import ICaseService
+# modules/report/domain/report_generation_service.py
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
-class ReportService:
-    def __init__(self, case_service: ICaseService, llm_provider: ILLMProvider):
-        self.case_service = case_service
-        self.llm_provider = llm_provider
+class ReportGenerationService:
+    def __init__(
+        self,
+        llm_router: Any,
+        case_repository: CaseRepository,  # TD-001: use Case repository for persistence
+        runbook_kb: Optional[Any] = None,
+        lock_manager: Optional[Any] = None,
+        pii_redactor: Optional[Any] = None
+    ):
+        self.llm_router = llm_router
+        self.case_repository = case_repository  # TD-001: reports stored via Case repository
+        self.runbook_kb = runbook_kb
+        self.lock_manager = lock_manager
+        self.pii_redactor = pii_redactor
     
     async def generate_report(self, case_id: str, report_type: ReportType):
-        case = await self.case_service.get_case(case_id)
+        case = await self.case_repository.get(case_id)
         report = await self._generate(case, report_type)
         
-        # TEMPORARY: Ephemeral storage until TD-001
-        await self.report_cache.save(report)  # Redis + ChromaDB
-        # TODO TD-001: await self.case_service.save_report(case_id, report)
+        # TD-001 Complete: Persistent storage via Case repository
+        await self.case_repository.add_report(report)  # PostgreSQL reports table
+        return report
 ```
 
 #### Agent Tools: Exception to Domain Service Pattern
@@ -779,8 +789,8 @@ from faultmaven.modules.agent.domain.orchestrator import InvestigationOrchestrat
 
 **Report Module**: Keep separate because:
 - Report generation is complex business logic
-- Ephemeral storage pattern (Redis + ChromaDB) is distinct (temporary until TD-001)
-- Reports are derived outputs, not core entities
+- Reports stored persistently in PostgreSQL (owned by Case module via FK) - TD-001 complete
+- Reports are investigation outputs with same lifecycle as case (symmetric to evidence)
 
 ---
 
@@ -793,7 +803,7 @@ from faultmaven.modules.agent.domain.orchestrator import InvestigationOrchestrat
 | `modules/knowledge/` | ✅ Yes (`kb_documents` + ChromaDB) | ✅ Yes | ✅ Yes | ✅ **VERTICAL** | `data-storage-design.md` Section 5.5.2 |
 | `modules/evidence/` | ❌ No (data in Case tables) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | `case-storage-design.md` Section 4.3 |
 | `modules/agent/` | ❌ No (no agent tables) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | No agent tables in schema |
-| `modules/report/` | ❌ No (Redis + ChromaDB, ephemeral) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | `data-storage-design.md` Section 8.2 |
+| `modules/report/` | ❌ No (data in Case `reports` table) | ✅ Yes | ✅ Yes | ❌ **DOMAIN SERVICE** | `case-storage-design.md` Section 4.9, `data-storage-design.md` Section 8 (TD-001 complete) |
 | `infrastructure/llm/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Provider abstraction |
 | `infrastructure/vector/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Provider abstraction |
 | `infrastructure/storage/` | ❌ No | ❌ No | ❌ No | ❌ **HORIZONTAL** | Provider abstraction |
@@ -907,21 +917,21 @@ These modules implement **business logic** but **operate on data owned by other 
 
 **Note**: Agent's LangGraph state is ephemeral/in-memory. All persistent state (investigations, tool calls) is stored in Case module's tables.
 
-#### 3. **`modules/report/`** ❌ **DOMAIN SERVICE** (Schema-Verified)
+#### 3. **`modules/report/`** ❌ **DOMAIN SERVICE** (Schema-Verified, TD-001 Complete)
 - **Business Logic**: Report generation, runbook creation, post-mortem generation
-- **Data Ownership**: ❌ **NO** - No PostgreSQL tables; reports stored in Redis + ChromaDB with TTL
-- **Schema Verification**: See `data-storage-design.md` Section 8.2 - "Storage: Hybrid Redis (metadata) + ChromaDB (content)" with ephemeral TTL
-- **Rationale**: Reports are generated artifacts (cached outputs), not owned domain entities
-- **Retention**: 90 days post-case-closure (ephemeral)
-- **Structure**: Keep as domain service (generates ephemeral content from Case data)
+- **Data Ownership**: ❌ **NO** - Reports stored in PostgreSQL `reports` table (owned by Case module, FK to cases)
+- **Schema Verification**: See `case-storage-design.md` Section 4.9 and `data-storage-design.md` Section 8 - "Storage: PostgreSQL (persistent, FK to cases)" - TD-001 migration complete
+- **Rationale**: Report module generates reports but data is owned by Case module (same as Evidence module pattern)
+- **Retention**: Persistent for lifetime of case (symmetric to evidence, cascade delete with case)
+- **Structure**: Domain service (generates reports, delegates persistence to Case repository)
   ```
   modules/report/
   ├── domain/               # Report generation logic
-  ├── api/                  # Report endpoints
-  └── infrastructure/       # Redis + ChromaDB storage (ephemeral)
+  └── api/                  # Report endpoints
+  # NO infrastructure/      # Uses Case repository for persistence (TD-001 complete)
   ```
 
-**Note**: Reports are derived/cached outputs, not first-class domain entities. They're similar to cached LLM responses.
+**Note**: Reports are investigation **outputs** and persist alongside the case, symmetric to evidence (investigation **inputs**). Both have the same lifecycle tied to the case (TD-001 migration complete).
 
 ---
 
@@ -1112,10 +1122,10 @@ faultmaven/
 │   │   └── api/                      # Orchestrates via Case contracts
 │   │   # NO infrastructure/          # All state flows through Case module
 │   │
-│   └── report/                       # ❌ Domain Service (ephemeral outputs)
+│   └── report/                       # ❌ Domain Service (TD-001 complete)
 │       ├── domain/                   # Report generation logic
-│       ├── api/
-│       └── infrastructure/           # Redis + ChromaDB (ephemeral, TTL-based)
+│       └── api/                      # Report endpoints
+│   # NO infrastructure/              # Uses Case repository for persistence
 │
 ├── infrastructure/                   # Horizontal cross-cutting infrastructure
 │   ├── llm/                          # ❌ Horizontal
@@ -1217,10 +1227,10 @@ faultmaven/
 - ⏳ Add integration tests for contract compliance
 
 ### Phase 2.5: Restructure Domain Services
-- ⏳ Remove `contracts.py` from Evidence, Agent, Report modules (they don't own data)
-- ⏳ Remove `infrastructure/` from Evidence, Agent modules (use Case repository)
-- ⏳ Keep Report `infrastructure/` temporarily until TD-001 migration (Redis + ChromaDB)
-- ⏳ Update Evidence, Agent, Report to use Case module's contracts (`ICaseRepository`, `ICaseService`)
+- ✅ Remove `contracts.py` from Evidence, Agent, Report modules (they don't own data)
+- ✅ Remove `infrastructure/` from Evidence, Agent modules (use Case repository)
+- ✅ Remove Report `infrastructure/` - TD-001 migration complete (now uses Case repository)
+- ✅ Update Evidence, Agent, Report to use Case module's contracts (`ICaseRepository`, `ICaseService`)
 - ⏳ Add import-linter rules for Domain Service boundaries (prevent vertical modules from importing domain service internals)
 - ⏳ Update composition root (`main.py`) to wire Domain Services with Case contracts
 - ⏳ Update API routes to use injected Domain Service instances
@@ -1323,11 +1333,11 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 | Component | Organization | Reason |
 |-----------|-------------|--------|
 | `modules/auth/` | ✅ Vertical | Owns domain data (users, organizations tables) |
-| `modules/case/` | ✅ Vertical | Owns domain data (10 tables including evidence) |
+| `modules/case/` | ✅ Vertical | Owns domain data (11 tables including evidence and reports) |
 | `modules/knowledge/` | ✅ Vertical | Owns domain data (kb_documents + ChromaDB) |
 | `modules/evidence/` | ❌ Domain Service | Business logic only; data owned by Case module |
 | `modules/agent/` | ❌ Domain Service | Orchestration logic; no persistent state ownership |
-| `modules/report/` | ❌ Domain Service | Generation logic; ephemeral storage (Redis + ChromaDB) |
+| `modules/report/` | ❌ Domain Service | Generation logic; data owned by Case module (TD-001 complete) |
 | `infrastructure/llm/` | ❌ Horizontal | Provider abstraction, no business logic |
 | `infrastructure/vector/` | ❌ Horizontal | Provider abstraction, no business logic |
 | `infrastructure/storage/` | ❌ Horizontal | Provider abstraction, no business logic |
@@ -1359,10 +1369,10 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 
 | Module | v1.0 Classification | v2.0 Classification | Reason |
 |--------|---------------------|---------------------|--------|
-| Evidence | ✅ Vertical | ❌ Domain Service | Evidence table has FK to cases - part of Case module's 10-table schema |
+| Evidence | ✅ Vertical | ❌ Domain Service | Evidence table has FK to cases - part of Case module's 11-table schema |
 | Agent | ✅ Vertical | ❌ Domain Service | No agent_* tables; agent_tool_calls is case audit data, not agent state |
-| Report | ✅ Vertical | ❌ Domain Service | No PostgreSQL tables; Redis + ChromaDB with TTL (ephemeral artifacts) |
-| Case | ✅ Vertical | ✅ Vertical | Owns 10 tables including evidence (schema verified) |
+| Report | ✅ Vertical | ❌ Domain Service | Reports table has FK to cases - part of Case module's 11-table schema (TD-001 complete) |
+| Case | ✅ Vertical | ✅ Vertical | Owns 11 tables including evidence and reports (schema verified, TD-001 complete) |
 | Auth | ✅ Vertical | ✅ Vertical | Owns users and organizations tables (schema verified) |
 | Knowledge | ✅ Vertical | ✅ Vertical | Owns kb_documents + ChromaDB collections (schema verified) |
 
@@ -1374,54 +1384,49 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 
 ### TD-001: Migrate Report Storage from Ephemeral to Persistent
 
-**Status**: Planned  
+**Status**: ✅ **COMPLETE** (2026-01-10)  
 **Priority**: Medium  
 **Related Modules**: Report (domain service), Case (vertical module)
 
-#### Current State
-- Reports stored in Redis (metadata) + ChromaDB (content) with TTL expiration
-- Reports are ephemeral cached artifacts that expire after case closure
-- Report module classified as Domain Service with ephemeral outputs
+#### Completed Migration
+- ✅ Reports now stored in PostgreSQL `reports` table with FK to `cases(case_id) ON DELETE CASCADE`
+- ✅ Reports persist for the lifetime of the case (symmetric to evidence)
+- ✅ Report module remains Domain Service, data owned by Case module
+- ✅ All legacy Redis + ChromaDB code removed
 
-#### Target State
-- Reports stored in PostgreSQL `reports` table with FK to `cases`
-- Reports persist for the lifetime of the case (like evidence)
-- Report module remains Domain Service, but data owned by Case module
+#### Implementation Completed
 
-#### Rationale
-Reports are investigation **outputs** and should persist alongside the case, symmetric to evidence (investigation **inputs**). Both should have the same lifecycle tied to the case.
+1. **Schema Change** ✅
+   - ✅ Added `reports` table to Case module's schema (`005_add_reports_table.sql`)
+   - ✅ FK constraint: `case_id REFERENCES cases(case_id) ON DELETE CASCADE`
+   - ✅ Updated Case module table count from 10 to 11
 
-#### Implementation Tasks
+2. **Storage Design Update** ✅
+   - ✅ Updated Report storage section in `data-storage-design.md` to PostgreSQL (persistent)
+   - ✅ Removed all TTL-based expiration references
+   - ✅ Updated `case-storage-design.md` with reports table schema
 
-1. **Schema Change** (case-storage-design.md)
-   - Add `reports` table to Case module's schema
-   - Include FK constraint: `case_id REFERENCES cases(case_id) ON DELETE CASCADE`
-   - Update Case module table count from 10 to 11
+3. **Code Migration** ✅
+   - ✅ Created `reports` table migration script (`005_add_reports_table.sql`)
+   - ✅ Updated Report service to use Case repository for persistence
+   - ✅ Added report methods (`add_report`, `get_report`, `get_reports`, `update_report`, `delete_report`) to `CaseRepository`
+   - ✅ Implemented in both `InMemoryCaseRepository` and `PostgreSQLHybridCaseRepository`
+   - ✅ Removed all legacy `IReportStore` interface and `RedisReportStore` implementation
 
-2. **Storage Design Update** (data-storage-design.md)
-   - Update Report storage section from "Hybrid Redis + ChromaDB (ephemeral)" to "PostgreSQL (persistent, FK to cases)"
-   - Remove TTL-based expiration references
+4. **Documentation Update** ✅
+   - ✅ Updated this document's Report classification rationale
+   - ✅ Updated schema verification references
+   - ✅ All design documents reflect PostgreSQL storage
 
-3. **Code Migration**
-   - Add `reports` table migration script
-   - Update Report service to use Case repository for persistence
-   - Add `save_report()` and `get_reports()` methods to ICaseRepository contract
-   - Migrate existing cached reports to PostgreSQL (if applicable)
+#### Acceptance Criteria (All Complete)
+- ✅ `reports` table exists in PostgreSQL schema with FK to cases
+- ✅ Reports persist permanently (no TTL expiration)
+- ✅ Reports deleted when parent case is deleted (CASCADE)
+- ✅ Report service uses `CaseRepository` for all persistence
+- ✅ Schema documentation updated in `case-storage-design.md` and `data-storage-design.md`
+- ✅ All legacy code removed (`IReportStore`, `RedisReportStore`)
 
-4. **Documentation Update**
-   - Update this document's Report classification rationale
-   - Update schema verification references
-
-#### Dependencies
-- Case module must expose report persistence methods via contracts
-- Migration script must handle existing cached reports
-
-#### Acceptance Criteria
-- [ ] `reports` table exists in PostgreSQL with FK to cases
-- [ ] Reports persist after Redis TTL would have expired
-- [ ] Reports deleted when parent case is deleted (cascade)
-- [ ] Report service uses ICaseRepository for all persistence
-- [ ] Schema documentation updated in case-storage-design.md and data-storage-design.md
+**Result**: Reports are now first-class persistent entities stored in PostgreSQL via Case module's repository, with the same lifecycle as evidence (investigation inputs). Report module remains a Domain Service that generates reports but delegates persistence to Case module.
 
 ---
 

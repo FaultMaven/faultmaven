@@ -136,7 +136,8 @@ class TestExecuteAgentNonStreaming:
                 duration_ms=1000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        # Mock should return the async generator directly (not call it)
+        mock_agent_service.execute_agent = mock_execute
         mock_agent_service.get_execution.return_value = mock_execution
 
         response = client.post(
