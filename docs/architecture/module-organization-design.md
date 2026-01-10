@@ -710,8 +710,9 @@ modules/agent/             # Domain Service (NOT vertical)
 
 modules/report/            # Domain Service (NOT vertical)
 ├── domain/                # Report generation
-├── api/                   # Endpoints
-└── infrastructure/        # ⚠️ TEMPORARY until TD-001 (Redis + ChromaDB)
+└── api/                   # Endpoints
+# NO infrastructure/        # Storage in horizontal infrastructure (RedisReportStore)
+# Storage: infrastructure/persistence/redis_report_store.py (ephemeral until TD-001)
 ```
 
 **Pros**: Maintains domain cohesion, extraction-ready, matches schema reality  
@@ -735,7 +736,7 @@ modules/report/            # Domain Service (NOT vertical)
 | **Domain cohesion** | ✅ High | ✅ High | ⚠️ Medium |
 | **Extraction ready** | ✅ Yes | ✅ Yes | ⚠️ Requires refactor |
 
-*Exception: Report keeps `infrastructure/` temporarily until TD-001 migration
+*Exception: Report storage is in horizontal infrastructure (`infrastructure/persistence/redis_report_store.py`) until TD-001 migration (ephemeral Redis + ChromaDB)
 
 ### Purpose Achievement: Domain Services vs Vertical
 
@@ -797,21 +798,39 @@ class AgentService:
 #### Report Service Pattern (Current - Pre-TD-001)
 
 ```python
-# modules/report/domain/report_service.py
-from faultmaven.modules.case.contracts import ICaseService
+# modules/report/api/routes.py (API layer uses Case contracts)
+from faultmaven.models.interfaces_case import ICaseService
+from faultmaven.models.interfaces_report import IReportStore
 
-class ReportService:
-    def __init__(self, case_service: ICaseService, llm_provider: ILLMProvider):
-        self.case_service = case_service
-        self.llm_provider = llm_provider
+@router.post("/cases/{case_id}/reports")
+async def generate_reports(
+    case_id: str,
+    case_service: ICaseService = Depends(get_case_service),
+    report_store: IReportStore = Depends(get_report_store),
+):
+    # API layer gets Case via ICaseService
+    case = await case_service.get_case(case_id, user_id=current_user.user_id)
     
-    async def generate_report(self, case_id: str, report_type: ReportType):
-        case = await self.case_service.get_case(case_id)
+    # Service receives Case object (doesn't query directly)
+    report = await report_service.generate_reports(case, report_types)
+    
+    # Storage via IReportStore (horizontal infrastructure: RedisReportStore)
+    await report_store.save_report(report)  # Redis + ChromaDB (ephemeral)
+    # TODO TD-001: await case_service.save_report(case_id, report)  # PostgreSQL
+
+# modules/report/domain/services/report_generation_service.py
+class ReportGenerationService:
+    def __init__(self, llm_router, report_store: IReportStore):
+        self.llm_router = llm_router
+        self.report_store = report_store  # Horizontal infrastructure
+    
+    async def generate_reports(self, case: Case, report_types: List[ReportType]):
+        # Receives Case object (no direct Case query needed)
         report = await self._generate(case, report_type)
         
         # TEMPORARY: Ephemeral storage until TD-001
-        await self.report_cache.save(report)  # Redis + ChromaDB
-        # TODO TD-001: await self.case_service.save_report(case_id, report)
+        await self.report_store.save_report(report)  # Redis + ChromaDB
+        # TODO TD-001: Use Case repository for persistence
 ```
 
 #### Agent Tools: Exception to Domain Service Pattern
@@ -1403,9 +1422,11 @@ These modules implement **business logic** but **operate on data owned by other 
   ```
   modules/report/
   ├── domain/               # Report generation logic
-  ├── api/                  # Report endpoints
-  └── infrastructure/       # Redis + ChromaDB storage (ephemeral)
+  └── api/                  # Report endpoints
+  # NO infrastructure/      # Storage in horizontal infrastructure (RedisReportStore)
   ```
+- **Storage**: Reports stored via `IReportStore` interface implemented by `RedisReportStore` in `infrastructure/persistence/redis_report_store.py` (horizontal infrastructure, ephemeral until TD-001)
+- **Case Access**: API routes use `ICaseService` to get Case data; service receives Case object as parameter
 
 **Note**: Reports are derived/cached outputs, not first-class domain entities. They're similar to cached LLM responses.
 
@@ -1600,8 +1621,8 @@ faultmaven/
 │   │
 │   └── report/                       # ❌ Domain Service (ephemeral outputs)
 │       ├── domain/                   # Report generation logic
-│       ├── api/
-│       └── infrastructure/           # Redis + ChromaDB (ephemeral, TTL-based)
+│       └── api/                      # Report endpoints
+│       # NO infrastructure/          # Storage in horizontal infrastructure (RedisReportStore)
 │
 ├── infrastructure/                   # Horizontal cross-cutting infrastructure
 │   ├── llm/                          # ❌ Horizontal
@@ -1703,10 +1724,13 @@ faultmaven/
 - ⏳ Add integration tests for contract compliance
 
 ### Phase 2.5: Restructure Domain Services
-- ⏳ Remove `contracts.py` from Evidence, Agent, Report modules (they don't own data)
-- ⏳ Remove `infrastructure/` from Evidence, Agent modules (use Case repository)
-- ⏳ Keep Report `infrastructure/` temporarily until TD-001 migration (Redis + ChromaDB)
+- ✅ Remove `contracts.py` from Evidence, Agent, Report modules (they don't own data) - **COMPLETED**: None of these modules have contracts.py
+- ✅ Remove `infrastructure/` from Evidence, Agent modules (use Case repository) - **COMPLETED**: Neither module has infrastructure/persistence
+- ✅ Report storage in horizontal infrastructure (`infrastructure/persistence/redis_report_store.py`) - **VERIFIED**: Storage correctly in horizontal infrastructure, not module infrastructure/
 - ⏳ Update Evidence, Agent, Report to use Case module's contracts (`ICaseRepository`, `ICaseService`)
+  - ✅ Report API routes already use `ICaseService` via dependency injection
+  - ⏳ Verify Evidence uses Case contracts (may need completion)
+  - ⏳ Verify Agent uses Case contracts
 - ⏳ Add import-linter rules for Domain Service boundaries (prevent vertical modules from importing domain service internals)
 - ⏳ Update composition root (`main.py`) to wire Domain Services with Case contracts
 - ⏳ Update API routes to use injected Domain Service instances
@@ -1840,6 +1864,7 @@ modules/knowledge/domain/services/indexing_service.py  # Business logic
 | 1.0 | 2026-01-09 | Initial recommendations with 6 vertical modules |
 | 2.0 | 2026-01-09 | **Schema-verified revision** - Only 3 vertical modules (Case, Auth, Knowledge) after reviewing `case-storage-design.md` and `data-storage-design.md`. Evidence, Agent, and Report reclassified as Domain Services. |
 | 2.1 | 2026-01-10 | **Domain Service structural guidance** - Added detailed implementation patterns, structural options, boundary enforcement strategies, and migration steps (Phase 2.5) for Evidence, Agent, Report modules. Consolidated vertical-vs-layer structuring guidance into this document. |
+| 2.2 | 2026-01-10 | **Report module structure verification** - Clarified that Report module storage is correctly in horizontal infrastructure (`infrastructure/persistence/redis_report_store.py`), not in module `infrastructure/`. Updated Phase 2.5 status to reflect Report module correctly uses `ICaseService` in API routes. |
 
 ### Key Changes in v2.0
 
