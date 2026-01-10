@@ -34,21 +34,38 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, delete, func, select, update
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.infrastructure.persistence.models import (
-    AgentExecutionModel,
-    AgentToolCallV2Model,
-)
+
+# SQLAlchemy imports are conditional - only needed for DatabaseAgentExecutionRepository
+# InMemoryAgentExecutionRepository works without SQLAlchemy
+try:
+    from sqlalchemy import and_, delete, func, select, update
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.orm import selectinload
+    from faultmaven.infrastructure.persistence.models import (
+        AgentExecutionModel,
+        AgentToolCallV2Model,
+    )
+    SQLALCHEMY_AVAILABLE = True
+except ImportError:
+    # SQLAlchemy not installed - only InMemoryAgentExecutionRepository will work
+    SQLALCHEMY_AVAILABLE = False
+    and_ = None
+    delete = None
+    func = None
+    select = None
+    update = None
+    IntegrityError = None
+    AsyncSession = None
+    selectinload = None
+    AgentExecutionModel = None
+    AgentToolCallV2Model = None
 
 logger = logging.getLogger(__name__)
 
@@ -256,12 +273,20 @@ class AgentExecutionRepository(ABC):
 class DatabaseAgentExecutionRepository(AgentExecutionRepository):
     """Database-backed agent execution repository using SQLAlchemy ORM."""
 
-    def __init__(self, db_session: AsyncSession):
+    def __init__(self, db_session):
         """Initialize repository with database session.
 
         Args:
             db_session: SQLAlchemy async session for database operations
+            
+        Raises:
+            ImportError: If SQLAlchemy is not installed
         """
+        if not SQLALCHEMY_AVAILABLE:
+            raise ImportError(
+                "SQLAlchemy is required for DatabaseAgentExecutionRepository. "
+                "Install it with: pip install sqlalchemy"
+            )
         self.db = db_session
 
     # =========================================================================
@@ -271,6 +296,10 @@ class DatabaseAgentExecutionRepository(AgentExecutionRepository):
     async def create_execution(self, execution: AgentExecution) -> AgentExecution:
         """Create new agent execution record in the database."""
         try:
+            # Ensure models are available
+            if AgentExecutionModel is None:
+                raise ImportError("AgentExecutionModel is not available. SQLAlchemy must be installed.")
+            
             # Convert domain model to ORM model
             execution_model = AgentExecutionModel(
                 execution_id=execution.execution_id,

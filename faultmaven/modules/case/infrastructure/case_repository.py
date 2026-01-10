@@ -725,15 +725,21 @@ class InMemoryCaseRepository(CaseRepository):
     async def list_standalone_evidence(self, filters: Any) -> tuple[List[Any], int]:
         """List standalone evidence with filters (in-memory implementation)."""
         from faultmaven.modules.evidence.domain.models import EvidenceListFilter
+        from uuid import UUID
         
         all_evidence = list(self._standalone_evidence.values())
         filtered = all_evidence
         
         # Apply filters if EvidenceListFilter provided
         if filters and hasattr(filters, 'case_id') and filters.case_id:
-            filtered = [e for e in filtered if filters.case_id in getattr(e, 'linked_case_ids', [])]
+            # Convert UUID to string for comparison (linked_case_ids stores strings)
+            case_id_str = str(filters.case_id) if isinstance(filters.case_id, UUID) else filters.case_id
+            filtered = [e for e in filtered if case_id_str in getattr(e, 'linked_case_ids', [])]
+        
         if filters and hasattr(filters, 'uploaded_by') and filters.uploaded_by:
-            filtered = [e for e in filtered if getattr(e, 'user_id', None) == str(filters.uploaded_by)]
+            # Convert UUID to string for comparison (user_id is stored as string)
+            uploaded_by_str = str(filters.uploaded_by) if isinstance(filters.uploaded_by, UUID) else filters.uploaded_by
+            filtered = [e for e in filtered if getattr(e, 'user_id', None) == uploaded_by_str]
         if filters and hasattr(filters, 'tags') and filters.tags:
             # Match any tag
             filtered = [e for e in filtered if any(tag in getattr(e, 'tags', []) for tag in filters.tags)]
@@ -852,12 +858,14 @@ class InMemoryCaseRepository(CaseRepository):
             if getattr(e, 'case_id', None) == case_id
         ]
         
-        # Filter by status
+        # Filter by status (ExecutionStatus is str, Enum so direct comparison works)
         if status:
+            # For str, Enum types, both enum == enum and enum == str work
             executions = [e for e in executions if getattr(e, 'status', None) == status]
         
-        # Filter by agent_type
+        # Filter by agent_type (AgentType is str, Enum so direct comparison works)
         if agent_type:
+            # For str, Enum types, both enum == enum and enum == str work
             executions = [e for e in executions if getattr(e, 'agent_type', None) == agent_type]
         
         # Sort by created_at descending

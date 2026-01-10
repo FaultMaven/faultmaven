@@ -139,7 +139,9 @@ class AuthSessionService(BaseService):
 
             # Index by (user_id, client_id) for resumption if client_id provided
             if client_id:
-                await self.session_store.index_by_user_and_client(user_id, client_id, session.session_id)
+                # Calculate TTL in seconds from expires_at
+                ttl_seconds = int((session.expires_at - datetime.now(timezone.utc)).total_seconds()) if session.expires_at else self.session_ttl.total_seconds()
+                await self.session_store.index_session_by_client(user_id, client_id, session.session_id, int(ttl_seconds))
 
         self.logger.info(f"Created new session for user {user_id}: {session.session_id}")
         return session, False
@@ -160,7 +162,7 @@ class AuthSessionService(BaseService):
         if not self.session_store:
             raise ServiceException("Session store not configured")
 
-        session = await self.session_store.get(session_id)
+        session = await self.session_store.get_session(session_id)
         if not session:
             return None
 
@@ -339,7 +341,7 @@ class AuthSessionService(BaseService):
         if not self.session_store:
             return []
 
-        all_sessions = await self.session_store.list()
+        all_sessions = await self.session_store.list_sessions()
         user_sessions = [
             s for s in all_sessions
             if s.user_id == user_id and await self._is_active(s)
@@ -360,7 +362,7 @@ class AuthSessionService(BaseService):
         if not self.session_store:
             return []
 
-        all_sessions = await self.session_store.list()
+        all_sessions = await self.session_store.list_sessions()
 
         if user_id:
             return [s for s in all_sessions if s.user_id == user_id]
@@ -381,7 +383,7 @@ class AuthSessionService(BaseService):
         if not self.session_store:
             return 0
 
-        all_sessions = await self.session_store.list()
+        all_sessions = await self.session_store.list_sessions()
         now = datetime.now(timezone.utc)
         cleaned = 0
 
@@ -405,7 +407,7 @@ class AuthSessionService(BaseService):
         if not self.session_store:
             return 0
 
-        all_sessions = await self.session_store.list()
+        all_sessions = await self.session_store.list_sessions()
         now = datetime.now(timezone.utc)
         cleaned = 0
 
@@ -434,7 +436,7 @@ class AuthSessionService(BaseService):
         if not self.session_store:
             return {}
 
-        all_sessions = await self.session_store.list()
+        all_sessions = await self.session_store.list_sessions()
         now = datetime.now(timezone.utc)
 
         active_sessions = [s for s in all_sessions if await self._is_active(s)]
@@ -493,7 +495,7 @@ class AuthSessionService(BaseService):
         if not self.session_store:
             return {"status": "unhealthy", "reason": "session_store not configured"}
 
-        all_sessions = await self.session_store.list()
+        all_sessions = await self.session_store.list_sessions()
         now = datetime.now(timezone.utc)
 
         active = sum(1 for s in all_sessions if await self._is_active(s))
@@ -535,7 +537,7 @@ class AuthSessionService(BaseService):
                 return await self.get_session(session_id)
 
         # Fallback: search all sessions
-        all_sessions = await self.session_store.list()
+        all_sessions = await self.session_store.list_sessions()
         for session in all_sessions:
             if session.user_id == user_id and session.client_id == client_id:
                 if await self._is_active(session):
