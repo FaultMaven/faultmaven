@@ -134,8 +134,8 @@ def sample_members():
 def mock_auth_and_services(owner_user, sample_organization, sample_members):
     """Mock authentication and services."""
     with patch("faultmaven.api.middleware.auth.get_auth_service") as mock_get_auth, \
-         patch("faultmaven.api.v1.routes.organizations.get_api_organization_service") as mock_get_api_service, \
-         patch("faultmaven.api.v1.routes.organizations.get_organization_service") as mock_get_org_service:
+         patch("faultmaven.modules.auth.api.organizations.get_api_organization_service") as mock_get_api_service, \
+         patch("faultmaven.modules.auth.api.organizations.get_organization_service") as mock_get_org_service:
 
         # Mock auth service
         mock_auth = MagicMock()
