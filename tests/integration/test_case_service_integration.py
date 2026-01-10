@@ -206,7 +206,7 @@ class TestCaseLifecycle:
         closed = await case_service.close_case(
             case.case_id,
             org_id,
-            "Cannot reproduce - monitoring for recurrence",
+            "other",  # Cannot reproduce - monitoring for recurrence
         )
 
         assert closed.status == CaseStatus.RESOLVED
@@ -551,10 +551,10 @@ class TestCaseStateTransitions:
             severity=CaseSeverity.LOW,
         )
 
-        await case_service.close_case(case.case_id, org_id, "First close")
+        await case_service.close_case(case.case_id, org_id, "resolved")
 
         with pytest.raises(ConflictError):
-            await case_service.close_case(case.case_id, org_id, "Second close")
+            await case_service.close_case(case.case_id, org_id, "resolved")
 
     @pytest.mark.asyncio
     async def test_cannot_reopen_non_closed_case(self, case_service):
