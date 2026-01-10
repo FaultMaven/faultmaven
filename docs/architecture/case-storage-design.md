@@ -22,11 +22,11 @@
 
 **Active Implementation**:
 - **Development**: `InMemoryCaseRepository` (Python dict, data lost on restart)
-- **Production Target**: `PostgreSQLHybridCaseRepository` (10-table hybrid schema)
+- **Production Target**: `PostgreSQLHybridCaseRepository` (11-table hybrid schema)
 - **Legacy**: `PostgreSQLCaseRepository` (single-table JSONB, deprecated)
 
 **Reality Check**:
-The 10-table hybrid schema is **designed and coded but NOT yet tested or deployed**. All performance metrics in this document are **estimated targets**, not measured results.
+The 11-table hybrid schema is **designed and coded but NOT yet tested or deployed**. All performance metrics in this document are **estimated targets**, not measured results.
 
 ---
 
@@ -227,7 +227,7 @@ class Case(BaseModel):
 
 ## 4. PostgreSQL Schema
 
-### 4.1 Table Design (10 Tables)
+### 4.1 Table Design (11 Tables)
 
 ```
 Core Tables (4):
@@ -236,13 +236,14 @@ Core Tables (4):
 ├── organizations      -- Multi-tenancy
 └── sessions           -- Session management
 
-High-Cardinality Tables (6):
+High-Cardinality Tables (7):
 ├── evidence           -- Investigation evidence (many per case)
 ├── hypotheses         -- Hypotheses being tested (many per case)
 ├── solutions          -- Proposed/verified solutions (few per case)
 ├── uploaded_files     -- File metadata (many per case)
 ├── case_messages      -- Turn-by-turn messages (very high volume)
-└── case_status_transitions  -- Audit trail (few per case)
+├── case_status_transitions  -- Audit trail (few per case)
+└── reports            -- Generated reports (few per case, versioned)
 ```
 
 ### 4.2 cases (Main Table)
@@ -658,7 +659,89 @@ CREATE INDEX idx_status_transitions_timestamp ON case_status_transitions(transit
 COMMENT ON TABLE case_status_transitions IS 'Audit trail of status changes';
 ```
 
-### 4.9 Supporting Tables (users, organizations, sessions)
+### 4.9 reports (High-Cardinality Table)
+
+```sql
+CREATE TABLE reports (
+    report_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    case_id VARCHAR(17) NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+
+    -- ============================================================
+    -- Report Type & Versioning
+    -- ============================================================
+    report_type VARCHAR(30) NOT NULL,              -- incident_report | runbook | post_mortem
+    version INTEGER NOT NULL DEFAULT 1,
+    is_current BOOLEAN NOT NULL DEFAULT TRUE,      -- Latest version for this report_type
+    linked_to_closure BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- ============================================================
+    -- Content
+    -- ============================================================
+    title VARCHAR(200) NOT NULL,
+    content TEXT NOT NULL,                         -- Full markdown content
+    format VARCHAR(20) NOT NULL DEFAULT 'markdown',
+
+    -- ============================================================
+    -- Generation Metadata
+    -- ============================================================
+    generation_status VARCHAR(20) NOT NULL,        -- generating | completed | failed
+    generation_time_ms INTEGER NOT NULL CHECK (generation_time_ms >= 0 AND generation_time_ms <= 120000),
+    generated_by VARCHAR(255),                     -- user_id who triggered generation
+
+    -- ============================================================
+    -- Runbook-Specific Metadata (JSONB for flexibility)
+    -- ============================================================
+    metadata JSONB DEFAULT '{}'::jsonb,            -- RunbookMetadata: source, domain, tags, etc.
+
+    -- ============================================================
+    -- Timestamps
+    -- ============================================================
+    generated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT reports_type_check
+        CHECK (report_type IN ('incident_report', 'runbook', 'post_mortem')),
+
+    CONSTRAINT reports_status_check
+        CHECK (generation_status IN ('generating', 'completed', 'failed')),
+
+    CONSTRAINT reports_format_check
+        CHECK (format IN ('markdown')),
+
+    CONSTRAINT reports_version_check
+        CHECK (version >= 1 AND version <= 5)
+);
+
+-- Ensure only one current version per report_type per case (partial unique index)
+CREATE UNIQUE INDEX idx_reports_current_unique
+    ON reports(case_id, report_type)
+    WHERE is_current = TRUE;
+
+-- Additional indexes for report queries (current_unique index created above)
+CREATE INDEX idx_reports_case ON reports(case_id);
+CREATE INDEX idx_reports_type_version ON reports(case_id, report_type, version DESC);
+CREATE INDEX idx_reports_closure ON reports(case_id) WHERE linked_to_closure = TRUE;
+CREATE INDEX idx_reports_generated_at ON reports(generated_at DESC);
+
+-- Full-text search on report content
+CREATE INDEX idx_reports_content_search ON reports USING gin(
+    to_tsvector('english', title || ' ' || content)
+);
+
+COMMENT ON TABLE reports IS 'Generated case reports (incident reports, runbooks, post-mortems) - versioned, persistent storage';
+COMMENT ON COLUMN reports.metadata IS 'Runbook-specific metadata: source (incident_driven/document_driven), domain, tags, etc.';
+```
+
+**Design Notes**:
+- Reports stored persistently in PostgreSQL (TD-001 migration from Redis + ChromaDB)
+- Versioning support: up to 5 versions per report_type per case
+- `is_current` flag marks latest version (enforced via unique constraint)
+- `linked_to_closure` tracks reports linked during case closure
+- Metadata stored as JSONB for runbook-specific fields (source, domain, tags)
+- Full-text search index on title and content for similarity queries
+- Cascade delete when parent case is deleted
+
+### 4.10 Supporting Tables (users, organizations, sessions)
 
 ```sql
 CREATE TABLE users (
@@ -763,7 +846,7 @@ SELECT * FROM cases WHERE case_id = 'case_123';
 
 **Performance Comparison**:
 
-| Operation | Fully Normalized (32 tables) | Hybrid (10 tables) | Single Table (current) |
+| Operation | Fully Normalized (32 tables) | Hybrid (11 tables) | Single Table (current) |
 |-----------|------------------------------|-------------------|------------------------|
 | Load case | 8-12 JOINs (~50ms) | 4 JOINs + JSONB (~10ms) | 1 query (~2ms) |
 | Filter evidence | Efficient (indexed) | Efficient (indexed) | ❌ Slow (JSONB scan) |
@@ -947,7 +1030,7 @@ psql -U faultmaven -d faultmaven_cases < migrations/001_initial_hybrid_schema.sq
 
 # Verify all tables created
 psql -U faultmaven -d faultmaven_cases -c "\dt"
-# Expected: 10 tables (cases, evidence, hypotheses, solutions, case_messages, uploaded_files, case_status_transitions, case_tags, agent_tool_calls, plus system tables)
+# Expected: 11 tables (cases, evidence, hypotheses, solutions, case_messages, uploaded_files, case_status_transitions, reports, plus system tables)
 
 # Verify indexes created
 psql -U faultmaven -d faultmaven_cases -c "\di"
@@ -1136,7 +1219,7 @@ This design provides:
 > Build it clean, build it right. No backward compatibility needed during development.
 
 **What's Different from Legacy**:
-- **10 tables** (not 1) → Better filtering and search performance
+- **11 tables** (not 1) → Better filtering and search performance
 - **Normalized evidence/hypotheses** → Row-level locking, concurrent writes
 - **JSONB for flexible data** → Consulting, conclusions, progress tracking
 - **Full-text search indexes** → Fast case and evidence search
