@@ -26,10 +26,11 @@ from faultmaven.models.common import SessionContext
 def mock_user():
     """Create a mock authenticated user."""
     return DevUser(
-        id=uuid4(),
         user_id="test_user_123",
         username="testuser",
         email="test@example.com",
+        display_name="Test User",
+        created_at=datetime.now(timezone.utc),
     )
 
 
