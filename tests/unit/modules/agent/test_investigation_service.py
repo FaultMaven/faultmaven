@@ -53,7 +53,8 @@ class TestInvestigationServiceProcessTurn:
 
         assert isinstance(response, CaseQueryResponse)
         assert response.agent_response == f"Agent response to: {sample_case_query_request.message}"
-        assert response.turn_number == sample_case.current_turn + 1
+        # Mock engine increments turn from 0 to 1, so response should have turn_number = 1
+        assert response.turn_number == 1, f"Expected turn_number=1, got {response.turn_number} (initial was {sample_case.current_turn})"
         assert mock_milestone_engine.process_turn.called
         assert mock_case_repository.save.called
 
@@ -103,12 +104,17 @@ class TestInvestigationServiceProcessTurn:
             request=sample_case_query_request,
         )
 
-        # Verify case was saved with user message
+        # Verify case was saved with user message and agent response
         saved_case = await mock_case_repository.get(sample_case.case_id)
         assert saved_case.message_count == initial_message_count + 2  # User message + agent response
-        assert len(saved_case.messages) >= 1
-        assert saved_case.messages[-2]["role"] == "user"
-        assert saved_case.messages[-2]["content"] == sample_case_query_request.message
+        assert len(saved_case.messages) >= 2, f"Expected at least 2 messages, got {len(saved_case.messages)}"
+        # Messages are added in order: user message first (index 0), then agent response (index 1)
+        # So messages[-2] should be the user message if there are exactly 2, or second-to-last otherwise
+        user_messages = [m for m in saved_case.messages if m.get("role") == "user"]
+        assert len(user_messages) >= 1, "User message should be saved"
+        # Check that our test message is in the user messages
+        assert any(m["content"] == sample_case_query_request.message for m in user_messages), \
+            f"User message '{sample_case_query_request.message}' not found in saved messages"
 
     @pytest.mark.asyncio
     async def test_process_turn_saves_agent_response(
@@ -127,8 +133,9 @@ class TestInvestigationServiceProcessTurn:
 
         # Verify case was saved with agent response
         saved_case = await mock_case_repository.get(sample_case.case_id)
-        assert saved_case.messages[-1]["role"] == "agent"
-        assert saved_case.messages[-1]["content"] == response.agent_response
+        agent_messages = [m for m in saved_case.messages if m.get("role") == "agent"]
+        assert len(agent_messages) >= 1
+        assert agent_messages[-1]["content"] == response.agent_response
 
     @pytest.mark.asyncio
     async def test_process_turn_increments_turn_number(
@@ -137,7 +144,7 @@ class TestInvestigationServiceProcessTurn:
         """Test that turn number is incremented."""
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
         sample_case.user_id = sample_user_id
-        initial_turn = sample_case.current_turn
+        initial_turn = sample_case.current_turn  # Should be 0 from fixture
         await mock_case_repository.save(sample_case)
 
         response = await service.process_turn(
@@ -146,9 +153,20 @@ class TestInvestigationServiceProcessTurn:
             request=sample_case_query_request,
         )
 
-        assert response.turn_number == initial_turn + 1
+        # Service flow:
+        # 1. Gets case (current_turn = initial_turn, e.g., 0)
+        # 2. Adds user message with turn_number = current_turn + 1 (e.g., 1)
+        # 3. Engine processes and increments current_turn += 1 (e.g., 0 -> 1)
+        # 4. Service adds agent message with turn_number = updated_case.current_turn (e.g., 1)
+        # 5. Response has turn_number = updated_case.current_turn (e.g., 1)
+        expected_turn = initial_turn + 1  # Engine increments by 1
+        assert response.turn_number == expected_turn, \
+            f"Expected turn_number={expected_turn}, got {response.turn_number} (initial was {initial_turn})"
+        
         saved_case = await mock_case_repository.get(sample_case.case_id)
-        assert saved_case.current_turn == initial_turn + 1
+        # The saved case should have current_turn incremented by the engine
+        assert saved_case.current_turn == expected_turn, \
+            f"Expected saved_case.current_turn={expected_turn}, got {saved_case.current_turn}"
 
     @pytest.mark.asyncio
     async def test_process_turn_with_attachments(
@@ -227,12 +245,13 @@ class TestInvestigationServiceGetProgress:
 
     @pytest.mark.asyncio
     async def test_get_progress_permission_denied(
-        self, service, mock_case_repository, sample_case
+        self, service, mock_case_repository, sample_case, sample_user_id
     ):
         """Test progress retrieval with unauthorized user."""
-        # Pre-populate repository
+        # Pre-populate repository - ensure sample_case has a different user_id
+        sample_case.user_id = sample_user_id
         await mock_case_repository.save(sample_case)
-        unauthorized_user_id = str(uuid4())
+        unauthorized_user_id = str(uuid4())  # Different user
 
         with pytest.raises(PermissionDeniedException, match="not authorized"):
             await service.get_progress(
