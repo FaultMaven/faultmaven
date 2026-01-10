@@ -273,7 +273,7 @@ class InvestigationService(BaseService):
             # Validate current status
             if case.status != CaseStatus.CONSULTING:
                 raise ServiceException(
-                    f"Cannot transition to INVESTIGATING: case is in {case.status} status"
+                    f"Cannot transition to INVESTIGATING: case is in {case.status.value} status"
                 )
 
             # Ensure consulting data is properly set for INVESTIGATING transition

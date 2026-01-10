@@ -337,6 +337,12 @@ class TestInvestigationServiceTransitionToInvestigating:
         sample_case.user_id = sample_user_id
         sample_case.status = CaseStatus.INVESTIGATING
         await mock_case_repository.save(sample_case)
+        
+        # Verify the case is stored with INVESTIGATING status
+        stored_case = await mock_case_repository.get(sample_case.case_id)
+        assert stored_case is not None, "Case should be stored in repository"
+        assert stored_case.status == CaseStatus.INVESTIGATING, \
+            f"Case status should be INVESTIGATING, got {stored_case.status}"
 
         with pytest.raises(ServiceException, match="Cannot transition"):
             await service.transition_to_investigating(
