@@ -248,10 +248,10 @@ class TestInvestigationServiceGetProgress:
         self, service, mock_case_repository, sample_case, sample_user_id
     ):
         """Test progress retrieval with unauthorized user."""
-        # Pre-populate repository - ensure sample_case has a different user_id
+        # Pre-populate repository - set sample_case to have sample_user_id as owner
         sample_case.user_id = sample_user_id
         await mock_case_repository.save(sample_case)
-        unauthorized_user_id = str(uuid4())  # Different user
+        unauthorized_user_id = str(uuid4())  # Different user (not the owner)
 
         with pytest.raises(PermissionDeniedException, match="not authorized"):
             await service.get_progress(
