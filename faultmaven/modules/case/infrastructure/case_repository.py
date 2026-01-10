@@ -373,6 +373,12 @@ class InMemoryCaseRepository(CaseRepository):
         """Initialize empty in-memory store."""
         self._cases: Dict[str, Case] = {}
         self._reports: Dict[str, 'CaseReport'] = {}  # report_id -> CaseReport
+        # Standalone evidence storage (migrated from Evidence module)
+        self._standalone_evidence: Dict[str, Any] = {}  # evidence_id -> EvidenceArtifact
+        # Agent execution storage (migrated from Agent module)
+        from copy import deepcopy
+        self._agent_executions: Dict[str, Any] = {}  # execution_id -> AgentExecution (tool_calls stored separately)
+        self._agent_tool_calls: Dict[str, Any] = {}  # tool_call_id -> AgentToolCall
 
     async def save(self, case: Case) -> Case:
         """Save case to memory."""
@@ -650,6 +656,209 @@ class InMemoryCaseRepository(CaseRepository):
             return True
         return False
 
+    # ============================================================
+    # Standalone Evidence Operations (migrated from Evidence module)
+    # ============================================================
+    
+    async def create_standalone_evidence(
+        self,
+        filename: str,
+        content_type: str,
+        size_bytes: int,
+        storage_path: str,
+        uploaded_by: str,
+        description: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Any:
+        """Create standalone evidence record (in-memory implementation)."""
+        from uuid import uuid4
+        from datetime import datetime, timezone
+        from faultmaven.modules.evidence.domain.models import (
+            EvidenceArtifact,
+            EvidenceArtifactType,
+            StorageBackend,
+        )
+        
+        evidence_id = str(uuid4())
+        now = datetime.now(timezone.utc)
+        
+        # Infer evidence type from content_type
+        if content_type.startswith("image/"):
+            evidence_type = EvidenceArtifactType.SCREENSHOT
+        elif content_type.startswith("video/"):
+            evidence_type = EvidenceArtifactType.VIDEO_RECORDING
+        elif "json" in content_type or content_type.startswith("text/"):
+            evidence_type = EvidenceArtifactType.LOG_FILE
+        elif "application/x-har" in content_type:
+            evidence_type = EvidenceArtifactType.HAR_FILE
+        else:
+            evidence_type = EvidenceArtifactType.OTHER
+        
+        evidence = EvidenceArtifact(
+            evidence_id=evidence_id,
+            case_id="standalone",  # Default until linked
+            user_id=uploaded_by,
+            organization_id="default_org",  # Default
+            original_filename=filename,
+            stored_filename=filename,
+            file_path=storage_path,
+            evidence_type=evidence_type,
+            mime_type=content_type,
+            file_size=size_bytes,
+            storage_backend=StorageBackend.LOCAL_FILESYSTEM,
+            created_at=now,
+            updated_at=now,
+            description=description,
+            metadata={},
+            tags=tags or [],
+            linked_case_ids=[],
+        )
+        
+        self._standalone_evidence[evidence_id] = evidence
+        return evidence
+    
+    async def get_standalone_evidence(self, evidence_id: str) -> Optional[Any]:
+        """Get standalone evidence by ID (in-memory implementation)."""
+        from faultmaven.modules.evidence.domain.models import EvidenceArtifact
+        return self._standalone_evidence.get(evidence_id)
+    
+    async def list_standalone_evidence(self, filters: Any) -> tuple[List[Any], int]:
+        """List standalone evidence with filters (in-memory implementation)."""
+        from faultmaven.modules.evidence.domain.models import EvidenceListFilter
+        
+        all_evidence = list(self._standalone_evidence.values())
+        filtered = all_evidence
+        
+        # Apply filters if EvidenceListFilter provided
+        if filters and hasattr(filters, 'case_id') and filters.case_id:
+            filtered = [e for e in filtered if filters.case_id in getattr(e, 'linked_case_ids', [])]
+        if filters and hasattr(filters, 'uploaded_by') and filters.uploaded_by:
+            filtered = [e for e in filtered if getattr(e, 'user_id', None) == str(filters.uploaded_by)]
+        if filters and hasattr(filters, 'tags') and filters.tags:
+            # Match any tag
+            filtered = [e for e in filtered if any(tag in getattr(e, 'tags', []) for tag in filters.tags)]
+        if filters and hasattr(filters, 'filename_contains') and filters.filename_contains:
+            filtered = [e for e in filtered if filters.filename_contains.lower() in getattr(e, 'original_filename', '').lower()]
+        
+        total = len(filtered)
+        
+        # Apply pagination
+        offset = getattr(filters, 'offset', 0) if filters else 0
+        limit = getattr(filters, 'limit', 50) if filters else 50
+        paginated = filtered[offset:offset + limit]
+        
+        return paginated, total
+    
+    async def delete_standalone_evidence(self, evidence_id: str) -> bool:
+        """Delete standalone evidence record (in-memory implementation)."""
+        if evidence_id in self._standalone_evidence:
+            del self._standalone_evidence[evidence_id]
+            return True
+        return False
+    
+    async def link_standalone_evidence_to_case(self, evidence_id: str, case_id: str) -> Optional[Any]:
+        """Link standalone evidence to a case (in-memory implementation)."""
+        from datetime import datetime, timezone
+        from faultmaven.modules.evidence.domain.models import EvidenceArtifact
+        
+        evidence = self._standalone_evidence.get(evidence_id)
+        if not evidence:
+            return None
+        
+        # Update linked_case_ids
+        linked_case_ids = getattr(evidence, 'linked_case_ids', [])
+        if case_id not in linked_case_ids:
+            linked_case_ids.append(case_id)
+            # Create updated evidence with new linked_case_ids
+            updated_evidence = EvidenceArtifact(
+                evidence_id=evidence.evidence_id,
+                case_id=linked_case_ids[0] if linked_case_ids else "standalone",  # Primary case is first
+                user_id=evidence.user_id,
+                organization_id=evidence.organization_id,
+                original_filename=evidence.original_filename,
+                stored_filename=evidence.stored_filename,
+                file_path=evidence.file_path,
+                evidence_type=evidence.evidence_type,
+                mime_type=evidence.mime_type,
+                file_size=evidence.file_size,
+                storage_backend=evidence.storage_backend,
+                created_at=evidence.created_at,
+                updated_at=datetime.now(timezone.utc),
+                description=evidence.description,
+                metadata=getattr(evidence, 'metadata', {}),
+                tags=getattr(evidence, 'tags', []),
+                linked_case_ids=linked_case_ids,
+            )
+            self._standalone_evidence[evidence_id] = updated_evidence
+            return updated_evidence
+        
+        return evidence
+    
+    # ============================================================
+    # Agent Execution Operations (migrated from Agent module)
+    # ============================================================
+    
+    async def create_agent_execution(self, execution: Any) -> Any:
+        """Create new agent execution record (in-memory stub)."""
+        raise NotImplementedError("create_agent_execution not yet implemented in InMemoryCaseRepository")
+    
+    async def get_agent_execution(self, execution_id: str) -> Optional[Any]:
+        """Get agent execution by ID (in-memory stub)."""
+        raise NotImplementedError("get_agent_execution not yet implemented in InMemoryCaseRepository")
+    
+    async def list_agent_executions_by_case(
+        self,
+        case_id: str,
+        status: Optional[str] = None,
+        agent_type: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[List[Any], int]:
+        """List agent executions for a case (in-memory stub)."""
+        raise NotImplementedError("list_agent_executions_by_case not yet implemented in InMemoryCaseRepository")
+    
+    async def list_agent_executions_by_session(
+        self,
+        session_id: str,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[List[Any], int]:
+        """List agent executions for a session (in-memory stub)."""
+        raise NotImplementedError("list_agent_executions_by_session not yet implemented in InMemoryCaseRepository")
+    
+    async def update_agent_execution(self, execution: Any) -> Any:
+        """Update agent execution (in-memory stub)."""
+        raise NotImplementedError("update_agent_execution not yet implemented in InMemoryCaseRepository")
+    
+    async def delete_agent_execution(self, execution_id: str) -> bool:
+        """Delete agent execution (in-memory stub)."""
+        raise NotImplementedError("delete_agent_execution not yet implemented in InMemoryCaseRepository")
+    
+    async def create_agent_tool_call(self, tool_call: Any) -> Any:
+        """Create new agent tool call record (in-memory stub)."""
+        raise NotImplementedError("create_agent_tool_call not yet implemented in InMemoryCaseRepository")
+    
+    async def update_agent_tool_call(self, tool_call: Any) -> Any:
+        """Update agent tool call (in-memory stub)."""
+        raise NotImplementedError("update_agent_tool_call not yet implemented in InMemoryCaseRepository")
+    
+    async def get_agent_tool_calls_for_execution(self, execution_id: str) -> List[Any]:
+        """Get all tool calls for an execution (in-memory stub)."""
+        raise NotImplementedError("get_agent_tool_calls_for_execution not yet implemented in InMemoryCaseRepository")
+    
+    async def count_agent_executions_by_case(self, case_id: str) -> int:
+        """Count agent executions for a case (in-memory stub)."""
+        raise NotImplementedError("count_agent_executions_by_case not yet implemented in InMemoryCaseRepository")
+    
+    async def get_latest_agent_execution(
+        self,
+        case_id: str,
+        agent_type: Optional[str] = None,
+    ) -> Optional[Any]:
+        """Get the most recent agent execution (in-memory stub)."""
+        raise NotImplementedError("get_latest_agent_execution not yet implemented in InMemoryCaseRepository")
+    
     def clear(self):
         """Clear all cases and reports (testing utility)."""
         self._cases.clear()
@@ -1137,6 +1346,139 @@ class PostgreSQLCaseRepository(CaseRepository):
             resolved_at=row.resolved_at,
             closed_at=row.closed_at,
         )
+    
+    # ============================================================
+    # Standalone Evidence Operations (migrated from Evidence module)
+    # TODO: Implement these methods properly
+    # ============================================================
+    
+    async def create_standalone_evidence(
+        self,
+        filename: str,
+        content_type: str,
+        size_bytes: int,
+        storage_path: str,
+        uploaded_by: str,
+        description: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Any:
+        """Create standalone evidence record (PostgreSQL stub - needs implementation)."""
+        raise NotImplementedError("create_standalone_evidence not yet implemented in PostgreSQLCaseRepository")
+    
+    async def get_standalone_evidence(self, evidence_id: str) -> Optional[Any]:
+        """Get standalone evidence by ID (PostgreSQL stub)."""
+        raise NotImplementedError("get_standalone_evidence not yet implemented in PostgreSQLCaseRepository")
+    
+    async def list_standalone_evidence(self, filters: Any) -> tuple[List[Any], int]:
+        """List standalone evidence with filters (PostgreSQL stub)."""
+        raise NotImplementedError("list_standalone_evidence not yet implemented in PostgreSQLCaseRepository")
+    
+    async def delete_standalone_evidence(self, evidence_id: str) -> bool:
+        """Delete standalone evidence record (PostgreSQL stub)."""
+        raise NotImplementedError("delete_standalone_evidence not yet implemented in PostgreSQLCaseRepository")
+    
+    async def link_standalone_evidence_to_case(self, evidence_id: str, case_id: str) -> Optional[Any]:
+        """Link standalone evidence to a case (PostgreSQL stub)."""
+        raise NotImplementedError("link_standalone_evidence_to_case not yet implemented in PostgreSQLCaseRepository")
+    
+    # ============================================================
+    # Agent Execution Operations (migrated from Agent module)
+    # TODO: Implement these methods properly
+    # ============================================================
+    
+    async def create_agent_execution(self, execution: Any) -> Any:
+        """Create new agent execution record (PostgreSQL stub)."""
+        raise NotImplementedError("create_agent_execution not yet implemented in PostgreSQLCaseRepository")
+    
+    async def get_agent_execution(self, execution_id: str) -> Optional[Any]:
+        """Get agent execution by ID (PostgreSQL stub)."""
+        raise NotImplementedError("get_agent_execution not yet implemented in PostgreSQLCaseRepository")
+    
+    async def list_agent_executions_by_case(
+        self,
+        case_id: str,
+        status: Optional[str] = None,
+        agent_type: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[List[Any], int]:
+        """List agent executions for a case (PostgreSQL stub)."""
+        raise NotImplementedError("list_agent_executions_by_case not yet implemented in PostgreSQLCaseRepository")
+    
+    async def list_agent_executions_by_session(
+        self,
+        session_id: str,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[List[Any], int]:
+        """List agent executions for a session (PostgreSQL stub)."""
+        raise NotImplementedError("list_agent_executions_by_session not yet implemented in PostgreSQLCaseRepository")
+    
+    async def update_agent_execution(self, execution: Any) -> Any:
+        """Update agent execution (PostgreSQL stub)."""
+        raise NotImplementedError("update_agent_execution not yet implemented in PostgreSQLCaseRepository")
+    
+    async def delete_agent_execution(self, execution_id: str) -> bool:
+        """Delete agent execution (PostgreSQL stub)."""
+        raise NotImplementedError("delete_agent_execution not yet implemented in PostgreSQLCaseRepository")
+    
+    async def create_agent_tool_call(self, tool_call: Any) -> Any:
+        """Create new agent tool call record (PostgreSQL stub)."""
+        raise NotImplementedError("create_agent_tool_call not yet implemented in PostgreSQLCaseRepository")
+    
+    async def update_agent_tool_call(self, tool_call: Any) -> Any:
+        """Update agent tool call (PostgreSQL stub)."""
+        raise NotImplementedError("update_agent_tool_call not yet implemented in PostgreSQLCaseRepository")
+    
+    async def get_agent_tool_calls_for_execution(self, execution_id: str) -> List[Any]:
+        """Get all tool calls for an execution (PostgreSQL stub)."""
+        raise NotImplementedError("get_agent_tool_calls_for_execution not yet implemented in PostgreSQLCaseRepository")
+    
+    async def count_agent_executions_by_case(self, case_id: str) -> int:
+        """Count agent executions for a case (PostgreSQL stub)."""
+        raise NotImplementedError("count_agent_executions_by_case not yet implemented in PostgreSQLCaseRepository")
+    
+    async def get_latest_agent_execution(
+        self,
+        case_id: str,
+        agent_type: Optional[str] = None,
+    ) -> Optional[Any]:
+        """Get the most recent agent execution (PostgreSQL stub)."""
+        raise NotImplementedError("get_latest_agent_execution not yet implemented in PostgreSQLCaseRepository")
+    
+    # ============================================================
+    # Report Operations (TD-001: Already migrated, but not implemented here)
+    # ============================================================
+    # Note: PostgreSQLCaseRepository doesn't implement report methods yet.
+    # These should be implemented in PostgreSQLHybridCaseRepository (production).
+    # Stubs added for interface compliance.
+    
+    async def add_report(self, report: 'CaseReport') -> 'CaseReport':
+        """Add report (PostgreSQL stub - implemented in PostgreSQLHybridCaseRepository)."""
+        raise NotImplementedError("add_report not implemented in PostgreSQLCaseRepository - use PostgreSQLHybridCaseRepository")
+    
+    async def get_report(self, report_id: str) -> Optional['CaseReport']:
+        """Get report (PostgreSQL stub - implemented in PostgreSQLHybridCaseRepository)."""
+        raise NotImplementedError("get_report not implemented in PostgreSQLCaseRepository - use PostgreSQLHybridCaseRepository")
+    
+    async def get_reports(
+        self,
+        case_id: str,
+        report_type: Optional['ReportType'] = None,
+        include_history: bool = False,
+        only_current: bool = False
+    ) -> List['CaseReport']:
+        """Get reports (PostgreSQL stub - implemented in PostgreSQLHybridCaseRepository)."""
+        raise NotImplementedError("get_reports not implemented in PostgreSQLCaseRepository - use PostgreSQLHybridCaseRepository")
+    
+    async def update_report(self, report: 'CaseReport') -> 'CaseReport':
+        """Update report (PostgreSQL stub - implemented in PostgreSQLHybridCaseRepository)."""
+        raise NotImplementedError("update_report not implemented in PostgreSQLCaseRepository - use PostgreSQLHybridCaseRepository")
+    
+    async def delete_report(self, report_id: str) -> bool:
+        """Delete report (PostgreSQL stub - implemented in PostgreSQLHybridCaseRepository)."""
+        raise NotImplementedError("delete_report not implemented in PostgreSQLCaseRepository - use PostgreSQLHybridCaseRepository")
 
 
 # ============================================================

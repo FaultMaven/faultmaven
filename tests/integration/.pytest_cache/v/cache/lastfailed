@@ -568,5 +568,10 @@
   "test_user_kb_flow.py::TestUserKBFlow::test_get_user_kb_stats": true,
   "test_user_kb_flow.py::TestUserKBFlow::test_access_control_upload": true,
   "test_user_kb_flow.py::TestUserKBFlow::test_access_control_list": true,
-  "api/test_agent_api.py::TestExecuteAgentNonStreaming::test_execute_agent_session_not_found": true
+  "api/test_agent_api.py::TestExecuteAgentNonStreaming::test_execute_agent_session_not_found": true,
+  "test_agent_execution_integration.py": true,
+  "test_evidence_artifact_integration.py": true,
+  "test_evidence_artifact_service_integration.py": true,
+  "test_investigation_session_integration.py": true,
+  "test_knowledge_item_integration.py": true
 }

@@ -27,7 +27,6 @@ from faultmaven.infrastructure.persistence.repository_factory import (
     reset_inmemory_knowledge_item_repository,
 )
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-from tests.utils import generate_item_id, generate_org_id
     KnowledgeItem,
     KnowledgeItemType,
     EMBEDDING_DIMENSIONS,
