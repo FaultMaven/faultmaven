@@ -468,7 +468,7 @@ class TestExecuteAgentStreaming:
                 duration_ms=1000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
@@ -493,7 +493,7 @@ class TestExecuteAgentStreaming:
             raise NotFoundError("Session", "nonexistent")
             yield  # Make it a generator
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/nonexistent/execute",
@@ -517,7 +517,7 @@ class TestExecuteAgentStreaming:
             raise AuthorizationError("Not authorized")
             yield
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
@@ -546,7 +546,7 @@ class TestExecuteAgentStreaming:
             )
             yield
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
@@ -570,7 +570,7 @@ class TestExecuteAgentStreaming:
             raise LLMException("Rate limit exceeded")
             yield
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
@@ -596,7 +596,7 @@ class TestExecuteAgentStreaming:
                 metadata={},
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
@@ -809,7 +809,7 @@ class TestAgentTypes:
                 duration_ms=1000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
         mock_agent_service.get_execution.return_value = mock_execution
 
         response = client.post(
@@ -853,7 +853,7 @@ class TestResponseFormat:
                 duration_ms=1000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
         mock_agent_service.get_execution.return_value = mock_execution
 
         response = client.post(
@@ -882,7 +882,7 @@ class TestResponseFormat:
                 duration_ms=1000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
         mock_agent_service.get_execution.return_value = mock_execution
 
         response = client.post(
