@@ -425,16 +425,12 @@ async def test_repository_factory_database(test_session: AsyncSession):
 @pytest.mark.integration
 async def test_repository_factory_invalid_type():
     """Test repository factory with invalid storage type."""
-    os.environ["CASE_STORAGE_TYPE"] = "invalid_type"
-
+    # Pass storage_type explicitly to avoid Settings caching
     with pytest.raises(ValueError) as exc_info:
-        async with get_case_repository_async() as repo:
+        async with get_case_repository_async(storage_type="invalid_type") as repo:
             pass
 
     assert "Unknown storage type" in str(exc_info.value)
-
-    # Reset
-    os.environ["CASE_STORAGE_TYPE"] = STORAGE_TYPE_INMEMORY
 
 
 # ============================================================
