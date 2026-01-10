@@ -179,8 +179,6 @@
   "api/test_admin_authorization.py::TestTokenRevocation::test_role_assignment_revokes_tokens": true,
   "api/test_admin_authorization.py::TestTokenRevocation::test_role_removal_revokes_tokens": true,
   "api/test_agent_api.py::TestExecuteAgentNonStreaming::test_execute_agent_missing_headers": true,
-  "api/test_agent_api.py::TestExecuteAgentNonStreaming::test_execute_agent_default_agent_type": true,
-  "api/test_agent_api.py::TestExecuteAgentNonStreaming::test_execute_agent_invalid_agent_type_returns_400": true,
   "api/test_agent_api.py::TestExecuteAgentStreaming::test_execute_agent_streaming_events_format": true,
   "api/test_agent_api.py::TestExecuteAgentStreaming::test_execute_agent_streaming_tool_call_events": true,
   "api/test_agent_api.py::TestExecuteAgentStreaming::test_execute_agent_streaming_error_event_not_found": true,
