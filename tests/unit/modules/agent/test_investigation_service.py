@@ -343,13 +343,22 @@ class TestInvestigationServiceTransitionToInvestigating:
         assert stored_case is not None, "Case should be stored in repository"
         assert stored_case.status == CaseStatus.INVESTIGATING, \
             f"Case status should be INVESTIGATING, got {stored_case.status}"
+        assert stored_case.status != CaseStatus.CONSULTING, \
+            "Case should NOT be in CONSULTING status for this test"
 
-        with pytest.raises(ServiceException, match="Cannot transition"):
+        # The service should raise ServiceException when trying to transition from non-CONSULTING status
+        with pytest.raises(ServiceException) as exc_info:
             await service.transition_to_investigating(
                 case_id=sample_case.case_id,
                 user_id=sample_user_id,
                 confirmed_description="Test description",
             )
+        
+        # Verify the exception message contains "Cannot transition"
+        assert "Cannot transition" in str(exc_info.value), \
+            f"Exception message should contain 'Cannot transition', got: {str(exc_info.value)}"
+        assert "investigating" in str(exc_info.value).lower() or "INVESTIGATING" in str(exc_info.value), \
+            f"Exception message should mention the current status, got: {str(exc_info.value)}"
 
 
 class TestInvestigationServiceCloseCase:
