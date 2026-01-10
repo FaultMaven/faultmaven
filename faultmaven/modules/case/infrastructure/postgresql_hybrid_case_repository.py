@@ -20,13 +20,16 @@ Architecture:
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+
+if TYPE_CHECKING:
+    from faultmaven.modules.report.domain.models import CaseReport, ReportType
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
@@ -1064,6 +1067,254 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             last_activity_at=row.last_activity_at if hasattr(row, 'last_activity_at') else row.updated_at,
             resolved_at=row.resolved_at if hasattr(row, 'resolved_at') else None,
             closed_at=row.closed_at if hasattr(row, 'closed_at') else None,
+        )
+
+    # ========================================================================
+    # Report Operations (TD-001: migrated from IReportStore)
+    # ========================================================================
+
+    async def add_report(self, report: 'CaseReport') -> 'CaseReport':
+        """Add report to PostgreSQL reports table."""
+        from faultmaven.modules.report.domain.models import CaseReport, ReportType, RunbookMetadata
+        from faultmaven.utils.serialization import to_json_compatible
+        from datetime import timezone
+
+        # If this is marked as current, unmark other reports of the same type for this case
+        if report.is_current:
+            unmark_query = text("""
+                UPDATE reports
+                SET is_current = FALSE, updated_at = NOW()
+                WHERE case_id = :case_id
+                  AND report_type = :report_type
+                  AND is_current = TRUE
+            """)
+            await self.db.execute(unmark_query, {
+                "case_id": report.case_id,
+                "report_type": report.report_type.value
+            })
+
+        # Insert report
+        metadata_json = json.dumps(report.metadata.model_dump()) if report.metadata else '{}'
+        
+        insert_query = text("""
+            INSERT INTO reports (
+                report_id, case_id, report_type, version, is_current,
+                linked_to_closure, title, content, format,
+                generation_status, generation_time_ms, metadata,
+                generated_at, updated_at
+            ) VALUES (
+                :report_id, :case_id, :report_type, :version, :is_current,
+                :linked_to_closure, :title, :content, :format,
+                :generation_status, :generation_time_ms, :metadata::jsonb,
+                :generated_at::timestamptz, :updated_at::timestamptz
+            )
+            ON CONFLICT (report_id) DO UPDATE SET
+                version = EXCLUDED.version,
+                is_current = EXCLUDED.is_current,
+                linked_to_closure = EXCLUDED.linked_to_closure,
+                title = EXCLUDED.title,
+                content = EXCLUDED.content,
+                format = EXCLUDED.format,
+                generation_status = EXCLUDED.generation_status,
+                generation_time_ms = EXCLUDED.generation_time_ms,
+                metadata = EXCLUDED.metadata,
+                updated_at = EXCLUDED.updated_at
+        """)
+
+        now = datetime.now(timezone.utc)
+        generated_at = datetime.fromisoformat(report.generated_at.replace('Z', '+00:00')) if isinstance(report.generated_at, str) else now
+        updated_at = now  # CaseReport doesn't have updated_at field, use current time
+
+        await self.db.execute(insert_query, {
+            "report_id": report.report_id,
+            "case_id": report.case_id,
+            "report_type": report.report_type.value,
+            "version": report.version,
+            "is_current": report.is_current,
+            "linked_to_closure": report.linked_to_closure,
+            "title": report.title,
+            "content": report.content,
+            "format": report.format,
+            "generation_status": report.generation_status.value,
+            "generation_time_ms": report.generation_time_ms,
+            "metadata": metadata_json,
+            "generated_at": generated_at,
+            "updated_at": updated_at
+        })
+
+        await self.db.commit()
+        return report
+
+    async def get_report(self, report_id: str) -> Optional['CaseReport']:
+        """Get report by ID from PostgreSQL."""
+        from faultmaven.modules.report.domain.models import CaseReport, ReportType, ReportStatus, RunbookMetadata
+        from faultmaven.utils.serialization import to_json_compatible
+
+        query = text("""
+            SELECT 
+                report_id, case_id, report_type, version, is_current,
+                linked_to_closure, title, content, format,
+                generation_status, generation_time_ms, metadata,
+                generated_at, updated_at
+            FROM reports
+            WHERE report_id = :report_id
+        """)
+
+        result = await self.db.execute(query, {"report_id": report_id})
+        row = result.fetchone()
+
+        if not row:
+            return None
+
+        return self._row_to_report(row)
+
+    async def get_reports(
+        self,
+        case_id: str,
+        report_type: Optional['ReportType'] = None,
+        include_history: bool = False,
+        only_current: bool = False
+    ) -> List['CaseReport']:
+        """Get reports for a case with optional filtering."""
+        from faultmaven.modules.report.domain.models import CaseReport, ReportType, ReportStatus, RunbookMetadata
+        from faultmaven.utils.serialization import to_json_compatible
+
+        conditions = ["case_id = :case_id"]
+        params = {"case_id": case_id}
+
+        if report_type:
+            conditions.append("report_type = :report_type")
+            params["report_type"] = report_type.value
+
+        if only_current or not include_history:
+            conditions.append("is_current = TRUE")
+
+        where_clause = " AND ".join(conditions)
+
+        query = text(f"""
+            SELECT 
+                report_id, case_id, report_type, version, is_current,
+                linked_to_closure, title, content, format,
+                generation_status, generation_time_ms, metadata,
+                generated_at, updated_at
+            FROM reports
+            WHERE {where_clause}
+            ORDER BY report_type, version DESC
+        """)
+
+        result = await self.db.execute(query, params)
+        rows = result.fetchall()
+
+        return [self._row_to_report(row) for row in rows]
+
+    async def update_report(self, report: 'CaseReport') -> 'CaseReport':
+        """Update report in PostgreSQL."""
+        from faultmaven.modules.report.domain.models import CaseReport, ReportType, RunbookMetadata
+        from faultmaven.utils.serialization import to_json_compatible
+        from datetime import timezone
+
+        # If this is marked as current, unmark other reports of the same type for this case
+        if report.is_current:
+            unmark_query = text("""
+                UPDATE reports
+                SET is_current = FALSE, updated_at = NOW()
+                WHERE case_id = :case_id
+                  AND report_type = :report_type
+                  AND report_id != :report_id
+                  AND is_current = TRUE
+            """)
+            await self.db.execute(unmark_query, {
+                "case_id": report.case_id,
+                "report_type": report.report_type.value,
+                "report_id": report.report_id
+            })
+
+        # Update report
+        metadata_json = json.dumps(report.metadata.model_dump()) if report.metadata else '{}'
+        now = datetime.now(timezone.utc)
+        updated_at = now  # CaseReport doesn't have updated_at field, use current time
+
+        update_query = text("""
+            UPDATE reports
+            SET version = :version,
+                is_current = :is_current,
+                linked_to_closure = :linked_to_closure,
+                title = :title,
+                content = :content,
+                format = :format,
+                generation_status = :generation_status,
+                generation_time_ms = :generation_time_ms,
+                metadata = :metadata::jsonb,
+                updated_at = :updated_at::timestamptz
+            WHERE report_id = :report_id
+        """)
+
+        result = await self.db.execute(update_query, {
+            "report_id": report.report_id,
+            "version": report.version,
+            "is_current": report.is_current,
+            "linked_to_closure": report.linked_to_closure,
+            "title": report.title,
+            "content": report.content,
+            "format": report.format,
+            "generation_status": report.generation_status.value,
+            "generation_time_ms": report.generation_time_ms,
+            "metadata": metadata_json,
+            "updated_at": updated_at
+        })
+
+        await self.db.commit()
+
+        if result.rowcount == 0:
+            raise RepositoryException(f"Report {report.report_id} not found")
+
+        return report
+
+    async def delete_report(self, report_id: str) -> bool:
+        """Delete report from PostgreSQL."""
+        delete_query = text("""
+            DELETE FROM reports
+            WHERE report_id = :report_id
+        """)
+
+        result = await self.db.execute(delete_query, {"report_id": report_id})
+        await self.db.commit()
+
+        return result.rowcount > 0
+
+    def _row_to_report(self, row) -> 'CaseReport':
+        """Convert database row to CaseReport domain object."""
+        from faultmaven.modules.report.domain.models import CaseReport, ReportType, ReportStatus, RunbookMetadata
+        from faultmaven.utils.serialization import to_json_compatible
+
+        # Parse metadata if present
+        metadata = None
+        if row.metadata and row.metadata != '{}':
+            try:
+                metadata_dict = json.loads(row.metadata) if isinstance(row.metadata, str) else row.metadata
+                if metadata_dict:
+                    metadata = RunbookMetadata(**metadata_dict)
+            except Exception:
+                pass
+
+        # Convert timestamps to ISO 8601 strings
+        generated_at = to_json_compatible(row.generated_at) if row.generated_at else to_json_compatible(datetime.now(timezone.utc))
+        # CaseReport doesn't have updated_at field, use generated_at
+
+        return CaseReport(
+            report_id=row.report_id,
+            case_id=row.case_id,
+            report_type=ReportType(row.report_type),
+            version=row.version,
+            is_current=row.is_current,
+            linked_to_closure=row.linked_to_closure,
+            title=row.title,
+            content=row.content,
+            format=row.format,
+            generation_status=ReportStatus(row.generation_status),
+            generation_time_ms=row.generation_time_ms,
+            generated_at=generated_at,
+            metadata=metadata
         )
 
 

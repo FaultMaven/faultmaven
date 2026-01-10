@@ -150,7 +150,7 @@ class ReportGenerationService(BaseService):
 
                 # Persist report to storage via Case repository (TD-001: migrated from IReportStore)
                 if self.case_repository:
-                    await self.case_repository.add_report(case_id=case.case_id, report=report)
+                    await self.case_repository.add_report(report)
                     logger.info(
                         f"Report persisted to Case repository",
                         extra={"report_id": report.report_id, "case_id": case.case_id}

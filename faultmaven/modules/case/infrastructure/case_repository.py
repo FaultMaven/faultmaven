@@ -7,7 +7,7 @@ It abstracts database operations and provides clean interfaces for the service l
 import json
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from faultmaven.modules.case.domain.models import (
     Case,
@@ -28,6 +28,9 @@ from faultmaven.modules.case.domain.models import (
     PathSelection,
     CaseStatusTransition,
 )
+
+if TYPE_CHECKING:
+    from faultmaven.modules.report.domain.models import CaseReport, ReportType
 
 
 # ============================================================
@@ -247,6 +250,95 @@ class CaseRepository(ABC):
         """
         pass
 
+    @abstractmethod
+    async def add_report(self, report: 'CaseReport') -> 'CaseReport':
+        """
+        Save report to persistence layer.
+
+        Args:
+            report: CaseReport domain object
+
+        Returns:
+            Saved report (may have updated timestamps)
+
+        Raises:
+            RepositoryException: If save fails
+        """
+        pass
+
+    @abstractmethod
+    async def get_report(self, report_id: str) -> Optional['CaseReport']:
+        """
+        Retrieve a report by ID.
+
+        Args:
+            report_id: Report identifier (UUID)
+
+        Returns:
+            CaseReport if found, None otherwise
+
+        Raises:
+            RepositoryException: If retrieval fails
+        """
+        pass
+
+    @abstractmethod
+    async def get_reports(
+        self,
+        case_id: str,
+        report_type: Optional['ReportType'] = None,
+        include_history: bool = False,
+        only_current: bool = False
+    ) -> List['CaseReport']:
+        """
+        Get reports for a case with optional filtering.
+
+        Args:
+            case_id: Case identifier
+            report_type: Optional filter by report type
+            include_history: If True, return all versions; if False, only current
+            only_current: If True, return only is_current=True reports
+
+        Returns:
+            List of CaseReport objects
+
+        Raises:
+            RepositoryException: If query fails
+        """
+        pass
+
+    @abstractmethod
+    async def update_report(self, report: 'CaseReport') -> 'CaseReport':
+        """
+        Update an existing report.
+
+        Args:
+            report: CaseReport with updated fields
+
+        Returns:
+            Updated report
+
+        Raises:
+            RepositoryException: If update fails
+        """
+        pass
+
+    @abstractmethod
+    async def delete_report(self, report_id: str) -> bool:
+        """
+        Delete a report by ID.
+
+        Args:
+            report_id: Report identifier (UUID)
+
+        Returns:
+            True if deleted, False if not found
+
+        Raises:
+            RepositoryException: If deletion fails
+        """
+        pass
+
     async def begin_transaction(self):
         """
         Begin a transaction context (optional feature).
@@ -280,6 +372,7 @@ class InMemoryCaseRepository(CaseRepository):
     def __init__(self):
         """Initialize empty in-memory store."""
         self._cases: Dict[str, Case] = {}
+        self._reports: Dict[str, 'CaseReport'] = {}  # report_id -> CaseReport
 
     async def save(self, case: Case) -> Case:
         """Save case to memory."""
@@ -470,9 +563,94 @@ class InMemoryCaseRepository(CaseRepository):
 
         return deleted_count
 
+    async def add_report(self, report: 'CaseReport') -> 'CaseReport':
+        """Add report to memory."""
+        from faultmaven.modules.report.domain.models import CaseReport, ReportType
+        from faultmaven.utils.serialization import to_json_compatible
+        from datetime import timezone
+
+        # If this is marked as current, unmark other reports of the same type for this case
+        if report.is_current:
+            for existing_report in self._reports.values():
+                if (existing_report.case_id == report.case_id and
+                    existing_report.report_type == report.report_type and
+                    existing_report.report_id != report.report_id and
+                    existing_report.is_current):
+                    existing_report.is_current = False
+
+        # Store report
+        report.updated_at = to_json_compatible(datetime.now(timezone.utc))
+        self._reports[report.report_id] = report
+
+        return report
+
+    async def get_report(self, report_id: str) -> Optional['CaseReport']:
+        """Get report from memory."""
+        return self._reports.get(report_id)
+
+    async def get_reports(
+        self,
+        case_id: str,
+        report_type: Optional['ReportType'] = None,
+        include_history: bool = False,
+        only_current: bool = False
+    ) -> List['CaseReport']:
+        """Get reports for a case with optional filtering."""
+        from faultmaven.modules.report.domain.models import ReportType
+
+        # Filter by case_id
+        reports = [r for r in self._reports.values() if r.case_id == case_id]
+
+        # Filter by report_type if specified
+        if report_type:
+            reports = [r for r in reports if r.report_type == report_type]
+
+        # Filter by is_current if only_current is True
+        if only_current:
+            reports = [r for r in reports if r.is_current]
+        elif not include_history:
+            # If include_history is False, default to only current
+            reports = [r for r in reports if r.is_current]
+
+        # Sort by version descending
+        reports.sort(key=lambda r: (r.report_type.value, r.version), reverse=True)
+
+        return reports
+
+    async def update_report(self, report: 'CaseReport') -> 'CaseReport':
+        """Update report in memory."""
+        from faultmaven.utils.serialization import to_json_compatible
+        from datetime import timezone
+
+        if report.report_id not in self._reports:
+            raise RepositoryException(f"Report {report.report_id} not found")
+
+        # If this is marked as current, unmark other reports of the same type for this case
+        if report.is_current:
+            for existing_report in self._reports.values():
+                if (existing_report.case_id == report.case_id and
+                    existing_report.report_type == report.report_type and
+                    existing_report.report_id != report.report_id and
+                    existing_report.is_current):
+                    existing_report.is_current = False
+
+        # Update report
+        report.updated_at = to_json_compatible(datetime.now(timezone.utc))
+        self._reports[report.report_id] = report
+
+        return report
+
+    async def delete_report(self, report_id: str) -> bool:
+        """Delete report from memory."""
+        if report_id in self._reports:
+            del self._reports[report_id]
+            return True
+        return False
+
     def clear(self):
-        """Clear all cases (testing utility)."""
+        """Clear all cases and reports (testing utility)."""
         self._cases.clear()
+        self._reports.clear()
 
 
 # ============================================================

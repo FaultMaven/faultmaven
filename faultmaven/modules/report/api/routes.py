@@ -35,14 +35,12 @@ from faultmaven.modules.report.domain.models import (
     CaseClosureResponse,
 )
 from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.models.interfaces_report import IReportStore
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import (
     get_case_service,
     get_case_repository,
-    get_report_store,
     get_tenant_provider,
     get_report_generation_service,
     get_report_recommendation_service,
@@ -160,14 +158,14 @@ class ReportRecommendationResponse(BaseModel):
 # ============================================================
 
 
-def check_report_store_available(report_store: Optional[IReportStore]) -> IReportStore:
-    """Check if report store is available and raise appropriate error if not."""
-    if report_store is None:
+def check_case_repository_available(case_repository: Optional[CaseRepository]) -> CaseRepository:
+    """Check if case repository is available and raise appropriate error if not."""
+    if case_repository is None:
         raise HTTPException(
             status_code=503,
-            detail="Report service unavailable"
+            detail="Case repository unavailable - report service not available"
         )
-    return report_store
+    return case_repository
 
 
 def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseService:
@@ -252,7 +250,6 @@ async def generate_report(
     current_user: DevUser = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_service: Optional[ICaseService] = Depends(get_case_service),
-    report_store: Optional[IReportStore] = Depends(get_report_store),
     generation_service = Depends(get_report_generation_service),
 ) -> ReportGenerationResponse:
     """Generate reports for a case.
@@ -267,7 +264,6 @@ async def generate_report(
         case_id: Case identifier
         current_user: Authenticated user
         case_service: Case service for case validation
-        report_store: Report storage service
 
     Returns:
         ReportGenerationResponse with generated reports
@@ -279,7 +275,6 @@ async def generate_report(
         503: Service unavailable
     """
     case_service = check_case_service_available(case_service)
-    report_store = check_report_store_available(report_store)
 
     # Validate tenant context if provider available (multi-tenant mode)
     if tenant_provider:
@@ -438,7 +433,7 @@ async def get_report(
     report_id: str = Path(..., description="Report UUID"),
     current_user: DevUser = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportResponse:
     """Get report by ID.
@@ -447,7 +442,7 @@ async def get_report(
         report_id: Report UUID
         current_user: Authenticated user
         tenant_provider: Tenant provider for multi-tenant isolation
-        report_store: Report storage service
+        case_repository: Case repository for report retrieval (TD-001: migrated from IReportStore)
         case_service: Case service for organization validation
 
     Returns:
@@ -459,7 +454,7 @@ async def get_report(
         404: Report not found
         503: Service unavailable
     """
-    report_store = check_report_store_available(report_store)
+    case_repository = check_case_repository_available(case_repository)
 
     logger.info(
         f"Getting report",
@@ -467,7 +462,7 @@ async def get_report(
     )
 
     try:
-        report = await report_store.get_report(report_id)
+        report = await case_repository.get_report(report_id)
 
         if not report:
             raise HTTPException(
@@ -504,7 +499,7 @@ async def update_report(
     request: ReportUpdateRequest = Body(...),
     current_user: DevUser = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportResponse:
     """Update existing report.
@@ -520,7 +515,7 @@ async def update_report(
         request: Update request with new values
         current_user: Authenticated user
         tenant_provider: Tenant provider for multi-tenant isolation
-        report_store: Report storage service
+        case_repository: Case repository for report updates (TD-001: migrated from IReportStore)
         case_service: Case service for organization validation
 
     Returns:
@@ -532,7 +527,7 @@ async def update_report(
         404: Report not found
         400: Validation error
     """
-    report_store = check_report_store_available(report_store)
+    case_repository = check_case_repository_available(case_repository)
 
     logger.info(
         f"Updating report",
@@ -541,7 +536,7 @@ async def update_report(
 
     try:
         # Get existing report
-        existing_report = await report_store.get_report(report_id)
+        existing_report = await case_repository.get_report(report_id)
         if not existing_report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
@@ -575,7 +570,7 @@ async def update_report(
         )
 
         # Save updated report
-        await report_store.save_report(updated_report)
+        updated_report = await case_repository.update_report(updated_report)
 
         logger.info(
             f"Report updated",
@@ -607,7 +602,7 @@ async def delete_report(
     report_id: str = Path(..., description="Report UUID"),
     current_user: DevUser = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> None:
     """Delete report.
@@ -621,7 +616,7 @@ async def delete_report(
         report_id: Report UUID
         current_user: Authenticated user
         tenant_provider: Tenant provider for multi-tenant isolation
-        report_store: Report storage service
+        case_repository: Case repository for report deletion (TD-001: migrated from IReportStore)
         case_service: Case service for organization validation
 
     Raises:
@@ -629,7 +624,7 @@ async def delete_report(
         403: Access denied (wrong organization) or attempt to delete runbook
         404: Report not found
     """
-    report_store = check_report_store_available(report_store)
+    case_repository = check_case_repository_available(case_repository)
 
     logger.info(
         f"Deleting report",
@@ -638,7 +633,7 @@ async def delete_report(
 
     try:
         # Get report to validate it exists
-        report = await report_store.get_report(report_id)
+        report = await case_repository.get_report(report_id)
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
@@ -658,7 +653,7 @@ async def delete_report(
                 )
 
         # Actually delete the report
-        deleted = await report_store.delete_report(report_id)
+        deleted = await case_repository.delete_report(report_id)
         if not deleted:
             raise HTTPException(status_code=500, detail="Failed to delete report")
 
@@ -689,7 +684,7 @@ async def list_reports_for_case(
     report_type: Optional[str] = Query(None, description="Filter by report type"),
     current_user: DevUser = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportListResponse:
     """List all reports for a case.
@@ -700,7 +695,7 @@ async def list_reports_for_case(
         report_type: Optional filter by report type (incident_report, runbook, post_mortem)
         current_user: Authenticated user
         tenant_provider: Tenant provider for multi-tenant isolation
-        report_store: Report storage service
+        case_repository: Case repository for report retrieval (TD-001: migrated from IReportStore)
         case_service: Case service for organization validation
 
     Returns:
@@ -711,7 +706,7 @@ async def list_reports_for_case(
         403: Access denied (wrong organization)
         404: Case not found
     """
-    report_store = check_report_store_available(report_store)
+    case_repository = check_case_repository_available(case_repository)
 
     # Validate organization ownership via case (multi-tenant isolation)
     if tenant_provider and case_service:
@@ -743,10 +738,10 @@ async def list_reports_for_case(
                 )
 
         # Get reports
-        reports = await report_store.get_case_reports(
+        reports = await case_repository.get_reports(
             case_id=case_id,
-            include_history=include_history,
-            report_type=type_filter
+            report_type=type_filter,
+            include_history=include_history
         )
 
         return ReportListResponse(
@@ -773,7 +768,7 @@ async def get_report_versions(
     report_id: str = Path(..., description="Report UUID"),
     current_user: DevUser = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> ReportVersionListResponse:
     """Get version history for a report.
@@ -784,7 +779,7 @@ async def get_report_versions(
         report_id: Report UUID
         current_user: Authenticated user
         tenant_provider: Tenant provider for multi-tenant isolation
-        report_store: Report storage service
+        case_repository: Case repository for report retrieval (TD-001: migrated from IReportStore)
         case_service: Case service for organization validation
 
     Returns:
@@ -795,7 +790,7 @@ async def get_report_versions(
         403: Access denied (wrong organization)
         404: Report not found
     """
-    report_store = check_report_store_available(report_store)
+    case_repository = check_case_repository_available(case_repository)
 
     logger.info(
         f"Getting report versions",
@@ -804,7 +799,7 @@ async def get_report_versions(
 
     try:
         # Get current report to find case_id
-        report = await report_store.get_report(report_id)
+        report = await case_repository.get_report(report_id)
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
@@ -817,10 +812,10 @@ async def get_report_versions(
                 )
 
         # Get all versions for this report type in this case
-        all_reports = await report_store.get_case_reports(
+        all_reports = await case_repository.get_reports(
             case_id=report.case_id,
-            include_history=True,
-            report_type=report.report_type
+            report_type=report.report_type,
+            include_history=True
         )
 
         # Build version list
@@ -863,7 +858,7 @@ async def link_report_to_case_closure(
     request: LinkCaseRequest = Body(default=LinkCaseRequest()),
     current_user: DevUser = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    report_store: Optional[IReportStore] = Depends(get_report_store),
+    case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
 ) -> LinkCaseResponse:
     """Link report to case closure.
@@ -878,7 +873,7 @@ async def link_report_to_case_closure(
         request: Optional closure note
         current_user: Authenticated user
         tenant_provider: Tenant provider for multi-tenant isolation
-        report_store: Report storage service
+        case_repository: Case repository for report updates (TD-001: migrated from IReportStore)
         case_service: Case service
 
     Returns:
@@ -890,7 +885,7 @@ async def link_report_to_case_closure(
         404: Report or case not found
         400: Report already linked or case not in valid state
     """
-    report_store = check_report_store_available(report_store)
+    case_repository = check_case_repository_available(case_repository)
     case_service = check_case_service_available(case_service)
 
     logger.info(
@@ -900,7 +895,7 @@ async def link_report_to_case_closure(
 
     try:
         # Get report
-        report = await report_store.get_report(report_id)
+        report = await case_repository.get_report(report_id)
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
@@ -920,14 +915,16 @@ async def link_report_to_case_closure(
             )
 
         # Get all current reports for the case
-        current_reports = await report_store.get_latest_reports_for_closure(report.case_id)
+        current_reports = await case_repository.get_reports(
+            case_id=report.case_id,
+            only_current=True
+        )
         report_ids = [r.report_id for r in current_reports]
 
-        # Mark reports as linked
-        await report_store.mark_reports_linked_to_closure(
-            case_id=report.case_id,
-            report_ids=report_ids
-        )
+        # Mark reports as linked by updating each one
+        for r in current_reports:
+            r.linked_to_closure = True
+            await case_repository.update_report(r)
 
         linked_at = to_json_compatible(datetime.now(timezone.utc))
 
