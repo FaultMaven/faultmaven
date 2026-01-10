@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 def create_sample_case(
     case_id: Optional[str] = None,
     user_id: Optional[str] = None,
-    status: CaseStatus = CaseStatus.OPEN,
+    status: CaseStatus = CaseStatus.CONSULTING,
     current_turn: int = 0,
     message_count: int = 0,
 ) -> Case:
