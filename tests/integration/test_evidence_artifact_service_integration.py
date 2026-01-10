@@ -36,6 +36,7 @@ from faultmaven.modules.evidence.domain.models import (
     StorageBackend,
 )
 from faultmaven.exceptions import (
+from tests.utils import generate_case_id, generate_evidence_id
     NotFoundError,
     AuthorizationError,
     ValidationException,
