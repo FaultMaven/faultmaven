@@ -34,7 +34,6 @@ from faultmaven.infrastructure.persistence.repository_factory import (
 )
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy, ConsultingData
 from faultmaven.modules.evidence.domain.models import (
-from tests.utils import generate_case_id, generate_evidence_id
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,

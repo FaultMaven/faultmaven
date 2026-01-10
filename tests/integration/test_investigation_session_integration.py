@@ -40,7 +40,6 @@ from faultmaven.models.investigation_session import (
     SessionStatus,
 )
 from faultmaven.modules.agent.domain.models.agent_execution import (
-from tests.utils import generate_case_id, generate_session_id
     AgentExecution,
     AgentToolCall,
     AgentType,
