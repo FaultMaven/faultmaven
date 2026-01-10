@@ -334,6 +334,7 @@ class TestInvestigationServiceTransitionToInvestigating:
     ):
         """Test transition from non-CONSULTING status."""
         # Pre-populate repository with case in OPEN status
+        sample_case.user_id = sample_user_id
         sample_case.status = CaseStatus.OPEN
         await mock_case_repository.save(sample_case)
 
@@ -393,12 +394,13 @@ class TestInvestigationServiceCloseCase:
 
     @pytest.mark.asyncio
     async def test_close_case_permission_denied(
-        self, service, mock_case_repository, sample_case
+        self, service, mock_case_repository, sample_case, sample_user_id
     ):
         """Test case closure with unauthorized user."""
-        # Pre-populate repository
+        # Pre-populate repository - set sample_case to have sample_user_id as owner
+        sample_case.user_id = sample_user_id
         await mock_case_repository.save(sample_case)
-        unauthorized_user_id = str(uuid4())
+        unauthorized_user_id = str(uuid4())  # Different user
 
         with pytest.raises(PermissionDeniedException, match="not authorized"):
             await service.close_case(
