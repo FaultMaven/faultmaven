@@ -358,7 +358,7 @@ class TestExecuteAgentStreaming:
                 duration_ms=1000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
@@ -383,7 +383,7 @@ class TestExecuteAgentStreaming:
                 metadata={},
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
@@ -420,7 +420,7 @@ class TestExecuteAgentStreaming:
                 duration_ms=1000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
