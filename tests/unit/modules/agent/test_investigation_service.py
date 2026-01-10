@@ -334,7 +334,19 @@ class TestInvestigationServiceTransitionToInvestigating:
     ):
         """Test transition from non-CONSULTING status."""
         # Pre-populate repository with case in INVESTIGATING status (cannot transition from non-CONSULTING)
+        # INVESTIGATING status requires: confirmed problem statement, decided to investigate, and description
+        from datetime import datetime, timezone
+        
         sample_case.user_id = sample_user_id
+        sample_case.description = "Test description"  # Required for INVESTIGATING
+        # Set up consulting data required for INVESTIGATING status
+        sample_case.consulting.proposed_problem_statement = "Test problem statement"
+        sample_case.consulting.problem_statement_confirmed = True
+        sample_case.consulting.problem_statement_confirmed_at = datetime.now(timezone.utc)
+        sample_case.consulting.decided_to_investigate = True
+        sample_case.consulting.decision_made_at = datetime.now(timezone.utc)
+        
+        # Now set status to INVESTIGATING (all requirements are met)
         sample_case.status = CaseStatus.INVESTIGATING
         await mock_case_repository.save(sample_case)
         
