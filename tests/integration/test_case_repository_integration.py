@@ -405,10 +405,8 @@ async def test_repository_factory_inmemory():
 @pytest.mark.integration
 async def test_repository_factory_database(test_session: AsyncSession):
     """Test repository factory with explicit session returns DatabaseCaseRepository."""
-    os.environ["CASE_STORAGE_TYPE"] = STORAGE_TYPE_DATABASE
-
-    # Get repository with session
-    repo = get_case_repository(session=test_session)
+    # Pass storage_type explicitly to avoid Settings caching
+    repo = get_case_repository(storage_type=STORAGE_TYPE_DATABASE, session=test_session)
     assert isinstance(repo, DatabaseCaseRepository)
 
     # Test basic operations
