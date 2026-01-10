@@ -34,15 +34,115 @@ from faultmaven.models.rbac import get_permissions_for_roles
 
 
 @pytest.fixture
-def app():
-    """Create FastAPI test application."""
-    return main_app
+def mock_api_service(sample_organization, sample_members):
+    """Create mock API organization service."""
+    mock_service = MagicMock()
+    mock_service.create_organization = AsyncMock(return_value=sample_organization)
+    mock_service.get_organization = AsyncMock(return_value=sample_organization)
+    mock_service.update_organization = AsyncMock(return_value=sample_organization)
+    mock_service.delete_organization = AsyncMock(return_value=True)
+    mock_service.list_user_organizations = AsyncMock(return_value=(
+        [{"organization_id": "org-123", "name": "Test Org", "slug": "test-org",
+          "plan_tier": "pro", "role": "owner", "member_since": datetime.now(timezone.utc)}],
+        1
+    ))
+    mock_service.list_organization_members = AsyncMock(return_value=(
+        [{"user_id": "user-owner", "email": "owner@test.com", "full_name": "Owner",
+          "role": "owner", "joined_at": datetime.now(timezone.utc)}],
+        1
+    ))
+    mock_service.add_member = AsyncMock(return_value={
+        "user_id": "user-new", "email": "new@test.com", "full_name": "New User",
+        "role": "member", "joined_at": datetime.now(timezone.utc), "invitation_sent": True
+    })
+    mock_service.remove_member = AsyncMock(return_value=True)
+    mock_service.update_member_role = AsyncMock(return_value={
+        "user_id": "user-member", "email": "member@test.com", "full_name": "Member",
+        "role": "admin", "joined_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc)
+    })
+    mock_service.get_organization_settings = AsyncMock(return_value={
+        "organization_id": "org-123", "plan_tier": "pro", "max_members": 50,
+        "current_member_count": 3, "max_cases_per_month": 500, "max_storage_gb": 100,
+        "features": {"knowledge_base": True, "ai_agents": True},
+        "settings": {"allow_public_cases": False, "require_2fa": False}
+    })
+    mock_service.update_organization_settings = AsyncMock(return_value={
+        "organization_id": "org-123",
+        "settings": {"allow_public_cases": True},
+        "updated_at": datetime.now(timezone.utc)
+    })
+
+    # Mock organization service's list_organization_members
+    mock_service.organization_service = MagicMock()
+    mock_service.organization_service.list_organization_members = AsyncMock(
+        return_value=sample_members
+    )
+
+    return mock_service
+
+
+@pytest.fixture
+def mock_org_service(sample_organization, sample_members):
+    """Create mock domain organization service."""
+    mock_service = MagicMock()
+    mock_service.get_organization_by_slug = AsyncMock(return_value=sample_organization)
+    mock_service.list_organization_members = AsyncMock(return_value=sample_members)
+    mock_service.user_has_permission = AsyncMock(return_value=True)
+    return mock_service
+
+
+@pytest.fixture
+def app(mock_api_service, mock_org_service, owner_user):
+    """Create FastAPI test application with dependency overrides."""
+    app = main_app
+
+    # Override dependencies
+    async def get_mock_current_user():
+        return owner_user
+
+    async def get_mock_api_service():
+        return mock_api_service
+
+    async def get_mock_org_service():
+        return mock_org_service
+
+    # Import actual dependencies
+    from faultmaven.api.middleware.auth import get_current_user
+    from faultmaven.modules.auth.api.organizations import (
+        get_api_organization_service,
+        get_organization_service
+    )
+
+    app.dependency_overrides[get_current_user] = get_mock_current_user
+    app.dependency_overrides[get_api_organization_service] = get_mock_api_service
+    app.dependency_overrides[get_organization_service] = get_mock_org_service
+
+    yield app
+
+    # Cleanup
+    app.dependency_overrides.clear()
 
 
 @pytest.fixture
 def client(app):
-    """Create test client."""
+    """Create test client with auth."""
     return TestClient(app)
+
+
+@pytest.fixture
+def unauthed_client():
+    """Create test client without auth override (for 401 tests)."""
+    return TestClient(main_app)
+
+
+@pytest.fixture
+def mock_services(mock_api_service, mock_org_service):
+    """Provide access to mock services for test configuration."""
+    return {
+        "api_service": mock_api_service,
+        "org_service": mock_org_service
+    }
 
 
 @pytest.fixture
@@ -130,77 +230,6 @@ def sample_members():
     ]
 
 
-@pytest.fixture
-def mock_auth_and_services(owner_user, sample_organization, sample_members):
-    """Mock authentication and services."""
-    with patch("faultmaven.api.middleware.auth.get_auth_service") as mock_get_auth, \
-         patch("faultmaven.modules.auth.api.organizations.get_api_organization_service") as mock_get_api_service, \
-         patch("faultmaven.modules.auth.api.organizations.get_organization_service") as mock_get_org_service:
-
-        # Mock auth service
-        mock_auth = MagicMock()
-        mock_auth.extract_user_from_token_with_revocation_check = AsyncMock(return_value=owner_user)
-        mock_get_auth.return_value = mock_auth
-
-        # Mock API organization service
-        mock_api_service = MagicMock()
-        mock_api_service.create_organization = AsyncMock(return_value=sample_organization)
-        mock_api_service.get_organization = AsyncMock(return_value=sample_organization)
-        mock_api_service.update_organization = AsyncMock(return_value=sample_organization)
-        mock_api_service.delete_organization = AsyncMock(return_value=True)
-        mock_api_service.list_user_organizations = AsyncMock(return_value=(
-            [{"organization_id": "org-123", "name": "Test Org", "slug": "test-org",
-              "plan_tier": "pro", "role": "owner", "member_since": datetime.now(timezone.utc)}],
-            1
-        ))
-        mock_api_service.list_organization_members = AsyncMock(return_value=(
-            [{"user_id": "user-owner", "email": "owner@test.com", "full_name": "Owner",
-              "role": "owner", "joined_at": datetime.now(timezone.utc)}],
-            1
-        ))
-        mock_api_service.add_member = AsyncMock(return_value={
-            "user_id": "user-new", "email": "new@test.com", "full_name": "New User",
-            "role": "member", "joined_at": datetime.now(timezone.utc), "invitation_sent": True
-        })
-        mock_api_service.remove_member = AsyncMock(return_value=True)
-        mock_api_service.update_member_role = AsyncMock(return_value={
-            "user_id": "user-member", "email": "member@test.com", "full_name": "Member",
-            "role": "admin", "joined_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
-        })
-        mock_api_service.get_organization_settings = AsyncMock(return_value={
-            "organization_id": "org-123", "plan_tier": "pro", "max_members": 50,
-            "current_member_count": 3, "max_cases_per_month": 500, "max_storage_gb": 100,
-            "features": {"knowledge_base": True, "ai_agents": True},
-            "settings": {"allow_public_cases": False, "require_2fa": False}
-        })
-        mock_api_service.update_organization_settings = AsyncMock(return_value={
-            "organization_id": "org-123",
-            "settings": {"allow_public_cases": True},
-            "updated_at": datetime.now(timezone.utc)
-        })
-
-        # Mock organization service's list_organization_members
-        mock_api_service.organization_service = MagicMock()
-        mock_api_service.organization_service.list_organization_members = AsyncMock(
-            return_value=sample_members
-        )
-
-        mock_get_api_service.return_value = mock_api_service
-
-        # Mock domain organization service
-        mock_org_service = MagicMock()
-        mock_org_service.get_organization_by_slug = AsyncMock(return_value=sample_organization)
-        mock_org_service.list_organization_members = AsyncMock(return_value=sample_members)
-        mock_org_service.user_has_permission = AsyncMock(return_value=True)
-        mock_get_org_service.return_value = mock_org_service
-
-        yield {
-            "auth_service": mock_auth,
-            "api_service": mock_api_service,
-            "org_service": mock_org_service,
-            "current_user": owner_user,
-        }
 
 
 # ============================================================
@@ -212,7 +241,7 @@ class TestCreateOrganizationEndpoint:
     """Tests for POST /api/v1/organizations."""
 
     def test_201_created_creates_organization_successfully(
-        self, client, mock_auth_and_services
+        self, client
     ):
         """201 Created - creates organization successfully."""
         response = client.post(
@@ -231,7 +260,7 @@ class TestCreateOrganizationEndpoint:
         assert data["organization_id"] == "org-123"
         assert data["name"] == "Test Organization"
 
-    def test_creator_becomes_owner_member(self, client, mock_auth_and_services):
+    def test_creator_becomes_owner_member(self, client, mock_services):
         """Creator becomes owner member."""
         response = client.post(
             "/api/v1/organizations",
@@ -243,7 +272,7 @@ class TestCreateOrganizationEndpoint:
         data = response.json()
         assert data["owner_user_id"] == "user-owner"
 
-    def test_returns_organization_with_all_fields(self, client, mock_auth_and_services):
+    def test_returns_organization_with_all_fields(self, client, mock_services):
         """Returns organization with all fields."""
         response = client.post(
             "/api/v1/organizations",
@@ -261,7 +290,7 @@ class TestCreateOrganizationEndpoint:
         assert "created_at" in data
         assert "updated_at" in data
 
-    def test_422_unprocessable_entity_invalid_slug_format(self, client, mock_auth_and_services):
+    def test_422_unprocessable_entity_invalid_slug_format(self, client, mock_services):
         """422 Unprocessable Entity - invalid slug format."""
         response = client.post(
             "/api/v1/organizations",
@@ -271,10 +300,10 @@ class TestCreateOrganizationEndpoint:
 
         assert response.status_code == 422
 
-    def test_409_conflict_duplicate_slug(self, client, mock_auth_and_services):
+    def test_409_conflict_duplicate_slug(self, client, mock_services):
         """409 Conflict - duplicate slug."""
         from faultmaven.exceptions import ValidationException
-        mock_auth_and_services["api_service"].create_organization.side_effect = \
+        mock_services["api_service"].create_organization.side_effect = \
             ValidationException("Slug already exists")
 
         response = client.post(
@@ -285,9 +314,9 @@ class TestCreateOrganizationEndpoint:
 
         assert response.status_code == 409
 
-    def test_401_unauthorized_no_jwt_token(self, client):
+    def test_401_unauthorized_no_jwt_token(self, unauthed_client):
         """401 Unauthorized - no JWT token."""
-        response = client.post(
+        response = unauthed_client.post(
             "/api/v1/organizations",
             json={"name": "Test Org", "slug": "test-org"}
         )
@@ -303,7 +332,7 @@ class TestCreateOrganizationEndpoint:
 class TestListUserOrganizationsEndpoint:
     """Tests for GET /api/v1/organizations."""
 
-    def test_200_ok_returns_users_organizations(self, client, mock_auth_and_services):
+    def test_200_ok_returns_users_organizations(self, client, mock_services):
         """200 OK - returns user's organizations."""
         response = client.get(
             "/api/v1/organizations",
@@ -316,7 +345,7 @@ class TestListUserOrganizationsEndpoint:
         assert "total" in data
         assert len(data["organizations"]) > 0
 
-    def test_pagination_works_limit_offset(self, client, mock_auth_and_services):
+    def test_pagination_works_limit_offset(self, client, mock_services):
         """Pagination works (limit, offset)."""
         response = client.get(
             "/api/v1/organizations?limit=10&offset=0",
@@ -328,9 +357,9 @@ class TestListUserOrganizationsEndpoint:
         assert data["limit"] == 10
         assert data["offset"] == 0
 
-    def test_returns_empty_list_if_no_memberships(self, client, mock_auth_and_services):
+    def test_returns_empty_list_if_no_memberships(self, client, mock_services):
         """Returns empty list if no memberships."""
-        mock_auth_and_services["api_service"].list_user_organizations.return_value = ([], 0)
+        mock_services["api_service"].list_user_organizations.return_value = ([], 0)
 
         response = client.get(
             "/api/v1/organizations",
@@ -342,7 +371,7 @@ class TestListUserOrganizationsEndpoint:
         assert data["organizations"] == []
         assert data["total"] == 0
 
-    def test_shows_users_role_in_each_organization(self, client, mock_auth_and_services):
+    def test_shows_users_role_in_each_organization(self, client, mock_services):
         """Shows user's role in each organization."""
         response = client.get(
             "/api/v1/organizations",
@@ -353,9 +382,9 @@ class TestListUserOrganizationsEndpoint:
         data = response.json()
         assert "role" in data["organizations"][0]
 
-    def test_401_unauthorized_no_jwt_token(self, client):
+    def test_401_unauthorized_no_jwt_token(self, unauthed_client):
         """401 Unauthorized - no JWT token."""
-        response = client.get("/api/v1/organizations")
+        response = unauthed_client.get("/api/v1/organizations")
 
         assert response.status_code == 401
 
@@ -369,7 +398,7 @@ class TestGetOrganizationEndpoint:
     """Tests for GET /api/v1/organizations/{org_id}."""
 
     def test_200_ok_member_can_view_organization_details(
-        self, client, mock_auth_and_services
+        self, client
     ):
         """200 OK - member can view organization details."""
         response = client.get(
@@ -381,7 +410,7 @@ class TestGetOrganizationEndpoint:
         data = response.json()
         assert data["organization_id"] == "org-123"
 
-    def test_includes_settings_and_member_count(self, client, mock_auth_and_services):
+    def test_includes_settings_and_member_count(self, client, mock_services):
         """Includes settings and member count."""
         response = client.get(
             "/api/v1/organizations/org-123",
@@ -393,10 +422,10 @@ class TestGetOrganizationEndpoint:
         assert "settings" in data
         assert "current_member_count" in data
 
-    def test_404_not_found_organization_doesnt_exist(self, client, mock_auth_and_services):
+    def test_404_not_found_organization_doesnt_exist(self, client, mock_services):
         """404 Not Found - organization doesn't exist."""
         from faultmaven.exceptions import NotFoundError
-        mock_auth_and_services["api_service"].get_organization.side_effect = \
+        mock_services["api_service"].get_organization.side_effect = \
             NotFoundError("Organization", "nonexistent")
 
         response = client.get(
@@ -406,10 +435,10 @@ class TestGetOrganizationEndpoint:
 
         assert response.status_code == 404
 
-    def test_403_forbidden_user_not_member(self, client, mock_auth_and_services):
+    def test_403_forbidden_user_not_member(self, client, mock_services):
         """403 Forbidden - user not a member."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].get_organization.side_effect = \
+        mock_services["api_service"].get_organization.side_effect = \
             AuthorizationError("Organization membership required")
 
         response = client.get(
@@ -419,9 +448,9 @@ class TestGetOrganizationEndpoint:
 
         assert response.status_code == 403
 
-    def test_401_unauthorized_no_jwt_token(self, client):
+    def test_401_unauthorized_no_jwt_token(self, unauthed_client):
         """401 Unauthorized - no JWT token."""
-        response = client.get("/api/v1/organizations/org-123")
+        response = unauthed_client.get("/api/v1/organizations/org-123")
 
         assert response.status_code == 401
 
@@ -435,7 +464,7 @@ class TestUpdateOrganizationEndpoint:
     """Tests for PATCH /api/v1/organizations/{org_id}."""
 
     def test_200_ok_owner_can_update_name_description(
-        self, client, mock_auth_and_services
+        self, client
     ):
         """200 OK - owner can update name/description."""
         response = client.patch(
@@ -448,10 +477,10 @@ class TestUpdateOrganizationEndpoint:
         data = response.json()
         assert data["organization_id"] == "org-123"
 
-    def test_403_forbidden_admin_cannot_update(self, client, mock_auth_and_services):
+    def test_403_forbidden_admin_cannot_update(self, client, mock_services):
         """403 Forbidden - admin cannot update."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].update_organization.side_effect = \
+        mock_services["api_service"].update_organization.side_effect = \
             AuthorizationError("Organization owner access required")
 
         response = client.patch(
@@ -462,10 +491,10 @@ class TestUpdateOrganizationEndpoint:
 
         assert response.status_code == 403
 
-    def test_403_forbidden_member_cannot_update(self, client, mock_auth_and_services):
+    def test_403_forbidden_member_cannot_update(self, client, mock_services):
         """403 Forbidden - member cannot update."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].update_organization.side_effect = \
+        mock_services["api_service"].update_organization.side_effect = \
             AuthorizationError("Organization owner access required")
 
         response = client.patch(
@@ -476,10 +505,10 @@ class TestUpdateOrganizationEndpoint:
 
         assert response.status_code == 403
 
-    def test_404_not_found_organization_doesnt_exist(self, client, mock_auth_and_services):
+    def test_404_not_found_organization_doesnt_exist(self, client, mock_services):
         """404 Not Found - organization doesn't exist."""
         from faultmaven.exceptions import NotFoundError
-        mock_auth_and_services["api_service"].update_organization.side_effect = \
+        mock_services["api_service"].update_organization.side_effect = \
             NotFoundError("Organization", "nonexistent")
 
         response = client.patch(
@@ -490,9 +519,9 @@ class TestUpdateOrganizationEndpoint:
 
         assert response.status_code == 404
 
-    def test_401_unauthorized_no_jwt_token(self, client):
+    def test_401_unauthorized_no_jwt_token(self, unauthed_client):
         """401 Unauthorized - no JWT token."""
-        response = client.patch(
+        response = unauthed_client.patch(
             "/api/v1/organizations/org-123",
             json={"name": "Updated Name"}
         )
@@ -508,7 +537,7 @@ class TestUpdateOrganizationEndpoint:
 class TestDeleteOrganizationEndpoint:
     """Tests for DELETE /api/v1/organizations/{org_id}."""
 
-    def test_200_ok_owner_can_delete_organization(self, client, mock_auth_and_services):
+    def test_200_ok_owner_can_delete_organization(self, client, mock_services):
         """200 OK - owner can delete organization."""
         response = client.delete(
             "/api/v1/organizations/org-123",
@@ -520,10 +549,10 @@ class TestDeleteOrganizationEndpoint:
         assert "message" in data
         assert data["organization_id"] == "org-123"
 
-    def test_403_forbidden_admin_cannot_delete(self, client, mock_auth_and_services):
+    def test_403_forbidden_admin_cannot_delete(self, client, mock_services):
         """403 Forbidden - admin cannot delete."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].delete_organization.side_effect = \
+        mock_services["api_service"].delete_organization.side_effect = \
             AuthorizationError("Organization owner access required")
 
         response = client.delete(
@@ -533,10 +562,10 @@ class TestDeleteOrganizationEndpoint:
 
         assert response.status_code == 403
 
-    def test_409_conflict_active_cases_exist(self, client, mock_auth_and_services):
+    def test_409_conflict_active_cases_exist(self, client, mock_services):
         """409 Conflict - active cases exist."""
         from faultmaven.exceptions import ConflictError
-        mock_auth_and_services["api_service"].delete_organization.side_effect = \
+        mock_services["api_service"].delete_organization.side_effect = \
             ConflictError("Organization has active cases")
 
         response = client.delete(
@@ -546,10 +575,10 @@ class TestDeleteOrganizationEndpoint:
 
         assert response.status_code == 409
 
-    def test_404_not_found_organization_doesnt_exist(self, client, mock_auth_and_services):
+    def test_404_not_found_organization_doesnt_exist(self, client, mock_services):
         """404 Not Found - organization doesn't exist."""
         from faultmaven.exceptions import NotFoundError
-        mock_auth_and_services["api_service"].delete_organization.side_effect = \
+        mock_services["api_service"].delete_organization.side_effect = \
             NotFoundError("Organization", "nonexistent")
 
         response = client.delete(
@@ -559,9 +588,9 @@ class TestDeleteOrganizationEndpoint:
 
         assert response.status_code == 404
 
-    def test_401_unauthorized_no_jwt_token(self, client):
+    def test_401_unauthorized_no_jwt_token(self, unauthed_client):
         """401 Unauthorized - no JWT token."""
-        response = client.delete("/api/v1/organizations/org-123")
+        response = unauthed_client.delete("/api/v1/organizations/org-123")
 
         assert response.status_code == 401
 
@@ -574,7 +603,7 @@ class TestDeleteOrganizationEndpoint:
 class TestListOrganizationMembersEndpoint:
     """Tests for GET /api/v1/organizations/{org_id}/members."""
 
-    def test_200_ok_member_can_list_all_members(self, client, mock_auth_and_services):
+    def test_200_ok_member_can_list_all_members(self, client, mock_services):
         """200 OK - member can list all members."""
         response = client.get(
             "/api/v1/organizations/org-123/members",
@@ -586,7 +615,7 @@ class TestListOrganizationMembersEndpoint:
         assert "members" in data
         assert "total" in data
 
-    def test_pagination_works(self, client, mock_auth_and_services):
+    def test_pagination_works(self, client, mock_services):
         """Pagination works."""
         response = client.get(
             "/api/v1/organizations/org-123/members?limit=10&offset=0",
@@ -598,7 +627,7 @@ class TestListOrganizationMembersEndpoint:
         assert data["limit"] == 10
         assert data["offset"] == 0
 
-    def test_filter_by_role_works(self, client, mock_auth_and_services):
+    def test_filter_by_role_works(self, client, mock_services):
         """Filter by role works."""
         response = client.get(
             "/api/v1/organizations/org-123/members?role=owner",
@@ -607,10 +636,10 @@ class TestListOrganizationMembersEndpoint:
 
         assert response.status_code == 200
 
-    def test_403_forbidden_non_member_cannot_list(self, client, mock_auth_and_services):
+    def test_403_forbidden_non_member_cannot_list(self, client, mock_services):
         """403 Forbidden - non-member cannot list."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].list_organization_members.side_effect = \
+        mock_services["api_service"].list_organization_members.side_effect = \
             AuthorizationError("Organization membership required")
 
         response = client.get(
@@ -620,9 +649,9 @@ class TestListOrganizationMembersEndpoint:
 
         assert response.status_code == 403
 
-    def test_401_unauthorized_no_jwt_token(self, client):
+    def test_401_unauthorized_no_jwt_token(self, unauthed_client):
         """401 Unauthorized - no JWT token."""
-        response = client.get("/api/v1/organizations/org-123/members")
+        response = unauthed_client.get("/api/v1/organizations/org-123/members")
 
         assert response.status_code == 401
 
@@ -635,7 +664,7 @@ class TestListOrganizationMembersEndpoint:
 class TestAddMemberEndpoint:
     """Tests for POST /api/v1/organizations/{org_id}/members."""
 
-    def test_201_created_owner_adds_member(self, client, mock_auth_and_services):
+    def test_201_created_owner_adds_member(self, client, mock_services):
         """201 Created - owner adds member."""
         response = client.post(
             "/api/v1/organizations/org-123/members",
@@ -649,7 +678,7 @@ class TestAddMemberEndpoint:
         assert data["role"] == "member"
 
     def test_201_created_admin_adds_member_not_admin_role(
-        self, client, mock_auth_and_services
+        self, client
     ):
         """201 Created - admin adds member (not admin role)."""
         response = client.post(
@@ -660,10 +689,10 @@ class TestAddMemberEndpoint:
 
         assert response.status_code == 201
 
-    def test_403_forbidden_admin_cannot_add_admin(self, client, mock_auth_and_services):
+    def test_403_forbidden_admin_cannot_add_admin(self, client, mock_services):
         """403 Forbidden - admin cannot add admin."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].add_member.side_effect = \
+        mock_services["api_service"].add_member.side_effect = \
             AuthorizationError("Only owners can add admin members")
 
         response = client.post(
@@ -674,10 +703,10 @@ class TestAddMemberEndpoint:
 
         assert response.status_code == 403
 
-    def test_403_forbidden_member_cannot_add(self, client, mock_auth_and_services):
+    def test_403_forbidden_member_cannot_add(self, client, mock_services):
         """403 Forbidden - member cannot add."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].add_member.side_effect = \
+        mock_services["api_service"].add_member.side_effect = \
             AuthorizationError("Organization admin access required")
 
         response = client.post(
@@ -688,10 +717,10 @@ class TestAddMemberEndpoint:
 
         assert response.status_code == 403
 
-    def test_404_not_found_user_email_doesnt_exist(self, client, mock_auth_and_services):
+    def test_404_not_found_user_email_doesnt_exist(self, client, mock_services):
         """404 Not Found - user email doesn't exist."""
         from faultmaven.exceptions import NotFoundError
-        mock_auth_and_services["api_service"].add_member.side_effect = \
+        mock_services["api_service"].add_member.side_effect = \
             NotFoundError("User", "email:nonexistent@test.com")
 
         response = client.post(
@@ -702,10 +731,10 @@ class TestAddMemberEndpoint:
 
         assert response.status_code == 404
 
-    def test_409_conflict_user_already_member(self, client, mock_auth_and_services):
+    def test_409_conflict_user_already_member(self, client, mock_services):
         """409 Conflict - user already a member."""
         from faultmaven.exceptions import ConflictError
-        mock_auth_and_services["api_service"].add_member.side_effect = \
+        mock_services["api_service"].add_member.side_effect = \
             ConflictError("User is already a member")
 
         response = client.post(
@@ -716,10 +745,10 @@ class TestAddMemberEndpoint:
 
         assert response.status_code == 409
 
-    def test_403_forbidden_max_members_limit_reached(self, client, mock_auth_and_services):
-        """403 Forbidden - max members limit reached."""
+    def test_409_conflict_max_members_limit_reached(self, client, mock_services):
+        """409 Conflict - max members limit reached."""
         from faultmaven.exceptions import ConflictError
-        mock_auth_and_services["api_service"].add_member.side_effect = \
+        mock_services["api_service"].add_member.side_effect = \
             ConflictError("Organization has reached maximum member limit")
 
         response = client.post(
@@ -728,11 +757,11 @@ class TestAddMemberEndpoint:
             json={"email": "new@test.com", "role": "member"}
         )
 
-        assert response.status_code == 403
+        assert response.status_code == 409
 
-    def test_401_unauthorized_no_jwt_token(self, client):
+    def test_401_unauthorized_no_jwt_token(self, unauthed_client):
         """401 Unauthorized - no JWT token."""
-        response = client.post(
+        response = unauthed_client.post(
             "/api/v1/organizations/org-123/members",
             json={"email": "new@test.com", "role": "member"}
         )
@@ -748,7 +777,7 @@ class TestAddMemberEndpoint:
 class TestRemoveMemberEndpoint:
     """Tests for DELETE /api/v1/organizations/{org_id}/members/{user_id}."""
 
-    def test_200_ok_owner_removes_member(self, client, mock_auth_and_services):
+    def test_200_ok_owner_removes_member(self, client, mock_services):
         """200 OK - owner removes member."""
         response = client.delete(
             "/api/v1/organizations/org-123/members/user-member",
@@ -760,7 +789,7 @@ class TestRemoveMemberEndpoint:
         assert "message" in data
 
     def test_200_ok_admin_removes_member_not_admin_owner(
-        self, client, mock_auth_and_services
+        self, client
     ):
         """200 OK - admin removes member (not admin/owner)."""
         response = client.delete(
@@ -770,10 +799,10 @@ class TestRemoveMemberEndpoint:
 
         assert response.status_code == 200
 
-    def test_403_forbidden_admin_cannot_remove_admin(self, client, mock_auth_and_services):
+    def test_403_forbidden_admin_cannot_remove_admin(self, client, mock_services):
         """403 Forbidden - admin cannot remove admin."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].remove_member.side_effect = \
+        mock_services["api_service"].remove_member.side_effect = \
             AuthorizationError("Admins cannot remove other admins")
 
         response = client.delete(
@@ -783,10 +812,10 @@ class TestRemoveMemberEndpoint:
 
         assert response.status_code == 403
 
-    def test_403_forbidden_cannot_remove_owner(self, client, mock_auth_and_services):
+    def test_403_forbidden_cannot_remove_owner(self, client, mock_services):
         """403 Forbidden - cannot remove owner."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].remove_member.side_effect = \
+        mock_services["api_service"].remove_member.side_effect = \
             AuthorizationError("Cannot remove organization owner")
 
         response = client.delete(
@@ -796,10 +825,10 @@ class TestRemoveMemberEndpoint:
 
         assert response.status_code == 403
 
-    def test_403_forbidden_member_cannot_remove(self, client, mock_auth_and_services):
+    def test_403_forbidden_member_cannot_remove(self, client, mock_services):
         """403 Forbidden - member cannot remove."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].remove_member.side_effect = \
+        mock_services["api_service"].remove_member.side_effect = \
             AuthorizationError("Organization admin access required")
 
         response = client.delete(
@@ -809,10 +838,10 @@ class TestRemoveMemberEndpoint:
 
         assert response.status_code == 403
 
-    def test_404_not_found_user_not_member(self, client, mock_auth_and_services):
+    def test_404_not_found_user_not_member(self, client, mock_services):
         """404 Not Found - user not a member."""
         from faultmaven.exceptions import NotFoundError
-        mock_auth_and_services["api_service"].remove_member.side_effect = \
+        mock_services["api_service"].remove_member.side_effect = \
             NotFoundError("OrganizationMember", "nonexistent")
 
         response = client.delete(
@@ -822,9 +851,9 @@ class TestRemoveMemberEndpoint:
 
         assert response.status_code == 404
 
-    def test_401_unauthorized_no_jwt_token(self, client):
+    def test_401_unauthorized_no_jwt_token(self, unauthed_client):
         """401 Unauthorized - no JWT token."""
-        response = client.delete("/api/v1/organizations/org-123/members/user-member")
+        response = unauthed_client.delete("/api/v1/organizations/org-123/members/user-member")
 
         assert response.status_code == 401
 
@@ -837,7 +866,7 @@ class TestRemoveMemberEndpoint:
 class TestUpdateMemberRoleEndpoint:
     """Tests for PATCH /api/v1/organizations/{org_id}/members/{user_id}."""
 
-    def test_200_ok_owner_updates_member_role(self, client, mock_auth_and_services):
+    def test_200_ok_owner_updates_member_role(self, client, mock_services):
         """200 OK - owner updates member role."""
         response = client.patch(
             "/api/v1/organizations/org-123/members/user-member",
@@ -849,10 +878,10 @@ class TestUpdateMemberRoleEndpoint:
         data = response.json()
         assert data["role"] == "admin"
 
-    def test_403_forbidden_admin_cannot_update_roles(self, client, mock_auth_and_services):
+    def test_403_forbidden_admin_cannot_update_roles(self, client, mock_services):
         """403 Forbidden - admin cannot update roles."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].update_member_role.side_effect = \
+        mock_services["api_service"].update_member_role.side_effect = \
             AuthorizationError("Organization owner access required")
 
         response = client.patch(
@@ -863,10 +892,10 @@ class TestUpdateMemberRoleEndpoint:
 
         assert response.status_code == 403
 
-    def test_403_forbidden_member_cannot_update_roles(self, client, mock_auth_and_services):
+    def test_403_forbidden_member_cannot_update_roles(self, client, mock_services):
         """403 Forbidden - member cannot update roles."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].update_member_role.side_effect = \
+        mock_services["api_service"].update_member_role.side_effect = \
             AuthorizationError("Organization owner access required")
 
         response = client.patch(
@@ -877,7 +906,7 @@ class TestUpdateMemberRoleEndpoint:
 
         assert response.status_code == 403
 
-    def test_422_unprocessable_entity_invalid_role(self, client, mock_auth_and_services):
+    def test_422_unprocessable_entity_invalid_role(self, client, mock_services):
         """422 Unprocessable Entity - invalid role."""
         response = client.patch(
             "/api/v1/organizations/org-123/members/user-member",
@@ -887,10 +916,10 @@ class TestUpdateMemberRoleEndpoint:
 
         assert response.status_code == 422
 
-    def test_404_not_found_user_not_member(self, client, mock_auth_and_services):
+    def test_404_not_found_user_not_member(self, client, mock_services):
         """404 Not Found - user not a member."""
         from faultmaven.exceptions import NotFoundError
-        mock_auth_and_services["api_service"].update_member_role.side_effect = \
+        mock_services["api_service"].update_member_role.side_effect = \
             NotFoundError("OrganizationMember", "nonexistent")
 
         response = client.patch(
@@ -901,9 +930,9 @@ class TestUpdateMemberRoleEndpoint:
 
         assert response.status_code == 404
 
-    def test_401_unauthorized_no_jwt_token(self, client):
+    def test_401_unauthorized_no_jwt_token(self, unauthed_client):
         """401 Unauthorized - no JWT token."""
-        response = client.patch(
+        response = unauthed_client.patch(
             "/api/v1/organizations/org-123/members/user-member",
             json={"role": "admin"}
         )
@@ -919,7 +948,7 @@ class TestUpdateMemberRoleEndpoint:
 class TestGetOrganizationSettingsEndpoint:
     """Tests for GET /api/v1/organizations/{org_id}/settings."""
 
-    def test_200_ok_member_can_view_settings(self, client, mock_auth_and_services):
+    def test_200_ok_member_can_view_settings(self, client, mock_services):
         """200 OK - member can view settings."""
         response = client.get(
             "/api/v1/organizations/org-123/settings",
@@ -932,7 +961,7 @@ class TestGetOrganizationSettingsEndpoint:
         assert "features" in data
         assert "settings" in data
 
-    def test_includes_plan_limits_and_features(self, client, mock_auth_and_services):
+    def test_includes_plan_limits_and_features(self, client, mock_services):
         """Includes plan limits and features."""
         response = client.get(
             "/api/v1/organizations/org-123/settings",
@@ -945,10 +974,10 @@ class TestGetOrganizationSettingsEndpoint:
         assert "max_storage_gb" in data
         assert "features" in data
 
-    def test_403_forbidden_non_member_cannot_view(self, client, mock_auth_and_services):
+    def test_403_forbidden_non_member_cannot_view(self, client, mock_services):
         """403 Forbidden - non-member cannot view."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].get_organization_settings.side_effect = \
+        mock_services["api_service"].get_organization_settings.side_effect = \
             AuthorizationError("Organization membership required")
 
         response = client.get(
@@ -958,9 +987,9 @@ class TestGetOrganizationSettingsEndpoint:
 
         assert response.status_code == 403
 
-    def test_401_unauthorized_no_jwt_token(self, client):
+    def test_401_unauthorized_no_jwt_token(self, unauthed_client):
         """401 Unauthorized - no JWT token."""
-        response = client.get("/api/v1/organizations/org-123/settings")
+        response = unauthed_client.get("/api/v1/organizations/org-123/settings")
 
         assert response.status_code == 401
 
@@ -973,7 +1002,7 @@ class TestGetOrganizationSettingsEndpoint:
 class TestUpdateOrganizationSettingsEndpoint:
     """Tests for PATCH /api/v1/organizations/{org_id}/settings."""
 
-    def test_200_ok_owner_updates_settings(self, client, mock_auth_and_services):
+    def test_200_ok_owner_updates_settings(self, client, mock_services):
         """200 OK - owner updates settings."""
         response = client.patch(
             "/api/v1/organizations/org-123/settings",
@@ -986,11 +1015,11 @@ class TestUpdateOrganizationSettingsEndpoint:
         assert "settings" in data
 
     def test_403_forbidden_admin_cannot_update_settings(
-        self, client, mock_auth_and_services
+        self, client, mock_services
     ):
         """403 Forbidden - admin cannot update settings."""
         from faultmaven.exceptions import AuthorizationError
-        mock_auth_and_services["api_service"].update_organization_settings.side_effect = \
+        mock_services["api_service"].update_organization_settings.side_effect = \
             AuthorizationError("Organization owner access required")
 
         response = client.patch(
@@ -1002,7 +1031,7 @@ class TestUpdateOrganizationSettingsEndpoint:
         assert response.status_code == 403
 
     def test_422_unprocessable_entity_invalid_setting_value(
-        self, client, mock_auth_and_services
+        self, client
     ):
         """422 Unprocessable Entity - invalid setting value."""
         response = client.patch(
@@ -1013,9 +1042,9 @@ class TestUpdateOrganizationSettingsEndpoint:
 
         assert response.status_code == 422
 
-    def test_401_unauthorized_no_jwt_token(self, client):
+    def test_401_unauthorized_no_jwt_token(self, unauthed_client):
         """401 Unauthorized - no JWT token."""
-        response = client.patch(
+        response = unauthed_client.patch(
             "/api/v1/organizations/org-123/settings",
             json={"allow_public_cases": True}
         )
