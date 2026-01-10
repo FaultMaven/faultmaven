@@ -286,6 +286,21 @@ class RedisSessionStore(ISessionStore):
             metadata=session_data.get('metadata', {})
         )
 
+    async def save(self, session: SessionContext) -> None:
+        """Save session context to Redis"""
+        session_data = {
+            'session_id': session.session_id,
+            'user_id': session.user_id,
+            'client_id': session.client_id,
+            'created_at': to_json_compatible(session.created_at),
+            'last_activity': to_json_compatible(session.last_activity),
+            'updated_at': to_json_compatible(session.updated_at),
+            'expires_at': to_json_compatible(session.expires_at) if session.expires_at else None,
+            'metadata': session.metadata or {},
+            'session_resumed': session.session_resumed
+        }
+        await self.set(session.session_id, session_data)
+
     async def update_session(self, session_id: str, updates: Dict[str, Any]) -> bool:
         """Update session with new data"""
         session_data = await self.get(session_id)

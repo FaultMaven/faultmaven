@@ -137,33 +137,139 @@ response = await client.post("/api/v1/auth/login", ...)
 
 ---
 
-## Next Steps
+## Phase 9: API Auth Endpoint Cleanup
 
-### Phase 1: Systematic Evaluation (IN PROGRESS)
+**Status**: IN PROGRESS
+**Branch**: `fix/integration-tests-phase9-api-auth-cleanup`
+**PR**: TBD
+**Started**: 2026-01-10
+
+### Investigation
+
+**Root Cause**: Tests in `test_auth_api.py` target non-existent endpoints.
+
+**Endpoints Tests Expect**:
+- POST `/api/v1/auth/login`
+- POST `/api/v1/auth/register`
+- GET `/api/v1/auth/verify-token`
+- POST `/api/v1/auth/refresh-token`
+
+**Actual Production Endpoints** ([auth.py:68-447](../../faultmaven/modules/auth/api/auth.py)):
+- POST `/api/v1/dev-login` (dev-only)
+- POST `/api/v1/dev-register` (dev-only)
+- POST `/api/v1/logout`
+- GET `/api/v1/me`
+- GET `/api/v1/health`
+- POST `/api/v1/dev/revoke-all-tokens`
+
+### Decision Framework Applied
+
+**Question**: Do these tests test existing production functionality?
+**Answer**: NO - Tests target endpoints that don't exist in codebase
+
+**Evaluation**: DELETE (follows evaluation-first principle)
+
+**Rationale**:
+1. Tests are for non-existent API contract
+2. Actual auth uses dev-only endpoints (`/dev-login`, `/dev-register`)
+3. Precedent: Deleted 45 JWT auth tests in PR #90 for same reason
+4. No backward compatibility requirements (development system)
+5. Implementing missing endpoints = major feature work, out of scope
+
+### Options Considered
+
+**Option A: DELETE test_auth_api.py** (SELECTED)
+- Pros: Clean, follows precedent (PR #88, PR #90), no tech debt
+- Cons: Loss of test coverage for future auth implementation
+- Impact: ~61 tests removed
+- Effort: Minutes (delete file, update imports)
+
+**Option B: Update endpoint paths to match dev endpoints**
+- Pros: Preserves test structure
+- Cons: Tests would still fail (different auth flow), changes production contract
+- Impact: ~61 tests potentially fixed
+- Effort: Hours (update all endpoint paths, fix auth flow differences)
+
+**Option C: Implement production auth endpoints**
+- Pros: Complete auth system
+- Cons: Large feature implementation, out of scope, requires architectural design
+- Impact: Unknown (new feature)
+- Effort: Days/weeks
+
+### Implementation Plan
+
+**Phase 9a: Delete Non-Existent Auth Tests** (CURRENT)
+1. Delete `tests/integration/api/test_auth_api.py`
+2. Update any cross-references or imports
+3. Run test suite to verify no regressions
+4. Document deletion with rationale
+
+**Phase 9b: Verify No Downstream Impact**
+1. Check for other tests importing from test_auth_api.py
+2. Check for shared fixtures used elsewhere
+3. Verify no documentation references
+
+**Phase 9c: Update Metrics**
+1. Record before/after test counts
+2. Update progress tracking
+3. Document net change
+
+### Progress Tracking
+
+**Files Analyzed**: 0/1
+- [ ] `tests/integration/api/test_auth_api.py` - 61 tests, DELETE decision
+
+**Actions Taken**:
+- None yet (awaiting team coordination)
+
+**Metrics** (as of Phase 8):
+```
+Before Phase 9:  300 passing, 293 failing, 6 errors (599 total)
+After Phase 9:   TBD passing, TBD failing, TBD errors (TBD total)
+Net Change:      TBD
+```
+
+### Expected Outcome
+
+**Best Case**:
+- 61 tests deleted
+- 0 errors introduced
+- Net: 300 passing, 232 failing, 6 errors (538 total)
+- Clean codebase with only valid tests
+
+**Risk**: Deletion may reveal other tests that depend on test_auth_api.py fixtures
+
+### Next Phase Preview
+
+**Phase 10 Candidates** (after Phase 9 completion):
+1. Fix remaining 6 errors
+2. Evaluate remaining 232 failing tests
+3. Apply similar DELETE evaluation to other non-existent endpoint tests
+
+---
+
+## Next Steps (Overall Project)
+
+### Systematic Evaluation Approach
 
 1. **Categorize all failing/error tests** by root cause:
-   - Non-existent endpoints (like auth)
-   - Async generator mocking (like agent_api - FIXED)
-   - Import errors / module not found
-   - Database/fixture issues
-   - Other
+   - ✅ Non-existent endpoints (like auth) - Phase 9 IN PROGRESS
+   - ✅ Async generator mocking (like agent_api) - FIXED in PR #89
+   - Import errors / module not found - TBD
+   - Database/fixture issues - TBD
+   - Other - TBD
 
 2. **Triage categories**:
-   - **DELETE**: Tests for non-existent features
+   - **DELETE**: Tests for non-existent features (Phase 9 applying this)
    - **FIX**: Tests with correctable bugs
    - **INVESTIGATE**: Unclear root cause
 
-### Phase 2: Cleanup (TODO)
+### Remaining Work
 
-1. Delete obsolete test files
-2. Fix correctable bugs (apply patterns from PR #89)
-3. Document remaining issues
-
-### Phase 3: Report & Merge (TODO)
-
-1. Create PR for test cleanup
-2. Update test metrics
-3. Document architectural decisions
+1. Complete Phase 9 (delete auth_api tests)
+2. Fix remaining 6 errors
+3. Evaluate remaining 232 failing tests
+4. Apply DELETE/FIX decisions systematically
 
 ---
 
