@@ -212,6 +212,10 @@ async def test_full_case_lifecycle(db_repository: DatabaseCaseRepository):
 
     # Step 3: Update case
     case.title = "Updated Lifecycle Test"
+    # INVESTIGATING requires confirmed problem statement and decision - SET BEFORE STATUS CHANGE
+    case.consulting.problem_statement_confirmed = True
+    case.consulting.decided_to_investigate = True
+    case.consulting.proposed_problem_statement = "Test problem statement"
     case.status = CaseStatus.INVESTIGATING
     case.current_turn = 5
     case.consulting.quick_suggestions = ["Check database", "Review logs"]
