@@ -271,6 +271,11 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # Allow unused imports in __init__.py
 "test_*.py" = ["F401", "F811"]  # Allow unused imports and redefinitions in tests
+"conftest.py" = ["F401"]  # Allow unused imports in conftest files
+"faultmaven/agent/doctrine.py" = ["F841"]  # Allow unused variables (placeholders for future features)
+"faultmaven/data_processing/log_processor.py" = ["F841"]  # Allow unused variables (investigation context planned)
+"faultmaven/main.py" = ["F841"]  # Allow unused variables (dependency injection)
+
 
 [tool.black]
 line-length = 88

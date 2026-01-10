@@ -124,6 +124,7 @@ def sample_case_with_evidence() -> Case:
         description="Testing evidence linking",
         status=CaseStatus.INVESTIGATING,
         consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
         ),
@@ -159,6 +160,7 @@ def sample_case_with_hypotheses() -> Case:
         description="Testing hypothesis tracking",
         status=CaseStatus.INVESTIGATING,
         consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
         ),
@@ -327,6 +329,7 @@ async def test_hypothesis_validation_flow(db_repository: DatabaseCaseRepository)
         description="Testing hypothesis validation flow",
         status=CaseStatus.INVESTIGATING,
         consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
         ),
@@ -548,6 +551,7 @@ async def test_complex_case_persistence(db_repository: DatabaseCaseRepository):
         status=CaseStatus.INVESTIGATING,
         investigation_strategy=InvestigationStrategy.ACTIVE_INCIDENT,
         consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
             quick_suggestions=["Check logs", "Restart service"],

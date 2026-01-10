@@ -58,7 +58,7 @@ class TestUserKBFlow:
                 data_type=DataType.UNSTRUCTURED_TEXT,
                 processing_time_ms=50.0,
                 llm_calls_used=0,
-                extraction_strategy="text_extraction",
+                extraction_strategy="direct",
                 confidence=0.95,
                 source="user_upload",
             ),

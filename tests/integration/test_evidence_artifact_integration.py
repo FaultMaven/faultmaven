@@ -107,6 +107,7 @@ async def sample_case(case_repository: DatabaseCaseRepository) -> Case:
         description="Testing evidence management",
         status=CaseStatus.INVESTIGATING,
         consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
         ),

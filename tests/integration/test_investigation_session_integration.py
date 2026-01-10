@@ -34,7 +34,7 @@ from faultmaven.modules.agent.infrastructure.persistence.agent_execution_reposit
 from faultmaven.infrastructure.persistence.repository_factory import (
     reset_inmemory_investigation_session_repository,
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus
+from faultmaven.modules.case.domain.models import Case, CaseStatus, ConsultingData
 from faultmaven.models.investigation_session import (
     InvestigationSession,
     SessionStatus,
@@ -130,6 +130,7 @@ async def sample_case(case_repository: DatabaseCaseRepository) -> Case:
         description="Testing investigation session management",
         status=CaseStatus.INVESTIGATING,
         consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
         ),
@@ -298,6 +299,7 @@ async def test_cascade_delete_case_to_sessions(
         description="Testing CASCADE delete",
         status=CaseStatus.INVESTIGATING,
         consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
         ),
@@ -346,6 +348,7 @@ async def test_four_level_cascade_delete_chain(
         description="Testing full cascade chain",
         status=CaseStatus.INVESTIGATING,
         consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
             problem_statement_confirmed=True,
             decided_to_investigate=True,
         ),
@@ -483,6 +486,7 @@ async def test_list_sessions_by_user_pagination(
             description="Testing pagination",
             status=CaseStatus.INVESTIGATING,
             consulting=ConsultingData(
+            proposed_problem_statement="Test problem statement",
                 problem_statement_confirmed=True,
                 decided_to_investigate=True,
             ),
