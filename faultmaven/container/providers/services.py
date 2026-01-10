@@ -119,27 +119,26 @@ def create_investigation_orchestrator(
 
 
 def create_evidence_service(
-    db_session: Any | None,
+    case_repository: Any | None,
     settings: FaultMavenSettings,
 ) -> Any | None:
-    """Create evidence service for evidence management (PR #46b).
+    """Create evidence service for evidence management (migrated to use Case repository).
 
     Args:
-        db_session: Database session for repository
+        case_repository: Case repository (now handles standalone evidence)
         settings: Application settings
 
     Returns:
         EvidenceService or None if dependencies unavailable
     """
-    if not db_session:
-        logger.debug("EvidenceService skipped (no database session)")
+    if not case_repository:
+        logger.debug("EvidenceService skipped (no Case repository)")
         return None
 
     try:
         from faultmaven.modules.evidence.domain.services import EvidenceService
         from faultmaven.modules.evidence.infrastructure import (
             EvidenceStorageAdapter,
-            EvidenceRepository,
         )
         from faultmaven.services.file_storage_service import FileStorageService
 
@@ -156,13 +155,12 @@ def create_evidence_service(
             base_url=base_url,
         )
 
-        # Create repository and service
-        evidence_repository = EvidenceRepository(session=db_session)
+        # Create service with Case repository (migrated from EvidenceRepository)
         service = EvidenceService(
             storage_provider=storage_adapter,
-            repository=evidence_repository,
+            case_repository=case_repository,
         )
-        logger.info("✅ EvidenceService initialized")
+        logger.info("✅ EvidenceService initialized (using Case repository)")
         return service
     except Exception as e:
         logger.warning(f"EvidenceService initialization failed: {e}")
@@ -446,8 +444,8 @@ def register_services(container: BaseDIContainer) -> None:
     if investigation_orchestrator:
         container._register_service("investigation_orchestrator", investigation_orchestrator)
 
-    # Evidence Service (PR #46b)
-    evidence_service = create_evidence_service(db_session, settings)
+    # Evidence Service (migrated to use Case repository)
+    evidence_service = create_evidence_service(case_repository, settings)
     container.evidence_service = evidence_service
     if evidence_service:
         container._register_service("evidence_service", evidence_service)

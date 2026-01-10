@@ -20,15 +20,15 @@ logger = logging.getLogger(__name__)
 class EvidenceService:
     """Service for managing evidence files."""
 
-    def __init__(self, storage_provider, repository):
+    def __init__(self, storage_provider, case_repository):
         """Initialize evidence service.
 
         Args:
             storage_provider: File storage provider (local/S3/Azure)
-            repository: Evidence database repository
+            case_repository: Case repository (migrated from EvidenceRepository)
         """
         self.storage = storage_provider
-        self.repository = repository
+        self.case_repository = case_repository
 
     async def upload_evidence(
         self,
@@ -55,14 +55,13 @@ class EvidenceService:
             file, namespace="evidence"
         )
 
-        # Create evidence record
-        evidence = await self.repository.create(
-            original_filename=file.filename,
-            mime_type=file.content_type,
-            file_size=file.size,
-            file_path=storage_path,
-            user_id=str(uploaded_by),
-            case_id=str(case_id) if case_id else "standalone",
+        # Create evidence record via Case repository
+        evidence = await self.case_repository.create_standalone_evidence(
+            filename=file.filename or "unknown",
+            content_type=file.content_type or "application/octet-stream",
+            size_bytes=file.size or 0,
+            storage_path=storage_path,
+            uploaded_by=str(uploaded_by),
             description=description,
             tags=tags or [],
         )
@@ -83,7 +82,7 @@ class EvidenceService:
         Returns:
             EvidenceArtifact or None if not found
         """
-        return await self.repository.get(evidence_id)
+        return await self.case_repository.get_standalone_evidence(str(evidence_id))
 
     async def list_evidence(
         self, filters: EvidenceListFilter
@@ -96,7 +95,7 @@ class EvidenceService:
         Returns:
             Tuple of (evidence list, total count)
         """
-        return await self.repository.list(filters)
+        return await self.case_repository.list_standalone_evidence(filters)
 
     async def delete_evidence(self, evidence_id: UUID) -> bool:
         """Delete evidence file and record.
@@ -107,18 +106,18 @@ class EvidenceService:
         Returns:
             True if deleted, False if not found
         """
-        evidence = await self.repository.get(evidence_id)
+        evidence = await self.case_repository.get_standalone_evidence(str(evidence_id))
         if not evidence:
             return False
 
         # Delete file from storage
         await self.storage.delete_file(evidence.file_path)
 
-        # Delete database record
-        await self.repository.delete(evidence_id)
-
-        logger.info(f"Evidence {evidence_id} deleted")
-        return True
+        # Delete database record via Case repository
+        deleted = await self.case_repository.delete_standalone_evidence(str(evidence_id))
+        if deleted:
+            logger.info(f"Evidence {evidence_id} deleted")
+        return deleted
 
     async def link_to_case(
         self, evidence_id: UUID, case_id: UUID
@@ -135,7 +134,9 @@ class EvidenceService:
         Raises:
             ValueError: If evidence not found
         """
-        evidence = await self.repository.link_to_case(evidence_id, case_id)
+        evidence = await self.case_repository.link_standalone_evidence_to_case(
+            str(evidence_id), str(case_id)
+        )
         if not evidence:
             raise ValueError(f"Evidence {evidence_id} not found")
 
@@ -151,7 +152,7 @@ class EvidenceService:
         Returns:
             Download URL or None if not found
         """
-        evidence = await self.repository.get(evidence_id)
+        evidence = await self.case_repository.get_standalone_evidence(str(evidence_id))
         if not evidence:
             return None
 
