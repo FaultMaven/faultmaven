@@ -81,6 +81,7 @@ from .modules.case.api.routes import router as case_router
 from .modules.evidence.api.routes import router as evidence_router
 from .modules.knowledge.api.routes import router as knowledge_router
 from .modules.report.api.routes import router as report_router
+from .api.routes.sessions import router as investigation_sessions_router
 
 from .infrastructure.observability.tracing import init_opik_tracing
 from .api.middleware.logging import LoggingMiddleware
@@ -570,6 +571,9 @@ logger.info("✅ Auth endpoints added")
 
 app.include_router(case_router, prefix="/api/v1")
 logger.info("✅ Case endpoints added")
+
+app.include_router(investigation_sessions_router)  # No prefix - router already has /api/v1/cases/{case_id}/sessions
+logger.info("✅ Investigation session endpoints added")
 
 app.include_router(evidence_router, prefix="/api/v1")
 logger.info("✅ Evidence endpoints added")
