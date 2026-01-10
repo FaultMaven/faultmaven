@@ -163,9 +163,9 @@ class TestExecuteAgentNonStreaming:
 
         async def mock_execute(*args, **kwargs):
             raise NotFoundError("Session", "nonexistent")
-            yield  # Make it a generator
+            yield  # Make it a generator (unreachable but required for async generator)
 
-        mock_agent_service.execute_agent.side_effect = NotFoundError("Session", "nonexistent")
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/nonexistent/execute",
@@ -182,9 +182,11 @@ class TestExecuteAgentNonStreaming:
         self, client, mock_agent_service, headers
     ):
         """Test execution with wrong organization."""
-        mock_agent_service.execute_agent.side_effect = AuthorizationError(
-            "Session does not belong to organization"
-        )
+        async def mock_execute(*args, **kwargs):
+            raise AuthorizationError("Session does not belong to organization")
+            yield  # Make it a generator (unreachable but required for async generator)
+
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
@@ -201,12 +203,16 @@ class TestExecuteAgentNonStreaming:
         self, client, mock_agent_service, headers
     ):
         """Test execution when session is not active."""
-        mock_agent_service.execute_agent.side_effect = ConflictError(
-            "Session is not active",
-            resource_type="Session",
-            resource_id="session_123abc",
-            conflict_reason="session_paused",
-        )
+        async def mock_execute(*args, **kwargs):
+            raise ConflictError(
+                "Session is not active",
+                resource_type="Session",
+                resource_id="session_123abc",
+                conflict_reason="session_paused",
+            )
+            yield  # Make it a generator (unreachable but required for async generator)
+
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
@@ -223,12 +229,16 @@ class TestExecuteAgentNonStreaming:
         self, client, mock_agent_service, headers
     ):
         """Test execution when token budget is exceeded."""
-        mock_agent_service.execute_agent.side_effect = ConflictError(
-            "Token budget exceeded for session",
-            resource_type="Session",
-            resource_id="session_123abc",
-            conflict_reason="budget_exceeded",
-        )
+        async def mock_execute(*args, **kwargs):
+            raise ConflictError(
+                "Token budget exceeded for session",
+                resource_type="Session",
+                resource_id="session_123abc",
+                conflict_reason="budget_exceeded",
+            )
+            yield  # Make it a generator (unreachable but required for async generator)
+
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_123abc/execute",
