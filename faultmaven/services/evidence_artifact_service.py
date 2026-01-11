@@ -124,7 +124,6 @@ class APIEvidenceArtifactService(BaseService):
             NotFoundError: If evidence not found
             AuthorizationError: If organization doesn't own parent case
         """
-        from uuid import UUID
         evidence = await self.case_repo.get_standalone_evidence(evidence_id)
         if not evidence:
             raise NotFoundError("Evidence", evidence_id)
@@ -241,7 +240,6 @@ class APIEvidenceArtifactService(BaseService):
 
             # Step 6: Save to repository using create_standalone_evidence
             # Extract parameters from EvidenceArtifact object
-            from uuid import UUID
             saved_evidence = await self.case_repo.create_standalone_evidence(
                 filename=evidence.original_filename,
                 content_type=evidence.mime_type,
@@ -261,7 +259,6 @@ class APIEvidenceArtifactService(BaseService):
             if is_primary:
                 await self.case_repo.set_primary_evidence(case_id, saved_evidence.evidence_id)
                 # Refresh to get updated state
-                from uuid import UUID
                 saved_evidence = await self.case_repo.get_standalone_evidence(evidence_id)
 
             self.log_operation(
@@ -305,7 +302,6 @@ class APIEvidenceArtifactService(BaseService):
             return None
 
         try:
-            from uuid import UUID
             evidence = await self.case_repo.get_standalone_evidence(evidence_id)
 
             if not evidence:
@@ -456,7 +452,6 @@ class APIEvidenceArtifactService(BaseService):
                 saved_evidence = await self.case_repo.update_standalone_evidence(evidence)
             else:
                 # Refresh evidence to get updated state
-                from uuid import UUID
                 saved_evidence = await self.case_repo.get_standalone_evidence(evidence_id)
             self.log_operation(
                 "update_evidence_success",
@@ -507,7 +502,6 @@ class APIEvidenceArtifactService(BaseService):
 
         try:
             # Get evidence to check authorization and get file path
-            from uuid import UUID
             evidence = await self.case_repo.get_standalone_evidence(evidence_id)
 
             if not evidence:
@@ -529,7 +523,6 @@ class APIEvidenceArtifactService(BaseService):
                 )
 
             # Delete record from repository
-            from uuid import UUID
             deleted = await self.case_repo.delete_standalone_evidence(evidence_id)
 
             if deleted:
@@ -753,7 +746,6 @@ class APIEvidenceArtifactService(BaseService):
             await self._verify_case_access(case_id, organization_id)
 
             # Get all evidence for case (no pagination for stats)
-            from uuid import UUID
             filters = EvidenceListFilter(case_id=case_id, limit=10000, offset=0)
             evidence_list, total = await self.case_repo.list_standalone_evidence(filters)
 
@@ -843,7 +835,6 @@ class APIEvidenceArtifactService(BaseService):
             await self._verify_case_access(case_id, organization_id)
 
             # Get all evidence for case
-            from uuid import UUID
             filters = EvidenceListFilter(case_id=case_id, limit=10000, offset=0)
             evidence_list, total = await self.case_repo.list_standalone_evidence(filters)
 
@@ -854,7 +845,6 @@ class APIEvidenceArtifactService(BaseService):
                 await self.file_storage.delete_file(evidence.file_path)
 
                 # Delete record from repository
-                from uuid import UUID
                 if await self.case_repo.delete_standalone_evidence(evidence_id):
                     deleted_count += 1
 
