@@ -425,7 +425,7 @@ async def check_service_health(request: Request) -> dict:
             health_status["session_manager"] = "healthy"
         else:
             health_status["session_manager"] = "unhealthy"
-    except:
+    except Exception:
         health_status["session_manager"] = "unhealthy"
 
     # Add more health checks as needed

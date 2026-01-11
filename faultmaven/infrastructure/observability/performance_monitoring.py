@@ -241,7 +241,7 @@ def monitor_service_operation(
                     # Check if first arg after self has session_id
                     if hasattr(args[1], 'session_id'):
                         session_id = args[1].session_id
-                
+
                 if 'user_id' in kwargs:
                     user_id = kwargs['user_id']
                 elif session_id and hasattr(args[0], '_session_service'):
@@ -250,9 +250,9 @@ def monitor_service_operation(
                         session = await args[0]._session_service.get_session(session_id)
                         if session:
                             user_id = getattr(session, 'user_id', None)
-                    except:
+                    except Exception:
                         pass
-            except:
+            except Exception:
                 pass
             
             # Prepare metadata
@@ -390,7 +390,7 @@ def monitor_service_operation(
                     session_id = kwargs['session_id']
                 if 'user_id' in kwargs:
                     user_id = kwargs['user_id']
-            except:
+            except Exception:
                 pass
             
             # Prepare metadata

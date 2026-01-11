@@ -304,7 +304,7 @@ class OpikTracer(BaseExternalClient, ITracer):
         try:
             from faultmaven.infrastructure.logging.coordinator import request_context
             context = request_context.get()
-        except:
+        except Exception:
             context = None
         
         # Check for targeted user tracing
@@ -517,7 +517,7 @@ def trace(name: str, tags: Optional[dict] = None, settings=None):
                     try:
                         from faultmaven.config.settings import get_settings
                         trace_settings = get_settings()
-                    except:
+                    except Exception:
                         trace_settings = None
 
                 start_time = time.time()
@@ -583,7 +583,7 @@ def trace(name: str, tags: Optional[dict] = None, settings=None):
                     try:
                         from faultmaven.config.settings import get_settings
                         trace_settings = get_settings()
-                    except:
+                    except Exception:
                         trace_settings = None
 
                 start_time = time.time()
@@ -727,9 +727,9 @@ def create_span(name: str, tags: Optional[dict] = None, settings=None):
         try:
             from faultmaven.config.settings import get_settings
             settings = get_settings()
-        except:
+        except Exception:
             settings = None
-    
+
     class DummySpan:
         def __enter__(self):
             return self
@@ -806,19 +806,19 @@ def _should_trace_operation(operation_name: str, settings=None) -> bool:
         try:
             from faultmaven.config.settings import get_settings
             settings = get_settings()
-        except:
+        except Exception:
             # If settings can't be loaded, default to enabled
             return True
-    
+
     # Global disable check
     if settings.observability.opik_track_disable:
         return False
-    
+
     # Get current request context for targeted tracing
     try:
         from faultmaven.infrastructure.logging.coordinator import request_context
         context = request_context.get()
-    except:
+    except Exception:
         context = None
     
     # Check for targeted user tracing
