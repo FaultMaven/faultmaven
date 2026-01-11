@@ -247,25 +247,41 @@ class TestCreateCase:
         assert data["title"] is not None
         assert len(data["title"]) > 0
 
-    async def test_create_case_missing_authentication(self):
+    async def test_create_case_missing_authentication(self, mock_case_service, mock_session_service):
         """Test case creation without JWT authentication returns 401."""
-        # Create app without auth override to test unauthenticated request
+        # Create app WITH service mocks but WITHOUT auth override
+        # This allows dependencies to resolve but auth to fail naturally
         from faultmaven.main import app as main_app
-        from fastapi.testclient import TestClient
+        from httpx import AsyncClient, ASGITransport
+        from faultmaven.modules.case.api.routes import _di_get_case_service_dependency, _di_get_session_service_dependency
 
         app = main_app
-        unauthenticated_client = TestClient(app)
 
-        response = unauthenticated_client.post(
-            "/api/v1/cases",
-            json={
-                "title": "Test",
-                "description": "Test",
-                "severity": "medium",
-            },
-        )
+        # Mock ONLY the services, NOT the auth
+        async def get_mock_case_service():
+            return mock_case_service
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        async def get_mock_session_service():
+            return mock_session_service
+
+        app.dependency_overrides[_di_get_case_service_dependency] = get_mock_case_service
+        app.dependency_overrides[_di_get_session_service_dependency] = get_mock_session_service
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post(
+                    "/api/v1/cases",
+                    json={
+                        "title": "Test",
+                        "description": "Test",
+                        "severity": "medium",
+                    },
+                )
+
+            assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        finally:
+            # Clean up overrides
+            app.dependency_overrides.clear()
 
     async def test_create_case_all_severities(self, client, mock_case_service, mock_case, headers):
         """Test case creation with all severity levels."""
