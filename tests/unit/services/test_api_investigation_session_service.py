@@ -1039,7 +1039,7 @@ class TestGetSessionWithExecutions:
 
     @pytest.mark.asyncio
     async def test_get_session_with_executions_includes_executions(
-        self, session_service, mock_session_repo, mock_execution_repo, mock_case_repo,
+        self, session_service, mock_session_repo, mock_case_repo,
         sample_session, sample_case, sample_execution
     ):
         """Test that get_session_with_executions includes executions."""
@@ -1047,7 +1047,7 @@ class TestGetSessionWithExecutions:
         sample_execution.case_id = sample_case.case_id
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.list_executions_by_case.return_value = ([sample_execution], 1)
+        mock_case_repo.list_agent_executions_by_case.return_value = ([sample_execution], 1)
 
         result = await session_service.get_session_with_executions(
             sample_session.session_id, sample_case.organization_id
@@ -1096,7 +1096,7 @@ class TestAddExecutionToSession:
 
     @pytest.mark.asyncio
     async def test_add_execution_links_execution(
-        self, session_service, mock_session_repo, mock_execution_repo, mock_case_repo,
+        self, session_service, mock_session_repo, mock_case_repo,
         sample_session, sample_case, sample_execution
     ):
         """Test that add_execution_to_session links execution."""
