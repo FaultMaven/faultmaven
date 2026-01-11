@@ -676,14 +676,6 @@ class TestUploadEvidence:
 
         mock_case_repo.get_standalone_evidence.return_value = primary_evidence
 
-
-
-            is_primary=True,
-
-        )
-
-
-
         result = await evidence_service.upload_evidence(
 
             case_id=sample_case.case_id,
