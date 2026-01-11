@@ -22,7 +22,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
 
 from faultmaven.api.middleware.auth import (
@@ -148,39 +148,29 @@ class PasswordChangeRequest(BaseModel):
 # ============================================================
 
 
-def get_user_service():
-    """Get UserService instance from DI container.
+async def get_user_service(request: Request):
+    """Get UserService instance from app.state (Composition Root).
 
-    Uses the Composition Root pattern: UserService is created by the container
+    Uses the Composition Root pattern: UserService is attached to app.state
     with its auth_service dependency properly injected.
+
+    Args:
+        request: FastAPI request object
 
     Returns:
         UserService instance
 
     Raises:
-        RuntimeError: If container is not initialized or UserService not available
+        RuntimeError: If UserService not available in app.state
     """
-    # Check cached instance first
-    if hasattr(get_user_service, "_instance") and get_user_service._instance is not None:
-        return get_user_service._instance
-
-    # Get from DI container (Composition Root pattern)
-    try:
-        from faultmaven.container import container
-        user_service = container.get_user_service()
-        if user_service:
-            get_user_service._instance = user_service
-            return user_service
-        else:
-            raise RuntimeError(
-                "UserService not available from DI container. "
-                "Ensure the container is properly initialized with auth_service."
-            )
-    except Exception as e:
+    user_service = getattr(request.app.state, 'user_service', None)
+    if user_service:
+        return user_service
+    else:
         raise RuntimeError(
-            "UserService not available from DI container. "
-            "Ensure the container is properly initialized."
-        ) from e
+            "UserService not available from app.state. "
+            "Ensure the container is properly initialized with auth_service."
+        )
 
 
 # ============================================================

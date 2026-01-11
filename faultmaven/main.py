@@ -141,6 +141,41 @@ async def lifespan(app: FastAPI):
 
         # Make container available to app for access by other components
         app.extra["di_container"] = container
+
+        # ============================================================
+        # Composition Root: Attach all services to app.state
+        # ============================================================
+        # This follows the Composition Root principle (P5):
+        # - Services are wired here at startup
+        # - FastAPI dependencies access via request.app.state
+        # - Services do NOT call container.get_*() themselves
+        # ============================================================
+        app.state.session_service = container.get_session_service()
+        app.state.case_service = container.get_case_service()
+        app.state.investigation_service = container.get_investigation_service()
+        app.state.investigation_orchestrator = container.get_investigation_orchestrator()
+        app.state.knowledge_service = container.get_knowledge_service()
+        app.state.evidence_service = container.get_evidence_service()
+        app.state.preprocessing_service = container.get_preprocessing_service()
+        app.state.enhanced_agent_service = container.get_enhanced_agent_service()
+        app.state.memory_service = container.get_memory_service()
+        app.state.planning_service = container.get_planning_service()
+        app.state.orchestration_service = container.get_orchestration_service()
+        app.state.data_service = container.get_data_service()
+        app.state.tenant_provider = container.get_tenant_provider()
+        app.state.report_generation_service = container.get_report_generation_service()
+        app.state.report_recommendation_service = container.get_report_recommendation_service()
+        app.state.organization_service = container.get_organization_service()
+        app.state.team_service = container.get_team_service()
+        app.state.job_service = container.get_job_service()
+        app.state.query_classification_engine = container.get_query_classification_engine()
+        app.state.auth_service = container.get_auth_service()
+        app.state.token_manager = container.get_token_manager()
+        app.state.user_store = container.get_user_store()
+        app.state.user_service = container.get_user_service()
+        app.state.tracer = container.get_tracer()
+        app.state.llm_provider = container.get_llm_provider()
+        logger.info("✅ Services attached to app.state (Composition Root)")
     except RuntimeError as e:
         # Container already logged the error and raised if it's a production fail-fast
         # Re-raise to let FastAPI handle startup failure
