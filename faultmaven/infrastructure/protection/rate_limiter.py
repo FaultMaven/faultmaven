@@ -345,7 +345,7 @@ class RedisRateLimiter:
             else:
                 # Use in-memory tracking
                 violation_count = 1
-        except:
+        except Exception:
             violation_count = 1
         
         # Apply progressive penalties

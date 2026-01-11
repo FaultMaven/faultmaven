@@ -123,7 +123,7 @@ class ProviderRegistry:
             try:
                 from faultmaven.config.settings import get_settings
                 settings = get_settings()
-            except:
+            except Exception:
                 settings = None
         
         self.settings = settings

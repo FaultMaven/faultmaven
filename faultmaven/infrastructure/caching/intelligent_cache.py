@@ -644,7 +644,7 @@ class IntelligentCache(BaseExternalClient):
                 return "L3"
             elif size_bytes > 1024 * 1024:  # >1MB
                 return "L2"
-        except:
+        except Exception:
             pass
         
         # Pattern-based decisions
@@ -710,7 +710,7 @@ class IntelligentCache(BaseExternalClient):
                 # Calculate size
                 try:
                     size_bytes = len(pickle.dumps(value))
-                except:
+                except Exception:
                     size_bytes = 0
                 
                 # Create cache entry
