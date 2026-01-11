@@ -1106,7 +1106,7 @@ class TestAddExecutionToSession:
         sample_session.total_agent_executions = 5
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.get_execution.return_value = sample_execution
+        mock_case_repo.get_agent_execution.return_value = sample_execution
         mock_session_repo.update.side_effect = lambda s: s
 
         result = await session_service.add_execution_to_session(
@@ -1122,7 +1122,7 @@ class TestAddExecutionToSession:
 
     @pytest.mark.asyncio
     async def test_add_execution_increments_token_usage(
-        self, session_service, mock_session_repo, mock_execution_repo, mock_case_repo,
+        self, session_service, mock_session_repo, mock_case_repo,
         sample_session, sample_case, sample_execution
     ):
         """Test that token usage is incremented."""
@@ -1132,7 +1132,7 @@ class TestAddExecutionToSession:
         sample_session.total_agent_executions = 0
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.get_execution.return_value = sample_execution
+        mock_case_repo.get_agent_execution.return_value = sample_execution
         mock_session_repo.update.side_effect = lambda s: s
 
         result = await session_service.add_execution_to_session(
@@ -1146,7 +1146,7 @@ class TestAddExecutionToSession:
 
     @pytest.mark.asyncio
     async def test_add_execution_increments_execution_count(
-        self, session_service, mock_session_repo, mock_execution_repo, mock_case_repo,
+        self, session_service, mock_session_repo, mock_case_repo,
         sample_session, sample_case, sample_execution
     ):
         """Test that execution count is incremented."""
@@ -1156,7 +1156,7 @@ class TestAddExecutionToSession:
         sample_session.total_agent_executions = 0
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.get_execution.return_value = sample_execution
+        mock_case_repo.get_agent_execution.return_value = sample_execution
         mock_session_repo.update.side_effect = lambda s: s
 
         result = await session_service.add_execution_to_session(
@@ -1184,7 +1184,7 @@ class TestAddExecutionToSession:
 
     @pytest.mark.asyncio
     async def test_add_execution_execution_not_found_raises_error(
-        self, session_service, mock_session_repo, mock_execution_repo, mock_case_repo,
+        self, session_service, mock_session_repo, mock_case_repo,
         sample_session, sample_case
     ):
         """Test that non-existent execution raises NotFoundError."""
@@ -1192,7 +1192,7 @@ class TestAddExecutionToSession:
         sample_session.status = SessionStatus.ACTIVE
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.get_execution.return_value = None
+        mock_case_repo.get_agent_execution.return_value = None
 
         with pytest.raises(NotFoundError) as exc_info:
             await session_service.add_execution_to_session(
