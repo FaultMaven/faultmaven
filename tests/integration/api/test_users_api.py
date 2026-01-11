@@ -52,11 +52,13 @@ def register_and_login(client: TestClient, email: str = None, password: str = "T
     if email is None:
         email = f"user_{uuid.uuid4().hex[:8]}@example.com"
 
+    username = email.split('@')[0]  # Use email prefix as username
+
     # Register
     client.post(
-        "/api/v1/auth/register",
+        "/api/v1/auth/dev-register",
         json={
-            "email": email,
+            "username": username,
             "password": password,
             "full_name": "Test User",
         },
@@ -64,8 +66,8 @@ def register_and_login(client: TestClient, email: str = None, password: str = "T
 
     # Login
     response = client.post(
-        "/api/v1/auth/login",
-        json={"email": email, "password": password},
+        "/api/v1/auth/dev-login",
+        json={"username": username, "password": password},
     )
 
     return response.json()["access_token"], email
@@ -74,9 +76,9 @@ def register_and_login(client: TestClient, email: str = None, password: str = "T
 def get_admin_token(client: TestClient):
     """Get an admin token using dev users."""
     response = client.post(
-        "/api/v1/auth/login",
+        "/api/v1/auth/dev-login",
         json={
-            "email": "admin@faultmaven.local",
+            "username": "admin",
             "password": "password123",
         },
     )

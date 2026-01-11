@@ -460,11 +460,12 @@ class APIEvidenceArtifactService(BaseService):
 
             # Save updated evidence (if not just is_primary update handled by set_primary_evidence)
             if 'is_primary' not in applied_updates or len(applied_updates) > 1:
-                saved_evidence = await self.evidence_repo.update_evidence(evidence)
+                saved_evidence = await self.case_repo.update_standalone_evidence(evidence)
             else:
                 # Refresh evidence to get updated state
-                saved_evidence = await self.evidence_repo.get_evidence(evidence_id)
-
+                from uuid import UUID
+                evidence_id_uuid = UUID(evidence_id) if isinstance(evidence_id, str) else evidence_id
+                saved_evidence = await self.case_repo.get_standalone_evidence(evidence_id_uuid)
             self.log_operation(
                 "update_evidence_success",
                 evidence_id=evidence_id,
@@ -766,11 +767,10 @@ class APIEvidenceArtifactService(BaseService):
             await self._verify_case_access(case_id, organization_id)
 
             # Get all evidence for case (no pagination for stats)
-            evidence_list, total = await self.evidence_repo.list_evidence_by_case(
-                case_id=case_id,
-                limit=10000,  # Get all for statistics
-                offset=0,
-            )
+            from uuid import UUID
+            case_id_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
+            filters = EvidenceListFilter(case_id=case_id_uuid, limit=10000, offset=0)
+            evidence_list, total = await self.case_repo.list_standalone_evidence(filters)
 
             # Calculate statistics
             by_type: Dict[str, int] = {}

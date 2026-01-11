@@ -719,6 +719,7 @@ class TestToolCallHandling:
         sample_execution,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls executes tools."""
         mock_tool_registry.execute_tool.return_value = ToolResult(
@@ -757,6 +758,7 @@ class TestToolCallHandling:
         sample_execution,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls executes multiple tools in parallel."""
         call_times = []
@@ -802,6 +804,7 @@ class TestToolCallHandling:
         sample_execution,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls respects max_parallel_tools limit."""
         concurrent_count = [0]
@@ -848,6 +851,7 @@ class TestToolCallHandling:
         sample_execution,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls handles tool execution errors."""
         mock_tool_registry.execute_tool.return_value = ToolResult(
@@ -887,6 +891,7 @@ class TestToolCallHandling:
         sample_execution,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls creates ToolCallRecord for each call."""
         mock_tool_registry.execute_tool.return_value = ToolResult(
@@ -925,6 +930,7 @@ class TestToolCallHandling:
         sample_execution,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls enforces timeout."""
         async def slow_tool(tool_name, params, context):
