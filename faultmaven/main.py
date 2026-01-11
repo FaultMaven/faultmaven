@@ -394,26 +394,24 @@ def setup_middleware():
         logger.info(f"Initial middleware stack: {[type(m).__name__ for m in app.user_middleware]}")
 
     # 1. CORS middleware (first - handles preflight requests)
+    # Use configurable origins from settings - production should specify
+    # specific extension IDs instead of wildcards (e.g., chrome-extension://abc123)
+    cors_origins = list(settings.security.cors_allow_origins)
+    # Add production domain if not already present
+    if "https://faultmaven.ai" not in cors_origins:
+        cors_origins.append("https://faultmaven.ai")
+    # Add local development origins if not already present
+    for dev_origin in ["http://localhost:3000", "http://localhost:8000"]:
+        if dev_origin not in cors_origins:
+            cors_origins.append(dev_origin)
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "chrome-extension://*",  # Browser extension
-            "http://localhost:3000",  # Local development
-            "http://localhost:8000",  # Local API
-            "https://faultmaven.ai",  # Production domain
-        ],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=settings.security.cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=[
-            "Location",           # Resource creation endpoints
-            "X-Total-Count",      # Pagination
-            "Link",               # Pagination/deprecation links
-            "Deprecation",        # Deprecation headers
-            "Sunset",             # Deprecation sunset date
-            "X-Request-ID",       # Request correlation
-            "Retry-After",        # Rate limiting
-        ],
+        expose_headers=list(settings.security.cors_expose_headers),
     )
     if logging_enabled:
         logger.info(f"After CORS middleware: {[type(m).__name__ for m in app.user_middleware]}")
