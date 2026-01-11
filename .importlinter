@@ -19,7 +19,7 @@ modules =
     faultmaven.services.evidence_artifact_service
     faultmaven.services.user_service
     faultmaven.services.file_storage_service
-    faultmaven.services.agent_orchestration_service
+    # agent_orchestration_service moved to modules/agent/domain/services/
     # Knowledge services moved to vertical slice module
     faultmaven.modules.knowledge.domain.services.search_service
     faultmaven.modules.knowledge.domain.services.embedding_service
