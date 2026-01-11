@@ -221,7 +221,7 @@ class EvidenceListFilter(BaseModel):
     uploaded_by: Optional[UUID] = None
     tags: Optional[List[str]] = None
     filename_contains: Optional[str] = None
-    limit: int = PydanticField(default=50, le=200)
+    limit: int = PydanticField(default=50, le=10000)
     offset: int = PydanticField(default=0, ge=0)
 
 
