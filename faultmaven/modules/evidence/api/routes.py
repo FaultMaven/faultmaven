@@ -105,7 +105,7 @@ async def get_evidence_for_case(
     Returns:
         List of evidence records for the case
     """
-    filters = EvidenceListFilter(case_id=case_id, limit=200)
+    filters = EvidenceListFilter(case_id=str(case_id), limit=200)
     evidence_list, _ = await service.list_evidence(filters)
     return evidence_list
 
