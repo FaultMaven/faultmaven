@@ -253,8 +253,7 @@ class APIEvidenceArtifactService(BaseService):
             )
             
             # Link to case
-            from uuid import UUID
-            saved_evidence = await self.case_repo.link_standalone_evidence_to_case(evidence_id, case_id)
+            saved_evidence = await self.case_repo.link_standalone_evidence_to_case(saved_evidence.evidence_id, case_id)
             if not saved_evidence:
                 raise ServiceError(f"Failed to link evidence {saved_evidence.evidence_id} to case {case_id}")
 
