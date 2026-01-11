@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
+from faultmaven.modules.case.infrastructure.case_repository import InMemoryCaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
@@ -78,9 +79,9 @@ async def async_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture
-async def case_repo(async_session) -> DatabaseCaseRepository:
-    """Create database case repository."""
-    return DatabaseCaseRepository(async_session)
+def case_repo() -> InMemoryCaseRepository:
+    """Create in-memory case repository with agent execution support."""
+    return InMemoryCaseRepository()
 
 
 @pytest.fixture
@@ -99,6 +100,34 @@ def session_service(session_repo, case_repo) -> APIInvestigationSessionService:
 
 
 @pytest.fixture
+def execution_repo(case_repo):
+    """Execution repository adapter.
+
+    The case_repo now handles agent executions (migrated from AgentExecutionRepository).
+    This fixture provides a compatibility layer for tests.
+    """
+    class ExecutionRepoAdapter:
+        """Adapter to map execution_repo interface to case_repo methods."""
+
+        def __init__(self, case_repo):
+            self._case_repo = case_repo
+
+        async def create_execution(self, execution):
+            """Create an agent execution."""
+            return await self._case_repo.create_agent_execution(execution)
+
+        async def get_execution(self, execution_id: str):
+            """Get an execution by ID."""
+            return await self._case_repo.get_agent_execution(execution_id)
+
+        async def list_executions(self, case_id: str, limit: int = 50, offset: int = 0):
+            """List executions for a case."""
+            return await self._case_repo.list_agent_executions(case_id, limit, offset)
+
+    return ExecutionRepoAdapter(case_repo)
+
+
+@pytest.fixture
 async def sample_case(case_repo) -> Case:
     """Create and save a sample case for testing."""
     case = Case(
@@ -110,6 +139,7 @@ async def sample_case(case_repo) -> Case:
         status=CaseStatus.CONSULTING,
         investigation_strategy=InvestigationStrategy.POST_MORTEM,
     )
+    # InMemoryCaseRepository uses save() to persist cases
     return await case_repo.save(case)
 
 
