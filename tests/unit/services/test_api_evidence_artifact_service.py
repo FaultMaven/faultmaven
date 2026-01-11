@@ -842,7 +842,7 @@ class TestGetEvidence:
 
     async def test_get_evidence_success(
 
-        self, evidence_service, sample_evidence
+        self, evidence_service, mock_case_repo, sample_evidence
 
     ):
 
