@@ -27,7 +27,6 @@ from faultmaven.infrastructure.persistence.repository_factory import (
     get_case_repository,
     get_investigation_session_repository,
     get_evidence_artifact_repository,
-    get_agent_execution_repository,
     get_knowledge_item_repository,
     STORAGE_TYPE_DATABASE,
 )
@@ -37,9 +36,6 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 )
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     EvidenceArtifactRepository,
-)
-from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
-    AgentExecutionRepository,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
@@ -65,7 +61,6 @@ class ServiceFactory:
         case_repo: Case repository instance
         session_repo: Investigation session repository instance
         evidence_repo: Evidence artifact repository instance
-        execution_repo: Agent execution repository instance
         knowledge_repo: Knowledge item repository instance
 
     Example:
@@ -96,10 +91,6 @@ class ServiceFactory:
             storage_type=STORAGE_TYPE_DATABASE,
             session=db_session,
         )
-        self.execution_repo: AgentExecutionRepository = get_agent_execution_repository(
-            storage_type=STORAGE_TYPE_DATABASE,
-            session=db_session,
-        )
         self.knowledge_repo: KnowledgeItemRepository = get_knowledge_item_repository(
             storage_type=STORAGE_TYPE_DATABASE,
             session=db_session,
@@ -115,7 +106,6 @@ class ServiceFactory:
             case_repo=self.case_repo,
             session_repo=self.session_repo,
             evidence_repo=self.evidence_repo,
-            execution_repo=self.execution_repo,
         )
 
     def create_investigation_session_service(self) -> APIInvestigationSessionService:
@@ -126,7 +116,6 @@ class ServiceFactory:
         """
         return APIInvestigationSessionService(
             session_repo=self.session_repo,
-            execution_repo=self.execution_repo,
             case_repo=self.case_repo,
         )
 

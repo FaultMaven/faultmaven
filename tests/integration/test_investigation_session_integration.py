@@ -28,9 +28,6 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
 )
-from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
-    DatabaseAgentExecutionRepository,
-)
 from faultmaven.infrastructure.persistence.repository_factory import (
     reset_inmemory_investigation_session_repository,
 )
@@ -117,17 +114,7 @@ async def session_repository(test_session) -> DatabaseInvestigationSessionReposi
     return DatabaseInvestigationSessionRepository(test_session)
 
 
-@pytest.fixture(scope="function")
-async def execution_repository(test_session) -> DatabaseAgentExecutionRepository:
-    """Create DatabaseAgentExecutionRepository with test session."""
-    return DatabaseAgentExecutionRepository(test_session)
-
-
-@pytest.fixture(scope="function")
-def inmemory_session_repository() -> InMemoryInvestigationSessionRepository:
-    """Create fresh InMemoryInvestigationSessionRepository."""
-    reset_inmemory_investigation_session_repository()
-    return InMemoryInvestigationSessionRepository()
+# execution_repository fixture removed - APIInvestigationSessionService uses case_repo
 
 
 @pytest.fixture
@@ -342,7 +329,6 @@ async def test_cascade_delete_case_to_sessions(
 async def test_four_level_cascade_delete_chain(
     case_repository: DatabaseCaseRepository,
     session_repository: DatabaseInvestigationSessionRepository,
-    execution_repository: DatabaseAgentExecutionRepository,
     test_session: AsyncSession,
 ):
     """Verify Case → Session → Execution → ToolCall CASCADE chain.

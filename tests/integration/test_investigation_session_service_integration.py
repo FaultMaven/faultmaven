@@ -31,10 +31,6 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
 )
-from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
-    DatabaseAgentExecutionRepository,
-    InMemoryAgentExecutionRepository,
-)
 from faultmaven.services.investigation_session_service import APIInvestigationSessionService
 from faultmaven.services.case_service import APICaseService
 from faultmaven.modules.case.domain.models import Case, CaseStatus, CaseSeverity, InvestigationStrategy
@@ -94,17 +90,10 @@ def session_repo() -> InMemoryInvestigationSessionRepository:
 
 
 @pytest.fixture
-def execution_repo() -> InMemoryAgentExecutionRepository:
-    """Create in-memory agent execution repository."""
-    return InMemoryAgentExecutionRepository()
-
-
-@pytest.fixture
-def session_service(session_repo, execution_repo, case_repo) -> APIInvestigationSessionService:
+def session_service(session_repo, case_repo) -> APIInvestigationSessionService:
     """Create APIInvestigationSessionService with real/in-memory repositories."""
     return APIInvestigationSessionService(
         session_repo=session_repo,
-        execution_repo=execution_repo,
         case_repo=case_repo,
     )
 

@@ -31,9 +31,7 @@ from faultmaven.infrastructure.persistence.database_case_repository import Datab
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InMemoryInvestigationSessionRepository,
 )
-from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
-    InMemoryAgentExecutionRepository,
-)
+# AgentExecutionRepository removed - APIInvestigationSessionService now uses case_repo
 from faultmaven.services.investigation_session_service import APIInvestigationSessionService
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus

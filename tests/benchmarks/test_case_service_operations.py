@@ -30,9 +30,7 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     InMemoryEvidenceArtifactRepository,
 )
-from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
-    InMemoryAgentExecutionRepository,
-)
+# AgentExecutionRepository removed - APICaseService now uses case_repo
 from faultmaven.services.case_service import APICaseService
 from faultmaven.modules.case.domain.models import CaseSeverity
 

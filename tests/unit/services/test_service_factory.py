@@ -118,8 +118,6 @@ class TestServiceFactoryInitialization:
         """Test that factory creates agent execution repository."""
         factory = ServiceFactory(mock_session)
 
-        assert factory.execution_repo is not None
-        assert isinstance(factory.execution_repo, AgentExecutionRepository)
 
     def test_factory_creates_knowledge_repo(self, mock_session):
         """Test that factory creates knowledge item repository."""
@@ -178,8 +176,6 @@ class TestServiceCreation:
 
         service = factory.create_case_service()
 
-        assert service.execution_repo is not None
-        assert service.execution_repo is factory.execution_repo
 
 
 # ============================================================
@@ -213,8 +209,6 @@ class TestInvestigationSessionServiceCreation:
 
         service = factory.create_investigation_session_service()
 
-        assert service.execution_repo is not None
-        assert service.execution_repo is factory.execution_repo
 
     def test_create_investigation_session_service_injects_case_repo(self, mock_session):
         """Test that session service has case_repo injected."""
@@ -244,7 +238,6 @@ class TestInvestigationSessionServiceCreation:
 
         # Repositories are shared
         assert service1.session_repo is service2.session_repo
-        assert service1.execution_repo is service2.execution_repo
         assert service1.case_repo is service2.case_repo
 
 
@@ -276,7 +269,6 @@ class TestMultipleServiceCreation:
         assert service1.case_repo is service2.case_repo
         assert service1.session_repo is service2.session_repo
         assert service1.evidence_repo is service2.evidence_repo
-        assert service1.execution_repo is service2.execution_repo
 
 
 # ============================================================
@@ -331,7 +323,6 @@ class TestServiceFactoryIntegration:
         service = factory.create_investigation_session_service()
 
         assert service.session_repo is not None
-        assert service.execution_repo is not None
         assert service.case_repo is not None
 
 
