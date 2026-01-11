@@ -60,10 +60,9 @@ def mock_file_storage():
 
 
 @pytest.fixture
-def evidence_service(mock_evidence_repo, mock_case_repo, mock_file_storage):
+def evidence_service(mock_case_repo, mock_file_storage):
     """Create APIEvidenceArtifactService with mocked dependencies."""
     return APIEvidenceArtifactService(
-        evidence_repo=mock_evidence_repo,
         case_repo=mock_case_repo,
         file_storage=mock_file_storage,
     )
