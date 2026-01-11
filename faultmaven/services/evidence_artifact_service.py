@@ -845,7 +845,7 @@ class APIEvidenceArtifactService(BaseService):
                 await self.file_storage.delete_file(evidence.file_path)
 
                 # Delete record from repository
-                if await self.case_repo.delete_standalone_evidence(evidence_id):
+                if await self.case_repo.delete_standalone_evidence(evidence.evidence_id):
                     deleted_count += 1
 
             self.log_operation(

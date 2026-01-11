@@ -46,13 +46,6 @@ def mock_session_repo():
 
 
 @pytest.fixture
-def mock_execution_repo():
-    """Create mock agent execution repository."""
-    repo = AsyncMock()
-    return repo
-
-
-@pytest.fixture
 def mock_case_repo():
     """Create mock case repository."""
     repo = AsyncMock()
@@ -60,11 +53,12 @@ def mock_case_repo():
 
 
 @pytest.fixture
-def session_service(mock_session_repo, mock_execution_repo, mock_case_repo):
+def session_service(mock_session_repo, mock_case_repo):
     """Create APIInvestigationSessionService with mocked repositories."""
+    # Note: execution_repo removed - agent executions now handled by case_repo (ICaseRepository)
+    # as part of TD-001 migration
     return APIInvestigationSessionService(
         session_repo=mock_session_repo,
-        execution_repo=mock_execution_repo,
         case_repo=mock_case_repo,
     )
 

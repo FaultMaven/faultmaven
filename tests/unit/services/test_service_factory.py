@@ -103,16 +103,10 @@ class TestServiceFactoryInitialization:
         assert factory.session_repo is not None
         assert isinstance(factory.session_repo, InvestigationSessionRepository)
 
-    def test_factory_creates_evidence_repo(self, mock_session):
-        """Test that factory creates evidence artifact repository."""
-        factory = ServiceFactory(mock_session)
-
-        assert factory.evidence_repo is not None
-        assert isinstance(factory.evidence_repo, EvidenceArtifactRepository)
-
-    def test_factory_creates_execution_repo(self, mock_session):
-        """Test that factory creates agent execution repository."""
-        factory = ServiceFactory(mock_session)
+    # Note: evidence_repo and execution_repo removed from ServiceFactory - evidence
+    # and agent executions are now handled by case_repo (ICaseRepository) as part
+    # of TD-001 migration. The factory no longer creates separate repositories for
+    # these entities.
 
 
     def test_factory_creates_knowledge_repo(self, mock_session):
