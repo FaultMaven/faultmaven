@@ -17,7 +17,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 
 from faultmaven.api.middleware.auth import get_current_user, require_admin
 from faultmaven.api.models import (
@@ -285,7 +285,7 @@ async def activate_user(
 @router.post("/users/{user_id}/roles", response_model=RoleAssignmentResponse)
 async def assign_role(
     user_id: str = Path(..., description="User ID to assign role to"),
-    request: RoleAssignmentRequest = ...,
+    request: RoleAssignmentRequest = Body(...),
     current_user: AuthenticatedUser = Depends(require_admin),
 ) -> RoleAssignmentResponse:
     """Assign role to user (admin only).

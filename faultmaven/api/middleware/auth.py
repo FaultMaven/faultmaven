@@ -50,11 +50,11 @@ bearer_scheme = HTTPBearer(auto_error=False)
 _test_auth_service: Optional[AuthService] = None
 
 
-async def get_auth_service(request: Optional[Request] = None) -> AuthService:
+async def get_auth_service(request: Request) -> AuthService:
     """Get AuthService instance from app.state (Composition Root).
 
     Args:
-        request: FastAPI request object (optional for backward compatibility)
+        request: FastAPI request object (automatically injected by FastAPI)
 
     Returns:
         AuthService instance from app.state (properly configured with Redis if available)
@@ -68,14 +68,13 @@ async def get_auth_service(request: Optional[Request] = None) -> AuthService:
     if _test_auth_service is not None:
         return _test_auth_service
 
-    # Try to get from app.state if request is provided
-    if request is not None:
-        try:
-            auth_service = getattr(request.app.state, 'auth_service', None)
-            if auth_service is not None:
-                return auth_service
-        except Exception as e:
-            logger.warning(f"Failed to get AuthService from app.state: {e}")
+    # Try to get from app.state
+    try:
+        auth_service = getattr(request.app.state, 'auth_service', None)
+        if auth_service is not None:
+            return auth_service
+    except Exception as e:
+        logger.warning(f"Failed to get AuthService from app.state: {e}")
 
     # Fallback: create a minimal AuthService without Redis
     logger.debug("Creating fallback AuthService (no Redis for token revocation)")

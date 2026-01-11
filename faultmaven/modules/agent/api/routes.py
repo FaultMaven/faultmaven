@@ -17,7 +17,7 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 import logging
 from typing import AsyncGenerator, Optional
 
-from fastapi import APIRouter, Depends, Path, status
+from fastapi import APIRouter, Body, Depends, Path, status
 from fastapi.responses import StreamingResponse
 
 from faultmaven.api.dependencies import get_agent_orchestration_service
@@ -112,7 +112,7 @@ Token usage is tracked and the session will auto-pause if budget is exceeded.
 async def execute_agent(
     case_id: str = Path(..., description="Case ID"),
     session_id: str = Path(..., description="Investigation session ID"),
-    request: AgentExecutionRequest = ...,
+    request: AgentExecutionRequest = Body(...),
     current_user: AuthenticatedUser = Depends(get_current_user),
     agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service),
 ) -> AgentExecutionResponse:
