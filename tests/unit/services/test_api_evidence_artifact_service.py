@@ -116,7 +116,7 @@ class TestUploadEvidence:
 
     @pytest.mark.asyncio
     async def test_upload_evidence_success(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, mock_file_storage, sample_case, sample_file_data
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_case, sample_file_data
     ):
         """Test successful evidence upload."""
         mock_case_repo.get.return_value = sample_case
@@ -125,8 +125,8 @@ class TestUploadEvidence:
             "file_path": "org_456/case_123/2024-01-15/abc123_test.png",
             "file_size": len(sample_file_data),
         }
-        mock_evidence_repo.create_evidence.side_effect = lambda e: e
-        mock_evidence_repo.get_evidence.side_effect = lambda id: EvidenceArtifact(
+        mock_case_repo.create_standalone_evidence.side_effect = lambda e: e
+        mock_case_repo.get_standalone_evidence.side_effect = lambda id: EvidenceArtifact(
             evidence_id=id,
             case_id=sample_case.case_id,
             user_id="user_123",
@@ -154,11 +154,11 @@ class TestUploadEvidence:
         assert result is not None
         mock_case_repo.get.assert_called_once_with(sample_case.case_id)
         mock_file_storage.store_file.assert_called_once()
-        mock_evidence_repo.create_evidence.assert_called_once()
+        mock_case_repo.create_standalone_evidence.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_upload_evidence_generates_uuid_id(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, mock_file_storage, sample_case, sample_file_data
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_case, sample_file_data
     ):
         """Test that upload_evidence generates UUID for evidence_id."""
         mock_case_repo.get.return_value = sample_case
@@ -175,7 +175,7 @@ class TestUploadEvidence:
             created_evidence = e
             return e
 
-        mock_evidence_repo.create_evidence.side_effect = capture_evidence
+        mock_case_repo.create_standalone_evidence.side_effect = capture_evidence
 
         await evidence_service.upload_evidence(
             case_id=sample_case.case_id,
@@ -249,7 +249,7 @@ class TestUploadEvidence:
 
     @pytest.mark.asyncio
     async def test_upload_evidence_with_is_primary_sets_primary(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, mock_file_storage, sample_case, sample_file_data
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_case, sample_file_data
     ):
         """Test that is_primary=True sets primary evidence."""
         mock_case_repo.get.return_value = sample_case
@@ -258,9 +258,9 @@ class TestUploadEvidence:
             "file_path": "org/case/date/abc_test.png",
             "file_size": len(sample_file_data),
         }
-        mock_evidence_repo.create_evidence.side_effect = lambda e: e
-        mock_evidence_repo.set_primary_evidence.return_value = True
-        mock_evidence_repo.get_evidence.side_effect = lambda id: EvidenceArtifact(
+        mock_case_repo.create_standalone_evidence.side_effect = lambda e: e
+        mock_case_repo.set_primary_evidence.return_value = True
+        mock_case_repo.get_standalone_evidence.side_effect = lambda id: EvidenceArtifact(
             evidence_id=id,
             case_id=sample_case.case_id,
             user_id="user_123",
@@ -285,11 +285,11 @@ class TestUploadEvidence:
             is_primary=True,
         )
 
-        mock_evidence_repo.set_primary_evidence.assert_called_once()
+        mock_case_repo.set_primary_evidence.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_upload_evidence_with_metadata(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, mock_file_storage, sample_case, sample_file_data
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_case, sample_file_data
     ):
         """Test uploading evidence with metadata."""
         mock_case_repo.get.return_value = sample_case
@@ -306,7 +306,7 @@ class TestUploadEvidence:
             created_evidence = e
             return e
 
-        mock_evidence_repo.create_evidence.side_effect = capture_evidence
+        mock_case_repo.create_standalone_evidence.side_effect = capture_evidence
 
         metadata = {"resolution": "1920x1080", "source": "browser"}
 
@@ -333,10 +333,10 @@ class TestGetEvidence:
 
     @pytest.mark.asyncio
     async def test_get_evidence_success(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test successful evidence retrieval."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
 
         result = await evidence_service.get_evidence(
             evidence_id=sample_evidence.evidence_id,
@@ -345,14 +345,13 @@ class TestGetEvidence:
 
         assert result is not None
         assert result.evidence_id == sample_evidence.evidence_id
-        mock_evidence_repo.get_evidence.assert_called_once_with(sample_evidence.evidence_id)
+        mock_case_repo.get_standalone_evidence.assert_called_once_with(sample_evidence.evidence_id)
 
     @pytest.mark.asyncio
     async def test_get_evidence_returns_none_if_not_found(
-        self, evidence_service, mock_evidence_repo
-    ):
+        self, evidence_service):
         """Test that missing evidence returns None."""
-        mock_evidence_repo.get_evidence.return_value = None
+        mock_case_repo.get_standalone_evidence.return_value = None
 
         result = await evidence_service.get_evidence(
             evidence_id="nonexistent",
@@ -363,10 +362,10 @@ class TestGetEvidence:
 
     @pytest.mark.asyncio
     async def test_get_evidence_wrong_org_returns_none(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test that wrong organization returns None."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
 
         result = await evidence_service.get_evidence(
             evidence_id=sample_evidence.evidence_id,
@@ -409,10 +408,10 @@ class TestDownloadEvidence:
 
     @pytest.mark.asyncio
     async def test_download_evidence_success(
-        self, evidence_service, mock_evidence_repo, mock_file_storage, sample_evidence, sample_file_data
+        self, evidence_service, mock_file_storage, sample_evidence, sample_file_data
     ):
         """Test successful evidence download."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
         mock_file_storage.retrieve_file.return_value = sample_file_data
 
         data, filename, mime_type = await evidence_service.download_evidence(
@@ -427,10 +426,9 @@ class TestDownloadEvidence:
 
     @pytest.mark.asyncio
     async def test_download_evidence_not_found_raises_not_found_error(
-        self, evidence_service, mock_evidence_repo
-    ):
+        self, evidence_service):
         """Test that missing evidence raises NotFoundError."""
-        mock_evidence_repo.get_evidence.return_value = None
+        mock_case_repo.get_standalone_evidence.return_value = None
 
         with pytest.raises(NotFoundError):
             await evidence_service.download_evidence(
@@ -440,10 +438,10 @@ class TestDownloadEvidence:
 
     @pytest.mark.asyncio
     async def test_download_evidence_wrong_org_raises_authorization_error(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test that wrong organization raises AuthorizationError."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
 
         with pytest.raises(AuthorizationError):
             await evidence_service.download_evidence(
@@ -453,10 +451,10 @@ class TestDownloadEvidence:
 
     @pytest.mark.asyncio
     async def test_download_evidence_file_missing_raises_service_error(
-        self, evidence_service, mock_evidence_repo, mock_file_storage, sample_evidence
+        self, evidence_service, mock_file_storage, sample_evidence
     ):
         """Test that missing file raises ServiceError."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
         mock_file_storage.retrieve_file.side_effect = Exception("File not found")
 
         with pytest.raises(ServiceError):
@@ -475,16 +473,16 @@ class TestUpdateEvidence:
 
     @pytest.mark.asyncio
     async def test_update_evidence_description_success(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test successful description update."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
 
         updated_evidence = EvidenceArtifact(**{
             **sample_evidence.__dict__,
             "description": "Updated description",
         })
-        mock_evidence_repo.update_evidence.return_value = updated_evidence
+        mock_case_repo.update_standalone_evidence.return_value = updated_evidence
 
         result = await evidence_service.update_evidence(
             evidence_id=sample_evidence.evidence_id,
@@ -493,15 +491,15 @@ class TestUpdateEvidence:
         )
 
         assert result.description == "Updated description"
-        mock_evidence_repo.update_evidence.assert_called_once()
+        mock_case_repo.update_standalone_evidence.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_update_evidence_metadata_success(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test successful metadata update."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
-        mock_evidence_repo.update_evidence.side_effect = lambda e: e
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
+        mock_case_repo.update_standalone_evidence.side_effect = lambda e: e
 
         new_metadata = {"key": "value"}
 
@@ -515,17 +513,17 @@ class TestUpdateEvidence:
 
     @pytest.mark.asyncio
     async def test_update_evidence_is_primary_true(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test setting is_primary to True."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
-        mock_evidence_repo.set_primary_evidence.return_value = True
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
+        mock_case_repo.set_primary_evidence.return_value = True
 
         primary_evidence = EvidenceArtifact(**{
             **sample_evidence.__dict__,
             "is_primary": True,
         })
-        mock_evidence_repo.get_evidence.side_effect = [sample_evidence, primary_evidence]
+        mock_case_repo.get_standalone_evidence.side_effect = [sample_evidence, primary_evidence]
 
         result = await evidence_service.update_evidence(
             evidence_id=sample_evidence.evidence_id,
@@ -533,14 +531,13 @@ class TestUpdateEvidence:
             updates={"is_primary": True},
         )
 
-        mock_evidence_repo.set_primary_evidence.assert_called_once()
+        mock_case_repo.set_primary_evidence.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_update_evidence_not_found_raises_not_found_error(
-        self, evidence_service, mock_evidence_repo
-    ):
+        self, evidence_service):
         """Test that missing evidence raises NotFoundError."""
-        mock_evidence_repo.get_evidence.return_value = None
+        mock_case_repo.get_standalone_evidence.return_value = None
 
         with pytest.raises(NotFoundError):
             await evidence_service.update_evidence(
@@ -551,10 +548,10 @@ class TestUpdateEvidence:
 
     @pytest.mark.asyncio
     async def test_update_evidence_wrong_org_raises_authorization_error(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test that wrong organization raises AuthorizationError."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
 
         with pytest.raises(AuthorizationError):
             await evidence_service.update_evidence(
@@ -577,10 +574,10 @@ class TestUpdateEvidence:
 
     @pytest.mark.asyncio
     async def test_update_evidence_invalid_metadata_raises_validation_error(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test that non-dict metadata raises ValidationException."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
 
         with pytest.raises(ValidationException):
             await evidence_service.update_evidence(
@@ -591,10 +588,10 @@ class TestUpdateEvidence:
 
     @pytest.mark.asyncio
     async def test_update_evidence_no_valid_fields_raises_validation_error(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test that updates with only invalid fields raises ValidationException."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
 
         with pytest.raises(ValidationException):
             await evidence_service.update_evidence(
@@ -613,12 +610,12 @@ class TestDeleteEvidence:
 
     @pytest.mark.asyncio
     async def test_delete_evidence_success(
-        self, evidence_service, mock_evidence_repo, mock_file_storage, sample_evidence
+        self, evidence_service, mock_file_storage, sample_evidence
     ):
         """Test successful evidence deletion."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
         mock_file_storage.delete_file.return_value = True
-        mock_evidence_repo.delete_evidence.return_value = True
+        mock_case_repo.delete_standalone_evidence.return_value = True
 
         result = await evidence_service.delete_evidence(
             evidence_id=sample_evidence.evidence_id,
@@ -627,14 +624,13 @@ class TestDeleteEvidence:
 
         assert result is True
         mock_file_storage.delete_file.assert_called_once_with(sample_evidence.file_path)
-        mock_evidence_repo.delete_evidence.assert_called_once_with(sample_evidence.evidence_id)
+        mock_case_repo.delete_standalone_evidence.assert_called_once_with(sample_evidence.evidence_id)
 
     @pytest.mark.asyncio
     async def test_delete_evidence_not_found_returns_false(
-        self, evidence_service, mock_evidence_repo
-    ):
+        self, evidence_service):
         """Test that missing evidence returns False."""
-        mock_evidence_repo.get_evidence.return_value = None
+        mock_case_repo.get_standalone_evidence.return_value = None
 
         result = await evidence_service.delete_evidence(
             evidence_id="nonexistent",
@@ -645,10 +641,10 @@ class TestDeleteEvidence:
 
     @pytest.mark.asyncio
     async def test_delete_evidence_wrong_org_raises_authorization_error(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test that wrong organization raises AuthorizationError."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
 
         with pytest.raises(AuthorizationError):
             await evidence_service.delete_evidence(
@@ -658,12 +654,12 @@ class TestDeleteEvidence:
 
     @pytest.mark.asyncio
     async def test_delete_evidence_file_already_missing(
-        self, evidence_service, mock_evidence_repo, mock_file_storage, sample_evidence
+        self, evidence_service, mock_file_storage, sample_evidence
     ):
         """Test that missing file doesn't prevent deletion."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
         mock_file_storage.delete_file.return_value = False  # File not found
-        mock_evidence_repo.delete_evidence.return_value = True
+        mock_case_repo.delete_standalone_evidence.return_value = True
 
         result = await evidence_service.delete_evidence(
             evidence_id=sample_evidence.evidence_id,
@@ -694,11 +690,11 @@ class TestListEvidenceByCase:
 
     @pytest.mark.asyncio
     async def test_list_evidence_by_case_success(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, sample_case, sample_evidence
+        self, evidence_service, mock_case_repo, sample_case, sample_evidence
     ):
         """Test successful listing of evidence."""
         mock_case_repo.get.return_value = sample_case
-        mock_evidence_repo.list_evidence_by_case.return_value = ([sample_evidence], 1)
+        mock_case_repo.list_standalone_evidence.return_value = ([sample_evidence], 1)
 
         result = await evidence_service.list_evidence_by_case(
             case_id=sample_case.case_id,
@@ -710,11 +706,11 @@ class TestListEvidenceByCase:
 
     @pytest.mark.asyncio
     async def test_list_evidence_by_case_with_type_filter(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, sample_case
+        self, evidence_service, mock_case_repo, sample_case
     ):
         """Test listing with evidence type filter."""
         mock_case_repo.get.return_value = sample_case
-        mock_evidence_repo.list_evidence_by_case.return_value = ([], 0)
+        mock_case_repo.list_standalone_evidence.return_value = ([], 0)
 
         await evidence_service.list_evidence_by_case(
             case_id=sample_case.case_id,
@@ -722,7 +718,7 @@ class TestListEvidenceByCase:
             evidence_type=EvidenceArtifactType.SCREENSHOT,
         )
 
-        mock_evidence_repo.list_evidence_by_case.assert_called_once_with(
+        mock_case_repo.list_standalone_evidence.assert_called_once_with(
             case_id=sample_case.case_id,
             evidence_type=EvidenceArtifactType.SCREENSHOT,
             limit=50,
@@ -731,11 +727,11 @@ class TestListEvidenceByCase:
 
     @pytest.mark.asyncio
     async def test_list_evidence_by_case_with_pagination(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, sample_case
+        self, evidence_service, mock_case_repo, sample_case
     ):
         """Test listing with pagination."""
         mock_case_repo.get.return_value = sample_case
-        mock_evidence_repo.list_evidence_by_case.return_value = ([], 0)
+        mock_case_repo.list_standalone_evidence.return_value = ([], 0)
 
         await evidence_service.list_evidence_by_case(
             case_id=sample_case.case_id,
@@ -744,7 +740,7 @@ class TestListEvidenceByCase:
             offset=10,
         )
 
-        mock_evidence_repo.list_evidence_by_case.assert_called_once_with(
+        mock_case_repo.list_standalone_evidence.assert_called_once_with(
             case_id=sample_case.case_id,
             evidence_type=None,
             limit=20,
@@ -787,17 +783,17 @@ class TestSetPrimaryEvidence:
 
     @pytest.mark.asyncio
     async def test_set_primary_evidence_success(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test successful setting of primary evidence."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
-        mock_evidence_repo.set_primary_evidence.return_value = True
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
+        mock_case_repo.set_primary_evidence.return_value = True
 
         primary_evidence = EvidenceArtifact(**{
             **sample_evidence.__dict__,
             "is_primary": True,
         })
-        mock_evidence_repo.get_evidence.side_effect = [sample_evidence, primary_evidence]
+        mock_case_repo.get_standalone_evidence.side_effect = [sample_evidence, primary_evidence]
 
         result = await evidence_service.set_primary_evidence(
             evidence_id=sample_evidence.evidence_id,
@@ -805,14 +801,13 @@ class TestSetPrimaryEvidence:
         )
 
         assert result.is_primary is True
-        mock_evidence_repo.set_primary_evidence.assert_called_once()
+        mock_case_repo.set_primary_evidence.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_set_primary_evidence_not_found_raises_not_found_error(
-        self, evidence_service, mock_evidence_repo
-    ):
+        self, evidence_service):
         """Test that missing evidence raises NotFoundError."""
-        mock_evidence_repo.get_evidence.return_value = None
+        mock_case_repo.get_standalone_evidence.return_value = None
 
         with pytest.raises(NotFoundError):
             await evidence_service.set_primary_evidence(
@@ -822,10 +817,10 @@ class TestSetPrimaryEvidence:
 
     @pytest.mark.asyncio
     async def test_set_primary_evidence_wrong_org_raises_authorization_error(
-        self, evidence_service, mock_evidence_repo, sample_evidence
+        self, evidence_service, sample_evidence
     ):
         """Test that wrong organization raises AuthorizationError."""
-        mock_evidence_repo.get_evidence.return_value = sample_evidence
+        mock_case_repo.get_standalone_evidence.return_value = sample_evidence
 
         with pytest.raises(AuthorizationError):
             await evidence_service.set_primary_evidence(
@@ -843,7 +838,7 @@ class TestGetPrimaryEvidence:
 
     @pytest.mark.asyncio
     async def test_get_primary_evidence_success(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, sample_case, sample_evidence
+        self, evidence_service, mock_case_repo, sample_case, sample_evidence
     ):
         """Test successful retrieval of primary evidence."""
         mock_case_repo.get.return_value = sample_case
@@ -852,7 +847,7 @@ class TestGetPrimaryEvidence:
             "case_id": sample_case.case_id,
             "is_primary": True,
         })
-        mock_evidence_repo.get_primary_evidence.return_value = primary_evidence
+        mock_case_repo.get_primary_evidence.return_value = primary_evidence
 
         result = await evidence_service.get_primary_evidence(
             case_id=sample_case.case_id,
@@ -864,11 +859,11 @@ class TestGetPrimaryEvidence:
 
     @pytest.mark.asyncio
     async def test_get_primary_evidence_not_set_returns_none(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, sample_case
+        self, evidence_service, mock_case_repo, sample_case
     ):
         """Test that no primary evidence returns None."""
         mock_case_repo.get.return_value = sample_case
-        mock_evidence_repo.get_primary_evidence.return_value = None
+        mock_case_repo.get_primary_evidence.return_value = None
 
         result = await evidence_service.get_primary_evidence(
             case_id=sample_case.case_id,
@@ -913,7 +908,7 @@ class TestGetEvidenceStatistics:
 
     @pytest.mark.asyncio
     async def test_get_evidence_statistics_success(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, sample_case
+        self, evidence_service, mock_case_repo, sample_case
     ):
         """Test successful statistics retrieval."""
         mock_case_repo.get.return_value = sample_case
@@ -960,7 +955,7 @@ class TestGetEvidenceStatistics:
                 is_primary=False,
             ),
         ]
-        mock_evidence_repo.list_evidence_by_case.return_value = (evidence_list, 3)
+        mock_case_repo.list_standalone_evidence.return_value = (evidence_list, 3)
 
         result = await evidence_service.get_evidence_statistics(
             case_id=sample_case.case_id,
@@ -975,11 +970,11 @@ class TestGetEvidenceStatistics:
 
     @pytest.mark.asyncio
     async def test_get_evidence_statistics_empty_case(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, sample_case
+        self, evidence_service, mock_case_repo, sample_case
     ):
         """Test statistics for case with no evidence."""
         mock_case_repo.get.return_value = sample_case
-        mock_evidence_repo.list_evidence_by_case.return_value = ([], 0)
+        mock_case_repo.list_standalone_evidence.return_value = ([], 0)
 
         result = await evidence_service.get_evidence_statistics(
             case_id=sample_case.case_id,
@@ -1014,7 +1009,7 @@ class TestDeleteAllEvidenceForCase:
 
     @pytest.mark.asyncio
     async def test_delete_all_evidence_for_case_success(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, mock_file_storage, sample_case
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_case
     ):
         """Test successful deletion of all evidence for a case."""
         mock_case_repo.get.return_value = sample_case
@@ -1045,9 +1040,9 @@ class TestDeleteAllEvidenceForCase:
                 file_size=2048,
             ),
         ]
-        mock_evidence_repo.list_evidence_by_case.return_value = (evidence_list, 2)
+        mock_case_repo.list_standalone_evidence.return_value = (evidence_list, 2)
         mock_file_storage.delete_file.return_value = True
-        mock_evidence_repo.delete_evidence.return_value = True
+        mock_case_repo.delete_standalone_evidence.return_value = True
 
         result = await evidence_service.delete_all_evidence_for_case(
             case_id=sample_case.case_id,
@@ -1056,7 +1051,7 @@ class TestDeleteAllEvidenceForCase:
 
         assert result == 2
         assert mock_file_storage.delete_file.call_count == 2
-        assert mock_evidence_repo.delete_evidence.call_count == 2
+        assert mock_case_repo.delete_standalone_evidence.call_count == 2
 
 
 # ============================================================
@@ -1105,7 +1100,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_upload_evidence_with_very_long_description(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, mock_file_storage, sample_case, sample_file_data
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_case, sample_file_data
     ):
         """Test uploading evidence with very long description."""
         mock_case_repo.get.return_value = sample_case
@@ -1114,7 +1109,7 @@ class TestEdgeCases:
             "file_path": "org/case/date/abc_test.png",
             "file_size": len(sample_file_data),
         }
-        mock_evidence_repo.create_evidence.side_effect = lambda e: e
+        mock_case_repo.create_standalone_evidence.side_effect = lambda e: e
 
         long_description = "A" * 10000
 
@@ -1133,7 +1128,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_upload_evidence_all_evidence_types(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, mock_file_storage, sample_case, sample_file_data
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_case, sample_file_data
     ):
         """Test uploading evidence with all evidence types."""
         mock_case_repo.get.return_value = sample_case
@@ -1142,7 +1137,7 @@ class TestEdgeCases:
             "file_path": "org/case/date/abc_test.bin",
             "file_size": len(sample_file_data),
         }
-        mock_evidence_repo.create_evidence.side_effect = lambda e: e
+        mock_case_repo.create_standalone_evidence.side_effect = lambda e: e
 
         for evidence_type in EvidenceArtifactType:
             result = await evidence_service.upload_evidence(
@@ -1159,7 +1154,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_concurrent_uploads_generate_unique_ids(
-        self, evidence_service, mock_evidence_repo, mock_case_repo, mock_file_storage, sample_case, sample_file_data
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_case, sample_file_data
     ):
         """Test that concurrent uploads generate unique IDs."""
         mock_case_repo.get.return_value = sample_case
@@ -1175,7 +1170,7 @@ class TestEdgeCases:
             created_ids.append(e.evidence_id)
             return e
 
-        mock_evidence_repo.create_evidence.side_effect = capture_id
+        mock_case_repo.create_standalone_evidence.side_effect = capture_id
 
         import asyncio
         await asyncio.gather(*[
