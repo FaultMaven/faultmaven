@@ -33,7 +33,8 @@ from faultmaven.api.models import (
 )
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.modules.case.domain.models import CaseSeverity, CaseStatus
+# Import from contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import CaseSeverity, CaseStatus
 from faultmaven.services.case_service import APICaseService
 
 

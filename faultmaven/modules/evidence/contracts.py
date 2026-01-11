@@ -8,19 +8,64 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
-from typing import Protocol, Optional, List, TYPE_CHECKING
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
+from typing import Protocol, Optional, List, Dict, Any, TYPE_CHECKING
+from uuid import UUID
 
 if TYPE_CHECKING:
-    from uuid import UUID
-    from datetime import datetime
+    pass  # Type-only imports if needed
 
 
 # ============================================================
-# Enums for Cross-Module Use
+# DTOs (Data Transfer Objects) for Cross-Module Use
+# ============================================================
+
+class EvidenceArtifactTypeDTO(str, Enum):
+    """Public evidence type enum for cross-module use."""
+    LOG_FILE = "log_file"
+    STACK_TRACE = "stack_trace"
+    SCREENSHOT = "screenshot"
+    METRICS = "metrics"
+    CONFIG = "config"
+    DOCUMENT = "document"
+    CODE_SNIPPET = "code_snippet"
+    OTHER = "other"
+
+
+class StorageBackendDTO(str, Enum):
+    """Public storage backend enum for cross-module use."""
+    LOCAL = "local"
+    S3 = "s3"
+    DATABASE = "database"
+
+
+@dataclass
+class EvidenceDTO:
+    """Public evidence representation for cross-module use.
+
+    This DTO exposes only the fields needed by other modules,
+    hiding internal evidence implementation details.
+    """
+    evidence_id: UUID
+    case_id: str
+    artifact_type: EvidenceArtifactTypeDTO
+    filename: str
+    content_type: str
+    size_bytes: int
+    storage_backend: StorageBackendDTO
+    created_at: datetime
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    is_primary: bool = False
+
+
+# ============================================================
+# Re-export domain enums for backward compatibility
 # ============================================================
 
 # Re-export enums from domain models for cross-module use
+# Services should import from contracts.py (not domain.models) per Principle 2
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifactType,
     StorageBackend,
@@ -28,7 +73,7 @@ from faultmaven.modules.evidence.domain.models import (
 
 
 # ============================================================
-# DTOs (Data Transfer Objects) for Cross-Module Use
+# Re-export domain models for backward compatibility
 # ============================================================
 
 # EvidenceArtifact can be used directly or via DTOs
@@ -47,7 +92,7 @@ from faultmaven.modules.evidence.domain.models import (
 class IEvidenceQuery(Protocol):
     """Read-only evidence query interface for cross-module use."""
 
-    async def get_evidence(self, evidence_id: 'UUID') -> Optional['EvidenceArtifact']:
+    async def get_evidence(self, evidence_id: UUID) -> Optional['EvidenceArtifact']:
         """Get evidence by ID."""
         ...
 
@@ -66,10 +111,13 @@ class IEvidenceQuery(Protocol):
 # ============================================================
 
 __all__ = [
-    # Enums
+    # DTOs (preferred for new code)
+    "EvidenceArtifactTypeDTO",
+    "StorageBackendDTO",
+    "EvidenceDTO",
+    # Domain re-exports (backward compatibility)
     "EvidenceArtifactType",
     "StorageBackend",
-    # Models
     "EvidenceArtifact",
     "EvidenceListFilter",
     # Protocols

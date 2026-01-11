@@ -12,14 +12,56 @@ Per Principle 2 (Vertical Modules with Contracts):
 - Internal domain models are re-exported for backward compatibility
 """
 
-from typing import Protocol, Optional, List, TYPE_CHECKING
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Protocol, Optional, List, Dict, Any, TYPE_CHECKING
+from uuid import UUID
 
 if TYPE_CHECKING:
-    from uuid import UUID
+    pass  # Type-only imports if needed
 
 
 # ============================================================
-# Re-export domain models for cross-module use
+# DTOs (Data Transfer Objects) for Cross-Module Use
+# ============================================================
+
+class ReportTypeDTO(str, Enum):
+    """Public report type enum for cross-module use."""
+    RCA = "rca"  # Root Cause Analysis
+    EXECUTIVE_SUMMARY = "executive_summary"
+    RUNBOOK = "runbook"
+    TECHNICAL_POSTMORTEM = "technical_postmortem"
+
+
+class ReportStatusDTO(str, Enum):
+    """Public report status enum for cross-module use."""
+    PENDING = "pending"
+    GENERATING = "generating"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass
+class ReportDTO:
+    """Public report representation for cross-module use.
+
+    This DTO exposes only the fields needed by other modules,
+    hiding internal report implementation details.
+    """
+    report_id: UUID
+    case_id: str
+    report_type: ReportTypeDTO
+    status: ReportStatusDTO
+    title: str
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    content: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+# ============================================================
+# Re-export domain models for backward compatibility
 # ============================================================
 
 from faultmaven.modules.report.domain.models import (
@@ -85,17 +127,19 @@ class IReportGenerationService(Protocol):
 # ============================================================
 
 __all__ = [
-    # Enums
+    # DTOs (preferred for new code)
+    "ReportTypeDTO",
+    "ReportStatusDTO",
+    "ReportDTO",
+    # Domain re-exports (backward compatibility)
     "ReportType",
     "ReportStatus",
     "RunbookSource",
-    # Models
     "CaseReport",
     "RunbookMetadata",
     "SimilarRunbook",
     "RunbookRecommendation",
     "ReportRecommendation",
-    # Request/Response DTOs
     "ReportGenerationRequest",
     "ReportGenerationResponse",
     "CaseClosureRequest",
