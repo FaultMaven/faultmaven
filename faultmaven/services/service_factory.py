@@ -191,10 +191,9 @@ class ServiceFactory:
         from faultmaven.modules.agent.tools.agent_tools import agent_tool_registry
 
         return AgentOrchestrationService(
+            case_repo=self.case_repo,
             session_service=self.create_investigation_session_service(),
             evidence_service=self.create_evidence_artifact_service(),
-            execution_repo=self.execution_repo,
-            case_repo=self.case_repo,
             tool_registry=agent_tool_registry,
             # LLM client will be created lazily by the service
         )

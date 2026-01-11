@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
-from faultmaven.modules.evidence.infrastructure.storage_adapter import EvidenceStorageAdapter
+from faultmaven.modules.evidence.domain.adapters.storage_adapter import EvidenceStorageAdapter
 
 from .conftest import MockUploadFile
 
