@@ -275,8 +275,8 @@ async def test_list_standalone_evidence_filter_by_case_id(inmemory_repository: I
     # Link evidence2 to case_id2
     await inmemory_repository.link_standalone_evidence_to_case(evidence2.evidence_id, case_id2)
     
-    # Test filtering by case_id (implementation should convert UUID to string)
-    filters = EvidenceListFilter(case_id=UUID(case_id1))
+    # Test filtering by case_id (EvidenceListFilter expects str, not UUID)
+    filters = EvidenceListFilter(case_id=case_id1)
     results, total = await inmemory_repository.list_standalone_evidence(filters)
     
     # Filter should work correctly (implementation converts UUID to string)

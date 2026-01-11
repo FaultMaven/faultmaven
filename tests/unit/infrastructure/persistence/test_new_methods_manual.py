@@ -67,8 +67,8 @@ async def test_standalone_evidence():
     assert linked is not None
     assert case_id in linked.linked_case_ids
     
-    # Filter by case_id (UUID conversion test)
-    filters = EvidenceListFilter(case_id=UUID(case_id))
+    # Filter by case_id (EvidenceListFilter expects str, not UUID)
+    filters = EvidenceListFilter(case_id=case_id)
     results, total = await repo.list_standalone_evidence(filters)
     print(f"✅ Filtered by case_id (UUID): {total} results")
     # Should find the linked evidence

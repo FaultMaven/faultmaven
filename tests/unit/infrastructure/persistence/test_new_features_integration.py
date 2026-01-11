@@ -94,13 +94,13 @@ async def test_standalone_evidence_workflow():
     assert str(case_uuid) in linked.linked_case_ids, "Should have case_id in linked_case_ids"
     print("  ✓ Link to case")
     
-    # Filter by case_id (use UUID)
-    wrong_case_uuid = uuid4()
-    case_filters = EvidenceListFilter(case_id=wrong_case_uuid, limit=10, offset=0)  # Wrong case
+    # Filter by case_id (EvidenceListFilter expects str, not UUID)
+    wrong_case_id = str(uuid4())
+    case_filters = EvidenceListFilter(case_id=wrong_case_id, limit=10, offset=0)  # Wrong case
     filtered_wrong, count_wrong = await repo.list_standalone_evidence(case_filters)
     assert count_wrong == 0, "Should not find evidence for wrong case"
     
-    case_filters_correct = EvidenceListFilter(case_id=case_uuid, limit=10, offset=0)
+    case_filters_correct = EvidenceListFilter(case_id=str(case_uuid), limit=10, offset=0)
     filtered_correct, count_correct = await repo.list_standalone_evidence(case_filters_correct)
     assert count_correct == 1, "Should find evidence for correct case"
     print("  ✓ Filter by case_id")
