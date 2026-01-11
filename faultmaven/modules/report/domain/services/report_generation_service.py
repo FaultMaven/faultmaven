@@ -24,7 +24,8 @@ from faultmaven.modules.report.domain.models import (
     ReportGenerationRequest,
     ReportGenerationResponse
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import Case, CaseStatus
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.concurrency import ReportLockManager, LockAcquisitionError
