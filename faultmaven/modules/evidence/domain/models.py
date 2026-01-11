@@ -217,7 +217,7 @@ class EvidenceLinkRequest(BaseModel):
 class EvidenceListFilter(BaseModel):
     """Filters for listing evidence."""
 
-    case_id: Optional[UUID] = None
+    case_id: Optional[str] = None
     uploaded_by: Optional[UUID] = None
     tags: Optional[List[str]] = None
     filename_contains: Optional[str] = None

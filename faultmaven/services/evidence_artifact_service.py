@@ -599,9 +599,7 @@ class APIEvidenceArtifactService(BaseService):
             await self._verify_case_access(case_id, organization_id)
 
             # Get evidence from repository
-            from uuid import UUID
-            case_id_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
-            filters = EvidenceListFilter(case_id=case_id_uuid, limit=limit, offset=offset)
+            filters = EvidenceListFilter(case_id=case_id, limit=limit, offset=offset)
             # Note: evidence_type filtering not yet supported in EvidenceListFilter, all evidence returned
             evidence_list, total = await self.case_repo.list_standalone_evidence(filters)
             # Filter by evidence_type if specified (client-side filter for now)
@@ -667,9 +665,7 @@ class APIEvidenceArtifactService(BaseService):
                 raise ServiceError(f"Failed to set primary evidence for {evidence_id}")
 
             # Refresh evidence to get updated state
-            from uuid import UUID
-            evidence_id_uuid = UUID(evidence_id) if isinstance(evidence_id, str) else evidence_id
-            updated_evidence = await self.case_repo.get_standalone_evidence(evidence_id_uuid)
+            updated_evidence = await self.case_repo.get_standalone_evidence(evidence_id)
 
             self.log_operation(
                 "set_primary_evidence_success",
