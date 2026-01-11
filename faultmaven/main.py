@@ -397,13 +397,26 @@ def setup_middleware():
     # Use configurable origins from settings - production should specify
     # specific extension IDs instead of wildcards (e.g., chrome-extension://abc123)
     cors_origins = list(settings.security.cors_allow_origins)
+
+    # SECURITY: Fail-fast validation - no wildcards allowed in production
+    from faultmaven.config.settings import Environment
+    if settings.server.environment == Environment.PRODUCTION:
+        wildcard_origins = [o for o in cors_origins if "://*" in o]
+        if wildcard_origins:
+            raise RuntimeError(
+                f"SECURITY ERROR: Wildcard CORS origins are not allowed in production: {wildcard_origins}. "
+                "Configure CORS_ALLOW_ORIGINS with specific extension IDs "
+                "(e.g., chrome-extension://abc123def456)."
+            )
+
     # Add production domain if not already present
     if "https://faultmaven.ai" not in cors_origins:
         cors_origins.append("https://faultmaven.ai")
-    # Add local development origins if not already present
-    for dev_origin in ["http://localhost:3000", "http://localhost:8000"]:
-        if dev_origin not in cors_origins:
-            cors_origins.append(dev_origin)
+    # Add local development origins if not already present (only in non-production)
+    if settings.server.environment != Environment.PRODUCTION:
+        for dev_origin in ["http://localhost:3000", "http://localhost:8000"]:
+            if dev_origin not in cors_origins:
+                cors_origins.append(dev_origin)
 
     app.add_middleware(
         CORSMiddleware,
