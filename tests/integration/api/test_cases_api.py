@@ -99,7 +99,14 @@ def mock_case_service():
 
 
 @pytest.fixture
-def app(mock_case_service, mock_user):
+def mock_session_service():
+    """Create a mock session service."""
+    service = AsyncMock()
+    return service
+
+
+@pytest.fixture
+def app(mock_case_service, mock_session_service, mock_user):
     """Create test application with mocked dependencies."""
     app = main_app
 
@@ -107,16 +114,21 @@ def app(mock_case_service, mock_user):
     async def get_mock_case_service():
         return mock_case_service
 
+    # Override the session service dependency
+    async def get_mock_session_service():
+        return mock_session_service
+
     # Override the auth dependency to return mock user
     async def get_mock_current_user():
         return mock_user
 
     # Import the actual dependencies used by case routes
     # Note: Case routes use wrapper functions, so we override those
-    from faultmaven.modules.case.api.routes import _di_get_case_service_dependency
+    from faultmaven.modules.case.api.routes import _di_get_case_service_dependency, _di_get_session_service_dependency
     from faultmaven.api.v1.auth_dependencies import require_authentication
 
     app.dependency_overrides[_di_get_case_service_dependency] = get_mock_case_service
+    app.dependency_overrides[_di_get_session_service_dependency] = get_mock_session_service
     app.dependency_overrides[require_authentication] = get_mock_current_user
 
     yield app

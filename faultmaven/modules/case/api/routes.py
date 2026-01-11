@@ -164,11 +164,11 @@ BANNED_GENERIC_WORDS = [
     'user query', 'support request', 'technical issue'
 ]
 
-async def _di_get_case_service_dependency() -> Optional[ICaseService]:
+async def _di_get_case_service_dependency(request: Request) -> Optional[ICaseService]:
     """Runtime wrapper so patched dependency is honored in tests."""
     # Import inside to resolve the patched function at call time
     from faultmaven.api.v1.dependencies import get_case_service as _getter
-    return await _getter()
+    return await _getter(request)
 
 
 # Legacy dependency functions removed - using new auth_dependencies directly
@@ -180,10 +180,10 @@ async def _di_get_session_id_dependency(request: Request) -> Optional[str]:
     return await _get_session_id(request)
 
 
-async def _di_get_session_service_dependency() -> ISessionService:
+async def _di_get_session_service_dependency(request: Request) -> ISessionService:
     """Runtime wrapper so patched dependency is honored in tests."""
     from faultmaven.api.v1.dependencies import get_session_service as _getter
-    return await _getter()
+    return await _getter(request)
 
 
 def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseService:
