@@ -127,13 +127,11 @@ def file_storage_service(temp_storage_dir) -> FileStorageService:
 
 @pytest.fixture(scope="function")
 async def evidence_service(
-    evidence_repository,
     case_repository,
     file_storage_service,
 ) -> APIEvidenceArtifactService:
     """Create APIEvidenceArtifactService with test dependencies."""
     return APIEvidenceArtifactService(
-        evidence_repo=evidence_repository,
         case_repo=case_repository,
         file_storage=file_storage_service,
     )
