@@ -93,56 +93,60 @@ class MockEvidenceStorageAdapter:
 
 
 class MockEvidenceRepository:
-    """Mock repository for testing EvidenceService."""
+    """Mock repository for testing EvidenceService (implements ICaseRepository interface)."""
 
     def __init__(self):
         self._storage: dict[str, EvidenceArtifact] = {}
-        self.create = AsyncMock(side_effect=self._create)
-        self.get = AsyncMock(side_effect=self._get)
-        self.list = AsyncMock(side_effect=self._list)
-        self.delete = AsyncMock(side_effect=self._delete)
-        self.link_to_case = AsyncMock(side_effect=self._link_to_case)
+        self.create_standalone_evidence = AsyncMock(side_effect=self._create_standalone_evidence)
+        self.get_standalone_evidence = AsyncMock(side_effect=self._get_standalone_evidence)
+        self.list_standalone_evidence = AsyncMock(side_effect=self._list_standalone_evidence)
+        self.delete_standalone_evidence = AsyncMock(side_effect=self._delete_standalone_evidence)
+        self.link_standalone_evidence_to_case = AsyncMock(side_effect=self._link_standalone_evidence_to_case)
+        
+        # Backward compatibility aliases
+        self.create = self.create_standalone_evidence
+        self.get = self.get_standalone_evidence
+        self.list = self.list_standalone_evidence
+        self.delete = self.delete_standalone_evidence
+        self.link_to_case = self.link_standalone_evidence_to_case
 
-    async def _create(
+    async def _create_standalone_evidence(
         self,
-        original_filename: Optional[str] = None,
-        mime_type: Optional[str] = None,
-        file_size: Optional[int] = None,
-        file_path: Optional[str] = None,
-        user_id: Optional[str] = None,
-        case_id: Optional[str] = None,
-        organization_id: str = "org_test123",
+        filename: str,
+        content_type: str,
+        size_bytes: int,
+        storage_path: str,
+        uploaded_by: str,
         description: Optional[str] = None,
         tags: Optional[List[str]] = None,
-        **kwargs
     ) -> EvidenceArtifact:
         evidence = create_sample_evidence(
-            original_filename=original_filename or "test.log",
-            mime_type=mime_type or "text/plain",
-            file_size=file_size or 1024,
-            file_path=file_path or "evidence/test.log",
-            user_id=user_id or str(uuid4()),
-            case_id=case_id or "standalone",
-            organization_id=organization_id,
+            original_filename=filename,
+            mime_type=content_type,
+            file_size=size_bytes,
+            file_path=storage_path,
+            user_id=uploaded_by,
+            case_id="standalone",
             description=description,
             tags=tags or [],
         )
         self._storage[evidence.evidence_id] = evidence
         return evidence
 
-    async def _get(self, evidence_id) -> Optional[EvidenceArtifact]:
+    async def _get_standalone_evidence(self, evidence_id) -> Optional[EvidenceArtifact]:
         # Accept both UUID and str
         key = str(evidence_id) if not isinstance(evidence_id, str) else evidence_id
         return self._storage.get(key)
 
-    async def _list(self, filters: EvidenceListFilter) -> Tuple[List[EvidenceArtifact], int]:
+    async def _list_standalone_evidence(self, filters: EvidenceListFilter) -> Tuple[List[EvidenceArtifact], int]:
         results = list(self._storage.values())
 
         # Apply filters
         if filters.uploaded_by:
             results = [e for e in results if e.user_id == str(filters.uploaded_by)]
         if filters.case_id:
-            results = [e for e in results if e.case_id == str(filters.case_id)]
+            case_id_str = str(filters.case_id) if hasattr(filters.case_id, '__str__') else filters.case_id
+            results = [e for e in results if case_id_str in e.linked_case_ids]
         if filters.tags:
             results = [e for e in results if any(tag in e.tags for tag in (filters.tags or []))]
         if filters.filename_contains:
@@ -152,7 +156,7 @@ class MockEvidenceRepository:
         results = results[filters.offset : filters.offset + filters.limit]
         return results, total
 
-    async def _delete(self, evidence_id) -> bool:
+    async def _delete_standalone_evidence(self, evidence_id) -> bool:
         # Accept both UUID and str
         key = str(evidence_id) if not isinstance(evidence_id, str) else evidence_id
         if key in self._storage:
@@ -160,7 +164,7 @@ class MockEvidenceRepository:
             return True
         return False
 
-    async def _link_to_case(self, evidence_id, case_id) -> Optional[EvidenceArtifact]:
+    async def _link_standalone_evidence_to_case(self, evidence_id, case_id) -> Optional[EvidenceArtifact]:
         # Accept both UUID and str
         key = str(evidence_id) if not isinstance(evidence_id, str) else evidence_id
         evidence = self._storage.get(key)

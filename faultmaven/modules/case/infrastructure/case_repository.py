@@ -800,6 +800,57 @@ class InMemoryCaseRepository(CaseRepository):
         
         return evidence
     
+    async def update_standalone_evidence(self, evidence: Any) -> Any:
+        """Update standalone evidence record (in-memory implementation)."""
+        from faultmaven.modules.evidence.domain.models import EvidenceArtifact
+        from datetime import datetime, timezone
+        
+        evidence_id = getattr(evidence, 'evidence_id', None)
+        if not evidence_id or evidence_id not in self._standalone_evidence:
+            raise ValueError(f"Evidence {evidence_id} not found")
+        
+        # Update timestamp
+        if hasattr(evidence, 'updated_at'):
+            evidence.updated_at = datetime.now(timezone.utc)
+        
+        # Store updated evidence
+        self._standalone_evidence[evidence_id] = evidence
+        return evidence
+    
+    async def set_primary_evidence(self, case_id: str, evidence_id: str) -> bool:
+        """Set evidence as primary for a case (unsets others) (in-memory implementation)."""
+        from datetime import datetime, timezone
+        
+        # Get the evidence
+        evidence = self._standalone_evidence.get(evidence_id)
+        if not evidence:
+            return False
+        
+        # Verify it's linked to the case
+        if case_id not in getattr(evidence, 'linked_case_ids', []):
+            return False
+        
+        # Unset primary for all other evidence linked to this case
+        for ev_id, ev in self._standalone_evidence.items():
+            if ev_id != evidence_id and case_id in getattr(ev, 'linked_case_ids', []):
+                ev.is_primary = False
+                ev.updated_at = datetime.now(timezone.utc)
+        
+        # Set this evidence as primary
+        evidence.is_primary = True
+        evidence.updated_at = datetime.now(timezone.utc)
+        
+        return True
+    
+    async def get_primary_evidence(self, case_id: str) -> Optional[Any]:
+        """Get primary evidence for a case (in-memory implementation)."""
+        # Find evidence linked to this case that is marked as primary
+        for evidence in self._standalone_evidence.values():
+            if (case_id in getattr(evidence, 'linked_case_ids', []) and 
+                getattr(evidence, 'is_primary', False)):
+                return evidence
+        return None
+    
     # ============================================================
     # Agent Execution Operations (migrated from Agent module)
     # ============================================================
@@ -1614,6 +1665,18 @@ class PostgreSQLCaseRepository(CaseRepository):
     async def link_standalone_evidence_to_case(self, evidence_id: str, case_id: str) -> Optional[Any]:
         """Link standalone evidence to a case (PostgreSQL stub)."""
         raise NotImplementedError("link_standalone_evidence_to_case not yet implemented in PostgreSQLCaseRepository")
+    
+    async def update_standalone_evidence(self, evidence: Any) -> Any:
+        """Update standalone evidence record (PostgreSQL stub)."""
+        raise NotImplementedError("update_standalone_evidence not yet implemented in PostgreSQLCaseRepository")
+    
+    async def set_primary_evidence(self, case_id: str, evidence_id: str) -> bool:
+        """Set evidence as primary for a case (PostgreSQL stub)."""
+        raise NotImplementedError("set_primary_evidence not yet implemented in PostgreSQLCaseRepository")
+    
+    async def get_primary_evidence(self, case_id: str) -> Optional[Any]:
+        """Get primary evidence for a case (PostgreSQL stub)."""
+        raise NotImplementedError("get_primary_evidence not yet implemented in PostgreSQLCaseRepository")
     
     # ============================================================
     # Agent Execution Operations (migrated from Agent module)
