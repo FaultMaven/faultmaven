@@ -517,7 +517,7 @@ class TestAuthServiceSingleton:
     async def test_set_and_get_auth_service(self, mock_auth_service):
         """set_auth_service and get_auth_service work correctly."""
         set_auth_service(mock_auth_service)
-        retrieved = await get_auth_service()
+        retrieved = await get_auth_service(request=None)
         assert retrieved == mock_auth_service
 
     @pytest.mark.asyncio
@@ -526,7 +526,7 @@ class TestAuthServiceSingleton:
         # Clear any existing service
         set_auth_service(None)
 
-        service = await get_auth_service()
+        service = await get_auth_service(request=None)
         assert service is not None
 
     def teardown_method(self, method):
