@@ -542,6 +542,7 @@ class APICaseService(BaseService):
             if include_evidence:
                 try:
                     from uuid import UUID
+                    from faultmaven.modules.evidence.domain.models import EvidenceListFilter
                     case_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
                     filters = EvidenceListFilter(case_id=case_uuid, limit=100, offset=0)
                     evidence_list, _ = await self.case_repo.list_standalone_evidence(filters)

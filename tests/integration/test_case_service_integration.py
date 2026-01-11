@@ -32,10 +32,6 @@ from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
     InMemoryEvidenceArtifactRepository,
 )
-from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
-    DatabaseAgentExecutionRepository,
-    InMemoryAgentExecutionRepository,
-)
 from faultmaven.services.case_service import APICaseService
 from faultmaven.services.service_factory import ServiceFactory
 from faultmaven.modules.case.domain.models import Case, CaseStatus, CaseSeverity
@@ -101,20 +97,15 @@ def evidence_repo() -> InMemoryEvidenceArtifactRepository:
     return InMemoryEvidenceArtifactRepository()
 
 
-@pytest.fixture
-def execution_repo() -> InMemoryAgentExecutionRepository:
-    """Create in-memory agent execution repository."""
-    return InMemoryAgentExecutionRepository()
+# execution_repo removed - APICaseService now uses case_repo for agent executions
 
 
 @pytest.fixture
-def case_service(case_repo, session_repo, evidence_repo, execution_repo) -> APICaseService:
+def case_service(case_repo, session_repo) -> APICaseService:
     """Create APICaseService with real/in-memory repositories."""
     return APICaseService(
         case_repo=case_repo,
         session_repo=session_repo,
-        evidence_repo=evidence_repo,
-        execution_repo=execution_repo,
     )
 
 

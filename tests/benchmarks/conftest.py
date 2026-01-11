@@ -16,9 +16,7 @@ from faultmaven.modules.auth.infrastructure.repositories.session_repository impo
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
 )
-from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
-    DatabaseAgentExecutionRepository,
-)
+# AgentExecutionRepository removed - agent executions now handled by ICaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
 )
@@ -97,9 +95,7 @@ async def evidence_artifact_repository(benchmark_session) -> DatabaseEvidenceArt
 
 
 @pytest.fixture
-async def agent_execution_repository(benchmark_session) -> DatabaseAgentExecutionRepository:
-    """Create agent execution repository for benchmarks."""
-    return DatabaseAgentExecutionRepository(benchmark_session)
+    # agent_execution_repository fixture removed - no longer needed
 
 
 @pytest.fixture

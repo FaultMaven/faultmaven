@@ -48,30 +48,17 @@ def mock_session_repo():
     repo = AsyncMock()
     return repo
 
-
 @pytest.fixture
-def mock_evidence_repo():
-    """Create mock evidence artifact repository."""
-    repo = AsyncMock()
-    return repo
-
-
-@pytest.fixture
-def mock_execution_repo():
-    """Create mock agent execution repository."""
-    repo = AsyncMock()
-    return repo
-
-
-@pytest.fixture
-def case_service(mock_case_repo, mock_session_repo, mock_evidence_repo, mock_execution_repo):
+def case_service(mock_case_repo, mock_session_repo):
     """Create APICaseService with mocked repositories."""
     return APICaseService(
         case_repo=mock_case_repo,
         session_repo=mock_session_repo,
-        evidence_repo=mock_evidence_repo,
-        execution_repo=mock_execution_repo,
     )
+
+
+
+
 
 
 @pytest.fixture
@@ -551,11 +538,11 @@ class TestGetCaseWithDetails:
 
     @pytest.mark.asyncio
     async def test_get_case_with_details_includes_evidence(
-        self, case_service, mock_case_repo, mock_evidence_repo, sample_case
+        self, case_service, mock_case_repo, sample_case
     ):
         """Test that get_case_with_details includes evidence when requested."""
         mock_case_repo.get.return_value = sample_case
-        mock_evidence_repo.list_evidence_by_case.return_value = ([], 0)
+        mock_case_repo.list_standalone_evidence.return_value = ([], 0)
 
         result = await case_service.get_case_with_details(
             sample_case.case_id,
@@ -564,15 +551,15 @@ class TestGetCaseWithDetails:
         )
 
         assert "evidence" in result
-        mock_evidence_repo.list_evidence_by_case.assert_called_once()
+        mock_case_repo.list_standalone_evidence.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_get_case_with_details_includes_executions(
-        self, case_service, mock_case_repo, mock_execution_repo, sample_case
+        self, case_service, mock_case_repo, sample_case
     ):
         """Test that get_case_with_details includes executions when requested."""
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         result = await case_service.get_case_with_details(
             sample_case.case_id,
@@ -581,7 +568,7 @@ class TestGetCaseWithDetails:
         )
 
         assert "executions" in result
-        mock_execution_repo.list_executions_by_case.assert_called_once()
+        mock_case_repo.list_agent_executions_by_case.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_get_case_with_details_not_found_returns_none(
