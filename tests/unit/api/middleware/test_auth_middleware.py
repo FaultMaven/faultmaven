@@ -513,18 +513,20 @@ class TestRequireAdmin:
 class TestAuthServiceSingleton:
     """Tests for auth service singleton management."""
 
-    def test_set_and_get_auth_service(self, mock_auth_service):
+    @pytest.mark.asyncio
+    async def test_set_and_get_auth_service(self, mock_auth_service):
         """set_auth_service and get_auth_service work correctly."""
         set_auth_service(mock_auth_service)
-        retrieved = get_auth_service()
+        retrieved = await get_auth_service()
         assert retrieved == mock_auth_service
 
-    def test_get_creates_default_service(self):
+    @pytest.mark.asyncio
+    async def test_get_creates_default_service(self):
         """get_auth_service creates default service if none set."""
         # Clear any existing service
         set_auth_service(None)
 
-        service = get_auth_service()
+        service = await get_auth_service()
         assert service is not None
 
     def teardown_method(self, method):

@@ -45,47 +45,65 @@ logger = logging.getLogger(__name__)
 # HTTP Bearer security scheme for OpenAPI documentation
 bearer_scheme = HTTPBearer(auto_error=False)
 
+# Module-level test service for backward compatibility with tests
+_test_auth_service: Optional[AuthService] = None
 
-async def get_auth_service(request: Request) -> AuthService:
+
+async def get_auth_service(request: Optional[Request] = None) -> AuthService:
     """Get AuthService instance from app.state (Composition Root).
 
     Args:
-        request: FastAPI request object
+        request: FastAPI request object (optional for backward compatibility)
 
     Returns:
         AuthService instance from app.state (properly configured with Redis if available)
 
     Note:
         Uses app.state which is initialized at app startup (Composition Root pattern).
-        Falls back to creating a new instance if not available.
+        Falls back to test service or creating a new instance if not available.
     """
-    try:
-        auth_service = getattr(request.app.state, 'auth_service', None)
-        if auth_service is not None:
-            return auth_service
-    except Exception as e:
-        logger.warning(f"Failed to get AuthService from app.state: {e}")
+    # Check test service first (for unit tests)
+    global _test_auth_service
+    if _test_auth_service is not None:
+        return _test_auth_service
+
+    # Try to get from app.state if request is provided
+    if request is not None:
+        try:
+            auth_service = getattr(request.app.state, 'auth_service', None)
+            if auth_service is not None:
+                return auth_service
+        except Exception as e:
+            logger.warning(f"Failed to get AuthService from app.state: {e}")
 
     # Fallback: create a minimal AuthService without Redis
     logger.debug("Creating fallback AuthService (no Redis for token revocation)")
     return AuthService()
 
 
-def set_auth_service(request: Request, service: AuthService) -> None:
-    """Set the AuthService instance in app.state (for testing/DI).
+def set_auth_service(service: Optional[AuthService], request: Optional[Request] = None) -> None:
+    """Set the AuthService instance (for testing/DI).
 
     Args:
-        request: FastAPI request object
-        service: AuthService instance to use
+        service: AuthService instance to use (or None to clear)
+        request: Optional FastAPI request object (if provided, sets on app.state)
 
     Note:
-        This sets the auth_service attribute on app.state for testing purposes.
+        For testing, can be called without request to set module-level test service.
+        For production DI, can be called with request to set on app.state.
     """
-    try:
-        request.app.state.auth_service = service
-        logger.debug("AuthService set in app.state")
-    except Exception as e:
-        logger.warning(f"Failed to set AuthService in app.state: {e}")
+    global _test_auth_service
+
+    if request is not None:
+        try:
+            request.app.state.auth_service = service
+            logger.debug("AuthService set in app.state")
+        except Exception as e:
+            logger.warning(f"Failed to set AuthService in app.state: {e}")
+    else:
+        # Set module-level test service for backward compatibility
+        _test_auth_service = service
+        logger.debug("AuthService set in module-level test variable")
 
 
 async def get_current_user(
