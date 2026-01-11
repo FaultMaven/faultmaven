@@ -30,10 +30,8 @@ from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
-from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
-    EvidenceArtifactRepository,
-)
-# AgentExecutionRepository removed - agent executions now handled by ICaseRepository
+# EvidenceArtifactRepository removed - evidence now handled by ICaseRepository (TD-001)
+# AgentExecutionRepository removed - agent executions now handled by ICaseRepository (TD-001)
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
