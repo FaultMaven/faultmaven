@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from faultmaven.modules.agent.domain.models.investigation import (
+from faultmaven.modules.agent.contracts import (
     InvestigationPhase,
     OODAStep,
     OODAIteration,

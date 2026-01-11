@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 # Module-level test service for backward compatibility with tests
+# This allows unit tests to set a mock service without going through FastAPI DI
 _test_auth_service: Optional[AuthService] = None
 
 

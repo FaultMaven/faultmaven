@@ -9,7 +9,7 @@ Design Reference:
 """
 
 from typing import List, Optional, Tuple
-from faultmaven.modules.agent.domain.models.investigation import (
+from faultmaven.modules.agent.contracts import (
     InvestigationState,
     WorkingConclusion,
     ProgressMetrics,

@@ -19,9 +19,9 @@ from enum import Enum
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from faultmaven.modules.agent.domain.models.investigation import InvestigationState, InvestigationPhase
+    from faultmaven.modules.agent.contracts import InvestigationState, InvestigationPhase
 
-from faultmaven.modules.agent.domain.models.investigation import InvestigationPhase
+from faultmaven.modules.agent.contracts import InvestigationPhase
 
 logger = logging.getLogger(__name__)
 
@@ -384,7 +384,7 @@ def should_loop_back_from_validation(state: "InvestigationState") -> tuple[bool,
     Returns:
         Tuple of (should_loop, outcome, reason)
     """
-    from faultmaven.modules.agent.domain.models.investigation import HypothesisStatus
+    from faultmaven.modules.agent.contracts import HypothesisStatus
 
     hypotheses = state.ooda_engine.hypotheses
 
