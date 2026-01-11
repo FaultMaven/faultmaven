@@ -36,12 +36,8 @@ from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
-from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
-    EvidenceArtifactRepository,
-)
-from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
-    AgentExecutionRepository,
-)
+from faultmaven.modules.case.contracts import ICaseRepository
+from faultmaven.modules.evidence.domain.models import EvidenceListFilter
 from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.exceptions import (
     NotFoundError,
@@ -67,32 +63,25 @@ class APICaseService(BaseService):
         case_repo: Case repository for case persistence
         session_repo: Investigation session repository
         evidence_repo: Evidence artifact repository
-        execution_repo: Agent execution repository
         tenant_provider: Provider for deployment-neutral organization context
     """
 
     def __init__(
         self,
-        case_repo: CaseRepository,
+        case_repo: ICaseRepository,
         session_repo: InvestigationSessionRepository,
-        evidence_repo: EvidenceArtifactRepository,
-        execution_repo: AgentExecutionRepository,
         tenant_provider: Optional[TenantProvider] = None,
     ):
         """Initialize API case service.
 
         Args:
-            case_repo: Case repository
+            case_repo: Case repository (handles evidence and agent executions - migrated from separate repositories)
             session_repo: Investigation session repository
-            evidence_repo: Evidence artifact repository
-            execution_repo: Agent execution repository
             tenant_provider: Provider for deployment-neutral organization context (TASK-023)
         """
         super().__init__("api_case_service")
         self.case_repo = case_repo
         self.session_repo = session_repo
-        self.evidence_repo = evidence_repo
-        self.execution_repo = execution_repo
         self.tenant_provider = tenant_provider
 
     # ============================================================
@@ -552,7 +541,10 @@ class APICaseService(BaseService):
 
             if include_evidence:
                 try:
-                    evidence_list, _ = await self.evidence_repo.list_evidence_by_case(case_id)
+                    from uuid import UUID
+                    case_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
+                    filters = EvidenceListFilter(case_id=case_uuid, limit=100, offset=0)
+                    evidence_list, _ = await self.case_repo.list_standalone_evidence(filters)
                     result["evidence"] = evidence_list
                 except Exception as e:
                     self.log_error("get_case_evidence", e, case_id=case_id)
@@ -560,7 +552,7 @@ class APICaseService(BaseService):
 
             if include_executions:
                 try:
-                    executions, _ = await self.execution_repo.list_executions_by_case(case_id)
+                    executions, _ = await self.case_repo.list_agent_executions_by_case(case_id)
                     result["executions"] = executions
                 except Exception as e:
                     self.log_error("get_case_executions", e, case_id=case_id)

@@ -77,7 +77,7 @@ class TestEvidenceServiceUpload:
         # Storage should be called
         service.storage.store_file.assert_called_once()
         # Repository should be called after storage
-        service.repository.create.assert_called_once()
+        service.case_repository.create_standalone_evidence.assert_called_once()
 
 
 class TestEvidenceServiceGet:
@@ -95,7 +95,7 @@ class TestEvidenceServiceGet:
     async def test_get_evidence_success(self, service, sample_evidence):
         """Test retrieving existing evidence."""
         # Pre-populate the mock repository using evidence_id as key
-        service.repository._storage[sample_evidence.evidence_id] = sample_evidence
+        service.case_repository._storage[sample_evidence.evidence_id] = sample_evidence
 
         result = await service.get_evidence(sample_evidence.evidence_id)
 
@@ -119,7 +119,7 @@ class TestEvidenceServiceGet:
 
         await service.get_evidence(evidence_id)
 
-        service.repository.get.assert_called_once_with(evidence_id)
+        service.case_repository.get_standalone_evidence.assert_called_once_with(str(evidence_id))
 
 
 class TestEvidenceServiceList:
@@ -146,7 +146,7 @@ class TestEvidenceServiceList:
         """Test listing returns all evidence."""
         # Pre-populate repository
         for evidence in sample_evidence_list:
-            service.repository._storage[evidence.evidence_id] = evidence
+            service.case_repository._storage[evidence.evidence_id] = evidence
 
         results, total = await service.list_evidence(sample_filters)
 
@@ -158,7 +158,7 @@ class TestEvidenceServiceList:
         """Test listing with pagination."""
         # Pre-populate repository
         for evidence in sample_evidence_list:
-            service.repository._storage[evidence.evidence_id] = evidence
+            service.case_repository._storage[evidence.evidence_id] = evidence
 
         filters = EvidenceListFilter(limit=2, offset=0)
         results, total = await service.list_evidence(filters)
@@ -170,7 +170,7 @@ class TestEvidenceServiceList:
     async def test_list_evidence_with_offset(self, service, sample_evidence_list):
         """Test listing with offset."""
         for evidence in sample_evidence_list:
-            service.repository._storage[evidence.evidence_id] = evidence
+            service.case_repository._storage[evidence.evidence_id] = evidence
 
         filters = EvidenceListFilter(limit=10, offset=3)
         results, total = await service.list_evidence(filters)
@@ -182,7 +182,7 @@ class TestEvidenceServiceList:
     async def test_list_evidence_filter_by_tags(self, service, sample_evidence_list):
         """Test filtering by tags."""
         for evidence in sample_evidence_list:
-            service.repository._storage[evidence.evidence_id] = evidence
+            service.case_repository._storage[evidence.evidence_id] = evidence
 
         filters = EvidenceListFilter(tags=["tag0"])
         results, total = await service.list_evidence(filters)
@@ -194,7 +194,7 @@ class TestEvidenceServiceList:
     async def test_list_evidence_filter_by_filename(self, service, sample_evidence_list):
         """Test filtering by filename contains."""
         for evidence in sample_evidence_list:
-            service.repository._storage[evidence.evidence_id] = evidence
+            service.case_repository._storage[evidence.evidence_id] = evidence
 
         filters = EvidenceListFilter(filename_contains="file_2")
         results, total = await service.list_evidence(filters)
@@ -217,13 +217,13 @@ class TestEvidenceServiceDelete:
     @pytest.mark.asyncio
     async def test_delete_evidence_success(self, service, sample_evidence):
         """Test successful evidence deletion."""
-        service.repository._storage[sample_evidence.evidence_id] = sample_evidence
+        service.case_repository._storage[sample_evidence.evidence_id] = sample_evidence
 
         result = await service.delete_evidence(sample_evidence.evidence_id)
 
         assert result is True
         service.storage.delete_file.assert_called_once()
-        service.repository.delete.assert_called_once()
+        service.case_repository.delete_standalone_evidence.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_delete_evidence_not_found(self, service):
@@ -237,13 +237,13 @@ class TestEvidenceServiceDelete:
     @pytest.mark.asyncio
     async def test_delete_removes_file_and_record(self, service, sample_evidence):
         """Test that both file and database record are deleted."""
-        service.repository._storage[sample_evidence.evidence_id] = sample_evidence
+        service.case_repository._storage[sample_evidence.evidence_id] = sample_evidence
 
         await service.delete_evidence(sample_evidence.evidence_id)
 
         # Both storage and repository delete should be called
         service.storage.delete_file.assert_called_once_with(sample_evidence.file_path)
-        service.repository.delete.assert_called_once_with(sample_evidence.evidence_id)
+        service.case_repository.delete_standalone_evidence.assert_called_once_with(sample_evidence.evidence_id)
 
 
 class TestEvidenceServiceLinkToCase:
@@ -260,7 +260,7 @@ class TestEvidenceServiceLinkToCase:
     @pytest.mark.asyncio
     async def test_link_to_case_success(self, service, sample_evidence, sample_case_id):
         """Test successful linking to a case."""
-        service.repository._storage[sample_evidence.evidence_id] = sample_evidence
+        service.case_repository._storage[sample_evidence.evidence_id] = sample_evidence
 
         result = await service.link_to_case(sample_evidence.evidence_id, sample_case_id)
 
@@ -278,7 +278,7 @@ class TestEvidenceServiceLinkToCase:
     @pytest.mark.asyncio
     async def test_link_to_case_idempotent(self, service, sample_evidence, sample_case_id):
         """Test linking same case twice doesn't create duplicates."""
-        service.repository._storage[sample_evidence.evidence_id] = sample_evidence
+        service.case_repository._storage[sample_evidence.evidence_id] = sample_evidence
 
         # Link twice
         await service.link_to_case(sample_evidence.evidence_id, sample_case_id)
@@ -302,7 +302,7 @@ class TestEvidenceServiceGetFileUrl:
     @pytest.mark.asyncio
     async def test_get_file_url_success(self, service, sample_evidence):
         """Test getting download URL for existing evidence."""
-        service.repository._storage[sample_evidence.evidence_id] = sample_evidence
+        service.case_repository._storage[sample_evidence.evidence_id] = sample_evidence
 
         result = await service.get_file_url(sample_evidence.evidence_id)
 
@@ -321,7 +321,7 @@ class TestEvidenceServiceGetFileUrl:
     @pytest.mark.asyncio
     async def test_get_file_url_delegates_to_storage(self, service, sample_evidence):
         """Test that URL generation delegates to storage adapter."""
-        service.repository._storage[sample_evidence.evidence_id] = sample_evidence
+        service.case_repository._storage[sample_evidence.evidence_id] = sample_evidence
 
         await service.get_file_url(sample_evidence.evidence_id)
 

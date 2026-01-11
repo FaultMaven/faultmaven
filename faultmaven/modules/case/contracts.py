@@ -161,6 +161,18 @@ class ICaseRepository(Protocol):
         """Link standalone evidence to a case."""
         ...
     
+    async def update_standalone_evidence(self, evidence: 'EvidenceArtifact') -> 'EvidenceArtifact':
+        """Update standalone evidence record."""
+        ...
+    
+    async def set_primary_evidence(self, case_id: str, evidence_id: str) -> bool:
+        """Set evidence as primary for a case (unsets others for the same case)."""
+        ...
+    
+    async def get_primary_evidence(self, case_id: str) -> Optional['EvidenceArtifact']:
+        """Get primary evidence for a case."""
+        ...
+    
     # Agent Execution Operations (migrated from Agent module)
     async def create_agent_execution(self, execution: 'AgentExecution') -> 'AgentExecution':
         """Create new agent execution record."""

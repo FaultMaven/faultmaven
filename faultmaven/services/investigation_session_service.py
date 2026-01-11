@@ -33,10 +33,7 @@ from faultmaven.models.investigation_session import (
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
-from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
-    AgentExecutionRepository,
-)
-from faultmaven.infrastructure.persistence.case_repository import CaseRepository
+from faultmaven.modules.case.contracts import ICaseRepository
 from faultmaven.exceptions import (
     NotFoundError,
     AuthorizationError,
@@ -58,26 +55,22 @@ class APIInvestigationSessionService(BaseService):
 
     Attributes:
         session_repo: Investigation session repository
-        execution_repo: Agent execution repository
-        case_repo: Case repository for authorization checks
+        case_repo: Case repository (handles agent executions and authorization - migrated from separate repository)
     """
 
     def __init__(
         self,
         session_repo: InvestigationSessionRepository,
-        execution_repo: AgentExecutionRepository,
-        case_repo: CaseRepository,
+        case_repo: ICaseRepository,
     ):
         """Initialize API investigation session service.
 
         Args:
             session_repo: Investigation session repository
-            execution_repo: Agent execution repository
-            case_repo: Case repository (for authorization)
+            case_repo: Case repository (handles agent executions and authorization - migrated from AgentExecutionRepository)
         """
         super().__init__("api_investigation_session_service")
         self.session_repo = session_repo
-        self.execution_repo = execution_repo
         self.case_repo = case_repo
 
     # ============================================================
@@ -800,7 +793,7 @@ class APIInvestigationSessionService(BaseService):
             # Get executions for this session's case
             # Note: We filter by session_id if the execution has one
             try:
-                executions, _ = await self.execution_repo.list_executions_by_case(
+                executions, _ = await self.case_repo.list_agent_executions_by_case(
                     session.case_id
                 )
 
@@ -813,7 +806,7 @@ class APIInvestigationSessionService(BaseService):
                     for execution in executions:
                         if not execution.tool_calls:
                             execution.tool_calls = (
-                                await self.execution_repo.get_tool_calls_for_execution(
+                                await self.case_repo.get_agent_tool_calls_for_execution(
                                     execution.execution_id
                                 )
                             )
@@ -893,7 +886,7 @@ class APIInvestigationSessionService(BaseService):
                 )
 
             # Verify execution exists
-            execution = await self.execution_repo.get_execution(execution_id)
+            execution = await self.case_repo.get_agent_execution(execution_id)
             if not execution:
                 raise NotFoundError("Execution", execution_id)
 

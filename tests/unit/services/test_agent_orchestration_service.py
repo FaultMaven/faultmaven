@@ -64,11 +64,6 @@ def mock_evidence_service():
     return service
 
 
-@pytest.fixture
-def mock_execution_repo():
-    """Create a mock execution repository."""
-    repo = AsyncMock()
-    return repo
 
 
 @pytest.fixture
@@ -139,17 +134,15 @@ def sample_execution():
 def orchestration_service(
     mock_session_service,
     mock_evidence_service,
-    mock_execution_repo,
     mock_case_repo,
     mock_tool_registry,
     mock_llm_client,
 ):
     """Create an AgentOrchestrationService with mock dependencies."""
     return AgentOrchestrationService(
+        case_repo=mock_case_repo,
         session_service=mock_session_service,
         evidence_service=mock_evidence_service,
-        execution_repo=mock_execution_repo,
-        case_repo=mock_case_repo,
         tool_registry=mock_tool_registry,
         llm_client=mock_llm_client,
         max_retries=3,
@@ -172,7 +165,6 @@ class TestExecuteAgentBasicWorkflow:
         self,
         orchestration_service,
         mock_session_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_session,
         sample_case,
@@ -183,14 +175,14 @@ class TestExecuteAgentBasicWorkflow:
         mock_session_service.check_budget_exceeded.return_value = {"is_over_budget": False}
         mock_session_service.add_execution_to_session.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.create_execution.return_value = AgentExecution(
+        mock_case_repo.create_agent_execution.return_value = AgentExecution(
             execution_id="exec_new",
             case_id=sample_case.case_id,
             agent_type=AgentType.INVESTIGATOR,
             agent_model="test-model",
         )
-        mock_execution_repo.update_execution.return_value = None
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.update_agent_execution.return_value = None
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         # Mock LLM to return simple response
         async def mock_stream(**kwargs):
@@ -213,7 +205,7 @@ class TestExecuteAgentBasicWorkflow:
             events.append(event)
 
         # Verify
-        mock_execution_repo.create_execution.assert_called_once()
+        mock_case_repo.create_agent_execution.assert_called_once()
         assert any(e.event_type == ExecutionEventType.STARTED for e in events)
 
     @pytest.mark.asyncio
@@ -291,7 +283,6 @@ class TestExecuteAgentBasicWorkflow:
         self,
         orchestration_service,
         mock_session_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_session,
         sample_case,
@@ -301,14 +292,14 @@ class TestExecuteAgentBasicWorkflow:
         mock_session_service.check_budget_exceeded.return_value = {"is_over_budget": False}
         mock_session_service.add_execution_to_session.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.create_execution.return_value = AgentExecution(
+        mock_case_repo.create_agent_execution.return_value = AgentExecution(
             execution_id="exec_new",
             case_id=sample_case.case_id,
             agent_type=AgentType.INVESTIGATOR,
             agent_model="test-model",
         )
-        mock_execution_repo.update_execution.return_value = None
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.update_agent_execution.return_value = None
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         # Mock LLM with multiple chunks
         async def mock_stream(**kwargs):
@@ -340,7 +331,6 @@ class TestExecuteAgentBasicWorkflow:
         self,
         orchestration_service,
         mock_session_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_session,
         sample_case,
@@ -350,14 +340,14 @@ class TestExecuteAgentBasicWorkflow:
         mock_session_service.check_budget_exceeded.return_value = {"is_over_budget": False}
         mock_session_service.add_execution_to_session.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.create_execution.return_value = AgentExecution(
+        mock_case_repo.create_agent_execution.return_value = AgentExecution(
             execution_id="exec_new",
             case_id=sample_case.case_id,
             agent_type=AgentType.INVESTIGATOR,
             agent_model="test-model",
         )
-        mock_execution_repo.update_execution.return_value = None
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.update_agent_execution.return_value = None
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         async def mock_stream(**kwargs):
             yield LLMEvent(event_type=LLMEventType.TEXT_CHUNK, content="Response")
@@ -386,7 +376,6 @@ class TestExecuteAgentBasicWorkflow:
         self,
         orchestration_service,
         mock_session_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_session,
         sample_case,
@@ -401,14 +390,14 @@ class TestExecuteAgentBasicWorkflow:
         mock_session_service.add_execution_to_session.return_value = sample_session
         mock_session_service.pause_session.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.create_execution.return_value = AgentExecution(
+        mock_case_repo.create_agent_execution.return_value = AgentExecution(
             execution_id="exec_new",
             case_id=sample_case.case_id,
             agent_type=AgentType.INVESTIGATOR,
             agent_model="test-model",
         )
-        mock_execution_repo.update_execution.return_value = None
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.update_agent_execution.return_value = None
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         async def mock_stream(**kwargs):
             yield LLMEvent(event_type=LLMEventType.TEXT_CHUNK, content="Response")
@@ -437,7 +426,6 @@ class TestExecuteAgentBasicWorkflow:
         self,
         orchestration_service,
         mock_session_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_session,
         sample_case,
@@ -447,11 +435,11 @@ class TestExecuteAgentBasicWorkflow:
         mock_session_service.check_budget_exceeded.return_value = {"is_over_budget": False}
         mock_session_service.add_execution_to_session.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.update_execution.return_value = None
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.update_agent_execution.return_value = None
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         for agent_type in [AgentType.INVESTIGATOR, AgentType.DEBUGGER, AgentType.RESEARCHER]:
-            mock_execution_repo.create_execution.return_value = AgentExecution(
+            mock_case_repo.create_agent_execution.return_value = AgentExecution(
                 execution_id=f"exec_{agent_type.value}",
                 case_id=sample_case.case_id,
                 agent_type=agent_type,
@@ -493,7 +481,6 @@ class TestExecuteAgentErrorHandling:
         self,
         orchestration_service,
         mock_session_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_session,
         sample_case,
@@ -502,14 +489,14 @@ class TestExecuteAgentErrorHandling:
         mock_session_service.get_session.return_value = sample_session
         mock_session_service.check_budget_exceeded.return_value = {"is_over_budget": False}
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.create_execution.return_value = AgentExecution(
+        mock_case_repo.create_agent_execution.return_value = AgentExecution(
             execution_id="exec_new",
             case_id=sample_case.case_id,
             agent_type=AgentType.INVESTIGATOR,
             agent_model="test-model",
         )
-        mock_execution_repo.update_execution.return_value = None
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.update_agent_execution.return_value = None
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         async def mock_stream(**kwargs):
             yield LLMEvent(
@@ -537,7 +524,6 @@ class TestExecuteAgentErrorHandling:
         self,
         orchestration_service,
         mock_session_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_session,
         sample_case,
@@ -553,10 +539,10 @@ class TestExecuteAgentErrorHandling:
             agent_type=AgentType.INVESTIGATOR,
             agent_model="test-model",
         )
-        mock_execution_repo.create_execution.return_value = created_execution
-        mock_execution_repo.get_execution.return_value = created_execution
-        mock_execution_repo.update_execution.return_value = None
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.create_agent_execution.return_value = created_execution
+        mock_case_repo.get_agent_execution.return_value = created_execution
+        mock_case_repo.update_agent_execution.return_value = None
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         async def mock_stream(**kwargs):
             raise LLMException("Connection failed")
@@ -572,7 +558,7 @@ class TestExecuteAgentErrorHandling:
                 pass
 
         # Verify execution was updated with failure
-        mock_execution_repo.update_execution.assert_called()
+        mock_case_repo.update_agent_execution.assert_called()
 
 
 # =============================================================================
@@ -588,13 +574,12 @@ class TestBuildAgentContext:
         self,
         orchestration_service,
         mock_case_repo,
-        mock_execution_repo,
         sample_session,
         sample_case,
     ):
         """Test that context includes case details."""
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         context = await orchestration_service._build_agent_context(
             session=sample_session,
@@ -610,7 +595,6 @@ class TestBuildAgentContext:
         self,
         orchestration_service,
         mock_case_repo,
-        mock_execution_repo,
         sample_session,
         sample_case,
     ):
@@ -628,7 +612,7 @@ class TestBuildAgentContext:
                 response="Previous answer",
             ),
         ]
-        mock_execution_repo.list_executions_by_case.return_value = (previous_executions, 1)
+        mock_case_repo.list_agent_executions_by_case.return_value = (previous_executions, 1)
 
         context = await orchestration_service._build_agent_context(
             session=sample_session,
@@ -644,13 +628,12 @@ class TestBuildAgentContext:
         self,
         orchestration_service,
         mock_case_repo,
-        mock_execution_repo,
         sample_session,
         sample_case,
     ):
         """Test that context uses correct system prompt for agent type."""
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         for agent_type in AgentType:
             if agent_type == AgentType.CUSTOM:
@@ -673,14 +656,13 @@ class TestBuildAgentContext:
         self,
         orchestration_service,
         mock_case_repo,
-        mock_execution_repo,
         mock_tool_registry,
         sample_session,
         sample_case,
     ):
         """Test that context includes available tools."""
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         from faultmaven.modules.agent.domain.events.execution_events import Tool
 
@@ -703,13 +685,12 @@ class TestBuildAgentContext:
         self,
         orchestration_service,
         mock_case_repo,
-        mock_execution_repo,
         sample_session,
         sample_case,
     ):
         """Test that context handles empty conversation history."""
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.list_executions_by_case.return_value = ([], 0)
+        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
         context = await orchestration_service._build_agent_context(
             session=sample_session,
@@ -736,16 +717,16 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_execution_repo,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls executes tools."""
         mock_tool_registry.execute_tool.return_value = ToolResult(
             success=True,
             data={"content": "File contents here"},
         )
-        mock_execution_repo.save_tool_call.return_value = None
+        mock_case_repo.create_agent_tool_call.return_value = None
 
         tool_calls = [
             ToolCall(id="tc_1", name="read_file", arguments={"evidence_id": "ev_123"}),
@@ -775,9 +756,9 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_execution_repo,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls executes multiple tools in parallel."""
         call_times = []
@@ -788,7 +769,7 @@ class TestToolCallHandling:
             return ToolResult(success=True, data={"tool": tool_name})
 
         mock_tool_registry.execute_tool = mock_execute
-        mock_execution_repo.save_tool_call.return_value = None
+        mock_case_repo.create_agent_tool_call.return_value = None
 
         tool_calls = [
             ToolCall(id="tc_1", name="tool_1", arguments={}),
@@ -821,9 +802,9 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_execution_repo,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls respects max_parallel_tools limit."""
         concurrent_count = [0]
@@ -837,7 +818,7 @@ class TestToolCallHandling:
             return ToolResult(success=True, data={})
 
         mock_tool_registry.execute_tool = mock_execute
-        mock_execution_repo.save_tool_call.return_value = None
+        mock_case_repo.create_agent_tool_call.return_value = None
 
         # Create more tools than max_parallel_tools (3)
         tool_calls = [
@@ -868,9 +849,9 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_execution_repo,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls handles tool execution errors."""
         mock_tool_registry.execute_tool.return_value = ToolResult(
@@ -878,7 +859,7 @@ class TestToolCallHandling:
             data=None,
             error="File not found",
         )
-        mock_execution_repo.save_tool_call.return_value = None
+        mock_case_repo.create_agent_tool_call.return_value = None
 
         tool_calls = [
             ToolCall(id="tc_1", name="read_file", arguments={"evidence_id": "nonexistent"}),
@@ -908,16 +889,16 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_execution_repo,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls creates ToolCallRecord for each call."""
         mock_tool_registry.execute_tool.return_value = ToolResult(
             success=True,
             data={"result": "data"},
         )
-        mock_execution_repo.save_tool_call.return_value = None
+        mock_case_repo.create_agent_tool_call.return_value = None
 
         tool_calls = [
             ToolCall(id="tc_1", name="read_file", arguments={"evidence_id": "ev_1"}),
@@ -939,7 +920,7 @@ class TestToolCallHandling:
         )
 
         # Should save tool call records twice (once for each tool)
-        assert mock_execution_repo.save_tool_call.call_count == 4  # 2 start + 2 end
+        assert mock_case_repo.create_agent_tool_call.call_count == 4  # 2 start + 2 end
 
     @pytest.mark.asyncio
     async def test_handle_tool_calls_enforces_timeout(
@@ -947,9 +928,9 @@ class TestToolCallHandling:
         orchestration_service,
         mock_tool_registry,
         sample_execution,
-        mock_execution_repo,
         mock_evidence_service,
         sample_session,
+        mock_case_repo,
     ):
         """Test that _handle_tool_calls enforces timeout."""
         async def slow_tool(tool_name, params, context):
@@ -957,7 +938,7 @@ class TestToolCallHandling:
             return ToolResult(success=True, data={})
 
         mock_tool_registry.execute_tool = slow_tool
-        mock_execution_repo.save_tool_call.return_value = None
+        mock_case_repo.create_agent_tool_call.return_value = None
 
         tool_calls = [
             ToolCall(id="tc_1", name="slow_tool", arguments={}),
@@ -1141,13 +1122,12 @@ class TestUtilityMethods:
     async def test_get_execution_with_authorization(
         self,
         orchestration_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_execution,
         sample_case,
     ):
         """Test get_execution with proper authorization."""
-        mock_execution_repo.get_execution.return_value = sample_execution
+        mock_case_repo.get_agent_execution.return_value = sample_execution
         mock_case_repo.get.return_value = sample_case
 
         result = await orchestration_service.get_execution(
@@ -1162,13 +1142,12 @@ class TestUtilityMethods:
     async def test_get_execution_returns_none_for_wrong_org(
         self,
         orchestration_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_execution,
         sample_case,
     ):
         """Test get_execution returns None for wrong organization."""
-        mock_execution_repo.get_execution.return_value = sample_execution
+        mock_case_repo.get_agent_execution.return_value = sample_execution
         sample_case.organization_id = "different_org"
         mock_case_repo.get.return_value = sample_case
 
@@ -1183,13 +1162,12 @@ class TestUtilityMethods:
     async def test_list_executions_with_authorization(
         self,
         orchestration_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_case,
     ):
         """Test list_executions with proper authorization."""
         mock_case_repo.get.return_value = sample_case
-        mock_execution_repo.list_executions_by_case.return_value = (
+        mock_case_repo.list_agent_executions_by_case.return_value = (
             [
                 AgentExecution(
                     execution_id="exec_1",
@@ -1236,7 +1214,6 @@ class TestUtilityMethods:
     async def test_cancel_execution(
         self,
         orchestration_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_case,
     ):
@@ -1248,8 +1225,8 @@ class TestUtilityMethods:
             agent_model="test-model",
             status=ExecutionStatus.RUNNING,
         )
-        mock_execution_repo.get_execution.return_value = running_execution
-        mock_execution_repo.update_execution.return_value = None
+        mock_case_repo.get_agent_execution.return_value = running_execution
+        mock_case_repo.update_agent_execution.return_value = None
         mock_case_repo.get.return_value = sample_case
 
         result = await orchestration_service.cancel_execution(
@@ -1258,13 +1235,12 @@ class TestUtilityMethods:
         )
 
         assert result is True
-        mock_execution_repo.update_execution.assert_called_once()
+        mock_case_repo.update_agent_execution.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_cancel_execution_returns_false_for_completed(
         self,
         orchestration_service,
-        mock_execution_repo,
         mock_case_repo,
         sample_case,
     ):
@@ -1276,7 +1252,7 @@ class TestUtilityMethods:
             agent_model="test-model",
             status=ExecutionStatus.COMPLETED,
         )
-        mock_execution_repo.get_execution.return_value = completed_execution
+        mock_case_repo.get_agent_execution.return_value = completed_execution
         mock_case_repo.get.return_value = sample_case
 
         result = await orchestration_service.cancel_execution(
