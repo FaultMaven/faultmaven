@@ -1170,9 +1170,39 @@ class TestEdgeCases:
             "file_path": "org/case/date/abc_test.png",
             "file_size": len(sample_file_data),
         }
-        mock_case_repo.create_standalone_evidence.side_effect = lambda e: e
-
         long_description = "A" * 10000
+        # Mock create_standalone_evidence to return evidence
+        created_evidence = EvidenceArtifact(
+            evidence_id="evd_long123",
+            case_id="standalone",
+            user_id="user_123",
+            organization_id=sample_case.organization_id,
+            original_filename="test.png",
+            stored_filename="abc_test.png",
+            file_path="org/case/date/abc_test.png",
+            evidence_type=EvidenceArtifactType.SCREENSHOT,
+            mime_type="image/png",
+            file_size=len(sample_file_data),
+            is_primary=False,
+            description=long_description,
+        )
+        mock_case_repo.create_standalone_evidence.return_value = created_evidence
+        # Mock link_standalone_evidence_to_case to return linked evidence
+        linked_evidence = EvidenceArtifact(
+            evidence_id=created_evidence.evidence_id,
+            case_id=sample_case.case_id,
+            user_id="user_123",
+            organization_id=sample_case.organization_id,
+            original_filename="test.png",
+            stored_filename="abc_test.png",
+            file_path="org/case/date/abc_test.png",
+            evidence_type=EvidenceArtifactType.SCREENSHOT,
+            mime_type="image/png",
+            file_size=len(sample_file_data),
+            is_primary=False,
+            description=long_description,
+        )
+        mock_case_repo.link_standalone_evidence_to_case.return_value = linked_evidence
 
         result = await evidence_service.upload_evidence(
             case_id=sample_case.case_id,
