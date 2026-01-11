@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
     ConsultingData,
@@ -655,7 +655,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
         Returns:
             UploadedFile object
         """
-        from faultmaven.modules.case.domain.models import UploadedFile
+        from faultmaven.modules.case.contracts import UploadedFile
 
         uploaded_file = UploadedFile(
             file_id=attachment.get('file_id', f"file_{uuid4().hex[:12]}"),

@@ -315,4 +315,6 @@ from faultmaven.modules.case.domain.models import (
     HypothesisStatus,
     InvestigationPath,
     ConsultingData,
+    UrgencyLevel,
+    UploadedFile,
 )
