@@ -1,6 +1,13 @@
 """Verification test to understand why mocking fails in API integration tests.
 
 This test investigates whether the auth mocking strategy works at all.
+
+KNOWN ISSUE:
+- test_with_mock_using_override_dependency currently fails
+- The case routes use require_authentication which depends on get_current_user_optional
+- Simple dependency override doesn't work - needs investigation into middleware interaction
+- Working pattern exists in test_agent_api.py (overrides get_current_user from auth middleware)
+- This test file should be refactored or removed once proper auth mocking pattern is documented
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -68,15 +75,29 @@ def test_no_auth_returns_401(client):
     assert "Authentication required" in response.json()["detail"]
 
 
-def test_with_mock_using_override_dependency(client, app, mock_user):
+def test_with_mock_using_override_dependency(client, app):
     """Test using FastAPI dependency override (better approach)."""
-    from faultmaven.api.middleware.auth import get_current_user
+    from datetime import datetime, timezone
+    from faultmaven.api.v1.auth_dependencies import get_current_user_optional
+    from faultmaven.modules.auth.domain.models.auth import DevUser
 
-    async def override_get_current_user():
+    # Create a proper DevUser (not AuthenticatedUser)
+    mock_user = DevUser(
+        user_id="test-user-123",
+        username="testuser",
+        email="test@example.com",
+        display_name="Test User",
+        created_at=datetime.now(timezone.utc),
+        is_dev_user=True,
+        is_active=True,
+        roles=["admin"]
+    )
+
+    async def override_get_current_user_optional():
         return mock_user
 
-    # Override the dependency
-    app.dependency_overrides[get_current_user] = override_get_current_user
+    # Override the correct dependency (get_current_user_optional, not get_current_user)
+    app.dependency_overrides[get_current_user_optional] = override_get_current_user_optional
 
     try:
         response = client.get("/api/v1/cases")
