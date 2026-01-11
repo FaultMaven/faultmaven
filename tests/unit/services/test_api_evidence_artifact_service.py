@@ -902,8 +902,7 @@ class TestGetEvidence:
 
     async def test_get_evidence_wrong_org_returns_none(
 
-        self, evidence_service, sample_evidence
-
+        self, evidence_service, mock_case_repo, sample_evidence
     ):
 
         """Test that wrong organization returns None."""
@@ -994,8 +993,7 @@ class TestDownloadEvidence:
 
     async def test_download_evidence_success(
 
-        self, evidence_service, mock_file_storage, sample_evidence, sample_file_data
-
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_evidence, sample_file_data
     ):
 
         """Test successful evidence download."""
@@ -1054,8 +1052,7 @@ class TestDownloadEvidence:
 
     async def test_download_evidence_wrong_org_raises_authorization_error(
 
-        self, evidence_service, sample_evidence
-
+        self, evidence_service, mock_case_repo, sample_evidence
     ):
 
         """Test that wrong organization raises AuthorizationError."""
@@ -1080,8 +1077,7 @@ class TestDownloadEvidence:
 
     async def test_download_evidence_file_missing_raises_service_error(
 
-        self, evidence_service, mock_file_storage, sample_evidence
-
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_evidence
     ):
 
         """Test that missing file raises ServiceError."""
@@ -1124,8 +1120,7 @@ class TestUpdateEvidence:
 
     async def test_update_evidence_description_success(
 
-        self, evidence_service, sample_evidence
-
+        self, evidence_service, mock_case_repo, sample_evidence
     ):
 
         """Test successful description update."""
@@ -1168,8 +1163,7 @@ class TestUpdateEvidence:
 
     async def test_update_evidence_metadata_success(
 
-        self, evidence_service, sample_evidence
-
+        self, evidence_service, mock_case_repo, sample_evidence
     ):
 
         """Test successful metadata update."""
@@ -1204,8 +1198,7 @@ class TestUpdateEvidence:
 
     async def test_update_evidence_is_primary_true(
 
-        self, evidence_service, sample_evidence
-
+        self, evidence_service, mock_case_repo, sample_evidence
     ):
 
         """Test setting is_primary to True."""
@@ -1274,8 +1267,7 @@ class TestUpdateEvidence:
 
     async def test_update_evidence_wrong_org_raises_authorization_error(
 
-        self, evidence_service, sample_evidence
-
+        self, evidence_service, mock_case_repo, sample_evidence
     ):
 
         """Test that wrong organization raises AuthorizationError."""
@@ -1326,8 +1318,7 @@ class TestUpdateEvidence:
 
     async def test_update_evidence_invalid_metadata_raises_validation_error(
 
-        self, evidence_service, sample_evidence
-
+        self, evidence_service, mock_case_repo, sample_evidence
     ):
 
         """Test that non-dict metadata raises ValidationException."""
@@ -1354,8 +1345,7 @@ class TestUpdateEvidence:
 
     async def test_update_evidence_no_valid_fields_raises_validation_error(
 
-        self, evidence_service, sample_evidence
-
+        self, evidence_service, mock_case_repo, sample_evidence
     ):
 
         """Test that updates with only invalid fields raises ValidationException."""
@@ -1398,8 +1388,7 @@ class TestDeleteEvidence:
 
     async def test_delete_evidence_success(
 
-        self, evidence_service, mock_file_storage, sample_evidence
-
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_evidence
     ):
 
         """Test successful evidence deletion."""
@@ -1460,8 +1449,7 @@ class TestDeleteEvidence:
 
     async def test_delete_evidence_wrong_org_raises_authorization_error(
 
-        self, evidence_service, sample_evidence
-
+        self, evidence_service, mock_case_repo, sample_evidence
     ):
 
         """Test that wrong organization raises AuthorizationError."""
@@ -1486,8 +1474,7 @@ class TestDeleteEvidence:
 
     async def test_delete_evidence_file_already_missing(
 
-        self, evidence_service, mock_file_storage, sample_evidence
-
+        self, evidence_service, mock_case_repo, mock_file_storage, sample_evidence
     ):
 
         """Test that missing file doesn't prevent deletion."""
@@ -1752,8 +1739,7 @@ class TestSetPrimaryEvidence:
 
     async def test_set_primary_evidence_success(
 
-        self, evidence_service, sample_evidence
-
+        self, evidence_service, mock_case_repo, sample_evidence
     ):
 
         """Test successful setting of primary evidence."""
@@ -1820,8 +1806,7 @@ class TestSetPrimaryEvidence:
 
     async def test_set_primary_evidence_wrong_org_raises_authorization_error(
 
-        self, evidence_service, sample_evidence
-
+        self, evidence_service, mock_case_repo, sample_evidence
     ):
 
         """Test that wrong organization raises AuthorizationError."""
