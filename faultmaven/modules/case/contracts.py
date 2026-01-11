@@ -306,4 +306,13 @@ class CaseDTO:
 
 # Re-export domain models for backward compatibility
 # These can be used directly until full DTO migration is complete
-from faultmaven.modules.case.domain.models import Case, CaseStatus
+# Services should import from contracts.py (not domain.models) per Principle 2
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    CaseSeverity,
+    InvestigationStrategy,
+    HypothesisStatus,
+    InvestigationPath,
+    ConsultingData,
+)

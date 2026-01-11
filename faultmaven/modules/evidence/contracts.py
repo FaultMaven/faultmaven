@@ -33,7 +33,11 @@ from faultmaven.modules.evidence.domain.models import (
 
 # EvidenceArtifact can be used directly or via DTOs
 # For now, re-export from domain for backward compatibility
-from faultmaven.modules.evidence.domain.models import EvidenceArtifact
+# Services should import from contracts.py (not domain.models) per Principle 2
+from faultmaven.modules.evidence.domain.models import (
+    EvidenceArtifact,
+    EvidenceListFilter,
+)
 
 
 # ============================================================
@@ -67,6 +71,7 @@ __all__ = [
     "StorageBackend",
     # Models
     "EvidenceArtifact",
+    "EvidenceListFilter",
     # Protocols
     "IEvidenceQuery",
 ]
