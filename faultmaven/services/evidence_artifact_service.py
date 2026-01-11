@@ -125,8 +125,7 @@ class APIEvidenceArtifactService(BaseService):
             AuthorizationError: If organization doesn't own parent case
         """
         from uuid import UUID
-        evidence_id_uuid = UUID(evidence_id) if isinstance(evidence_id, str) else evidence_id
-        evidence = await self.case_repo.get_standalone_evidence(evidence_id_uuid)
+        evidence = await self.case_repo.get_standalone_evidence(evidence_id)
         if not evidence:
             raise NotFoundError("Evidence", evidence_id)
 
@@ -243,22 +242,19 @@ class APIEvidenceArtifactService(BaseService):
             # Step 6: Save to repository using create_standalone_evidence
             # Extract parameters from EvidenceArtifact object
             from uuid import UUID
-            uploaded_by_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
             saved_evidence = await self.case_repo.create_standalone_evidence(
                 filename=evidence.original_filename,
                 content_type=evidence.mime_type,
                 size_bytes=evidence.file_size,
                 storage_path=evidence.file_path,
-                uploaded_by=uploaded_by_uuid,
+                uploaded_by=user_id,
                 description=evidence.description,
                 tags=getattr(evidence, 'tags', []),
             )
             
             # Link to case
             from uuid import UUID
-            evidence_id_uuid = UUID(saved_evidence.evidence_id) if isinstance(saved_evidence.evidence_id, str) else saved_evidence.evidence_id
-            case_id_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
-            saved_evidence = await self.case_repo.link_standalone_evidence_to_case(evidence_id_uuid, case_id_uuid)
+            saved_evidence = await self.case_repo.link_standalone_evidence_to_case(evidence_id, case_id)
             if not saved_evidence:
                 raise ServiceError(f"Failed to link evidence {saved_evidence.evidence_id} to case {case_id}")
 
@@ -267,8 +263,7 @@ class APIEvidenceArtifactService(BaseService):
                 await self.case_repo.set_primary_evidence(case_id, saved_evidence.evidence_id)
                 # Refresh to get updated state
                 from uuid import UUID
-                evidence_id_uuid = UUID(saved_evidence.evidence_id) if isinstance(saved_evidence.evidence_id, str) else saved_evidence.evidence_id
-                saved_evidence = await self.case_repo.get_standalone_evidence(evidence_id_uuid)
+                saved_evidence = await self.case_repo.get_standalone_evidence(evidence_id)
 
             self.log_operation(
                 "upload_evidence_success",
@@ -312,8 +307,7 @@ class APIEvidenceArtifactService(BaseService):
 
         try:
             from uuid import UUID
-            evidence_id_uuid = UUID(evidence_id) if isinstance(evidence_id, str) else evidence_id
-            evidence = await self.case_repo.get_standalone_evidence(evidence_id_uuid)
+            evidence = await self.case_repo.get_standalone_evidence(evidence_id)
 
             if not evidence:
                 return None
@@ -464,8 +458,7 @@ class APIEvidenceArtifactService(BaseService):
             else:
                 # Refresh evidence to get updated state
                 from uuid import UUID
-                evidence_id_uuid = UUID(evidence_id) if isinstance(evidence_id, str) else evidence_id
-                saved_evidence = await self.case_repo.get_standalone_evidence(evidence_id_uuid)
+                saved_evidence = await self.case_repo.get_standalone_evidence(evidence_id)
             self.log_operation(
                 "update_evidence_success",
                 evidence_id=evidence_id,
@@ -516,8 +509,7 @@ class APIEvidenceArtifactService(BaseService):
         try:
             # Get evidence to check authorization and get file path
             from uuid import UUID
-            evidence_id_uuid = UUID(evidence_id) if isinstance(evidence_id, str) else evidence_id
-            evidence = await self.case_repo.get_standalone_evidence(evidence_id_uuid)
+            evidence = await self.case_repo.get_standalone_evidence(evidence_id)
 
             if not evidence:
                 return False
@@ -539,8 +531,7 @@ class APIEvidenceArtifactService(BaseService):
 
             # Delete record from repository
             from uuid import UUID
-            evidence_id_uuid = UUID(evidence_id) if isinstance(evidence_id, str) else evidence_id
-            deleted = await self.case_repo.delete_standalone_evidence(evidence_id_uuid)
+            deleted = await self.case_repo.delete_standalone_evidence(evidence_id)
 
             if deleted:
                 self.log_operation(
@@ -764,8 +755,7 @@ class APIEvidenceArtifactService(BaseService):
 
             # Get all evidence for case (no pagination for stats)
             from uuid import UUID
-            case_id_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
-            filters = EvidenceListFilter(case_id=case_id_uuid, limit=10000, offset=0)
+            filters = EvidenceListFilter(case_id=case_id, limit=10000, offset=0)
             evidence_list, total = await self.case_repo.list_standalone_evidence(filters)
 
             # Calculate statistics
@@ -855,8 +845,7 @@ class APIEvidenceArtifactService(BaseService):
 
             # Get all evidence for case
             from uuid import UUID
-            case_id_uuid = UUID(case_id) if isinstance(case_id, str) else case_id
-            filters = EvidenceListFilter(case_id=case_id_uuid, limit=10000, offset=0)
+            filters = EvidenceListFilter(case_id=case_id, limit=10000, offset=0)
             evidence_list, total = await self.case_repo.list_standalone_evidence(filters)
 
             deleted_count = 0
@@ -867,8 +856,7 @@ class APIEvidenceArtifactService(BaseService):
 
                 # Delete record from repository
                 from uuid import UUID
-                evidence_id_uuid = UUID(evidence.evidence_id) if isinstance(evidence.evidence_id, str) else evidence.evidence_id
-                if await self.case_repo.delete_standalone_evidence(evidence_id_uuid):
+                if await self.case_repo.delete_standalone_evidence(evidence_id):
                     deleted_count += 1
 
             self.log_operation(
