@@ -105,7 +105,6 @@ class ServiceFactory:
         return APICaseService(
             case_repo=self.case_repo,
             session_repo=self.session_repo,
-            evidence_repo=self.evidence_repo,
         )
 
     def create_investigation_session_service(self) -> APIInvestigationSessionService:
@@ -165,7 +164,6 @@ class ServiceFactory:
             file_storage = self.create_file_storage_service()
 
         return APIEvidenceArtifactService(
-            evidence_repo=self.evidence_repo,
             case_repo=self.case_repo,
             file_storage=file_storage,
         )

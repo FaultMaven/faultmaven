@@ -159,20 +159,8 @@ class TestServiceCreation:
         assert service.session_repo is not None
         assert service.session_repo is factory.session_repo
 
-    def test_create_case_service_injects_evidence_repo(self, mock_session):
-        """Test that case service has evidence_repo injected."""
-        factory = ServiceFactory(mock_session)
-
-        service = factory.create_case_service()
-
-        assert service.evidence_repo is not None
-        assert service.evidence_repo is factory.evidence_repo
-
-    def test_create_case_service_injects_execution_repo(self, mock_session):
-        """Test that case service has execution_repo injected."""
-        factory = ServiceFactory(mock_session)
-
-        service = factory.create_case_service()
+    # Note: evidence_repo and execution_repo removed - evidence and agent executions
+    # are now handled by case_repo (ICaseRepository) as part of TD-001 migration
 
 
 
@@ -201,11 +189,8 @@ class TestInvestigationSessionServiceCreation:
         assert service.session_repo is not None
         assert service.session_repo is factory.session_repo
 
-    def test_create_investigation_session_service_injects_execution_repo(self, mock_session):
-        """Test that session service has execution_repo injected."""
-        factory = ServiceFactory(mock_session)
-
-        service = factory.create_investigation_session_service()
+    # Note: execution_repo removed - agent executions are now handled by case_repo
+    # (ICaseRepository) as part of TD-001 migration
 
 
     def test_create_investigation_session_service_injects_case_repo(self, mock_session):
@@ -266,7 +251,7 @@ class TestMultipleServiceCreation:
         # Repositories are shared
         assert service1.case_repo is service2.case_repo
         assert service1.session_repo is service2.session_repo
-        assert service1.evidence_repo is service2.evidence_repo
+        # Note: evidence_repo removed - evidence now handled by case_repo (TD-001)
 
 
 # ============================================================
@@ -398,14 +383,8 @@ class TestEvidenceArtifactServiceCreation:
         assert service is not None
         assert isinstance(service, APIEvidenceArtifactService)
 
-    def test_create_evidence_service_injects_evidence_repo(self, mock_session):
-        """Test that evidence service has evidence_repo injected."""
-        factory = ServiceFactory(mock_session)
-
-        service = factory.create_evidence_artifact_service()
-
-        assert service.evidence_repo is not None
-        assert service.evidence_repo is factory.evidence_repo
+    # Note: evidence_repo removed - evidence now handled by case_repo (ICaseRepository)
+    # as part of TD-001 migration
 
     def test_create_evidence_service_injects_case_repo(self, mock_session):
         """Test that evidence service has case_repo injected."""
@@ -455,7 +434,7 @@ class TestEvidenceArtifactServiceCreation:
         service1 = factory.create_evidence_artifact_service()
         service2 = factory.create_evidence_artifact_service()
 
-        assert service1.evidence_repo is service2.evidence_repo
+        # Note: evidence_repo removed - evidence now handled by case_repo (TD-001)
         assert service1.case_repo is service2.case_repo
 
 
