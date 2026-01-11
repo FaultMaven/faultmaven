@@ -149,33 +149,38 @@ class PasswordChangeRequest(BaseModel):
 
 
 def get_user_service():
-    """Get UserService instance.
+    """Get UserService instance from DI container.
 
-    Creates a UserService with InMemoryUserRepository for development.
-    In production, this would use PostgreSQLUserRepository or get from DI container.
+    Uses the Composition Root pattern: UserService is created by the container
+    with its auth_service dependency properly injected.
 
     Returns:
         UserService instance
-    """
-    from faultmaven.services.user_service import UserService
 
-    # Use singleton repositories for development
-    if not hasattr(get_user_service, "_instance"):
-        # Try to get from DI container first
-        try:
-            from faultmaven.container import container
-            user_service = getattr(container, 'user_service', None)
-            if user_service:
-                get_user_service._instance = user_service
-                return user_service
-        except Exception as e:
-            # No fallback - service must be available via DI
+    Raises:
+        RuntimeError: If container is not initialized or UserService not available
+    """
+    # Check cached instance first
+    if hasattr(get_user_service, "_instance") and get_user_service._instance is not None:
+        return get_user_service._instance
+
+    # Get from DI container (Composition Root pattern)
+    try:
+        from faultmaven.container import container
+        user_service = container.get_user_service()
+        if user_service:
+            get_user_service._instance = user_service
+            return user_service
+        else:
             raise RuntimeError(
                 "UserService not available from DI container. "
-                "Ensure the container is properly initialized."
-            ) from e
-
-    return get_user_service._instance
+                "Ensure the container is properly initialized with auth_service."
+            )
+    except Exception as e:
+        raise RuntimeError(
+            "UserService not available from DI container. "
+            "Ensure the container is properly initialized."
+        ) from e
 
 
 # ============================================================
