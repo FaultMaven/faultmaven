@@ -19,7 +19,8 @@ from faultmaven.modules.report.domain.models import (
     SimilarRunbook,
     CaseReport
 )
-from faultmaven.modules.case.domain.models import Case
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import Case
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.observability.tracing import trace
 

@@ -17,7 +17,8 @@ from faultmaven.utils.serialization import to_json_compatible
 from faultmaven.services.base import BaseService
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
-from faultmaven.modules.case.domain.models import Case, CaseStatus
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import Case, CaseStatus
 from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
 from faultmaven.exceptions import NotFoundError, PermissionDeniedException, ServiceException
 from faultmaven.infrastructure.observability.tracing import trace

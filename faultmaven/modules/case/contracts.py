@@ -268,8 +268,42 @@ ICaseService = _ICaseService  # Re-export with same name
 
 
 # ============================================================
-# DTOs (Data Transfer Objects)
+# DTOs (Data Transfer Objects) for Cross-Module Use
 # ============================================================
 
-# Case domain model can be used directly as DTO
-# If specific DTOs are needed, they can be added here
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+
+
+class CaseStatusDTO(str, Enum):
+    """Public case status enum for cross-module use."""
+    CONSULTING = "consulting"
+    INVESTIGATING = "investigating"
+    DOCUMENTING = "documenting"
+    RESOLVED = "resolved"
+    RESOLVED_WITH_WORKAROUND = "resolved_with_workaround"
+    RESOLVED_BY_USER = "resolved_by_user"
+    CLOSED = "closed"
+    ABANDONED = "abandoned"
+
+
+@dataclass
+class CaseDTO:
+    """Public case representation for cross-module use.
+
+    This DTO exposes only the fields needed by other modules,
+    hiding internal case implementation details.
+    """
+    case_id: str
+    title: str
+    status: CaseStatusDTO
+    user_id: str
+    organization_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+# Re-export domain models for backward compatibility
+# These can be used directly until full DTO migration is complete
+from faultmaven.modules.case.domain.models import Case, CaseStatus

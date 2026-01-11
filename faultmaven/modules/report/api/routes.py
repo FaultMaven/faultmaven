@@ -36,7 +36,8 @@ from faultmaven.modules.report.domain.models import (
 )
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-from faultmaven.modules.auth.domain.models.auth import DevUser
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import (
     get_case_service,
@@ -190,7 +191,7 @@ def check_tenant_provider_available(tenant_provider: Optional[TenantProvider]) -
 
 async def validate_organization_access(
     tenant_provider: TenantProvider,
-    current_user: DevUser,
+    current_user: UserDTO,
     case_organization_id: Optional[str] = None
 ) -> None:
     """Validate user has access to the organization context.
@@ -247,7 +248,7 @@ async def validate_organization_access(
 async def generate_report(
     request: ReportGenerationRequest,
     case_id: str = Query(..., description="Case ID to generate reports for"),
-    current_user: DevUser = Depends(require_authentication),
+    current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_service: Optional[ICaseService] = Depends(get_case_service),
     generation_service = Depends(get_report_generation_service),
@@ -346,7 +347,7 @@ async def generate_report(
 @trace("api_get_report_recommendations")
 async def get_report_recommendations(
     case_id: str = Path(..., description="Case ID"),
-    current_user: DevUser = Depends(require_authentication),
+    current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_service: Optional[ICaseService] = Depends(get_case_service),
     rec_service = Depends(get_report_recommendation_service),
@@ -431,7 +432,7 @@ async def get_report_recommendations(
 @trace("api_get_report")
 async def get_report(
     report_id: str = Path(..., description="Report UUID"),
-    current_user: DevUser = Depends(require_authentication),
+    current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
@@ -497,7 +498,7 @@ async def get_report(
 async def update_report(
     report_id: str = Path(..., description="Report UUID"),
     request: ReportUpdateRequest = Body(...),
-    current_user: DevUser = Depends(require_authentication),
+    current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
@@ -605,7 +606,7 @@ async def update_report(
 @trace("api_delete_report")
 async def delete_report(
     report_id: str = Path(..., description="Report UUID"),
-    current_user: DevUser = Depends(require_authentication),
+    current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
@@ -687,7 +688,7 @@ async def list_reports_for_case(
     case_id: str = Path(..., description="Case UUID"),
     include_history: bool = Query(False, description="Include all versions or only current"),
     report_type: Optional[str] = Query(None, description="Filter by report type"),
-    current_user: DevUser = Depends(require_authentication),
+    current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
@@ -771,7 +772,7 @@ async def list_reports_for_case(
 @trace("api_get_report_versions")
 async def get_report_versions(
     report_id: str = Path(..., description="Report UUID"),
-    current_user: DevUser = Depends(require_authentication),
+    current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
@@ -861,7 +862,7 @@ async def get_report_versions(
 async def link_report_to_case_closure(
     report_id: str = Path(..., description="Report UUID"),
     request: LinkCaseRequest = Body(default=LinkCaseRequest()),
-    current_user: DevUser = Depends(require_authentication),
+    current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_repository: Optional[CaseRepository] = Depends(get_case_repository),
     case_service: Optional[ICaseService] = Depends(get_case_service),
