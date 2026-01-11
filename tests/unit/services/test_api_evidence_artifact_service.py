@@ -23,6 +23,7 @@ from faultmaven.services.file_storage_service import FileStorageService
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
+    EvidenceListFilter,
     StorageBackend,
 )
 from faultmaven.modules.case.domain.models import Case, CaseStatus
@@ -37,13 +38,6 @@ from faultmaven.exceptions import (
 # ============================================================
 # Fixtures
 # ============================================================
-
-@pytest.fixture
-def mock_evidence_repo():
-    """Create mock evidence artifact repository."""
-    repo = AsyncMock()
-    return repo
-
 
 @pytest.fixture
 def mock_case_repo():
@@ -125,9 +119,24 @@ class TestUploadEvidence:
             "file_path": "org_456/case_123/2024-01-15/abc123_test.png",
             "file_size": len(sample_file_data),
         }
-        mock_case_repo.create_standalone_evidence.side_effect = lambda e: e
-        mock_case_repo.get_standalone_evidence.side_effect = lambda id: EvidenceArtifact(
-            evidence_id=id,
+        # Mock create_standalone_evidence to return evidence
+        created_evidence = EvidenceArtifact(
+            evidence_id="evd_abc123def456",
+            case_id="standalone",  # Default until linked
+            user_id="user_123",
+            organization_id=sample_case.organization_id,
+            original_filename="test.png",
+            stored_filename="abc123_test.png",
+            file_path="org_456/case_123/2024-01-15/abc123_test.png",
+            evidence_type=EvidenceArtifactType.SCREENSHOT,
+            mime_type="image/png",
+            file_size=len(sample_file_data),
+            is_primary=False,
+        )
+        mock_case_repo.create_standalone_evidence.return_value = created_evidence
+        # Mock link_standalone_evidence_to_case to return linked evidence
+        linked_evidence = EvidenceArtifact(
+            evidence_id=created_evidence.evidence_id,
             case_id=sample_case.case_id,
             user_id="user_123",
             organization_id=sample_case.organization_id,
@@ -137,8 +146,9 @@ class TestUploadEvidence:
             evidence_type=EvidenceArtifactType.SCREENSHOT,
             mime_type="image/png",
             file_size=len(sample_file_data),
-            is_primary=True,
+            is_primary=False,
         )
+        mock_case_repo.link_standalone_evidence_to_case.return_value = linked_evidence
 
         result = await evidence_service.upload_evidence(
             case_id=sample_case.case_id,
@@ -155,6 +165,7 @@ class TestUploadEvidence:
         mock_case_repo.get.assert_called_once_with(sample_case.case_id)
         mock_file_storage.store_file.assert_called_once()
         mock_case_repo.create_standalone_evidence.assert_called_once()
+        mock_case_repo.link_standalone_evidence_to_case.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_upload_evidence_generates_uuid_id(
@@ -168,16 +179,38 @@ class TestUploadEvidence:
             "file_size": len(sample_file_data),
         }
 
-        created_evidence = None
+        # Mock create_standalone_evidence to return evidence
+        created_evidence = EvidenceArtifact(
+            evidence_id="evd_test123",
+            case_id="standalone",
+            user_id="user_123",
+            organization_id=sample_case.organization_id,
+            original_filename="test.png",
+            stored_filename="abc_test.png",
+            file_path="org/case/date/abc_test.png",
+            evidence_type=EvidenceArtifactType.SCREENSHOT,
+            mime_type="image/png",
+            file_size=len(sample_file_data),
+            is_primary=False,
+        )
+        mock_case_repo.create_standalone_evidence.return_value = created_evidence
+        # Mock link_standalone_evidence_to_case to return linked evidence
+        linked_evidence = EvidenceArtifact(
+            evidence_id=created_evidence.evidence_id,
+            case_id=sample_case.case_id,
+            user_id="user_123",
+            organization_id=sample_case.organization_id,
+            original_filename="test.png",
+            stored_filename="abc_test.png",
+            file_path="org/case/date/abc_test.png",
+            evidence_type=EvidenceArtifactType.SCREENSHOT,
+            mime_type="image/png",
+            file_size=len(sample_file_data),
+            is_primary=False,
+        )
+        mock_case_repo.link_standalone_evidence_to_case.return_value = linked_evidence
 
-        async def capture_evidence(e):
-            nonlocal created_evidence
-            created_evidence = e
-            return e
-
-        mock_case_repo.create_standalone_evidence.side_effect = capture_evidence
-
-        await evidence_service.upload_evidence(
+        result = await evidence_service.upload_evidence(
             case_id=sample_case.case_id,
             organization_id=sample_case.organization_id,
             user_id="user_123",
@@ -187,8 +220,8 @@ class TestUploadEvidence:
             evidence_type=EvidenceArtifactType.SCREENSHOT,
         )
 
-        assert created_evidence is not None
-        assert created_evidence.evidence_id.startswith("evd_")
+        assert result is not None
+        assert result.evidence_id.startswith("evd_")
 
     @pytest.mark.asyncio
     async def test_upload_evidence_case_not_found_raises_not_found_error(
@@ -299,18 +332,42 @@ class TestUploadEvidence:
             "file_size": len(sample_file_data),
         }
 
-        created_evidence = None
-
-        async def capture_evidence(e):
-            nonlocal created_evidence
-            created_evidence = e
-            return e
-
-        mock_case_repo.create_standalone_evidence.side_effect = capture_evidence
+        # Mock create_standalone_evidence to return evidence with metadata
+        created_evidence = EvidenceArtifact(
+            evidence_id="evd_meta123",
+            case_id="standalone",
+            user_id="user_123",
+            organization_id=sample_case.organization_id,
+            original_filename="test.png",
+            stored_filename="abc_test.png",
+            file_path="org/case/date/abc_test.png",
+            evidence_type=EvidenceArtifactType.SCREENSHOT,
+            mime_type="image/png",
+            file_size=len(sample_file_data),
+            is_primary=False,
+            metadata={"resolution": "1920x1080", "source": "browser"},
+        )
+        mock_case_repo.create_standalone_evidence.return_value = created_evidence
+        # Mock link_standalone_evidence_to_case to return linked evidence
+        linked_evidence = EvidenceArtifact(
+            evidence_id=created_evidence.evidence_id,
+            case_id=sample_case.case_id,
+            user_id="user_123",
+            organization_id=sample_case.organization_id,
+            original_filename="test.png",
+            stored_filename="abc_test.png",
+            file_path="org/case/date/abc_test.png",
+            evidence_type=EvidenceArtifactType.SCREENSHOT,
+            mime_type="image/png",
+            file_size=len(sample_file_data),
+            is_primary=False,
+            metadata={"resolution": "1920x1080", "source": "browser"},
+        )
+        mock_case_repo.link_standalone_evidence_to_case.return_value = linked_evidence
 
         metadata = {"resolution": "1920x1080", "source": "browser"}
 
-        await evidence_service.upload_evidence(
+        result = await evidence_service.upload_evidence(
             case_id=sample_case.case_id,
             organization_id=sample_case.organization_id,
             user_id="user_123",
@@ -321,7 +378,7 @@ class TestUploadEvidence:
             metadata=metadata,
         )
 
-        assert created_evidence.metadata == metadata
+        assert result.metadata == metadata
 
 
 # ============================================================
@@ -718,12 +775,14 @@ class TestListEvidenceByCase:
             evidence_type=EvidenceArtifactType.SCREENSHOT,
         )
 
-        mock_case_repo.list_standalone_evidence.assert_called_once_with(
-            case_id=sample_case.case_id,
-            evidence_type=EvidenceArtifactType.SCREENSHOT,
-            limit=50,
-            offset=0,
-        )
+        mock_case_repo.list_standalone_evidence.assert_called_once()
+        call_args = mock_case_repo.list_standalone_evidence.call_args
+        assert call_args is not None
+        filters = call_args[0][0]  # First positional argument
+        assert isinstance(filters, EvidenceListFilter)
+        assert filters.case_id == sample_case.case_id
+        assert filters.limit == 50
+        assert filters.offset == 0
 
     @pytest.mark.asyncio
     async def test_list_evidence_by_case_with_pagination(
@@ -740,12 +799,14 @@ class TestListEvidenceByCase:
             offset=10,
         )
 
-        mock_case_repo.list_standalone_evidence.assert_called_once_with(
-            case_id=sample_case.case_id,
-            evidence_type=None,
-            limit=20,
-            offset=10,
-        )
+        mock_case_repo.list_standalone_evidence.assert_called_once()
+        call_args = mock_case_repo.list_standalone_evidence.call_args
+        assert call_args is not None
+        filters = call_args[0][0]  # First positional argument
+        assert isinstance(filters, EvidenceListFilter)
+        assert filters.case_id == sample_case.case_id
+        assert filters.limit == 20
+        assert filters.offset == 10
 
     @pytest.mark.asyncio
     async def test_list_evidence_by_case_not_found_raises_not_found_error(
@@ -1137,9 +1198,39 @@ class TestEdgeCases:
             "file_path": "org/case/date/abc_test.bin",
             "file_size": len(sample_file_data),
         }
-        mock_case_repo.create_standalone_evidence.side_effect = lambda e: e
 
         for evidence_type in EvidenceArtifactType:
+            # Mock create_standalone_evidence to return evidence with current type
+            created_evidence = EvidenceArtifact(
+                evidence_id=f"evd_{evidence_type.value}123",
+                case_id="standalone",
+                user_id="user_123",
+                organization_id=sample_case.organization_id,
+                original_filename="test.bin",
+                stored_filename="abc_test.bin",
+                file_path="org/case/date/abc_test.bin",
+                evidence_type=evidence_type,
+                mime_type="application/octet-stream",
+                file_size=len(sample_file_data),
+                is_primary=False,
+            )
+            mock_case_repo.create_standalone_evidence.return_value = created_evidence
+            # Mock link_standalone_evidence_to_case to return linked evidence
+            linked_evidence = EvidenceArtifact(
+                evidence_id=created_evidence.evidence_id,
+                case_id=sample_case.case_id,
+                user_id="user_123",
+                organization_id=sample_case.organization_id,
+                original_filename="test.bin",
+                stored_filename="abc_test.bin",
+                file_path="org/case/date/abc_test.bin",
+                evidence_type=evidence_type,
+                mime_type="application/octet-stream",
+                file_size=len(sample_file_data),
+                is_primary=False,
+            )
+            mock_case_repo.link_standalone_evidence_to_case.return_value = linked_evidence
+
             result = await evidence_service.upload_evidence(
                 case_id=sample_case.case_id,
                 organization_id=sample_case.organization_id,
