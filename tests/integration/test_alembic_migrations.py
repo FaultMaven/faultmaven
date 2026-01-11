@@ -50,8 +50,11 @@ def run_alembic(command: str, database_url: str) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
 
+    # Use venv alembic to ensure correct version
+    alembic_path = PROJECT_ROOT / ".venv" / "bin" / "alembic"
+
     result = subprocess.run(
-        f"alembic {command}",
+        f"{alembic_path} {command}",
         shell=True,
         cwd=PROJECT_ROOT,
         env=env,
