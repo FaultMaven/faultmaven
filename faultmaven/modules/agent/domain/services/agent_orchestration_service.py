@@ -28,16 +28,13 @@ from uuid import uuid4
 
 from faultmaven.services.base import BaseService
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.modules.case.contracts import ICaseRepository
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.modules.agent.infrastructure.persistence.agent_execution_repository import (
-    AgentExecutionRepository,
-)
-from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.domain.events import (
     AgentContext,
     ExecutionEvent,
@@ -185,19 +182,17 @@ class AgentOrchestrationService(BaseService):
     - Token budget tracking
     - Error handling and retry logic
 
-    Attributes:
+        Attributes:
         session_service: Investigation session service
         evidence_service: Evidence artifact service
-        execution_repo: Agent execution repository
-        case_repo: Case repository
+        case_repo: Case repository (handles agent executions - migrated from AgentExecutionRepository)
         tool_registry: Registry of available tools
         llm_client: LLM client for API calls
     """
 
     def __init__(
         self,
-        execution_repo: AgentExecutionRepository,
-        case_repo: CaseRepository,
+        case_repo: ICaseRepository,
         session_service: Any,
         evidence_service: Any,
         tool_registry: Optional[AgentToolRegistry] = None,
@@ -210,8 +205,7 @@ class AgentOrchestrationService(BaseService):
         """Initialize agent orchestration service.
 
         Args:
-            execution_repo: Agent execution repository
-            case_repo: Case repository
+            case_repo: Case repository (handles agent executions - migrated from AgentExecutionRepository)
             session_service: Investigation session service (required)
             evidence_service: Evidence artifact service (required)
             tool_registry: Registry of available tools (uses global if not provided)
@@ -225,7 +219,6 @@ class AgentOrchestrationService(BaseService):
             ValueError: If required dependencies are not provided
         """
         super().__init__("agent_orchestration_service")
-        self.execution_repo = execution_repo
         self.case_repo = case_repo
 
         # Require explicit dependency injection
@@ -385,7 +378,7 @@ class AgentOrchestrationService(BaseService):
                 prompt_tokens=total_tokens.get("input_tokens", 0),
                 completion_tokens=total_tokens.get("output_tokens", 0),
             )
-            await self.execution_repo.update_execution(execution)
+            await self.case_repo.update_agent_execution(execution)
 
             # Step 9: Update session token usage
             total = total_tokens.get("input_tokens", 0) + total_tokens.get("output_tokens", 0)
@@ -494,7 +487,7 @@ class AgentOrchestrationService(BaseService):
         )
         execution.mark_started()
 
-        saved = await self.execution_repo.create_execution(execution)
+        saved = await self.case_repo.create_agent_execution(execution)
         return saved
 
     async def _mark_execution_failed(
@@ -509,10 +502,10 @@ class AgentOrchestrationService(BaseService):
             error_message: Error message
         """
         try:
-            execution = await self.execution_repo.get_execution(execution_id)
+            execution = await self.case_repo.get_agent_execution(execution_id)
             if execution:
                 execution.mark_failed(error_message)
-                await self.execution_repo.update_execution(execution)
+                await self.case_repo.update_agent_execution(execution)
         except Exception as e:
             logger.error(f"Failed to mark execution as failed: {e}")
 
@@ -606,7 +599,7 @@ class AgentOrchestrationService(BaseService):
         messages: List[Message] = []
 
         try:
-            executions, _ = await self.execution_repo.list_executions_by_case(case_id)
+            executions, _ = await self.case_repo.list_agent_executions_by_case(case_id)
 
             # Take most recent completed executions
             completed = [
@@ -836,7 +829,8 @@ class AgentOrchestrationService(BaseService):
         try:
             # Add to execution
             execution.add_tool_call(tc_record)
-            await self.execution_repo.save_tool_call(tc_record)
+            # Create tool call record (will be updated after execution)
+            await self.case_repo.create_agent_tool_call(tc_record)
 
             # Execute with timeout
             try:
@@ -868,7 +862,7 @@ class AgentOrchestrationService(BaseService):
                 result = None
 
             # Save updated tool call
-            await self.execution_repo.save_tool_call(tc_record)
+            await self.case_repo.update_agent_tool_call(tc_record)
 
             return DomainToolResult(
                 tool_call_id=tool_call.id,
@@ -882,9 +876,14 @@ class AgentOrchestrationService(BaseService):
             logger.exception(f"Tool execution failed: {e}")
             tc_record.mark_failed(str(e))
             try:
-                await self.execution_repo.save_tool_call(tc_record)
+                # Update tool call with failure status
+                await self.case_repo.update_agent_tool_call(tc_record)
             except Exception:
-                pass
+                # If update fails, try to create it
+                try:
+                    await self.case_repo.create_agent_tool_call(tc_record)
+                except Exception:
+                    pass
 
             return DomainToolResult(
                 tool_call_id=tool_call.id,
@@ -998,7 +997,7 @@ class AgentOrchestrationService(BaseService):
         Returns:
             AgentExecution if found and authorized
         """
-        execution = await self.execution_repo.get_execution(execution_id)
+        execution = await self.case_repo.get_agent_execution(execution_id)
         if not execution:
             return None
 
@@ -1036,7 +1035,7 @@ class AgentOrchestrationService(BaseService):
                 f"Case {case_id} not accessible by organization {organization_id}"
             )
 
-        executions, total = await self.execution_repo.list_executions_by_case(
+        executions, total = await self.case_repo.list_agent_executions_by_case(
             case_id, limit=limit, offset=offset
         )
         return executions, total
@@ -1063,5 +1062,5 @@ class AgentOrchestrationService(BaseService):
             return False
 
         execution.mark_cancelled()
-        await self.execution_repo.update_execution(execution)
+        await self.case_repo.update_agent_execution(execution)
         return True

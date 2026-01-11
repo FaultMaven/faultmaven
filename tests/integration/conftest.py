@@ -766,7 +766,11 @@ async def case_service() -> CaseService:
     """
     from faultmaven.container import container
 
-    # Container is already initialized
+    # Ensure container is initialized (idempotent - safe to call multiple times)
+    await container.initialize()
 
     # Return the case service from the container
-    return container.case_service
+    service = container.get_case_service()
+    if service is None:
+        raise RuntimeError("case_service is None - container initialization may have failed")
+    return service

@@ -25,7 +25,7 @@ class TestEvidenceServiceUpload:
         """Create EvidenceService with mocked dependencies."""
         return EvidenceService(
             storage_provider=mock_storage,
-            repository=mock_repository,
+            case_repository=mock_repository,
         )
 
     @pytest.mark.asyncio
@@ -52,8 +52,8 @@ class TestEvidenceServiceUpload:
         )
 
         assert result is not None
-        # Verify link_to_case was called
-        service.repository.link_to_case.assert_called_once()
+        # Verify link_standalone_evidence_to_case was called
+        service.case_repository.link_standalone_evidence_to_case.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_upload_evidence_without_optional_fields(self, service, mock_upload_file, sample_user_id):
@@ -88,7 +88,7 @@ class TestEvidenceServiceGet:
         """Create EvidenceService with mocked dependencies."""
         return EvidenceService(
             storage_provider=mock_storage,
-            repository=mock_repository,
+            case_repository=mock_repository,
         )
 
     @pytest.mark.asyncio
@@ -130,7 +130,7 @@ class TestEvidenceServiceList:
         """Create EvidenceService with mocked dependencies."""
         return EvidenceService(
             storage_provider=mock_storage,
-            repository=mock_repository,
+            case_repository=mock_repository,
         )
 
     @pytest.mark.asyncio
@@ -211,7 +211,7 @@ class TestEvidenceServiceDelete:
         """Create EvidenceService with mocked dependencies."""
         return EvidenceService(
             storage_provider=mock_storage,
-            repository=mock_repository,
+            case_repository=mock_repository,
         )
 
     @pytest.mark.asyncio
@@ -254,7 +254,7 @@ class TestEvidenceServiceLinkToCase:
         """Create EvidenceService with mocked dependencies."""
         return EvidenceService(
             storage_provider=mock_storage,
-            repository=mock_repository,
+            case_repository=mock_repository,
         )
 
     @pytest.mark.asyncio
@@ -296,7 +296,7 @@ class TestEvidenceServiceGetFileUrl:
         """Create EvidenceService with mocked dependencies."""
         return EvidenceService(
             storage_provider=mock_storage,
-            repository=mock_repository,
+            case_repository=mock_repository,
         )
 
     @pytest.mark.asyncio

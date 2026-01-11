@@ -845,12 +845,13 @@ class InMemoryCaseRepository(CaseRepository):
     async def list_agent_executions_by_case(
         self,
         case_id: str,
-        status: Optional[str] = None,
-        agent_type: Optional[str] = None,
+        status: Optional[Any] = None,
+        agent_type: Optional[Any] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[List[Any], int]:
         """List agent executions for a case with optional filters (in-memory implementation)."""
+        from faultmaven.modules.agent.domain.models.agent_execution import ExecutionStatus, AgentType
         
         # Filter by case
         executions = [
@@ -858,15 +859,29 @@ class InMemoryCaseRepository(CaseRepository):
             if getattr(e, 'case_id', None) == case_id
         ]
         
-        # Filter by status (ExecutionStatus is str, Enum so direct comparison works)
+        # Filter by status (ExecutionStatus is StrEnum - == works with enum, string, or .value)
         if status:
-            # For str, Enum types, both enum == enum and enum == str work
-            executions = [e for e in executions if getattr(e, 'status', None) == status]
+            status_val = status.value if hasattr(status, 'value') else status
+            executions = [
+                e for e in executions 
+                if getattr(e, 'status', None) and (
+                    getattr(e, 'status', None) == status or
+                    (hasattr(getattr(e, 'status', None), 'value') and getattr(e, 'status', None).value == status_val) or
+                    str(getattr(e, 'status', '')) == str(status_val)
+                )
+            ]
         
-        # Filter by agent_type (AgentType is str, Enum so direct comparison works)
+        # Filter by agent_type (AgentType is StrEnum - == works with enum, string, or .value)
         if agent_type:
-            # For str, Enum types, both enum == enum and enum == str work
-            executions = [e for e in executions if getattr(e, 'agent_type', None) == agent_type]
+            agent_type_val = agent_type.value if hasattr(agent_type, 'value') else agent_type
+            executions = [
+                e for e in executions 
+                if getattr(e, 'agent_type', None) and (
+                    getattr(e, 'agent_type', None) == agent_type or
+                    (hasattr(getattr(e, 'agent_type', None), 'value') and getattr(e, 'agent_type', None).value == agent_type_val) or
+                    str(getattr(e, 'agent_type', '')) == str(agent_type_val)
+                )
+            ]
         
         # Sort by created_at descending
         executions.sort(key=lambda e: getattr(e, 'created_at', datetime.min), reverse=True)
@@ -893,7 +908,7 @@ class InMemoryCaseRepository(CaseRepository):
     async def list_agent_executions_by_session(
         self,
         session_id: str,
-        status: Optional[str] = None,
+        status: Optional[Any] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[List[Any], int]:
@@ -904,8 +919,18 @@ class InMemoryCaseRepository(CaseRepository):
         for e in self._agent_executions.values():
             metadata = getattr(e, 'metadata', {})
             if isinstance(metadata, dict) and metadata.get("session_id") == session_id:
-                if status is None or getattr(e, 'status', None) == status:
+                if status is None:
                     executions.append(e)
+                else:
+                    exec_status = getattr(e, 'status', None)
+                    status_val = status.value if hasattr(status, 'value') else status
+                    # Compare (works with enum, string, or .value)
+                    if exec_status and (
+                        exec_status == status or
+                        (hasattr(exec_status, 'value') and exec_status.value == status_val) or
+                        str(exec_status) == str(status_val)
+                    ):
+                        executions.append(e)
         
         # Sort by created_at ascending
         executions.sort(key=lambda e: getattr(e, 'created_at', datetime.min))
@@ -1028,7 +1053,7 @@ class InMemoryCaseRepository(CaseRepository):
     async def get_latest_agent_execution(
         self,
         case_id: str,
-        agent_type: Optional[str] = None,
+        agent_type: Optional[Any] = None,
     ) -> Optional[Any]:
         """Get the most recent agent execution for a case (in-memory implementation)."""
         
@@ -1038,7 +1063,15 @@ class InMemoryCaseRepository(CaseRepository):
         ]
         
         if agent_type:
-            executions = [e for e in executions if getattr(e, 'agent_type', None) == agent_type]
+            agent_type_val = agent_type.value if hasattr(agent_type, 'value') else agent_type
+            executions = [
+                e for e in executions 
+                if getattr(e, 'agent_type', None) and (
+                    getattr(e, 'agent_type', None) == agent_type or
+                    (hasattr(getattr(e, 'agent_type', None), 'value') and getattr(e, 'agent_type', None).value == agent_type_val) or
+                    str(getattr(e, 'agent_type', '')) == str(agent_type_val)
+                )
+            ]
         
         if not executions:
             return None
