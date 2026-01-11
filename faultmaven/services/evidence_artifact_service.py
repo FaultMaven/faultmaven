@@ -24,13 +24,14 @@ from faultmaven.services.base import BaseService
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
-from faultmaven.modules.evidence.domain.models import (
+# Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
+from faultmaven.modules.evidence.contracts import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,
+    EvidenceListFilter,
 )
 from faultmaven.modules.case.contracts import ICaseRepository
-from faultmaven.modules.evidence.domain.models import EvidenceListFilter
 from faultmaven.exceptions import (
     NotFoundError,
     AuthorizationError,

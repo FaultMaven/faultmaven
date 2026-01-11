@@ -15,9 +15,10 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from faultmaven.modules.case.domain.models import CaseSeverity, CaseStatus
+# Import from contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import CaseSeverity, CaseStatus
 from faultmaven.models.investigation_session import SessionStatus
-from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
+from faultmaven.modules.evidence.contracts import EvidenceArtifactType
 
 
 # ============================================================

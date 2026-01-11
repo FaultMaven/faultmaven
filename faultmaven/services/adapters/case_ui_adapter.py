@@ -22,7 +22,14 @@ from typing import Dict, List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore
 
-from faultmaven.modules.case.domain.models import Case, CaseStatus, HypothesisStatus, InvestigationPath
+# Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseStatus,
+    HypothesisStatus,
+    InvestigationPath,
+    ConsultingData,
+)
 from faultmaven.models.case_ui import (
     CaseUIResponse,
     CaseUIResponse_Consulting,
@@ -194,7 +201,7 @@ def _transform_consulting(case: Case) -> CaseUIResponse_Consulting:
     # Defensive: Ensure consulting object exists (should never be None from repository)
     # If somehow None, initialize with default to satisfy API contract requirement
     if case.consulting is None:
-        from faultmaven.modules.case.domain.models import ConsultingData
+        # ConsultingData imported from contracts at module level
         case.consulting = ConsultingData()
 
     # Build nested consulting data

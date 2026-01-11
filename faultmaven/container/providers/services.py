@@ -337,6 +337,57 @@ def create_auth_service(
         return AuthService()
 
 
+def create_user_service(
+    auth_service: Any,
+    redis_client: Any | None,
+    db_session: Any | None,
+    settings: FaultMavenSettings,
+) -> Any | None:
+    """Create user service for user management.
+
+    Follows Composition Root principle: UserService receives its auth_service
+    dependency via constructor injection, not via ServiceContainer.get().
+
+    Args:
+        auth_service: Auth service for JWT token operations (REQUIRED)
+        redis_client: Redis client for token tracking
+        db_session: Database session for persistence
+        settings: Application settings
+
+    Returns:
+        UserService instance, or None if auth_service not available
+    """
+    if not auth_service:
+        logger.warning("UserService skipped (no auth_service available)")
+        return None
+
+    try:
+        from faultmaven.modules.auth.domain.services.user_service import UserService
+        from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
+            InMemoryUserRepository,
+            PostgreSQLUserRepository,
+        )
+
+        # Use PostgreSQL if db_session available, else InMemory for development
+        if db_session:
+            user_repo = PostgreSQLUserRepository(db_session)
+            logger.debug("UserService using PostgreSQLUserRepository")
+        else:
+            user_repo = InMemoryUserRepository()
+            logger.debug("UserService using InMemoryUserRepository (development)")
+
+        service = UserService(
+            user_repo=user_repo,
+            auth_service=auth_service,  # Composition Root: injected, not fetched
+            redis_client=redis_client,
+        )
+        logger.info("✅ UserService initialized with proper DI")
+        return service
+    except Exception as e:
+        logger.warning(f"UserService initialization failed: {e}")
+        return None
+
+
 def create_tenant_provider(
     db_session: Any | None,
     organization_repository: Any | None,
@@ -412,6 +463,12 @@ def register_services(container: BaseDIContainer) -> None:
     auth_service = create_auth_service(redis_client, settings)
     container.auth_service = auth_service
     container._register_service("auth_service", auth_service)
+
+    # User Service (Composition Root: auth_service injected via constructor)
+    user_service = create_user_service(auth_service, redis_client, db_session, settings)
+    container.user_service = user_service
+    if user_service:
+        container._register_service("user_service", user_service)
 
     # Case Service
     case_service = create_case_service(

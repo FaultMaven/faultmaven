@@ -1759,6 +1759,19 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, 'user_store', None)
 
+    def get_user_service(self):
+        """Get the user service for user management operations.
+
+        Returns UserService with auth_service injected via Composition Root pattern
+        (not via ServiceContainer.get() anti-pattern).
+        """
+        if not self._initialized:
+            logger = logging.getLogger(__name__)
+            logger.warning("User service requested but container not initialized")
+            if not getattr(self, '_initializing', False):
+                pass  # Container must be initialized via await container.initialize() at startup
+        return getattr(self, 'user_service', None)
+
     def health_check(self) -> dict:
         """Check health of all container dependencies.
 

@@ -7,8 +7,8 @@ across all FastAPI routes. It handles token extraction, validation, and user
 resolution with proper error handling and logging.
 
 Key Dependencies:
-- get_token_manager: DI container access for token operations
-- get_user_store: DI container access for user operations
+- get_token_manager: Access via app.state (Composition Root)
+- get_user_store: Access via app.state (Composition Root)
 - extract_bearer_token: Clean token extraction from Authorization header
 - get_current_user_optional: Optional user authentication
 - require_authentication: Mandatory user authentication
@@ -18,7 +18,7 @@ Design Principles:
 - Clean separation of concerns
 - Consistent error responses
 - Proper logging with correlation IDs
-- Interface-based dependency injection
+- Composition Root pattern (services via app.state, not container.get_*)
 - Easy to test and mock
 """
 
@@ -27,20 +27,19 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import HTTPException, Depends, Header
+from fastapi import HTTPException, Depends, Header, Request
 from fastapi.security import HTTPBearer
 
 from faultmaven.models.auth import DevUser
-from faultmaven.container import container
 
 # Initialize logger and security scheme
 logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 
-# Container Service Dependencies
-async def get_token_manager():
-    """Get token manager from DI container
+# Service Dependencies (Composition Root pattern - access via app.state)
+async def get_token_manager(request: Request):
+    """Get token manager from app.state (Composition Root)
 
     Returns:
         DevTokenManager instance
@@ -49,9 +48,9 @@ async def get_token_manager():
         HTTPException: 503 if service unavailable
     """
     try:
-        token_manager = container.get_token_manager()
+        token_manager = request.app.state.token_manager
         if not token_manager:
-            logger.error("Token manager not available from container")
+            logger.error("Token manager not available from app.state")
             raise HTTPException(
                 status_code=503,
                 detail="Authentication service unavailable"
@@ -65,8 +64,8 @@ async def get_token_manager():
         )
 
 
-async def get_user_store():
-    """Get user store from DI container
+async def get_user_store(request: Request):
+    """Get user store from app.state (Composition Root)
 
     Returns:
         DevUserStore instance
@@ -75,9 +74,9 @@ async def get_user_store():
         HTTPException: 503 if service unavailable
     """
     try:
-        user_store = container.get_user_store()
+        user_store = request.app.state.user_store
         if not user_store:
-            logger.error("User store not available from container")
+            logger.error("User store not available from app.state")
             raise HTTPException(
                 status_code=503,
                 detail="User management service unavailable"
@@ -125,11 +124,13 @@ async def extract_bearer_token(
 
 # User Authentication Dependencies
 async def get_current_user_optional(
+    request: Request,
     token: Optional[str] = Depends(extract_bearer_token)
 ) -> Optional[DevUser]:
     """Get current user from token (optional - no error if missing/invalid)
 
     Args:
+        request: FastAPI request object
         token: Bearer token from header
 
     Returns:
@@ -144,7 +145,7 @@ async def get_current_user_optional(
         return None
 
     try:
-        token_manager = await get_token_manager()
+        token_manager = await get_token_manager(request)
         validation_result = await token_manager.validate_token(token)
 
         if validation_result.is_valid and validation_result.user:
@@ -237,8 +238,11 @@ async def get_current_user_id_optional(
 
 
 # Health Check Dependency
-async def check_auth_services_health() -> dict:
+async def check_auth_services_health(request: Request) -> dict:
     """Check health of authentication services
+
+    Args:
+        request: FastAPI request object
 
     Returns:
         Dict with service health status
@@ -257,7 +261,7 @@ async def check_auth_services_health() -> dict:
 
     # Check token manager
     try:
-        token_manager = container.get_token_manager()
+        token_manager = getattr(request.app.state, 'token_manager', None)
         health_status["authentication"]["services"]["token_manager"] = {
             "status": "available" if token_manager else "unavailable",
             "type": "DevTokenManager" if token_manager else None
@@ -270,7 +274,7 @@ async def check_auth_services_health() -> dict:
 
     # Check user store
     try:
-        user_store = container.get_user_store()
+        user_store = getattr(request.app.state, 'user_store', None)
         health_status["authentication"]["services"]["user_store"] = {
             "status": "available" if user_store else "unavailable",
             "type": "DevUserStore" if user_store else None

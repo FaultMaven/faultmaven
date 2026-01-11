@@ -615,6 +615,7 @@ async def update_case(
 @trace("api_generate_case_title")
 async def generate_case_title(
     case_id: str,
+    request: Request,
     response: Response,
     request_body: Optional[Dict[str, Any]] = Body(None, description="Optional request parameters"),
     force: bool = Query(False, description="Only overwrite non-default titles when true"),
@@ -739,8 +740,9 @@ async def generate_case_title(
         
         # Generate title using LLM with fallback logic
         title_source = "unknown"
+        llm_provider = getattr(request.app.state, 'llm_provider', None)
         try:
-            generated_title, title_source = await _generate_title_with_llm(context_text, case, max_words, hint, user_message_content)
+            generated_title, title_source = await _generate_title_with_llm(context_text, case, max_words, hint, user_message_content, llm_provider)
         except ValueError:
             # LLM and fallback failed - keep 422 on "no meaningful" after post-processing
             error_response = ErrorResponse(
@@ -915,9 +917,17 @@ def _extract_user_signals_from_context(context_text: str) -> str:
     return ""
 
 
-async def _generate_title_with_llm(context_text: str, case, max_words: int = 8, hint: Optional[str] = None, user_signals: Optional[str] = None) -> tuple[str, str]:
-    """Generate title using LLM with fallback to first few words"""
-    from faultmaven.container import container
+async def _generate_title_with_llm(context_text: str, case, max_words: int = 8, hint: Optional[str] = None, user_signals: Optional[str] = None, llm_provider=None) -> tuple[str, str]:
+    """Generate title using LLM with fallback to first few words
+
+    Args:
+        context_text: Conversation context text
+        case: Case object
+        max_words: Maximum words in generated title
+        hint: Optional hint to guide title generation
+        user_signals: Pre-extracted user signals from conversation
+        llm_provider: LLM provider from app.state (Composition Root)
+    """
     
     # Helper function to validate title - length/word-count guards, not dictionary rules
     def is_title_valid(title, check_banned_words=True):
@@ -969,8 +979,7 @@ async def _generate_title_with_llm(context_text: str, case, max_words: int = 8, 
         return None
     
     try:
-        # Get LLM provider from container
-        llm_provider = container.get_llm_provider()
+        # LLM provider passed from app.state (Composition Root)
         if not llm_provider:
             fallback = get_fallback_title()
             if not fallback:

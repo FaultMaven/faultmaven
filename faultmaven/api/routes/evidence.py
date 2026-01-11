@@ -32,7 +32,8 @@ from faultmaven.api.models import (
 )
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
+# Import from contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.evidence.contracts import EvidenceArtifactType
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 
 

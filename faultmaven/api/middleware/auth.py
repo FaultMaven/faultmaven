@@ -30,7 +30,7 @@ Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 import logging
 from typing import Callable, Optional
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from faultmaven.models.auth import AuthenticatedUser
@@ -46,48 +46,46 @@ logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def get_auth_service() -> AuthService:
-    """Get AuthService instance from DI container.
+async def get_auth_service(request: Request) -> AuthService:
+    """Get AuthService instance from app.state (Composition Root).
+
+    Args:
+        request: FastAPI request object
 
     Returns:
-        AuthService instance from container (properly configured with Redis if available)
+        AuthService instance from app.state (properly configured with Redis if available)
 
     Note:
-        Uses the DI container which is initialized at app startup.
-        Falls back to creating a new instance if container is not initialized.
+        Uses app.state which is initialized at app startup (Composition Root pattern).
+        Falls back to creating a new instance if not available.
     """
     try:
-        from faultmaven.container import container
-        # Check both the method and direct attribute (for testing)
-        auth_service = container.get_auth_service()
+        auth_service = getattr(request.app.state, 'auth_service', None)
         if auth_service is not None:
             return auth_service
-        # Also check direct attribute in case it was set manually (e.g., in tests)
-        if hasattr(container, 'auth_service') and container.auth_service is not None:
-            return container.auth_service
     except Exception as e:
-        logger.warning(f"Failed to get AuthService from container: {e}")
+        logger.warning(f"Failed to get AuthService from app.state: {e}")
 
     # Fallback: create a minimal AuthService without Redis
     logger.debug("Creating fallback AuthService (no Redis for token revocation)")
     return AuthService()
 
 
-def set_auth_service(service: AuthService) -> None:
-    """Set the AuthService instance in the DI container (for testing/DI).
+def set_auth_service(request: Request, service: AuthService) -> None:
+    """Set the AuthService instance in app.state (for testing/DI).
 
     Args:
+        request: FastAPI request object
         service: AuthService instance to use
 
     Note:
-        This sets the auth_service attribute on the container for testing purposes.
+        This sets the auth_service attribute on app.state for testing purposes.
     """
     try:
-        from faultmaven.container import container
-        container.auth_service = service
-        logger.debug("AuthService set in DI container")
+        request.app.state.auth_service = service
+        logger.debug("AuthService set in app.state")
     except Exception as e:
-        logger.warning(f"Failed to set AuthService in container: {e}")
+        logger.warning(f"Failed to set AuthService in app.state: {e}")
 
 
 async def get_current_user(

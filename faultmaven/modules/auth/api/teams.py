@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status, Body
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status, Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -35,7 +35,6 @@ from faultmaven.exceptions import (
     NotFoundError,
     PermissionDeniedException
 )
-from faultmaven.container import container
 
 # Create router
 router = APIRouter(prefix="/teams", tags=["teams"])
@@ -97,9 +96,9 @@ class TeamMemberResponse(BaseModel):
 # Dependencies
 # ============================================================================
 
-async def get_team_service() -> TeamService:
-    """Get TeamService instance from container"""
-    service = container.get_team_service()
+async def get_team_service(request: Request) -> TeamService:
+    """Get TeamService instance from app.state (Composition Root)"""
+    service = getattr(request.app.state, 'team_service', None)
     if service is None:
         raise HTTPException(
             status_code=503,

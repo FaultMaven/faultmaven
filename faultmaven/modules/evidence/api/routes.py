@@ -20,6 +20,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
     UploadFile,
     status,
 )
@@ -39,17 +40,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/evidence", tags=["evidence"])
 
 
-def get_evidence_service() -> Optional[EvidenceService]:
-    """Get evidence service from DI container.
+async def get_evidence_service(request: Request) -> Optional[EvidenceService]:
+    """Get evidence service from app.state (Composition Root).
 
-    TODO: Integrate with DI container when Evidence module is registered.
-    
     Returns:
-        EvidenceService if available, None if service can't be created
+        EvidenceService if available, None if service not attached
     """
-    from faultmaven.container import container
-
-    return container.get_evidence_service()
+    return getattr(request.app.state, 'evidence_service', None)
 
 
 @router.post("", response_model=EvidenceArtifact, status_code=status.HTTP_201_CREATED)

@@ -22,7 +22,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
 
 from faultmaven.api.middleware.auth import (
@@ -148,34 +148,29 @@ class PasswordChangeRequest(BaseModel):
 # ============================================================
 
 
-def get_user_service():
-    """Get UserService instance.
+async def get_user_service(request: Request):
+    """Get UserService instance from app.state (Composition Root).
 
-    Creates a UserService with InMemoryUserRepository for development.
-    In production, this would use PostgreSQLUserRepository or get from DI container.
+    Uses the Composition Root pattern: UserService is attached to app.state
+    with its auth_service dependency properly injected.
+
+    Args:
+        request: FastAPI request object
 
     Returns:
         UserService instance
+
+    Raises:
+        RuntimeError: If UserService not available in app.state
     """
-    from faultmaven.services.user_service import UserService
-
-    # Use singleton repositories for development
-    if not hasattr(get_user_service, "_instance"):
-        # Try to get from DI container first
-        try:
-            from faultmaven.container import container
-            user_service = getattr(container, 'user_service', None)
-            if user_service:
-                get_user_service._instance = user_service
-                return user_service
-        except Exception as e:
-            # No fallback - service must be available via DI
-            raise RuntimeError(
-                "UserService not available from DI container. "
-                "Ensure the container is properly initialized."
-            ) from e
-
-    return get_user_service._instance
+    user_service = getattr(request.app.state, 'user_service', None)
+    if user_service:
+        return user_service
+    else:
+        raise RuntimeError(
+            "UserService not available from app.state. "
+            "Ensure the container is properly initialized with auth_service."
+        )
 
 
 # ============================================================

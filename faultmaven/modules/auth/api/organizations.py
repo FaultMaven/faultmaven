@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status, Body
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status, Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 import re
@@ -42,7 +42,6 @@ from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
 )
-from faultmaven.container import container
 
 # Create router
 router = APIRouter(prefix="/organizations", tags=["organizations"])
@@ -248,26 +247,18 @@ class DeleteResponse(BaseModel):
 # Dependencies
 # ============================================================================
 
-async def get_api_organization_service() -> APIOrganizationService:
-    """Get APIOrganizationService instance from container"""
-    org_service = container.get_organization_service()
+async def get_api_organization_service(request: Request) -> APIOrganizationService:
+    """Get APIOrganizationService instance from app.state (Composition Root)"""
+    org_service = getattr(request.app.state, 'organization_service', None)
     if org_service is None:
         raise HTTPException(
             status_code=503,
             detail="Organization service not available"
         )
 
-    # Get optional services
-    user_service = None
-    auth_service = None
-    try:
-        user_service = container.get_user_service()
-    except Exception:
-        pass
-    try:
-        auth_service = container.get_auth_service()
-    except Exception:
-        pass
+    # Get optional services from app.state
+    user_service = getattr(request.app.state, 'user_service', None)
+    auth_service = getattr(request.app.state, 'auth_service', None)
 
     return APIOrganizationService(
         organization_service=org_service,
@@ -276,9 +267,9 @@ async def get_api_organization_service() -> APIOrganizationService:
     )
 
 
-async def get_organization_service() -> OrganizationService:
-    """Get OrganizationService instance from container"""
-    service = container.get_organization_service()
+async def get_organization_service(request: Request) -> OrganizationService:
+    """Get OrganizationService instance from app.state (Composition Root)"""
+    service = getattr(request.app.state, 'organization_service', None)
     if service is None:
         raise HTTPException(
             status_code=503,

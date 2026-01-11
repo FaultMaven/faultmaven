@@ -26,18 +26,19 @@ from faultmaven.services.base import BaseService
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore
-from faultmaven.modules.case.domain.models import (
+# Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
     CaseSeverity,
     InvestigationStrategy,
+    ICaseRepository,
 )
+from faultmaven.modules.evidence.contracts import EvidenceListFilter
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
-from faultmaven.modules.case.contracts import ICaseRepository
-from faultmaven.modules.evidence.domain.models import EvidenceListFilter
 from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.exceptions import (
     NotFoundError,
@@ -541,7 +542,7 @@ class APICaseService(BaseService):
 
             if include_evidence:
                 try:
-                    from faultmaven.modules.evidence.domain.models import EvidenceListFilter
+                    # EvidenceListFilter imported from contracts at module level
                     filters = EvidenceListFilter(case_id=case_id, limit=100, offset=0)
                     evidence_list, _ = await self.case_repo.list_standalone_evidence(filters)
                     result["evidence"] = evidence_list
