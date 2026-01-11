@@ -542,7 +542,7 @@ class APICaseService(BaseService):
             if include_evidence:
                 try:
                     from faultmaven.modules.evidence.domain.models import EvidenceListFilter
-                    filters = EvidenceListFilter(case_id=case_id, limit=100, offset=offset)
+                    filters = EvidenceListFilter(case_id=case_id, limit=100, offset=0)
                     evidence_list, _ = await self.case_repo.list_standalone_evidence(filters)
                     result["evidence"] = evidence_list
                 except Exception as e:
