@@ -874,7 +874,9 @@ class TestGetEvidence:
 
     async def test_get_evidence_returns_none_if_not_found(
 
-        self, evidence_service):
+        self, evidence_service, mock_case_repo
+
+    ):
 
         """Test that missing evidence returns None."""
 
@@ -1028,7 +1030,7 @@ class TestDownloadEvidence:
 
     async def test_download_evidence_not_found_raises_not_found_error(
 
-        self, evidence_service):
+        self, evidence_service, mock_case_repo):
 
         """Test that missing evidence raises NotFoundError."""
 
@@ -1246,7 +1248,7 @@ class TestUpdateEvidence:
 
     async def test_update_evidence_not_found_raises_not_found_error(
 
-        self, evidence_service):
+        self, evidence_service, mock_case_repo):
 
         """Test that missing evidence raises NotFoundError."""
 
@@ -1432,7 +1434,7 @@ class TestDeleteEvidence:
 
     async def test_delete_evidence_not_found_returns_false(
 
-        self, evidence_service):
+        self, evidence_service, mock_case_repo):
 
         """Test that missing evidence returns False."""
 
@@ -1794,7 +1796,7 @@ class TestSetPrimaryEvidence:
 
     async def test_set_primary_evidence_not_found_raises_not_found_error(
 
-        self, evidence_service):
+        self, evidence_service, mock_case_repo):
 
         """Test that missing evidence raises NotFoundError."""
 
