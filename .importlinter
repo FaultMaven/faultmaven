@@ -91,3 +91,72 @@ layers =
     faultmaven.modules.knowledge.infrastructure
 ignore_imports =
     faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository -> faultmaven.modules.knowledge.domain.models.knowledge_item
+
+# ============================================================================
+# CONTRACT 5: Case Module Layer Boundaries
+# ============================================================================
+# Enforce clean architecture within the Case module vertical slice
+[importlinter:contract:5]
+name = Case module layer boundaries
+type = layers
+layers =
+    faultmaven.modules.case.api
+    faultmaven.modules.case.domain
+    faultmaven.modules.case.infrastructure
+ignore_imports =
+    faultmaven.modules.case.infrastructure.case_repository -> faultmaven.modules.case.domain.models
+    faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository -> faultmaven.modules.case.domain.models
+    faultmaven.modules.case.infrastructure.database_case_repository -> faultmaven.modules.case.domain.models
+    faultmaven.modules.case.infrastructure.investigation_session_repository -> faultmaven.modules.case.domain.models
+
+# ============================================================================
+# CONTRACT 6: Auth Module Layer Boundaries
+# ============================================================================
+# Enforce clean architecture within the Auth module vertical slice
+[importlinter:contract:6]
+name = Auth module layer boundaries
+type = layers
+layers =
+    faultmaven.modules.auth.api
+    faultmaven.modules.auth.domain
+    faultmaven.modules.auth.infrastructure
+ignore_imports =
+    faultmaven.modules.auth.infrastructure.repositories.user_repository -> faultmaven.modules.auth.domain.models
+    faultmaven.modules.auth.infrastructure.repositories.session_repository -> faultmaven.modules.auth.domain.models
+    faultmaven.modules.auth.infrastructure.stores.user_store -> faultmaven.modules.auth.domain.models
+
+# ============================================================================
+# CONTRACT 7: Agent Module Layer Boundaries
+# ============================================================================
+# Enforce clean architecture within the Agent module vertical slice
+[importlinter:contract:7]
+name = Agent module layer boundaries
+type = layers
+layers =
+    faultmaven.modules.agent.api
+    faultmaven.modules.agent.domain
+    faultmaven.modules.agent.tools
+ignore_imports =
+    faultmaven.modules.agent.tools -> faultmaven.modules.agent.domain.models
+
+# ============================================================================
+# CONTRACT 8: Evidence Module Layer Boundaries
+# ============================================================================
+# Enforce clean architecture within the Evidence module vertical slice
+[importlinter:contract:8]
+name = Evidence module layer boundaries
+type = layers
+layers =
+    faultmaven.modules.evidence.api
+    faultmaven.modules.evidence.domain
+
+# ============================================================================
+# CONTRACT 9: Report Module Layer Boundaries
+# ============================================================================
+# Enforce clean architecture within the Report module vertical slice
+[importlinter:contract:9]
+name = Report module layer boundaries
+type = layers
+layers =
+    faultmaven.modules.report.api
+    faultmaven.modules.report.domain
