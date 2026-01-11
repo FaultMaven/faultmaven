@@ -919,8 +919,8 @@ class TestToolCallHandling:
             tool_context=tool_context,
         )
 
-        # Should save tool call records twice (once for each tool)
-        assert mock_case_repo.create_agent_tool_call.call_count == 4  # 2 start + 2 end
+        # Should save tool call records once per tool (2 tools = 2 calls)
+        assert mock_case_repo.create_agent_tool_call.call_count == 2
 
     @pytest.mark.asyncio
     async def test_handle_tool_calls_enforces_timeout(
