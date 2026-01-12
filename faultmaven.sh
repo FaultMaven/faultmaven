@@ -28,16 +28,34 @@ usage() {
     echo "  --port PORT     Bind port (default: 8000)"
     echo "  --host HOST     Bind host (default: 0.0.0.0)"
     echo ""
-    echo "Test options (see 'scripts/tests.py --help' for full list):"
-    echo "  --unit           Run unit tests only"
-    echo "  --integration    Run integration tests only"
-    echo "  -k, --keyword    Filter tests by keyword"
-    echo "  -m, --marker     Run tests with specific marker"
-    echo "  --dir            Run tests in specific directory"
-    echo "  --coverage       Run with coverage report"
-    echo "  --parallel       Run in parallel"
-    echo "  --fail-fast      Stop after first failure"
-    echo "  -v, --verbose    Verbose output"
+    echo "Test options (see './faultmaven.sh test --help' for full list):"
+    echo ""
+    echo "  CI/CD Pipeline modes:"
+    echo "    --ci             Fast CI mode (unit tests only, parallel)"
+    echo "    --ci-full        Full CI suite (unit + integration + infra)"
+    echo "    --ci-nightly     Nightly (all tests including benchmarks)"
+    echo "    --ci-enterprise  Enterprise (requires Redis, PostgreSQL)"
+    echo ""
+    echo "  Test categories:"
+    echo "    --unit           Run unit tests"
+    echo "    --integration    Run integration tests"
+    echo "    --infrastructure Run infrastructure tests"
+    echo "    --benchmarks     Run performance benchmarks"
+    echo "    --health         Run health/smoke tests"
+    echo ""
+    echo "  Common options:"
+    echo "    -k, --keyword    Filter tests by keyword"
+    echo "    -m, --marker     Run tests with specific marker"
+    echo "    --coverage       Generate coverage report"
+    echo "    -n, --parallel   Run in parallel"
+    echo "    -x, --fail-fast  Stop after first failure"
+    echo "    -v, --verbose    Verbose output"
+    echo "    --junit-xml FILE Generate JUnit XML report"
+    echo ""
+    echo "  Subcommands:"
+    echo "    test status      Check background test status"
+    echo "    test stop        Stop background tests"
+    echo "    test load        Run Locust load tests"
     exit 1
 }
 
@@ -251,13 +269,26 @@ case "$COMMAND" in
         ;;
     test)
         # Test command: delegate to scripts/tests.py
-        echo -e "${GREEN}🧪 Running FaultMaven Test Suite...${NC}"
         if [ ! -f "scripts/tests.py" ]; then
             echo -e "${RED}❌ scripts/tests.py not found.${NC}"
             exit 1
         fi
-        # Pass all remaining arguments to scripts/tests.py
-        python3 scripts/tests.py run "$@"
+        # Check for subcommands (status, stop, load) vs regular test run
+        case "${1:-}" in
+            status|stop|load)
+                # Pass subcommand directly to scripts/tests.py
+                python3 scripts/tests.py "$@"
+                ;;
+            --help|-h)
+                # Show help
+                python3 scripts/tests.py --help
+                ;;
+            *)
+                # Regular test run - show banner and run
+                echo -e "${GREEN}🧪 Running FaultMaven Test Suite...${NC}"
+                python3 scripts/tests.py "$@"
+                ;;
+        esac
         ;;
     *)
         usage
