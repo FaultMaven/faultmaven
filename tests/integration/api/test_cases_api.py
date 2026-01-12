@@ -533,7 +533,7 @@ class TestUpdateCase:
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
     async def test_update_case_empty_request(self, client, mock_case_service, mock_case, headers):
-        """Test update with empty request body - v2.0 uses PUT method."""
+        """Test update with empty request body - v2.0 rejects empty updates."""
         mock_case_service.get_case.return_value = mock_case
 
         response = await client.put(
@@ -542,8 +542,11 @@ class TestUpdateCase:
             headers=headers,
         )
 
-        # Should return current case without updates
-        assert response.status_code == status.HTTP_200_OK
+        # v2.0 API rejects empty updates with 400 Bad Request
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        data = response.json()
+        assert "detail" in data
+        assert "no updates" in data["detail"].lower() or "update" in data["detail"].lower()
 
 
 # ============================================================
