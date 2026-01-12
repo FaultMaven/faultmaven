@@ -83,18 +83,13 @@ def session_repo() -> InMemoryInvestigationSessionRepository:
     return InMemoryInvestigationSessionRepository()
 
 
-@pytest.fixture
-def execution_repo() -> InMemoryAgentExecutionRepository:
-    """Create in-memory execution repository."""
-    return InMemoryAgentExecutionRepository()
-
+# execution_repo fixture removed - case_repo now handles agent executions
 
 @pytest.fixture
-def session_service(session_repo, execution_repo, case_repo) -> APIInvestigationSessionService:
+def session_service(session_repo, case_repo) -> APIInvestigationSessionService:
     """Create APIInvestigationSessionService with repositories."""
     return APIInvestigationSessionService(
         session_repo=session_repo,
-        execution_repo=execution_repo,
         case_repo=case_repo,
     )
 
@@ -445,7 +440,7 @@ class TestGetSessionWithExecutionsBenchmarks:
 
     @pytest.mark.asyncio
     async def test_benchmark_get_session_with_executions(
-        self, session_service, sample_case, execution_repo
+        self, session_service, sample_case, case_repo
     ):
         """Benchmark get_session_with_executions - target <250ms p95."""
         session = await session_service.create_session(
@@ -454,7 +449,7 @@ class TestGetSessionWithExecutionsBenchmarks:
             user_id=sample_case.user_id,
         )
 
-        # Create 10 executions
+        # Create 10 executions using case_repo (migrated from execution_repo)
         for i in range(10):
             execution = AgentExecution(
                 execution_id=create_test_execution_id(),
@@ -463,7 +458,7 @@ class TestGetSessionWithExecutionsBenchmarks:
                 agent_model="gpt-4",
                 status=ExecutionStatus.COMPLETED,
             )
-            await execution_repo.create_execution(execution)
+            await case_repo.create_agent_execution(execution)
 
         iterations = 50
         timings = []
@@ -491,7 +486,7 @@ class TestAddExecutionBenchmarks:
 
     @pytest.mark.asyncio
     async def test_benchmark_add_execution_to_session(
-        self, session_service, sample_case, execution_repo
+        self, session_service, sample_case, case_repo
     ):
         """Benchmark add_execution_to_session operation - target <150ms p95."""
         session = await session_service.create_session(
@@ -511,7 +506,7 @@ class TestAddExecutionBenchmarks:
                 agent_model="gpt-4",
                 status=ExecutionStatus.COMPLETED,
             )
-            await execution_repo.create_execution(execution)
+            await case_repo.create_agent_execution(execution)
 
             duration = await time_async_operation(
                 session_service.add_execution_to_session(
