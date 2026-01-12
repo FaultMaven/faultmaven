@@ -93,30 +93,43 @@ It supports a wide variety of backends, including:
 
 ## Editions
 
-FaultMaven is available in two editions to meet the needs of individual developers and enterprise teams.
+FaultMaven runs on a single, deployment-agnostic **Core**. This engine can be configured for different environments, giving you two distinct ways to use the platform.
 
-### 1. FaultMaven Open Source (Local)
+### 1. FaultMaven Open Source (Local Deployment)
 
-**Best for:** Individuals, small teams, and contributors.
+**Best for:** Individuals, contributors, and air-gapped environments.
 
-This repository contains the full core platform. You download the source code, deploy it on your own infrastructure (local machine or private server), and manage it yourself.
+In this configuration, you deploy the Core on your own hardware using Docker. It is a self-contained environment where you control the infrastructure.
 
-- **Data Privacy:** Your data never leaves your infrastructure.
-- **Community Driven:** Access to the latest experimental features and community support.
-- **Cost:** Free (you pay for your own compute and LLM API usage).
+- **Self-Hosted:** You own the stack. You manage the container, the database (SQLite), and the configuration.
+- **Build Your Own Knowledge:** The local environment starts with a clean slate. It includes all the capabilities to ingest your own runbooks and build a **Personal Knowledge Base** from scratch, tailored exactly to your specific needs.
+- **Offline Capable:** Can run entirely offline (with local LLMs like Ollama), making it ideal for high-restriction environments.
 
 Follow the [Quick Start](#quick-start) guide above to get up and running.
 
 ### 2. FaultMaven Cloud (SaaS)
 
-**Best for:** Enterprise teams requiring managed scale, security, and collaboration.
+**Best for:** Engineering teams and enterprises requiring collaboration and institutional scale.
 
-A fully managed subscription service hosted by the FaultMaven organization. You do not deploy anything; you simply log in and connect your integrations.
+The SaaS edition runs the Core in a distributed, production-grade configuration. It provides immediate value out of the box with managed infrastructure and data.
 
-- **Zero Maintenance:** No servers to provision, no databases to scale, no updates to manage.
-- **Enterprise Security:** SSO (SAML/OIDC), SOC 2 compliance, and audit logging.
-- **Team Collaboration:** Shared workspaces and role-based access control (RBAC) for large engineering organizations.
-- **Support:** Dedicated support SLAs.
+- **Managed Kubernetes Infrastructure:** We run the Core on a high-availability Kubernetes control plane, handling auto-scaling, encryption, and zero-downtime updates for you.
+- **Pre-Built Intelligence:** Unlike the empty local state, the SaaS version comes with a **Global Knowledge Base** pre-populated with industry-standard troubleshooting guides and best practices.
+- **Collaborative 3-Tier Knowledge:** The cloud platform activates the full 3-tier architecture:
+  1. **Global:** Pre-built system-wide knowledge.
+  2. **Team:** Shared runbooks and incident logs (Institutional Memory).
+  3. **Personal:** Private notes and drafts.
+
+### Comparison
+
+| Feature | Open Source (Local) | Cloud (SaaS) |
+|---------|---------------------|--------------|
+| **Configuration** | Single-User / Docker | Multi-User / Managed K8s |
+| **Knowledge Base Start State** | **Empty** (User builds it) | **Pre-Loaded** (Global KB included) |
+| **Knowledge Tiers** | Personal Only | **Global + Team + Personal** |
+| **Infrastructure** | User-Managed (SQLite) | Fully Managed (Postgres, S3) |
+| **Security** | Local Auth | SSO (SAML/OIDC), SOC 2 Ready |
+| **Access** | `localhost` | `app.faultmaven.ai` |
 
 **Subscribe:** [https://cloud.faultmaven.ai](https://cloud.faultmaven.ai)
 
