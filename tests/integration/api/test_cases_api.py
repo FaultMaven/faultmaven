@@ -467,14 +467,14 @@ class TestListCases:
 
 
 class TestUpdateCase:
-    """Tests for PATCH /api/v1/cases/{case_id} endpoint."""
+    """Tests for PUT /api/v1/cases/{case_id} endpoint (v2.0 uses PUT not PATCH)."""
 
     async def test_update_case_success(self, client, mock_case_service, mock_case, headers):
-        """Test successful case update."""
+        """Test successful case update - v2.0 uses PUT method."""
         mock_case.title = "Updated Title"
         mock_case_service.update_case.return_value = mock_case
 
-        response = await client.patch(
+        response = await client.put(
             "/api/v1/cases/case_123abc",
             json={"title": "Updated Title"},
             headers=headers,
@@ -485,12 +485,12 @@ class TestUpdateCase:
         assert data["title"] == "Updated Title"
 
     async def test_update_case_multiple_fields(self, client, mock_case_service, mock_case, headers):
-        """Test updating multiple fields."""
+        """Test updating multiple fields - v2.0 uses PUT method."""
         mock_case.title = "Updated"
         mock_case.status = CaseStatus.INVESTIGATING
         mock_case_service.update_case.return_value = mock_case
 
-        response = await client.patch(
+        response = await client.put(
             "/api/v1/cases/case_123abc",
             json={
                 "title": "Updated",
@@ -502,11 +502,11 @@ class TestUpdateCase:
         assert response.status_code == status.HTTP_200_OK
 
     async def test_update_case_not_found(self, client, mock_case_service, headers):
-        """Test updating non-existent case."""
+        """Test updating non-existent case - v2.0 uses PUT method."""
         from faultmaven.exceptions import NotFoundError
         mock_case_service.update_case.side_effect = NotFoundError("Case", "nonexistent")
 
-        response = await client.patch(
+        response = await client.put(
             "/api/v1/cases/nonexistent",
             json={"title": "Updated"},
             headers=headers,
@@ -515,13 +515,13 @@ class TestUpdateCase:
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
     async def test_update_case_forbidden(self, client, mock_case_service, headers):
-        """Test updating case from different organization."""
+        """Test updating case from different organization - v2.0 uses PUT method."""
         from faultmaven.exceptions import AuthorizationError
         mock_case_service.update_case.side_effect = AuthorizationError(
             "Case not accessible by organization"
         )
 
-        response = await client.patch(
+        response = await client.put(
             "/api/v1/cases/case_123abc",
             json={"title": "Updated"},
             headers=headers,
@@ -530,10 +530,10 @@ class TestUpdateCase:
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
     async def test_update_case_empty_request(self, client, mock_case_service, mock_case, headers):
-        """Test update with empty request body."""
+        """Test update with empty request body - v2.0 uses PUT method."""
         mock_case_service.get_case.return_value = mock_case
 
-        response = await client.patch(
+        response = await client.put(
             "/api/v1/cases/case_123abc",
             json={},
             headers=headers,
