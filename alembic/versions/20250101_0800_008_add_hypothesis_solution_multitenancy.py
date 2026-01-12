@@ -11,8 +11,8 @@ Changes:
 - Add indexes for query performance
 - Backfill organization_id from cases.org_id for existing records
 
-Revision ID: 20250101_008
-Revises: 20251230_0100_007
+Revision ID: 010_hypothesis_solution_multitenancy
+Revises: 008_email_uniqueness_constraint
 Create Date: 2025-01-01 08:00:00.000000
 """
 
@@ -21,8 +21,8 @@ import sqlalchemy as sa
 from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
-revision = "20250101_008"
-down_revision = "20251230_0100_007"
+revision = "010_hypothesis_solution_multitenancy"
+down_revision = "008_email_uniqueness_constraint"
 branch_labels = None
 depends_on = None
 

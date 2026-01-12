@@ -333,9 +333,21 @@ async def test_four_level_cascade_delete_chain(
 ):
     """Verify Case → Session → Execution → ToolCall CASCADE chain.
 
-    Note: Session-to-Execution link is ON DELETE SET NULL,
-    so executions remain but lose session association.
+    This tests the complete four-level cascade:
+    1. Case → InvestigationSession (CASCADE)
+    2. Case → AgentExecution (CASCADE)
+    3. AgentExecution → AgentToolCallV2 (CASCADE)
+
+    Note: InvestigationSession → AgentExecution link is ON DELETE SET NULL,
+    but AgentExecution → Case is CASCADE, so deleting the case cascades down.
     """
+    from faultmaven.infrastructure.persistence.models import (
+        AgentExecutionModel,
+        AgentToolCallV2Model,
+    )
+    from sqlalchemy import select
+    from datetime import datetime, timezone
+
     # Create case
     case = Case(
         case_id=generate_case_id(),
@@ -352,38 +364,117 @@ async def test_four_level_cascade_delete_chain(
     )
     await case_repository.save(case)
 
-    # Create session
-    session = create_sample_session(case.case_id)
-    await session_repository.create(session)
+    # Create investigation session
+    inv_session = create_sample_session(case.case_id)
+    await session_repository.create(inv_session)
 
-    # Create executions for the case
-    exec1 = create_sample_execution(case.case_id)
-    exec2 = create_sample_execution(case.case_id)
-    await execution_repository.create_execution(exec1)
-    await execution_repository.create_execution(exec2)
+    # Create executions directly using SQLAlchemy models
+    exec1_id = generate_execution_id()
+    exec2_id = generate_execution_id()
 
-    # Create tool calls for executions
-    tc1 = create_sample_tool_call(exec1.execution_id)
-    tc2 = create_sample_tool_call(exec1.execution_id)
-    tc3 = create_sample_tool_call(exec2.execution_id)
-    await execution_repository.create_tool_call(tc1)
-    await execution_repository.create_tool_call(tc2)
-    await execution_repository.create_tool_call(tc3)
+    exec1 = AgentExecutionModel(
+        execution_id=exec1_id,
+        case_id=case.case_id,
+        session_id=inv_session.session_id,
+        agent_type="investigator",
+        agent_model="gpt-4",
+        status="queued",
+        prompt="Test prompt 1",
+        started_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
 
-    # Verify setup
+    exec2 = AgentExecutionModel(
+        execution_id=exec2_id,
+        case_id=case.case_id,
+        session_id=inv_session.session_id,
+        agent_type="investigator",
+        agent_model="gpt-4",
+        status="queued",
+        prompt="Test prompt 2",
+        started_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+
+    test_session.add(exec1)
+    test_session.add(exec2)
+    await test_session.commit()
+
+    # Create tool calls directly using SQLAlchemy models
+    tc1 = AgentToolCallV2Model(
+        tool_call_id=generate_tool_call_id(),
+        execution_id=exec1_id,
+        tool_name="web_search",
+        tool_input='{"query": "test"}',
+        status="pending",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+
+    tc2 = AgentToolCallV2Model(
+        tool_call_id=generate_tool_call_id(),
+        execution_id=exec1_id,
+        tool_name="file_read",
+        tool_input='{"path": "test.txt"}',
+        status="pending",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+
+    tc3 = AgentToolCallV2Model(
+        tool_call_id=generate_tool_call_id(),
+        execution_id=exec2_id,
+        tool_name="code_exec",
+        tool_input='{"code": "print(1)"}',
+        status="pending",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+
+    test_session.add(tc1)
+    test_session.add(tc2)
+    test_session.add(tc3)
+    await test_session.commit()
+
+    # Verify setup - count sessions
     assert await session_repository.count_by_case_id(case.case_id) == 1
-    execs, _ = await execution_repository.list_executions_by_case(case.case_id)
+
+    # Verify executions exist
+    result = await test_session.execute(
+        select(AgentExecutionModel).where(AgentExecutionModel.case_id == case.case_id)
+    )
+    execs = result.scalars().all()
     assert len(execs) == 2
-    tool_calls = await execution_repository.get_tool_calls_for_execution(exec1.execution_id)
+
+    # Verify tool calls exist
+    result = await test_session.execute(
+        select(AgentToolCallV2Model).where(AgentToolCallV2Model.execution_id == exec1_id)
+    )
+    tool_calls = result.scalars().all()
     assert len(tool_calls) == 2
 
     # Delete case - should CASCADE to sessions, executions, and tool calls
     await case_repository.delete(case.case_id)
 
-    # Verify all are deleted
+    # Verify all are deleted via CASCADE
+    # 1. Investigation sessions should be gone
     assert await session_repository.count_by_case_id(case.case_id) == 0
-    remaining_execs, _ = await execution_repository.list_executions_by_case(case.case_id)
+
+    # 2. Agent executions should be gone (CASCADE from case)
+    result = await test_session.execute(
+        select(AgentExecutionModel).where(AgentExecutionModel.case_id == case.case_id)
+    )
+    remaining_execs = result.scalars().all()
     assert len(remaining_execs) == 0
+
+    # 3. Tool calls should be gone (CASCADE from execution deletion)
+    result = await test_session.execute(
+        select(AgentToolCallV2Model).where(AgentToolCallV2Model.execution_id.in_([exec1_id, exec2_id]))
+    )
+    remaining_tool_calls = result.scalars().all()
+    assert len(remaining_tool_calls) == 0
 
 
 # ============================================================

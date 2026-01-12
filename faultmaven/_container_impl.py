@@ -996,10 +996,14 @@ class DIContainer(BaseDIContainer):
                 # Generate case_id matching required pattern ^case_[a-f0-9]{12}$
                 case_id = f"case_{uuid.uuid4().hex[:12]}"
 
+                # Validate owner_id is required (match real CaseService behavior)
+                if not owner_id or not owner_id.strip():
+                    from faultmaven.exceptions import ValidationException
+                    raise ValidationException("Owner ID is required")
+
                 # Create case with proper Case model structure
-                # Default to "anonymous" if no owner specified (API contract compliance)
-                final_user_id = user_id or owner_id or "anonymous"
-                final_org_id = organization_id or "default-org"
+                final_user_id = user_id or owner_id
+                final_org_id = organization_id or owner_id  # Use owner_id as org_id if not provided
 
                 # Phase 2: Handle initial_message transactionally
                 current_time = datetime.now(timezone.utc)
@@ -1044,7 +1048,7 @@ class DIContainer(BaseDIContainer):
                         "message_type": "user_query",
                         "content": initial_message.strip(),
                         "timestamp": current_time,
-                        "user_id": final_owner_id
+                        "user_id": final_user_id
                     }
                     self.case_messages[case_id].append(initial_msg)
                 
@@ -1163,7 +1167,7 @@ class DIContainer(BaseDIContainer):
                 """List cases for a user with pagination - Phase 1: Core filtering implementation"""
                 # Filter cases by user_id if provided
                 if user_id:
-                    user_cases = [case for case in self.cases.values() if case.owner_id == user_id]
+                    user_cases = [case for case in self.cases.values() if case.user_id == user_id]
                 else:
                     # Return all cases if no user filter
                     user_cases = list(self.cases.values())

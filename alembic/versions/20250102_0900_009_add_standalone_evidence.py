@@ -1,7 +1,7 @@
 """Add standalone_evidence table
 
-Revision ID: 009_add_standalone_evidence
-Revises: 008_add_hypothesis_solution_multitenancy
+Revision ID: 011_add_standalone_evidence
+Revises: 010_hypothesis_solution_multitenancy
 Create Date: 2025-01-02 09:00:00
 
 PR #46b: Infrastructure layer for Evidence Service module.
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '009_add_standalone_evidence'
-down_revision: Union[str, None] = '008_add_hypothesis_solution_multitenancy'
+revision: str = '011_add_standalone_evidence'
+down_revision: Union[str, None] = '010_hypothesis_solution_multitenancy'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
