@@ -68,7 +68,7 @@ Both are RAG-enabled, so the AI retrieves relevant context automatically during 
 
 FaultMaven uses a 7-phase investigation lifecycle with integrated engines:
 
-- **MemoryManager** - Hierarchical memory management (64% token reduction)
+- **MemoryManager** - Hierarchical memory with hot/warm/cold tiers (~1,600 vs 4,500+ tokens unmanaged)
 - **WorkingConclusionGenerator** - Continuous progress tracking
 - **PhaseOrchestrator** - Intelligent phase progression with loop-back detection
 - **OODAEngine** - Adaptive investigation intensity (light/medium/full)
