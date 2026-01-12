@@ -105,8 +105,17 @@ def app(mock_api_service, mock_org_service, owner_user):
 
 @pytest.fixture
 def client(app):
-    """Create test client."""
+    """Create test client (uses owner_user by default)."""
     return TestClient(app)
+
+
+@pytest.fixture
+def create_client_for_user(mock_api_service, mock_org_service):
+    """Factory to create test client with specific user."""
+    def _create_client(user):
+        app = create_app_with_user(user, mock_api_service, mock_org_service)
+        return TestClient(app)
+    return _create_client
 
 
 def create_user(user_id: str, role: str, org_role: str = None):
@@ -232,8 +241,9 @@ class TestAdminLimitedAccess:
 
         assert response.status_code == 200
 
-    def test_admin_cannot_update_organization(self, client, admin_user):
+    def test_admin_cannot_update_organization(self, create_client_for_user, admin_user):
         """Admin cannot update organization."""
+        client = create_client_for_user(admin_user)
         response = client.patch(
                 "/api/v1/organizations/org-123",
                 headers={"Authorization": "Bearer valid-token"},
@@ -242,8 +252,9 @@ class TestAdminLimitedAccess:
 
         assert response.status_code == 403
 
-    def test_admin_cannot_delete_organization(self, client, admin_user):
+    def test_admin_cannot_delete_organization(self, create_client_for_user, admin_user):
         """Admin cannot delete organization."""
+        client = create_client_for_user(admin_user)
         response = client.delete(
                 "/api/v1/organizations/org-123",
                 headers={"Authorization": "Bearer valid-token"}
@@ -251,8 +262,9 @@ class TestAdminLimitedAccess:
 
         assert response.status_code == 403
 
-    def test_admin_cannot_update_settings(self, client, admin_user):
+    def test_admin_cannot_update_settings(self, create_client_for_user, admin_user):
         """Admin cannot update settings."""
+        client = create_client_for_user(admin_user)
         response = client.patch(
                 "/api/v1/organizations/org-123/settings",
                 headers={"Authorization": "Bearer valid-token"},
@@ -261,8 +273,9 @@ class TestAdminLimitedAccess:
 
         assert response.status_code == 403
 
-    def test_admin_cannot_change_member_roles(self, client, admin_user):
+    def test_admin_cannot_change_member_roles(self, create_client_for_user, admin_user):
         """Admin cannot change member roles."""
+        client = create_client_for_user(admin_user)
         response = client.patch(
                 "/api/v1/organizations/org-123/members/user-member",
                 headers={"Authorization": "Bearer valid-token"},
@@ -303,8 +316,9 @@ class TestMemberReadOnlyAccess:
 
         assert response.status_code == 200
 
-    def test_member_can_view_settings(self, client, member_user):
+    def test_member_can_view_settings(self, create_client_for_user, member_user):
         """Member can view settings."""
+        client = create_client_for_user(member_user)
         response = client.get(
                 "/api/v1/organizations/org-123/settings",
                 headers={"Authorization": "Bearer valid-token"}
@@ -312,8 +326,9 @@ class TestMemberReadOnlyAccess:
 
         assert response.status_code == 200
 
-    def test_member_cannot_add_members(self, client, member_user):
+    def test_member_cannot_add_members(self, create_client_for_user, member_user):
         """Member cannot add members."""
+        client = create_client_for_user(member_user)
         response = client.post(
                 "/api/v1/organizations/org-123/members",
                 headers={"Authorization": "Bearer valid-token"},
@@ -322,8 +337,9 @@ class TestMemberReadOnlyAccess:
 
         assert response.status_code == 403
 
-    def test_member_cannot_remove_members(self, client, member_user):
+    def test_member_cannot_remove_members(self, create_client_for_user, member_user):
         """Member cannot remove members."""
+        client = create_client_for_user(member_user)
         response = client.delete(
                 "/api/v1/organizations/org-123/members/user-other",
                 headers={"Authorization": "Bearer valid-token"}
@@ -335,8 +351,9 @@ class TestMemberReadOnlyAccess:
 class TestNonMemberNoAccess:
     """Tests that non-member has no access."""
 
-    def test_non_member_cannot_view_organization(self, client, non_member_user):
+    def test_non_member_cannot_view_organization(self, create_client_for_user, non_member_user):
         """Non-member cannot view organization."""
+        client = create_client_for_user(non_member_user)
         response = client.get(
                 "/api/v1/organizations/org-123",
                 headers={"Authorization": "Bearer valid-token"}
@@ -344,8 +361,9 @@ class TestNonMemberNoAccess:
 
         assert response.status_code == 403
 
-    def test_non_member_cannot_list_members(self, client, non_member_user):
+    def test_non_member_cannot_list_members(self, create_client_for_user, non_member_user):
         """Non-member cannot list members."""
+        client = create_client_for_user(non_member_user)
         response = client.get(
                 "/api/v1/organizations/org-123/members",
                 headers={"Authorization": "Bearer valid-token"}
@@ -353,8 +371,9 @@ class TestNonMemberNoAccess:
 
         assert response.status_code == 403
 
-    def test_non_member_cannot_view_settings(self, client, non_member_user):
+    def test_non_member_cannot_view_settings(self, create_client_for_user, non_member_user):
         """Non-member cannot view settings."""
+        client = create_client_for_user(non_member_user)
         response = client.get(
                 "/api/v1/organizations/org-123/settings",
                 headers={"Authorization": "Bearer valid-token"}
