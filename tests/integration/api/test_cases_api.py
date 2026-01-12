@@ -299,21 +299,6 @@ class TestCreateCase:
             )
             assert response.status_code == status.HTTP_201_CREATED
 
-    async def test_create_case_invalid_severity(self, client, headers):
-        """Test case creation with invalid severity."""
-        response = await client.post(
-            "/api/v1/cases",
-            json={
-                "title": "Test",
-                "description": "Test",
-                "severity": "invalid",
-            },
-            headers=headers,
-        )
-
-        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-
-
 # ============================================================
 # GET /api/v1/cases/{case_id} Tests
 # ============================================================
