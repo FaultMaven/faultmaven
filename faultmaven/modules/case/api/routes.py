@@ -224,14 +224,34 @@ async def delete_case(
         await case_service.hard_delete_case(case_id, current_user.user_id)
             # Service layer handles the deletion and cascade behavior
             # Idempotent: No error even if case doesn't exist
-        
-        # Success response with correlation header (always 204 for idempotent behavior)  
+
+        # Success response with correlation header (always 204 for idempotent behavior)
         return Response(
             status_code=status.HTTP_204_NO_CONTENT,
             headers={"x-correlation-id": correlation_id}
         )
     except HTTPException:
         raise
+    except AuthorizationError as e:
+        # Authorization errors should not be treated as idempotent success
+        logger.warning(f"Authorization error in delete_case: {e}", extra={"correlation_id": correlation_id})
+        error_response = ErrorResponse(
+            schema_version="3.1.0",
+            error=ErrorDetail(code="FORBIDDEN", message=str(e))
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=error_response.dict(),
+            headers={"x-correlation-id": correlation_id}
+        )
+    except NotFoundError:
+        # NotFoundError is treated as success for idempotent DELETE
+        # REST principle: DELETE is idempotent, resource deletion succeeds whether or not resource exists
+        logger.info(f"Case not found in delete_case, treating as idempotent success: {case_id}", extra={"correlation_id": correlation_id})
+        return Response(
+            status_code=status.HTTP_204_NO_CONTENT,
+            headers={"x-correlation-id": correlation_id}
+        )
     except Exception as e:
         logger.error(f"Unexpected error in delete_case: {e}", extra={"correlation_id": correlation_id})
         error_response = ErrorResponse(

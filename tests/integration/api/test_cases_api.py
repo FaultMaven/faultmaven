@@ -569,20 +569,23 @@ class TestDeleteCase:
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
     async def test_delete_case_not_found(self, client, mock_case_service, headers):
-        """Test deleting non-existent case."""
-        mock_case_service.delete_case.return_value = False
+        """Test deleting non-existent case - v2.0 DELETE is idempotent."""
+        from faultmaven.exceptions import NotFoundError
+        mock_case_service.hard_delete_case.side_effect = NotFoundError("Case", "nonexistent")
 
         response = await client.delete(
             "/api/v1/cases/nonexistent",
             headers=headers,
         )
 
-        assert response.status_code == status.HTTP_404_NOT_FOUND
+        # v2.0: DELETE is idempotent - returns 204 even if case doesn't exist
+        # REST principle: DELETE succeeds whether or not resource exists
+        assert response.status_code == status.HTTP_204_NO_CONTENT
 
     async def test_delete_case_forbidden(self, client, mock_case_service, headers):
-        """Test deleting case from different organization."""
+        """Test deleting case from different organization - still returns 403."""
         from faultmaven.exceptions import AuthorizationError
-        mock_case_service.delete_case.side_effect = AuthorizationError(
+        mock_case_service.hard_delete_case.side_effect = AuthorizationError(
             "Not authorized"
         )
 
@@ -591,6 +594,7 @@ class TestDeleteCase:
             headers=headers,
         )
 
+        # Authorization errors are NOT treated as idempotent success
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
 
