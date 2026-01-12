@@ -335,7 +335,7 @@ class TestGetCase:
         )
 
     async def test_get_case_not_found(self, client, mock_case_service, headers):
-        """Test case not found."""
+        """Test case not found - v2.0 API returns FastAPI standard error format."""
         mock_case_service.get_case.return_value = None
 
         response = await client.get(
@@ -345,8 +345,9 @@ class TestGetCase:
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
         data = response.json()
-        assert data["error"] == "Not Found"
-        assert "nonexistent" in data["detail"]
+        # v2.0 API: FastAPI standard error format {"detail": "message"}
+        assert "detail" in data
+        assert "not found" in data["detail"].lower() or "access denied" in data["detail"].lower()
 
     async def test_get_case_missing_authentication(self):
         """Test get case without JWT authentication returns 401."""

@@ -198,3 +198,4 @@ scripts/config/local_*.sh
 # Virtual environments (additional patterns)
 .venv-*/
 venv-*/
+.faultmaven/
