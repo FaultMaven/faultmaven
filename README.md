@@ -4,9 +4,9 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688)](https://fastapi.tiangolo.com/)
 
-**AI-Powered Troubleshooting Copilot for SRE and DevOps Teams**
+**Open-Source AI Troubleshooting Copilot for Modern Engineering**
 
-FaultMaven correlates live telemetry with runbooks, documentation, and past fixes. It delivers answers grounded in your actual system—not generic guesses. Resolve incidents faster with an AI copilot that understands both your stack and your organization.
+FaultMaven helps SREs, DevOps engineers, and developers diagnose incidents faster by correlating full-stack data with a unified knowledge base. It assists with both incident resolution and root cause analysis—human-centric, with AI doing the heavy lifting on data correlation and context retrieval.
 
 ---
 
@@ -49,45 +49,34 @@ uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000
 
 ---
 
-## Why FaultMaven?
+## What It Does
 
-Traditional observability tools tell you **what** broke. Generic LLMs guess **why** but lack access to your infrastructure. FaultMaven bridges this gap.
+### Full-Stack Data Correlation
 
-### Deep Context Awareness
+FaultMaven ingests logs, configs, metrics, and deployment state, then correlates them with recent changes. You provide the data; the AI finds the connections.
 
-FaultMaven ingests your full stack context—logs, configs, deployments—and correlates errors with recent changes, configuration drift, and system state.
+### Unified Knowledge Base
 
-**Example:** A Kubernetes pod is crashlooping. ChatGPT gives generic advice. FaultMaven ingests your pod logs, deployment YAML, and recent Git commits—then identifies that a ConfigMap changed 2 hours ago.
+Two knowledge stores work together:
 
-### Institutional Memory
+- **User Knowledge Base** - Runbooks, post-mortems, internal documentation (persisted)
+- **Case Knowledge Base** - Context from the current investigation (session-scoped)
 
-Knowledge dies in Slack threads. FaultMaven's knowledge base ensures you never solve the same problem twice:
-
-- **User Knowledge Base** - Personal runbooks, post-mortems, documentation
-- **Case Knowledge Base** - Context from past investigations with automatic cleanup
-
-### Investigation Framework
-
-FaultMaven uses a 7-phase investigation lifecycle with integrated engines:
-
-- **MemoryManager** - Hierarchical memory management (64% token reduction)
-- **WorkingConclusionGenerator** - Continuous progress tracking
-- **PhaseOrchestrator** - Intelligent phase progression with loop-back detection
-- **OODAEngine** - Adaptive investigation intensity (light/medium/full)
+Both are RAG-enabled, so the AI retrieves relevant context automatically during investigations.
 
 ### Multi-LLM Support
 
-Supports 7 LLM providers with automatic fallback:
+7 LLM providers with automatic fallback:
 
-| Provider | Models | Notes |
-|----------|--------|-------|
-| OpenAI | GPT-4o, GPT-4, GPT-3.5 | Recommended for general use |
-| Anthropic | Claude 3.5 Sonnet | Strong reasoning |
-| Fireworks AI | Llama 3.1 70B | Cost-effective |
-| Google Gemini | Gemini 1.5 Pro | Multimodal support |
-| Groq | Llama, Mixtral | Ultra-fast inference |
-| HuggingFace | Various | Open models |
-| Local | Ollama, vLLM | Self-hosted, no API key |
+| Provider | Models | Use Case |
+|----------|--------|----------|
+| OpenAI | GPT-4o, GPT-4, GPT-3.5 | General purpose |
+| Anthropic | Claude 3.5 Sonnet | Complex reasoning |
+| Fireworks AI | Llama 3.1 70B | Lower cost |
+| Google Gemini | Gemini 1.5 Pro | Multimodal (images) |
+| Groq | Llama, Mixtral | Low latency |
+| HuggingFace | Various | Open-weight models |
+| Local | Ollama, vLLM | Air-gapped / self-hosted |
 
 ---
 
