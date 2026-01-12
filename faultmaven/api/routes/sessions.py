@@ -88,6 +88,45 @@ async def create_session(
     return SessionResponse.from_domain(session)
 
 
+@router.get("/active", response_model=Optional[SessionResponse])
+async def get_active_session(
+    case_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    session_service: APIInvestigationSessionService = Depends(
+        get_investigation_session_service
+    ),
+) -> Optional[SessionResponse]:
+    """Get currently active session for case.
+
+    Returns the currently active investigation session for a case,
+    if one exists. Each case can have at most one active session.
+
+    Authentication:
+        - JWT Bearer token: Authorization: Bearer <token>
+
+    Args:
+        case_id: Case to get active session for
+        current_user: Authenticated user from JWT
+        session_service: Injected session service
+
+    Returns:
+        Active session if exists, null otherwise
+
+    Raises:
+        401: Authentication required
+        404: Case not found
+    """
+    session = await session_service.get_active_session(
+        case_id=case_id,
+        organization_id=current_user.organization_id,
+    )
+
+    if not session:
+        return None
+
+    return SessionResponse.from_domain(session)
+
+
 @router.get("/{session_id}", response_model=SessionResponse)
 async def get_session(
     case_id: str,
@@ -375,44 +414,5 @@ async def complete_session(
     # Verify session belongs to the specified case
     if session.case_id != case_id:
         raise NotFoundError("Session", session_id)
-
-    return SessionResponse.from_domain(session)
-
-
-@router.get("/active", response_model=Optional[SessionResponse])
-async def get_active_session(
-    case_id: str,
-    current_user: AuthenticatedUser = Depends(get_current_user),
-    session_service: APIInvestigationSessionService = Depends(
-        get_investigation_session_service
-    ),
-) -> Optional[SessionResponse]:
-    """Get currently active session for case.
-
-    Returns the currently active investigation session for a case,
-    if one exists. Each case can have at most one active session.
-
-    Authentication:
-        - JWT Bearer token: Authorization: Bearer <token>
-
-    Args:
-        case_id: Case to get active session for
-        current_user: Authenticated user from JWT
-        session_service: Injected session service
-
-    Returns:
-        Active session if exists, null otherwise
-
-    Raises:
-        401: Authentication required
-        404: Case not found
-    """
-    session = await session_service.get_active_session(
-        case_id=case_id,
-        organization_id=current_user.organization_id,
-    )
-
-    if not session:
-        return None
 
     return SessionResponse.from_domain(session)
