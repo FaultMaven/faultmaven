@@ -64,6 +64,15 @@ Two knowledge stores work together:
 
 Both are RAG-enabled, so the AI retrieves relevant context automatically during investigations.
 
+### Investigation Framework
+
+FaultMaven uses a 7-phase investigation lifecycle with integrated engines:
+
+- **MemoryManager** - Hierarchical memory management (64% token reduction)
+- **WorkingConclusionGenerator** - Continuous progress tracking
+- **PhaseOrchestrator** - Intelligent phase progression with loop-back detection
+- **OODAEngine** - Adaptive investigation intensity (light/medium/full)
+
 ### Multi-LLM Support
 
 7 LLM providers with automatic fallback:
