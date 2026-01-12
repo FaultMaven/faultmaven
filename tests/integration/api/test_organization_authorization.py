@@ -36,12 +36,13 @@ def mock_api_service(sample_organization):
     mock_service.delete_organization = AsyncMock(return_value=True)
     mock_service.list_organization_members = AsyncMock(return_value=([], 0))
     mock_service.add_member = AsyncMock(return_value={
-        "user_id": "user-new", "email": "new@test.com", "role": "member",
+        "user_id": "user-new", "email": "new@test.com", "full_name": "New User", "role": "member",
         "joined_at": datetime.now(timezone.utc), "invitation_sent": True
     })
     mock_service.remove_member = AsyncMock(return_value=True)
     mock_service.update_member_role = AsyncMock(return_value={
-        "user_id": "user-member", "role": "admin", "joined_at": datetime.now(timezone.utc),
+        "user_id": "user-member", "email": "member@example.com", "full_name": "Member User",
+        "role": "admin", "joined_at": datetime.now(timezone.utc),
         "updated_at": datetime.now(timezone.utc)
     })
     mock_service.update_organization_settings = AsyncMock(return_value={
