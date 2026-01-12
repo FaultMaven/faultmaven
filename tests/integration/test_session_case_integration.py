@@ -27,6 +27,7 @@ from faultmaven.infrastructure.persistence.database import reset_engine
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
+from faultmaven.config.settings import reset_settings
 from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
     DatabaseSessionRepository,
     InMemorySessionRepository,
@@ -234,6 +235,7 @@ async def test_multiple_cases_per_session(
     await session_repository.create_session(session)
 
     # Create cases with different statuses
+    # INVESTIGATING requires description to be set
     statuses = [
         CaseStatus.CONSULTING,
         CaseStatus.INVESTIGATING,
@@ -241,13 +243,26 @@ async def test_multiple_cases_per_session(
     ]
 
     for i, status in enumerate(statuses):
-        case = Case(
-            case_id=f"case_{uuid4().hex[:12]}",
-            user_id="multi-case-user",
-            organization_id="test-org",
-            title=f"Multi Case {i}",
-            status=status,
-        )
+        case_data = {
+            "case_id": f"case_{uuid4().hex[:12]}",
+            "user_id": "multi-case-user",
+            "organization_id": "test-org",
+            "title": f"Multi Case {i}",
+            "status": status,
+        }
+
+        # INVESTIGATING requires description, proposed_problem_statement, and consulting flags
+        if status == CaseStatus.INVESTIGATING:
+            case_data["description"] = f"Description for Multi Case {i}"
+            case_data["consulting"] = {
+                "proposed_problem_statement": f"Problem statement for Multi Case {i}",
+                "problem_statement_confirmed": True,
+                "decided_to_investigate": True,
+            }
+        else:
+            case_data["description"] = ""
+
+        case = Case(**case_data)
         await case_repository.save_with_session(case, session_id=session.session_id)
 
     # Act
@@ -328,63 +343,99 @@ async def test_session_expiry_workflow(
 @pytest.mark.integration
 async def test_repository_factory_session_inmemory():
     """Test session repository factory returns InMemorySessionRepository."""
-    # Set storage type
-    os.environ["SESSION_STORAGE_TYPE"] = STORAGE_TYPE_INMEMORY
-    reset_inmemory_session_repository()
+    # Save original env var
+    original_storage_type = os.environ.get("SESSION_STORAGE_TYPE")
 
-    # Get repository
-    async with get_session_repository_async() as repo:
-        assert isinstance(repo, InMemorySessionRepository)
+    try:
+        # Set storage type
+        os.environ["SESSION_STORAGE_TYPE"] = STORAGE_TYPE_INMEMORY
+        reset_inmemory_session_repository()
+        reset_settings()  # Clear settings cache
 
-        # Test basic operations
-        session = Session(
-            session_id=str(uuid4()),
-            user_id="factory-test-user",
-        )
-        await repo.create_session(session)
-        retrieved = await repo.get_session(session.session_id)
-        assert retrieved is not None
-        assert retrieved.user_id == "factory-test-user"
+        # Get repository
+        async with get_session_repository_async() as repo:
+            assert isinstance(repo, InMemorySessionRepository)
 
-    # Cleanup
-    reset_inmemory_session_repository()
+            # Test basic operations
+            session = Session(
+                session_id=str(uuid4()),
+                user_id="factory-test-user",
+            )
+            await repo.create_session(session)
+            retrieved = await repo.get_session(session.session_id)
+            assert retrieved is not None
+            assert retrieved.user_id == "factory-test-user"
+
+        # Cleanup
+        reset_inmemory_session_repository()
+    finally:
+        # Restore original env var
+        if original_storage_type is not None:
+            os.environ["SESSION_STORAGE_TYPE"] = original_storage_type
+        elif "SESSION_STORAGE_TYPE" in os.environ:
+            del os.environ["SESSION_STORAGE_TYPE"]
+        reset_settings()  # Clear settings cache
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_repository_factory_session_database(test_session: AsyncSession):
     """Test session repository factory with explicit session returns DatabaseSessionRepository."""
-    os.environ["SESSION_STORAGE_TYPE"] = STORAGE_TYPE_DATABASE
+    # Save original env var
+    original_storage_type = os.environ.get("SESSION_STORAGE_TYPE")
 
-    # Get repository with session
-    repo = get_session_repository(session=test_session)
-    assert isinstance(repo, DatabaseSessionRepository)
+    try:
+        os.environ["SESSION_STORAGE_TYPE"] = STORAGE_TYPE_DATABASE
+        reset_inmemory_session_repository()  # Clear any singleton from previous tests
+        reset_settings()  # Clear settings cache
 
-    # Test basic operations
-    session = Session(
-        session_id=str(uuid4()),
-        user_id="factory-db-test-user",
-    )
-    await repo.create_session(session)
-    retrieved = await repo.get_session(session.session_id)
-    assert retrieved is not None
-    assert retrieved.user_id == "factory-db-test-user"
+        # Get repository with session
+        repo = get_session_repository(session=test_session)
+        assert isinstance(repo, DatabaseSessionRepository)
+
+        # Test basic operations
+        session = Session(
+            session_id=str(uuid4()),
+            user_id="factory-db-test-user",
+        )
+        await repo.create_session(session)
+        retrieved = await repo.get_session(session.session_id)
+        assert retrieved is not None
+        assert retrieved.user_id == "factory-db-test-user"
+    finally:
+        # Restore original env var
+        if original_storage_type is not None:
+            os.environ["SESSION_STORAGE_TYPE"] = original_storage_type
+        elif "SESSION_STORAGE_TYPE" in os.environ:
+            del os.environ["SESSION_STORAGE_TYPE"]
+        reset_settings()  # Clear settings cache
 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_repository_factory_session_invalid_type():
     """Test session repository factory with invalid storage type."""
-    os.environ["SESSION_STORAGE_TYPE"] = "invalid_type"
+    # Save original env var
+    original_storage_type = os.environ.get("SESSION_STORAGE_TYPE")
 
-    with pytest.raises(ValueError) as exc_info:
-        async with get_session_repository_async() as repo:
-            pass
+    try:
+        os.environ["SESSION_STORAGE_TYPE"] = "invalid_type"
+        reset_inmemory_session_repository()  # Clear any singleton from previous tests
+        reset_settings()  # Clear settings cache
 
-    assert "Unknown storage type" in str(exc_info.value)
+        # The ValueError is raised when entering the async context manager
+        with pytest.raises(ValueError) as exc_info:
+            async with get_session_repository_async() as repo:
+                pass
 
-    # Reset
-    os.environ["SESSION_STORAGE_TYPE"] = STORAGE_TYPE_INMEMORY
+        assert "Unknown storage type" in str(exc_info.value)
+    finally:
+        # Restore original env var
+        if original_storage_type is not None:
+            os.environ["SESSION_STORAGE_TYPE"] = original_storage_type
+        elif "SESSION_STORAGE_TYPE" in os.environ:
+            del os.environ["SESSION_STORAGE_TYPE"]
+        reset_settings()  # Clear settings cache
 
 
 # ============================================================
@@ -448,11 +499,16 @@ async def test_case_status_updates_with_session(
         user_id="status-update-user",
         organization_id="test-org",
         title="Status Update Test",
+        description="Initial description for investigation",
         status=CaseStatus.CONSULTING,
     )
     await case_repository.save_with_session(case, session_id=session.session_id)
 
     # Act - Update case status through normal save
+    # INVESTIGATING requires description, proposed_problem_statement, and consulting flags to be set
+    case.consulting.proposed_problem_statement = "Confirmed problem statement"
+    case.consulting.problem_statement_confirmed = True
+    case.consulting.decided_to_investigate = True
     case.status = CaseStatus.INVESTIGATING
     await case_repository.save(case)
 
@@ -461,7 +517,15 @@ async def test_case_status_updates_with_session(
     assert len(cases) == 1
 
     # Need to re-save with session to maintain linkage
-    case.status = CaseStatus.RESOLVED
+    # RESOLVED status requires resolved_at, closed_at timestamps, and closure_reason
+    # Use model_copy to update all fields atomically (avoids validation ordering issues)
+    now = datetime.now(timezone.utc)
+    case = case.model_copy(update={
+        "status": CaseStatus.RESOLVED,
+        "resolved_at": now,
+        "closed_at": now,
+        "closure_reason": "resolved"
+    })
     await case_repository.save_with_session(case, session_id=session.session_id)
 
     # Verify still linked

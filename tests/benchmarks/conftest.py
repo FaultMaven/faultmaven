@@ -94,8 +94,7 @@ async def evidence_artifact_repository(benchmark_session) -> DatabaseEvidenceArt
     return DatabaseEvidenceArtifactRepository(benchmark_session)
 
 
-@pytest.fixture
-    # agent_execution_repository fixture removed - no longer needed
+# agent_execution_repository fixture removed - no longer needed
 
 
 @pytest.fixture
