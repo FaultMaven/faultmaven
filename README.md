@@ -6,7 +6,9 @@
 
 **Open-Source AI Troubleshooting Copilot for Modern Engineering**
 
-FaultMaven helps SREs, DevOps engineers, and developers diagnose incidents faster by correlating full-stack data with a unified knowledge base. It assists with both incident resolution and root cause analysis—human-centric, with AI doing the heavy lifting on data correlation and context retrieval.
+FaultMaven correlates your live telemetry with your runbooks, docs, and past fixes. It delivers answers grounded in your actual system—not generic guesses. Resolve incidents faster with an AI copilot that understands both your stack and your organization.
+
+Traditional observability tools tell you **what** broke. Generic LLMs guess **why**, but can't see your infrastructure. FaultMaven bridges this gap.
 
 ---
 
@@ -49,49 +51,80 @@ cp .env.example .env
 
 ---
 
-## What It Does
+## Why FaultMaven?
 
-### Full-Stack Data Correlation
+FaultMaven is not just a chatbot wrapper; it is a context-aware investigation engine designed to get smarter with every incident.
 
-FaultMaven ingests logs, configs, metrics, and deployment state, then correlates them with recent changes. You provide the data; the AI finds the connections.
+### 1. Deep Context Awareness
 
-### Unified Knowledge Base
+Generic chatbots can't access your logs, configs, or deployments. FaultMaven auto-ingests your **full stack context**—correlating errors with recent changes, configuration drift, and system state.
 
-Two knowledge stores work together:
+**Example:** A Kubernetes pod is crashlooping. ChatGPT gives generic advice. FaultMaven ingests your pod logs, deployment YAML, and recent Git commits—then tells you the ConfigMap changed 2 hours ago.
 
-- **User Knowledge Base** - Runbooks, post-mortems, internal documentation (persisted)
-- **Case Knowledge Base** - Context from the current investigation (session-scoped)
+### 2. The Knowledge Flywheel
 
-Both are RAG-enabled, so the AI retrieves relevant context automatically during investigations.
+Most troubleshooting knowledge is lost once the incident is closed. FaultMaven turns that lost data into a growing asset through a "Seed & Grow" lifecycle:
 
-### Investigation Framework
+- **Seed with Runbooks:** You don't start from zero. Pre-load your existing runbooks and documentation into the Knowledge Base so the AI knows your standard operating procedures from Day 1.
+- **Grow with Incidents:** As you troubleshoot, the AI learns. When a case is resolved, FaultMaven extracts the successful steps and root cause to automatically update the knowledge base.
+- **Result:** Your static documentation becomes a dynamic, self-improving engine. The solution to today's incident becomes the automated fix for tomorrow's.
 
-FaultMaven uses a 7-phase investigation lifecycle with integrated engines:
+### 3. AI-Powered Investigation Framework
 
-- **MemoryManager** - Hot/warm/cold memory tiers to maintain context across long investigations
-- **WorkingConclusionGenerator** - Continuous progress tracking
-- **PhaseOrchestrator** - Intelligent phase progression with loop-back detection
-- **OODAEngine** - Adaptive investigation intensity (light/medium/full)
+FaultMaven uses a 7-phase investigation lifecycle based on the **OODA Loop** (Observe, Orient, Decide, Act) with integrated engines:
 
-### Multi-LLM Support
+- **MemoryManager** - Hot/warm/cold memory tiers to maintain context across long investigations and reduce token usage.
+- **WorkingConclusionGenerator** - Continuous progress tracking to prevent circular reasoning.
+- **PhaseOrchestrator** - Intelligent phase progression with loop-back detection.
+- **OODAEngine** - Adaptive investigation intensity (light/medium/full).
 
-7 LLM providers with automatic fallback:
+### 4. Flexible Multi-LLM Support
 
-| Provider | Models | Use Case |
-|----------|--------|----------|
-| OpenAI | GPT-4o, GPT-4, GPT-3.5 | General purpose |
-| Anthropic | Claude 3.5 Sonnet | Complex reasoning |
-| Fireworks AI | Llama 3.1 70B | Lower cost |
-| Google Gemini | Gemini 1.5 Pro | Multimodal (images) |
-| Groq | Llama, Mixtral | Low latency |
-| HuggingFace | Various | Open-weight models |
-| Local | Ollama, vLLM | Air-gapped / self-hosted |
+FaultMaven is architected to be model-agnostic, giving you the freedom to choose the best intelligence for your specific needs and budget.
+
+It supports a wide variety of backends, including:
+
+- **Frontier Models:** Connect to major cloud providers (OpenAI, Anthropic, Google) for complex reasoning and multimodal analysis.
+- **Inference Providers:** Utilize high-speed inference engines (Groq, Fireworks AI) for low-latency responsiveness.
+- **Local & Open Source:** Run entirely on your own hardware using local runners (Ollama, vLLM) for maximum data privacy and zero API costs.
+- **Model Routing:** Built-in fallback logic ensures high availability by automatically switching providers if the primary API becomes unavailable.
+
+---
+
+## Editions
+
+FaultMaven is available in two editions to meet the needs of individual developers and enterprise teams.
+
+### 1. FaultMaven Open Source (Local)
+
+**Best for:** Individuals, small teams, and contributors.
+
+This repository contains the full core platform. You download the source code, deploy it on your own infrastructure (local machine or private server), and manage it yourself.
+
+- **Data Privacy:** Your data never leaves your infrastructure.
+- **Community Driven:** Access to the latest experimental features and community support.
+- **Cost:** Free (you pay for your own compute and LLM API usage).
+
+Follow the [Quick Start](#quick-start) guide above to get up and running.
+
+### 2. FaultMaven Cloud (SaaS)
+
+**Best for:** Enterprise teams requiring managed scale, security, and collaboration.
+
+A fully managed subscription service hosted by the FaultMaven organization. You do not deploy anything; you simply log in and connect your integrations.
+
+- **Zero Maintenance:** No servers to provision, no databases to scale, no updates to manage.
+- **Enterprise Security:** SSO (SAML/OIDC), SOC 2 compliance, and audit logging.
+- **Team Collaboration:** Shared workspaces and role-based access control (RBAC) for large engineering organizations.
+- **Support:** Dedicated support SLAs.
+
+**Subscribe:** [https://cloud.faultmaven.ai](https://cloud.faultmaven.ai)
 
 ---
 
 ## Architecture
 
-FaultMaven is a monolithic application with clean vertical slice architecture.
+FaultMaven is a monolithic application with clean **Vertical Slice Architecture**. Instead of separating by technical layers (Controller, Service, Dao), we organize by Feature Modules.
 
 ```
                     Browser Extension / Dashboard
@@ -99,25 +132,25 @@ FaultMaven is a monolithic application with clean vertical slice architecture.
                             HTTPS
                               v
 +------------------------------------------------------------------+
-|                     FaultMaven API (8000)                        |
+|                      FaultMaven API (8000)                       |
 |                                                                  |
 |  +------------------------------------------------------------+  |
-|  |                      API Layer                              |  |
+|  |                       API Layer                            |  |
 |  |   /api/v1/agent   /api/v1/cases   /api/v1/knowledge  ...   |  |
 |  +------------------------------------------------------------+  |
-|  |                    Service Layer                            |  |
-|  |   AgentService  CaseService  KnowledgeService  AuthService  |  |
+|  |                     Service Layer                          |  |
+|  |   AgentService  CaseService  KnowledgeService  AuthService |  |
 |  +------------------------------------------------------------+  |
-|  |                 Infrastructure Layer                        |  |
-|  |   LLM Router   Persistence   Security   Observability       |  |
+|  |                  Infrastructure Layer                      |  |
+|  |   LLM Router   Persistence   Security   Observability      |  |
 |  +------------------------------------------------------------+  |
 +------------------------------------------------------------------+
-         |                    |                    |
-         v                    v                    v
-    +--------+          +---------+          +----------+
-    | Redis  |          |ChromaDB |          | SQLite/  |
-    | (opt)  |          |(Vectors)|          | Postgres |
-    +--------+          +---------+          +----------+
+         |                     |                     |
+         v                     v                     v
+    +--------+           +---------+           +----------+
+    | Redis  |           |ChromaDB |           | SQLite/  |
+    | (opt)  |           |(Vectors)|           | Postgres |
+    +--------+           +---------+           +----------+
 ```
 
 ### Modules
@@ -137,7 +170,7 @@ FaultMaven is a monolithic application with clean vertical slice architecture.
 
 ```
 faultmaven/
-├── faultmaven/              # Main application (398 Python files)
+├── faultmaven/              # Main application
 │   ├── main.py              # FastAPI entry point
 │   ├── api/                 # Shared API middleware, dependencies
 │   ├── modules/             # Vertical slice feature modules
@@ -202,77 +235,11 @@ ANTHROPIC_API_KEY=sk-ant-...
 FIREWORKS_API_KEY=fw-...
 
 # Optional: Separate providers for specific tasks
-MULTIMODAL_PROVIDER=gemini      # Visual evidence processing
-SYNTHESIS_PROVIDER=openai       # RAG document queries
+MULTIMODAL_PROVIDER=gemini       # Visual evidence processing
+SYNTHESIS_PROVIDER=openai        # RAG document queries
 ```
 
 **Fallback Chain:** Primary provider -> Fireworks -> OpenAI -> Local
-
----
-
-## Deployment
-
-### Docker (Recommended)
-
-```bash
-# Configure environment
-cp .env.example .env
-# Edit .env with your API keys
-
-# Option 1: Docker Compose (includes Redis + ChromaDB)
-docker-compose up
-
-# Option 2: Standalone container
-docker build -t faultmaven:local .
-docker run --rm -p 8000:8000 --env-file .env faultmaven:local
-```
-
-### Local Development
-
-```bash
-# Setup environment
-python -m venv .venv
-source .venv/bin/activate
-
-# Install with dev dependencies
-pip install -e .[dev,test]
-
-# Configure
-cp .env.example .env
-
-# Start server (foreground)
-./faultmaven.sh start
-
-# Or run in background
-./faultmaven.sh start -d
-
-# Other commands
-./faultmaven.sh stop      # Stop server
-./faultmaven.sh status    # Check if running
-./faultmaven.sh restart   # Restart server
-```
-
-### Deployment Options
-
-| Environment | Database | Sessions | Vectors | Storage |
-|-------------|----------|----------|---------|---------|
-| Local/Dev | SQLite | In-memory | ChromaDB | Filesystem |
-| Production | PostgreSQL | Redis | ChromaDB | S3/Azure Blob |
-
-### FaultMaven Cloud
-
-For teams that prefer a managed solution, FaultMaven Cloud provides a fully hosted SaaS offering.
-
-| Feature | Self-Hosted | Cloud |
-|---------|-------------|-------|
-| Infrastructure | You manage | Fully managed |
-| Updates | Manual | Automatic |
-| Scaling | Manual configuration | Auto-scaling |
-| SSO/SAML | Configure yourself | Built-in |
-| Support | Community | Dedicated |
-| Data residency | Your infrastructure | Multi-region options |
-
-**Sign up:** [https://cloud.faultmaven.ai](https://cloud.faultmaven.ai)
 
 ---
 
@@ -284,16 +251,11 @@ For teams that prefer a managed solution, FaultMaven Cloud provides a fully host
 # Run all tests
 ./faultmaven.sh test
 
-# Run specific test categories
-./faultmaven.sh test --unit
-./faultmaven.sh test --integration
-
 # Run with coverage
 ./faultmaven.sh test --coverage
 
 # Or use pytest directly
 pytest tests/unit/
-pytest tests/integration/
 pytest --cov=faultmaven
 ```
 
