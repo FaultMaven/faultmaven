@@ -84,6 +84,7 @@ from faultmaven.exceptions import (
     ValidationException,
     ServiceException,
     NotFoundError,
+    AuthorizationError,
     PermissionDeniedException
 )
 
@@ -587,6 +588,28 @@ async def update_case(
 
     except HTTPException:
         raise
+    except NotFoundError as e:
+        logger.warning(f"Case not found in update_case: {e}", extra={"correlation_id": correlation_id})
+        error_response = ErrorResponse(
+            schema_version="3.1.0",
+            error=ErrorDetail(code="CASE_NOT_FOUND", message=str(e))
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=error_response.dict(),
+            headers={"x-correlation-id": correlation_id}
+        )
+    except AuthorizationError as e:
+        logger.warning(f"Authorization error in update_case: {e}", extra={"correlation_id": correlation_id})
+        error_response = ErrorResponse(
+            schema_version="3.1.0",
+            error=ErrorDetail(code="FORBIDDEN", message=str(e))
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=error_response.dict(),
+            headers={"x-correlation-id": correlation_id}
+        )
     except ValidationException as e:
         logger.error(f"Validation error in update_case: {e}", extra={"correlation_id": correlation_id})
         error_response = ErrorResponse(
