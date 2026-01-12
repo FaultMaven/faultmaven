@@ -470,7 +470,7 @@ class TestUpdateCase:
     """Tests for PUT /api/v1/cases/{case_id} endpoint (v2.0 uses PUT not PATCH)."""
 
     async def test_update_case_success(self, client, mock_case_service, mock_case, headers):
-        """Test successful case update - v2.0 uses PUT method."""
+        """Test successful case update - v2.0 uses PUT and returns status response."""
         mock_case.title = "Updated Title"
         mock_case_service.update_case.return_value = mock_case
 
@@ -482,7 +482,10 @@ class TestUpdateCase:
 
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        assert data["title"] == "Updated Title"
+        # v2.0 API returns status response, not full case object
+        assert data["success"] is True
+        assert data["case_id"] == "case_123abc"
+        assert "updated successfully" in data["message"].lower()
 
     async def test_update_case_multiple_fields(self, client, mock_case_service, mock_case, headers):
         """Test updating multiple fields - v2.0 uses PUT method."""
