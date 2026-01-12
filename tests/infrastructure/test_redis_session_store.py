@@ -21,7 +21,7 @@ class TestRedisSessionStore:
     @pytest.fixture
     def mock_redis_client(self):
         """Mock Redis client for testing"""
-        with patch('faultmaven.infrastructure.persistence.redis_session_store.create_redis_client') as mock_redis_factory:
+        with patch('faultmaven.modules.auth.infrastructure.stores.redis_session_store.create_redis_client') as mock_redis_factory:
             mock_client = AsyncMock()
             mock_redis_factory.return_value = mock_client
             yield mock_client
@@ -54,11 +54,13 @@ class TestRedisSessionStore:
     def test_initialization(self, mock_redis_client):
         """Test successful initialization with default settings"""
         store = RedisSessionStore()
-        
+
         # Verify initialization parameters
         assert store.default_ttl == 1800  # 30 minutes
         assert store.prefix == "session:"
-        assert store.redis_client is not None
+        # Redis client is lazily initialized, so it starts as None
+        assert store.redis_client is None
+        assert store._connection_healthy is None
     
     @pytest.mark.asyncio
     async def test_get_success(self, session_store):
@@ -282,7 +284,7 @@ class TestRedisSessionStore:
     
     def test_configuration_defaults(self):
         """Test default configuration values"""
-        with patch('faultmaven.infrastructure.persistence.redis_session_store.create_redis_client'):
+        with patch('faultmaven.modules.auth.infrastructure.stores.redis_session_store.create_redis_client'):
             store = RedisSessionStore()
             
             assert store.default_ttl == 1800  # 30 minutes in seconds
@@ -377,7 +379,7 @@ class TestRedisSessionStoreIntegration:
     @pytest.fixture
     def mock_redis_client(self):
         """Mock Redis client for integration testing"""
-        with patch('faultmaven.infrastructure.persistence.redis_session_store.create_redis_client') as mock_redis_factory:
+        with patch('faultmaven.modules.auth.infrastructure.stores.redis_session_store.create_redis_client') as mock_redis_factory:
             mock_client = AsyncMock()
             mock_redis_factory.return_value = mock_client
             yield mock_client
@@ -402,7 +404,7 @@ class TestRedisSessionStoreIntegration:
     @pytest.mark.asyncio
     async def test_interface_compliance_comprehensive(self):
         """Comprehensive test of interface compliance"""
-        with patch('faultmaven.infrastructure.persistence.redis_session_store.create_redis_client'):
+        with patch('faultmaven.modules.auth.infrastructure.stores.redis_session_store.create_redis_client'):
             store = RedisSessionStore()
             
             # Test all interface methods exist and are callable

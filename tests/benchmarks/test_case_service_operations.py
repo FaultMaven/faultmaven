@@ -80,8 +80,6 @@ def case_service(case_repo) -> APICaseService:
     return APICaseService(
         case_repo=case_repo,
         session_repo=InMemoryInvestigationSessionRepository(),
-        evidence_repo=InMemoryEvidenceArtifactRepository(),
-        execution_repo=InMemoryAgentExecutionRepository(),
     )
 
 
@@ -422,7 +420,7 @@ class TestCloseReopenBenchmark:
                 description="Case for reopen benchmarking",
                 severity=CaseSeverity.LOW,
             )
-            await case_service.close_case(case.case_id, org_id, "Closed for reopen test")
+            await case_service.close_case(case.case_id, org_id, "resolved")
             cases.append(case)
 
         times = []

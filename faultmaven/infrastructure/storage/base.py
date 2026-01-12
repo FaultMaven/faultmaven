@@ -18,7 +18,7 @@ Usage:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, Optional
 import logging
@@ -51,12 +51,12 @@ class PresignedUrl:
     @property
     def is_expired(self) -> bool:
         """Check if the URL has expired."""
-        return datetime.utcnow() > self.expires_at
+        return datetime.now(timezone.utc) > self.expires_at
 
     @property
     def seconds_until_expiry(self) -> int:
         """Seconds until URL expires (0 if already expired)."""
-        delta = self.expires_at - datetime.utcnow()
+        delta = self.expires_at - datetime.now(timezone.utc)
         return max(0, int(delta.total_seconds()))
 
 

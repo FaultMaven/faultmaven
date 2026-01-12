@@ -43,7 +43,7 @@ class TestUploadedFileSchemaConsistency:
 
         # Create instance with all required fields
         uploaded_file = UploadedFile(
-            file_id="file_abc123",
+            file_id="file_abc123def456",  # Must match pattern: ^(file_|data_)[a-f0-9]{12,16}$
             filename="test.log",
             size_bytes=1024,  # NOT file_size
             data_type="log",  # NOT content_type
@@ -76,7 +76,7 @@ class TestUploadedFileSchemaConsistency:
         """Verify content_ref can be None (processing pending)"""
 
         uploaded_file = UploadedFile(
-            file_id="file_abc123",
+            file_id="file_abc123def456",
             filename="test.log",
             size_bytes=1024,
             data_type="log",
@@ -105,7 +105,7 @@ class TestUploadedFileSchemaConsistency:
             messages=[],
             uploaded_files=[
                 UploadedFile(
-                    file_id="file_001",
+                    file_id="file_001234567890",
                     filename="test.log",
                     size_bytes=2048,
                     data_type="log",
@@ -127,7 +127,7 @@ class TestUploadedFileSchemaConsistency:
         assert len(retrieved.uploaded_files) == 1
         file = retrieved.uploaded_files[0]
 
-        assert file.file_id == "file_001"
+        assert file.file_id == "file_001234567890"
         assert file.size_bytes == 2048  # NOT file_size
         assert file.data_type == "log"  # NOT content_type
         assert file.content_ref == "s3://bucket/test.log"  # NOT storage_path
@@ -171,7 +171,7 @@ class TestMessageSchemaConsistency:
         mock_session_store = MagicMock()
 
         service = CaseService(
-            repository=mock_repo,
+            case_repository=mock_repo,
             session_store=mock_session_store,
         )
 
@@ -220,9 +220,10 @@ class TestRepositoryArchitecture:
 
         # Create cases for two different users
         case1 = Case(
-            case_id="case_001",
+            case_id="case_001234567890123",  # Must be at least 17 chars
             title="User 1 Case",
-            owner_id="user_001",
+            user_id="user_001",  # Required field, not owner_id
+            organization_id="org_001",  # Required field
             status=CaseStatus.CONSULTING,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
@@ -230,9 +231,10 @@ class TestRepositoryArchitecture:
         )
 
         case2 = Case(
-            case_id="case_002",
+            case_id="case_002234567890123",  # Must be at least 17 chars
             title="User 2 Case",
-            owner_id="user_002",
+            user_id="user_002",  # Required field, not owner_id
+            organization_id="org_002",  # Required field
             status=CaseStatus.CONSULTING,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
@@ -245,11 +247,11 @@ class TestRepositoryArchitecture:
         # List by user_id should only return that user's cases
         user1_cases, count = await repo.list(user_id="user_001")
         assert count == 1
-        assert user1_cases[0].case_id == "case_001"
+        assert user1_cases[0].case_id == "case_001234567890123"
 
         user2_cases, count = await repo.list(user_id="user_002")
         assert count == 1
-        assert user2_cases[0].case_id == "case_002"
+        assert user2_cases[0].case_id == "case_002234567890123"
 
 
 # ============================================================
