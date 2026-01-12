@@ -36,7 +36,7 @@ cp .env.example .env
 # Edit .env with your API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
 
 # Start server
-uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000
+./faultmaven.sh start
 ```
 
 ### Access Points
@@ -152,13 +152,14 @@ faultmaven/
 │   ├── infrastructure/      # Shared adapters (LLM, DB, storage)
 │   ├── core/                # Core domain logic
 │   └── services/            # Service layer
-├── tests/                   # Test suite (142 test files)
+├── tests/                   # Test suite
 │   ├── unit/
 │   ├── integration/
 │   ├── health/
 │   └── performance/
 ├── docs/                    # Documentation
 ├── alembic/                 # Database migrations
+├── faultmaven.sh            # CLI wrapper (start/stop/test)
 ├── docker-compose.yml       # Local services
 ├── Dockerfile               # Container image
 ├── pyproject.toml           # Dependencies and tools
@@ -239,8 +240,16 @@ pip install -e .[dev,test]
 # Configure
 cp .env.example .env
 
-# Start server
-uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000
+# Start server (foreground)
+./faultmaven.sh start
+
+# Or run in background
+./faultmaven.sh start -d
+
+# Other commands
+./faultmaven.sh stop      # Stop server
+./faultmaven.sh status    # Check if running
+./faultmaven.sh restart   # Restart server
 ```
 
 ### Deployment Options
@@ -258,15 +267,19 @@ uvicorn faultmaven.main:app --reload --host 0.0.0.0 --port 8000
 
 ```bash
 # Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=faultmaven
+./faultmaven.sh test
 
 # Run specific test categories
+./faultmaven.sh test --unit
+./faultmaven.sh test --integration
+
+# Run with coverage
+./faultmaven.sh test --coverage
+
+# Or use pytest directly
 pytest tests/unit/
 pytest tests/integration/
-pytest -m "not slow"
+pytest --cov=faultmaven
 ```
 
 ### Code Quality
