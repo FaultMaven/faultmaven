@@ -190,12 +190,13 @@ def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
         test_paths = config["paths"]
         if config.get("markers"):
             pytest_cmd.extend(["-m", config["markers"]])
-        if config.get("parallel") and not args.no_parallel:
+        if config.get("parallel") and not getattr(args, "no_parallel", False):
             try:
                 import xdist  # noqa: F401
                 pytest_cmd.extend(["-n", "auto"])
             except ImportError:
-                pass
+                print("Warning: pytest-xdist not installed. Install with: pip install pytest-xdist")
+                print("         Running tests sequentially instead.")
         # Set environment variables
         if config.get("env"):
             for key, value in config["env"].items():
@@ -253,12 +254,14 @@ def build_pytest_command(args, unknown_args: List[str]) -> List[str]:
             pytest_cmd.append(f"--cov-fail-under={args.coverage_fail_under}")
 
     # Parallel execution (if not in CI mode that already handled it)
-    if args.parallel and not ci_mode:
+    if getattr(args, "parallel", False) and not ci_mode:
         try:
             import xdist  # noqa: F401
-            pytest_cmd.extend(["-n", str(args.jobs) if args.jobs else "auto"])
+            jobs = getattr(args, "jobs", None)
+            pytest_cmd.extend(["-n", str(jobs) if jobs else "auto"])
         except ImportError:
-            print("Warning: pytest-xdist not installed, running sequentially")
+            print("Warning: pytest-xdist not installed. Install with: pip install pytest-xdist")
+            print("         Running tests sequentially instead.")
 
     # JUnit XML output for CI
     if args.junit_xml:
@@ -434,7 +437,10 @@ def _add_test_arguments(parser):
     exec_group.add_argument("-x", "--fail-fast", action="store_true", help="Stop after first failure")
     exec_group.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     exec_group.add_argument("-q", "--quiet", action="store_true", help="Quiet output")
-    exec_group.add_argument("-d", "--daemon", action="store_true", help="Run in background")
+    exec_group.add_argument(
+        "-d", "--daemon", action="store_true",
+        help="Run in background (for CI/long test suites, not typical local dev)"
+    )
     exec_group.add_argument(
         "-n", "--parallel", action="store_true",
         help="Run tests in parallel (requires pytest-xdist)"

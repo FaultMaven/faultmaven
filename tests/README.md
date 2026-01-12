@@ -137,10 +137,10 @@ Load tests use Locust for stress testing:
 
 ## Background Execution
 
-For long-running test suites:
+For CI pipelines or long-running test suites (not typical local development):
 
 ```bash
-# Run in background
+# Run in background (useful for CI or full test suites)
 ./faultmaven.sh test --ci-full --daemon
 
 # Check status
