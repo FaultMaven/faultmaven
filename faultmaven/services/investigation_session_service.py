@@ -196,6 +196,11 @@ class APIInvestigationSessionService(BaseService):
                 "token_budget_limit: Token budget limit cannot be negative"
             )
 
+        # Trim inputs after validation
+        case_id = case_id.strip()
+        user_id = user_id.strip()
+        organization_id = organization_id.strip()
+
         try:
             # Verify case authorization
             await self._verify_case_authorization(case_id, organization_id)
@@ -214,9 +219,9 @@ class APIInvestigationSessionService(BaseService):
             now = datetime.now(timezone.utc)
             session = InvestigationSession(
                 session_id=f"session_{uuid4().hex[:12]}",
-                case_id=case_id.strip(),
-                user_id=user_id.strip(),
-                organization_id=organization_id.strip(),
+                case_id=case_id,
+                user_id=user_id,
+                organization_id=organization_id,
                 status=SessionStatus.ACTIVE,
                 started_at=now,
                 last_activity_at=now,
@@ -352,7 +357,11 @@ class APIInvestigationSessionService(BaseService):
                     continue
 
                 if key == "session_goal":
-                    session.session_goal = value.strip() if value else None
+                    # Preserve empty string explicitly, only convert None
+                    if value is None:
+                        session.session_goal = None
+                    else:
+                        session.session_goal = value.strip()
 
                 elif key == "token_budget_limit":
                     if value is not None and value < 0:
