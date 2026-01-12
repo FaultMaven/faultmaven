@@ -66,12 +66,13 @@ docs/
 │   ├── database/        # Schema documentation
 │   └── tools/           # Tool catalog
 ├── development/         # Contributor docs
-├── operations/          # Production operations
-│   ├── monitoring/      # Logging & metrics
-│   ├── security/        # Security guides
-│   └── runbooks/        # Troubleshooting
-└── _archive/            # Historical docs
+└── operations/          # Production operations
+    ├── monitoring/      # Logging & metrics
+    ├── security/        # Security guides
+    └── runbooks/        # Troubleshooting
 ```
+
+> **Note**: Local working documents can be stored in `docs/_archive/` (not tracked in git).
 
 ## Naming Conventions
 
