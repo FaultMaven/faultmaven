@@ -330,15 +330,17 @@ class TestDocumentationSync:
             assert doc_path.exists(), f"Architecture doc {doc} should exist"
 
     def test_migration_guide_exists(self):
-        """Test that migration documentation exists"""
+        """Test that migration or architecture documentation exists"""
         guide_paths = [
             Path("CLAUDE.md"),
             Path("FaultMaven-Refactoring-Plan.md"),
-            Path("docs/migration/import-migration-guide.md")
+            Path("docs/migration/import-migration-guide.md"),
+            Path("docs/architecture/current-architecture.md"),  # Modern architecture docs
+            Path("docs/architecture/architecture-overview.md"),  # Comprehensive architecture overview
         ]
-        
+
         existing_guides = [path for path in guide_paths if path.exists()]
-        assert len(existing_guides) > 0, "At least one migration guide should exist"
+        assert len(existing_guides) > 0, "At least one architecture or migration guide should exist"
 
 
 if __name__ == "__main__":

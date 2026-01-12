@@ -26,6 +26,7 @@ from faultmaven.models.report import (
 )
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.utils.serialization import to_json_compatible
 
 
 logger = logging.getLogger(__name__)

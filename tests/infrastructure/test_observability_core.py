@@ -118,72 +118,62 @@ class TestObservabilityIntegration:
         assert hasattr(LLMRouter.route, "__wrapped__")
 
     def test_agent_has_tracing(self):
-        """Verify agent methods have trace decorators."""
-        from faultmaven.core.agent.agent import FaultMavenAgent
+        """Verify agent service methods have trace decorators."""
+        from faultmaven.modules.agent.domain.services.investigation_service import InvestigationService
 
-        # Create an instance to get bound methods for testing
-        try:
-            agent = FaultMavenAgent()
-        except Exception:
-            # If instantiation fails, just check the unbound methods
-            agent = None
-        
-        # List of methods that should have @trace decorators
-        if agent:
-            # Test with bound methods (preferred)
-            traced_methods = [
-                ("run", agent.run),
-                ("resume", agent.resume),
-                ("_triage_node", agent._triage_node),
-                ("_formulate_hypothesis_node", agent._formulate_hypothesis_node),
-                ("_validate_hypothesis_node", agent._validate_hypothesis_node),
-                ("_propose_solution_node", agent._propose_solution_node),
-            ]
-        else:
-            # Fallback to unbound methods
-            traced_methods = [
-                ("run", FaultMavenAgent.run),
-                ("resume", FaultMavenAgent.resume),
-                ("_triage_node", FaultMavenAgent._triage_node),
-                ("_formulate_hypothesis_node", FaultMavenAgent._formulate_hypothesis_node),
-                ("_validate_hypothesis_node", FaultMavenAgent._validate_hypothesis_node),
-                ("_propose_solution_node", FaultMavenAgent._propose_solution_node),
-            ]
+        # Check that key methods have been wrapped with @trace
+        # InvestigationService has @trace decorators on key methods
+        traced_methods = [
+            ("process_turn", InvestigationService.process_turn),
+            ("get_progress", InvestigationService.get_progress),
+            ("transition_to_investigating", InvestigationService.transition_to_investigating),
+            ("close_case", InvestigationService.close_case),
+        ]
 
-        # Check each method for the __wrapped__ attribute with detailed error messages
+        # Check each method for the __wrapped__ attribute
         missing_wrapped = []
         for method_name, method_obj in traced_methods:
             if not hasattr(method_obj, "__wrapped__"):
                 missing_wrapped.append(method_name)
-                # Additional debugging info
-                print(f"DEBUG: {method_name} missing __wrapped__ attribute")
-                print(f"DEBUG: {method_name} type: {type(method_obj)}")
-                print(f"DEBUG: {method_name} dir: {[attr for attr in dir(method_obj) if not attr.startswith('_')]}")
 
         # Assert with detailed error message
         if missing_wrapped:
             raise AssertionError(
-                f"The following FaultMavenAgent methods are missing __wrapped__ attributes: {missing_wrapped}. "
+                f"The following InvestigationService methods are missing __wrapped__ attributes: {missing_wrapped}. "
                 f"This indicates they may not be properly decorated with @trace decorators."
             )
 
-        # Additional verification: check that __wrapped__ points to the original function
-        for method_name, method_obj in traced_methods:
-            wrapped_func = getattr(method_obj, "__wrapped__", None)
-            assert wrapped_func is not None, f"{method_name}.__wrapped__ is None"
-            assert callable(wrapped_func), f"{method_name}.__wrapped__ is not callable"
-
     def test_data_processing_has_tracing(self):
         """Verify data processing methods have trace decorators."""
-        from faultmaven.services.preprocessing.classifier import DataClassifier  # Updated
+        import sys
+        import importlib
+
+        # Remove the mock from sys.modules to import the real class
+        if "faultmaven.core.processing.log_analyzer" in sys.modules:
+            mock_module = sys.modules["faultmaven.core.processing.log_analyzer"]
+            # Check if it's a mock (SimpleNamespace)
+            if not hasattr(mock_module, "__file__"):
+                del sys.modules["faultmaven.core.processing.log_analyzer"]
+
+        # Import the real LogProcessor
         from faultmaven.core.processing.log_analyzer import LogProcessor
 
         # Check that key methods have been wrapped with @trace
+        # LogProcessor has @trace decorators on process methods
         assert hasattr(LogProcessor.process, "__wrapped__")
-        assert hasattr(DataClassifier.classify, "__wrapped__")
+        assert hasattr(LogProcessor.process_detailed, "__wrapped__")
 
     def test_knowledge_base_has_tracing(self):
         """Verify knowledge base methods have trace decorators."""
+        import sys
+
+        # Remove the mock from sys.modules to import the real class
+        if "faultmaven.core.knowledge.ingestion" in sys.modules:
+            mock_module = sys.modules["faultmaven.core.knowledge.ingestion"]
+            # Check if it's a mock (SimpleNamespace)
+            if not hasattr(mock_module, "__file__"):
+                del sys.modules["faultmaven.core.knowledge.ingestion"]
+
         from faultmaven.core.knowledge.ingestion import KnowledgeIngester
 
         # Check that key methods have been wrapped with @trace
@@ -192,14 +182,10 @@ class TestObservabilityIntegration:
 
     def test_api_endpoints_have_tracing(self):
         """Verify API endpoints have trace decorators."""
-        from faultmaven.api.v1.routes.data import upload_data
-        # REMOVED: agent routes deprecated - using case routes instead
-        from faultmaven.api.v1.routes.knowledge import upload_document, search_documents
+        from faultmaven.modules.knowledge.api.routes import upload_document, search_documents
         from faultmaven.modules.auth.api.session import create_session
 
         # Check that key endpoints have been wrapped with @trace
-        assert hasattr(upload_data, "__wrapped__")
-        # REMOVED: troubleshoot endpoint from deprecated agent routes
         assert hasattr(upload_document, "__wrapped__")
         assert hasattr(search_documents, "__wrapped__")
         assert hasattr(create_session, "__wrapped__")

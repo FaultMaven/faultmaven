@@ -163,9 +163,12 @@ class ProviderRegistry:
             if self.settings.llm.fireworks_api_key:
                 fireworks_key_preview = self.settings.llm.fireworks_api_key.get_secret_value()[:10] + "..."
             self.logger.info(f"🔍 FIREWORKS_API_KEY: {fireworks_key_preview}")
-            
-            # Get primary provider from settings
+
+            # Get primary provider from settings (convert enum to string)
             primary_provider = self.settings.llm.provider
+            # Convert enum to string if needed (LLMProvider enum inherits from str)
+            if hasattr(primary_provider, 'value'):
+                primary_provider = primary_provider.value
         else:
             # No fallback - unified settings system is mandatory
             from faultmaven.models.exceptions import LLMProviderError

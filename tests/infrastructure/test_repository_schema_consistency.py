@@ -96,9 +96,10 @@ class TestUploadedFileSchemaConsistency:
 
         # Create case with uploaded file
         case = Case(
-            case_id="case_123",
+            case_id="case_123456789012",  # Must be exactly 17 chars
             title="Test Case",
-            owner_id="user_123",
+            user_id="user_123",  # Changed from owner_id
+            organization_id="org_123",  # Added required field
             status=CaseStatus.CONSULTING,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
@@ -118,7 +119,7 @@ class TestUploadedFileSchemaConsistency:
         )
 
         # Store case
-        await repo.create(case)
+        await repo.save(case)
 
         # Retrieve case
         retrieved = await repo.get(case.case_id)
@@ -220,7 +221,7 @@ class TestRepositoryArchitecture:
 
         # Create cases for two different users
         case1 = Case(
-            case_id="case_001234567890123",  # Must be at least 17 chars
+            case_id="case_001234567890",  # Must be exactly 17 chars
             title="User 1 Case",
             user_id="user_001",  # Required field, not owner_id
             organization_id="org_001",  # Required field
@@ -231,7 +232,7 @@ class TestRepositoryArchitecture:
         )
 
         case2 = Case(
-            case_id="case_002234567890123",  # Must be at least 17 chars
+            case_id="case_002234567890",  # Must be exactly 17 chars
             title="User 2 Case",
             user_id="user_002",  # Required field, not owner_id
             organization_id="org_002",  # Required field
@@ -241,17 +242,17 @@ class TestRepositoryArchitecture:
             messages=[],
         )
 
-        await repo.create(case1)
-        await repo.create(case2)
+        await repo.save(case1)
+        await repo.save(case2)
 
         # List by user_id should only return that user's cases
         user1_cases, count = await repo.list(user_id="user_001")
         assert count == 1
-        assert user1_cases[0].case_id == "case_001234567890123"
+        assert user1_cases[0].case_id == "case_001234567890"
 
         user2_cases, count = await repo.list(user_id="user_002")
         assert count == 1
-        assert user2_cases[0].case_id == "case_002234567890123"
+        assert user2_cases[0].case_id == "case_002234567890"
 
 
 # ============================================================
