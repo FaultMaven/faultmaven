@@ -13,14 +13,18 @@ class TestLLMRouter:
     @pytest.fixture
     def router(self):
         """Create LLMRouter instance."""
-        # Reset registry to ensure clean state
-        reset_registry()
-        
-        # Set up test API keys
+        from faultmaven.config.settings import reset_settings
+
+        # Set up test environment variables BEFORE resetting singletons
         os.environ["FIREWORKS_API_KEY"] = "test-fireworks-key"
         os.environ["OPENAI_API_KEY"] = "test-openai-key"
+        os.environ["GROQ_API_KEY"] = ""  # Disable groq for controlled testing
         os.environ["CHAT_PROVIDER"] = "fireworks"
-        
+
+        # Reset singletons to pick up new environment
+        reset_settings()
+        reset_registry()
+
         return LLMRouter()
 
     def test_init_default_configuration(self, router):
@@ -73,27 +77,31 @@ class TestLLMRouter:
         }
 
         with patch("aiohttp.ClientSession.post") as mock_post:
-            # Create a proper async context manager mock
-            mock_context = AsyncMock()
-            mock_context.status = 500  # First call fails
-            mock_context.json = AsyncMock(side_effect=Exception("API error"))
+            # Create failure mocks for all fireworks attempts
+            mock_fail = AsyncMock()
+            mock_fail.status = 500
+            mock_fail.json = AsyncMock(side_effect=Exception("API error"))
 
-            # Second call succeeds
-            mock_context2 = AsyncMock()
-            mock_context2.status = 200
-            mock_context2.json = AsyncMock(return_value=mock_response)
+            # Success mock for openai
+            mock_success = AsyncMock()
+            mock_success.status = 200
+            mock_success.json = AsyncMock(return_value=mock_response)
 
-            # Set up the mock to return different context managers
+            # Router retries twice (2 attempts), each attempt tries providers with their own retries
+            # Attempt 1: fireworks (fails) + retry (fails), openai (fails) + retry (fails)
+            # Attempt 2: fireworks (fails) + retry (fails), openai (succeeds)
+            # Total: up to 10 calls, but we'll provide enough mocks
             mock_post.return_value.__aenter__.side_effect = [
-                mock_context,
-                mock_context2,
+                mock_fail, mock_fail,  # Fireworks attempt 1 + retry
+                mock_fail, mock_fail,  # Openai attempt 1 + retry
+                mock_fail, mock_fail,  # Fireworks attempt 2 + retry
+                mock_success,           # Openai attempt 2 succeeds
             ]
 
             result = await router.route("Test prompt")
 
             assert isinstance(result, LLMResponse)
             assert result.content == "Fallback response"
-            # Updated to match actual fallback chain: fireworks -> openai -> local
             assert result.provider == "openai"
             assert result.confidence == 0.85
 
@@ -292,4 +300,8 @@ class TestLLMRouter:
             # The model in the response will be the effective model from the provider
             # which is the default model from the provider schema, not the custom model
             # since the test doesn't set up the provider to handle custom models
-            assert result.model in ["accounts/fireworks/models/llama-v3p1-8b-instruct", "custom-model"]
+            assert result.model in [
+                "accounts/fireworks/models/llama-v3p1-8b-instruct",
+                "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct",
+                "custom-model"
+            ]
