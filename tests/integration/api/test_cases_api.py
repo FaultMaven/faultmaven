@@ -67,6 +67,16 @@ def mock_case():
     mock.assigned_to = None  # Optional[str]
     mock.closed_at = None  # Optional[datetime]
     mock.severity = CaseSeverity.MEDIUM  # Used by from_domain
+
+    # Investigation stage and progress (v2.0)
+    mock.current_stage = None  # None for CONSULTING status (only set for INVESTIGATING)
+    mock_progress = MagicMock()
+    mock_progress.completed_milestones = []
+    mock_progress.pending_milestones = ["M1", "M2", "M3"]
+    mock_progress.completion_percentage = 0.0
+    mock_progress.current_stage = None
+    mock.progress = mock_progress
+
     return mock
 
 
@@ -319,8 +329,9 @@ class TestGetCase:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["case_id"] == "case_123abc"
+        # v2.0 API passes user_id (from current_user), not organization_id
         mock_case_service.get_case.assert_called_once_with(
-            "case_123abc", "org_456"
+            "case_123abc", "user_789"
         )
 
     async def test_get_case_not_found(self, client, mock_case_service, headers):
