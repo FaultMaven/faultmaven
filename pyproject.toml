@@ -208,22 +208,36 @@ testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 addopts = [
     "-ra",
     "--strict-markers",
     "--strict-config",
-    "--cov=faultmaven",
-    "--cov-branch",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-    "--cov-report=xml",
+    "-v",
+    "--tb=short",
 ]
 markers = [
-    "enterprise: marks tests that require enterprise dependencies",
-    "integration: marks integration tests",
-    "unit: marks unit tests",
-    "slow: marks slow tests",
-    "security: marks security-focused tests",
+    "unit: Unit tests (fast, isolated)",
+    "integration: Integration tests (cross-layer)",
+    "slow: Slow running tests (excluded from fast CI)",
+    "enterprise: Tests requiring Redis, PostgreSQL, etc.",
+    "security: Security-related tests",
+    "benchmark: Performance benchmarks (baseline tracking)",
+    "performance: Performance overhead tests",
+    "asyncio: Async tests",
+    "api: API endpoint tests",
+    "llm: LLM-related tests",
+    "agent: Agent-related tests",
+    "session: Session management tests",
+    "knowledge_base: Knowledge base tests",
+    "architecture: Architecture validation tests",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:websockets.*",
+    "ignore::DeprecationWarning:uvicorn.*",
+    "ignore::UserWarning:pytest_asyncio.*",
+    "ignore::PendingDeprecationWarning",
 ]
 
 [tool.coverage.run]
