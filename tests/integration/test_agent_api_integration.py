@@ -191,7 +191,7 @@ class TestE2EStreamingWorkflow:
                 duration_ms=2500,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -240,7 +240,7 @@ class TestE2EStreamingWorkflow:
                 duration_ms=1000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -303,7 +303,7 @@ class TestE2EToolCallStreaming:
                 duration_ms=3000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -367,7 +367,7 @@ class TestE2EToolCallStreaming:
                 duration_ms=5000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -414,7 +414,7 @@ class TestE2EToolCallStreaming:
                 duration_ms=2000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -459,7 +459,7 @@ class TestE2ENonStreamingMode:
                 duration_ms=2000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
         mock_agent_service.get_execution.return_value = mock_execution
 
         response = client.post(
@@ -502,7 +502,7 @@ class TestE2ENonStreamingMode:
                 duration_ms=3000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
         mock_agent_service.get_execution.return_value = mock_execution
 
         response = client.post(
@@ -533,7 +533,7 @@ class TestE2EErrorHandling:
             raise NotFoundError("Session", "nonexistent_session")
             yield  # Make it a generator
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/nonexistent_session/execute",
@@ -554,7 +554,7 @@ class TestE2EErrorHandling:
             raise AuthorizationError("Session does not belong to organization")
             yield
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -580,7 +580,7 @@ class TestE2EErrorHandling:
             )
             yield
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -606,7 +606,7 @@ class TestE2EErrorHandling:
             )
             yield
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -627,7 +627,7 @@ class TestE2EErrorHandling:
             raise LLMException("Rate limit exceeded. Please try again later.")
             yield
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -648,7 +648,7 @@ class TestE2EErrorHandling:
             raise RuntimeError("Unexpected internal error")
             yield
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -681,15 +681,17 @@ class TestE2EAgentTypes:
         self, client, mock_agent_service, headers, agent_type, expected_type
     ):
         """Test agent type is passed correctly to service."""
+        captured_kwargs = {}
 
         async def mock_execute(*args, **kwargs):
+            captured_kwargs.update(kwargs)
             yield ExecutionEvent.completed(
                 execution_id="exec_test123",
                 total_tokens=100,
                 duration_ms=500,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -702,8 +704,7 @@ class TestE2EAgentTypes:
         )
 
         # Verify the agent type was passed correctly
-        call_kwargs = mock_agent_service.execute_agent.call_args.kwargs
-        assert call_kwargs["agent_type"] == expected_type
+        assert captured_kwargs["agent_type"] == expected_type
 
 
 # ============================================================
@@ -780,7 +781,7 @@ class TestE2EResponseFormat:
                 duration_ms=500,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
 
         response = client.post(
             "/api/v1/cases/case_456def/sessions/session_test123/execute",
@@ -812,7 +813,7 @@ class TestE2EResponseFormat:
                 duration_ms=2000,
             )
 
-        mock_agent_service.execute_agent.return_value = mock_execute()
+        mock_agent_service.execute_agent = mock_execute
         mock_agent_service.get_execution.return_value = mock_execution
 
         response = client.post(
