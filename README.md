@@ -259,6 +259,21 @@ cp .env.example .env
 | Local/Dev | SQLite | In-memory | ChromaDB | Filesystem |
 | Production | PostgreSQL | Redis | ChromaDB | S3/Azure Blob |
 
+### FaultMaven Cloud
+
+For teams that prefer a managed solution, FaultMaven Cloud provides a fully hosted SaaS offering.
+
+| Feature | Self-Hosted | Cloud |
+|---------|-------------|-------|
+| Infrastructure | You manage | Fully managed |
+| Updates | Manual | Automatic |
+| Scaling | Manual configuration | Auto-scaling |
+| SSO/SAML | Configure yourself | Built-in |
+| Support | Community | Dedicated |
+| Data residency | Your infrastructure | Multi-region options |
+
+**Sign up:** [https://cloud.faultmaven.ai](https://cloud.faultmaven.ai)
+
 ---
 
 ## Development
