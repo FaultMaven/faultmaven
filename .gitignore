@@ -195,6 +195,11 @@ scripts/config/local_*.sh
 # Cleanup and archived files (root level only)
 /recycle/
 
+# Documentation - local working files (not tracked)
+docs/_archive/
+docs/working/
+**/working/
+
 # Virtual environments (additional patterns)
 .venv-*/
 venv-*/
