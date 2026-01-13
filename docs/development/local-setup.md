@@ -42,7 +42,7 @@ cp .env.example .env
 # Edit .env: Set your LLM API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
 
 # Start the server
-./faultmaven.sh start
+./scripts/faultmaven-dev.sh start
 # Or: python -m faultmaven.main
 ```
 
@@ -60,9 +60,9 @@ cd faultmaven-dashboard
 # Install dependencies
 npm install
 
-# Configure API endpoint (optional - defaults to localhost:8000)
+# Configure API endpoint
 cp .env.example .env
-# Edit .env: VITE_API_URL=http://localhost:8000
+# The default VITE_API_URL=http://localhost:8000 should work for local development
 
 # Start development server
 npm run dev
@@ -113,8 +113,25 @@ REDIS_URL=redis://localhost:6379
 CHROMADB_URL=http://localhost:8001
 
 # Start the API
-./faultmaven.sh start
+./scripts/faultmaven-dev.sh start
 ```
+
+---
+
+## Verifying Your Setup
+
+After starting the services, run the health check script to verify everything is working:
+
+```bash
+# From the faultmaven directory
+./scripts/faultmaven-dev.sh health
+```
+
+This will check:
+
+- API process is running on port 8000
+- Dashboard dev server is running on port 5173
+- All HTTP endpoints are responding correctly
 
 ---
 
@@ -124,7 +141,7 @@ CHROMADB_URL=http://localhost:8001
 |-----------|-----|-------|
 | API | http://localhost:8000 | Backend server |
 | API Docs | http://localhost:8000/docs | OpenAPI documentation |
-| Dashboard | http://localhost:5173 | Development server (Vite) |
+| Dashboard | http://localhost:5173 | Development server (Vite with hot-reload) |
 | Dashboard | http://localhost:3000 | Docker/production |
 
 ---
@@ -136,7 +153,7 @@ CHROMADB_URL=http://localhost:8001
 1. Check Python version: `python --version` (requires 3.11+)
 2. Verify virtual environment is activated
 3. Check `.env` has valid LLM API keys
-4. Review logs: `LOG_LEVEL=DEBUG ./faultmaven.sh start`
+4. Review logs: `LOG_LEVEL=DEBUG ./scripts/faultmaven-dev.sh start`
 
 ### Dashboard can't connect to API
 

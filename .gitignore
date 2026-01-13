@@ -204,3 +204,5 @@ docs/working/
 .venv-*/
 venv-*/
 .faultmaven/
+.faultmaven.pid
+.faultmaven-dev.pid

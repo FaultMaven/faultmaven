@@ -49,7 +49,8 @@ cp .env.example .env
 # Edit .env: Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or configure Ollama
 
 # Start API + Dashboard
-docker compose up -d
+./faultmaven.sh start
+# Or: docker compose up -d
 ```
 
 ### Step 2: Install the Copilot Extension
@@ -77,6 +78,39 @@ docker compose up -d
 ### Alternative: Local Development Setup
 
 For contributors or debugging, you can run the components as local processes instead of Docker. See [Development Setup](docs/development/local-setup.md).
+
+### Helper Scripts
+
+Convenient scripts for managing the FaultMaven stack:
+
+**Docker Deployment (Recommended):**
+
+```bash
+# Main CLI for Docker-based deployment
+./faultmaven.sh start              # Start services
+./faultmaven.sh start --demo       # Start with demo data
+./faultmaven.sh status             # Check service health
+./faultmaven.sh logs               # View all logs
+./faultmaven.sh logs api           # View specific service logs
+./faultmaven.sh restart            # Restart all services
+./faultmaven.sh stop               # Stop all services
+```
+
+**Local Development (without Docker):**
+
+```bash
+# For contributors developing FaultMaven
+./scripts/faultmaven-dev.sh start  # Start API as local process
+./scripts/faultmaven-dev.sh health    # Verify local setup
+```
+
+**Legacy Commands:**
+
+```bash
+# Alternative quick-start scripts
+./faultmaven.sh start           # Start with Docker Compose
+./faultmaven.sh status          # Health check for containers
+```
 
 ---
 
