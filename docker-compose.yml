@@ -9,6 +9,9 @@
 #   3. Open http://localhost:3000 (Dashboard)
 #   4. Install the Copilot browser extension
 #
+# Demo Mode (with sample data):
+#   docker compose --profile demo up
+#
 # For development with external services (Redis, ChromaDB), see docker-compose.dev.yml
 
 services:
@@ -54,6 +57,28 @@ services:
       api:
         condition: service_healthy
     restart: unless-stopped
+
+  # Demo mode: Seeds sample runbooks and a demo incident case
+  # Activate with: docker compose --profile demo up
+  demo-seeder:
+    build: .
+    profiles:
+      - demo
+    environment:
+      - FAULTMAVEN_DEMO_MODE=true
+      - DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
+      - SESSION_STORAGE_TYPE=inmemory
+      - VECTOR_STORAGE_TYPE=inmemory
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./demo:/app/demo:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["python", "-m", "demo.seed_demo_data"]
+    restart: "no"
 
 volumes:
   data:

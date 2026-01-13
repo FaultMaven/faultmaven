@@ -1,0 +1,76 @@
+Name:             payment-service-7d9f8c6b5d-x2k4m
+Namespace:        payment
+Priority:         0
+Service Account:  default
+Node:             worker-node-03/10.0.1.103
+Start Time:       Mon, 15 Jan 2024 10:30:45 +0000
+Labels:           app=payment-service
+                  pod-template-hash=7d9f8c6b5d
+                  version=v2.4.1
+Annotations:      <none>
+Status:           Running
+IP:               10.244.3.47
+IPs:
+  IP:           10.244.3.47
+Controlled By:  ReplicaSet/payment-service-7d9f8c6b5d
+Containers:
+  payment-service:
+    Container ID:   containerd://a1b2c3d4e5f6789...
+    Image:          acme/payment-service:v2.4.1
+    Image ID:       docker.io/acme/payment-service@sha256:abc123...
+    Port:           8080/TCP
+    Host Port:      0/TCP
+    State:          Running
+      Started:      Mon, 15 Jan 2024 10:35:35 +0000
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137
+      Started:      Mon, 15 Jan 2024 10:30:45 +0000
+      Finished:     Mon, 15 Jan 2024 10:35:25 +0000
+    Ready:          True
+    Restart Count:  3
+    Limits:
+      cpu:     500m
+      memory:  256Mi
+    Requests:
+      cpu:      100m
+      memory:   128Mi
+    Liveness:   http-get http://:8080/health/live delay=30s timeout=1s period=10s #success=1 #failure=3
+    Readiness:  http-get http://:8080/health/ready delay=5s timeout=1s period=5s #success=1 #failure=3
+    Environment:
+      PAYMENT_DB_HOST:      postgres.payment.svc
+      PAYMENT_DB_PORT:      5432
+      PAYMENT_DB_POOL_SIZE: 10
+      REDIS_HOST:           redis.payment.svc
+      REDIS_PORT:           6379
+      STRIPE_API_KEY:       <set to the key 'stripe-api-key' in secret 'payment-secrets'>
+      BATCH_JOB_ENABLED:    true
+      BATCH_JOB_SCHEDULE:   */5 * * * *
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-x7k9m (ro)
+Conditions:
+  Type              Status
+  Initialized       True
+  Ready             True
+  ContainersReady   True
+  PodScheduled      True
+Volumes:
+  kube-api-access-x7k9m:
+    Type:                    Projected (a]volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    ConfigMapOptional:       <nil>
+    DownwardAPI:             true
+QoS Class:                   Burstable
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason     Age                    From               Message
+  ----     ------     ----                   ----               -------
+  Normal   Scheduled  15m                    default-scheduler  Successfully assigned payment/payment-service-7d9f8c6b5d-x2k4m to worker-node-03
+  Normal   Pulled     10m (x3 over 15m)      kubelet            Container image "acme/payment-service:v2.4.1" already present on machine
+  Normal   Created    10m (x3 over 15m)      kubelet            Created container payment-service
+  Normal   Started    10m (x3 over 15m)      kubelet            Started container payment-service
+  Warning  OOMKilled  5m (x2 over 10m)       kubelet            Container payment-service was OOMKilled
+  Warning  BackOff    2m (x4 over 8m)        kubelet            Back-off restarting failed container
