@@ -1,0 +1,32 @@
+2024-01-15T10:23:45.123Z INFO  [payment-service] Starting payment service v2.4.1
+2024-01-15T10:23:45.456Z INFO  [payment-service] Connecting to PostgreSQL at postgres.payment.svc:5432
+2024-01-15T10:23:45.789Z INFO  [payment-service] Database connection established
+2024-01-15T10:23:46.012Z INFO  [payment-service] Connecting to Redis at redis.payment.svc:6379
+2024-01-15T10:23:46.234Z INFO  [payment-service] Redis connection established
+2024-01-15T10:23:46.567Z INFO  [payment-service] Server listening on port 8080
+2024-01-15T10:23:46.890Z INFO  [payment-service] Health check endpoint ready at /health
+2024-01-15T10:24:01.123Z INFO  [payment-service] Processing transaction txn_abc123 for $149.99
+2024-01-15T10:24:01.456Z INFO  [payment-service] Transaction txn_abc123 completed successfully
+2024-01-15T10:25:15.789Z INFO  [payment-service] Processing transaction txn_def456 for $89.50
+2024-01-15T10:25:16.012Z INFO  [payment-service] Transaction txn_def456 completed successfully
+2024-01-15T10:30:00.000Z INFO  [payment-service] Batch job started: reconcile_pending_transactions
+2024-01-15T10:30:05.123Z INFO  [payment-service] Processing 1,247 pending transactions
+2024-01-15T10:30:15.456Z WARN  [payment-service] Memory usage elevated: 198MB / 256MB (77%)
+2024-01-15T10:30:25.789Z WARN  [payment-service] Memory usage critical: 231MB / 256MB (90%)
+2024-01-15T10:30:30.012Z WARN  [payment-service] GC pause detected: 450ms
+2024-01-15T10:30:35.234Z ERROR [payment-service] Memory allocation failed: unable to allocate 32MB for batch buffer
+2024-01-15T10:30:35.567Z ERROR [payment-service] Batch job failed: reconcile_pending_transactions - OutOfMemoryError
+2024-01-15T10:30:35.890Z WARN  [payment-service] Attempting graceful shutdown due to memory pressure
+2024-01-15T10:30:36.123Z INFO  [payment-service] Closing database connections
+2024-01-15T10:30:36.456Z INFO  [payment-service] Closing Redis connections
+--- Container terminated: OOMKilled ---
+2024-01-15T10:30:45.000Z INFO  [payment-service] Starting payment service v2.4.1
+2024-01-15T10:30:45.333Z INFO  [payment-service] Connecting to PostgreSQL at postgres.payment.svc:5432
+2024-01-15T10:30:45.666Z INFO  [payment-service] Database connection established
+2024-01-15T10:30:46.000Z INFO  [payment-service] Server listening on port 8080
+2024-01-15T10:35:00.000Z INFO  [payment-service] Batch job started: reconcile_pending_transactions
+2024-01-15T10:35:10.123Z WARN  [payment-service] Memory usage elevated: 195MB / 256MB (76%)
+2024-01-15T10:35:20.456Z WARN  [payment-service] Memory usage critical: 240MB / 256MB (94%)
+2024-01-15T10:35:25.789Z ERROR [payment-service] Memory allocation failed: unable to allocate 16MB for transaction batch
+--- Container terminated: OOMKilled ---
+2024-01-15T10:35:35.000Z INFO  [payment-service] Starting payment service v2.4.1

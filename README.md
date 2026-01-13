@@ -12,42 +12,71 @@ Traditional observability tools tell you **what** broke. Generic LLMs guess **wh
 
 ---
 
+## System Components
+
+FaultMaven consists of three components that work together:
+
+| Component | Repository | Purpose |
+|-----------|------------|---------|
+| **FaultMaven API** | This repo | Backend server: investigation engine, knowledge base, AI orchestration |
+| **FaultMaven Dashboard** | [faultmaven-dashboard](https://github.com/FaultMaven/faultmaven-dashboard) | Web UI: knowledge base management, case history, settings |
+| **FaultMaven Copilot** | [faultmaven-copilot](https://github.com/FaultMaven/faultmaven-copilot) | Browser extension: in-context troubleshooting overlay |
+
+**Typical usage:** The Copilot extension is your primary interface during incidents. The Dashboard manages your knowledge base and reviews past cases. Both connect to the API backend.
+
+---
+
 ## Quick Start
+
+Get the full FaultMaven stack running in under 5 minutes.
 
 ### Prerequisites
 
-- **Python 3.11+**
+- **Docker** and **Docker Compose**
 - **LLM Provider** (one of):
   - Cloud: OpenAI, Anthropic, Fireworks AI, Google Gemini, Groq
   - Local: Ollama (no API key required)
 
-### Installation
+### Step 1: Start the Stack
 
 ```bash
-# Clone and setup
+# Clone the repository
 git clone https://github.com/FaultMaven/faultmaven.git
 cd faultmaven
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# Install dependencies
-pip install -e .
-
-# Configure
+# Configure your LLM provider
 cp .env.example .env
-# Edit .env with your API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+# Edit .env: Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or configure Ollama
 
-# Start server
-./faultmaven.sh start
+# Start API + Dashboard
+docker compose up -d
 ```
+
+### Step 2: Install the Copilot Extension
+
+1. Download `faultmaven-copilot.zip` from [Releases](https://github.com/FaultMaven/faultmaven-copilot/releases)
+2. Extract the archive
+3. **Chrome/Edge:** Open `chrome://extensions` → Enable "Developer mode" → "Load unpacked" → Select `.output/chrome-mv3/`
+4. **Firefox:** Open `about:debugging#/runtime/this-firefox` → "Load Temporary Add-on" → Select any file in `.output/firefox-mv3/`
+5. Click the extension icon → Settings → Set API URL to `http://localhost:8000`
+
+### Step 3: Start Troubleshooting
+
+1. Open the **Dashboard** at http://localhost:3000 to upload runbooks to your Knowledge Base
+2. Navigate to any observability tool (AWS Console, Datadog, Grafana)
+3. Click the **Copilot** extension icon and start troubleshooting
 
 ### Access Points
 
-| Endpoint | URL | Description |
-|----------|-----|-------------|
+| Component | URL | Description |
+|-----------|-----|-------------|
+| Dashboard | http://localhost:3000 | Web UI for KB management, case history |
 | API | http://localhost:8000 | REST API |
 | API Docs | http://localhost:8000/docs | Interactive OpenAPI documentation |
-| Health | http://localhost:8000/health | Health check endpoint |
+
+### Alternative: Local Development Setup
+
+For contributors or debugging, you can run the components as local processes instead of Docker. See [Development Setup](docs/development/local-setup.md).
 
 ---
 
@@ -57,11 +86,17 @@ FaultMaven is not just a chatbot wrapper; it is a context-aware investigation en
 
 ### 1. Deep Context Awareness
 
-Generic chatbots can't access your logs, configs, or deployments. FaultMaven auto-ingests your **full stack context**—correlating errors with recent changes, configuration drift, and system state.
+Generic chatbots can't access your logs, configs, or deployments. FaultMaven correlates your **full stack context**—connecting errors with recent changes, configuration drift, and system state to find root causes faster.
 
-**Example:** A Kubernetes pod is crashlooping. ChatGPT gives generic advice. FaultMaven ingests your pod logs, deployment YAML, and recent Git commits—then tells you the ConfigMap changed 2 hours ago.
+**Example:** A Kubernetes pod is crashlooping. ChatGPT gives generic advice. FaultMaven analyzes your pod logs alongside deployment YAMLs and recent changes—then identifies that a ConfigMap update 2 hours ago introduced an invalid environment variable.
 
-### 2. The Knowledge Flywheel
+### 2. Zero Context-Switching
+
+Stop copying errors between browser tabs. The **[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** browser extension overlays AI troubleshooting directly onto your existing tools—AWS Console, Datadog, Grafana, or localhost. No backend agents, webhooks, or complex integrations required.
+
+**How it works:** FaultMaven lives in your browser, not your cluster. As you view logs in CloudWatch, traces in Datadog, or pods in the Kubernetes dashboard, the Copilot extension captures the relevant context and correlates it with your Knowledge Base in real-time.
+
+### 3. The Knowledge Flywheel
 
 Most troubleshooting knowledge is lost once the incident is closed. FaultMaven turns that lost data into a growing asset through a "Seed & Grow" lifecycle:
 
@@ -69,7 +104,7 @@ Most troubleshooting knowledge is lost once the incident is closed. FaultMaven t
 - **Grow with Incidents:** As you troubleshoot, the AI learns. When a case is resolved, FaultMaven extracts the successful steps and root cause to automatically update the knowledge base.
 - **Result:** Your static documentation becomes a dynamic, self-improving engine. The solution to today's incident becomes the automated fix for tomorrow's.
 
-### 3. AI-Powered Investigation Framework
+### 4. AI-Powered Investigation Framework
 
 FaultMaven uses a 7-phase investigation lifecycle based on the **OODA Loop** (Observe, Orient, Decide, Act) with integrated engines:
 
@@ -78,7 +113,7 @@ FaultMaven uses a 7-phase investigation lifecycle based on the **OODA Loop** (Ob
 - **PhaseOrchestrator** - Intelligent phase progression with loop-back detection.
 - **OODAEngine** - Adaptive investigation intensity (light/medium/full).
 
-### 4. Flexible Multi-LLM Support
+### 5. Flexible Multi-LLM Support
 
 FaultMaven is architected to be model-agnostic, giving you the freedom to choose the best intelligence for your specific needs and budget.
 
@@ -99,7 +134,7 @@ FaultMaven runs on a single, deployment-agnostic **Core**. This engine can be co
 
 **Best for:** Individuals, contributors, and air-gapped environments.
 
-In this configuration, you deploy the Core on your own hardware using Docker. It is a self-contained environment where you control the infrastructure.
+In this configuration, you run the Core on your own hardware—either directly as a server process or inside a Docker container. You maintain full control over the infrastructure.
 
 - **Self-Hosted:** You own the stack. You manage the container, the database (SQLite), and the configuration.
 - **Build Your Own Knowledge:** The local environment starts with a clean slate. It includes all the capabilities to ingest your own runbooks and build a **Personal Knowledge Base** from scratch, tailored exactly to your specific needs.
@@ -315,31 +350,30 @@ alembic upgrade head
 
 ## User Interfaces
 
-FaultMaven provides two complementary frontend interfaces (separate repositories):
-
-### Browser Extension
-
-**[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** - Browser extension for reactive troubleshooting:
-
-- Overlay AI assistance on AWS Console, Datadog, Grafana
-- Context-aware conversations during incidents
-- Evidence collection and file upload
+FaultMaven provides two frontend interfaces. For setup instructions, see [Quick Start](#quick-start) or [Local Development Setup](docs/development/local-setup.md).
 
 ### Dashboard
 
-**[FaultMaven Dashboard](https://github.com/FaultMaven/faultmaven-dashboard)** - Web UI for:
+**[FaultMaven Dashboard](https://github.com/FaultMaven/faultmaven-dashboard)** - Web application for proactive knowledge management:
 
-- Knowledge base management
-- Case history and analytics
-- Configuration and settings
+- **Knowledge Base Management**: Upload runbooks, edit indexed documents, manage vectors
+- **Case History**: View, search, and export past troubleshooting sessions
+- **Configuration**: Manage LLM providers and system settings
 
-```bash
-# Run dashboard locally (separate repo)
-cd faultmaven-dashboard
-pnpm install
-VITE_API_URL=http://localhost:8000 pnpm dev
-# Open http://localhost:5173
-```
+### Browser Extension (Copilot)
+
+**[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** - Browser extension for reactive troubleshooting:
+
+- **Context Capture**: Reads logs, stack traces, and dashboards directly from your screen
+- **In-Flow Diagnostics**: Troubleshoot within AWS Console, Datadog, Grafana, and other tools
+- **Knowledge Base Integration**: References your documentation in real-time
+- **Session Continuity**: Maintains chat history across browser sessions
+
+### Building from Source
+
+For development or customization, see the respective repositories:
+- [Dashboard Development](https://github.com/FaultMaven/faultmaven-dashboard#development)
+- [Copilot Development](https://github.com/FaultMaven/faultmaven-copilot#development)
 
 ---
 

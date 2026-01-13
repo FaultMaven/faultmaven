@@ -1,0 +1,80 @@
+# Payment Service Kubernetes Deployment
+# Last modified: 2024-01-14 (reduced memory limit from 512Mi to 256Mi per cost optimization)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: payment
+  labels:
+    app: payment-service
+    version: v2.4.1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+        version: v2.4.1
+    spec:
+      containers:
+      - name: payment-service
+        image: acme/payment-service:v2.4.1
+        ports:
+        - containerPort: 8080
+          name: http
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"    # CHANGED: was 512Mi, reduced for cost savings
+            cpu: "500m"
+        env:
+        - name: PAYMENT_DB_HOST
+          value: "postgres.payment.svc"
+        - name: PAYMENT_DB_PORT
+          value: "5432"
+        - name: PAYMENT_DB_POOL_SIZE
+          value: "10"
+        - name: REDIS_HOST
+          value: "redis.payment.svc"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: STRIPE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: payment-secrets
+              key: stripe-api-key
+        - name: BATCH_JOB_ENABLED
+          value: "true"
+        - name: BATCH_JOB_SCHEDULE
+          value: "*/5 * * * *"    # Run every 5 minutes
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      restartPolicy: Always
+---
+# ConfigMap for recent change tracking
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payment-service-changelog
+  namespace: payment
+data:
+  recent_changes: |
+    2024-01-14: Reduced memory limit from 512Mi to 256Mi (cost optimization ticket COST-1234)
+    2024-01-10: Updated to v2.4.1 (bug fixes)
+    2024-01-05: Added batch reconciliation job (FEAT-5678)
+    2023-12-20: Increased replicas from 2 to 3 (capacity planning)

@@ -56,19 +56,77 @@ def _is_test_environment() -> bool:
     # Check for pytest in command line arguments
     if 'pytest' in ' '.join(sys.argv) or any('test' in arg.lower() for arg in sys.argv):
         return True
-    
+
     # Check for common test environment variables
     if os.getenv('SKIP_SERVICE_CHECKS', '').lower() == 'true':
         return True
-        
+
     if os.getenv('PYTEST_CURRENT_TEST'):
         return True
-        
+
     # Check if we're being imported by pytest
     if 'pytest' in sys.modules:
         return True
-        
+
     return False
+
+
+def _check_llm_configuration(llm_provider) -> None:
+    """Check if any LLM provider is configured and print warning if not."""
+    # Skip check in test environments
+    if _is_test_environment():
+        return
+
+    # Check if we have any configured providers
+    has_provider = False
+    provider_name = None
+
+    # Check common API key environment variables
+    llm_keys = {
+        'OpenAI': os.getenv('OPENAI_API_KEY', ''),
+        'Anthropic': os.getenv('ANTHROPIC_API_KEY', ''),
+        'Fireworks': os.getenv('FIREWORKS_API_KEY', ''),
+        'Groq': os.getenv('GROQ_API_KEY', ''),
+        'Gemini': os.getenv('GEMINI_API_KEY', ''),
+    }
+
+    for name, key in llm_keys.items():
+        if key and not key.startswith('your_') and key != '':
+            has_provider = True
+            provider_name = name
+            break
+
+    # Check for local LLM configuration
+    chat_provider = os.getenv('CHAT_PROVIDER', '').lower()
+    if chat_provider == 'local' and os.getenv('LOCAL_LLM_URL'):
+        has_provider = True
+        provider_name = 'Local (Ollama)'
+
+    if has_provider:
+        logger.info(f"✅ LLM Provider configured: {provider_name}")
+    else:
+        # Print prominent warning banner
+        banner = """
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                        ⚠️  NO LLM PROVIDER CONFIGURED                         ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║                                                                               ║
+║  FaultMaven requires an LLM provider to function. Please configure one:       ║
+║                                                                               ║
+║  Option 1: Cloud Provider (in your .env file)                                 ║
+║    OPENAI_API_KEY=sk-...                                                      ║
+║    ANTHROPIC_API_KEY=sk-ant-...                                               ║
+║                                                                               ║
+║  Option 2: Local LLM (Ollama)                                                 ║
+║    CHAT_PROVIDER=local                                                        ║
+║    LOCAL_LLM_URL=http://localhost:11434                                       ║
+║    LOCAL_LLM_MODEL=llama3.1                                                   ║
+║                                                                               ║
+║  See: https://github.com/FaultMaven/faultmaven#quick-start                    ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+"""
+        logger.warning(banner)
 
 # Import API routes from modules
 # All routes now in modules following vertical slice architecture
@@ -176,6 +234,9 @@ async def lifespan(app: FastAPI):
         app.state.tracer = container.get_tracer()
         app.state.llm_provider = container.get_llm_provider()
         logger.info("✅ Services attached to app.state (Composition Root)")
+
+        # Check LLM provider configuration and warn if none configured
+        _check_llm_configuration(app.state.llm_provider)
     except RuntimeError as e:
         # Container already logged the error and raised if it's a production fail-fast
         # Re-raise to let FastAPI handle startup failure
