@@ -1,0 +1,58 @@
+# Pre-commit hooks to prevent API key exposure
+# Install: pip install pre-commit && pre-commit install
+
+repos:
+  # Detect secrets and API keys
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        args:
+          - '--baseline'
+          - '.secrets.baseline'
+          - '--exclude-files'
+          - '.*\.lock$'
+          - '--exclude-files'
+          - 'package-lock\.json$'
+        exclude: |
+          (?x)^(
+            .*\.lock$|
+            package-lock\.json$|
+            poetry\.lock$|
+            .*\.min\.js$
+          )$
+
+  # Check for common secret patterns
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-json
+      - id: check-yaml
+        args: ['--unsafe']  # Allow custom YAML tags
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+
+  # Custom hook to detect API key patterns
+  - repo: local
+    hooks:
+      - id: check-api-keys
+        name: Check for API keys
+        entry: bash -c 'if grep -r "sk-proj\|sk-pro\|AIza[A-Za-z0-9_-]\{35\}\|gsk_[A-Za-z0-9]\{52\}\|fw_[A-Za-z0-9_-]\{20,\}\|hf_[A-Za-z0-9]\{34,\}\|sk-or-v1" "$@"; then echo "ERROR: API key pattern detected!"; exit 1; fi' --
+        language: system
+        pass_filenames: true
+        files: \.(py|js|ts|jsx|tsx|md|txt|yml|yaml|json|env)$
+        exclude: |
+          (?x)^(
+            \.git/.*|
+            \.venv/.*|
+            node_modules/.*|
+            __pycache__/.*|
+            .*\.min\.js$|
+            \.secrets\.baseline$|
+            \.pre-commit-config\.yaml$
+          )$
