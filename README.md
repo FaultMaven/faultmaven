@@ -32,12 +32,13 @@ This section covers setting up the **backend API server**. For full-stack setup 
 
 ### Prerequisites
 
-- **Python 3.11+**
 - **LLM Provider** (one of):
   - Cloud: OpenAI, Anthropic, Fireworks AI, Google Gemini, Groq
   - Local: Ollama (no API key required)
 
-### Installation
+### Option 1: Server Process
+
+**Additional prerequisites:** Python 3.11+
 
 ```bash
 # Clone and setup
@@ -55,6 +56,19 @@ cp .env.example .env
 
 # Start server
 ./faultmaven.sh start
+```
+
+### Option 2: Docker Container
+
+**Additional prerequisites:** Docker
+
+```bash
+# Configure environment
+cp .env.example .env
+# Edit .env with your API keys
+
+# Run container
+docker run -p 8000:8000 --env-file .env faultmaven/faultmaven:latest
 ```
 
 ### Access Points
@@ -117,7 +131,7 @@ FaultMaven runs on a single, deployment-agnostic **Core**. This engine can be co
 
 **Best for:** Individuals, contributors, and air-gapped environments.
 
-In this configuration, you deploy the Core on your own hardware using Docker. It is a self-contained environment where you control the infrastructure.
+In this configuration, you run the Core on your own hardware—either directly as a server process or inside a Docker container. You maintain full control over the infrastructure.
 
 - **Self-Hosted:** You own the stack. You manage the container, the database (SQLite), and the configuration.
 - **Build Your Own Knowledge:** The local environment starts with a clean slate. It includes all the capabilities to ingest your own runbooks and build a **Personal Knowledge Base** from scratch, tailored exactly to your specific needs.
