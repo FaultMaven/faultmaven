@@ -28,58 +28,55 @@ FaultMaven consists of three components that work together:
 
 ## Quick Start
 
-This section covers setting up the **backend API server**. For full-stack setup including the Dashboard and Copilot, see [User Interfaces](#user-interfaces).
+Get the full FaultMaven stack running in under 5 minutes.
 
 ### Prerequisites
 
+- **Docker** and **Docker Compose**
 - **LLM Provider** (one of):
   - Cloud: OpenAI, Anthropic, Fireworks AI, Google Gemini, Groq
   - Local: Ollama (no API key required)
 
-### Option 1: Server Process
-
-**Additional prerequisites:** Python 3.11+
+### Step 1: Start the Stack
 
 ```bash
-# Clone and setup
+# Clone the repository
 git clone https://github.com/FaultMaven/faultmaven.git
 cd faultmaven
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# Install dependencies
-pip install -e .
-
-# Configure
+# Configure your LLM provider
 cp .env.example .env
-# Edit .env with your API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+# Edit .env: Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or configure Ollama
 
-# Start server
-./faultmaven.sh start
+# Start API + Dashboard
+docker compose up -d
 ```
 
-### Option 2: Docker Container
+### Step 2: Install the Copilot Extension
 
-**Additional prerequisites:** Docker
+1. Download `faultmaven-copilot.zip` from [Releases](https://github.com/FaultMaven/faultmaven-copilot/releases)
+2. Extract the archive
+3. **Chrome/Edge:** Open `chrome://extensions` → Enable "Developer mode" → "Load unpacked" → Select `.output/chrome-mv3/`
+4. **Firefox:** Open `about:debugging#/runtime/this-firefox` → "Load Temporary Add-on" → Select any file in `.output/firefox-mv3/`
+5. Click the extension icon → Settings → Set API URL to `http://localhost:8000`
 
-```bash
-# Configure environment
-cp .env.example .env
-# Edit .env with your API keys
+### Step 3: Start Troubleshooting
 
-# Run container
-docker run -p 8000:8000 --env-file .env faultmaven/faultmaven:latest
-```
+1. Open the **Dashboard** at http://localhost:3000 to upload runbooks to your Knowledge Base
+2. Navigate to any observability tool (AWS Console, Datadog, Grafana)
+3. Click the **Copilot** extension icon and start troubleshooting
 
 ### Access Points
 
 | Component | URL | Description |
 |-----------|-----|-------------|
+| Dashboard | http://localhost:3000 | Web UI for KB management, case history |
 | API | http://localhost:8000 | REST API |
 | API Docs | http://localhost:8000/docs | Interactive OpenAPI documentation |
-| Health | http://localhost:8000/health | Health check endpoint |
-| Dashboard | http://localhost:5173 | Web UI (requires separate setup) |
-| Copilot | Browser extension | In-context overlay (requires installation) |
+
+### Alternative: Local Development Setup
+
+For contributors or debugging, you can run the components as local processes instead of Docker. See [Development Setup](docs/development/local-setup.md).
 
 ---
 
@@ -349,7 +346,7 @@ alembic upgrade head
 
 ## User Interfaces
 
-FaultMaven provides two frontend interfaces that connect to the backend API.
+FaultMaven provides two frontend interfaces. For setup instructions, see [Quick Start](#quick-start) or [Local Development Setup](docs/development/local-setup.md).
 
 ### Dashboard
 
@@ -359,96 +356,20 @@ FaultMaven provides two frontend interfaces that connect to the backend API.
 - **Case History**: View, search, and export past troubleshooting sessions
 - **Configuration**: Manage LLM providers and system settings
 
-#### Dashboard Setup
-
-**Prerequisites:** Node.js 18+, npm or pnpm
-
-```bash
-# Clone and install
-git clone https://github.com/FaultMaven/faultmaven-dashboard.git
-cd faultmaven-dashboard
-npm install
-
-# Configure API endpoint (optional - defaults to localhost:8000)
-cp .env.example .env
-# Edit .env: VITE_API_URL=http://localhost:8000
-
-# Start development server
-npm run dev
-# Open http://localhost:5173
-```
-
-**Docker alternative:**
-```bash
-docker run -p 3000:80 -e API_URL=http://localhost:8000 \
-  faultmaven/faultmaven-dashboard:latest
-# Open http://localhost:3000
-```
-
 ### Browser Extension (Copilot)
 
 **[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** - Browser extension for reactive troubleshooting:
 
-- **Context Capture**: Automatically scrapes relevant logs, stack traces, and DOM elements
-- **In-Flow Diagnostics**: Troubleshoot within AWS Console, Datadog, Grafana, and other dashboards
-- **Knowledge Base Integration**: References your documentation directly in conversations
+- **Context Capture**: Reads logs, stack traces, and dashboards directly from your screen
+- **In-Flow Diagnostics**: Troubleshoot within AWS Console, Datadog, Grafana, and other tools
+- **Knowledge Base Integration**: References your documentation in real-time
 - **Session Continuity**: Maintains chat history across browser sessions
 
-#### Copilot Installation
+### Building from Source
 
-**Option A: Pre-built Release** (Recommended)
-
-1. Download `faultmaven-copilot.zip` from [Releases](https://github.com/FaultMaven/faultmaven-copilot/releases)
-2. Extract the archive
-
-**Chrome/Edge:**
-1. Open `chrome://extensions`
-2. Enable "Developer mode" (toggle in top-right)
-3. Click "Load unpacked"
-4. Select the extracted `.output/chrome-mv3/` directory
-
-**Firefox:**
-1. Open `about:debugging#/runtime/this-firefox`
-2. Click "Load Temporary Add-on"
-3. Select any file from the extracted `.output/firefox-mv3/` directory
-
-**Option B: Build from Source**
-
-**Prerequisites:** Node.js 18+, pnpm
-
-```bash
-git clone https://github.com/FaultMaven/faultmaven-copilot.git
-cd faultmaven-copilot
-pnpm install
-cp .env.example .env
-
-# Development (auto-reload)
-pnpm dev          # Chrome
-pnpm dev:firefox  # Firefox
-
-# Production build
-pnpm build
-# Load from .output/chrome-mv3/ or .output/firefox-mv3/
-```
-
-#### Copilot Configuration
-
-The extension connects to **FaultMaven Cloud** by default. To use your local backend:
-
-1. Click the FaultMaven extension icon in your browser toolbar
-2. Go to **Settings**
-3. Change **API Endpoint** to: `http://localhost:8000`
-4. Save and refresh
-
-### Full Stack Summary
-
-| Component | Port | Setup Command |
-|-----------|------|---------------|
-| Backend API | 8000 | `./faultmaven.sh start` |
-| Dashboard | 5173 | `npm run dev` (in dashboard repo) |
-| Copilot | N/A | Load extension in browser |
-
-All three components should be running for the complete FaultMaven experience. The Dashboard and Copilot both require the backend API to be running.
+For development or customization, see the respective repositories:
+- [Dashboard Development](https://github.com/FaultMaven/faultmaven-dashboard#development)
+- [Copilot Development](https://github.com/FaultMaven/faultmaven-copilot#development)
 
 ---
 

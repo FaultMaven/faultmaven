@@ -1,6 +1,21 @@
+# FaultMaven Full-Stack - Quick Start Configuration
+#
+# This is the simplest way to run FaultMaven locally.
+# Uses in-memory storage (SQLite, in-memory sessions/vectors) - no external services required.
+#
+# Usage:
+#   1. Copy .env.example to .env and configure your LLM provider
+#   2. docker compose up
+#   3. Open http://localhost:3000 (Dashboard)
+#   4. Install the Copilot browser extension
+#
+# For development with external services (Redis, ChromaDB), see docker-compose.dev.yml
+
 services:
-  faultmaven-backend:
+  api:
     build: .
+    # Or use pre-built image:
+    # image: faultmaven/faultmaven:latest
     ports:
       - "8000:8000"
     environment:
@@ -8,67 +23,37 @@ services:
       - PORT=8000
       - DEBUG=false
       - LOG_LEVEL=INFO
-      # Note: In production, these services run in K8s cluster
-      # For local development, you can use local services or connect to K8s
-      - REDIS_URL=redis://redis:6379  # Local development fallback
-      - CHROMADB_URL=http://chromadb:8000  # Local development fallback
-      # - PRESIDIO_HOST=presidio.faultmaven.local  # K8s service (requires /etc/hosts setup)
-      # - PRESIDIO_ANALYZER_PORT=30433
-      # - PRESIDIO_ANONYMIZER_PORT=30434
+      # Local deployment uses in-memory storage (no external services needed)
+      - SESSION_STORAGE_TYPE=inmemory
+      - VECTOR_STORAGE_TYPE=inmemory
+      - CASE_STORAGE_TYPE=database
+      - DATABASE_URL=sqlite+aiosqlite:///./data/faultmaven.db
     env_file:
       - .env
     volumes:
       - ./data:/app/data
     restart: unless-stopped
-    depends_on:
-      - redis
-      - chromadb
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
-  chromadb:
-    image: chromadb/chroma:latest
+  dashboard:
+    image: faultmaven/faultmaven-dashboard:latest
+    # Or build from source:
+    # build:
+    #   context: ../faultmaven-dashboard
+    #   dockerfile: Dockerfile
     ports:
-      - "8001:8000"
+      - "3000:80"
     environment:
-      - ANONYMIZED_TELEMETRY=False
-      - CHROMA_SERVER_AUTHN_PROVIDER=chromadb.auth.basic_authn.BasicAuthenticationServerProvider
-    volumes:
-      - chromadb_data:/chroma/chroma
+      - API_URL=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
-
-  # PostgreSQL for persistent storage (optional future enhancement)
-  # postgres:
-  #   image: postgres:15-alpine
-  #   environment:
-  #     POSTGRES_DB: faultmaven
-  #     POSTGRES_USER: faultmaven
-  #     POSTGRES_PASSWORD: faultmaven_password
-  #   ports:
-  #     - "5432:5432"
-  #   volumes:
-  #     - postgres_data:/var/lib/postgresql/data
-  #   restart: unless-stopped
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U faultmaven"]
-  #     interval: 5s
-  #     timeout: 5s
-  #     retries: 5
 
 volumes:
-  redis_data:
-  chromadb_data:
-  # postgres_data:
-  data: 
+  data:
