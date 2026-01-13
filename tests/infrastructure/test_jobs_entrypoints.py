@@ -186,7 +186,7 @@ class TestJobsRunner:
         from faultmaven.jobs.run import run_job
 
         with patch("faultmaven.config.settings.get_settings", return_value=mock_settings), \
-             patch("faultmaven.jobs.run.container", mock_container):
+             patch("faultmaven.container.container", mock_container):
             result = await run_job("case_cleanup", verbose=False)
 
         assert result["status"] == "completed"
