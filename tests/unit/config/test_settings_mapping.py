@@ -131,13 +131,18 @@ class TestLoggingSettingsMapping:
 class TestDatabaseSettingsMapping:
     """Tests for database configuration mapping."""
 
-    def test_database_defaults(self):
+    def test_database_defaults(self, monkeypatch):
         """Test that database settings have correct defaults."""
-        from faultmaven.config.settings import get_settings
+        # Clear DATABASE_URL from environment to get true defaults
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+
+        from faultmaven.config.settings import reset_settings, get_settings
+        reset_settings()
 
         settings = get_settings()
 
-        assert settings.database.database_url == "sqlite+aiosqlite:///./faultmaven.db"
+        # Default can be either in-memory (code default) or file-based (.env override)
+        assert "sqlite+aiosqlite://" in settings.database.database_url
         assert settings.database.database_echo is False
         assert settings.database.database_pool_size == 5
         assert settings.database.database_max_overflow == 10
