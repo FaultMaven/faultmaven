@@ -12,7 +12,23 @@ Traditional observability tools tell you **what** broke. Generic LLMs guess **wh
 
 ---
 
+## System Components
+
+FaultMaven consists of three components that work together:
+
+| Component | Repository | Purpose |
+|-----------|------------|---------|
+| **FaultMaven API** | This repo | Backend server: investigation engine, knowledge base, AI orchestration |
+| **FaultMaven Dashboard** | [faultmaven-dashboard](https://github.com/FaultMaven/faultmaven-dashboard) | Web UI: knowledge base management, case history, settings |
+| **FaultMaven Copilot** | [faultmaven-copilot](https://github.com/FaultMaven/faultmaven-copilot) | Browser extension: in-context troubleshooting overlay |
+
+**Typical usage:** The Copilot extension is your primary interface during incidents. The Dashboard manages your knowledge base and reviews past cases. Both connect to the API backend.
+
+---
+
 ## Quick Start
+
+This section covers setting up the **backend API server**. For full-stack setup including the Dashboard and Copilot, see [User Interfaces](#user-interfaces).
 
 ### Prerequisites
 
@@ -43,11 +59,13 @@ cp .env.example .env
 
 ### Access Points
 
-| Endpoint | URL | Description |
-|----------|-----|-------------|
+| Component | URL | Description |
+|-----------|-----|-------------|
 | API | http://localhost:8000 | REST API |
 | API Docs | http://localhost:8000/docs | Interactive OpenAPI documentation |
 | Health | http://localhost:8000/health | Health check endpoint |
+| Dashboard | http://localhost:5173 | Web UI (requires separate setup) |
+| Copilot | Browser extension | In-context overlay (requires installation) |
 
 ---
 
@@ -315,31 +333,106 @@ alembic upgrade head
 
 ## User Interfaces
 
-FaultMaven provides two complementary frontend interfaces (separate repositories):
-
-### Browser Extension
-
-**[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** - Browser extension for reactive troubleshooting:
-
-- Overlay AI assistance on AWS Console, Datadog, Grafana
-- Context-aware conversations during incidents
-- Evidence collection and file upload
+FaultMaven provides two frontend interfaces that connect to the backend API.
 
 ### Dashboard
 
-**[FaultMaven Dashboard](https://github.com/FaultMaven/faultmaven-dashboard)** - Web UI for:
+**[FaultMaven Dashboard](https://github.com/FaultMaven/faultmaven-dashboard)** - Web application for proactive knowledge management:
 
-- Knowledge base management
-- Case history and analytics
-- Configuration and settings
+- **Knowledge Base Management**: Upload runbooks, edit indexed documents, manage vectors
+- **Case History**: View, search, and export past troubleshooting sessions
+- **Configuration**: Manage LLM providers and system settings
+
+#### Dashboard Setup
+
+**Prerequisites:** Node.js 18+, npm or pnpm
 
 ```bash
-# Run dashboard locally (separate repo)
+# Clone and install
+git clone https://github.com/FaultMaven/faultmaven-dashboard.git
 cd faultmaven-dashboard
-pnpm install
-VITE_API_URL=http://localhost:8000 pnpm dev
+npm install
+
+# Configure API endpoint (optional - defaults to localhost:8000)
+cp .env.example .env
+# Edit .env: VITE_API_URL=http://localhost:8000
+
+# Start development server
+npm run dev
 # Open http://localhost:5173
 ```
+
+**Docker alternative:**
+```bash
+docker run -p 3000:80 -e API_URL=http://localhost:8000 \
+  faultmaven/faultmaven-dashboard:latest
+# Open http://localhost:3000
+```
+
+### Browser Extension (Copilot)
+
+**[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** - Browser extension for reactive troubleshooting:
+
+- **Context Capture**: Automatically scrapes relevant logs, stack traces, and DOM elements
+- **In-Flow Diagnostics**: Troubleshoot within AWS Console, Datadog, Grafana, and other dashboards
+- **Knowledge Base Integration**: References your documentation directly in conversations
+- **Session Continuity**: Maintains chat history across browser sessions
+
+#### Copilot Installation
+
+**Option A: Pre-built Release** (Recommended)
+
+1. Download `faultmaven-copilot.zip` from [Releases](https://github.com/FaultMaven/faultmaven-copilot/releases)
+2. Extract the archive
+
+**Chrome/Edge:**
+1. Open `chrome://extensions`
+2. Enable "Developer mode" (toggle in top-right)
+3. Click "Load unpacked"
+4. Select the extracted `.output/chrome-mv3/` directory
+
+**Firefox:**
+1. Open `about:debugging#/runtime/this-firefox`
+2. Click "Load Temporary Add-on"
+3. Select any file from the extracted `.output/firefox-mv3/` directory
+
+**Option B: Build from Source**
+
+**Prerequisites:** Node.js 18+, pnpm
+
+```bash
+git clone https://github.com/FaultMaven/faultmaven-copilot.git
+cd faultmaven-copilot
+pnpm install
+cp .env.example .env
+
+# Development (auto-reload)
+pnpm dev          # Chrome
+pnpm dev:firefox  # Firefox
+
+# Production build
+pnpm build
+# Load from .output/chrome-mv3/ or .output/firefox-mv3/
+```
+
+#### Copilot Configuration
+
+The extension connects to **FaultMaven Cloud** by default. To use your local backend:
+
+1. Click the FaultMaven extension icon in your browser toolbar
+2. Go to **Settings**
+3. Change **API Endpoint** to: `http://localhost:8000`
+4. Save and refresh
+
+### Full Stack Summary
+
+| Component | Port | Setup Command |
+|-----------|------|---------------|
+| Backend API | 8000 | `./faultmaven.sh start` |
+| Dashboard | 5173 | `npm run dev` (in dashboard repo) |
+| Copilot | N/A | Load extension in browser |
+
+All three components should be running for the complete FaultMaven experience. The Dashboard and Copilot both require the backend API to be running.
 
 ---
 
