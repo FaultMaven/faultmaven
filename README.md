@@ -87,11 +87,13 @@ docker run -p 8000:8000 --env-file .env faultmaven/faultmaven:latest
 
 FaultMaven is not just a chatbot wrapper; it is a context-aware investigation engine designed to get smarter with every incident.
 
-### 1. Deep Context Awareness
+### 1. Zero-Agent Context Capture
 
-Generic chatbots can't access your logs, configs, or deployments. FaultMaven auto-ingests your **full stack context**—correlating errors with recent changes, configuration drift, and system state.
+Generic chatbots can't see your infrastructure. FaultMaven's browser extension captures context directly from your screen—reading logs, configs, and dashboards as you view them. No backend agents, webhooks, or complex API integrations required.
 
-**Example:** A Kubernetes pod is crashlooping. ChatGPT gives generic advice. FaultMaven ingests your pod logs, deployment YAML, and recent Git commits—then tells you the ConfigMap changed 2 hours ago.
+**How it works:** FaultMaven lives in your browser, not your cluster. As you view logs in CloudWatch, traces in Datadog, or pods in the Kubernetes dashboard, the Copilot extension captures the relevant text and correlates it with your stored Knowledge Base to provide instant, grounded answers.
+
+**Example:** A Kubernetes pod is crashlooping. ChatGPT gives generic advice. You open the pod logs in your browser—FaultMaven reads them alongside your runbooks and recent case history, then identifies that a ConfigMap change 2 hours ago introduced an invalid environment variable.
 
 ### 2. The Knowledge Flywheel
 
