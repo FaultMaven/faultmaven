@@ -84,15 +84,19 @@ For contributors or debugging, you can run the components as local processes ins
 
 FaultMaven is not just a chatbot wrapper; it is a context-aware investigation engine designed to get smarter with every incident.
 
-### 1. Zero-Agent Context Capture
+### 1. Deep Context Awareness
 
-Generic chatbots can't see your infrastructure. FaultMaven's browser extension captures context directly from your screen—reading logs, configs, and dashboards as you view them. No backend agents, webhooks, or complex API integrations required.
+Generic chatbots can't access your logs, configs, or deployments. FaultMaven correlates your **full stack context**—connecting errors with recent changes, configuration drift, and system state to find root causes faster.
 
-**How it works:** FaultMaven lives in your browser, not your cluster. As you view logs in CloudWatch, traces in Datadog, or pods in the Kubernetes dashboard, the Copilot extension captures the relevant text and correlates it with your stored Knowledge Base to provide instant, grounded answers.
+**Example:** A Kubernetes pod is crashlooping. ChatGPT gives generic advice. FaultMaven analyzes your pod logs alongside deployment YAMLs and recent changes—then identifies that a ConfigMap update 2 hours ago introduced an invalid environment variable.
 
-**Example:** A Kubernetes pod is crashlooping. ChatGPT gives generic advice. You open the pod logs in your browser—FaultMaven reads them alongside your runbooks and recent case history, then identifies that a ConfigMap change 2 hours ago introduced an invalid environment variable.
+### 2. Zero Context-Switching
 
-### 2. The Knowledge Flywheel
+Stop copying errors between browser tabs. The **[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** browser extension overlays AI troubleshooting directly onto your existing tools—AWS Console, Datadog, Grafana, or localhost. No backend agents, webhooks, or complex integrations required.
+
+**How it works:** FaultMaven lives in your browser, not your cluster. As you view logs in CloudWatch, traces in Datadog, or pods in the Kubernetes dashboard, the Copilot extension captures the relevant context and correlates it with your Knowledge Base in real-time.
+
+### 3. The Knowledge Flywheel
 
 Most troubleshooting knowledge is lost once the incident is closed. FaultMaven turns that lost data into a growing asset through a "Seed & Grow" lifecycle:
 
@@ -100,7 +104,7 @@ Most troubleshooting knowledge is lost once the incident is closed. FaultMaven t
 - **Grow with Incidents:** As you troubleshoot, the AI learns. When a case is resolved, FaultMaven extracts the successful steps and root cause to automatically update the knowledge base.
 - **Result:** Your static documentation becomes a dynamic, self-improving engine. The solution to today's incident becomes the automated fix for tomorrow's.
 
-### 3. AI-Powered Investigation Framework
+### 4. AI-Powered Investigation Framework
 
 FaultMaven uses a 7-phase investigation lifecycle based on the **OODA Loop** (Observe, Orient, Decide, Act) with integrated engines:
 
@@ -109,7 +113,7 @@ FaultMaven uses a 7-phase investigation lifecycle based on the **OODA Loop** (Ob
 - **PhaseOrchestrator** - Intelligent phase progression with loop-back detection.
 - **OODAEngine** - Adaptive investigation intensity (light/medium/full).
 
-### 4. Flexible Multi-LLM Support
+### 5. Flexible Multi-LLM Support
 
 FaultMaven is architected to be model-agnostic, giving you the freedom to choose the best intelligence for your specific needs and budget.
 
