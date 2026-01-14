@@ -226,8 +226,8 @@ def main():
     """Main function."""
     # Paths
     project_root = Path(__file__).parent.parent
-    locked_spec_path = project_root / "docs" / "api" / "openapi.locked.yaml"
-    current_spec_path = project_root / "docs" / "api" / "openapi.current.yaml"
+    locked_spec_path = project_root / "docs" / "reference" / "api" / "openapi.locked.yaml"
+    current_spec_path = project_root / "docs" / "reference" / "api" / "openapi.current.yaml"
 
     # Generate current spec
     print("Generating current OpenAPI specification...")
