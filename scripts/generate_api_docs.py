@@ -857,7 +857,7 @@ def generate_documentation() -> None:
         schema = enhance_openapi_schema(app)
         
         # Create docs directory
-        docs_dir = Path("docs/api")
+        docs_dir = Path("docs/reference/api")
         docs_dir.mkdir(parents=True, exist_ok=True)
         print(f"📁 Created documentation directory: {docs_dir}")
         
