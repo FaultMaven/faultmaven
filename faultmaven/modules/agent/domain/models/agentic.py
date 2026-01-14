@@ -40,7 +40,6 @@ from faultmaven.modules.agent.domain.models.investigation import (
 # Core Agentic Data Models
 
 
-
 class AgentRole(str, Enum):
     """Different agent roles in the system"""
 
