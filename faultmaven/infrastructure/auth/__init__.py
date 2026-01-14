@@ -15,7 +15,4 @@ Key Components:
 from .token_manager import DevTokenManager
 from .user_store import DevUserStore
 
-__all__ = [
-    "DevTokenManager",
-    "DevUserStore"
-]
+__all__ = ["DevTokenManager", "DevUserStore"]

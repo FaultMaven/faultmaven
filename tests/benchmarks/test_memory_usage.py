@@ -16,8 +16,14 @@ import os
 import psutil
 import pytest
 
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
-from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
+from faultmaven.infrastructure.persistence.database_case_repository import (
+    DatabaseCaseRepository,
+)
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationStrategy,
+)
 
 from .conftest import generate_case_id
 
@@ -72,7 +78,8 @@ class TestMemoryUsage:
                 user_id="memory-test-user",
                 organization_id="memory-test-org",
                 title=f"Memory Test Case {i}" * 5,  # ~100 bytes title
-                description="x" * 1900,  # ~1.9KB description per case (under 2000 char limit)
+                description="x"
+                * 1900,  # ~1.9KB description per case (under 2000 char limit)
                 status=CaseStatus.CONSULTING,
                 investigation_strategy=InvestigationStrategy.POST_MORTEM,
             )
@@ -83,13 +90,15 @@ class TestMemoryUsage:
         final_memory = process.memory_info().rss / 1024 / 1024
         memory_delta = final_memory - initial_memory
 
-        print(f"\n  Memory usage under load: {final_memory:.1f} MB RSS (+{memory_delta:.1f} MB)")
+        print(
+            f"\n  Memory usage under load: {final_memory:.1f} MB RSS (+{memory_delta:.1f} MB)"
+        )
 
         # Adjusted threshold to account for test infrastructure overhead
         # Focus is on detecting memory growth, not absolute values
-        assert final_memory < 2000, (
-            f"Memory usage {final_memory:.1f}MB exceeds 2000MB target"
-        )
+        assert (
+            final_memory < 2000
+        ), f"Memory usage {final_memory:.1f}MB exceeds 2000MB target"
 
     @pytest.mark.asyncio
     async def test_memory_efficiency_large_dataset(
@@ -192,7 +201,9 @@ class TestMemoryUsage:
         final_memory = process.memory_info().rss / 1024 / 1024
         memory_delta = final_memory - initial_memory
 
-        print(f"\n  Memory after GC: {final_memory:.1f} MB (+{memory_delta:.1f} MB from start)")
+        print(
+            f"\n  Memory after GC: {final_memory:.1f} MB (+{memory_delta:.1f} MB from start)"
+        )
 
         # Memory should not grow excessively after GC
         # Some growth is expected due to database connection pooling, etc.

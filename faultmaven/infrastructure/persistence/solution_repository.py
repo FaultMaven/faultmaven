@@ -40,14 +40,15 @@ from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.modules.case.domain.models import Solution
 from faultmaven.infrastructure.persistence.models import SolutionModel
+from faultmaven.modules.case.domain.models import Solution
 
 logger = logging.getLogger(__name__)
 
 
 class SolutionRepositoryException(Exception):
     """Exception raised when solution repository operations fail."""
+
     pass
 
 
@@ -242,7 +243,9 @@ class DatabaseSolutionRepository(SolutionRepository):
         except IntegrityError as e:
             await self.session.rollback()
             logger.error(f"Failed to create solution: {e}")
-            raise ValueError(f"Case {case_id} not found or integrity constraint violated")
+            raise ValueError(
+                f"Case {case_id} not found or integrity constraint violated"
+            )
         except Exception as e:
             await self.session.rollback()
             logger.error(f"Unexpected error creating solution: {e}")
@@ -293,7 +296,9 @@ class DatabaseSolutionRepository(SolutionRepository):
                 conditions.append(SolutionModel.status == status)
 
             # Count total
-            count_stmt = select(func.count()).select_from(SolutionModel).where(and_(*conditions))
+            count_stmt = (
+                select(func.count()).select_from(SolutionModel).where(and_(*conditions))
+            )
             count_result = await self.session.execute(count_stmt)
             total_count = count_result.scalar()
 
@@ -519,7 +524,8 @@ class InMemorySolutionRepository(SolutionRepository):
         """List solutions for a case."""
         # Filter by case and organization
         filtered = [
-            s for s in self._solutions.values()
+            s
+            for s in self._solutions.values()
             if s["case_id"] == case_id and s["organization_id"] == organization_id
         ]
 
@@ -532,7 +538,7 @@ class InMemorySolutionRepository(SolutionRepository):
 
         # Paginate
         total_count = len(filtered)
-        paginated = filtered[offset:offset + limit]
+        paginated = filtered[offset : offset + limit]
 
         return ([deepcopy(s) for s in paginated], total_count)
 

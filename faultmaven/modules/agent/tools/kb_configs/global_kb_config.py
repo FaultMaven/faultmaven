@@ -5,6 +5,7 @@ KB-specific configuration for system-wide documentation and best practices.
 """
 
 from typing import Optional
+
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 
@@ -27,37 +28,35 @@ class GlobalKBConfig(KBConfig):
         """Format with educational context: article IDs, titles, categories"""
         parts = [f"Score: {score:.2f}"]
 
-        if 'kb_article_id' in metadata:
+        if "kb_article_id" in metadata:
             parts.append(f"Article: {metadata['kb_article_id']}")
-        if 'title' in metadata:
+        if "title" in metadata:
             parts.append(f"Title: {metadata['title']}")
-        if 'category' in metadata:
+        if "category" in metadata:
             parts.append(f"Category: {metadata['category']}")
 
-        return ', '.join(parts)
+        return ", ".join(parts)
 
     def extract_source_name(self, metadata: dict) -> str:
         """Extract article ID or title as source"""
-        if 'kb_article_id' in metadata:
-            return metadata['kb_article_id']
-        return metadata.get('title', 'Unknown article')
+        if "kb_article_id" in metadata:
+            return metadata["kb_article_id"]
+        return metadata.get("title", "Unknown article")
 
     def get_citation_format(self) -> str:
         """Cite with article IDs and titles"""
         return "article IDs and titles"
 
     def format_response(
-        self,
-        answer: str,
-        sources: list,
-        chunk_count: int,
-        confidence: float
+        self, answer: str, sources: list, chunk_count: int, confidence: float
     ) -> str:
         """Format with KB article citations"""
         response = f"{answer}\n\n"
 
         if sources:
-            response += f"📖 Knowledge Base: {', '.join(sources[:5])}"  # Show more for global
+            response += (
+                f"📖 Knowledge Base: {', '.join(sources[:5])}"  # Show more for global
+            )
             if len(sources) > 5:
                 response += f" (+{len(sources) - 5} more)"
 

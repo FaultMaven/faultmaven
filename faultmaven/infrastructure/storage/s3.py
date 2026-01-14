@@ -24,10 +24,9 @@ from typing import Any, Dict, Optional
 from faultmaven.infrastructure.storage.base import (
     IFileStorageBackend,
     PresignedUrl,
-    StoredFile,
     StorageType,
+    StoredFile,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +36,7 @@ try:
     import boto3
     from botocore.config import Config as BotoConfig
     from botocore.exceptions import ClientError
+
     BOTO3_AVAILABLE = True
 except ImportError:
     BOTO3_AVAILABLE = False
@@ -84,8 +84,7 @@ class S3StorageBackend(IFileStorageBackend):
         """
         if not BOTO3_AVAILABLE:
             raise ImportError(
-                "boto3 is required for S3 storage. "
-                "Install with: pip install boto3"
+                "boto3 is required for S3 storage. " "Install with: pip install boto3"
             )
 
         self.bucket_name = bucket_name

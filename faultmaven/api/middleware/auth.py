@@ -70,7 +70,7 @@ async def get_auth_service(request: Request) -> AuthService:
 
     # Try to get from app.state
     try:
-        auth_service = getattr(request.app.state, 'auth_service', None)
+        auth_service = getattr(request.app.state, "auth_service", None)
         if auth_service is not None:
             return auth_service
     except Exception as e:
@@ -81,7 +81,9 @@ async def get_auth_service(request: Request) -> AuthService:
     return AuthService()
 
 
-def set_auth_service(service: Optional[AuthService], request: Optional[Request] = None) -> None:
+def set_auth_service(
+    service: Optional[AuthService], request: Optional[Request] = None
+) -> None:
     """Set the AuthService instance (for testing/DI).
 
     Args:
@@ -325,9 +327,7 @@ def require_role(role: str) -> Callable:
         current_user: AuthenticatedUser = Depends(get_current_user),
     ) -> AuthenticatedUser:
         if not current_user.has_role(role):
-            logger.debug(
-                f"Role denied: user {current_user.user_id} lacks role {role}"
-            )
+            logger.debug(f"Role denied: user {current_user.user_id} lacks role {role}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Missing required role: {role}",
@@ -352,8 +352,7 @@ def require_any_role(*roles: str) -> Callable:
     ) -> AuthenticatedUser:
         if not any(current_user.has_role(role) for role in roles):
             logger.debug(
-                f"Role denied: user {current_user.user_id} "
-                f"lacks all roles: {roles}"
+                f"Role denied: user {current_user.user_id} " f"lacks all roles: {roles}"
             )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

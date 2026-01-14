@@ -7,9 +7,9 @@ This package contains repository implementations for knowledge items:
 """
 
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
-    KnowledgeItemRepository,
     DatabaseKnowledgeItemRepository,
     InMemoryKnowledgeItemRepository,
+    KnowledgeItemRepository,
 )
 
 __all__ = [

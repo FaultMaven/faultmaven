@@ -28,6 +28,7 @@ import pytest
 
 class Violation(NamedTuple):
     """Represents a config purity violation."""
+
     file: str
     line: int
     pattern: str
@@ -55,15 +56,15 @@ class ConfigPurityScanner:
     # Files allowed to access environment variables
     ALLOWED_FILES = (
         "faultmaven/config/settings.py",  # Main unified configuration
-        "faultmaven/main.py",              # Composition root / bootstrap
+        "faultmaven/main.py",  # Composition root / bootstrap
     )
 
     # Regex patterns for quick detection
     FORBIDDEN_PATTERNS = (
-        (r'\bos\.getenv\s*\(', 'os.getenv()'),
-        (r'\bos\.environ\s*\[', 'os.environ[]'),
-        (r'\bos\.environ\.get\s*\(', 'os.environ.get()'),
-        (r'\bload_dotenv\s*\(', 'load_dotenv()'),
+        (r"\bos\.getenv\s*\(", "os.getenv()"),
+        (r"\bos\.environ\s*\[", "os.environ[]"),
+        (r"\bos\.environ\.get\s*\(", "os.environ.get()"),
+        (r"\bload_dotenv\s*\(", "load_dotenv()"),
     )
 
     def __init__(self, project_root: Path):
@@ -102,27 +103,29 @@ class ConfigPurityScanner:
         violations = []
 
         try:
-            content = file_path.read_text(encoding='utf-8')
+            content = file_path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, IOError):
             return violations
 
-        lines = content.split('\n')
+        lines = content.split("\n")
         rel_path = str(file_path.relative_to(self.project_root))
 
         for line_no, line in enumerate(lines, 1):
             # Skip comments
             stripped = line.strip()
-            if stripped.startswith('#'):
+            if stripped.startswith("#"):
                 continue
 
             for pattern, pattern_name in self.FORBIDDEN_PATTERNS:
                 if re.search(pattern, line):
-                    violations.append(Violation(
-                        file=rel_path,
-                        line=line_no,
-                        pattern=pattern_name,
-                        content=stripped[:100]  # Truncate long lines
-                    ))
+                    violations.append(
+                        Violation(
+                            file=rel_path,
+                            line=line_no,
+                            pattern=pattern_name,
+                            content=stripped[:100],  # Truncate long lines
+                        )
+                    )
 
         return violations
 
@@ -172,12 +175,14 @@ class DotenvImportScanner:
 
         return violations
 
-    def _scan_for_dotenv_import(self, file_path: Path, rel_path: str) -> list[Violation]:
+    def _scan_for_dotenv_import(
+        self, file_path: Path, rel_path: str
+    ) -> list[Violation]:
         """Check if a file imports and uses dotenv at module level."""
         violations = []
 
         try:
-            content = file_path.read_text(encoding='utf-8')
+            content = file_path.read_text(encoding="utf-8")
             tree = ast.parse(content, filename=str(file_path))
         except (SyntaxError, UnicodeDecodeError, IOError):
             return violations
@@ -188,9 +193,9 @@ class DotenvImportScanner:
         for node in ast.walk(tree):
             # Check for 'from dotenv import load_dotenv'
             if isinstance(node, ast.ImportFrom):
-                if node.module == 'dotenv':
+                if node.module == "dotenv":
                     for alias in node.names:
-                        if alias.name == 'load_dotenv':
+                        if alias.name == "load_dotenv":
                             has_dotenv_import = True
                             import_line = node.lineno
                             break
@@ -198,7 +203,7 @@ class DotenvImportScanner:
             # Check for 'import dotenv'
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name == 'dotenv':
+                    if alias.name == "dotenv":
                         has_dotenv_import = True
                         import_line = node.lineno
                         break
@@ -210,24 +215,33 @@ class DotenvImportScanner:
                 if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
                     call = node.value
                     # Check for load_dotenv() call
-                    if isinstance(call.func, ast.Name) and call.func.id == 'load_dotenv':
-                        violations.append(Violation(
-                            file=rel_path,
-                            line=node.lineno,
-                            pattern='import-time load_dotenv()',
-                            content=f"load_dotenv() called at module level (import at line {import_line})"
-                        ))
+                    if (
+                        isinstance(call.func, ast.Name)
+                        and call.func.id == "load_dotenv"
+                    ):
+                        violations.append(
+                            Violation(
+                                file=rel_path,
+                                line=node.lineno,
+                                pattern="import-time load_dotenv()",
+                                content=f"load_dotenv() called at module level (import at line {import_line})",
+                            )
+                        )
                     # Check for dotenv.load_dotenv() call
-                    elif (isinstance(call.func, ast.Attribute) and
-                          call.func.attr == 'load_dotenv' and
-                          isinstance(call.func.value, ast.Name) and
-                          call.func.value.id == 'dotenv'):
-                        violations.append(Violation(
-                            file=rel_path,
-                            line=node.lineno,
-                            pattern='import-time dotenv.load_dotenv()',
-                            content=f"dotenv.load_dotenv() called at module level (import at line {import_line})"
-                        ))
+                    elif (
+                        isinstance(call.func, ast.Attribute)
+                        and call.func.attr == "load_dotenv"
+                        and isinstance(call.func.value, ast.Name)
+                        and call.func.value.id == "dotenv"
+                    ):
+                        violations.append(
+                            Violation(
+                                file=rel_path,
+                                line=node.lineno,
+                                pattern="import-time dotenv.load_dotenv()",
+                                content=f"dotenv.load_dotenv() called at module level (import at line {import_line})",
+                            )
+                        )
 
         return violations
 
@@ -245,7 +259,9 @@ def format_violations(violations: list[Violation]) -> str:
         lines.append(f"    Content: {v.content}")
         lines.append("")
 
-    lines.append("Only faultmaven/config/settings.py and faultmaven/main.py are allowed")
+    lines.append(
+        "Only faultmaven/config/settings.py and faultmaven/main.py are allowed"
+    )
     lines.append("to access environment variables. Services, core, and API handlers")
     lines.append("must receive configuration via dependency injection.")
 
@@ -276,7 +292,9 @@ class TestConfigPurity:
         return DotenvImportScanner(project_root)
 
     @pytest.mark.architecture
-    def test_no_env_access_in_services_core_api(self, purity_scanner: ConfigPurityScanner):
+    def test_no_env_access_in_services_core_api(
+        self, purity_scanner: ConfigPurityScanner
+    ):
         """
         Forbidden directories must not access environment variables directly.
 
@@ -295,7 +313,9 @@ class TestConfigPurity:
         assert not violations, format_violations(violations)
 
     @pytest.mark.architecture
-    def test_no_import_time_dotenv_outside_config(self, dotenv_scanner: DotenvImportScanner):
+    def test_no_import_time_dotenv_outside_config(
+        self, dotenv_scanner: DotenvImportScanner
+    ):
         """
         load_dotenv() must not be called at import time in non-config modules.
 
@@ -322,20 +342,21 @@ class TestConfigPurity:
 
         # Verify patterns compile and match expected strings
         test_cases = [
-            ("x = os.getenv('FOO')", 'os.getenv()'),
-            ("x = os.getenv( 'FOO' )", 'os.getenv()'),
-            ("val = os.environ['BAR']", 'os.environ[]'),
-            ("val = os.environ.get('BAZ')", 'os.environ.get()'),
-            ("load_dotenv()", 'load_dotenv()'),
-            ("load_dotenv(override=True)", 'load_dotenv()'),
+            ("x = os.getenv('FOO')", "os.getenv()"),
+            ("x = os.getenv( 'FOO' )", "os.getenv()"),
+            ("val = os.environ['BAR']", "os.environ[]"),
+            ("val = os.environ.get('BAZ')", "os.environ.get()"),
+            ("load_dotenv()", "load_dotenv()"),
+            ("load_dotenv(override=True)", "load_dotenv()"),
         ]
 
         for test_line, expected_pattern in test_cases:
             matched = False
             for pattern, pattern_name in scanner.FORBIDDEN_PATTERNS:
                 if re.search(pattern, test_line):
-                    assert pattern_name == expected_pattern, \
-                        f"Pattern mismatch for '{test_line}': expected {expected_pattern}, got {pattern_name}"
+                    assert (
+                        pattern_name == expected_pattern
+                    ), f"Pattern mismatch for '{test_line}': expected {expected_pattern}, got {pattern_name}"
                     matched = True
                     break
             assert matched, f"No pattern matched for: {test_line}"
@@ -349,7 +370,8 @@ class TestConfigPurity:
         """
         # Create a temporary test file with commented patterns
         test_file = tmp_path / "test_module.py"
-        test_file.write_text("""
+        test_file.write_text(
+            """
 # This module doesn't use os.getenv() directly
 # Instead it receives config via dependency injection
 # Previously this used load_dotenv() but now uses settings
@@ -357,7 +379,8 @@ class TestConfigPurity:
 def some_function(config):
     # os.environ['OLD_WAY'] was replaced with config injection
     return config.some_value
-""")
+"""
+        )
 
         scanner = ConfigPurityScanner(tmp_path)
         # Point scanner to tmp_path which acts as project root
@@ -402,7 +425,9 @@ class TestConfigPurityAllowlist:
 
         for forbidden_dir in forbidden_dirs:
             dir_path = project_root / forbidden_dir
-            assert dir_path.exists(), f"Forbidden directory does not exist: {forbidden_dir}"
+            assert (
+                dir_path.exists()
+            ), f"Forbidden directory does not exist: {forbidden_dir}"
 
 
 if __name__ == "__main__":

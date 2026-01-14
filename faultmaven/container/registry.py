@@ -4,11 +4,11 @@ This module provides dependency tracking and validation,
 enabling clear service lifecycle management.
 """
 
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Callable, TypeVar, Generic
-from datetime import datetime, timezone
 import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Callable, Generic, TypeVar
 
 from faultmaven.container.errors import (
     CircularDependencyError,
@@ -228,7 +228,8 @@ class DependencyRegistry:
     def get_ready_services(self) -> list[str]:
         """Get names of all ready services."""
         return [
-            name for name, info in self._services.items()
+            name
+            for name, info in self._services.items()
             if info.status == ServiceStatus.READY
         ]
 

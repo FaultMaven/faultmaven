@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional
 import httpx
 from langchain.tools import BaseTool as LangChainBaseTool
 
-from faultmaven.models.interfaces import BaseTool as IBaseTool, ToolResult
+from faultmaven.models.interfaces import BaseTool as IBaseTool
+from faultmaven.models.interfaces import ToolResult
 
 
 class WebSearchTool(LangChainBaseTool, IBaseTool):
@@ -66,24 +67,23 @@ class WebSearchTool(LangChainBaseTool, IBaseTool):
         # Use settings-based configuration or fallback to direct parameters
         if settings:
             self._api_key = api_key or (
-                settings.tools.web_search_api_key.get_secret_value() 
-                if settings.tools.web_search_api_key else ""
+                settings.tools.web_search_api_key.get_secret_value()
+                if settings.tools.web_search_api_key
+                else ""
             )
-            self._api_endpoint = (
-                api_endpoint or settings.tools.web_search_api_endpoint
-            )
+            self._api_endpoint = api_endpoint or settings.tools.web_search_api_endpoint
             self._search_engine_id = settings.tools.web_search_engine_id
         else:
             # Fallback to environment variables if settings not provided
             from faultmaven.config.settings import get_settings
+
             settings = get_settings()
             self._api_key = api_key or (
-                settings.tools.web_search_api_key.get_secret_value() 
-                if settings.tools.web_search_api_key else ""
+                settings.tools.web_search_api_key.get_secret_value()
+                if settings.tools.web_search_api_key
+                else ""
             )
-            self._api_endpoint = (
-                api_endpoint or settings.tools.web_search_api_endpoint
-            )
+            self._api_endpoint = api_endpoint or settings.tools.web_search_api_endpoint
             self._search_engine_id = settings.tools.web_search_engine_id
 
         # Default trusted domains for technical documentation
@@ -115,7 +115,9 @@ class WebSearchTool(LangChainBaseTool, IBaseTool):
 
     def _run(self, query: str, context: Optional[Dict[str, Any]] = None) -> str:
         """Synchronous run method - not implemented for async tool"""
-        raise NotImplementedError("WebSearchTool only supports async execution via _arun")
+        raise NotImplementedError(
+            "WebSearchTool only supports async execution via _arun"
+        )
 
     async def _arun(self, query: str, context: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -318,45 +320,33 @@ class WebSearchTool(LangChainBaseTool, IBaseTool):
     async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """
         Execute the web search tool using our interface.
-        
+
         Args:
             params: Parameters dictionary containing 'query' and optional 'context'
-            
+
         Returns:
             ToolResult with success/data/error
         """
         try:
-            query = params.get('query', '')
-            context = params.get('context')
-            
+            query = params.get("query", "")
+            context = params.get("context")
+
             if not query or not query.strip():
-                return ToolResult(
-                    success=False,
-                    data=None,
-                    error="No query provided"
-                )
-            
+                return ToolResult(success=False, data=None, error="No query provided")
+
             # Call existing LangChain method
             result = await self._arun(query, context)
-            
-            return ToolResult(
-                success=True,
-                data=result,
-                error=None
-            )
+
+            return ToolResult(success=True, data=result, error=None)
         except Exception as e:
             if self._logger:
                 self._logger.error(f"Web search execution failed: {e}")
-            return ToolResult(
-                success=False,
-                data=None,
-                error=str(e)
-            )
-    
+            return ToolResult(success=False, data=None, error=str(e))
+
     def get_schema(self) -> Dict[str, Any]:
         """
         Get the tool schema for our interface compliance.
-        
+
         Returns:
             Tool schema dictionary
         """

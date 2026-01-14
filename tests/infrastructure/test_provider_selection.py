@@ -9,15 +9,16 @@ doc-aligned environment variables:
 - STORAGE_BACKEND: filesystem | s3
 """
 
-import os
-import pytest
-from unittest.mock import MagicMock
 import inspect
+import os
+from unittest.mock import MagicMock
 
+import pytest
 
 # =============================================================================
 # Test Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def clean_env():
@@ -50,6 +51,7 @@ def clean_env():
 def reset_settings_cache():
     """Reset the settings singleton cache between tests."""
     from faultmaven.config.settings import reset_settings
+
     reset_settings()
     yield
     reset_settings()
@@ -59,12 +61,13 @@ def reset_settings_cache():
 # Tenant Provider Selection Tests
 # =============================================================================
 
+
 class TestTenantProviderSelection:
     """Tests for TENANT_PROVIDER selector."""
 
     def test_default_is_single_tenant(self, clean_env, reset_settings_cache):
         """Test that default tenant provider is 'single'."""
-        from faultmaven.config.settings import get_settings, TenantProvider
+        from faultmaven.config.settings import TenantProvider, get_settings
 
         settings = get_settings()
         assert settings.providers.tenant_provider == TenantProvider.SINGLE
@@ -73,7 +76,7 @@ class TestTenantProviderSelection:
         """Test TENANT_PROVIDER=single selects single tenant."""
         os.environ["TENANT_PROVIDER"] = "single"
 
-        from faultmaven.config.settings import get_settings, TenantProvider
+        from faultmaven.config.settings import TenantProvider, get_settings
 
         settings = get_settings()
         assert settings.providers.tenant_provider == TenantProvider.SINGLE
@@ -82,7 +85,7 @@ class TestTenantProviderSelection:
         """Test TENANT_PROVIDER=multi selects multi tenant."""
         os.environ["TENANT_PROVIDER"] = "multi"
 
-        from faultmaven.config.settings import get_settings, TenantProvider
+        from faultmaven.config.settings import TenantProvider, get_settings
 
         settings = get_settings()
         assert settings.providers.tenant_provider == TenantProvider.MULTI
@@ -92,12 +95,13 @@ class TestTenantProviderSelection:
 # Database Backend Selection Tests
 # =============================================================================
 
+
 class TestDbBackendSelection:
     """Tests for DB_BACKEND selector."""
 
     def test_default_is_sqlite(self, clean_env, reset_settings_cache):
         """Test that default database backend is 'sqlite'."""
-        from faultmaven.config.settings import get_settings, DbBackend
+        from faultmaven.config.settings import DbBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.db_backend == DbBackend.SQLITE
@@ -106,7 +110,7 @@ class TestDbBackendSelection:
         """Test DB_BACKEND=sqlite."""
         os.environ["DB_BACKEND"] = "sqlite"
 
-        from faultmaven.config.settings import get_settings, DbBackend
+        from faultmaven.config.settings import DbBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.db_backend == DbBackend.SQLITE
@@ -115,7 +119,7 @@ class TestDbBackendSelection:
         """Test DB_BACKEND=postgres."""
         os.environ["DB_BACKEND"] = "postgres"
 
-        from faultmaven.config.settings import get_settings, DbBackend
+        from faultmaven.config.settings import DbBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.db_backend == DbBackend.POSTGRES
@@ -125,12 +129,13 @@ class TestDbBackendSelection:
 # Cache Backend Selection Tests
 # =============================================================================
 
+
 class TestCacheBackendSelection:
     """Tests for CACHE_BACKEND selector."""
 
     def test_default_is_memory(self, clean_env, reset_settings_cache):
         """Test that default cache backend is 'memory'."""
-        from faultmaven.config.settings import get_settings, CacheBackend
+        from faultmaven.config.settings import CacheBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.cache_backend == CacheBackend.MEMORY
@@ -139,7 +144,7 @@ class TestCacheBackendSelection:
         """Test CACHE_BACKEND=memory."""
         os.environ["CACHE_BACKEND"] = "memory"
 
-        from faultmaven.config.settings import get_settings, CacheBackend
+        from faultmaven.config.settings import CacheBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.cache_backend == CacheBackend.MEMORY
@@ -148,7 +153,7 @@ class TestCacheBackendSelection:
         """Test CACHE_BACKEND=redis."""
         os.environ["CACHE_BACKEND"] = "redis"
 
-        from faultmaven.config.settings import get_settings, CacheBackend
+        from faultmaven.config.settings import CacheBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.cache_backend == CacheBackend.REDIS
@@ -158,12 +163,13 @@ class TestCacheBackendSelection:
 # Vector Backend Selection Tests
 # =============================================================================
 
+
 class TestVectorBackendSelection:
     """Tests for VECTOR_BACKEND selector."""
 
     def test_default_is_chroma(self, clean_env, reset_settings_cache):
         """Test that default vector backend is 'chroma'."""
-        from faultmaven.config.settings import get_settings, VectorBackend
+        from faultmaven.config.settings import VectorBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.vector_backend == VectorBackend.CHROMA
@@ -172,7 +178,7 @@ class TestVectorBackendSelection:
         """Test VECTOR_BACKEND=chroma."""
         os.environ["VECTOR_BACKEND"] = "chroma"
 
-        from faultmaven.config.settings import get_settings, VectorBackend
+        from faultmaven.config.settings import VectorBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.vector_backend == VectorBackend.CHROMA
@@ -181,7 +187,7 @@ class TestVectorBackendSelection:
         """Test VECTOR_BACKEND=pinecone."""
         os.environ["VECTOR_BACKEND"] = "pinecone"
 
-        from faultmaven.config.settings import get_settings, VectorBackend
+        from faultmaven.config.settings import VectorBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.vector_backend == VectorBackend.PINECONE
@@ -191,12 +197,13 @@ class TestVectorBackendSelection:
 # Storage Backend Selection Tests
 # =============================================================================
 
+
 class TestStorageBackendSelection:
     """Tests for STORAGE_BACKEND selector."""
 
     def test_default_is_filesystem(self, clean_env, reset_settings_cache):
         """Test that default storage backend is 'filesystem'."""
-        from faultmaven.config.settings import get_settings, StorageBackend
+        from faultmaven.config.settings import StorageBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.storage_backend == StorageBackend.FILESYSTEM
@@ -205,7 +212,7 @@ class TestStorageBackendSelection:
         """Test STORAGE_BACKEND=filesystem."""
         os.environ["STORAGE_BACKEND"] = "filesystem"
 
-        from faultmaven.config.settings import get_settings, StorageBackend
+        from faultmaven.config.settings import StorageBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.storage_backend == StorageBackend.FILESYSTEM
@@ -214,7 +221,7 @@ class TestStorageBackendSelection:
         """Test STORAGE_BACKEND=s3."""
         os.environ["STORAGE_BACKEND"] = "s3"
 
-        from faultmaven.config.settings import get_settings, StorageBackend
+        from faultmaven.config.settings import StorageBackend, get_settings
 
         settings = get_settings()
         assert settings.providers.storage_backend == StorageBackend.S3
@@ -224,10 +231,13 @@ class TestStorageBackendSelection:
 # Factory Integration Tests
 # =============================================================================
 
+
 class TestTenantProviderFactory:
     """Tests for tenant provider factory integration."""
 
-    def test_factory_creates_single_tenant_by_default(self, clean_env, reset_settings_cache):
+    def test_factory_creates_single_tenant_by_default(
+        self, clean_env, reset_settings_cache
+    ):
         """Test factory creates SingleTenantProvider by default."""
         from faultmaven.providers.tenancy.factory import create_tenant_provider
         from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
@@ -237,7 +247,9 @@ class TestTenantProviderFactory:
 
         assert isinstance(provider, SingleTenantProvider)
 
-    def test_factory_creates_multi_tenant_when_configured(self, clean_env, reset_settings_cache):
+    def test_factory_creates_multi_tenant_when_configured(
+        self, clean_env, reset_settings_cache
+    ):
         """Test factory creates MultiTenantProvider when TENANT_PROVIDER=multi."""
         os.environ["TENANT_PROVIDER"] = "multi"
 
@@ -254,10 +266,13 @@ class TestTenantProviderFactory:
 # Settings Purity Tests
 # =============================================================================
 
+
 class TestSettingsPurity:
     """Tests that only settings module reads environment variables."""
 
-    def test_tenancy_factory_uses_settings_not_env(self, clean_env, reset_settings_cache):
+    def test_tenancy_factory_uses_settings_not_env(
+        self, clean_env, reset_settings_cache
+    ):
         """Test that tenancy factory reads from settings, not os.getenv directly."""
         import faultmaven.providers.tenancy.factory as factory_module
 
@@ -268,11 +283,13 @@ class TestSettingsPurity:
         # Should use settings
         assert "get_settings" in source or "settings" in source
 
-    def test_repository_factory_uses_settings_not_env(self, clean_env, reset_settings_cache):
+    def test_repository_factory_uses_settings_not_env(
+        self, clean_env, reset_settings_cache
+    ):
         """Test that repository factory reads from settings, not os.getenv directly."""
         from faultmaven.infrastructure.persistence.repository_factory import (
-            get_storage_type,
             get_session_storage_type,
+            get_storage_type,
         )
 
         # Check that functions use settings (with fallback for early init)

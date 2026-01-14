@@ -1,51 +1,55 @@
 # File: faultmaven/models/interfaces.py
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, Optional, List, ContextManager
+from typing import Any, ContextManager, Dict, List, Optional
+
 from pydantic import BaseModel, Field
+
 
 # Tool interfaces
 class ToolResult(BaseModel):
     """Result of a tool execution.
-    
+
     Attributes:
         success: Whether the tool execution was successful
         data: The data returned by the tool
         error: Error message if execution failed
     """
+
     success: bool
     data: Any
     error: Optional[str] = None
 
+
 class BaseTool(ABC):
     """Abstract base class for all agent tools.
-    
+
     This interface defines the contract that all tools must implement
     to be used within the FaultMaven agent system. Tools provide specific
     capabilities like knowledge base search, web search, data analysis,
     and system interactions that extend the agent's problem-solving abilities.
-    
+
     Tool Requirements:
         - Deterministic execution with consistent results
         - Graceful error handling with informative messages
         - Async execution support for I/O operations
         - Schema-based parameter validation
-        
+
     Integration Notes:
         - Tools are automatically registered via the tool registry
         - Agent selects appropriate tools based on schemas and context
         - Tool outputs are sanitized before LLM processing
         - Execution timeouts prevent hanging operations
     """
-    
+
     @abstractmethod
     async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """Execute the tool with the given parameters.
-        
+
         This method performs the tool's core functionality using the
         provided parameters. Implementations should handle parameter
         validation, execute the operation, and return structured results.
-        
+
         Args:
             params: Dictionary of parameters for tool execution. Parameters
                     must conform to the tool's schema definition. Common
@@ -54,21 +58,21 @@ class BaseTool(ABC):
                     - 'data': Input data for processing
                     - 'options': Configuration options for execution
                     - 'timeout': Maximum execution time in seconds
-                    
+
         Returns:
             ToolResult containing the execution outcome:
             - success: Boolean indicating if execution succeeded
             - data: Tool output data (search results, analysis, etc.)
             - error: Error message if execution failed (None if successful)
-            
+
         Raises:
             ToolExecutionException: When tool execution fails critically
             ValidationException: When parameters don't match schema
             TimeoutException: When execution exceeds configured timeout
-            
+
         Example:
             Knowledge base search tool:
-            
+
             >>> params = {
                 'query': 'database connection timeout',
                 'limit': 5,
@@ -79,9 +83,9 @@ class BaseTool(ABC):
             True
             >>> len(result.data['results'])
             3
-            
+
             Web search tool:
-            
+
             >>> params = {
                 'query': 'Redis connection pool exhausted',
                 'max_results': 10
@@ -90,16 +94,16 @@ class BaseTool(ABC):
             >>> if result.success:
                 print(f"Found {len(result.data)} results")
             Found 8 results
-            
+
             Error handling:
-            
+
             >>> params = {'invalid_param': 'value'}
             >>> result = await tool.execute(params)
             >>> result.success
             False
             >>> 'required parameter' in result.error
             True
-            
+
         Note:
             Parameter validation should occur before expensive operations.
             Long-running operations should support cancellation.
@@ -107,15 +111,15 @@ class BaseTool(ABC):
             Tools should be stateless for thread safety.
         """
         pass
-    
+
     @abstractmethod
     def get_schema(self) -> Dict[str, Any]:
         """Get the tool's schema definition for parameter validation.
-        
+
         This method returns a JSON Schema that describes the tool's
         parameters, capabilities, and usage patterns. The agent uses
         this schema for tool selection and parameter validation.
-        
+
         Returns:
             Dictionary containing the tool's schema in JSON Schema format:
             {
@@ -129,10 +133,10 @@ class BaseTool(ABC):
                 'examples': [...],     # Usage examples
                 'capabilities': [...]  # List of tool capabilities
             }
-            
+
         Example:
             Knowledge base tool schema:
-            
+
             >>> schema = kb_tool.get_schema()
             >>> schema['name']
             'knowledge_base_search'
@@ -142,15 +146,15 @@ class BaseTool(ABC):
             True
             >>> 'required' in schema['parameters']
             True
-            
+
             Web search tool schema:
-            
+
             >>> schema = web_tool.get_schema()
             >>> schema['capabilities']
             ['web_search', 'real_time_info', 'external_resources']
             >>> len(schema['examples'])
             3
-            
+
         Note:
             Schema should be static and deterministic.
             Examples in schema help the agent understand tool usage.
@@ -159,31 +163,32 @@ class BaseTool(ABC):
         """
         pass
 
+
 # Infrastructure interfaces
 class ILLMProvider(ABC):
     """Interface for Large Language Model providers.
-    
-    This interface abstracts interactions with different LLM providers (OpenAI, 
-    Anthropic, Fireworks, etc.) allowing the system to switch between providers 
+
+    This interface abstracts interactions with different LLM providers (OpenAI,
+    Anthropic, Fireworks, etc.) allowing the system to switch between providers
     without code changes. Implementations must handle provider-specific authentication,
     rate limiting, and error handling.
-    
+
     Thread Safety:
         Implementations must be thread-safe for concurrent request handling.
-        
+
     Performance Notes:
         Methods should implement appropriate timeout and retry mechanisms.
         Consider caching strategies for improved performance.
     """
-    
+
     @abstractmethod
     async def generate(self, prompt: str, **kwargs) -> str:
         """Generate text response using the configured LLM provider.
-        
+
         This method sends a prompt to the LLM provider and returns the generated
         response. The implementation handles provider-specific request formatting,
         authentication, error handling, and response parsing.
-        
+
         Args:
             prompt: The input text prompt for generation. Must be non-empty string.
                    Length limits vary by provider (typically 8K-32K tokens).
@@ -192,36 +197,36 @@ class ILLMProvider(ABC):
                      - max_tokens: Maximum response length
                      - model: Specific model to use (overrides default)
                      - timeout: Request timeout in seconds
-                     
+
         Returns:
             Generated text response from the LLM provider. Response length
             depends on provider limits and max_tokens parameter. Empty responses
             indicate generation failure or filtering.
-            
+
         Raises:
             LLMProviderException: When provider request fails (auth, network, etc.)
             ValidationException: When prompt is invalid or too long
             TimeoutException: When request exceeds configured timeout
             RateLimitException: When provider rate limits are exceeded
-            
+
         Example:
             Basic text generation:
-            
+
             >>> provider = OpenAIProvider()
             >>> response = await provider.generate("Explain quantum computing")
             >>> print(len(response))
             1247
-            
+
             Advanced generation with parameters:
-            
+
             >>> response = await provider.generate(
-                "Write a Python function for sorting", 
+                "Write a Python function for sorting",
                 temperature=0.1,
                 max_tokens=500
             )
             >>> "def " in response
             True
-            
+
         Note:
             Implementations should sanitize prompts to remove PII before sending
             to external providers. Rate limiting and cost management should be
@@ -229,69 +234,70 @@ class ILLMProvider(ABC):
         """
         pass
 
+
 class ITracer(ABC):
     """Interface for distributed tracing and observability systems.
-    
+
     This interface provides observability into system operations through
     distributed tracing capabilities. Implementations integrate with tracing
     systems like Jaeger, Zipkin, or Opik to provide request flow visibility,
     performance monitoring, and debugging capabilities.
-    
+
     Tracing Requirements:
         - Minimal performance overhead (<1% of request time)
         - Context propagation across async boundaries
         - Structured span data with standardized tags
-        
+
     Integration Notes:
         - Works with correlation IDs from logging system
         - Supports sampling for high-volume environments
         - Graceful degradation when tracing unavailable
     """
-    
+
     @abstractmethod
     def trace(self, operation: str) -> ContextManager:
         """Create a trace context for monitoring an operation.
-        
+
         This method creates a tracing span for monitoring the performance and
         execution flow of a specific operation. The span captures timing,
         success/failure status, and relevant metadata for observability.
-        
+
         Args:
             operation: Name of the operation being traced. Should follow
                       hierarchical naming convention like "service.method" or
                       "layer.component.action". Examples: "agent.process_query",
                       "data.classify", "llm.generate_response".
-                      
+
         Returns:
             Context manager that automatically handles span lifecycle.
             When entering context, starts the span with timestamp.
             When exiting context, finalizes span with duration and status.
             Exception handling records errors in span metadata.
-            
+
         Raises:
             TracingException: When tracing system is unavailable and failover fails
             ConfigurationException: When tracing configuration is invalid
-            
+
         Example:
             Basic operation tracing:
-            
+
             >>> tracer = OpikTracer()
             >>> with tracer.trace("user.authenticate") as span:
                 # Operation code here
                 result = authenticate_user(credentials)
                 span.set_attribute("user_id", result.user_id)
                 span.set_attribute("auth_method", "oauth")
-            
+
             Async operation tracing:
-            
+
             >>> async def process_data():
                 with tracer.trace("data.processing") as span:
                     data = await fetch_data()
                     span.set_attribute("record_count", len(data))
                     return await process_records(data)
-            
+
             Error handling with tracing:
-            
+
             >>> with tracer.trace("external.api_call") as span:
                 try:
                     response = await external_api.call()
@@ -300,7 +306,7 @@ class ITracer(ABC):
                     span.set_attribute("error", str(e))
                     span.set_status("error")
                     raise
-            
+
         Note:
             Spans are automatically linked to parent spans when nested.
             Correlation IDs from request context are automatically included.
@@ -308,33 +314,34 @@ class ITracer(ABC):
         """
         pass
 
+
 class ISanitizer(ABC):
     """Interface for data sanitization and PII redaction services.
-    
+
     This interface provides privacy-first data processing capabilities, ensuring
     that sensitive information is properly redacted before external processing.
     Implementations must handle various PII types including emails, phone numbers,
     credit cards, SSNs, and custom sensitive patterns.
-    
+
     Privacy Requirements:
         - All sensitive data must be consistently redacted
         - Redaction must be reversible for authorized users only
         - Original data must never be logged or exposed
-        
+
     Performance Requirements:
         - Sanitization should complete within 100ms for typical documents
         - Memory usage should remain constant regardless of document size
     """
-    
+
     @abstractmethod
     def sanitize(self, data: Any) -> Any:
         """Sanitize data by removing or redacting sensitive information.
-        
+
         This method processes input data to identify and redact personally
         identifiable information (PII) and other sensitive content. The
         sanitization process preserves data structure and utility while
         ensuring privacy compliance.
-        
+
         Args:
             data: Input data to be sanitized. Supported types include:
                   - str: Text content with potential PII
@@ -342,28 +349,28 @@ class ISanitizer(ABC):
                   - list: Collections of sanitizable items
                   - bytes: Binary content (limited support)
                   Complex objects are serialized before processing.
-                  
+
         Returns:
             Sanitized version of input data with same structure but PII
             replaced with redaction markers (e.g., "[EMAIL_REDACTED]",
             "[PHONE_REDACTED]"). Redaction markers preserve data type and
             approximate length for utility preservation.
-            
+
         Raises:
             SanitizationException: When sanitization process fails
             UnsupportedDataTypeException: When data type cannot be processed
             ConfigurationException: When sanitization rules are invalid
-            
+
         Example:
             Text sanitization:
-            
+
             >>> sanitizer = PresidioSanitizer()
             >>> result = sanitizer.sanitize("Contact john@example.com for help")
             >>> print(result)
             'Contact [EMAIL_REDACTED] for help'
-            
+
             Structured data sanitization:
-            
+
             >>> data = {"user": "jane@company.com", "age": 25, "notes": "Call 555-1234"}
             >>> result = sanitizer.sanitize(data)
             >>> result["user"]
@@ -372,7 +379,7 @@ class ISanitizer(ABC):
             25
             >>> result["notes"]
             'Call [PHONE_REDACTED]'
-            
+
         Note:
             Sanitization rules can be configured per-environment. Development
             environments may use less aggressive sanitization for debugging.
@@ -380,48 +387,49 @@ class ISanitizer(ABC):
         """
         pass
 
+
 class IVectorStore(ABC):
     """Interface for vector database operations.
-    
-    This interface abstracts vector database operations for knowledge base 
+
+    This interface abstracts vector database operations for knowledge base
     storage and retrieval using semantic similarity search. Implementations
     should handle document chunking, embedding generation, and efficient
     similarity queries for RAG (Retrieval-Augmented Generation) workflows.
-    
+
     Performance Requirements:
         - Sub-second search response times for typical queries
         - Support for concurrent read/write operations
         - Efficient memory usage for large document collections
-        
+
     Scalability Notes:
         - Should handle collections with 100K+ documents
         - Automatic index optimization for query performance
         - Batch operations for bulk document processing
     """
-    
+
     @abstractmethod
     async def add_documents(self, documents: List[Dict]) -> None:
         """Add documents to the vector store with automatic embedding generation.
-        
+
         This method processes documents by generating embeddings using the
         configured embedding model and storing them in the vector database.
         Documents are automatically chunked if they exceed size limits.
-        
+
         Args:
             documents: List of document dictionaries to add. Each document must
                       contain at minimum:
                       - 'id': Unique document identifier (str)
                       - 'content': Document text content (str)
                       - 'metadata': Optional metadata dict with additional fields
-                      
+
         Raises:
             VectorStoreException: When document addition fails
             ValidationException: When document format is invalid
             EmbeddingException: When embedding generation fails
-            
+
         Example:
             Basic document addition:
-            
+
             >>> docs = [
                 {
                     "id": "doc_001",
@@ -430,28 +438,28 @@ class IVectorStore(ABC):
                 }
             ]
             >>> await vector_store.add_documents(docs)
-            
+
         Note:
             Large documents are automatically chunked into smaller segments.
             Embeddings are generated using the configured BGE-M3 model.
             Duplicate document IDs will update existing documents.
         """
         pass
-    
+
     @abstractmethod
     async def search(self, query: str, k: int = 5) -> List[Dict]:
         """Search for semantically similar documents using vector similarity.
-        
+
         This method generates an embedding for the query text and performs
         similarity search against stored document embeddings. Results are
         ranked by cosine similarity score.
-        
+
         Args:
             query: Search query text. Should be a natural language question
                    or description of the information needed.
             k: Number of most similar results to return. Must be positive
                integer, typically between 1-20 for optimal performance.
-               
+
         Returns:
             List of similar documents ordered by relevance (highest first).
             Each result contains:
@@ -459,59 +467,59 @@ class IVectorStore(ABC):
             - 'content': Relevant document text chunk
             - 'metadata': Document metadata including similarity score
             - 'score': Similarity score (0.0-1.0, higher is more similar)
-            
+
         Raises:
             VectorStoreException: When search operation fails
             EmbeddingException: When query embedding generation fails
-            
+
         Example:
             Basic similarity search:
-            
+
             >>> results = await vector_store.search("database connection errors", k=3)
             >>> for result in results:
                 print(f"Score: {result['score']:.3f}, ID: {result['id']}")
             Score: 0.892, ID: doc_001
             Score: 0.745, ID: doc_015
             Score: 0.621, ID: doc_032
-            
+
             Accessing result content:
-            
+
             >>> top_result = results[0]
             >>> print(top_result['content'][:100])
             'This troubleshooting guide covers common database connection issues including timeout errors...'
-            
+
         Note:
             Search uses semantic similarity, not exact keyword matching.
             Results include chunk-level content for large documents.
             Metadata filtering can be implemented in concrete classes.
         """
         pass
-    
+
     @abstractmethod
     async def delete_documents(self, ids: List[str]) -> None:
         """Delete documents from the vector store by their identifiers.
-        
+
         This method removes documents and their associated embeddings from
         the vector database. For large documents that were chunked, all
         chunks are removed.
-        
+
         Args:
             ids: List of document identifiers to delete. Must be strings
                  matching existing document IDs in the store.
-                 
+
         Raises:
             VectorStoreException: When deletion operation fails
             ValidationException: When document IDs are invalid format
-            
+
         Example:
             Delete multiple documents:
-            
+
             >>> await vector_store.delete_documents(["doc_001", "doc_002"])
-            
+
             Delete single document:
-            
+
             >>> await vector_store.delete_documents(["outdated_guide"])
-            
+
         Note:
             Non-existent document IDs are silently ignored.
             Deletion is permanent and cannot be undone.
@@ -519,36 +527,37 @@ class IVectorStore(ABC):
         """
         pass
 
+
 class ISessionStore(ABC):
     """Interface for session storage operations.
-    
+
     This interface abstracts session storage operations for maintaining user
     session state in a distributed system. Implementations should provide
     reliable session persistence with automatic expiration, supporting
     concurrent access and high availability scenarios.
-    
+
     Performance Requirements:
         - Sub-10ms response times for session operations
         - Support for thousands of concurrent sessions
         - Automatic cleanup of expired sessions
-        
+
     Reliability Requirements:
         - Atomic operations for session updates
         - Consistent session state across distributed nodes
         - Graceful handling of storage failures
     """
-    
+
     @abstractmethod
     async def get(self, key: str) -> Optional[Dict]:
         """Retrieve session data by session identifier.
-        
+
         This method fetches session data from the persistent store,
         automatically handling deserialization and TTL validation.
-        
+
         Args:
             key: Session identifier (typically UUID). Must be non-empty
                  string following session ID format (e.g., UUID v4).
-                 
+
         Returns:
             Dictionary containing session data if session exists and
             hasn't expired, None if session not found or expired.
@@ -559,42 +568,42 @@ class ISessionStore(ABC):
             - 'last_activity': Last access timestamp (ISO format)
             - 'data_uploads': List of uploaded data references
             - 'case_history': List of troubleshooting steps
-            
+
         Raises:
             SessionStoreException: When storage operation fails
             ValidationException: When session key format is invalid
-            
+
         Example:
             Retrieve existing session:
-            
+
             >>> session_data = await session_store.get("550e8400-e29b-41d4-a716-446655440000")
             >>> if session_data:
                 print(f"User: {session_data.get('user_id')}")
                 print(f"Created: {session_data['created_at']}")
             User: user_123
             Created: 2025-01-15T10:30:00Z
-            
+
             Handle missing session:
-            
+
             >>> session_data = await session_store.get("nonexistent-session")
             >>> session_data is None
             True
-            
+
         Note:
             Expired sessions are automatically removed and return None.
             Session access does not update the last_activity timestamp.
             Use extend_ttl() to refresh session expiration.
         """
         pass
-    
+
     @abstractmethod
     async def set(self, key: str, value: Dict, ttl: Optional[int] = None) -> None:
         """Store session data with automatic expiration.
-        
+
         This method persists session data to the storage backend with
         automatic serialization and TTL management. Updates to existing
         sessions preserve the session structure.
-        
+
         Args:
             key: Session identifier. Must be unique string, typically UUID.
             value: Session data dictionary containing session state.
@@ -608,15 +617,15 @@ class ISessionStore(ABC):
                    - 'case_history': Troubleshooting history
             ttl: Time to live in seconds. If None, uses default session
                  timeout from configuration (typically 30 minutes).
-                 
+
         Raises:
             SessionStoreException: When storage operation fails
             ValidationException: When session data format is invalid
             SerializationException: When data cannot be serialized
-            
+
         Example:
             Create new session:
-            
+
             >>> session_data = {
                 'session_id': '550e8400-e29b-41d4-a716-446655440000',
                 'user_id': 'user_123',
@@ -626,137 +635,137 @@ class ISessionStore(ABC):
                 'case_history': []
             }
             >>> await session_store.set(session_data['session_id'], session_data, ttl=1800)
-            
+
             Update existing session:
-            
+
             >>> session_data['last_activity'] = '2025-01-15T11:00:00Z'
             >>> session_data['data_uploads'].append('data_upload_456')
             >>> await session_store.set(session_data['session_id'], session_data)
-            
+
         Note:
             Setting a session with existing key overwrites previous data.
             TTL countdown starts from the time this method is called.
             Session data is automatically serialized (typically as JSON).
         """
         pass
-    
+
     @abstractmethod
     async def delete(self, key: str) -> bool:
         """Remove session from storage.
-        
+
         This method permanently deletes session data from the storage
         backend. Once deleted, session data cannot be recovered.
-        
+
         Args:
             key: Session identifier to delete. Must be valid session ID.
-            
+
         Returns:
             True if session was successfully deleted, False if session
             did not exist or was already deleted.
-            
+
         Raises:
             SessionStoreException: When deletion operation fails
-            
+
         Example:
             Delete existing session:
-            
+
             >>> deleted = await session_store.delete("550e8400-e29b-41d4-a716-446655440000")
             >>> deleted
             True
-            
+
             Attempt to delete non-existent session:
-            
+
             >>> deleted = await session_store.delete("nonexistent-session")
             >>> deleted
             False
-            
+
         Note:
             Deletion is idempotent - multiple calls with same key are safe.
             This operation cannot be undone.
             Consider using TTL expiration for temporary session removal.
         """
         pass
-    
+
     @abstractmethod
     async def exists(self, key: str) -> bool:
         """Check if session exists without retrieving data.
-        
+
         This method efficiently checks session existence without the
         overhead of retrieving and deserializing session data.
-        
+
         Args:
             key: Session identifier to check. Must be valid session ID format.
-            
+
         Returns:
             True if session exists and hasn't expired, False otherwise.
-            
+
         Raises:
             SessionStoreException: When existence check fails
-            
+
         Example:
             Check session existence:
-            
+
             >>> exists = await session_store.exists("550e8400-e29b-41d4-a716-446655440000")
             >>> if exists:
                 session_data = await session_store.get(key)
                 # Process session data
-            
+
             Validate session before operations:
-            
+
             >>> if await session_store.exists(session_id):
                 await session_store.extend_ttl(session_id, 3600)
             else:
                 # Create new session
                 await create_new_session(session_id)
-            
+
         Note:
             This is more efficient than get() when only existence matters.
             Expired sessions return False.
             Result may change between exists() and subsequent get() calls.
         """
         pass
-    
+
     @abstractmethod
     async def extend_ttl(self, key: str, ttl: Optional[int] = None) -> bool:
         """Extend session expiration time.
-        
+
         This method refreshes the session TTL without modifying session
         data, effectively extending the session lifetime. Useful for
         keeping active sessions alive.
-        
+
         Args:
             key: Session identifier to extend. Must be existing session ID.
             ttl: New TTL in seconds from now. If None, uses default
                  session timeout from configuration.
-                 
+
         Returns:
             True if TTL was successfully extended, False if session
             does not exist or has already expired.
-            
+
         Raises:
             SessionStoreException: When TTL extension fails
             ValidationException: When TTL value is invalid
-            
+
         Example:
             Extend session by default timeout:
-            
+
             >>> extended = await session_store.extend_ttl("550e8400-e29b-41d4-a716-446655440000")
             >>> extended
             True
-            
+
             Extend session by specific duration:
-            
+
             >>> # Extend for 2 hours
             >>> extended = await session_store.extend_ttl(session_id, ttl=7200)
             >>> extended
             True
-            
+
             Handle expired session:
-            
+
             >>> extended = await session_store.extend_ttl("expired-session")
             >>> extended
             False
-            
+
         Note:
             TTL extension does not modify session data or last_activity.
             This operation is atomic and safe for concurrent access.
@@ -765,27 +774,29 @@ class ISessionStore(ABC):
         pass
 
     @abstractmethod
-    async def find_by_user_and_client(self, user_id: str, client_id: str) -> Optional[str]:
+    async def find_by_user_and_client(
+        self, user_id: str, client_id: str
+    ) -> Optional[str]:
         """Find session ID by user_id and client_id combination.
-        
+
         This method enables client-based session resumption by looking up
         existing sessions associated with a specific user and client/device
         identifier combination.
-        
+
         Args:
             user_id: User identifier to search for
             client_id: Client/device identifier to search for
-            
+
         Returns:
             Session ID if found, None if no matching session exists or
             if the client index has expired.
-            
+
         Raises:
             SessionStoreException: When search operation fails
-            
+
         Example:
             Find existing session for client resumption:
-            
+
             >>> session_id = await session_store.find_by_user_and_client("user_123", "client_456")
             >>> if session_id:
                 # Resume existing session
@@ -793,77 +804,79 @@ class ISessionStore(ABC):
             else:
                 # Create new session for this client
                 new_session = await create_new_session(user_id, client_id)
-            
+
         Note:
             Returns None for expired or invalid client indexes.
             Client indexes automatically expire with their associated sessions.
             This operation should be fast and not require full session data retrieval.
         """
         pass
-        
+
     @abstractmethod
-    async def index_session_by_client(self, user_id: str, client_id: str, session_id: str, ttl: int) -> None:
+    async def index_session_by_client(
+        self, user_id: str, client_id: str, session_id: str, ttl: int
+    ) -> None:
         """Create or update index entry for (user_id, client_id) -> session_id mapping.
-        
+
         This method maintains a reverse index that allows efficient lookup of
         sessions by client identifier. The index should have the same TTL as
         the session to ensure consistency.
-        
+
         Args:
             user_id: User identifier for the index key
             client_id: Client/device identifier for the index key
             session_id: Session ID to index
             ttl: Time to live in seconds (should match session TTL)
-            
+
         Raises:
             SessionStoreException: When index creation fails
-            
+
         Example:
             Create client index for new session:
-            
+
             >>> await session_store.index_session_by_client("user_123", "client_456", "session_789", 1800)
-            
+
             Update client index TTL to match session extension:
-            
+
             >>> await session_store.extend_ttl("session_789", 3600)
             >>> await session_store.index_session_by_client("user_123", "client_456", "session_789", 3600)
-            
+
         Note:
             This operation should be atomic to prevent race conditions.
             Index TTL should be synchronized with session TTL for consistency.
             Multiple clients for same user should be supported.
         """
         pass
-        
+
     @abstractmethod
     async def remove_client_index(self, user_id: str, client_id: str) -> None:
         """Remove client index entry for cleanup.
-        
+
         This method removes stale client index entries when sessions expire
         or are explicitly deleted. Essential for preventing index pollution
         and false positive lookups.
-        
+
         Args:
             user_id: User identifier for the index key
             client_id: Client/device identifier for the index key
-            
+
         Raises:
             SessionStoreException: When index removal fails
-            
+
         Example:
             Clean up expired session index:
-            
+
             >>> session_id = await session_store.find_by_user_and_client("user_123", "client_456")
             >>> if session_id:
                 session = await session_store.get(session_id)
                 if not session:  # Session expired but index remains
                     await session_store.remove_client_index("user_123", "client_456")
-            
+
             Clean up index during explicit session deletion:
-            
+
             >>> await session_store.delete("session_789")
             >>> await session_store.remove_client_index("user_123", "client_456")
-            
+
         Note:
             This operation is idempotent - safe to call multiple times.
             Should be called during session cleanup operations.
@@ -874,114 +887,114 @@ class ISessionStore(ABC):
 
 class IConfiguration(ABC):
     """Interface for centralized configuration management.
-    
+
     This interface provides type-safe access to application configuration
     with validation, defaults, and environment-specific overrides.
     Implementations should handle environment variables, configuration
     files, and runtime validation.
-    
+
     Design Principles:
         - Type safety with automatic conversion
         - Validation at startup with clear error messages
         - Environment-specific configuration support
         - Immutable configuration once loaded
-        
+
     Security Notes:
         - Sensitive values should be masked in logs
         - Configuration validation should prevent injection attacks
         - Access control for different configuration sections
     """
-    
+
     @abstractmethod
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value by key with optional default.
-        
+
         This method retrieves configuration values using dot notation
         for nested keys (e.g., 'database.host'). Values are returned
         in their stored type without conversion.
-        
+
         Args:
             key: Configuration key using dot notation for nested access.
                  Examples: 'redis.host', 'llm.provider', 'logging.level'
             default: Default value returned if key is not found.
                      Type should match expected configuration value type.
-                     
+
         Returns:
             Configuration value if found, otherwise the default value.
             Return type matches the stored configuration type.
-            
+
         Example:
             Basic configuration access:
-            
+
             >>> config = ConfigurationManager()
             >>> redis_host = config.get('redis.host', 'localhost')
             >>> print(redis_host)
             'redis.production.local'
-            
+
             Nested configuration access:
-            
+
             >>> llm_config = config.get('llm', {})
             >>> print(llm_config['provider'])
             'openai'
-            
+
         Note:
             This method does not perform type conversion.
             Use get_int(), get_bool(), get_str() for type-safe access.
             Dot notation supports arbitrary nesting depth.
         """
         pass
-    
+
     @abstractmethod
     def get_int(self, key: str, default: int = 0) -> int:
         """Get integer configuration value with type conversion.
-        
+
         This method retrieves configuration values and converts them
         to integers, handling string representations and type validation.
-        
+
         Args:
             key: Configuration key for the integer value.
             default: Default integer value if key not found or conversion fails.
                      Must be a valid integer.
-                     
+
         Returns:
             Integer value from configuration or default if conversion fails.
-            
+
         Raises:
             ConfigurationException: When key exists but cannot be converted to int
-            
+
         Example:
             Port configuration:
-            
+
             >>> port = config.get_int('redis.port', 6379)
             >>> isinstance(port, int)
             True
             >>> port
             6379
-            
+
             Timeout configuration:
-            
+
             >>> timeout = config.get_int('session.timeout_minutes', 30)
             >>> timeout > 0
             True
-            
+
         Note:
             Conversion handles string representations (e.g., '8080' -> 8080).
             Boolean True/False converts to 1/0 respectively.
             Invalid values return the default without raising exceptions.
         """
         pass
-    
+
     @abstractmethod
     def get_bool(self, key: str, default: bool = False) -> bool:
         """Get boolean configuration value with type conversion.
-        
+
         This method retrieves configuration values and converts them
         to booleans, handling various string representations.
-        
+
         Args:
             key: Configuration key for the boolean value.
             default: Default boolean value if key not found or conversion fails.
-                     
+
         Returns:
             Boolean value from configuration or default if conversion fails.
             Conversion rules:
@@ -989,101 +1002,101 @@ class IConfiguration(ABC):
             - Strings: 'false', '0', 'no', 'off' -> False (case insensitive)
             - Numbers: 0 -> False, non-zero -> True
             - Boolean: returned as-is
-            
+
         Example:
             Feature flag configuration:
-            
+
             >>> debug_mode = config.get_bool('debug.enabled', False)
             >>> isinstance(debug_mode, bool)
             True
-            
+
             Environment-specific settings:
-            
+
             >>> use_ssl = config.get_bool('redis.ssl', False)
             >>> if use_ssl:
                 print('Using SSL connection')
-            
+
         Note:
             String conversion is case-insensitive.
             Empty strings and None values return the default.
             Invalid values return the default without raising exceptions.
         """
         pass
-    
+
     @abstractmethod
     def get_str(self, key: str, default: str = "") -> str:
         """Get string configuration value with type conversion.
-        
+
         This method retrieves configuration values and converts them
         to strings, handling various data types safely.
-        
+
         Args:
             key: Configuration key for the string value.
             default: Default string value if key not found.
-                     
+
         Returns:
             String representation of configuration value or default.
             Conversion rules:
             - None values return the default
             - All other types converted using str()
-            
+
         Example:
             Database connection string:
-            
+
             >>> db_host = config.get_str('database.host', 'localhost')
             >>> isinstance(db_host, str)
             True
-            
+
             API endpoint configuration:
-            
+
             >>> api_url = config.get_str('llm.api_url')
             >>> api_url.startswith('https://')
             True
-            
+
         Note:
             Numbers and booleans are converted to their string representation.
             This method always returns a string (never None).
             Empty configuration values return empty string unless default provided.
         """
         pass
-    
+
     @abstractmethod
     def validate(self) -> bool:
         """Validate configuration completeness and correctness.
-        
+
         This method performs comprehensive validation of all configuration
         sections, checking for required values, valid formats, and
         constraint compliance. Should be called at application startup.
-        
+
         Returns:
             True if all configuration is valid and complete,
             False if validation errors are found.
-            
+
         Validation Checks:
             - Required configuration keys are present
             - Values meet format requirements (URLs, ports, etc.)
             - Numeric values are within acceptable ranges
             - API keys and credentials are properly formatted
             - Cross-section consistency (e.g., matching timeouts)
-            
+
         Example:
             Startup validation:
-            
+
             >>> config = ConfigurationManager()
             >>> if not config.validate():
                 print('Configuration validation failed!')
                 sys.exit(1)
             >>> print('Configuration is valid')
             Configuration is valid
-            
+
             Development environment check:
-            
+
             >>> try:
                 config = ConfigurationManager(validate_on_init=True)
             except ConfigurationException as e:
                 print(f'Config error: {e}')
                 # Handle configuration error
-            
+
         Note:
             Validation errors are logged with specific details.
             This method should be idempotent (safe to call multiple times).
@@ -1095,33 +1108,35 @@ class IConfiguration(ABC):
 # Data processing interfaces
 class IDataClassifier(ABC):
     """Interface for data type classification.
-    
+
     This interface abstracts data classification operations for automatic
     identification of data types in troubleshooting uploads. Implementations
     should analyze content patterns, file extensions, and metadata to
     determine appropriate processing strategies.
-    
+
     Classification Categories:
         - Log files (application, system, web server)
         - Configuration files (JSON, YAML, INI, XML)
         - Code files (Python, JavaScript, SQL, etc.)
         - Data files (CSV, JSON, database dumps)
         - Documentation (text, markdown, etc.)
-        
+
     Performance Requirements:
         - Classification should complete within 100ms for typical files
         - Memory usage should be constant regardless of file size
         - Support for files up to 100MB in size
     """
-    
+
     @abstractmethod
-    async def classify(self, content: str, filename: Optional[str] = None) -> 'DataType':
+    async def classify(
+        self, content: str, filename: Optional[str] = None
+    ) -> "DataType":
         """Classify data content and return appropriate DataType.
-        
+
         This method analyzes file content and optional filename to determine
         the most appropriate data type classification. The classification
         influences downstream processing and analysis strategies.
-        
+
         Args:
             content: The data content to classify. Should be string representation
                      of the file content. Binary files should be converted to
@@ -1129,7 +1144,7 @@ class IDataClassifier(ABC):
             filename: Optional filename hint for classification. Used for
                       extension-based classification and disambiguation.
                       Examples: 'app.log', 'config.json', 'script.py'
-                      
+
         Returns:
             DataType enum value representing the classified type.
             Common return values:
@@ -1138,33 +1153,33 @@ class IDataClassifier(ABC):
             - DataType.CODE_FILE: Source code files
             - DataType.DATA_FILE: Structured data files
             - DataType.UNKNOWN: Unrecognizable content
-            
+
         Raises:
             ClassificationException: When classification process fails
             ValidationException: When content format is invalid
-            
+
         Example:
             Log file classification:
-            
+
             >>> content = "2025-01-15 10:30:00 [ERROR] Database connection failed"
             >>> data_type = await classifier.classify(content, "app.log")
             >>> data_type
             DataType.LOGS_AND_ERRORS
-            
+
             Configuration file classification:
-            
+
             >>> content = '{"database": {"host": "localhost", "port": 5432}}'
             >>> data_type = await classifier.classify(content, "config.json")
             >>> data_type
             DataType.STRUCTURED_CONFIG
-            
+
             Content-based classification without filename:
-            
+
             >>> content = "SELECT * FROM users WHERE active = 1;"
             >>> data_type = await classifier.classify(content)
             >>> data_type
             DataType.CODE_FILE
-            
+
         Note:
             Classification uses both content analysis and filename hints.
             Content analysis takes precedence over filename extensions.
@@ -1173,35 +1188,38 @@ class IDataClassifier(ABC):
         """
         pass
 
+
 class ILogProcessor(ABC):
     """Interface for log processing and analysis operations.
-    
+
     This interface abstracts log analysis and insight extraction for
     troubleshooting workflows. Implementations should parse log entries,
     extract patterns, identify errors, and generate actionable insights
     for debugging and root cause analysis.
-    
+
     Processing Capabilities:
         - Error pattern detection and categorization
         - Performance metric extraction (response times, throughput)
         - Timeline reconstruction for incident analysis
         - Anomaly detection and trend analysis
         - Stack trace parsing and error correlation
-        
+
     Performance Requirements:
         - Process up to 10MB log files within 30 seconds
         - Memory-efficient streaming for large files
         - Parallel processing for multi-file analysis
     """
-    
+
     @abstractmethod
-    async def process(self, content: str, data_type: Optional['DataType'] = None) -> Dict[str, Any]:
+    async def process(
+        self, content: str, data_type: Optional["DataType"] = None
+    ) -> Dict[str, Any]:
         """Process log content and extract actionable insights.
-        
+
         This method analyzes log content to identify errors, patterns,
         performance issues, and other insights relevant for troubleshooting.
         Processing strategy adapts based on the detected or provided data type.
-        
+
         Args:
             content: The log content to process. Should be text-based log data
                      with entries separated by newlines. Binary logs should
@@ -1209,7 +1227,7 @@ class ILogProcessor(ABC):
             data_type: Optional data type hint for processing optimization.
                        If provided, enables type-specific parsing rules.
                        Examples: DataType.LOGS_AND_ERRORS, DataType.STRUCTURED_CONFIG
-                       
+
         Returns:
             Dictionary containing extracted insights and metadata:
             {
@@ -1249,15 +1267,15 @@ class ILogProcessor(ABC):
                     }
                 ]
             }
-            
+
         Raises:
             LogProcessingException: When log processing fails
             ValidationException: When log format is unrecognizable
             TimeoutException: When processing exceeds time limits
-            
+
         Example:
             Application log processing:
-            
+
             >>> log_content = '''
             2025-01-15 10:30:00 [INFO] Application started
             2025-01-15 10:30:15 [ERROR] Database connection failed: timeout
@@ -1269,9 +1287,9 @@ class ILogProcessor(ABC):
             2
             >>> result['errors'][0]['category']
             'database'
-            
+
             Web server log processing:
-            
+
             >>> access_log = '''
             192.168.1.1 - - [15/Jan/2025:10:30:00 +0000] "GET /api/health" 200 85
             192.168.1.2 - - [15/Jan/2025:10:30:01 +0000] "POST /api/login" 401 45
@@ -1281,7 +1299,7 @@ class ILogProcessor(ABC):
             1
             >>> result['recommendations'][0]['type']
             'investigation'
-            
+
         Note:
             Processing is adaptive based on detected log format.
             Large logs are processed in chunks to manage memory usage.
@@ -1290,34 +1308,35 @@ class ILogProcessor(ABC):
         """
         pass
 
+
 class IStorageBackend(ABC):
     """Interface for data storage operations.
-    
+
     This interface abstracts storage backend operations for persisting
     user data, analysis results, and temporary files. Implementations
     should provide reliable data persistence with appropriate access
     controls and data lifecycle management.
-    
+
     Storage Requirements:
         - Atomic operations for data consistency
         - Support for various data types (text, binary, structured)
         - Configurable retention policies
         - Encryption at rest for sensitive data
-        
+
     Performance Requirements:
         - Sub-second response times for typical operations
         - Support for concurrent access
         - Efficient storage utilization
     """
-    
+
     @abstractmethod
     async def store(self, key: str, data: Any) -> None:
         """Store data with given key and automatic serialization.
-        
+
         This method persists data to the storage backend with automatic
         serialization based on data type. Supports text, binary, and
         structured data with appropriate encoding.
-        
+
         Args:
             key: Unique identifier for the data. Should follow naming
                  convention like 'session_id/data_type/timestamp'.
@@ -1328,45 +1347,45 @@ class IStorageBackend(ABC):
                   - bytes: Binary data (stored as-is)
                   - dict/list: JSON-serializable structures
                   - Custom objects with __dict__ method
-                  
+
         Raises:
             StorageException: When storage operation fails
             SerializationException: When data cannot be serialized
             ValidationException: When key format is invalid
-            
+
         Example:
             Store text analysis results:
-            
+
             >>> analysis_results = {
                 'insights': ['Database timeout detected', 'Connection pool exhausted'],
                 'severity': 'high',
                 'timestamp': '2025-01-15T10:30:00Z'
             }
             >>> await storage.store('session123/analysis/log_analysis', analysis_results)
-            
+
             Store uploaded file content:
-            
+
             >>> file_content = "Error log content here..."
             >>> await storage.store('session123/uploads/error.log', file_content)
-            
+
         Note:
             Storing with existing key overwrites previous data.
             Large data objects are automatically compressed.
             Storage keys should be session-scoped for data isolation.
         """
         pass
-    
+
     @abstractmethod
     async def retrieve(self, key: str) -> Optional[Any]:
         """Retrieve data by key with automatic deserialization.
-        
+
         This method fetches data from the storage backend and automatically
         deserializes it to the original data type based on stored metadata.
-        
+
         Args:
             key: Unique identifier for the data to retrieve.
                  Must match a key from a previous store() operation.
-                 
+
         Returns:
             Retrieved data in its original type if found, None if key
             does not exist or data has expired. Data type matches
@@ -1374,35 +1393,35 @@ class IStorageBackend(ABC):
             - str for text data
             - bytes for binary data
             - dict/list for JSON structures
-            
+
         Raises:
             StorageException: When retrieval operation fails
             DeserializationException: When stored data cannot be deserialized
-            
+
         Example:
             Retrieve analysis results:
-            
+
             >>> results = await storage.retrieve('session123/analysis/log_analysis')
             >>> if results:
                 print(f"Severity: {results['severity']}")
                 print(f"Insights: {len(results['insights'])}")
             Severity: high
             Insights: 2
-            
+
             Retrieve uploaded file:
-            
+
             >>> file_content = await storage.retrieve('session123/uploads/error.log')
             >>> if file_content:
                 lines = file_content.split('\n')
                 print(f"File has {len(lines)} lines")
             File has 1247 lines
-            
+
             Handle missing data:
-            
+
             >>> missing_data = await storage.retrieve('nonexistent/key')
             >>> missing_data is None
             True
-            
+
         Note:
             Data expiration is handled automatically based on TTL policies.
             Deserialization preserves original data types and structure.
@@ -1410,21 +1429,22 @@ class IStorageBackend(ABC):
         """
         pass
 
+
 class IKnowledgeIngester(ABC):
     """Interface for knowledge base document ingestion operations.
-    
+
     This interface abstracts knowledge ingestion operations for building
     and maintaining a searchable knowledge base. Implementations should
     handle document processing, chunking, embedding generation, and
     indexing for efficient retrieval in RAG workflows.
-    
+
     Processing Pipeline:
         1. Document validation and preprocessing
         2. Content chunking for optimal retrieval
         3. Embedding generation using BGE-M3 model
         4. Vector storage and indexing
         5. Metadata enrichment and categorization
-        
+
     Document Types:
         - Troubleshooting guides and runbooks
         - API documentation and references
@@ -1432,189 +1452,186 @@ class IKnowledgeIngester(ABC):
         - Error catalogs and solution databases
         - Best practices and methodology guides
     """
-    
+
     @abstractmethod
     async def ingest_document(
-        self, 
-        title: str, 
-        content: str, 
+        self,
+        title: str,
+        content: str,
         document_type: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Ingest document into knowledge base with full processing pipeline.
-        
-        This method processes a document through the complete ingestion
-        pipeline including validation, chunking, embedding generation,
-        and storage. The document becomes immediately searchable.
-        
-        Args:
-            title: Document title for display and search. Should be descriptive
-                   and include key terms for discoverability.
-                   Examples: "Database Connection Troubleshooting Guide",
-                            "Redis Configuration Best Practices"
-            content: Full document content in text format. Supports markdown,
-                     plain text, and structured formats. Large documents
-                     are automatically chunked for optimal retrieval.
-            document_type: Document category for filtering and organization.
-                          Standard types: 'troubleshooting', 'configuration',
-                          'api_reference', 'best_practices', 'runbook'
-            metadata: Optional metadata dictionary containing:
-                      - 'author': Document author/contributor
-                      - 'version': Document version identifier
-                      - 'tags': List of searchable tags
-                      - 'source_url': Original document URL
-                      - 'last_updated': Last modification timestamp
-                      - 'difficulty': 'beginner|intermediate|advanced'
-                      
-        Returns:
-            Unique document identifier assigned by the system.
-            Format: 'doc_' followed by alphanumeric ID (e.g., 'doc_a1b2c3d4')
-            This ID is used for updates, deletions, and reference tracking.
-            
-        Raises:
-            IngestionException: When document processing fails
-            ValidationException: When document format is invalid
-            DuplicateDocumentException: When document already exists
-            EmbeddingException: When embedding generation fails
-            
-        Example:
-            Ingest troubleshooting guide:
-            
-            >>> content = '''
-# Database Connection Issues
 
-## Symptoms
-- Connection timeout errors
-- "Connection refused" messages
+                This method processes a document through the complete ingestion
+                pipeline including validation, chunking, embedding generation,
+                and storage. The document becomes immediately searchable.
 
-## Solutions
-1. Check database service status
-2. Verify connection parameters
-3. Review firewall settings
-'''
-            >>> metadata = {
-                'author': 'SRE Team',
-                'tags': ['database', 'networking', 'timeout'],
-                'difficulty': 'intermediate'
-            }
-            >>> doc_id = await ingester.ingest_document(
-                title="Database Connection Troubleshooting",
-                content=content,
-                document_type="troubleshooting",
-                metadata=metadata
-            )
-            >>> print(f"Document ingested: {doc_id}")
-            Document ingested: doc_a1b2c3d4
-            
-            Ingest configuration template:
-            
-            >>> config_content = '''
-# Redis Configuration Template
-redis:
-  host: localhost
-  port: 6379
-  timeout: 30s
-'''
-            >>> doc_id = await ingester.ingest_document(
-                "Redis Configuration Template",
-                config_content,
-                "configuration"
-            )
-            
-        Note:
-            Large documents are automatically chunked for optimal retrieval.
-            Embeddings are generated asynchronously for better performance.
-            Document processing may take several seconds for large content.
-            Duplicate content detection prevents redundant storage.
+                Args:
+                    title: Document title for display and search. Should be descriptive
+                           and include key terms for discoverability.
+                           Examples: "Database Connection Troubleshooting Guide",
+                                    "Redis Configuration Best Practices"
+                    content: Full document content in text format. Supports markdown,
+                             plain text, and structured formats. Large documents
+                             are automatically chunked for optimal retrieval.
+                    document_type: Document category for filtering and organization.
+                                  Standard types: 'troubleshooting', 'configuration',
+                                  'api_reference', 'best_practices', 'runbook'
+                    metadata: Optional metadata dictionary containing:
+                              - 'author': Document author/contributor
+                              - 'version': Document version identifier
+                              - 'tags': List of searchable tags
+                              - 'source_url': Original document URL
+                              - 'last_updated': Last modification timestamp
+                              - 'difficulty': 'beginner|intermediate|advanced'
+
+                Returns:
+                    Unique document identifier assigned by the system.
+                    Format: 'doc_' followed by alphanumeric ID (e.g., 'doc_a1b2c3d4')
+                    This ID is used for updates, deletions, and reference tracking.
+
+                Raises:
+                    IngestionException: When document processing fails
+                    ValidationException: When document format is invalid
+                    DuplicateDocumentException: When document already exists
+                    EmbeddingException: When embedding generation fails
+
+                Example:
+                    Ingest troubleshooting guide:
+
+                    >>> content = '''
+        # Database Connection Issues
+
+        ## Symptoms
+        - Connection timeout errors
+        - "Connection refused" messages
+
+        ## Solutions
+        1. Check database service status
+        2. Verify connection parameters
+        3. Review firewall settings
+        '''
+                    >>> metadata = {
+                        'author': 'SRE Team',
+                        'tags': ['database', 'networking', 'timeout'],
+                        'difficulty': 'intermediate'
+                    }
+                    >>> doc_id = await ingester.ingest_document(
+                        title="Database Connection Troubleshooting",
+                        content=content,
+                        document_type="troubleshooting",
+                        metadata=metadata
+                    )
+                    >>> print(f"Document ingested: {doc_id}")
+                    Document ingested: doc_a1b2c3d4
+
+                    Ingest configuration template:
+
+                    >>> config_content = '''
+        # Redis Configuration Template
+        redis:
+          host: localhost
+          port: 6379
+          timeout: 30s
+        '''
+                    >>> doc_id = await ingester.ingest_document(
+                        "Redis Configuration Template",
+                        config_content,
+                        "configuration"
+                    )
+
+                Note:
+                    Large documents are automatically chunked for optimal retrieval.
+                    Embeddings are generated asynchronously for better performance.
+                    Document processing may take several seconds for large content.
+                    Duplicate content detection prevents redundant storage.
         """
         pass
-    
+
     @abstractmethod
     async def update_document(
-        self, 
-        document_id: str, 
-        content: str,
-        metadata: Optional[Dict[str, Any]] = None
+        self, document_id: str, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """Update existing document with new content and metadata.
-        
-        This method updates an existing document, regenerating embeddings
-        and updating the search index. The document remains searchable
-        throughout the update process.
-        
-        Args:
-            document_id: Unique identifier of the document to update.
-                         Must be a valid ID from a previous ingest_document() call.
-            content: New document content replacing the existing content.
-                     Content formatting and chunking rules apply as in ingestion.
-            metadata: Optional metadata updates. Only provided fields are updated;
-                      existing metadata is preserved for unspecified fields.
-                      Set field to None to remove it from metadata.
-                      
-        Raises:
-            DocumentNotFoundException: When document_id does not exist
-            IngestionException: When content processing fails
-            ValidationException: When new content format is invalid
-            EmbeddingException: When embedding regeneration fails
-            
-        Example:
-            Update document content:
-            
-            >>> updated_content = '''
-# Database Connection Issues (Updated)
 
-## New Section: Performance Optimization
-- Connection pooling configuration
-- Query timeout tuning
+                This method updates an existing document, regenerating embeddings
+                and updating the search index. The document remains searchable
+                throughout the update process.
 
-## Symptoms
-- Connection timeout errors (updated diagnostics)
-'''
-            >>> await ingester.update_document(
-                "doc_a1b2c3d4",
-                updated_content,
-                metadata={'version': '2.0', 'last_updated': '2025-01-15'}
-            )
-            
-            Update only metadata:
-            
-            >>> await ingester.update_document(
-                "doc_a1b2c3d4",
-                existing_content,  # Keep existing content
-                metadata={'tags': ['database', 'performance', 'timeout']}
-            )
-            
-        Note:
-            Updates trigger complete reprocessing including new embeddings.
-            Search results reflect updated content immediately after processing.
-            Document version history is maintained for audit purposes.
-            Large content updates may take time for embedding regeneration.
+                Args:
+                    document_id: Unique identifier of the document to update.
+                                 Must be a valid ID from a previous ingest_document() call.
+                    content: New document content replacing the existing content.
+                             Content formatting and chunking rules apply as in ingestion.
+                    metadata: Optional metadata updates. Only provided fields are updated;
+                              existing metadata is preserved for unspecified fields.
+                              Set field to None to remove it from metadata.
+
+                Raises:
+                    DocumentNotFoundException: When document_id does not exist
+                    IngestionException: When content processing fails
+                    ValidationException: When new content format is invalid
+                    EmbeddingException: When embedding regeneration fails
+
+                Example:
+                    Update document content:
+
+                    >>> updated_content = '''
+        # Database Connection Issues (Updated)
+
+        ## New Section: Performance Optimization
+        - Connection pooling configuration
+        - Query timeout tuning
+
+        ## Symptoms
+        - Connection timeout errors (updated diagnostics)
+        '''
+                    >>> await ingester.update_document(
+                        "doc_a1b2c3d4",
+                        updated_content,
+                        metadata={'version': '2.0', 'last_updated': '2025-01-15'}
+                    )
+
+                    Update only metadata:
+
+                    >>> await ingester.update_document(
+                        "doc_a1b2c3d4",
+                        existing_content,  # Keep existing content
+                        metadata={'tags': ['database', 'performance', 'timeout']}
+                    )
+
+                Note:
+                    Updates trigger complete reprocessing including new embeddings.
+                    Search results reflect updated content immediately after processing.
+                    Document version history is maintained for audit purposes.
+                    Large content updates may take time for embedding regeneration.
         """
         pass
-    
+
     @abstractmethod
     async def delete_document(self, document_id: str) -> None:
         """Delete document from knowledge base permanently.
-        
+
         This method removes a document and all associated data including
         embeddings, chunks, and metadata from the knowledge base.
         The operation cannot be undone.
-        
+
         Args:
             document_id: Unique identifier of the document to delete.
                          Must be a valid ID from previous ingestion.
-                         
+
         Raises:
             DocumentNotFoundException: When document_id does not exist
             DeletionException: When deletion operation fails
-            
+
         Example:
             Delete obsolete document:
-            
+
             >>> await ingester.delete_document("doc_a1b2c3d4")
-            
+
             Batch deletion with error handling:
-            
+
             >>> obsolete_docs = ["doc_old1", "doc_old2", "doc_old3"]
             >>> for doc_id in obsolete_docs:
                 try:
@@ -1622,7 +1639,7 @@ redis:
                     print(f"Deleted: {doc_id}")
                 except DocumentNotFoundException:
                     print(f"Already deleted: {doc_id}")
-            
+
         Note:
             Deletion is immediate and cannot be undone.
             Related chunks and embeddings are automatically cleaned up.
@@ -1662,7 +1679,9 @@ class IGlobalConfidenceService(ABC):
     """
 
     @abstractmethod
-    async def score_confidence(self, request: 'ConfidenceRequest') -> 'ConfidenceResponse':
+    async def score_confidence(
+        self, request: "ConfidenceRequest"
+    ) -> "ConfidenceResponse":
         """Compute calibrated confidence score from feature vector.
 
         This method takes extracted features from the troubleshooting workflow
@@ -1978,14 +1997,17 @@ class IGlobalConfidenceService(ABC):
 # Memory Management Interfaces
 class ConversationContext(BaseModel):
     """Represents conversation context retrieved from memory"""
+
     session_id: str
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
     user_profile: Optional[Dict[str, Any]] = None
     relevant_insights: List[Dict[str, Any]] = Field(default_factory=list)
     domain_context: Optional[Dict[str, Any]] = None
-    
+
+
 class UserProfile(BaseModel):
     """Represents user profile and preferences"""
+
     user_id: Optional[str] = None
     skill_level: str = "intermediate"  # beginner, intermediate, advanced
     preferred_communication_style: str = "balanced"  # concise, detailed, balanced
@@ -1993,59 +2015,62 @@ class UserProfile(BaseModel):
     interaction_patterns: Dict[str, Any] = Field(default_factory=dict)
     historical_context: Dict[str, Any] = Field(default_factory=dict)
 
+
 class IMemoryService(ABC):
     """Interface for memory management operations.
-    
+
     This interface abstracts memory operations for intelligent conversation
     context management. Implementations should provide hierarchical memory
     storage with semantic retrieval, user profiling, and insight consolidation
     for enhanced troubleshooting conversations.
-    
+
     Memory Architecture:
         - Working Memory: Current conversation context
         - Session Memory: Session-specific insights and patterns
         - User Memory: User preferences and interaction history
         - Episodic Memory: Cross-session patterns and learning
-        
+
     Performance Requirements:
         - Context retrieval within 50ms for optimal user experience
         - Memory consolidation should be asynchronous
         - Efficient memory usage with automatic cleanup
-        
+
     Privacy Requirements:
         - All memory data must be sanitized for PII
         - User consent required for cross-session memory
         - Configurable memory retention policies
     """
-    
+
     @abstractmethod
-    async def retrieve_context(self, session_id: str, query: str) -> ConversationContext:
+    async def retrieve_context(
+        self, session_id: str, query: str
+    ) -> ConversationContext:
         """Retrieve relevant conversation context for enhanced responses.
-        
+
         This method analyzes the current query and session to retrieve
         relevant conversation history, user profile, and insights that
         can enhance the quality and personalization of responses.
-        
+
         Args:
             session_id: Session identifier for context scope
             query: Current user query for context relevance matching
-                   
+
         Returns:
             ConversationContext containing:
             - conversation_history: Relevant previous interactions
             - user_profile: User preferences and skill level
             - relevant_insights: Previously learned insights
             - domain_context: Domain-specific knowledge
-            
+
         Raises:
             MemoryException: When context retrieval fails
             ValidationException: When session_id or query is invalid
-            
+
         Example:
             Retrieve context for database troubleshooting:
-            
+
             >>> context = await memory_service.retrieve_context(
-                "session_123", 
+                "session_123",
                 "Database connection timeout"
             )
             >>> context.user_profile.skill_level
@@ -2054,37 +2079,39 @@ class IMemoryService(ABC):
             3
             >>> context.relevant_insights[0]['pattern']
             'connection_pool_exhaustion'
-            
+
         Note:
             Context retrieval uses semantic similarity for relevance matching.
             User profile is enriched based on interaction patterns.
             Privacy controls limit cross-session data sharing.
         """
         pass
-    
+
     @abstractmethod
-    async def consolidate_insights(self, session_id: str, result: Dict[str, Any]) -> bool:
+    async def consolidate_insights(
+        self, session_id: str, result: Dict[str, Any]
+    ) -> bool:
         """Consolidate insights from troubleshooting results into memory.
-        
+
         This method processes troubleshooting results to extract patterns,
         insights, and learning that can improve future interactions. The
         consolidation process updates all memory hierarchies appropriately.
-        
+
         Args:
             session_id: Session identifier for context attribution
             result: Troubleshooting result containing findings, solutions,
                    and outcomes that can be learned from
-                   
+
         Returns:
             True if consolidation was successful, False otherwise
-            
+
         Raises:
             MemoryException: When consolidation process fails
             ValidationException: When session_id or result format is invalid
-            
+
         Example:
             Consolidate database troubleshooting results:
-            
+
             >>> result = {
                 'root_cause': 'Connection pool exhaustion',
                 'solution': 'Increased pool size from 10 to 50',
@@ -2093,30 +2120,30 @@ class IMemoryService(ABC):
                 'patterns': ['high_load', 'connection_limit']
             }
             >>> success = await memory_service.consolidate_insights(
-                "session_123", 
+                "session_123",
                 result
             )
             >>> success
             True
-            
+
         Note:
             Consolidation runs asynchronously to avoid blocking responses.
             Patterns are automatically detected and categorized.
             User preferences are updated based on successful solutions.
         """
         pass
-    
+
     @abstractmethod
     async def get_user_profile(self, session_id: str) -> UserProfile:
         """Get user profile and preferences for personalization.
-        
+
         This method retrieves user profile information including skill level,
         communication preferences, domain expertise, and interaction patterns
         to enable personalized troubleshooting assistance.
-        
+
         Args:
             session_id: Session identifier for user association
-                   
+
         Returns:
             UserProfile containing:
             - skill_level: User's technical skill level
@@ -2124,14 +2151,14 @@ class IMemoryService(ABC):
             - domain_expertise: Areas of technical expertise
             - interaction_patterns: Historical interaction patterns
             - historical_context: Relevant historical context
-            
+
         Raises:
             MemoryException: When profile retrieval fails
             ValidationException: When session_id is invalid
-            
+
         Example:
             Get user profile for response personalization:
-            
+
             >>> profile = await memory_service.get_user_profile("session_123")
             >>> profile.skill_level
             'advanced'
@@ -2139,22 +2166,24 @@ class IMemoryService(ABC):
             'concise'
             >>> 'database' in profile.domain_expertise
             True
-            
+
         Note:
             New users receive default profile with gradual personalization.
             Profile updates are based on interaction patterns and feedback.
             Privacy controls limit profile data collection and sharing.
         """
         pass
-    
+
     @abstractmethod
-    async def update_user_profile(self, session_id: str, updates: Dict[str, Any]) -> bool:
+    async def update_user_profile(
+        self, session_id: str, updates: Dict[str, Any]
+    ) -> bool:
         """Update user profile based on interaction patterns.
-        
+
         This method updates user profile information based on observed
         interaction patterns, explicit user feedback, and successful
         troubleshooting outcomes to improve future personalization.
-        
+
         Args:
             session_id: Session identifier for user association
             updates: Dictionary of profile updates including:
@@ -2162,29 +2191,29 @@ class IMemoryService(ABC):
                     - communication_style: Observed style preferences
                     - domain_expertise: New or confirmed expertise areas
                     - interaction_patterns: Updated pattern data
-                   
+
         Returns:
             True if profile update was successful, False otherwise
-            
+
         Raises:
             MemoryException: When profile update fails
             ValidationException: When session_id or updates format is invalid
-            
+
         Example:
             Update user skill level based on successful troubleshooting:
-            
+
             >>> updates = {
                 'skill_level': 'advanced',
                 'domain_expertise': ['database', 'networking'],
                 'preferred_communication_style': 'detailed'
             }
             >>> success = await memory_service.update_user_profile(
-                "session_123", 
+                "session_123",
                 updates
             )
             >>> success
             True
-            
+
         Note:
             Profile updates are gradual to avoid over-correction.
             Multiple signals are weighted for reliable assessment.
@@ -2196,6 +2225,7 @@ class IMemoryService(ABC):
 # Planning System Interfaces
 class StrategicPlan(BaseModel):
     """Represents a strategic plan for problem resolution"""
+
     plan_id: str
     problem_analysis: Dict[str, Any]
     solution_strategy: Dict[str, Any]
@@ -2204,49 +2234,54 @@ class StrategicPlan(BaseModel):
     estimated_effort: Optional[str] = None
     confidence_score: float = 0.0
 
+
 class ProblemComponents(BaseModel):
     """Represents decomposed problem components"""
+
     primary_issue: str
     contributing_factors: List[str] = Field(default_factory=list)
     dependencies: List[str] = Field(default_factory=list)
     complexity_assessment: Dict[str, Any] = Field(default_factory=dict)
     priority_ranking: List[str] = Field(default_factory=list)
 
+
 class IPlanningService(ABC):
     """Interface for strategic planning operations.
-    
+
     This interface abstracts strategic planning operations for intelligent
     problem-solving workflows. Implementations should provide problem
     decomposition, solution strategy development, risk assessment, and
     resource planning for complex troubleshooting scenarios.
-    
+
     Planning Capabilities:
         - Multi-phase strategic planning
-        - Problem decomposition and prioritization  
+        - Problem decomposition and prioritization
         - Risk assessment and mitigation strategies
         - Alternative solution development
         - Resource requirement estimation
-        
+
     Performance Requirements:
         - Plan generation within 100ms for responsive interaction
         - Concurrent planning for multiple scenarios
         - Efficient plan storage and retrieval
-        
+
     Integration Notes:
         - Works with memory service for context-aware planning
         - Integrates with agent workflow for plan execution
         - Supports plan adaptation based on execution feedback
     """
-    
+
     @abstractmethod
-    async def plan_response_strategy(self, query: str, context: Dict[str, Any]) -> StrategicPlan:
+    async def plan_response_strategy(
+        self, query: str, context: Dict[str, Any]
+    ) -> StrategicPlan:
         """Plan strategic response approach for user query.
-        
+
         This method analyzes the user query and available context to develop
         a strategic plan for providing the most effective troubleshooting
         assistance. The plan includes problem analysis, solution strategy,
         and risk assessment.
-        
+
         Args:
             query: User's troubleshooting query or problem description
             context: Available context including:
@@ -2254,7 +2289,7 @@ class IPlanningService(ABC):
                     - user_profile: User preferences and skill level
                     - domain_context: Relevant domain knowledge
                     - available_tools: Tools available for assistance
-                   
+
         Returns:
             StrategicPlan containing:
             - problem_analysis: Detailed problem breakdown
@@ -2263,16 +2298,16 @@ class IPlanningService(ABC):
             - success_criteria: Measurable success indicators
             - estimated_effort: Time and resource estimates
             - confidence_score: Plan confidence assessment
-            
+
         Raises:
             PlanningException: When strategic planning fails
             ValidationException: When query or context is invalid
-            
+
         Example:
             Plan response for database performance issue:
-            
+
             >>> plan = await planning_service.plan_response_strategy(
-                "Database queries are slow", 
+                "Database queries are slow",
                 {
                     'user_profile': {'skill_level': 'intermediate'},
                     'domain_context': {'database_type': 'postgresql'},
@@ -2283,22 +2318,24 @@ class IPlanningService(ABC):
             'systematic_performance_analysis'
             >>> plan.estimated_effort
             '30-45 minutes'
-            
+
         Note:
             Planning adapts to user skill level and available context.
             Risk assessment considers potential impact of solutions.
             Plans are optimized for user success and safety.
         """
         pass
-    
+
     @abstractmethod
-    async def decompose_problem(self, problem: str, context: Dict[str, Any]) -> ProblemComponents:
+    async def decompose_problem(
+        self, problem: str, context: Dict[str, Any]
+    ) -> ProblemComponents:
         """Decompose complex problem into manageable components.
-        
+
         This method breaks down complex troubleshooting problems into
         smaller, manageable components with clear dependencies and
         priority rankings to enable systematic problem resolution.
-        
+
         Args:
             problem: Complex problem description requiring decomposition
             context: Problem context including:
@@ -2306,7 +2343,7 @@ class IPlanningService(ABC):
                     - error_symptoms: Observed error patterns
                     - environment_details: Environment configuration
                     - previous_attempts: Prior troubleshooting efforts
-                   
+
         Returns:
             ProblemComponents containing:
             - primary_issue: Core problem requiring resolution
@@ -2314,14 +2351,14 @@ class IPlanningService(ABC):
             - dependencies: Component relationships and dependencies
             - complexity_assessment: Difficulty and resource estimates
             - priority_ranking: Recommended resolution order
-            
+
         Raises:
             PlanningException: When problem decomposition fails
             ValidationException: When problem description is insufficient
-            
+
         Example:
             Decompose complex application performance issue:
-            
+
             >>> components = await planning_service.decompose_problem(
                 "Application is slow and occasionally crashes",
                 {
@@ -2334,7 +2371,7 @@ class IPlanningService(ABC):
             'Resource exhaustion causing performance degradation'
             >>> len(components.contributing_factors)
             3
-            
+
         Note:
             Decomposition considers system interdependencies.
             Priority ranking optimizes for maximum impact resolution.
@@ -2345,56 +2382,66 @@ class IPlanningService(ABC):
 
 class IJobService(ABC):
     """Interface for async job management and tracking.
-    
+
     This interface provides job management capabilities for long-running operations
     that require asynchronous processing. Jobs have lifecycle management, status
     tracking, and result storage with automatic cleanup.
-    
+
     Job Requirements:
         - Unique job identification with collision resistance
-        - Persistent status tracking across server restarts  
+        - Persistent status tracking across server restarts
         - TTL-based automatic cleanup and garbage collection
         - Consistent polling semantics with Retry-After headers
-        
+
     Integration Notes:
         - Uses Redis for job state persistence and distribution
         - Integrates with middleware for 202 → Location → 303/200 workflows
         - Supports job cancellation and error handling
     """
-    
+
     @abstractmethod
-    async def create_job(self, job_type: str, payload: Dict[str, Any] = None, 
-                        ttl_seconds: Optional[int] = None) -> str:
+    async def create_job(
+        self,
+        job_type: str,
+        payload: Dict[str, Any] = None,
+        ttl_seconds: Optional[int] = None,
+    ) -> str:
         """Create a new async job with initial pending status.
-        
+
         Args:
             job_type: Type identifier for the job (e.g., "query_processing", "data_analysis")
             payload: Optional job parameters and context data
             ttl_seconds: Time-to-live for job persistence (default 24 hours)
-            
+
         Returns:
             job_id: Unique identifier for tracking job status
-            
+
         Raises:
             ServiceException: When job creation fails due to storage issues
         """
         pass
-    
+
     @abstractmethod
     async def get_job(self, job_id: str) -> Optional["JobStatus"]:
         """Retrieve current job status and metadata.
-        
+
         Args:
             job_id: Unique job identifier
-            
+
         Returns:
             JobStatus object with current state or None if job not found
         """
         pass
-    
+
     @abstractmethod
-    async def update_job_status(self, job_id: str, status: str, progress: Optional[int] = None,
-                               result: Optional[Dict[str, Any]] = None, error: Optional[str] = None) -> bool:
+    async def update_job_status(
+        self,
+        job_id: str,
+        status: str,
+        progress: Optional[int] = None,
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+    ) -> bool:
         """Update job status and metadata.
 
         Args:
@@ -2411,6 +2458,7 @@ class IJobService(ABC):
 
 
 # --- Data Preprocessing Interfaces ---
+
 
 class IPreprocessor(ABC):
     """
@@ -2432,7 +2480,7 @@ class IPreprocessor(ABC):
         self,
         content: str,
         filename: str,
-        source_metadata: Optional["SourceMetadata"] = None
+        source_metadata: Optional["SourceMetadata"] = None,
     ) -> "PreprocessedData":
         """
         Process raw content into LLM-ready summary
@@ -2481,6 +2529,7 @@ class IPreprocessor(ABC):
 # =============================================================================
 # JOB RUNNER INTERFACE
 # =============================================================================
+
 
 class IJobRunner(ABC):
     """Interface for background job scheduling and execution.
@@ -2556,7 +2605,7 @@ class IJobRunner(ABC):
         job_name: Optional[str] = None,
         args: tuple = (),
         kwargs: dict = None,
-        replace_existing: bool = True
+        replace_existing: bool = True,
     ) -> str:
         """Schedule a recurring job that runs at fixed intervals.
 
@@ -2590,7 +2639,7 @@ class IJobRunner(ABC):
         job_id: Optional[str] = None,
         job_name: Optional[str] = None,
         args: tuple = (),
-        kwargs: dict = None
+        kwargs: dict = None,
     ) -> str:
         """Schedule a one-time job to run at a specific time.
 

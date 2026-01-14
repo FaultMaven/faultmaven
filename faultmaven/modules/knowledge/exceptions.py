@@ -7,14 +7,15 @@ including RAG, embeddings, and semantic search operations.
 from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import (
-    KnowledgeBaseException,
     EmbeddingException,
+    KnowledgeBaseException,
     VectorStoreException,
 )
 
 
 class KnowledgeException(KnowledgeBaseException):
     """Base exception for knowledge module errors."""
+
     pass
 
 
@@ -25,7 +26,7 @@ class DocumentNotFoundError(KnowledgeException):
         self,
         message: str = "Document not found",
         document_id: Optional[str] = None,
-        knowledge_base_id: Optional[str] = None
+        knowledge_base_id: Optional[str] = None,
     ):
         self.document_id = document_id
         self.knowledge_base_id = knowledge_base_id
@@ -33,8 +34,8 @@ class DocumentNotFoundError(KnowledgeException):
             message,
             details={
                 "document_id": document_id,
-                "knowledge_base_id": knowledge_base_id
-            }
+                "knowledge_base_id": knowledge_base_id,
+            },
         )
 
 
@@ -50,7 +51,7 @@ class DocumentIngestionError(KnowledgeException):
         message: str,
         document_name: Optional[str] = None,
         error_code: Optional[str] = None,
-        processing_step: Optional[str] = None
+        processing_step: Optional[str] = None,
     ):
         self.document_name = document_name
         self.error_code = error_code
@@ -60,8 +61,8 @@ class DocumentIngestionError(KnowledgeException):
             details={
                 "document_name": document_name,
                 "error_code": error_code,
-                "processing_step": processing_step
-            }
+                "processing_step": processing_step,
+            },
         )
 
 
@@ -77,7 +78,7 @@ class SearchError(KnowledgeException):
         message: str,
         query: Optional[str] = None,
         search_type: Optional[str] = None,
-        error_code: Optional[str] = None
+        error_code: Optional[str] = None,
     ):
         self.query = query
         self.search_type = search_type
@@ -87,8 +88,8 @@ class SearchError(KnowledgeException):
             details={
                 "query": query[:100] if query else None,  # Truncate long queries
                 "search_type": search_type,
-                "error_code": error_code
-            }
+                "error_code": error_code,
+            },
         )
 
 
@@ -104,7 +105,7 @@ class ChunkingError(KnowledgeException):
         message: str,
         document_id: Optional[str] = None,
         chunk_size: Optional[int] = None,
-        reason: Optional[str] = None
+        reason: Optional[str] = None,
     ):
         self.document_id = document_id
         self.chunk_size = chunk_size
@@ -114,8 +115,8 @@ class ChunkingError(KnowledgeException):
             details={
                 "document_id": document_id,
                 "chunk_size": chunk_size,
-                "reason": reason
-            }
+                "reason": reason,
+            },
         )
 
 
@@ -126,7 +127,7 @@ class KnowledgeBaseAccessError(KnowledgeException):
         self,
         message: str = "Access denied",
         knowledge_base_id: Optional[str] = None,
-        organization_id: Optional[str] = None
+        organization_id: Optional[str] = None,
     ):
         self.knowledge_base_id = knowledge_base_id
         self.organization_id = organization_id
@@ -134,8 +135,8 @@ class KnowledgeBaseAccessError(KnowledgeException):
             message,
             details={
                 "knowledge_base_id": knowledge_base_id,
-                "organization_id": organization_id
-            }
+                "organization_id": organization_id,
+            },
         )
 
 
@@ -150,14 +151,10 @@ class IndexingError(KnowledgeException):
         self,
         message: str,
         document_ids: Optional[List[str]] = None,
-        error_code: Optional[str] = None
+        error_code: Optional[str] = None,
     ):
         self.document_ids = document_ids
         self.error_code = error_code
         super().__init__(
-            message,
-            details={
-                "document_ids": document_ids,
-                "error_code": error_code
-            }
+            message, details={"document_ids": document_ids, "error_code": error_code}
         )

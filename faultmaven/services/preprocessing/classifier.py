@@ -14,12 +14,13 @@ Copy&paste text is handled by /queries endpoint with separate classification.
 
 import re
 from pathlib import Path
-from typing import Optional, List, TYPE_CHECKING
-from faultmaven.models.api import DataType, ClassificationResult
+from typing import TYPE_CHECKING, List, Optional
+
+from faultmaven.models.api import ClassificationResult, DataType
 
 if TYPE_CHECKING:
     from faultmaven.models.api import SourceMetadata
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class DataClassifier:
@@ -37,7 +38,7 @@ class DataClassifier:
         agent_hint: Optional[DataType] = None,
         browser_context: Optional[str] = None,
         user_override: Optional[DataType] = None,
-        source_metadata: Optional['SourceMetadata'] = None
+        source_metadata: Optional["SourceMetadata"] = None,
     ) -> ClassificationResult:
         """
         5-tier classification with confidence scoring
@@ -67,7 +68,7 @@ class DataClassifier:
                 data_type=user_override,
                 confidence=1.0,
                 source="user_override",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # Priority 2: Agent hint (95% confidence if validated)
@@ -76,15 +77,14 @@ class DataClassifier:
                 data_type=agent_hint,
                 confidence=0.95,
                 source="agent_hint",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # Priority 3: Source URL patterns (page captures - NEW)
         # Higher confidence than browser_context because URL is more specific
         if source_metadata and source_metadata.source_url:
             url_result = self._classify_from_source_url(
-                source_metadata.source_url,
-                source_metadata.source_type
+                source_metadata.source_url, source_metadata.source_type
             )
             if url_result:
                 return url_result
@@ -112,32 +112,40 @@ class DataClassifier:
         if hint == DataType.VISUAL_EVIDENCE:
             # Must be image file
             ext = Path(filename).suffix.lower()
-            return ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']
+            return ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]
 
         if hint == DataType.STRUCTURED_CONFIG:
             # Should have config-like patterns
             ext = Path(filename).suffix.lower()
-            if ext in ['.yaml', '.yml', '.json', '.toml', '.ini', '.env']:
+            if ext in [".yaml", ".yml", ".json", ".toml", ".ini", ".env"]:
                 return True
             # Check content for config patterns
-            return bool(re.search(r'[a-z_]+\s*[:=]', sample, re.MULTILINE))
+            return bool(re.search(r"[a-z_]+\s*[:=]", sample, re.MULTILINE))
 
         if hint == DataType.SOURCE_CODE:
             # Should have code-like patterns
             ext = Path(filename).suffix.lower()
-            code_exts = ['.py', '.js', '.ts', '.java', '.go', '.rs', '.cpp', '.c', '.rb']
+            code_exts = [
+                ".py",
+                ".js",
+                ".ts",
+                ".java",
+                ".go",
+                ".rs",
+                ".cpp",
+                ".c",
+                ".rb",
+            ]
             if ext in code_exts:
                 return True
             # Check for code patterns
-            return bool(re.search(r'(function|def|class|import|package)\s+\w+', sample))
+            return bool(re.search(r"(function|def|class|import|package)\s+\w+", sample))
 
         # Other types: accept hint (can't validate easily)
         return True
 
     def _classify_from_source_url(
-        self,
-        source_url: str,
-        source_type: str
+        self, source_url: str, source_type: str
     ) -> Optional[ClassificationResult]:
         """
         Classify based on source URL patterns (Priority 3)
@@ -158,44 +166,52 @@ class DataClassifier:
         # Confidence: 0.88-0.94 (higher than browser_context due to specificity)
         url_patterns = [
             # Error Tracking & Logs platforms
-            ('sentry.io', DataType.LOGS_AND_ERRORS, 0.94),
-            ('bugsnag.com', DataType.LOGS_AND_ERRORS, 0.94),
-            ('rollbar.com', DataType.LOGS_AND_ERRORS, 0.94),
-            ('app.datadoghq.com/logs', DataType.LOGS_AND_ERRORS, 0.92),
-            ('kibana', DataType.LOGS_AND_ERRORS, 0.92),
-            ('splunk.com', DataType.LOGS_AND_ERRORS, 0.92),
-            ('logz.io', DataType.LOGS_AND_ERRORS, 0.90),
-            ('papertrailapp.com', DataType.LOGS_AND_ERRORS, 0.90),
-            ('/logs/', DataType.LOGS_AND_ERRORS, 0.85),  # Generic logs path
-
+            ("sentry.io", DataType.LOGS_AND_ERRORS, 0.94),
+            ("bugsnag.com", DataType.LOGS_AND_ERRORS, 0.94),
+            ("rollbar.com", DataType.LOGS_AND_ERRORS, 0.94),
+            ("app.datadoghq.com/logs", DataType.LOGS_AND_ERRORS, 0.92),
+            ("kibana", DataType.LOGS_AND_ERRORS, 0.92),
+            ("splunk.com", DataType.LOGS_AND_ERRORS, 0.92),
+            ("logz.io", DataType.LOGS_AND_ERRORS, 0.90),
+            ("papertrailapp.com", DataType.LOGS_AND_ERRORS, 0.90),
+            ("/logs/", DataType.LOGS_AND_ERRORS, 0.85),  # Generic logs path
             # APM & Metrics platforms
-            ('grafana', DataType.METRICS_AND_PERFORMANCE, 0.92),
-            ('app.datadoghq.com/apm', DataType.METRICS_AND_PERFORMANCE, 0.92),
-            ('app.datadoghq.com/metric', DataType.METRICS_AND_PERFORMANCE, 0.92),
-            ('app.datadoghq.com/dashboard', DataType.METRICS_AND_PERFORMANCE, 0.90),
-            ('prometheus', DataType.METRICS_AND_PERFORMANCE, 0.92),
-            ('newrelic.com', DataType.METRICS_AND_PERFORMANCE, 0.90),
-            ('honeycomb.io', DataType.METRICS_AND_PERFORMANCE, 0.90),
-            ('jaeger', DataType.METRICS_AND_PERFORMANCE, 0.88),
-            ('zipkin', DataType.METRICS_AND_PERFORMANCE, 0.88),
-            ('/metrics/', DataType.METRICS_AND_PERFORMANCE, 0.85),  # Generic metrics path
-            ('/dashboard/', DataType.METRICS_AND_PERFORMANCE, 0.82),  # Generic dashboard
-
+            ("grafana", DataType.METRICS_AND_PERFORMANCE, 0.92),
+            ("app.datadoghq.com/apm", DataType.METRICS_AND_PERFORMANCE, 0.92),
+            ("app.datadoghq.com/metric", DataType.METRICS_AND_PERFORMANCE, 0.92),
+            ("app.datadoghq.com/dashboard", DataType.METRICS_AND_PERFORMANCE, 0.90),
+            ("prometheus", DataType.METRICS_AND_PERFORMANCE, 0.92),
+            ("newrelic.com", DataType.METRICS_AND_PERFORMANCE, 0.90),
+            ("honeycomb.io", DataType.METRICS_AND_PERFORMANCE, 0.90),
+            ("jaeger", DataType.METRICS_AND_PERFORMANCE, 0.88),
+            ("zipkin", DataType.METRICS_AND_PERFORMANCE, 0.88),
+            (
+                "/metrics/",
+                DataType.METRICS_AND_PERFORMANCE,
+                0.85,
+            ),  # Generic metrics path
+            (
+                "/dashboard/",
+                DataType.METRICS_AND_PERFORMANCE,
+                0.82,
+            ),  # Generic dashboard
             # Cloud Platform Consoles
-            ('console.aws.amazon.com/cloudwatch', DataType.METRICS_AND_PERFORMANCE, 0.90),
-            ('console.cloud.google.com/logs', DataType.LOGS_AND_ERRORS, 0.90),
-            ('portal.azure.com', DataType.METRICS_AND_PERFORMANCE, 0.88),
-
+            (
+                "console.aws.amazon.com/cloudwatch",
+                DataType.METRICS_AND_PERFORMANCE,
+                0.90,
+            ),
+            ("console.cloud.google.com/logs", DataType.LOGS_AND_ERRORS, 0.90),
+            ("portal.azure.com", DataType.METRICS_AND_PERFORMANCE, 0.88),
             # Source code platforms
-            ('github.com', DataType.SOURCE_CODE, 0.90),
-            ('gitlab.com', DataType.SOURCE_CODE, 0.90),
-            ('bitbucket.org', DataType.SOURCE_CODE, 0.90),
-
+            ("github.com", DataType.SOURCE_CODE, 0.90),
+            ("gitlab.com", DataType.SOURCE_CODE, 0.90),
+            ("bitbucket.org", DataType.SOURCE_CODE, 0.90),
             # Documentation platforms
-            ('readthedocs.io', DataType.UNSTRUCTURED_TEXT, 0.88),
-            ('docs.', DataType.UNSTRUCTURED_TEXT, 0.88),
-            ('confluence', DataType.UNSTRUCTURED_TEXT, 0.88),
-            ('notion.so', DataType.UNSTRUCTURED_TEXT, 0.88),
+            ("readthedocs.io", DataType.UNSTRUCTURED_TEXT, 0.88),
+            ("docs.", DataType.UNSTRUCTURED_TEXT, 0.88),
+            ("confluence", DataType.UNSTRUCTURED_TEXT, 0.88),
+            ("notion.so", DataType.UNSTRUCTURED_TEXT, 0.88),
         ]
 
         for pattern, data_type, confidence in url_patterns:
@@ -208,12 +224,14 @@ class DataClassifier:
                     data_type=data_type,
                     confidence=confidence,
                     source="source_url",
-                    classification_failed=False
+                    classification_failed=False,
                 )
 
         return None
 
-    def _classify_from_browser_context(self, context: str) -> Optional[ClassificationResult]:
+    def _classify_from_browser_context(
+        self, context: str
+    ) -> Optional[ClassificationResult]:
         """
         Classify based on browser page type (Priority 4)
 
@@ -227,14 +245,14 @@ class DataClassifier:
         # Mapping: page_type -> (data_type, confidence)
         # Confidence adjusted: now lower priority than source_url
         context_mappings = {
-            'sentry': (DataType.LOGS_AND_ERRORS, 0.92),
-            'kibana': (DataType.LOGS_AND_ERRORS, 0.90),
-            'splunk': (DataType.LOGS_AND_ERRORS, 0.90),
-            'grafana': (DataType.METRICS_AND_PERFORMANCE, 0.90),
-            'prometheus': (DataType.METRICS_AND_PERFORMANCE, 0.92),
-            'datadog': (DataType.METRICS_AND_PERFORMANCE, 0.88),
-            'jaeger': (DataType.METRICS_AND_PERFORMANCE, 0.85),
-            'zipkin': (DataType.METRICS_AND_PERFORMANCE, 0.85),
+            "sentry": (DataType.LOGS_AND_ERRORS, 0.92),
+            "kibana": (DataType.LOGS_AND_ERRORS, 0.90),
+            "splunk": (DataType.LOGS_AND_ERRORS, 0.90),
+            "grafana": (DataType.METRICS_AND_PERFORMANCE, 0.90),
+            "prometheus": (DataType.METRICS_AND_PERFORMANCE, 0.92),
+            "datadog": (DataType.METRICS_AND_PERFORMANCE, 0.88),
+            "jaeger": (DataType.METRICS_AND_PERFORMANCE, 0.85),
+            "zipkin": (DataType.METRICS_AND_PERFORMANCE, 0.85),
         }
 
         for page_type, (data_type, confidence) in context_mappings.items():
@@ -243,7 +261,7 @@ class DataClassifier:
                     data_type=data_type,
                     confidence=confidence,
                     source="browser_context",
-                    classification_failed=False
+                    classification_failed=False,
                 )
 
         return None
@@ -252,7 +270,7 @@ class DataClassifier:
         self,
         filename: str,
         content: str,
-        source_metadata: Optional['SourceMetadata'] = None
+        source_metadata: Optional["SourceMetadata"] = None,
     ) -> ClassificationResult:
         """
         Rule-based classification with confidence scoring (Priority 5)
@@ -274,18 +292,17 @@ class DataClassifier:
 
         # Confidence boost for file uploads (file extensions are trustworthy)
         is_file_upload = (
-            source_metadata and
-            source_metadata.source_type == "file_upload"
+            source_metadata and source_metadata.source_type == "file_upload"
         )
         confidence_boost = 0.03 if is_file_upload else 0.0
 
         # 1. Check for VISUAL_EVIDENCE (highest priority - most specific)
-        if ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']:
+        if ext in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]:
             return ClassificationResult(
                 data_type=DataType.VISUAL_EVIDENCE,
                 confidence=min(0.98 + confidence_boost, 0.99),
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # 2. Check for TRACE_DATA (distributed traces - very specific patterns)
@@ -296,43 +313,47 @@ class DataClassifier:
             r'"operationName".*"spans":\s*\[',  # Jaeger trace structure
         ]
 
-        trace_score = sum(1 for p in trace_patterns if re.search(p, sample, re.IGNORECASE))
+        trace_score = sum(
+            1 for p in trace_patterns if re.search(p, sample, re.IGNORECASE)
+        )
 
         if trace_score >= 2:
             return ClassificationResult(
                 data_type=DataType.TRACE_DATA,
                 confidence=min(0.95 + confidence_boost, 0.99),
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # 3. Check for PROFILING_DATA (performance profiling - specific headers)
         profiling_patterns = [
-            r'\bncalls\s+tottime\s+percall\s+cumtime',  # cProfile header
-            r'[\w\.]+(?:;[\w\.]+)+\s+\d+',  # Flame graph format: foo;bar;baz 123
-            r'\d+\s+calls?\s+in\s+[\d\.]+\s+seconds',  # Profiling summary
-            r'filename:lineno\(function\)',  # cProfile format
+            r"\bncalls\s+tottime\s+percall\s+cumtime",  # cProfile header
+            r"[\w\.]+(?:;[\w\.]+)+\s+\d+",  # Flame graph format: foo;bar;baz 123
+            r"\d+\s+calls?\s+in\s+[\d\.]+\s+seconds",  # Profiling summary
+            r"filename:lineno\(function\)",  # cProfile format
         ]
 
-        profiling_score = sum(1 for p in profiling_patterns if re.search(p, sample, re.IGNORECASE))
+        profiling_score = sum(
+            1 for p in profiling_patterns if re.search(p, sample, re.IGNORECASE)
+        )
 
         if profiling_score >= 1:
             return ClassificationResult(
                 data_type=DataType.PROFILING_DATA,
                 confidence=min(0.92 + confidence_boost, 0.98),
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # 4. Check for COMMAND_OUTPUT (shell command results - specific formats)
         command_patterns = [
-            (r'(top\s+-|Tasks:|%Cpu\(s\)|KiB Mem)', 'top'),
-            (r'PID\s+USER\s+%CPU\s+%MEM\s+VSZ\s+RSS', 'ps'),
-            (r'avg-cpu:\s+%user\s+%nice\s+%system', 'iostat'),
-            (r'Device.*tps.*kB_read/s.*kB_wrtn/s', 'iostat'),
-            (r'Proto\s+Recv-Q\s+Send-Q\s+Local Address\s+Foreign Address', 'netstat'),
-            (r'total\s+used\s+free\s+shared\s+buff/cache\s+available', 'free'),
-            (r'Filesystem\s+1K-blocks\s+Used\s+Available\s+Use%', 'df'),
+            (r"(top\s+-|Tasks:|%Cpu\(s\)|KiB Mem)", "top"),
+            (r"PID\s+USER\s+%CPU\s+%MEM\s+VSZ\s+RSS", "ps"),
+            (r"avg-cpu:\s+%user\s+%nice\s+%system", "iostat"),
+            (r"Device.*tps.*kB_read/s.*kB_wrtn/s", "iostat"),
+            (r"Proto\s+Recv-Q\s+Send-Q\s+Local Address\s+Foreign Address", "netstat"),
+            (r"total\s+used\s+free\s+shared\s+buff/cache\s+available", "free"),
+            (r"Filesystem\s+1K-blocks\s+Used\s+Available\s+Use%", "df"),
         ]
 
         for pattern, cmd in command_patterns:
@@ -341,17 +362,17 @@ class DataClassifier:
                     data_type=DataType.COMMAND_OUTPUT,
                     confidence=min(0.95 + confidence_boost, 0.98),
                     source="rule_based",
-                    classification_failed=False
+                    classification_failed=False,
                 )
 
         # 5. Check for ERROR_REPORT vs LOGS_AND_ERRORS (systematic approach)
 
         # Text-based log patterns
         text_log_patterns = [
-            r'\b(error|fatal|critical|panic|exception|traceback)\b',
-            r'\[\d{4}-\d{2}-\d{2}',  # Timestamp [2025-10-15
-            r'(INFO|WARN|ERROR|DEBUG|TRACE):',  # Log levels
-            r'at\s+[\w\.]+\(\w+\.java:\d+\)',  # Java stack trace
+            r"\b(error|fatal|critical|panic|exception|traceback)\b",
+            r"\[\d{4}-\d{2}-\d{2}",  # Timestamp [2025-10-15
+            r"(INFO|WARN|ERROR|DEBUG|TRACE):",  # Log levels
+            r"at\s+[\w\.]+\(\w+\.java:\d+\)",  # Java stack trace
             r'File\s+"[^"]+",\s+line\s+\d+',  # Python stack trace
         ]
 
@@ -364,24 +385,32 @@ class DataClassifier:
             r'"message":\s*"',  # JSON message field
         ]
 
-        text_score = sum(1 for p in text_log_patterns if re.search(p, sample, re.IGNORECASE))
-        structured_score = sum(1 for p in structured_log_patterns if re.search(p, sample, re.IGNORECASE))
+        text_score = sum(
+            1 for p in text_log_patterns if re.search(p, sample, re.IGNORECASE)
+        )
+        structured_score = sum(
+            1 for p in structured_log_patterns if re.search(p, sample, re.IGNORECASE)
+        )
 
         # Check for timestamps to differentiate ERROR_REPORT from LOGS_AND_ERRORS
         timestamp_patterns = [
-            r'\[\d{4}-\d{2}-\d{2}',  # [2025-10-15
-            r'\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}',  # ISO timestamp
+            r"\[\d{4}-\d{2}-\d{2}",  # [2025-10-15
+            r"\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}",  # ISO timestamp
             r'"timestamp":\s*"\d{4}-\d{2}-\d{2}',  # JSON timestamp
         ]
-        has_timestamps = any(re.search(p, sample, re.IGNORECASE) for p in timestamp_patterns)
+        has_timestamps = any(
+            re.search(p, sample, re.IGNORECASE) for p in timestamp_patterns
+        )
 
         # Check for stack trace structure
         stack_trace_patterns = [
-            r'at\s+[\w\.]+\(\w+\.java:\d+\)',  # Java stack trace
+            r"at\s+[\w\.]+\(\w+\.java:\d+\)",  # Java stack trace
             r'File\s+"[^"]+",\s+line\s+\d+',  # Python stack trace
-            r'Traceback \(most recent call last\)',  # Python traceback header
+            r"Traceback \(most recent call last\)",  # Python traceback header
         ]
-        has_stack_trace = any(re.search(p, sample, re.IGNORECASE) for p in stack_trace_patterns)
+        has_stack_trace = any(
+            re.search(p, sample, re.IGNORECASE) for p in stack_trace_patterns
+        )
 
         # ERROR_REPORT: Has stack trace but NO timestamps (standalone exception)
         if has_stack_trace and not has_timestamps and text_score >= 1:
@@ -389,18 +418,20 @@ class DataClassifier:
                 data_type=DataType.ERROR_REPORT,
                 confidence=min(0.92 + confidence_boost, 0.98),
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # LOGS_AND_ERRORS: Has timestamps AND log patterns (log file)
         # Strong indicator: .log file with any log patterns
-        if ext in ['.log', '.txt'] and (text_score >= 2 or structured_score >= 2):
-            base_confidence = 0.85 + min(text_score + structured_score, 3) * 0.03  # 0.85-0.94
+        if ext in [".log", ".txt"] and (text_score >= 2 or structured_score >= 2):
+            base_confidence = (
+                0.85 + min(text_score + structured_score, 3) * 0.03
+            )  # 0.85-0.94
             return ClassificationResult(
                 data_type=DataType.LOGS_AND_ERRORS,
                 confidence=min(base_confidence + confidence_boost, 0.98),
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # Strong log patterns regardless of extension
@@ -409,21 +440,23 @@ class DataClassifier:
                 data_type=DataType.LOGS_AND_ERRORS,
                 confidence=min(0.88 + confidence_boost, 0.95),
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # 3. Check for METRICS_AND_PERFORMANCE (before STRUCTURED_CONFIG to avoid JSON misclassification)
-        metrics_exts = ['.csv', '.tsv']
+        metrics_exts = [".csv", ".tsv"]
         metrics_patterns = [
-            r'timestamp[,\t]',  # CSV with timestamp column
+            r"timestamp[,\t]",  # CSV with timestamp column
             r'\btimestamp["\']?\s*[:,]',  # JSON with timestamp field
             r'\w+{[\w="]+}',  # Prometheus format: metric{label="value"}
-            r'^\d+\.\d+\s+\d+',  # Unix timestamp + value
-            r'(cpu|memory|latency|response_time|throughput|error_rate)',  # Common metric names
-            r'\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}',  # ISO timestamp
+            r"^\d+\.\d+\s+\d+",  # Unix timestamp + value
+            r"(cpu|memory|latency|response_time|throughput|error_rate)",  # Common metric names
+            r"\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}",  # ISO timestamp
         ]
 
-        metrics_score = sum(1 for p in metrics_patterns if re.search(p, sample, re.MULTILINE))
+        metrics_score = sum(
+            1 for p in metrics_patterns if re.search(p, sample, re.MULTILINE)
+        )
 
         # CSV files with numeric data patterns strongly suggest metrics
         if ext in metrics_exts and metrics_score >= 1:
@@ -431,35 +464,37 @@ class DataClassifier:
                 data_type=DataType.METRICS_AND_PERFORMANCE,
                 confidence=0.85,
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # JSON arrays with numeric time-series patterns
         # (must check before STRUCTURED_CONFIG to avoid misclassification)
-        if metrics_score >= 3 and re.search(r'\[\s*{', sample):
+        if metrics_score >= 3 and re.search(r"\[\s*{", sample):
             return ClassificationResult(
                 data_type=DataType.METRICS_AND_PERFORMANCE,
                 confidence=0.80,
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # 4. Check for STRUCTURED_CONFIG
-        config_exts = ['.yaml', '.yml', '.json', '.toml', '.ini', '.env', '.config']
+        config_exts = [".yaml", ".yml", ".json", ".toml", ".ini", ".env", ".config"]
         config_patterns = [
-            r'^[\w_]+\s*[:=]',  # key: value or key=value
-            r'^\[[\w\.]+\]',  # [section]
+            r"^[\w_]+\s*[:=]",  # key: value or key=value
+            r"^\[[\w\.]+\]",  # [section]
             r'{\s*"[\w_]+":\s*',  # JSON object
         ]
 
-        config_score = sum(1 for p in config_patterns if re.search(p, sample, re.MULTILINE))
+        config_score = sum(
+            1 for p in config_patterns if re.search(p, sample, re.MULTILINE)
+        )
 
         if ext in config_exts:
             return ClassificationResult(
                 data_type=DataType.STRUCTURED_CONFIG,
                 confidence=min(0.92 + confidence_boost, 0.98),
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         if config_score >= 2:
@@ -467,19 +502,35 @@ class DataClassifier:
                 data_type=DataType.STRUCTURED_CONFIG,
                 confidence=min(0.75 + confidence_boost, 0.85),
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # 5. Check for SOURCE_CODE
         code_exts = [
-            '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rs', '.cpp', '.c',
-            '.h', '.rb', '.php', '.swift', '.kt', '.scala', '.sh', '.bash'
+            ".py",
+            ".js",
+            ".ts",
+            ".jsx",
+            ".tsx",
+            ".java",
+            ".go",
+            ".rs",
+            ".cpp",
+            ".c",
+            ".h",
+            ".rb",
+            ".php",
+            ".swift",
+            ".kt",
+            ".scala",
+            ".sh",
+            ".bash",
         ]
 
         code_patterns = [
-            r'\b(function|def|class|import|package|interface)\s+\w+',
-            r'\b(const|let|var)\s+\w+\s*=',
-            r'^\s*(public|private|protected)\s+(class|interface|enum)',
+            r"\b(function|def|class|import|package|interface)\s+\w+",
+            r"\b(const|let|var)\s+\w+\s*=",
+            r"^\s*(public|private|protected)\s+(class|interface|enum)",
         ]
 
         code_score = sum(1 for p in code_patterns if re.search(p, sample, re.MULTILINE))
@@ -489,7 +540,7 @@ class DataClassifier:
                 data_type=DataType.SOURCE_CODE,
                 confidence=min(0.95 + confidence_boost, 0.98),
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         if code_score >= 2:
@@ -497,29 +548,33 @@ class DataClassifier:
                 data_type=DataType.SOURCE_CODE,
                 confidence=min(0.80 + confidence_boost, 0.90),
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # 6. Check for DOCUMENTATION vs UNSTRUCTURED_TEXT
-        doc_exts = ['.md', '.rst', '.adoc']
-        text_exts = ['.txt']
+        doc_exts = [".md", ".rst", ".adoc"]
+        text_exts = [".txt"]
 
         markdown_patterns = [
-            r'^#{1,6}\s+\w+',  # Markdown headers
-            r'^\*\*\w+\*\*',  # Bold text
-            r'^\-\s+\w+',  # List items
-            r'```[\w]*\n',  # Code blocks
+            r"^#{1,6}\s+\w+",  # Markdown headers
+            r"^\*\*\w+\*\*",  # Bold text
+            r"^\-\s+\w+",  # List items
+            r"```[\w]*\n",  # Code blocks
         ]
 
         # Prose patterns (indicate documentation)
         prose_patterns = [
-            r'\b(the|and|for|with|that|this|from|which)\b',  # Common prose words
-            r'[A-Z][a-z]+\s+[a-z]+\s+[a-z]+',  # Sentence structure
-            r'\.\s+[A-Z]',  # Sentence boundaries
+            r"\b(the|and|for|with|that|this|from|which)\b",  # Common prose words
+            r"[A-Z][a-z]+\s+[a-z]+\s+[a-z]+",  # Sentence structure
+            r"\.\s+[A-Z]",  # Sentence boundaries
         ]
 
-        markdown_score = sum(1 for p in markdown_patterns if re.search(p, sample, re.MULTILINE))
-        prose_count = sum(len(re.findall(p, sample, re.IGNORECASE)) for p in prose_patterns)
+        markdown_score = sum(
+            1 for p in markdown_patterns if re.search(p, sample, re.MULTILINE)
+        )
+        prose_count = sum(
+            len(re.findall(p, sample, re.IGNORECASE)) for p in prose_patterns
+        )
         prose_density = prose_count / max(len(sample), 1)
 
         # DOCUMENTATION: Markdown files or high prose density with structure
@@ -528,7 +583,7 @@ class DataClassifier:
                 data_type=DataType.DOCUMENTATION,
                 confidence=min(0.88 + confidence_boost, 0.95),
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # UNSTRUCTURED_TEXT: Generic text without clear structure
@@ -537,7 +592,7 @@ class DataClassifier:
                 data_type=DataType.UNSTRUCTURED_TEXT,
                 confidence=0.72,
                 source="rule_based",
-                classification_failed=False
+                classification_failed=False,
             )
 
         # 7. Fallback: Low confidence - trigger user modal
@@ -550,6 +605,6 @@ class DataClassifier:
             suggested_types=[
                 DataType.LOGS_AND_ERRORS,
                 DataType.UNSTRUCTURED_TEXT,
-                DataType.STRUCTURED_CONFIG
-            ]
+                DataType.STRUCTURED_CONFIG,
+            ],
         )

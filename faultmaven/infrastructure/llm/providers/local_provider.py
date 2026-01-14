@@ -6,17 +6,19 @@ including Phi-3, Ollama, and other local inference servers.
 """
 
 import asyncio
-import aiohttp
 import logging
 from typing import List, Optional
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+import aiohttp
+
 from faultmaven.exceptions import LLMException
+
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
 
 class LocalProvider(BaseLLMProvider):
     """Local LLM provider implementation"""
-    
+
     def __init__(self, config: ProviderConfig):
         super().__init__(config)
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
@@ -27,10 +29,7 @@ class LocalProvider(BaseLLMProvider):
 
     def is_available(self) -> bool:
         """Check if local provider is properly configured"""
-        return bool(
-            self.config.base_url and
-            self.config.models
-        )
+        return bool(self.config.base_url and self.config.models)
 
     def get_supported_models(self) -> List[str]:
         """Get list of supported models"""
@@ -42,7 +41,7 @@ class LocalProvider(BaseLLMProvider):
         model: Optional[str] = None,
         max_tokens: int = 1000,
         temperature: float = 0.7,
-        **kwargs
+        **kwargs,
     ) -> LLMResponse:
         """Generate response using local LLM server"""
 
@@ -54,32 +53,38 @@ class LocalProvider(BaseLLMProvider):
         # Intelligently detect API format for optimal compatibility
         # Priority order: Ollama -> OpenAI-compatible -> Raw llama.cpp
 
-        if "ollama" in self.config.base_url.lower() or "ollama" in effective_model.lower():
+        if (
+            "ollama" in self.config.base_url.lower()
+            or "ollama" in effective_model.lower()
+        ):
             # Ollama-specific API
-            return await self._call_ollama_api(prompt, effective_model, max_tokens, temperature, **kwargs)
+            return await self._call_ollama_api(
+                prompt, effective_model, max_tokens, temperature, **kwargs
+            )
 
         # First try OpenAI-compatible API (most common for modern local LLM servers)
         try:
-            return await self._call_openai_compatible_api(prompt, effective_model, max_tokens, temperature, **kwargs)
+            return await self._call_openai_compatible_api(
+                prompt, effective_model, max_tokens, temperature, **kwargs
+            )
         except Exception as openai_error:
             # If OpenAI-compatible fails, try raw llama.cpp completion endpoint as fallback
             if "404" in str(openai_error) or "not found" in str(openai_error).lower():
                 try:
-                    return await self._call_llamacpp_api(prompt, effective_model, max_tokens, temperature, **kwargs)
+                    return await self._call_llamacpp_api(
+                        prompt, effective_model, max_tokens, temperature, **kwargs
+                    )
                 except Exception as llamacpp_error:
                     # If both fail, raise the more informative error
-                    raise LLMException(f"Local LLM server failed with both API formats. OpenAI-compatible: {openai_error}. Raw llama.cpp: {llamacpp_error}")
+                    raise LLMException(
+                        f"Local LLM server failed with both API formats. OpenAI-compatible: {openai_error}. Raw llama.cpp: {llamacpp_error}"
+                    )
             else:
                 # For non-404 errors, re-raise the OpenAI error
                 raise openai_error
 
     async def _call_ollama_api(
-        self,
-        prompt: str,
-        model: str,
-        max_tokens: int,
-        temperature: float,
-        **kwargs
+        self, prompt: str, model: str, max_tokens: int, temperature: float, **kwargs
     ) -> LLMResponse:
         """Call Ollama-style API"""
 
@@ -87,10 +92,7 @@ class LocalProvider(BaseLLMProvider):
             "model": model,
             "prompt": prompt,
             "stream": False,
-            "options": {
-                "num_predict": max_tokens,
-                "temperature": temperature
-            }
+            "options": {"num_predict": max_tokens, "temperature": temperature},
         }
 
         # Add any additional options
@@ -134,17 +136,16 @@ class LocalProvider(BaseLLMProvider):
                 )
 
     async def _call_openai_compatible_api(
-        self,
-        prompt: str,
-        model: str,
-        max_tokens: int,
-        temperature: float,
-        **kwargs
+        self, prompt: str, model: str, max_tokens: int, temperature: float, **kwargs
     ) -> LLMResponse:
         """Call OpenAI-compatible API (for llama.cpp with OpenAI API, Phi-3 ONNX and similar)"""
 
-        self.logger.debug(f"Starting OpenAI-compatible API call to {self.config.base_url}")
-        self.logger.debug(f"Model: {model}, Max tokens: {max_tokens}, Temperature: {temperature}")
+        self.logger.debug(
+            f"Starting OpenAI-compatible API call to {self.config.base_url}"
+        )
+        self.logger.debug(
+            f"Model: {model}, Max tokens: {max_tokens}, Temperature: {temperature}"
+        )
 
         headers = {
             "Content-Type": "application/json",
@@ -204,7 +205,9 @@ class LocalProvider(BaseLLMProvider):
 
                     response_time = self._get_response_time_ms()
 
-                    self.logger.info(f"Successful response with {tokens_used} tokens, {response_time}ms")
+                    self.logger.info(
+                        f"Successful response with {tokens_used} tokens, {response_time}ms"
+                    )
 
                     return LLMResponse(
                         content=content,
@@ -217,10 +220,16 @@ class LocalProvider(BaseLLMProvider):
 
             except asyncio.TimeoutError as e:
                 response_time = self._get_response_time_ms()
-                self.logger.warning(f"Timeout after {response_time}ms (limit: {self.config.timeout * 1000}ms)")
-                self.logger.warning(f"Model: {model}, Max tokens: {max_tokens}, Temperature: {temperature}")
+                self.logger.warning(
+                    f"Timeout after {response_time}ms (limit: {self.config.timeout * 1000}ms)"
+                )
+                self.logger.warning(
+                    f"Model: {model}, Max tokens: {max_tokens}, Temperature: {temperature}"
+                )
                 self.logger.debug(f"Timeout error: {e}")
-                raise LLMException(f"Local LLM request timed out after {self.config.timeout} seconds")
+                raise LLMException(
+                    f"Local LLM request timed out after {self.config.timeout} seconds"
+                )
 
             except Exception as e:
                 response_time = self._get_response_time_ms()
@@ -230,12 +239,7 @@ class LocalProvider(BaseLLMProvider):
                 raise
 
     async def _call_llamacpp_api(
-        self,
-        prompt: str,
-        model: str,
-        max_tokens: int,
-        temperature: float,
-        **kwargs
+        self, prompt: str, model: str, max_tokens: int, temperature: float, **kwargs
     ) -> LLMResponse:
         """Call raw llama.cpp server API (completions endpoint)"""
 
@@ -245,7 +249,7 @@ class LocalProvider(BaseLLMProvider):
             "n_predict": max_tokens,
             "temperature": temperature,
             "stop": ["\\n\\n"],  # Basic stop tokens
-            "stream": False
+            "stream": False,
         }
 
         # Add any additional options

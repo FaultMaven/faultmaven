@@ -12,21 +12,21 @@ Core Responsibilities:
 - Team settings and configuration
 """
 
-from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
 import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-from faultmaven.services.base import BaseService
+from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.auth.domain.models.organization import (
-    ITeamRepository,
+    AuditCategory,
+    AuditEventType,
     IOrganizationRepository,
+    ITeamRepository,
     Team,
     TeamMember,
-    AuditEventType,
-    AuditCategory
 )
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.services.base import BaseService
 
 
 class TeamService(BaseService):
@@ -37,7 +37,7 @@ class TeamService(BaseService):
         team_repository: ITeamRepository,
         organization_repository: IOrganizationRepository,
         audit_repository: Optional[Any] = None,
-        settings: Optional[Any] = None
+        settings: Optional[Any] = None,
     ):
         """
         Initialize the Team Service.
@@ -60,7 +60,7 @@ class TeamService(BaseService):
         org_id: str,
         name: str,
         creator_user_id: str,
-        description: Optional[str] = None
+        description: Optional[str] = None,
     ) -> Team:
         """
         Create a new team within an organization.
@@ -95,7 +95,7 @@ class TeamService(BaseService):
             description=description,
             settings={},
             created_at=now,
-            updated_at=now
+            updated_at=now,
         )
 
         created_team = await self.repository.create_team(team)
@@ -112,7 +112,7 @@ class TeamService(BaseService):
                 resource_type="team",
                 resource_id=team_id,
                 org_id=org_id,
-                details={"name": name}
+                details={"name": name},
             )
 
         self.logger.info(f"Created team {team_id} ({name}) in org {org_id}")
@@ -130,7 +130,7 @@ class TeamService(BaseService):
         user_id: str,
         name: Optional[str] = None,
         description: Optional[str] = None,
-        settings: Optional[Dict[str, Any]] = None
+        settings: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Update team details.
@@ -205,7 +205,7 @@ class TeamService(BaseService):
         team_id: str,
         user_id: str,
         added_by: str,
-        team_role: Optional[str] = "member"
+        team_role: Optional[str] = "member",
     ) -> bool:
         """
         Add user to team.
@@ -245,18 +245,17 @@ class TeamService(BaseService):
                 resource_type="team_member",
                 resource_id=user_id,
                 org_id=team.org_id,
-                details={"team_id": team_id, "target_user_id": user_id, "role": team_role}
+                details={
+                    "team_id": team_id,
+                    "target_user_id": user_id,
+                    "role": team_role,
+                },
             )
 
         return success
 
     @trace("team_service_remove_member")
-    async def remove_member(
-        self,
-        team_id: str,
-        user_id: str,
-        removed_by: str
-    ) -> bool:
+    async def remove_member(self, team_id: str, user_id: str, removed_by: str) -> bool:
         """
         Remove user from team.
 
@@ -294,7 +293,7 @@ class TeamService(BaseService):
                 resource_type="team_member",
                 resource_id=user_id,
                 org_id=team.org_id,
-                details={"team_id": team_id, "target_user_id": user_id}
+                details={"team_id": team_id, "target_user_id": user_id},
             )
 
         return success

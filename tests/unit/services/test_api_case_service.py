@@ -14,26 +14,31 @@ Tests the API case service layer functionality including:
 - Search cases
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
-from faultmaven.services.case_service import APICaseService
-from faultmaven.modules.case.domain.models import Case, CaseStatus, CaseSeverity, InvestigationStrategy
 from faultmaven.exceptions import (
-    NotFoundError,
     AuthorizationError,
-    ValidationException,
-    ServiceError,
     ConflictError,
+    NotFoundError,
+    ServiceError,
+    ValidationException,
 )
-
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseSeverity,
+    CaseStatus,
+    InvestigationStrategy,
+)
+from faultmaven.services.case_service import APICaseService
 
 # ============================================================
 # Fixtures
 # ============================================================
+
 
 @pytest.fixture
 def mock_case_repo():
@@ -48,6 +53,7 @@ def mock_session_repo():
     repo = AsyncMock()
     return repo
 
+
 @pytest.fixture
 def case_service(mock_case_repo, mock_session_repo):
     """Create APICaseService with mocked repositories."""
@@ -55,10 +61,6 @@ def case_service(mock_case_repo, mock_session_repo):
         case_repo=mock_case_repo,
         session_repo=mock_session_repo,
     )
-
-
-
-
 
 
 @pytest.fixture
@@ -78,6 +80,7 @@ def sample_case():
 # ============================================================
 # Create Case Tests
 # ============================================================
+
 
 class TestCreateCase:
     """Test create_case method."""
@@ -155,7 +158,9 @@ class TestCreateCase:
         assert "title" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_create_case_whitespace_title_raises_validation_error(self, case_service):
+    async def test_create_case_whitespace_title_raises_validation_error(
+        self, case_service
+    ):
         """Test that whitespace-only title raises ValidationException."""
         with pytest.raises(ValidationException) as exc_info:
             await case_service.create_case(
@@ -169,7 +174,9 @@ class TestCreateCase:
         assert "title" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_create_case_title_too_long_raises_validation_error(self, case_service):
+    async def test_create_case_title_too_long_raises_validation_error(
+        self, case_service
+    ):
         """Test that title exceeding 200 chars raises ValidationException."""
         with pytest.raises(ValidationException) as exc_info:
             await case_service.create_case(
@@ -183,7 +190,9 @@ class TestCreateCase:
         assert "200" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_create_case_empty_user_id_raises_validation_error(self, case_service):
+    async def test_create_case_empty_user_id_raises_validation_error(
+        self, case_service
+    ):
         """Test that empty user_id raises ValidationException."""
         with pytest.raises(ValidationException) as exc_info:
             await case_service.create_case(
@@ -211,7 +220,9 @@ class TestCreateCase:
         assert "organization_id" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_create_case_repo_failure_raises_service_error(self, case_service, mock_case_repo):
+    async def test_create_case_repo_failure_raises_service_error(
+        self, case_service, mock_case_repo
+    ):
         """Test that repository failure raises ServiceError."""
         mock_case_repo.save.side_effect = Exception("Database error")
 
@@ -229,6 +240,7 @@ class TestCreateCase:
 # Get Case Tests
 # ============================================================
 
+
 class TestGetCase:
     """Test get_case method."""
 
@@ -237,7 +249,9 @@ class TestGetCase:
         """Test successful case retrieval."""
         mock_case_repo.get.return_value = sample_case
 
-        result = await case_service.get_case(sample_case.case_id, sample_case.organization_id)
+        result = await case_service.get_case(
+            sample_case.case_id, sample_case.organization_id
+        )
 
         assert result is not None
         assert result.case_id == sample_case.case_id
@@ -253,7 +267,9 @@ class TestGetCase:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_case_wrong_org_returns_none(self, case_service, mock_case_repo, sample_case):
+    async def test_get_case_wrong_org_returns_none(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that wrong organization returns None (authorization)."""
         mock_case_repo.get.return_value = sample_case
 
@@ -262,11 +278,15 @@ class TestGetCase:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_case_correct_org_returns_case(self, case_service, mock_case_repo, sample_case):
+    async def test_get_case_correct_org_returns_case(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that correct organization returns case."""
         mock_case_repo.get.return_value = sample_case
 
-        result = await case_service.get_case(sample_case.case_id, sample_case.organization_id)
+        result = await case_service.get_case(
+            sample_case.case_id, sample_case.organization_id
+        )
 
         assert result is not None
         assert result.organization_id == sample_case.organization_id
@@ -290,6 +310,7 @@ class TestGetCase:
 # Update Case Tests
 # ============================================================
 
+
 class TestUpdateCase:
     """Test update_case method."""
 
@@ -309,7 +330,9 @@ class TestUpdateCase:
         mock_case_repo.save.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_update_case_updates_description(self, case_service, mock_case_repo, sample_case):
+    async def test_update_case_updates_description(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test updating case description."""
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.save.side_effect = lambda case: case
@@ -323,7 +346,9 @@ class TestUpdateCase:
         assert result.description == "New description"
 
     @pytest.mark.asyncio
-    async def test_update_case_updates_status(self, case_service, mock_case_repo, sample_case):
+    async def test_update_case_updates_status(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Updating status to INVESTIGATING without required consulting confirmations should fail."""
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.save.side_effect = lambda case: case
@@ -335,7 +360,9 @@ class TestUpdateCase:
             )
 
     @pytest.mark.asyncio
-    async def test_update_case_not_found_raises_not_found_error(self, case_service, mock_case_repo):
+    async def test_update_case_not_found_raises_not_found_error(
+        self, case_service, mock_case_repo
+    ):
         """Test that updating non-existent case raises NotFoundError."""
         mock_case_repo.get.return_value = None
 
@@ -343,7 +370,9 @@ class TestUpdateCase:
             await case_service.update_case("nonexistent", "org_1", {"title": "New"})
 
     @pytest.mark.asyncio
-    async def test_update_case_wrong_org_raises_authorization_error(self, case_service, mock_case_repo, sample_case):
+    async def test_update_case_wrong_org_raises_authorization_error(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that wrong organization raises AuthorizationError."""
         mock_case_repo.get.return_value = sample_case
 
@@ -355,13 +384,17 @@ class TestUpdateCase:
             )
 
     @pytest.mark.asyncio
-    async def test_update_case_empty_updates_raises_validation_error(self, case_service):
+    async def test_update_case_empty_updates_raises_validation_error(
+        self, case_service
+    ):
         """Test that empty updates raises ValidationException."""
         with pytest.raises(ValidationException):
             await case_service.update_case("case_1", "org_1", {})
 
     @pytest.mark.asyncio
-    async def test_update_case_empty_title_raises_validation_error(self, case_service, mock_case_repo, sample_case):
+    async def test_update_case_empty_title_raises_validation_error(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that updating to empty title raises ValidationException."""
         mock_case_repo.get.return_value = sample_case
 
@@ -375,7 +408,9 @@ class TestUpdateCase:
         assert "title" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_update_case_invalid_status_raises_validation_error(self, case_service, mock_case_repo, sample_case):
+    async def test_update_case_invalid_status_raises_validation_error(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that invalid status string raises ValidationException."""
         mock_case_repo.get.return_value = sample_case
 
@@ -393,6 +428,7 @@ class TestUpdateCase:
 # Delete Case Tests
 # ============================================================
 
+
 class TestDeleteCase:
     """Test delete_case method."""
 
@@ -402,13 +438,17 @@ class TestDeleteCase:
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.delete.return_value = True
 
-        result = await case_service.delete_case(sample_case.case_id, sample_case.organization_id)
+        result = await case_service.delete_case(
+            sample_case.case_id, sample_case.organization_id
+        )
 
         assert result is True
         mock_case_repo.delete.assert_called_once_with(sample_case.case_id)
 
     @pytest.mark.asyncio
-    async def test_delete_case_not_found_returns_false(self, case_service, mock_case_repo):
+    async def test_delete_case_not_found_returns_false(
+        self, case_service, mock_case_repo
+    ):
         """Test that deleting non-existent case returns False."""
         mock_case_repo.get.return_value = None
 
@@ -417,7 +457,9 @@ class TestDeleteCase:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_delete_case_wrong_org_raises_authorization_error(self, case_service, mock_case_repo, sample_case):
+    async def test_delete_case_wrong_org_raises_authorization_error(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that wrong organization raises AuthorizationError."""
         mock_case_repo.get.return_value = sample_case
 
@@ -436,11 +478,14 @@ class TestDeleteCase:
 # List Cases Tests
 # ============================================================
 
+
 class TestListCases:
     """Test list_cases method."""
 
     @pytest.mark.asyncio
-    async def test_list_cases_returns_all_for_org(self, case_service, mock_case_repo, sample_case):
+    async def test_list_cases_returns_all_for_org(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that list_cases returns all cases for organization."""
         mock_case_repo.list.return_value = ([sample_case], 1)
 
@@ -450,7 +495,9 @@ class TestListCases:
         assert result[0].case_id == sample_case.case_id
 
     @pytest.mark.asyncio
-    async def test_list_cases_with_user_filter(self, case_service, mock_case_repo, sample_case):
+    async def test_list_cases_with_user_filter(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test list_cases filters by user_id."""
         mock_case_repo.list.return_value = ([sample_case], 1)
 
@@ -460,7 +507,9 @@ class TestListCases:
         assert call_kwargs["user_id"] == "user_123"
 
     @pytest.mark.asyncio
-    async def test_list_cases_with_status_filter(self, case_service, mock_case_repo, sample_case):
+    async def test_list_cases_with_status_filter(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test list_cases filters by status."""
         mock_case_repo.list.return_value = ([sample_case], 1)
 
@@ -500,6 +549,7 @@ class TestListCases:
 # ============================================================
 # Get Case With Details Tests
 # ============================================================
+
 
 class TestGetCaseWithDetails:
     """Test get_case_with_details method."""
@@ -586,6 +636,7 @@ class TestGetCaseWithDetails:
 # Assign Case Tests
 # ============================================================
 
+
 class TestAssignCase:
     """Test assign_case method."""
 
@@ -605,7 +656,9 @@ class TestAssignCase:
         mock_case_repo.save.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_assign_case_not_found_raises_not_found_error(self, case_service, mock_case_repo):
+    async def test_assign_case_not_found_raises_not_found_error(
+        self, case_service, mock_case_repo
+    ):
         """Test that assigning non-existent case raises NotFoundError."""
         mock_case_repo.get.return_value = None
 
@@ -613,7 +666,9 @@ class TestAssignCase:
             await case_service.assign_case("nonexistent", "org_1", "assignee")
 
     @pytest.mark.asyncio
-    async def test_assign_case_empty_assignee_raises_validation_error(self, case_service):
+    async def test_assign_case_empty_assignee_raises_validation_error(
+        self, case_service
+    ):
         """Test that empty assignee raises ValidationException."""
         with pytest.raises(ValidationException) as exc_info:
             await case_service.assign_case("case_1", "org_1", "")
@@ -624,6 +679,7 @@ class TestAssignCase:
 # ============================================================
 # Close Case Tests
 # ============================================================
+
 
 class TestCloseCase:
     """Test close_case method."""
@@ -644,7 +700,9 @@ class TestCloseCase:
         assert result.resolved_at is not None
 
     @pytest.mark.asyncio
-    async def test_close_case_sets_closure_reason(self, case_service, mock_case_repo, sample_case):
+    async def test_close_case_sets_closure_reason(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that close_case sets closure_reason."""
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.save.side_effect = lambda case: case
@@ -658,13 +716,17 @@ class TestCloseCase:
         assert result.closure_reason == "Root cause identified and fixed"
 
     @pytest.mark.asyncio
-    async def test_close_case_already_closed_raises_conflict_error(self, case_service, mock_case_repo, sample_case):
+    async def test_close_case_already_closed_raises_conflict_error(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that closing already-closed case raises ConflictError."""
-        closed_case = sample_case.model_copy(update={
-            "status": CaseStatus.RESOLVED,
-            "resolved_at": datetime.now(timezone.utc),
-            "closure_reason": "Already resolved",
-        })
+        closed_case = sample_case.model_copy(
+            update={
+                "status": CaseStatus.RESOLVED,
+                "resolved_at": datetime.now(timezone.utc),
+                "closure_reason": "Already resolved",
+            }
+        )
         mock_case_repo.get.return_value = closed_case
 
         with pytest.raises(ConflictError) as exc_info:
@@ -677,7 +739,9 @@ class TestCloseCase:
         assert "already closed" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_close_case_not_found_raises_not_found_error(self, case_service, mock_case_repo):
+    async def test_close_case_not_found_raises_not_found_error(
+        self, case_service, mock_case_repo
+    ):
         """Test that closing non-existent case raises NotFoundError."""
         mock_case_repo.get.return_value = None
 
@@ -685,7 +749,9 @@ class TestCloseCase:
             await case_service.close_case("nonexistent", "org_1", "Resolution")
 
     @pytest.mark.asyncio
-    async def test_close_case_empty_resolution_raises_validation_error(self, case_service):
+    async def test_close_case_empty_resolution_raises_validation_error(
+        self, case_service
+    ):
         """Test that empty resolution raises ValidationException."""
         with pytest.raises(ValidationException) as exc_info:
             await case_service.close_case("case_1", "org_1", "")
@@ -697,17 +763,20 @@ class TestCloseCase:
 # Reopen Case Tests
 # ============================================================
 
+
 class TestReopenCase:
     """Test reopen_case method."""
 
     @pytest.mark.asyncio
     async def test_reopen_case_success(self, case_service, mock_case_repo, sample_case):
         """Test successful case reopening."""
-        resolved_case = sample_case.model_copy(update={
-            "status": CaseStatus.RESOLVED,
-            "resolved_at": datetime.now(timezone.utc),
-            "closure_reason": "Already resolved",
-        })
+        resolved_case = sample_case.model_copy(
+            update={
+                "status": CaseStatus.RESOLVED,
+                "resolved_at": datetime.now(timezone.utc),
+                "closure_reason": "Already resolved",
+            }
+        )
         mock_case_repo.get.return_value = resolved_case
         mock_case_repo.save.side_effect = lambda case: case
 
@@ -720,12 +789,16 @@ class TestReopenCase:
         assert result.resolved_at is None
 
     @pytest.mark.asyncio
-    async def test_reopen_case_clears_closed_at(self, case_service, mock_case_repo, sample_case):
+    async def test_reopen_case_clears_closed_at(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that reopen_case clears closed_at timestamp."""
-        closed_case = sample_case.model_copy(update={
-            "status": CaseStatus.CLOSED,
-            "closed_at": datetime.now(timezone.utc),
-        })
+        closed_case = sample_case.model_copy(
+            update={
+                "status": CaseStatus.CLOSED,
+                "closed_at": datetime.now(timezone.utc),
+            }
+        )
         mock_case_repo.get.return_value = closed_case
         mock_case_repo.save.side_effect = lambda case: case
 
@@ -737,7 +810,9 @@ class TestReopenCase:
         assert result.closed_at is None
 
     @pytest.mark.asyncio
-    async def test_reopen_case_not_closed_raises_conflict_error(self, case_service, mock_case_repo, sample_case):
+    async def test_reopen_case_not_closed_raises_conflict_error(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that reopening non-closed case raises ConflictError."""
         sample_case.status = CaseStatus.CONSULTING
         mock_case_repo.get.return_value = sample_case
@@ -751,7 +826,9 @@ class TestReopenCase:
         assert "not closed" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_reopen_case_not_found_raises_not_found_error(self, case_service, mock_case_repo):
+    async def test_reopen_case_not_found_raises_not_found_error(
+        self, case_service, mock_case_repo
+    ):
         """Test that reopening non-existent case raises NotFoundError."""
         mock_case_repo.get.return_value = None
 
@@ -763,11 +840,14 @@ class TestReopenCase:
 # Get Statistics Tests
 # ============================================================
 
+
 class TestGetCaseStatistics:
     """Test get_case_statistics method."""
 
     @pytest.mark.asyncio
-    async def test_get_statistics_returns_total_cases(self, case_service, mock_case_repo, sample_case):
+    async def test_get_statistics_returns_total_cases(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that statistics includes total_cases."""
         mock_case_repo.list.return_value = ([sample_case], 1)
 
@@ -777,7 +857,9 @@ class TestGetCaseStatistics:
         assert result["total_cases"] == 1
 
     @pytest.mark.asyncio
-    async def test_get_statistics_returns_by_status(self, case_service, mock_case_repo, sample_case):
+    async def test_get_statistics_returns_by_status(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that statistics includes by_status breakdown."""
         mock_case_repo.list.return_value = ([sample_case], 1)
 
@@ -787,12 +869,16 @@ class TestGetCaseStatistics:
         assert "consulting" in result["by_status"]
 
     @pytest.mark.asyncio
-    async def test_get_statistics_returns_avg_resolution_time(self, case_service, mock_case_repo, sample_case):
+    async def test_get_statistics_returns_avg_resolution_time(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that statistics includes avg_resolution_time."""
-        resolved_case = sample_case.model_copy(update={
-            "status": CaseStatus.RESOLVED,
-            "resolved_at": sample_case.created_at + timedelta(hours=2),
-        })
+        resolved_case = sample_case.model_copy(
+            update={
+                "status": CaseStatus.RESOLVED,
+                "resolved_at": sample_case.created_at + timedelta(hours=2),
+            }
+        )
         mock_case_repo.list.return_value = ([resolved_case], 1)
 
         result = await case_service.get_case_statistics("org_456")
@@ -801,7 +887,9 @@ class TestGetCaseStatistics:
         assert result["avg_resolution_time_seconds"] > 0
 
     @pytest.mark.asyncio
-    async def test_get_statistics_empty_org_returns_zeros(self, case_service, mock_case_repo):
+    async def test_get_statistics_empty_org_returns_zeros(
+        self, case_service, mock_case_repo
+    ):
         """Test that empty organization returns zero statistics."""
         mock_case_repo.list.return_value = ([], 0)
 
@@ -814,11 +902,14 @@ class TestGetCaseStatistics:
 # Search Cases Tests
 # ============================================================
 
+
 class TestSearchCases:
     """Test search_cases method."""
 
     @pytest.mark.asyncio
-    async def test_search_cases_returns_matches(self, case_service, mock_case_repo, sample_case):
+    async def test_search_cases_returns_matches(
+        self, case_service, mock_case_repo, sample_case
+    ):
         """Test that search_cases returns matching cases."""
         mock_case_repo.search.return_value = ([sample_case], 1)
 

@@ -10,8 +10,7 @@ from sqlalchemy import create_engine, text
 
 
 @pytest.mark.skipif(
-    condition=True,
-    reason="Requires Docker services - run manually when Docker is up"
+    condition=True, reason="Requires Docker services - run manually when Docker is up"
 )
 def test_redis_connection():
     """Test Redis connection via Docker.
@@ -21,24 +20,23 @@ def test_redis_connection():
     """
     try:
         client = redis.Redis(
-            host='redis.faultmaven.local',
+            host="redis.faultmaven.local",
             port=6379,
             decode_responses=True,
-            socket_connect_timeout=5
+            socket_connect_timeout=5,
         )
         # Ping Redis
         assert client.ping() is True
         # Set and get a test value
-        client.set('health_check', 'ok', ex=60)
-        assert client.get('health_check') == 'ok'
-        client.delete('health_check')
+        client.set("health_check", "ok", ex=60)
+        assert client.get("health_check") == "ok"
+        client.delete("health_check")
     except redis.ConnectionError as e:
         pytest.fail(f"Redis connection failed: {e}")
 
 
 @pytest.mark.skipif(
-    condition=True,
-    reason="Requires Docker services - run manually when Docker is up"
+    condition=True, reason="Requires Docker services - run manually when Docker is up"
 )
 def test_postgres_connection():
     """Test PostgreSQL connection via Docker.
@@ -49,9 +47,9 @@ def test_postgres_connection():
     try:
         # Use synchronous engine for simple health check
         engine = create_engine(
-            'postgresql://faultmaven:faultmaven@localhost:5432/faultmaven_dev',
+            "postgresql://faultmaven:faultmaven@localhost:5432/faultmaven_dev",
             pool_pre_ping=True,
-            connect_args={'connect_timeout': 5}
+            connect_args={"connect_timeout": 5},
         )
         with engine.connect() as conn:
             result = conn.execute(text("SELECT 1"))
@@ -61,8 +59,7 @@ def test_postgres_connection():
 
 
 @pytest.mark.skipif(
-    condition=True,
-    reason="Requires Docker services - run manually when Docker is up"
+    condition=True, reason="Requires Docker services - run manually when Docker is up"
 )
 def test_docker_compose_services():
     """Test that all expected Docker Compose services are reachable.
@@ -74,21 +71,23 @@ def test_docker_compose_services():
 
     # Test Redis
     try:
-        client = redis.Redis(host='redis.faultmaven.local', port=6379, socket_connect_timeout=2)
-        services_status['redis'] = client.ping()
+        client = redis.Redis(
+            host="redis.faultmaven.local", port=6379, socket_connect_timeout=2
+        )
+        services_status["redis"] = client.ping()
     except:
-        services_status['redis'] = False
+        services_status["redis"] = False
 
     # Test PostgreSQL
     try:
         engine = create_engine(
-            'postgresql://faultmaven:faultmaven@localhost:5432/faultmaven_dev',
-            connect_args={'connect_timeout': 2}
+            "postgresql://faultmaven:faultmaven@localhost:5432/faultmaven_dev",
+            connect_args={"connect_timeout": 2},
         )
         with engine.connect() as conn:
-            services_status['postgres'] = conn.execute(text("SELECT 1")).scalar() == 1
+            services_status["postgres"] = conn.execute(text("SELECT 1")).scalar() == 1
     except:
-        services_status['postgres'] = False
+        services_status["postgres"] = False
 
     # Report results
     failed_services = [name for name, status in services_status.items() if not status]

@@ -21,25 +21,25 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from faultmaven.services.base import BaseService
-from faultmaven.modules.case.domain.investigation_session import (
-    InvestigationSession,
-    SessionStatus,
-)
-from faultmaven.modules.case.infrastructure.investigation_session_repository import (
-    InvestigationSessionRepository,
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    ServiceError,
+    ValidationException,
 )
 from faultmaven.infrastructure.persistence.agent_execution_repository import (
     AgentExecutionRepository,
 )
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ValidationException,
-    ServiceError,
-    ConflictError,
+from faultmaven.modules.case.domain.investigation_session import (
+    InvestigationSession,
+    SessionStatus,
 )
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.modules.case.infrastructure.investigation_session_repository import (
+    InvestigationSessionRepository,
+)
+from faultmaven.services.base import BaseService
 
 
 class APIInvestigationSessionService(BaseService):
@@ -385,7 +385,10 @@ class APIInvestigationSessionService(BaseService):
             raise
         except Exception as e:
             self.log_error(
-                "update_session", e, session_id=session_id, organization_id=organization_id
+                "update_session",
+                e,
+                session_id=session_id,
+                organization_id=organization_id,
             )
             raise ServiceError(f"Failed to update session: {e}")
 
@@ -448,7 +451,10 @@ class APIInvestigationSessionService(BaseService):
             raise
         except Exception as e:
             self.log_error(
-                "pause_session", e, session_id=session_id, organization_id=organization_id
+                "pause_session",
+                e,
+                session_id=session_id,
+                organization_id=organization_id,
             )
             raise ServiceError(f"Failed to pause session: {e}")
 
@@ -507,7 +513,10 @@ class APIInvestigationSessionService(BaseService):
             raise
         except Exception as e:
             self.log_error(
-                "resume_session", e, session_id=session_id, organization_id=organization_id
+                "resume_session",
+                e,
+                session_id=session_id,
+                organization_id=organization_id,
             )
             raise ServiceError(f"Failed to resume session: {e}")
 
@@ -814,9 +823,7 @@ class APIInvestigationSessionService(BaseService):
                                 )
                             )
             except Exception as e:
-                self.log_error(
-                    "get_session_executions", e, session_id=session_id
-                )
+                self.log_error("get_session_executions", e, session_id=session_id)
                 result["executions"] = []
 
             return result

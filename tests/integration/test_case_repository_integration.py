@@ -14,55 +14,54 @@ Requirements:
     - PostgreSQL for production testing (optional, requires DATABASE_URL)
 """
 
-import os
-import pytest
 import asyncio
-from datetime import datetime, timezone, timedelta
+import os
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.infrastructure.persistence.case_repository import (
+    CaseRepository,
+    InMemoryCaseRepository,
+)
 from faultmaven.infrastructure.persistence.database import (
+    close_database,
     get_db_session,
     init_database,
-    close_database,
     reset_engine,
 )
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.repository_factory import (
+    STORAGE_TYPE_DATABASE,
+    STORAGE_TYPE_INMEMORY,
     get_case_repository,
     get_case_repository_async,
     reset_inmemory_repository,
-    STORAGE_TYPE_INMEMORY,
-    STORAGE_TYPE_DATABASE,
-)
-from faultmaven.infrastructure.persistence.case_repository import (
-    CaseRepository,
-    InMemoryCaseRepository,
 )
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     CaseStatusTransition,
-    InvestigationProgress,
-    InvestigationStrategy,
+    ConsultingData,
     Evidence,
     EvidenceCategory,
-    EvidenceSourceType,
     EvidenceForm,
+    EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisStatus,
+    InvestigationProgress,
+    InvestigationStrategy,
     Solution,
     SolutionType,
-    ConsultingData,
 )
-
 
 # ============================================================
 # Test Fixtures
@@ -256,8 +255,7 @@ async def test_full_case_lifecycle(db_repository: DatabaseCaseRepository):
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_case_with_evidence(
-    db_repository: DatabaseCaseRepository,
-    sample_case_with_evidence: Case
+    db_repository: DatabaseCaseRepository, sample_case_with_evidence: Case
 ):
     """Test case with linked evidence."""
     # Save case with evidence
@@ -285,19 +283,21 @@ async def test_add_evidence_to_existing_case(db_repository: DatabaseCaseReposito
     await db_repository.save(case)
 
     # Add evidence
-    case.evidence.append(Evidence(
-        evidence_id=f"ev_{uuid4().hex[:12]}",
-        category=EvidenceCategory.CAUSAL_EVIDENCE,
-        primary_purpose="root_cause_identified",
-        summary="Memory usage at 95%",
-        preprocessed_content="Memory stats: used 7.6GB / 8GB",
-        source_type=EvidenceSourceType.METRICS_DATA,
-        form=EvidenceForm.DOCUMENT,
-        content_size_bytes=512,
-        preprocessing_method="anomaly_detection",
-        collected_by="test-user",
-        collected_at_turn=3,
-    ))
+    case.evidence.append(
+        Evidence(
+            evidence_id=f"ev_{uuid4().hex[:12]}",
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            primary_purpose="root_cause_identified",
+            summary="Memory usage at 95%",
+            preprocessed_content="Memory stats: used 7.6GB / 8GB",
+            source_type=EvidenceSourceType.METRICS_DATA,
+            form=EvidenceForm.DOCUMENT,
+            content_size_bytes=512,
+            preprocessing_method="anomaly_detection",
+            collected_by="test-user",
+            collected_at_turn=3,
+        )
+    )
     await db_repository.save(case)
 
     # Verify evidence added
@@ -313,8 +313,7 @@ async def test_add_evidence_to_existing_case(db_repository: DatabaseCaseReposito
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_case_with_hypotheses(
-    db_repository: DatabaseCaseRepository,
-    sample_case_with_hypotheses: Case
+    db_repository: DatabaseCaseRepository, sample_case_with_hypotheses: Case
 ):
     """Test case with linked hypotheses."""
     # Save case with hypotheses
@@ -453,10 +452,11 @@ async def test_repository_factory_invalid_type():
 @pytest.mark.integration
 @pytest.mark.xfail(
     reason="SQLAlchemy async session not thread-safe for concurrent operations - needs separate sessions per task",
-    strict=False
+    strict=False,
 )
 async def test_concurrent_case_creation(db_repository: DatabaseCaseRepository):
     """Test creating multiple cases concurrently."""
+
     async def create_case(index: int) -> Case:
         case = Case(
             case_id=f"case_{uuid4().hex[:12]}",
@@ -483,7 +483,7 @@ async def test_concurrent_case_creation(db_repository: DatabaseCaseRepository):
 @pytest.mark.integration
 @pytest.mark.xfail(
     reason="SQLAlchemy async session not thread-safe for concurrent operations - needs separate sessions per task",
-    strict=False
+    strict=False,
 )
 async def test_concurrent_message_addition(db_repository: DatabaseCaseRepository):
     """Test adding messages concurrently."""
@@ -504,7 +504,7 @@ async def test_concurrent_message_addition(db_repository: DatabaseCaseRepository
                 "role": "user" if index % 2 == 0 else "assistant",
                 "content": f"Message {index}",
                 "timestamp": datetime.now(timezone.utc),
-            }
+            },
         )
 
     # Add 10 messages concurrently
@@ -544,8 +544,7 @@ async def test_delete_nonexistent_case(db_repository: DatabaseCaseRepository):
 async def test_add_message_nonexistent_case(db_repository: DatabaseCaseRepository):
     """Test adding message to nonexistent case."""
     result = await db_repository.add_message(
-        "case_doesnotexist",
-        {"role": "user", "content": "Test message"}
+        "case_doesnotexist", {"role": "user", "content": "Test message"}
     )
     assert result is False
 

@@ -9,14 +9,16 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 import os
 from typing import Any, AsyncGenerator, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
+from faultmaven.exceptions import LLMException
 from faultmaven.integrations.llm_client import (
+    AnthropicClient,
+    BaseLLMClient,
     LLMClient,
     LLMProvider,
-    AnthropicClient,
     OpenAIClient,
-    BaseLLMClient,
     create_llm_client,
 )
 from faultmaven.modules.agent.domain.events.execution_events import (
@@ -27,8 +29,6 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     Tool,
     ToolCall,
 )
-from faultmaven.exceptions import LLMException
-
 
 # =============================================================================
 # Fixtures
@@ -409,10 +409,14 @@ class TestLLMClient:
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
             client = LLMClient(provider=LLMProvider.ANTHROPIC)
 
-            tool_call = ToolCall(id="tc_1", name="read_file", arguments={"file_id": "f1"})
+            tool_call = ToolCall(
+                id="tc_1", name="read_file", arguments={"file_id": "f1"}
+            )
 
             async def mock_stream(*args, **kwargs):
-                yield LLMEvent(event_type=LLMEventType.TEXT_CHUNK, content="Let me read that.")
+                yield LLMEvent(
+                    event_type=LLMEventType.TEXT_CHUNK, content="Let me read that."
+                )
                 yield LLMEvent(event_type=LLMEventType.TOOL_USE, content=tool_call)
                 yield LLMEvent(
                     event_type=LLMEventType.COMPLETION,
@@ -462,10 +466,13 @@ class TestCreateLLMClient:
 
     def test_create_with_provider_env(self):
         """Test creating client with LLM_PROVIDER env var."""
-        with patch.dict(os.environ, {
-            "LLM_PROVIDER": "openai",
-            "OPENAI_API_KEY": "test-key",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_PROVIDER": "openai",
+                "OPENAI_API_KEY": "test-key",
+            },
+        ):
             client = create_llm_client()
 
             assert client.provider == LLMProvider.OPENAI
@@ -508,7 +515,9 @@ class TestLLMEvents:
 
             async def mock_stream(*args, **kwargs):
                 yield LLMEvent(event_type=LLMEventType.TEXT_CHUNK, content="Hello")
-                yield LLMEvent(event_type=LLMEventType.COMPLETION, content="", metadata={})
+                yield LLMEvent(
+                    event_type=LLMEventType.COMPLETION, content="", metadata={}
+                )
 
             client._client.stream_completion = mock_stream
 
@@ -529,7 +538,9 @@ class TestLLMEvents:
 
             async def mock_stream(*args, **kwargs):
                 yield LLMEvent(event_type=LLMEventType.TOOL_USE, content=tool_call)
-                yield LLMEvent(event_type=LLMEventType.COMPLETION, content="", metadata={})
+                yield LLMEvent(
+                    event_type=LLMEventType.COMPLETION, content="", metadata={}
+                )
 
             client._client.stream_completion = mock_stream
 
@@ -561,6 +572,8 @@ class TestLLMEvents:
                 events.append(event)
 
             # Last event should be completion
-            completion_events = [e for e in events if e.event_type == LLMEventType.COMPLETION]
+            completion_events = [
+                e for e in events if e.event_type == LLMEventType.COMPLETION
+            ]
             assert len(completion_events) == 1
             assert "input_tokens" in completion_events[0].metadata

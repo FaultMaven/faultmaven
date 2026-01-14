@@ -11,9 +11,9 @@ Tests for:
 Coverage target: 90%+
 """
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-import uuid
 
 import pytest
 
@@ -24,8 +24,8 @@ from faultmaven.exceptions import (
 )
 from faultmaven.infrastructure.persistence.user_repository import (
     InMemoryUserRepository,
-    User as RepositoryUser,
 )
+from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
 from faultmaven.services.auth_service import AuthenticationError, AuthService
 from faultmaven.services.user_service import UserService
 
@@ -84,6 +84,7 @@ def registered_user(user_repo):
     )
     # Synchronously add to repository
     import asyncio
+
     asyncio.get_event_loop().run_until_complete(user_repo.save(user))
     return user
 
@@ -594,6 +595,7 @@ class TestResetPassword:
 
         # Small delay to ensure timestamp difference
         import asyncio
+
         await asyncio.sleep(0.01)
 
         # Mock token verification
@@ -748,7 +750,9 @@ class TestUpdateUserProfile:
         assert updated.email == "new@example.com"
 
     @pytest.mark.asyncio
-    async def test_update_profile_email_change_unverifies(self, user_service, user_repo):
+    async def test_update_profile_email_change_unverifies(
+        self, user_service, user_repo
+    ):
         """Email change should set is_verified to False."""
         user = await user_service.register_user(
             email="original@example.com",
@@ -767,7 +771,9 @@ class TestUpdateUserProfile:
         assert updated.is_email_verified is False
 
     @pytest.mark.asyncio
-    async def test_update_profile_rejects_duplicate_email(self, user_service, user_repo):
+    async def test_update_profile_rejects_duplicate_email(
+        self, user_service, user_repo
+    ):
         """Profile update should reject duplicate email."""
         user1 = await user_service.register_user(
             email="user1@example.com",

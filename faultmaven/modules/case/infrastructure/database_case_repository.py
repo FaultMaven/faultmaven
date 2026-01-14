@@ -22,47 +22,47 @@ Usage:
 
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from sqlalchemy import select, func, delete, update, or_, and_
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from faultmaven.modules.case.infrastructure.case_repository import (
-    CaseRepository,
-    RepositoryException,
-)
 from faultmaven.infrastructure.persistence.models import (
+    CaseMessageModel,
     CaseModel,
+    CaseStatusTransitionModel,
+    CaseTagModel,
     EvidenceModel,
     HypothesisModel,
     SolutionModel,
-    CaseMessageModel,
     UploadedFileModel,
-    CaseStatusTransitionModel,
-    CaseTagModel,
 )
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
-    InvestigationProgress,
-    TurnProgress,
-    UploadedFile,
+    CaseStatusTransition,
+    ConsultingData,
+    DegradedMode,
+    DocumentationData,
+    EscalationState,
     Evidence,
     Hypothesis,
-    Solution,
-    ConsultingData,
-    ProblemVerification,
-    WorkingConclusion,
-    RootCauseConclusion,
-    DegradedMode,
-    EscalationState,
-    DocumentationData,
-    PathSelection,
-    CaseStatusTransition,
+    InvestigationProgress,
     InvestigationStrategy,
+    PathSelection,
+    ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    TurnProgress,
+    UploadedFile,
+    WorkingConclusion,
+)
+from faultmaven.modules.case.infrastructure.case_repository import (
+    CaseRepository,
+    RepositoryException,
 )
 
 logger = logging.getLogger(__name__)
@@ -190,7 +190,7 @@ class DatabaseCaseRepository(CaseRepository):
         organization_id: Optional[str] = None,
         status: Optional[CaseStatus] = None,
         limit: int = 50,
-        offset: int = 0
+        offset: int = 0,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters and pagination.
@@ -227,23 +227,19 @@ class DatabaseCaseRepository(CaseRepository):
             total_count = count_result.scalar()
 
             # Data query with eager loading
-            data_stmt = (
-                select(CaseModel)
-                .options(
-                    selectinload(CaseModel.evidence),
-                    selectinload(CaseModel.hypotheses),
-                    selectinload(CaseModel.solutions),
-                    selectinload(CaseModel.messages),
-                    selectinload(CaseModel.uploaded_files),
-                    selectinload(CaseModel.status_transitions),
-                )
+            data_stmt = select(CaseModel).options(
+                selectinload(CaseModel.evidence),
+                selectinload(CaseModel.hypotheses),
+                selectinload(CaseModel.solutions),
+                selectinload(CaseModel.messages),
+                selectinload(CaseModel.uploaded_files),
+                selectinload(CaseModel.status_transitions),
             )
             if conditions:
                 data_stmt = data_stmt.where(and_(*conditions))
 
             data_stmt = (
-                data_stmt
-                .order_by(CaseModel.updated_at.desc())
+                data_stmt.order_by(CaseModel.updated_at.desc())
                 .limit(limit)
                 .offset(offset)
             )
@@ -294,7 +290,7 @@ class DatabaseCaseRepository(CaseRepository):
         query: str,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        limit: int = 20
+        limit: int = 20,
     ) -> tuple[List[Case], int]:
         """
         Search cases by text query.
@@ -330,9 +326,7 @@ class DatabaseCaseRepository(CaseRepository):
 
             # Count query
             count_stmt = (
-                select(func.count())
-                .select_from(CaseModel)
-                .where(and_(*conditions))
+                select(func.count()).select_from(CaseModel).where(and_(*conditions))
             )
             count_result = await self.db.execute(count_stmt)
             total_count = count_result.scalar()
@@ -416,13 +410,12 @@ class DatabaseCaseRepository(CaseRepository):
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Failed to add message to case {case_id}: {e}")
-            raise RepositoryException(f"Failed to add message to case {case_id}: {e}") from e
+            raise RepositoryException(
+                f"Failed to add message to case {case_id}: {e}"
+            ) from e
 
     async def get_messages(
-        self,
-        case_id: str,
-        limit: int = 50,
-        offset: int = 0
+        self, case_id: str, limit: int = 50, offset: int = 0
     ) -> List[dict]:
         """
         Get messages for a case with pagination.
@@ -452,20 +445,26 @@ class DatabaseCaseRepository(CaseRepository):
 
             messages = []
             for m in message_models:
-                messages.append({
-                    "message_id": m.message_id,
-                    "case_id": m.case_id,
-                    "role": m.role,
-                    "content": m.content,
-                    "timestamp": m.timestamp.isoformat() if m.timestamp else None,
-                    "metadata": json.loads(m.message_metadata) if m.message_metadata else {},
-                })
+                messages.append(
+                    {
+                        "message_id": m.message_id,
+                        "case_id": m.case_id,
+                        "role": m.role,
+                        "content": m.content,
+                        "timestamp": m.timestamp.isoformat() if m.timestamp else None,
+                        "metadata": (
+                            json.loads(m.message_metadata) if m.message_metadata else {}
+                        ),
+                    }
+                )
 
             return messages
 
         except Exception as e:
             logger.error(f"Failed to get messages for case {case_id}: {e}")
-            raise RepositoryException(f"Failed to get messages for case {case_id}: {e}") from e
+            raise RepositoryException(
+                f"Failed to get messages for case {case_id}: {e}"
+            ) from e
 
     # ========================================================================
     # Activity & Analytics
@@ -526,7 +525,9 @@ class DatabaseCaseRepository(CaseRepository):
                 "status": case.status.value,
                 "created_at": case.created_at.isoformat() if case.created_at else None,
                 "updated_at": case.updated_at.isoformat() if case.updated_at else None,
-                "last_activity_at": case.last_activity_at.isoformat() if case.last_activity_at else None,
+                "last_activity_at": (
+                    case.last_activity_at.isoformat() if case.last_activity_at else None
+                ),
                 "message_count": case.message_count,
                 "current_turn": case.current_turn,
                 "turns_without_progress": case.turns_without_progress,
@@ -553,7 +554,9 @@ class DatabaseCaseRepository(CaseRepository):
                 f"Failed to compute analytics for case {case_id}: {e}"
             ) from e
 
-    async def cleanup_expired(self, max_age_days: int = 90, batch_size: int = 100) -> int:
+    async def cleanup_expired(
+        self, max_age_days: int = 90, batch_size: int = 100
+    ) -> int:
         """
         Clean up expired/old closed cases.
 
@@ -651,10 +654,7 @@ class DatabaseCaseRepository(CaseRepository):
             ) from e
 
     async def get_orphaned_cases(
-        self,
-        user_id: Optional[str] = None,
-        limit: int = 50,
-        offset: int = 0
+        self, user_id: Optional[str] = None, limit: int = 50, offset: int = 0
     ) -> tuple[List[Case], int]:
         """
         Get cases with no session (session_id is NULL).
@@ -681,9 +681,7 @@ class DatabaseCaseRepository(CaseRepository):
 
             # Count query
             count_stmt = (
-                select(func.count())
-                .select_from(CaseModel)
-                .where(and_(*conditions))
+                select(func.count()).select_from(CaseModel).where(and_(*conditions))
             )
             count_result = await self.db.execute(count_stmt)
             total_count = count_result.scalar()
@@ -715,9 +713,7 @@ class DatabaseCaseRepository(CaseRepository):
             raise RepositoryException(f"Failed to get orphaned cases: {e}") from e
 
     async def link_case_to_session(
-        self,
-        case_id: str,
-        session_id: Optional[str]
+        self, case_id: str, session_id: Optional[str]
     ) -> bool:
         """
         Link or unlink a case to/from a session.
@@ -736,10 +732,7 @@ class DatabaseCaseRepository(CaseRepository):
             stmt = (
                 update(CaseModel)
                 .where(CaseModel.case_id == case_id)
-                .values(
-                    session_id=session_id,
-                    updated_at=datetime.now(timezone.utc)
-                )
+                .values(session_id=session_id, updated_at=datetime.now(timezone.utc))
             )
 
             result = await self.db.execute(stmt)
@@ -759,9 +752,7 @@ class DatabaseCaseRepository(CaseRepository):
             ) from e
 
     async def save_with_session(
-        self,
-        case: Case,
-        session_id: Optional[str] = None
+        self, case: Case, session_id: Optional[str] = None
     ) -> Case:
         """
         Save a case with optional session linkage.
@@ -812,7 +803,9 @@ class DatabaseCaseRepository(CaseRepository):
     # Helper: Sync Related Entities
     # ========================================================================
 
-    async def _sync_messages(self, case_id: str, messages: List[Dict[str, Any]]) -> None:
+    async def _sync_messages(
+        self, case_id: str, messages: List[Dict[str, Any]]
+    ) -> None:
         """Sync messages for a case (append-only)."""
         if not messages:
             return
@@ -846,8 +839,10 @@ class DatabaseCaseRepository(CaseRepository):
             return
 
         # Get existing transition count
-        stmt = select(func.count()).select_from(CaseStatusTransitionModel).where(
-            CaseStatusTransitionModel.case_id == case_id
+        stmt = (
+            select(func.count())
+            .select_from(CaseStatusTransitionModel)
+            .where(CaseStatusTransitionModel.case_id == case_id)
         )
         result = await self.db.execute(stmt)
         existing_count = result.scalar()
@@ -872,34 +867,44 @@ class DatabaseCaseRepository(CaseRepository):
     def _case_to_model(self, case: Case) -> CaseModel:
         """Convert Case domain model to CaseModel ORM model."""
         # Serialize complex fields to JSON
-        consulting_json = json.dumps(case.consulting.model_dump()) if case.consulting else "{}"
-        progress_json = json.dumps(case.progress.model_dump()) if case.progress else "{}"
-        documentation_json = json.dumps(case.documentation.model_dump()) if case.documentation else "{}"
+        consulting_json = (
+            json.dumps(case.consulting.model_dump()) if case.consulting else "{}"
+        )
+        progress_json = (
+            json.dumps(case.progress.model_dump()) if case.progress else "{}"
+        )
+        documentation_json = (
+            json.dumps(case.documentation.model_dump()) if case.documentation else "{}"
+        )
 
         # Optional JSONB fields
         problem_verification_json = (
             json.dumps(case.problem_verification.model_dump())
-            if case.problem_verification else None
+            if case.problem_verification
+            else None
         )
         working_conclusion_json = (
             json.dumps(case.working_conclusion.model_dump())
-            if case.working_conclusion else None
+            if case.working_conclusion
+            else None
         )
         root_cause_conclusion_json = (
             json.dumps(case.root_cause_conclusion.model_dump())
-            if case.root_cause_conclusion else None
+            if case.root_cause_conclusion
+            else None
         )
         path_selection_json = (
             json.dumps(case.path_selection.model_dump())
-            if case.path_selection else None
+            if case.path_selection
+            else None
         )
         degraded_mode_json = (
-            json.dumps(case.degraded_mode.model_dump())
-            if case.degraded_mode else None
+            json.dumps(case.degraded_mode.model_dump()) if case.degraded_mode else None
         )
         escalation_state_json = (
             json.dumps(case.escalation_state.model_dump())
-            if case.escalation_state else None
+            if case.escalation_state
+            else None
         )
 
         # Build metadata
@@ -917,7 +922,9 @@ class DatabaseCaseRepository(CaseRepository):
             "solutions": [s.model_dump() for s in case.solutions],
             "resolved_at": case.resolved_at.isoformat() if case.resolved_at else None,
             "closed_at": case.closed_at.isoformat() if case.closed_at else None,
-            "last_activity_at": case.last_activity_at.isoformat() if case.last_activity_at else None,
+            "last_activity_at": (
+                case.last_activity_at.isoformat() if case.last_activity_at else None
+            ),
         }
 
         return CaseModel(
@@ -953,9 +960,13 @@ class DatabaseCaseRepository(CaseRepository):
         metadata = self._parse_json(model.case_metadata, {})
 
         # Optional JSONB fields
-        problem_verification = self._parse_problem_verification(model.problem_verification)
+        problem_verification = self._parse_problem_verification(
+            model.problem_verification
+        )
         working_conclusion = self._parse_working_conclusion(model.working_conclusion)
-        root_cause_conclusion = self._parse_root_cause_conclusion(model.root_cause_conclusion)
+        root_cause_conclusion = self._parse_root_cause_conclusion(
+            model.root_cause_conclusion
+        )
         path_selection = self._parse_path_selection(model.path_selection)
         degraded_mode = self._parse_degraded_mode(model.degraded_mode)
         escalation_state = self._parse_escalation_state(model.escalation_state)
@@ -981,13 +992,17 @@ class DatabaseCaseRepository(CaseRepository):
         messages = []
         if model.messages:
             for msg in model.messages:
-                messages.append({
-                    "message_id": msg.message_id,
-                    "role": msg.role,
-                    "content": msg.content,
-                    "created_at": msg.timestamp.isoformat() if msg.timestamp else None,
-                    "metadata": self._parse_json(msg.message_metadata, {}),
-                })
+                messages.append(
+                    {
+                        "message_id": msg.message_id,
+                        "role": msg.role,
+                        "content": msg.content,
+                        "created_at": (
+                            msg.timestamp.isoformat() if msg.timestamp else None
+                        ),
+                        "metadata": self._parse_json(msg.message_metadata, {}),
+                    }
+                )
 
         # Parse status transitions from relationship
         status_history = []
@@ -995,10 +1010,16 @@ class DatabaseCaseRepository(CaseRepository):
             for t in model.status_transitions:
                 try:
                     transition = CaseStatusTransition(
-                        from_status=CaseStatus(t.from_status) if t.from_status else CaseStatus.CONSULTING,
+                        from_status=(
+                            CaseStatus(t.from_status)
+                            if t.from_status
+                            else CaseStatus.CONSULTING
+                        ),
                         to_status=CaseStatus(t.to_status),
                         triggered_at=t.transitioned_at,
-                        triggered_by=self._parse_json(t.transition_metadata, {}).get("triggered_by", "system"),
+                        triggered_by=self._parse_json(t.transition_metadata, {}).get(
+                            "triggered_by", "system"
+                        ),
                         reason=t.reason or "",
                     )
                     status_history.append(transition)
@@ -1008,7 +1029,9 @@ class DatabaseCaseRepository(CaseRepository):
         # Parse timestamps from metadata
         resolved_at = self._parse_datetime(metadata.get("resolved_at"))
         closed_at = self._parse_datetime(metadata.get("closed_at"))
-        last_activity_at = self._parse_datetime(metadata.get("last_activity_at")) or self._ensure_tz_aware(model.updated_at)
+        last_activity_at = self._parse_datetime(
+            metadata.get("last_activity_at")
+        ) or self._ensure_tz_aware(model.updated_at)
 
         return Case(
             case_id=model.case_id,
@@ -1102,7 +1125,9 @@ class DatabaseCaseRepository(CaseRepository):
         except Exception:
             return DocumentationData()
 
-    def _parse_problem_verification(self, value: Optional[str]) -> Optional[ProblemVerification]:
+    def _parse_problem_verification(
+        self, value: Optional[str]
+    ) -> Optional[ProblemVerification]:
         """Parse ProblemVerification from JSON."""
         data = self._parse_json(value)
         if data is None:
@@ -1112,7 +1137,9 @@ class DatabaseCaseRepository(CaseRepository):
         except Exception:
             return None
 
-    def _parse_working_conclusion(self, value: Optional[str]) -> Optional[WorkingConclusion]:
+    def _parse_working_conclusion(
+        self, value: Optional[str]
+    ) -> Optional[WorkingConclusion]:
         """Parse WorkingConclusion from JSON."""
         data = self._parse_json(value)
         if data is None:
@@ -1122,7 +1149,9 @@ class DatabaseCaseRepository(CaseRepository):
         except Exception:
             return None
 
-    def _parse_root_cause_conclusion(self, value: Optional[str]) -> Optional[RootCauseConclusion]:
+    def _parse_root_cause_conclusion(
+        self, value: Optional[str]
+    ) -> Optional[RootCauseConclusion]:
         """Parse RootCauseConclusion from JSON."""
         data = self._parse_json(value)
         if data is None:
@@ -1152,7 +1181,9 @@ class DatabaseCaseRepository(CaseRepository):
         except Exception:
             return None
 
-    def _parse_escalation_state(self, value: Optional[str]) -> Optional[EscalationState]:
+    def _parse_escalation_state(
+        self, value: Optional[str]
+    ) -> Optional[EscalationState]:
         """Parse EscalationState from JSON."""
         data = self._parse_json(value)
         if data is None:

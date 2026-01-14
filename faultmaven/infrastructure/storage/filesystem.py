@@ -12,21 +12,21 @@ Usage:
     url = await backend.generate_download_url("org123/case456/file.log")
 """
 
-import aiofiles
-import aiofiles.os
 import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import aiofiles
+import aiofiles.os
+
 from faultmaven.infrastructure.storage.base import (
     IFileStorageBackend,
     PresignedUrl,
-    StoredFile,
     StorageType,
+    StoredFile,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -193,13 +193,18 @@ class FilesystemStorageBackend(IFileStorageBackend):
         # Store metadata as sidecar file if provided
         if metadata:
             import json
+
             metadata_path = full_path.with_suffix(full_path.suffix + ".meta")
             async with aiofiles.open(metadata_path, "w") as f:
-                await f.write(json.dumps({
-                    "content_type": content_type,
-                    "metadata": metadata,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                }))
+                await f.write(
+                    json.dumps(
+                        {
+                            "content_type": content_type,
+                            "metadata": metadata,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+                )
 
         logger.info(f"Stored file: {key} ({len(data)} bytes)")
 
@@ -291,6 +296,7 @@ class FilesystemStorageBackend(IFileStorageBackend):
         metadata_path = full_path.with_suffix(full_path.suffix + ".meta")
         if await aiofiles.os.path.exists(str(metadata_path)):
             import json
+
             async with aiofiles.open(metadata_path, "r") as f:
                 meta_data = json.loads(await f.read())
                 content_type = meta_data.get("content_type", content_type)

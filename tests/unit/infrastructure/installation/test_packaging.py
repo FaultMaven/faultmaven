@@ -10,12 +10,13 @@ Tests both community and enterprise installation modes to ensure:
 Design Reference: docs/FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md (Week 11)
 """
 
-import pytest
-import sys
 import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
 from typing import List, Set
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 # Handle optional toml dependency
 # Python 3.11+ has tomllib in stdlib (read-only), but test needs read capability
@@ -25,46 +26,52 @@ except ImportError:
     try:
         # Python 3.11+ has tomllib in stdlib (read-only, requires binary mode)
         import tomllib
+
         # Create wrapper to match toml.load() API (text mode)
         class TomlWrapper:
             @staticmethod
             def load(f):
                 # tomllib.load() requires binary mode
-                if hasattr(f, 'read'):
+                if hasattr(f, "read"):
                     # File handle - check if it's binary or text
-                    if hasattr(f, 'mode') and 'b' in f.mode:
+                    if hasattr(f, "mode") and "b" in f.mode:
                         return tomllib.load(f)
                     else:
                         # Text mode - read and decode
                         content = f.read()
                         if isinstance(content, str):
-                            content = content.encode('utf-8')
+                            content = content.encode("utf-8")
                         import io
+
                         return tomllib.load(io.BytesIO(content))
                 else:
                     # Path object or string - open in binary mode
-                    with open(f, 'rb') as fp:
+                    with open(f, "rb") as fp:
                         return tomllib.load(fp)
+
         toml = TomlWrapper()
     except ImportError:
         try:
             import tomli as toml  # Read-only backport (also requires binary)
+
             # tomli also needs binary mode, create similar wrapper
             class TomliWrapper:
                 @staticmethod
                 def load(f):
-                    if hasattr(f, 'read'):
-                        if hasattr(f, 'mode') and 'b' in f.mode:
+                    if hasattr(f, "read"):
+                        if hasattr(f, "mode") and "b" in f.mode:
                             return tomli.load(f)
                         else:
                             content = f.read()
                             if isinstance(content, str):
-                                content = content.encode('utf-8')
+                                content = content.encode("utf-8")
                             import io
+
                             return tomli.load(io.BytesIO(content))
                     else:
-                        with open(f, 'rb') as fp:
+                        with open(f, "rb") as fp:
                             return tomli.load(fp)
+
             toml = TomliWrapper()
         except ImportError:
             pytest.skip("toml/tomli/tomllib not available", allow_module_level=True)
@@ -73,6 +80,7 @@ except ImportError:
 # ============================================================================
 # TEST FIXTURES
 # ============================================================================
+
 
 @pytest.fixture
 def pyproject_path() -> Path:
@@ -109,6 +117,7 @@ def test_dependencies(pyproject_data: dict) -> List[str]:
 # METADATA TESTS
 # ============================================================================
 
+
 class TestProjectMetadata:
     """Test pyproject.toml metadata compliance with PEP 621."""
 
@@ -116,7 +125,13 @@ class TestProjectMetadata:
         """Verify all required PEP 621 fields are present."""
         project = pyproject_data["project"]
 
-        required_fields = ["name", "version", "description", "readme", "requires-python"]
+        required_fields = [
+            "name",
+            "version",
+            "description",
+            "readme",
+            "requires-python",
+        ]
         for field in required_fields:
             assert field in project, f"Missing required field: {field}"
 
@@ -153,6 +168,7 @@ class TestProjectMetadata:
 # DEPENDENCY CATEGORIZATION TESTS
 # ============================================================================
 
+
 class TestDependencyCategorization:
     """Test that dependencies are correctly categorized."""
 
@@ -162,8 +178,9 @@ class TestDependencyCategorization:
 
         required = ["fastapi", "uvicorn", "sqlalchemy", "alembic"]
         for pkg in required:
-            assert any(pkg in dep for dep in base_dependencies), \
-                f"Missing core dependency: {pkg}"
+            assert any(
+                pkg in dep for dep in base_dependencies
+            ), f"Missing core dependency: {pkg}"
 
     def test_base_has_llm_framework(self, base_dependencies: List[str]):
         """Verify base dependencies include LLM framework (required for core functionality)."""
@@ -171,8 +188,9 @@ class TestDependencyCategorization:
 
         required = ["langgraph", "openai", "anthropic", "fireworks-ai"]
         for pkg in required:
-            assert any(pkg in dep for dep in base_dependencies), \
-                f"Missing LLM dependency: {pkg}"
+            assert any(
+                pkg in dep for dep in base_dependencies
+            ), f"Missing LLM dependency: {pkg}"
 
     def test_enterprise_has_observability(self, enterprise_dependencies: List[str]):
         """Verify enterprise dependencies include observability tools."""
@@ -180,8 +198,9 @@ class TestDependencyCategorization:
 
         required = ["opik", "prometheus-client"]
         for pkg in required:
-            assert any(pkg in dep for dep in enterprise_dependencies), \
-                f"Missing observability dependency: {pkg}"
+            assert any(
+                pkg in dep for dep in enterprise_dependencies
+            ), f"Missing observability dependency: {pkg}"
 
     def test_enterprise_has_security(self, enterprise_dependencies: List[str]):
         """Verify enterprise dependencies include PII protection."""
@@ -189,8 +208,9 @@ class TestDependencyCategorization:
 
         required = ["presidio-analyzer", "presidio-anonymizer"]
         for pkg in required:
-            assert any(pkg in dep for dep in enterprise_dependencies), \
-                f"Missing security dependency: {pkg}"
+            assert any(
+                pkg in dep for dep in enterprise_dependencies
+            ), f"Missing security dependency: {pkg}"
 
     def test_enterprise_has_infrastructure(self, enterprise_dependencies: List[str]):
         """Verify enterprise dependencies include distributed infrastructure."""
@@ -198,8 +218,9 @@ class TestDependencyCategorization:
 
         required = ["redis", "psycopg2-binary", "asyncpg"]
         for pkg in required:
-            assert any(pkg in dep for dep in enterprise_dependencies), \
-                f"Missing infrastructure dependency: {pkg}"
+            assert any(
+                pkg in dep for dep in enterprise_dependencies
+            ), f"Missing infrastructure dependency: {pkg}"
 
     def test_enterprise_has_cloud_storage(self, enterprise_dependencies: List[str]):
         """Verify enterprise dependencies include cloud storage adapters."""
@@ -207,8 +228,9 @@ class TestDependencyCategorization:
 
         required = ["boto3", "azure-storage-blob"]
         for pkg in required:
-            assert any(pkg in dep for dep in enterprise_dependencies), \
-                f"Missing cloud storage dependency: {pkg}"
+            assert any(
+                pkg in dep for dep in enterprise_dependencies
+            ), f"Missing cloud storage dependency: {pkg}"
 
     def test_test_dependencies_complete(self, test_dependencies: List[str]):
         """Verify test dependencies include all testing tools."""
@@ -216,11 +238,13 @@ class TestDependencyCategorization:
 
         required = ["pytest", "pytest-asyncio", "pytest-cov", "locust"]
         for pkg in required:
-            assert any(pkg in dep for dep in test_dependencies), \
-                f"Missing test dependency: {pkg}"
+            assert any(
+                pkg in dep for dep in test_dependencies
+            ), f"Missing test dependency: {pkg}"
 
-    def test_no_enterprise_leakage_to_base(self, base_dependencies: List[str],
-                                           enterprise_dependencies: List[str]):
+    def test_no_enterprise_leakage_to_base(
+        self, base_dependencies: List[str], enterprise_dependencies: List[str]
+    ):
         """Verify enterprise dependencies are NOT in base dependencies."""
         base_str = " ".join(base_dependencies).lower()
 
@@ -228,21 +252,31 @@ class TestDependencyCategorization:
         enterprise_packages = set()
         for dep in enterprise_dependencies:
             # Handle dependencies like "redis[hiredis]>=5.0.0"
-            pkg_name = dep.split("[")[0].split(">=")[0].split("==")[0].split("<")[0].strip()
+            pkg_name = (
+                dep.split("[")[0].split(">=")[0].split("==")[0].split("<")[0].strip()
+            )
             enterprise_packages.add(pkg_name.lower())
 
         # These packages should NOT appear in base dependencies
-        enterprise_only = {"opik", "presidio-analyzer", "presidio-anonymizer",
-                          "prometheus-client", "boto3", "azure-storage-blob"}
+        enterprise_only = {
+            "opik",
+            "presidio-analyzer",
+            "presidio-anonymizer",
+            "prometheus-client",
+            "boto3",
+            "azure-storage-blob",
+        }
 
         for pkg in enterprise_only:
-            assert pkg not in base_str, \
-                f"Enterprise package '{pkg}' leaked into base dependencies"
+            assert (
+                pkg not in base_str
+            ), f"Enterprise package '{pkg}' leaked into base dependencies"
 
 
 # ============================================================================
 # CONFIGURATION DEFAULTS TESTS
 # ============================================================================
+
 
 class TestConfigurationDefaults:
     """Test that configuration defaults match community mode expectations.
@@ -255,11 +289,15 @@ class TestConfigurationDefaults:
         """Verify storage defaults are community-friendly (in-memory)."""
         # Clear all environment variables that might override defaults
         import os
+
         for key in list(os.environ.keys()):
-            if key.startswith(('USER_STORAGE', 'CASE_STORAGE', 'SESSION_STORAGE', 'VECTOR_STORAGE')):
+            if key.startswith(
+                ("USER_STORAGE", "CASE_STORAGE", "SESSION_STORAGE", "VECTOR_STORAGE")
+            ):
                 monkeypatch.delenv(key, raising=False)
 
         from faultmaven.config.settings import FaultMavenSettings
+
         settings = FaultMavenSettings()
 
         # Storage should default to in-memory (no external dependencies)
@@ -272,52 +310,75 @@ class TestConfigurationDefaults:
         """Verify observability features are disabled by default (code defaults)."""
         # Clear environment variables that might override defaults
         import os
+
         for key in list(os.environ.keys()):
-            if 'OPIK' in key or 'PROMETHEUS' in key or 'TRACING' in key or 'METRICS' in key:
+            if (
+                "OPIK" in key
+                or "PROMETHEUS" in key
+                or "TRACING" in key
+                or "METRICS" in key
+            ):
                 monkeypatch.delenv(key, raising=False)
 
         # Verify code defaults in settings.py
         from faultmaven.config.settings import ObservabilitySettings
+
         # Check class defaults directly (before environment override)
-        assert ObservabilitySettings.model_fields['opik_enabled'].default is False
-        assert ObservabilitySettings.model_fields['opik_track_disable'].default is True
-        assert ObservabilitySettings.model_fields['prometheus_enabled'].default is False
-        assert ObservabilitySettings.model_fields['tracing_enabled'].default is False
-        assert ObservabilitySettings.model_fields['metrics_enabled'].default is False
+        assert ObservabilitySettings.model_fields["opik_enabled"].default is False
+        assert ObservabilitySettings.model_fields["opik_track_disable"].default is True
+        assert ObservabilitySettings.model_fields["prometheus_enabled"].default is False
+        assert ObservabilitySettings.model_fields["tracing_enabled"].default is False
+        assert ObservabilitySettings.model_fields["metrics_enabled"].default is False
 
     def test_community_protection_defaults(self, monkeypatch):
         """Verify protection features are disabled by default (code defaults)."""
         # Clear environment variables
         import os
+
         for key in list(os.environ.keys()):
-            if 'PROTECTION' in key or 'SANITIZE_PII' in key:
+            if "PROTECTION" in key or "SANITIZE_PII" in key:
                 monkeypatch.delenv(key, raising=False)
 
         # Verify code defaults in settings.py
         from faultmaven.config.settings import ProtectionSettings
+
         # Check class defaults directly (before environment override)
-        assert ProtectionSettings.model_fields['protection_enabled'].default is False
-        assert ProtectionSettings.model_fields['sanitize_pii'].default is False
-        assert ProtectionSettings.model_fields['basic_protection_enabled'].default is False
-        assert ProtectionSettings.model_fields['intelligent_protection_enabled'].default is False
+        assert ProtectionSettings.model_fields["protection_enabled"].default is False
+        assert ProtectionSettings.model_fields["sanitize_pii"].default is False
+        assert (
+            ProtectionSettings.model_fields["basic_protection_enabled"].default is False
+        )
+        assert (
+            ProtectionSettings.model_fields["intelligent_protection_enabled"].default
+            is False
+        )
 
     def test_community_performance_monitoring_defaults(self, monkeypatch):
         """Verify performance monitoring is disabled by default (code defaults)."""
         # Clear environment variables
         import os
+
         for key in list(os.environ.keys()):
-            if 'PERFORMANCE' in key or 'DETAILED_TRACING' in key:
+            if "PERFORMANCE" in key or "DETAILED_TRACING" in key:
                 monkeypatch.delenv(key, raising=False)
 
         # Verify code defaults in settings.py
         from faultmaven.config.settings import ObservabilitySettings
-        assert ObservabilitySettings.model_fields['enable_performance_monitoring'].default is False
-        assert ObservabilitySettings.model_fields['enable_detailed_tracing'].default is False
+
+        assert (
+            ObservabilitySettings.model_fields["enable_performance_monitoring"].default
+            is False
+        )
+        assert (
+            ObservabilitySettings.model_fields["enable_detailed_tracing"].default
+            is False
+        )
 
 
 # ============================================================================
 # INSTALLATION SIMULATION TESTS
 # ============================================================================
+
 
 class TestInstallationSimulation:
     """Test installation scenarios (mocked to avoid actual installation)."""
@@ -328,14 +389,16 @@ class TestInstallationSimulation:
         assert len(base_dependencies) > 10, "Too few base dependencies"
         assert len(base_dependencies) < 100, "Too many base dependencies"
 
-    def test_enterprise_installation_package_list(self, enterprise_dependencies: List[str]):
+    def test_enterprise_installation_package_list(
+        self, enterprise_dependencies: List[str]
+    ):
         """Verify enterprise installation adds appropriate packages."""
         # Enterprise should add significant functionality
-        assert len(enterprise_dependencies) >= 6, \
-            "Enterprise dependencies too minimal"
+        assert len(enterprise_dependencies) >= 6, "Enterprise dependencies too minimal"
 
-    def test_no_conflicting_versions(self, base_dependencies: List[str],
-                                     enterprise_dependencies: List[str]):
+    def test_no_conflicting_versions(
+        self, base_dependencies: List[str], enterprise_dependencies: List[str]
+    ):
         """Verify no version conflicts between base and enterprise."""
         # Extract package names and versions
         base_versions = {}
@@ -358,14 +421,17 @@ class TestInstallationSimulation:
         for pkg in set(base_versions.keys()) & set(enterprise_versions.keys()):
             # If both specify versions, they should be compatible
             # This is a simplified check - full compatibility would need pip resolver
-            assert base_versions[pkg] == enterprise_versions[pkg] or \
-                   base_versions[pkg] is None or enterprise_versions[pkg] is None, \
-                   f"Version conflict for {pkg}: base={base_versions[pkg]}, enterprise={enterprise_versions[pkg]}"
+            assert (
+                base_versions[pkg] == enterprise_versions[pkg]
+                or base_versions[pkg] is None
+                or enterprise_versions[pkg] is None
+            ), f"Version conflict for {pkg}: base={base_versions[pkg]}, enterprise={enterprise_versions[pkg]}"
 
 
 # ============================================================================
 # BUILD SYSTEM TESTS
 # ============================================================================
+
 
 class TestBuildSystem:
     """Test build system configuration."""
@@ -387,6 +453,7 @@ class TestBuildSystem:
 # ============================================================================
 # TOOL CONFIGURATION TESTS
 # ============================================================================
+
 
 class TestToolConfiguration:
     """Test tool configurations in pyproject.toml."""

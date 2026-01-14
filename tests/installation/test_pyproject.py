@@ -1,4 +1,5 @@
 """Tests for pyproject.toml configuration."""
+
 import tomllib
 from pathlib import Path
 
@@ -31,8 +32,9 @@ def test_optional_dependencies_structure():
     # Verify expected dependency groups exist
     expected_groups = ["enterprise", "test", "dev"]
     for group in expected_groups:
-        assert group in data["project"]["optional-dependencies"], \
-            f"Missing dependency group: {group}"
+        assert (
+            group in data["project"]["optional-dependencies"]
+        ), f"Missing dependency group: {group}"
 
 
 def test_core_dependencies_present():

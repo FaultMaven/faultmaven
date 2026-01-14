@@ -7,12 +7,13 @@ Tests cover:
 - Async task execution
 """
 
-import pytest
 import asyncio
-import time
-from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, MagicMock
 import threading
+import time
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestInMemoryJobRunner:
@@ -47,7 +48,7 @@ class TestInMemoryJobRunner:
             task_func=task,
             interval_seconds=1,
             job_id="test_recurring",
-            job_name="Test Recurring Job"
+            job_name="Test Recurring Job",
         )
 
         assert job_id == "test_recurring"
@@ -73,11 +74,7 @@ class TestInMemoryJobRunner:
             executed["done"] = True
 
         run_at = datetime.now(timezone.utc) + timedelta(seconds=0.1)
-        job_id = runner.schedule_once(
-            task_func=task,
-            run_at=run_at,
-            job_id="test_once"
-        )
+        job_id = runner.schedule_once(task_func=task, run_at=run_at, job_id="test_once")
 
         assert job_id == "test_once"
 
@@ -99,9 +96,7 @@ class TestInMemoryJobRunner:
             pass
 
         job_id = runner.schedule_recurring(
-            task_func=task,
-            interval_seconds=60,
-            job_id="test_cancel"
+            task_func=task, interval_seconds=60, job_id="test_cancel"
         )
 
         # Job should exist
@@ -144,7 +139,7 @@ class TestInMemoryJobRunner:
             task_func=task,
             interval_seconds=3600,
             job_id="test_info",
-            job_name="Test Info Job"
+            job_name="Test Info Job",
         )
 
         info = runner.get_job_info("test_info")
@@ -171,10 +166,7 @@ class TestInMemoryJobRunner:
             executed["done"] = True
 
         run_at = datetime.now(timezone.utc) + timedelta(seconds=0.1)
-        runner.schedule_once(
-            task_func=async_task,
-            run_at=run_at
-        )
+        runner.schedule_once(task_func=async_task, run_at=run_at)
 
         # Wait for job to execute
         time.sleep(0.5)
@@ -198,9 +190,7 @@ class TestInMemoryJobRunner:
 
         # Schedule first job
         runner.schedule_recurring(
-            task_func=task1,
-            interval_seconds=60,
-            job_id="test_replace"
+            task_func=task1, interval_seconds=60, job_id="test_replace"
         )
 
         # Replace with second job
@@ -208,7 +198,7 @@ class TestInMemoryJobRunner:
             task_func=task2,
             interval_seconds=120,
             job_id="test_replace",
-            replace_existing=True
+            replace_existing=True,
         )
 
         # Should still be one job
@@ -226,10 +216,7 @@ class TestInMemoryJobRunner:
         runner = InMemoryJobRunner()
 
         with pytest.raises(RuntimeError, match="Job runner not started"):
-            runner.schedule_recurring(
-                task_func=lambda: None,
-                interval_seconds=60
-            )
+            runner.schedule_recurring(task_func=lambda: None, interval_seconds=60)
 
     def test_auto_generated_job_id(self):
         """Test that job IDs are auto-generated if not provided."""
@@ -238,10 +225,7 @@ class TestInMemoryJobRunner:
         runner = InMemoryJobRunner()
         runner.start()
 
-        job_id = runner.schedule_recurring(
-            task_func=lambda: None,
-            interval_seconds=60
-        )
+        job_id = runner.schedule_recurring(task_func=lambda: None, interval_seconds=60)
 
         assert job_id.startswith("job_")
         assert len(job_id) == 16  # "job_" + 12 hex chars
@@ -254,10 +238,11 @@ class TestJobRunnerFactory:
 
     def test_default_returns_inmemory(self):
         """Test that default returns InMemoryJobRunner."""
-        from faultmaven.infrastructure.tasks import get_job_runner, InMemoryJobRunner
+        from faultmaven.infrastructure.tasks import InMemoryJobRunner, get_job_runner
 
         with patch.dict("os.environ", {}, clear=True):
             import os
+
             os.environ.pop("JOB_RUNNER_TYPE", None)
             os.environ.pop("ENVIRONMENT", None)
 
@@ -266,7 +251,7 @@ class TestJobRunnerFactory:
 
     def test_explicit_inmemory(self):
         """Test explicit inmemory selection."""
-        from faultmaven.infrastructure.tasks import get_job_runner, InMemoryJobRunner
+        from faultmaven.infrastructure.tasks import InMemoryJobRunner, get_job_runner
 
         runner = get_job_runner("inmemory")
         assert isinstance(runner, InMemoryJobRunner)
@@ -280,16 +265,19 @@ class TestJobRunnerFactory:
 
     def test_apscheduler_fallback_when_unavailable(self):
         """Test fallback to InMemory when APScheduler not available."""
-        from faultmaven.infrastructure.tasks import get_job_runner, InMemoryJobRunner
+        from faultmaven.infrastructure.tasks import InMemoryJobRunner, get_job_runner
 
-        with patch('faultmaven.infrastructure.tasks.job_runners.APSCHEDULER_AVAILABLE', False):
+        with patch(
+            "faultmaven.infrastructure.tasks.job_runners.APSCHEDULER_AVAILABLE", False
+        ):
             runner = get_job_runner("apscheduler")
             assert isinstance(runner, InMemoryJobRunner)
 
     def test_env_var_selection(self):
         """Test selection via JOB_RUNNER_TYPE env var."""
-        from faultmaven.infrastructure.tasks import get_job_runner, InMemoryJobRunner
         import os
+
+        from faultmaven.infrastructure.tasks import InMemoryJobRunner, get_job_runner
 
         with patch.dict(os.environ, {"JOB_RUNNER_TYPE": "inmemory"}):
             runner = get_job_runner()
@@ -308,7 +296,9 @@ class TestAPSchedulerJobRunner:
 
     def test_apscheduler_import_error_when_unavailable(self):
         """Test ImportError when APScheduler not installed."""
-        with patch('faultmaven.infrastructure.tasks.job_runners.APSCHEDULER_AVAILABLE', False):
+        with patch(
+            "faultmaven.infrastructure.tasks.job_runners.APSCHEDULER_AVAILABLE", False
+        ):
             # Re-import to get fresh class
             from faultmaven.infrastructure.tasks.job_runners import APSchedulerJobRunner
 
@@ -329,6 +319,7 @@ class TestJobRunnerConfiguration:
     def test_job_runner_type_from_env(self):
         """Test job_runner_type from environment variable."""
         import os
+
         from faultmaven.config.settings import FeatureSettings
 
         with patch.dict(os.environ, {"JOB_RUNNER_TYPE": "apscheduler"}):

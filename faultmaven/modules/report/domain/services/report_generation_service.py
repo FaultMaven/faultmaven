@@ -9,30 +9,33 @@ Generates professional documentation for resolved troubleshooting cases:
 Architecture Reference: docs/architecture/document-generation-and-closure-design.md
 """
 
-import time
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone, timedelta
 import logging
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
-from faultmaven.services.base import BaseService
-from faultmaven.modules.report.domain.models import (
-    CaseReport,
-    ReportType,
-    ReportStatus,
-    RunbookSource,
-    RunbookMetadata,
-    ReportGenerationRequest,
-    ReportGenerationResponse
+from faultmaven.exceptions import ValidationException
+from faultmaven.infrastructure.concurrency import (
+    LockAcquisitionError,
+    ReportLockManager,
 )
+from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+from faultmaven.infrastructure.observability.tracing import trace
+
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import Case, CaseStatus
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
-from faultmaven.infrastructure.concurrency import ReportLockManager, LockAcquisitionError
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import ValidationException
+from faultmaven.modules.report.domain.models import (
+    CaseReport,
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+    ReportStatus,
+    ReportType,
+    RunbookMetadata,
+    RunbookSource,
+)
+from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
-
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +61,7 @@ class ReportGenerationService(BaseService):
         case_repository: Optional[CaseRepository] = None,
         runbook_kb: Optional[RunbookKnowledgeBase] = None,
         lock_manager: Optional[ReportLockManager] = None,
-        pii_redactor: Optional[Any] = None
+        pii_redactor: Optional[Any] = None,
     ):
         """
         Initialize report generation service.
@@ -79,9 +82,7 @@ class ReportGenerationService(BaseService):
 
     @trace("generate_reports")
     async def generate_reports(
-        self,
-        case: Case,
-        report_types: List[ReportType]
+        self, case: Case, report_types: List[ReportType]
     ) -> ReportGenerationResponse:
         """
         Generate requested reports for a case with concurrency control.
@@ -104,20 +105,18 @@ class ReportGenerationService(BaseService):
         if case.report_generation_count >= case.max_report_regenerations:
             raise ValidationException(
                 "regeneration_limit_exceeded",
-                f"Maximum {case.max_report_regenerations} regenerations allowed"
+                f"Maximum {case.max_report_regenerations} regenerations allowed",
             )
 
         logger.info(
             f"Generating {len(report_types)} reports for case",
-            extra={"case_id": case.case_id, "types": [t.value for t in report_types]}
+            extra={"case_id": case.case_id, "types": [t.value for t in report_types]},
         )
 
         # Acquire lock if lock_manager available (prevents concurrent report generation)
         if self.lock_manager:
             async with self.lock_manager.lock(case.case_id, wait_timeout=30):
-                logger.debug(
-                    f"Acquired report generation lock for case {case.case_id}"
-                )
+                logger.debug(f"Acquired report generation lock for case {case.case_id}")
                 return await self._generate_reports_locked(case, report_types)
         else:
             # No lock manager - proceed without concurrency protection
@@ -127,9 +126,7 @@ class ReportGenerationService(BaseService):
             return await self._generate_reports_locked(case, report_types)
 
     async def _generate_reports_locked(
-        self,
-        case: Case,
-        report_types: List[ReportType]
+        self, case: Case, report_types: List[ReportType]
     ) -> ReportGenerationResponse:
         """
         Internal method: Generate reports with lock already acquired.
@@ -154,7 +151,7 @@ class ReportGenerationService(BaseService):
                     await self.case_repository.add_report(report)
                     logger.info(
                         f"Report persisted to Case repository",
-                        extra={"report_id": report.report_id, "case_id": case.case_id}
+                        extra={"report_id": report.report_id, "case_id": case.case_id},
                     )
 
                 reports.append(report)
@@ -165,8 +162,8 @@ class ReportGenerationService(BaseService):
                     extra={
                         "case_id": case.case_id,
                         "report_type": report_type.value,
-                        "generation_time_ms": generation_time
-                    }
+                        "generation_time_ms": generation_time,
+                    },
                 )
 
                 # Optional: Auto-index runbook in User KB for similarity search (separate from storage)
@@ -177,30 +174,25 @@ class ReportGenerationService(BaseService):
                 logger.error(
                     f"Failed to generate {report_type.value} report: {e}",
                     extra={"case_id": case.case_id},
-                    exc_info=True
+                    exc_info=True,
                 )
                 # Continue with other reports even if one fails
                 continue
 
         if not reports:
             raise ValidationException(
-                "report_generation_failed",
-                "Failed to generate any reports"
+                "report_generation_failed", "Failed to generate any reports"
             )
 
         # Calculate remaining regenerations
         remaining = case.max_report_regenerations - (case.report_generation_count + 1)
 
         return ReportGenerationResponse(
-            case_id=case.case_id,
-            reports=reports,
-            remaining_regenerations=remaining
+            case_id=case.case_id, reports=reports, remaining_regenerations=remaining
         )
 
     async def _generate_single_report(
-        self,
-        case: Case,
-        report_type: ReportType
+        self, case: Case, report_type: ReportType
     ) -> CaseReport:
         """Generate a single report using LLM."""
         start_time = time.time()
@@ -219,7 +211,9 @@ class ReportGenerationService(BaseService):
             content = await self._generate_post_mortem(case, context)
             title = f"Post-Mortem: {case.title}"
         else:
-            raise ValidationException("invalid_report_type", f"Unknown report type: {report_type}")
+            raise ValidationException(
+                "invalid_report_type", f"Unknown report type: {report_type}"
+            )
 
         # Sanitize PII if redactor available
         if self.pii_redactor:
@@ -232,10 +226,10 @@ class ReportGenerationService(BaseService):
         if report_type == ReportType.RUNBOOK:
             metadata = RunbookMetadata(
                 source=RunbookSource.INCIDENT_DRIVEN,
-                domain=getattr(case, 'domain', 'general'),
+                domain=getattr(case, "domain", "general"),
                 tags=case.tags,
                 case_context=context,
-                llm_model="gpt-4"  # TODO: Get from llm_router
+                llm_model="gpt-4",  # TODO: Get from llm_router
             )
 
         now = datetime.now(timezone.utc)
@@ -253,13 +247,11 @@ class ReportGenerationService(BaseService):
             is_current=True,
             version=case.report_generation_count + 1,
             linked_to_closure=False,
-            metadata=metadata
+            metadata=metadata,
         )
 
     async def _generate_incident_report(
-        self,
-        case: Case,
-        context: Dict[str, Any]
+        self, case: Case, context: Dict[str, Any]
     ) -> str:
         """Generate incident report using LLM."""
         prompt = f"""Generate a professional incident report for the following troubleshooting case.
@@ -301,11 +293,7 @@ Keep it professional, concise, and actionable. Focus on facts and outcomes."""
         response = await self._call_llm(prompt, max_tokens=2000)
         return response
 
-    async def _generate_runbook(
-        self,
-        case: Case,
-        context: Dict[str, Any]
-    ) -> str:
+    async def _generate_runbook(self, case: Case, context: Dict[str, Any]) -> str:
         """Generate runbook using LLM."""
         prompt = f"""Generate a step-by-step operational runbook for the following incident.
 
@@ -328,11 +316,7 @@ Make it actionable - someone should be able to follow this runbook without prior
         response = await self._call_llm(prompt, max_tokens=2500)
         return response
 
-    async def _generate_post_mortem(
-        self,
-        case: Case,
-        context: Dict[str, Any]
-    ) -> str:
+    async def _generate_post_mortem(self, case: Case, context: Dict[str, Any]) -> str:
         """Generate post-mortem using LLM."""
         prompt = f"""Generate a comprehensive post-mortem analysis for the following incident.
 
@@ -455,21 +439,39 @@ Key learnings available in case context."""
             "title": case.title,
             "description": case.description,
             "status": case.status.value,
-            "created_at": to_json_compatible(case.created_at) if case.created_at else None,
-            "resolved_at": to_json_compatible(case.updated_at) if case.status == CaseStatus.RESOLVED else None,
+            "created_at": (
+                to_json_compatible(case.created_at) if case.created_at else None
+            ),
+            "resolved_at": (
+                to_json_compatible(case.updated_at)
+                if case.status == CaseStatus.RESOLVED
+                else None
+            ),
             "duration": self._calculate_duration(case),
             "message_count": case.message_count,
             "tags": case.tags,
         }
 
         # Extract diagnostic state if available
-        if hasattr(case, 'diagnostic_state') and case.diagnostic_state:
+        if hasattr(case, "diagnostic_state") and case.diagnostic_state:
             diag = case.diagnostic_state
-            context.update({
-                "problem_summary": getattr(diag.anomaly_frame, 'statement', None) if hasattr(diag, 'anomaly_frame') else None,
-                "root_cause": getattr(diag.root_cause, 'description', None) if hasattr(diag, 'root_cause') else None,
-                "hypotheses_count": len(diag.hypotheses) if hasattr(diag, 'hypotheses') else 0,
-            })
+            context.update(
+                {
+                    "problem_summary": (
+                        getattr(diag.anomaly_frame, "statement", None)
+                        if hasattr(diag, "anomaly_frame")
+                        else None
+                    ),
+                    "root_cause": (
+                        getattr(diag.root_cause, "description", None)
+                        if hasattr(diag, "root_cause")
+                        else None
+                    ),
+                    "hypotheses_count": (
+                        len(diag.hypotheses) if hasattr(diag, "hypotheses") else 0
+                    ),
+                }
+            )
 
         return context
 
@@ -488,16 +490,12 @@ Key learnings available in case context."""
 
     def _validate_case_for_report_generation(self, case: Case) -> None:
         """Validate case is in valid state for report generation."""
-        valid_states = [
-            CaseStatus.RESOLVED,
-            CaseStatus.SOLVED,
-            CaseStatus.DOCUMENTING
-        ]
+        valid_states = [CaseStatus.RESOLVED, CaseStatus.SOLVED, CaseStatus.DOCUMENTING]
 
         if case.status not in valid_states:
             raise ValidationException(
                 "invalid_case_state",
-                f"Cannot generate reports from {case.status.value} state. Case must be resolved first."
+                f"Cannot generate reports from {case.status.value} state. Case must be resolved first.",
             )
 
     async def _index_generated_runbook(self, report: CaseReport, case: Case) -> None:
@@ -510,16 +508,15 @@ Key learnings available in case context."""
                 runbook=report,
                 source=RunbookSource.INCIDENT_DRIVEN,
                 case_title=case.title,
-                domain=getattr(case, 'domain', 'general'),
-                tags=case.tags
+                domain=getattr(case, "domain", "general"),
+                tags=case.tags,
             )
             logger.info(
                 f"Runbook indexed for similarity search",
-                extra={"case_id": case.case_id, "report_id": report.report_id}
+                extra={"case_id": case.case_id, "report_id": report.report_id},
             )
         except Exception as e:
             # Don't fail report generation if indexing fails
             logger.warning(
-                f"Failed to index runbook: {e}",
-                extra={"case_id": case.case_id}
+                f"Failed to index runbook: {e}", extra={"case_id": case.case_id}
             )

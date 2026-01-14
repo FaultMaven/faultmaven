@@ -16,16 +16,19 @@ Test Coverage:
 Testing Pattern: AsyncMock for repositories, verify business logic without database.
 """
 
-import pytest
+from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime, timezone
 
-from faultmaven.modules.agent.domain.services.investigation_orchestrator import InvestigationOrchestrator
+import pytest
+
 from faultmaven.exceptions import (
-    ValidationException,
-    NotFoundError,
     ConflictError,
+    NotFoundError,
+    ValidationException,
+)
+from faultmaven.modules.agent.domain.services.investigation_orchestrator import (
+    InvestigationOrchestrator,
 )
 
 
@@ -101,7 +104,9 @@ def sample_solution():
 
 
 @pytest.mark.asyncio
-async def test_create_hypothesis_success(orchestrator, mock_hypothesis_repo, sample_hypothesis):
+async def test_create_hypothesis_success(
+    orchestrator, mock_hypothesis_repo, sample_hypothesis
+):
     """Test successful hypothesis creation with valid inputs."""
     # Arrange
     case_id = "case_test123"
@@ -309,7 +314,11 @@ async def test_update_status_to_refuted_low_confidence(
 
 @pytest.mark.asyncio
 async def test_link_solution_to_validated_hypothesis(
-    orchestrator, mock_hypothesis_repo, mock_solution_repo, sample_hypothesis, sample_solution
+    orchestrator,
+    mock_hypothesis_repo,
+    mock_solution_repo,
+    sample_hypothesis,
+    sample_solution,
 ):
     """Test solution can be linked to validated hypothesis."""
     # Arrange
@@ -348,7 +357,11 @@ async def test_link_solution_to_validated_hypothesis(
 
 @pytest.mark.asyncio
 async def test_link_solution_to_rejected_hypothesis_fails(
-    orchestrator, mock_hypothesis_repo, mock_solution_repo, sample_hypothesis, sample_solution
+    orchestrator,
+    mock_hypothesis_repo,
+    mock_solution_repo,
+    sample_hypothesis,
+    sample_solution,
 ):
     """Test solution cannot be linked to refuted hypothesis."""
     # Arrange
@@ -382,7 +395,11 @@ async def test_link_solution_to_rejected_hypothesis_fails(
 
 @pytest.mark.asyncio
 async def test_get_investigation_progress(
-    orchestrator, mock_hypothesis_repo, mock_solution_repo, sample_hypothesis, sample_solution
+    orchestrator,
+    mock_hypothesis_repo,
+    mock_solution_repo,
+    sample_hypothesis,
+    sample_solution,
 ):
     """Test investigation progress summary calculation."""
     # Arrange

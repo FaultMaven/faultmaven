@@ -12,8 +12,8 @@ Design: Follows TASK-024 (Report Module) and TASK-026 (Hypothesis) API model pat
 
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, Field
 
+from pydantic import BaseModel, Field
 
 # ============================================================
 # Message API Models
@@ -23,7 +23,9 @@ from pydantic import BaseModel, Field
 class MessageMetadata(BaseModel):
     """Metadata for a message within a conversation."""
 
-    execution_id: str = Field(..., description="ID of the agent execution that created this message")
+    execution_id: str = Field(
+        ..., description="ID of the agent execution that created this message"
+    )
     token_usage: Optional[Dict[str, int]] = Field(
         None, description="Token usage for assistant messages (input, output, total)"
     )
@@ -31,7 +33,8 @@ class MessageMetadata(BaseModel):
         None, description="Type of agent that generated this message"
     )
     tool_calls: List[str] = Field(
-        default_factory=list, description="List of tool names called during this execution"
+        default_factory=list,
+        description="List of tool names called during this execution",
     )
 
 
@@ -39,7 +42,9 @@ class MessageResponse(BaseModel):
     """A single message in a conversation."""
 
     message_id: str = Field(..., description="Unique message identifier (execution_id)")
-    role: Literal["user", "assistant"] = Field(..., description="Message role (user or assistant)")
+    role: Literal["user", "assistant"] = Field(
+        ..., description="Message role (user or assistant)"
+    )
     content: str = Field(..., description="Message content")
     timestamp: datetime = Field(..., description="Message timestamp")
     metadata: Optional[MessageMetadata] = Field(

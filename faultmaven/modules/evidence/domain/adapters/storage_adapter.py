@@ -73,9 +73,7 @@ class EvidenceStorageAdapter:
             mime_type=file.content_type or "application/octet-stream",
         )
 
-        logger.info(
-            f"Evidence file stored: {file.filename} -> {result['file_path']}"
-        )
+        logger.info(f"Evidence file stored: {file.filename} -> {result['file_path']}")
 
         return result["file_path"]
 

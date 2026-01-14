@@ -8,122 +8,126 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
-from typing import Protocol, Optional, List, Dict, Any, TYPE_CHECKING
 from abc import ABC
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.domain.models import Case, CaseStatus
-    from faultmaven.modules.report.domain.models import CaseReport, ReportType
-    from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceListFilter
+    from uuid import UUID
+
     from faultmaven.modules.agent.domain.models.agent_execution import (
         AgentExecution,
         AgentToolCall,
-        ExecutionStatus,
         AgentType,
+        ExecutionStatus,
     )
-    from uuid import UUID
+    from faultmaven.modules.case.domain.models import Case, CaseStatus
+    from faultmaven.modules.evidence.domain.models import (
+        EvidenceArtifact,
+        EvidenceListFilter,
+    )
+    from faultmaven.modules.report.domain.models import CaseReport, ReportType
 
 
 # ============================================================
 # Repository Contract
 # ============================================================
 
+
 class ICaseRepository(Protocol):
     """
     Repository interface for Case persistence operations.
-    
+
     This is a Protocol (structural typing) that allows any implementation
     that matches this interface to be used. Concrete implementations are:
     - CaseRepository (abstract base class in infrastructure/case_repository.py)
     - InMemoryCaseRepository
     - PostgreSQLHybridCaseRepository
     """
-    
-    async def save(self, case: 'Case') -> 'Case':
+
+    async def save(self, case: "Case") -> "Case":
         """Save case to persistence layer."""
         ...
-    
-    async def get(self, case_id: str) -> Optional['Case']:
+
+    async def get(self, case_id: str) -> Optional["Case"]:
         """Retrieve case by ID."""
         ...
-    
+
     async def list(
         self,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        status: Optional['CaseStatus'] = None,
+        status: Optional["CaseStatus"] = None,
         limit: int = 50,
-        offset: int = 0
-    ) -> tuple[List['Case'], int]:
+        offset: int = 0,
+    ) -> tuple[List["Case"], int]:
         """List cases with optional filters."""
         ...
-    
+
     async def delete(self, case_id: str) -> bool:
         """Delete case by ID."""
         ...
-    
+
     async def search(
         self,
         query: str,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        limit: int = 20
-    ) -> tuple[List['Case'], int]:
+        limit: int = 20,
+    ) -> tuple[List["Case"], int]:
         """Search cases by text query."""
         ...
-    
+
     async def add_message(self, case_id: str, message_dict: dict) -> bool:
         """Add a message to a case."""
         ...
-    
+
     async def get_messages(
-        self,
-        case_id: str,
-        limit: int = 50,
-        offset: int = 0
+        self, case_id: str, limit: int = 50, offset: int = 0
     ) -> List[dict]:
         """Get messages for a case with pagination."""
         ...
-    
+
     async def update_activity_timestamp(self, case_id: str) -> bool:
         """Update case last_activity_at timestamp."""
         ...
-    
+
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """Compute analytics for a case."""
         ...
-    
-    async def cleanup_expired(self, max_age_days: int = 90, batch_size: int = 100) -> int:
+
+    async def cleanup_expired(
+        self, max_age_days: int = 90, batch_size: int = 100
+    ) -> int:
         """Clean up expired/old cases."""
         ...
-    
+
     # Report operations (TD-001: reports stored via Case repository)
-    async def add_report(self, report: 'CaseReport') -> 'CaseReport':
+    async def add_report(self, report: "CaseReport") -> "CaseReport":
         """Save report to persistence layer."""
         ...
-    
-    async def get_report(self, report_id: str) -> Optional['CaseReport']:
+
+    async def get_report(self, report_id: str) -> Optional["CaseReport"]:
         """Retrieve a report by ID."""
         ...
-    
+
     async def get_reports(
         self,
         case_id: str,
-        report_type: Optional['ReportType'] = None,
+        report_type: Optional["ReportType"] = None,
         include_history: bool = False,
-        only_current: bool = False
-    ) -> List['CaseReport']:
+        only_current: bool = False,
+    ) -> List["CaseReport"]:
         """Get reports for a case with optional filtering."""
         ...
-    
-    async def update_report(self, report: 'CaseReport') -> 'CaseReport':
+
+    async def update_report(self, report: "CaseReport") -> "CaseReport":
         """Update an existing report."""
         ...
-    
+
     async def delete_report(self, report_id: str) -> bool:
         """Delete a report by ID."""
         ...
-    
+
     # Standalone Evidence Operations (migrated from Evidence module)
     async def create_standalone_evidence(
         self,
@@ -131,110 +135,121 @@ class ICaseRepository(Protocol):
         content_type: str,
         size_bytes: int,
         storage_path: str,
-        uploaded_by: 'UUID',
+        uploaded_by: "UUID",
         description: Optional[str] = None,
         tags: Optional[List[str]] = None,
-    ) -> 'EvidenceArtifact':
+    ) -> "EvidenceArtifact":
         """Create standalone evidence record (can link to multiple cases)."""
         ...
-    
-    async def get_standalone_evidence(self, evidence_id: 'UUID') -> Optional['EvidenceArtifact']:
+
+    async def get_standalone_evidence(
+        self, evidence_id: "UUID"
+    ) -> Optional["EvidenceArtifact"]:
         """Get standalone evidence by ID."""
         ...
-    
+
     async def list_standalone_evidence(
-        self,
-        filters: 'EvidenceListFilter'
-    ) -> tuple[List['EvidenceArtifact'], int]:
+        self, filters: "EvidenceListFilter"
+    ) -> tuple[List["EvidenceArtifact"], int]:
         """List standalone evidence with filters."""
         ...
-    
-    async def delete_standalone_evidence(self, evidence_id: 'UUID') -> bool:
+
+    async def delete_standalone_evidence(self, evidence_id: "UUID") -> bool:
         """Delete standalone evidence record."""
         ...
-    
+
     async def link_standalone_evidence_to_case(
-        self,
-        evidence_id: 'UUID',
-        case_id: 'UUID'
-    ) -> Optional['EvidenceArtifact']:
+        self, evidence_id: "UUID", case_id: "UUID"
+    ) -> Optional["EvidenceArtifact"]:
         """Link standalone evidence to a case."""
         ...
-    
-    async def update_standalone_evidence(self, evidence: 'EvidenceArtifact') -> 'EvidenceArtifact':
+
+    async def update_standalone_evidence(
+        self, evidence: "EvidenceArtifact"
+    ) -> "EvidenceArtifact":
         """Update standalone evidence record."""
         ...
-    
+
     async def set_primary_evidence(self, case_id: str, evidence_id: str) -> bool:
         """Set evidence as primary for a case (unsets others for the same case)."""
         ...
-    
-    async def get_primary_evidence(self, case_id: str) -> Optional['EvidenceArtifact']:
+
+    async def get_primary_evidence(self, case_id: str) -> Optional["EvidenceArtifact"]:
         """Get primary evidence for a case."""
         ...
-    
+
     # Agent Execution Operations (migrated from Agent module)
-    async def create_agent_execution(self, execution: 'AgentExecution') -> 'AgentExecution':
+    async def create_agent_execution(
+        self, execution: "AgentExecution"
+    ) -> "AgentExecution":
         """Create new agent execution record."""
         ...
-    
-    async def get_agent_execution(self, execution_id: str) -> Optional['AgentExecution']:
+
+    async def get_agent_execution(
+        self, execution_id: str
+    ) -> Optional["AgentExecution"]:
         """Get agent execution by ID with tool calls loaded."""
         ...
-    
+
     async def list_agent_executions_by_case(
         self,
         case_id: str,
-        status: Optional['ExecutionStatus'] = None,
-        agent_type: Optional['AgentType'] = None,
+        status: Optional["ExecutionStatus"] = None,
+        agent_type: Optional["AgentType"] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[List['AgentExecution'], int]:
+    ) -> tuple[List["AgentExecution"], int]:
         """List agent executions for a case with optional filters."""
         ...
-    
+
     async def list_agent_executions_by_session(
         self,
         session_id: str,
-        status: Optional['ExecutionStatus'] = None,
+        status: Optional["ExecutionStatus"] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> tuple[List['AgentExecution'], int]:
+    ) -> tuple[List["AgentExecution"], int]:
         """List agent executions for a session with optional filters."""
         ...
-    
-    async def update_agent_execution(self, execution: 'AgentExecution') -> 'AgentExecution':
+
+    async def update_agent_execution(
+        self, execution: "AgentExecution"
+    ) -> "AgentExecution":
         """Update agent execution status and results."""
         ...
-    
+
     async def delete_agent_execution(self, execution_id: str) -> bool:
         """Delete agent execution by ID (cascades to tool calls)."""
         ...
-    
-    async def create_agent_tool_call(self, tool_call: 'AgentToolCall') -> 'AgentToolCall':
+
+    async def create_agent_tool_call(
+        self, tool_call: "AgentToolCall"
+    ) -> "AgentToolCall":
         """Create new agent tool call record."""
         ...
-    
-    async def update_agent_tool_call(self, tool_call: 'AgentToolCall') -> 'AgentToolCall':
+
+    async def update_agent_tool_call(
+        self, tool_call: "AgentToolCall"
+    ) -> "AgentToolCall":
         """Update agent tool call status and results."""
         ...
-    
+
     async def get_agent_tool_calls_for_execution(
         self,
         execution_id: str,
-    ) -> List['AgentToolCall']:
+    ) -> List["AgentToolCall"]:
         """Get all tool calls for an execution."""
         ...
-    
+
     async def count_agent_executions_by_case(self, case_id: str) -> int:
         """Count agent executions for a case."""
         ...
-    
+
     async def get_latest_agent_execution(
         self,
         case_id: str,
-        agent_type: Optional['AgentType'] = None,
-    ) -> Optional['AgentExecution']:
+        agent_type: Optional["AgentType"] = None,
+    ) -> Optional["AgentExecution"]:
         """Get the most recent agent execution for a case."""
         ...
 
@@ -243,14 +258,15 @@ class ICaseRepository(Protocol):
 # Service Contract
 # ============================================================
 
+
 class ICaseService(ABC):
     """
     Service interface for Case business logic and orchestration.
-    
+
     This interface defines the contract for case management business operations,
     coordinating between case storage, session management, and other services.
     """
-    
+
     # Note: Using ABC here because ICaseService is already defined in models/interfaces_case.py
     # We'll import and re-export it, or define a simplified version here.
     # For now, we'll reference the existing interface.
@@ -264,6 +280,7 @@ class ICaseService(ABC):
 # Re-export ICaseService from models/interfaces_case for backward compatibility
 # Eventually, this should be migrated fully to contracts.py
 from faultmaven.models.interfaces_case import ICaseService as _ICaseService
+
 ICaseService = _ICaseService  # Re-export with same name
 
 
@@ -278,6 +295,7 @@ from enum import Enum
 
 class CaseStatusDTO(str, Enum):
     """Public case status enum for cross-module use."""
+
     CONSULTING = "consulting"
     INVESTIGATING = "investigating"
     DOCUMENTING = "documenting"
@@ -295,6 +313,7 @@ class CaseDTO:
     This DTO exposes only the fields needed by other modules,
     hiding internal case implementation details.
     """
+
     case_id: str
     title: str
     status: CaseStatusDTO
@@ -307,40 +326,37 @@ class CaseDTO:
 # Re-export domain models for backward compatibility
 # These can be used directly until full DTO migration is complete
 # Services should import from contracts.py (not domain.models) per Principle 2
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models import (  # Evidence models (Case module owns the evidence table per module-organization-design.md); Hypothesis model (Case module owns hypotheses table); Investigation tracking models (used by milestone engine)
     Case,
-    CaseStatus,
     CaseSeverity,
-    InvestigationStrategy,
-    HypothesisStatus,
-    InvestigationPath,
-    ConsultingData,
-    UrgencyLevel,
-    UploadedFile,
-    # Evidence models (Case module owns the evidence table per module-organization-design.md)
-    Evidence,
-    EvidenceCategory,
-    EvidenceSourceType,
-    EvidenceForm,
-    EvidenceStance,
-    # Hypothesis model (Case module owns hypotheses table)
-    Hypothesis,
-    HypothesisCategory,
-    HypothesisGenerationMode,
-    HypothesisEvidenceLink,
-    # Investigation tracking models (used by milestone engine)
-    InvestigationProgress,
-    InvestigationStage,
-    PathSelection,
-    ProblemVerification,
-    Solution,
-    SolutionType,
-    TurnProgress,
-    TurnOutcome,
-    TemporalState,
-    WorkingConclusion,
-    RootCauseConclusion,
+    CaseStatus,
     ConfidenceLevel,
+    ConsultingData,
     DegradedMode,
     DegradedModeType,
+    Evidence,
+    EvidenceCategory,
+    EvidenceForm,
+    EvidenceSourceType,
+    EvidenceStance,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisEvidenceLink,
+    HypothesisGenerationMode,
+    HypothesisStatus,
+    InvestigationPath,
+    InvestigationProgress,
+    InvestigationStage,
+    InvestigationStrategy,
+    PathSelection,
+    ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    SolutionType,
+    TemporalState,
+    TurnOutcome,
+    TurnProgress,
+    UploadedFile,
+    UrgencyLevel,
+    WorkingConclusion,
 )

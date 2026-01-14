@@ -27,7 +27,3 @@ class ConfidenceAggregator:
         if len(history) >= 2 and all(h < 0.5 for h in history[-2:]):
             return "low"
         return "gray"
-
-
-
-

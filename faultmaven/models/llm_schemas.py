@@ -13,10 +13,10 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-
 # ============================================================
 # Supporting Models for State Updates
 # ============================================================
+
 
 class MilestoneUpdates(BaseModel):
     """
@@ -26,43 +26,35 @@ class MilestoneUpdates(BaseModel):
     """
 
     symptom_verified: Optional[bool] = Field(
-        default=None,
-        description="Symptom confirmed with concrete evidence"
+        default=None, description="Symptom confirmed with concrete evidence"
     )
 
     scope_assessed: Optional[bool] = Field(
-        default=None,
-        description="Scope determined (affected users/services/regions)"
+        default=None, description="Scope determined (affected users/services/regions)"
     )
 
     timeline_established: Optional[bool] = Field(
-        default=None,
-        description="Timeline determined (when started, when noticed)"
+        default=None, description="Timeline determined (when started, when noticed)"
     )
 
     changes_identified: Optional[bool] = Field(
-        default=None,
-        description="Recent changes identified (deployments, configs)"
+        default=None, description="Recent changes identified (deployments, configs)"
     )
 
     root_cause_identified: Optional[bool] = Field(
-        default=None,
-        description="Root cause determined"
+        default=None, description="Root cause determined"
     )
 
     solution_proposed: Optional[bool] = Field(
-        default=None,
-        description="Solution or mitigation proposed"
+        default=None, description="Solution or mitigation proposed"
     )
 
     solution_applied: Optional[bool] = Field(
-        default=None,
-        description="Solution applied by user"
+        default=None, description="Solution applied by user"
     )
 
     solution_verified: Optional[bool] = Field(
-        default=None,
-        description="Solution effectiveness verified"
+        default=None, description="Solution effectiveness verified"
     )
 
 
@@ -76,22 +68,21 @@ class EvidenceToAdd(BaseModel):
 
     raw_content: str = Field(
         description="Raw evidence content (text, JSON, log snippet, etc.)",
-        max_length=50000
+        max_length=50000,
     )
 
-    source: Literal["user_message", "llm_inference", "tool_output", "attachment"] = Field(
-        description="Where this evidence came from"
+    source: Literal["user_message", "llm_inference", "tool_output", "attachment"] = (
+        Field(description="Where this evidence came from")
     )
 
     form: Literal["text", "json", "log", "code", "metrics", "other"] = Field(
-        default="text",
-        description="Format of the content"
+        default="text", description="Format of the content"
     )
 
     summary: Optional[str] = Field(
         default=None,
         description="Brief summary of evidence (500 chars max)",
-        max_length=500
+        max_length=500,
     )
 
 
@@ -100,26 +91,26 @@ class HypothesisToAdd(BaseModel):
     Hypothesis the LLM wants to generate (optional, systematic investigation).
     """
 
-    text: str = Field(
-        description="Hypothesis statement",
-        max_length=500
-    )
+    text: str = Field(description="Hypothesis statement", max_length=500)
 
-    category: Literal["code", "config", "environment", "network", "data", "hardware", "external", "human", "other"] = Field(
-        default="other",
-        description="Hypothesis category"
-    )
+    category: Literal[
+        "code",
+        "config",
+        "environment",
+        "network",
+        "data",
+        "hardware",
+        "external",
+        "human",
+        "other",
+    ] = Field(default="other", description="Hypothesis category")
 
     likelihood: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Initial likelihood estimate (0.0-1.0)"
+        default=0.5, ge=0.0, le=1.0, description="Initial likelihood estimate (0.0-1.0)"
     )
 
     rationale: str = Field(
-        description="Why this hypothesis is plausible",
-        max_length=1000
+        description="Why this hypothesis is plausible", max_length=1000
     )
 
 
@@ -130,20 +121,13 @@ class EvidenceRequestToAdd(BaseModel):
     Example: "Please upload logs from the API gateway between 10:00-10:30 UTC"
     """
 
-    request_text: str = Field(
-        description="What evidence is requested",
-        max_length=500
-    )
+    request_text: str = Field(description="What evidence is requested", max_length=500)
 
     priority: Literal["high", "medium", "low"] = Field(
-        default="medium",
-        description="How critical this evidence is"
+        default="medium", description="How critical this evidence is"
     )
 
-    purpose: str = Field(
-        description="Why this evidence is needed",
-        max_length=500
-    )
+    purpose: str = Field(description="Why this evidence is needed", max_length=500)
 
 
 class WorkingConclusionUpdate(BaseModel):
@@ -152,25 +136,22 @@ class WorkingConclusionUpdate(BaseModel):
     """
 
     summary: str = Field(
-        description="Current best understanding of what's happening",
-        max_length=1000
+        description="Current best understanding of what's happening", max_length=1000
     )
 
     confidence: float = Field(
-        ge=0.0,
-        le=1.0,
-        description="Confidence in this understanding (0.0-1.0)"
+        ge=0.0, le=1.0, description="Confidence in this understanding (0.0-1.0)"
     )
 
     key_uncertainties: List[str] = Field(
-        default_factory=list,
-        description="What is still unknown or uncertain"
+        default_factory=list, description="What is still unknown or uncertain"
     )
 
 
 # ============================================================
 # CONSULTING Response Schema
 # ============================================================
+
 
 class ConsultingStateUpdate(BaseModel):
     """
@@ -182,35 +163,34 @@ class ConsultingStateUpdate(BaseModel):
     initial_symptoms: List[str] = Field(
         default_factory=list,
         description="Symptoms identified from conversation",
-        max_length=10
+        max_length=10,
     )
 
     proposed_problem_statement: Optional[str] = Field(
         default=None,
         description="Formalized problem statement for user confirmation",
-        max_length=1000
+        max_length=1000,
     )
 
-    urgency_level: Optional[Literal["critical", "high", "medium", "low", "unknown"]] = Field(
-        default=None,
-        description="Detected urgency level"
+    urgency_level: Optional[Literal["critical", "high", "medium", "low", "unknown"]] = (
+        Field(default=None, description="Detected urgency level")
     )
 
     problem_type: Optional[str] = Field(
         default=None,
         description="Type of problem (error, performance, availability, etc.)",
-        max_length=100
+        max_length=100,
     )
 
     decided_to_investigate: bool = Field(
         default=False,
-        description="Whether agent/user decided to start formal investigation"
+        description="Whether agent/user decided to start formal investigation",
     )
 
     next_clarifying_questions: List[str] = Field(
         default_factory=list,
         description="Questions agent wants answered before deciding to investigate",
-        max_length=5
+        max_length=5,
     )
 
 
@@ -223,8 +203,7 @@ class ConsultingResponse(BaseModel):
     """
 
     agent_response: str = Field(
-        description="Natural language response to user",
-        max_length=4000
+        description="Natural language response to user", max_length=4000
     )
 
     state_update: ConsultingStateUpdate = Field(
@@ -232,15 +211,14 @@ class ConsultingResponse(BaseModel):
     )
 
     suggested_action: Optional[str] = Field(
-        default=None,
-        description="What user should do next",
-        max_length=500
+        default=None, description="What user should do next", max_length=500
     )
 
 
 # ============================================================
 # INVESTIGATING Response Schema
 # ============================================================
+
 
 class InvestigationStateUpdate(BaseModel):
     """
@@ -250,49 +228,47 @@ class InvestigationStateUpdate(BaseModel):
     """
 
     milestones: MilestoneUpdates = Field(
-        default_factory=MilestoneUpdates,
-        description="Milestone completion flags"
+        default_factory=MilestoneUpdates, description="Milestone completion flags"
     )
 
     evidence_to_add: List[EvidenceToAdd] = Field(
         default_factory=list,
         description="Evidence to add from this turn",
-        max_length=10
+        max_length=10,
     )
 
     hypotheses_to_add: List[HypothesisToAdd] = Field(
         default_factory=list,
         description="Hypotheses to generate (optional, systematic investigation)",
-        max_length=5
+        max_length=5,
     )
 
     evidence_requests: List[EvidenceRequestToAdd] = Field(
         default_factory=list,
         description="Requests for additional evidence from user",
-        max_length=5
+        max_length=5,
     )
 
     mentioned_request_ids: List[str] = Field(
         default_factory=list,
         description="Evidence request IDs agent mentioned this turn (for mention_count tracking)",
-        max_length=20
+        max_length=20,
     )
 
     working_conclusion: Optional[WorkingConclusionUpdate] = Field(
-        default=None,
-        description="Updated understanding of the problem"
+        default=None, description="Updated understanding of the problem"
     )
 
     root_cause_description: Optional[str] = Field(
         default=None,
         description="Root cause explanation (when root_cause_identified=True)",
-        max_length=1000
+        max_length=1000,
     )
 
     solution_description: Optional[str] = Field(
         default=None,
         description="Proposed solution (when solution_proposed=True)",
-        max_length=2000
+        max_length=2000,
     )
 
 
@@ -305,8 +281,7 @@ class InvestigationResponse(BaseModel):
     """
 
     agent_response: str = Field(
-        description="Natural language response to user",
-        max_length=4000
+        description="Natural language response to user", max_length=4000
     )
 
     state_update: InvestigationStateUpdate = Field(
@@ -316,13 +291,13 @@ class InvestigationResponse(BaseModel):
     next_actions: List[str] = Field(
         default_factory=list,
         description="Suggested next steps for investigation",
-        max_length=5
+        max_length=5,
     )
 
     agent_status: Optional[str] = Field(
         default=None,
         description="What agent is currently doing/thinking",
-        max_length=500
+        max_length=500,
     )
 
 
@@ -330,23 +305,20 @@ class InvestigationResponse(BaseModel):
 # TERMINAL Response Schema (RESOLVED/CLOSED)
 # ============================================================
 
+
 class DocumentToGenerate(BaseModel):
     """
     Documentation the agent can generate post-investigation.
     """
 
-    document_type: Literal["incident_report", "post_mortem", "runbook", "timeline", "lessons_learned"] = Field(
-        description="Type of document"
-    )
+    document_type: Literal[
+        "incident_report", "post_mortem", "runbook", "timeline", "lessons_learned"
+    ] = Field(description="Type of document")
 
-    title: str = Field(
-        description="Document title",
-        max_length=200
-    )
+    title: str = Field(description="Document title", max_length=200)
 
     content: str = Field(
-        description="Document content (markdown format)",
-        max_length=20000
+        description="Document content (markdown format)", max_length=20000
     )
 
 
@@ -358,27 +330,23 @@ class TerminalStateUpdate(BaseModel):
     """
 
     resolution_summary: Optional[str] = Field(
-        default=None,
-        description="Summary of how case was resolved",
-        max_length=2000
+        default=None, description="Summary of how case was resolved", max_length=2000
     )
 
     lessons_learned: List[str] = Field(
         default_factory=list,
         description="Key takeaways from this investigation",
-        max_length=10
+        max_length=10,
     )
 
     prevention_measures: List[str] = Field(
         default_factory=list,
         description="How to prevent this in the future",
-        max_length=10
+        max_length=10,
     )
 
     documents_generated: List[DocumentToGenerate] = Field(
-        default_factory=list,
-        description="Documentation artifacts",
-        max_length=5
+        default_factory=list, description="Documentation artifacts", max_length=5
     )
 
 
@@ -390,27 +358,30 @@ class TerminalResponse(BaseModel):
     """
 
     agent_response: str = Field(
-        description="Natural language response to user",
-        max_length=4000
+        description="Natural language response to user", max_length=4000
     )
 
-    state_update: TerminalStateUpdate = Field(
-        description="State changes for this turn"
-    )
+    state_update: TerminalStateUpdate = Field(description="State changes for this turn")
 
-    closure_reason: Optional[Literal["resolved", "abandoned", "escalated", "consulting_only", "duplicate", "other"]] = Field(
-        default=None,
-        description="Why case was closed"
-    )
+    closure_reason: Optional[
+        Literal[
+            "resolved",
+            "abandoned",
+            "escalated",
+            "consulting_only",
+            "duplicate",
+            "other",
+        ]
+    ] = Field(default=None, description="Why case was closed")
 
 
 # ============================================================
 # Response Parser Helpers
 # ============================================================
 
+
 def parse_llm_response(
-    response_text: str,
-    response_schema: type[BaseModel]
+    response_text: str, response_schema: type[BaseModel]
 ) -> BaseModel:
     """
     Parse LLM response text into structured schema.

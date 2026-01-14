@@ -26,39 +26,38 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
+    ConfidenceLevel,
     ConsultingData,
+    DegradedMode,
+    DegradedModeType,
     Evidence,
     EvidenceCategory,
     EvidenceForm,
     EvidenceSourceType,
+    EvidenceStance,
     Hypothesis,
     HypothesisCategory,
+    HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisStatus,
-    HypothesisEvidenceLink,
-    EvidenceStance,
+    InvestigationPath,
     InvestigationProgress,
     InvestigationStage,
     PathSelection,
-    InvestigationPath,
     ProblemVerification,
+    RootCauseConclusion,
     Solution,
     SolutionType,
-    TurnProgress,
-    TurnOutcome,
     TemporalState,
+    TurnOutcome,
+    TurnProgress,
     UrgencyLevel,
     WorkingConclusion,
-    RootCauseConclusion,
-    ConfidenceLevel,
-    DegradedMode,
-    DegradedModeType,
 )
-from faultmaven.models.interfaces import ILLMProvider
-
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +92,7 @@ class MilestoneEngine:
         self,
         llm_provider: ILLMProvider,
         repository: Any,  # Case repository abstraction (duck typing)
-        trace_enabled: bool = True
+        trace_enabled: bool = True,
     ):
         """Initialize milestone engine.
 
@@ -112,7 +111,7 @@ class MilestoneEngine:
         self,
         case: Case,
         user_message: str,
-        attachments: Optional[List[Dict[str, Any]]] = None
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Process a single conversation turn.
@@ -156,9 +155,7 @@ class MilestoneEngine:
 
             # Step 2: Invoke LLM with structured output
             llm_response_text = await self.llm_provider.generate(
-                prompt=prompt,
-                temperature=0.7,
-                max_tokens=4000
+                prompt=prompt, temperature=0.7, max_tokens=4000
             )
 
             # Step 3: Parse LLM response (simple text for now, structured later)
@@ -169,7 +166,7 @@ class MilestoneEngine:
                 case=case,
                 user_message=user_message,
                 llm_response=llm_response_text,
-                attachments=attachments
+                attachments=attachments,
             )
 
             # Step 5: Increment turn counter
@@ -186,7 +183,7 @@ class MilestoneEngine:
                 progress_made=turn_metadata.get("progress_made", False),
                 outcome=turn_metadata.get("outcome", TurnOutcome.CONVERSATION),
                 user_message=user_message,
-                agent_response=llm_response_text
+                agent_response=llm_response_text,
             )
             updated_case.turn_history.append(turn_record)
 
@@ -197,7 +194,10 @@ class MilestoneEngine:
                 updated_case.turns_without_progress += 1
 
             # Step 8: Check degraded mode
-            if updated_case.turns_without_progress >= 3 and updated_case.degraded_mode is None:
+            if (
+                updated_case.turns_without_progress >= 3
+                and updated_case.degraded_mode is None
+            ):
                 self._enter_degraded_mode(updated_case, "no_progress")
 
             # Step 9: Check automatic status transitions
@@ -219,18 +219,21 @@ class MilestoneEngine:
                 "case_updated": updated_case,
                 "metadata": {
                     "turn_number": updated_case.current_turn,
-                    "milestones_completed": turn_metadata.get("milestones_completed", []),
+                    "milestones_completed": turn_metadata.get(
+                        "milestones_completed", []
+                    ),
                     "progress_made": turn_metadata.get("progress_made", False),
-                    "status_transitioned": turn_metadata.get("status_transitioned", False),
+                    "status_transitioned": turn_metadata.get(
+                        "status_transitioned", False
+                    ),
                     "outcome": turn_metadata.get("outcome", TurnOutcome.CONVERSATION),
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
             }
 
         except Exception as e:
             logger.error(
-                f"Error processing turn for case {case.case_id}: {e}",
-                exc_info=True
+                f"Error processing turn for case {case.case_id}: {e}", exc_info=True
             )
             raise MilestoneEngineError(f"Turn processing failed: {e}") from e
 
@@ -242,7 +245,7 @@ class MilestoneEngine:
         self,
         case: Case,
         user_message: str,
-        attachments: Optional[List[Dict[str, Any]]] = None
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
         Build status-appropriate prompt for LLM.
@@ -298,7 +301,7 @@ If the user confirms it and wants to investigate, let them know you're ready to 
         self,
         case: Case,
         user_message: str,
-        attachments: Optional[List[Dict[str, Any]]] = None
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Build prompt for INVESTIGATING status."""
 
@@ -329,11 +332,17 @@ Progress: {len(progress.completed_milestones)}/8 milestones complete
         # Build hypothesis summary
         hypothesis_summary = ""
         if case.hypotheses:
-            active = [h for h in case.hypotheses.values() if h.status == HypothesisStatus.ACTIVE]
+            active = [
+                h
+                for h in case.hypotheses.values()
+                if h.status == HypothesisStatus.ACTIVE
+            ]
             if active:
                 hypothesis_summary = f"\nActive Hypotheses ({len(active)}):\n"
                 for h in active[:3]:  # Top 3 hypotheses
-                    hypothesis_summary += f"- {h.statement} (likelihood: {h.likelihood:.2f})\n"
+                    hypothesis_summary += (
+                        f"- {h.statement} (likelihood: {h.likelihood:.2f})\n"
+                    )
 
         # Build attachments note
         attachments_note = ""
@@ -403,7 +412,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
         case: Case,
         user_message: str,
         llm_response: str,
-        attachments: Optional[List[Dict[str, Any]]] = None
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[Case, Dict[str, Any]]:
         """
         Process LLM response and update case state.
@@ -441,7 +450,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
                     uploaded_file = self._create_uploaded_file_from_attachment(
                         case=case,
                         attachment=attachment,
-                        turn_number=case.current_turn + 1
+                        turn_number=case.current_turn + 1,
                     )
                     case.uploaded_files.append(uploaded_file)
                     files_uploaded.append(uploaded_file.file_id)
@@ -450,26 +459,38 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
             if "yes" in user_message.lower() or "correct" in user_message.lower():
                 if case.consulting.proposed_problem_statement:
                     case.consulting.problem_statement_confirmed = True
-                    case.consulting.problem_statement_confirmed_at = datetime.now(timezone.utc)
+                    case.consulting.problem_statement_confirmed_at = datetime.now(
+                        timezone.utc
+                    )
 
             # Check for investigation decision
-            if "investigate" in user_message.lower() or "go ahead" in user_message.lower():
+            if (
+                "investigate" in user_message.lower()
+                or "go ahead" in user_message.lower()
+            ):
                 if case.consulting.problem_statement_confirmed:
                     case.consulting.decided_to_investigate = True
                     case.consulting.decision_made_at = datetime.now(timezone.utc)
 
             # Check if should transition to INVESTIGATING
             status_transitioned = False
-            if (case.consulting.problem_statement_confirmed and
-                case.consulting.decided_to_investigate):
+            if (
+                case.consulting.problem_statement_confirmed
+                and case.consulting.decided_to_investigate
+            ):
                 await self._transition_to_investigating(case)
                 status_transitioned = True
 
             metadata = {
-                "progress_made": case.consulting.problem_statement_confirmed or len(files_uploaded) > 0,
-                "outcome": TurnOutcome.DATA_PROVIDED if attachments else TurnOutcome.CONVERSATION,
+                "progress_made": case.consulting.problem_statement_confirmed
+                or len(files_uploaded) > 0,
+                "outcome": (
+                    TurnOutcome.DATA_PROVIDED
+                    if attachments
+                    else TurnOutcome.CONVERSATION
+                ),
                 "status_transitioned": status_transitioned,
-                "files_uploaded": files_uploaded  # Track uploaded files, not evidence (evidence only in INVESTIGATING)
+                "files_uploaded": files_uploaded,  # Track uploaded files, not evidence (evidence only in INVESTIGATING)
             }
 
         elif case.status == CaseStatus.INVESTIGATING:
@@ -483,7 +504,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
                     uploaded_file = self._create_uploaded_file_from_attachment(
                         case=case,
                         attachment=attachment,
-                        turn_number=case.current_turn + 1
+                        turn_number=case.current_turn + 1,
                     )
                     case.uploaded_files.append(uploaded_file)
 
@@ -491,7 +512,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
                     evidence = self._create_evidence_from_attachment(
                         case=case,
                         attachment=attachment,
-                        turn_number=case.current_turn + 1
+                        turn_number=case.current_turn + 1,
                     )
                     case.evidence.append(evidence)
                     evidence_added.append(evidence.evidence_id)
@@ -504,7 +525,10 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
                 case.progress.symptom_verified = True
                 milestones_completed.append("symptom_verified")
 
-            if not case.progress.root_cause_identified and "root cause" in response_lower:
+            if (
+                not case.progress.root_cause_identified
+                and "root cause" in response_lower
+            ):
                 case.progress.root_cause_identified = True
                 case.progress.root_cause_confidence = 0.8
                 case.progress.root_cause_method = "direct_analysis"
@@ -528,16 +552,17 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
                 "hypotheses_generated": hypotheses_generated,
                 "hypotheses_validated": hypotheses_validated,
                 "solutions_proposed": solutions_proposed,
-                "progress_made": len(milestones_completed) > 0 or len(evidence_added) > 0,
+                "progress_made": len(milestones_completed) > 0
+                or len(evidence_added) > 0,
                 "outcome": outcome,
-                "status_transitioned": False
+                "status_transitioned": False,
             }
 
         else:  # RESOLVED or CLOSED
             metadata = {
                 "progress_made": False,
                 "outcome": TurnOutcome.CONVERSATION,
-                "status_transitioned": False
+                "status_transitioned": False,
             }
 
         return case, metadata
@@ -580,8 +605,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
         Automatic Transitions:
         - INVESTIGATING → RESOLVED when solution_verified=True
         """
-        if (case.status == CaseStatus.INVESTIGATING and
-            case.progress.solution_verified):
+        if case.status == CaseStatus.INVESTIGATING and case.progress.solution_verified:
 
             case.status = CaseStatus.RESOLVED
             case.resolved_at = datetime.now(timezone.utc)
@@ -599,10 +623,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
             )
 
     def _enter_degraded_mode(
-        self,
-        case: Case,
-        mode_type: str,
-        reason: Optional[str] = None
+        self, case: Case, mode_type: str, reason: Optional[str] = None
     ) -> None:
         """
         Enter degraded mode when investigation is stuck.
@@ -619,7 +640,9 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
         # Determine reason if not provided
         if not reason:
             if mode_type == "no_progress":
-                reason = f"No progress for {case.turns_without_progress} consecutive turns"
+                reason = (
+                    f"No progress for {case.turns_without_progress} consecutive turns"
+                )
             else:
                 reason = "Investigation limitations encountered"
 
@@ -627,7 +650,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
             mode_type=DegradedModeType(mode_type),
             reason=reason,
             entered_at=datetime.now(timezone.utc),
-            attempted_actions=[]  # TODO: Track attempted actions
+            attempted_actions=[],  # TODO: Track attempted actions
         )
 
         logger.info(
@@ -639,10 +662,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
     # =========================================================================
 
     def _create_uploaded_file_from_attachment(
-        self,
-        case: Case,
-        attachment: Dict[str, Any],
-        turn_number: int
+        self, case: Case, attachment: Dict[str, Any], turn_number: int
     ) -> "UploadedFile":
         """
         Create uploaded file record from attachment.
@@ -658,24 +678,21 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
         from faultmaven.modules.case.contracts import UploadedFile
 
         uploaded_file = UploadedFile(
-            file_id=attachment.get('file_id', f"file_{uuid4().hex[:12]}"),
-            filename=attachment.get('filename', 'unknown'),
-            size_bytes=attachment.get('size', 0),
-            data_type=attachment.get('data_type', 'unknown'),
+            file_id=attachment.get("file_id", f"file_{uuid4().hex[:12]}"),
+            filename=attachment.get("filename", "unknown"),
+            size_bytes=attachment.get("size", 0),
+            data_type=attachment.get("data_type", "unknown"),
             uploaded_at_turn=turn_number,
             uploaded_at=datetime.now(timezone.utc),
-            source_type=attachment.get('source_type', 'file_upload'),
-            preprocessing_summary=attachment.get('summary', None),
-            content_ref=attachment.get('s3_uri', attachment.get('file_id', 'unknown'))
+            source_type=attachment.get("source_type", "file_upload"),
+            preprocessing_summary=attachment.get("summary", None),
+            content_ref=attachment.get("s3_uri", attachment.get("file_id", "unknown")),
         )
 
         return uploaded_file
 
     def _create_evidence_from_attachment(
-        self,
-        case: Case,
-        attachment: Dict[str, Any],
-        turn_number: int
+        self, case: Case, attachment: Dict[str, Any], turn_number: int
     ) -> Evidence:
         """
         Create evidence object from file attachment.
@@ -696,8 +713,8 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
             evidence_id=f"ev_{uuid4().hex[:12]}",
             summary=f"Uploaded file: {attachment.get('filename', 'unknown')}",
             preprocessed_content="[Content to be preprocessed]",  # Placeholder
-            content_ref=attachment.get('s3_uri', 'unknown'),
-            content_size_bytes=attachment.get('size', 0),
+            content_ref=attachment.get("s3_uri", "unknown"),
+            content_size_bytes=attachment.get("size", 0),
             preprocessing_method="pending",
             category=category,
             source_type=EvidenceSourceType.LOG_FILE,  # Default
@@ -705,7 +722,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
             advances_milestones=[],  # Calculated later
             collected_at=datetime.now(timezone.utc),
             collected_by=case.user_id,
-            collected_at_turn=turn_number
+            collected_at_turn=turn_number,
         )
 
         return evidence
@@ -738,7 +755,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
         progress_made: bool,
         outcome: TurnOutcome,
         user_message: str,
-        agent_response: str
+        agent_response: str,
     ) -> TurnProgress:
         """Create turn progress record."""
         return TurnProgress(
@@ -753,12 +770,19 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
             actions_taken=self._extract_actions(agent_response),
             outcome=outcome,
             user_message_summary=self._summarize_text(user_message, 200),
-            agent_response_summary=self._summarize_text(agent_response, 500)
+            agent_response_summary=self._summarize_text(agent_response, 500),
         )
 
     def _extract_actions(self, agent_response: str) -> List[str]:
         """Extract action keywords from agent response."""
-        action_keywords = ['verified', 'identified', 'proposed', 'tested', 'confirmed', 'analyzed']
+        action_keywords = [
+            "verified",
+            "identified",
+            "proposed",
+            "tested",
+            "confirmed",
+            "analyzed",
+        ]
         actions = []
 
         response_lower = agent_response.lower()
@@ -772,7 +796,7 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
         """Summarize long text for storage."""
         if len(text) <= max_length:
             return text
-        return text[:max_length - 3] + "..."
+        return text[: max_length - 3] + "..."
 
 
 # =============================================================================
@@ -782,4 +806,5 @@ The investigation is complete. Focus on documentation and knowledge sharing."""
 
 class MilestoneEngineError(Exception):
     """Base exception for milestone engine errors."""
+
     pass

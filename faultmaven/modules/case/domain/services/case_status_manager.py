@@ -13,22 +13,20 @@ Status Flow:
 
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+
 from faultmaven.modules.case.domain.models import CaseStatus
 from faultmaven.utils.serialization import to_json_compatible
-
 
 # Allowed user transitions (via UI)
 ALLOWED_TRANSITIONS = {
     CaseStatus.CONSULTING: [
         CaseStatus.INVESTIGATING,  # "Start investigation"
-        CaseStatus.CLOSED,         # "Close without investigating"
+        CaseStatus.CLOSED,  # "Close without investigating"
     ],
-
     CaseStatus.INVESTIGATING: [
-        CaseStatus.RESOLVED,       # "Mark as resolved"
-        CaseStatus.CLOSED,         # "Close as unresolved"
+        CaseStatus.RESOLVED,  # "Mark as resolved"
+        CaseStatus.CLOSED,  # "Close as unresolved"
     ],
-
     # Terminal states - no transitions allowed
     CaseStatus.RESOLVED: [],
     CaseStatus.CLOSED: [],
@@ -39,20 +37,25 @@ ALLOWED_TRANSITIONS = {
 # These messages are sent to agent as if user typed them
 STATUS_CHANGE_MESSAGES = {
     # CONSULTING → INVESTIGATING
-    (CaseStatus.CONSULTING, CaseStatus.INVESTIGATING):
-        "I want to start a formal investigation to find the root cause.",
-
+    (
+        CaseStatus.CONSULTING,
+        CaseStatus.INVESTIGATING,
+    ): "I want to start a formal investigation to find the root cause.",
     # CONSULTING → CLOSED
-    (CaseStatus.CONSULTING, CaseStatus.CLOSED):
-        "Close this case. I don't need further investigation.",
-
+    (
+        CaseStatus.CONSULTING,
+        CaseStatus.CLOSED,
+    ): "Close this case. I don't need further investigation.",
     # INVESTIGATING → RESOLVED
-    (CaseStatus.INVESTIGATING, CaseStatus.RESOLVED):
-        "The issue is resolved. Generate final documentation with root cause and solution.",
-
+    (
+        CaseStatus.INVESTIGATING,
+        CaseStatus.RESOLVED,
+    ): "The issue is resolved. Generate final documentation with root cause and solution.",
     # INVESTIGATING → CLOSED
-    (CaseStatus.INVESTIGATING, CaseStatus.CLOSED):
-        "Close this case as unresolved. Summarize what we found so far.",
+    (
+        CaseStatus.INVESTIGATING,
+        CaseStatus.CLOSED,
+    ): "Close this case as unresolved. Summarize what we found so far.",
 }
 
 
@@ -70,8 +73,7 @@ class CaseStatusManager:
 
     @staticmethod
     def validate_transition(
-        old_status: CaseStatus,
-        new_status: CaseStatus
+        old_status: CaseStatus, new_status: CaseStatus
     ) -> tuple[bool, Optional[str]]:
         """
         Validate status transition
@@ -84,7 +86,7 @@ class CaseStatusManager:
             return (
                 False,
                 f"Cannot change status from terminal state {old_status.value}. "
-                f"To reopen, create a new case."
+                f"To reopen, create a new case.",
             )
 
         # Check if transition is allowed
@@ -93,15 +95,14 @@ class CaseStatusManager:
             return (
                 False,
                 f"Invalid transition: {old_status.value} → {new_status.value}. "
-                f"Allowed transitions: {[s.value for s in allowed]}"
+                f"Allowed transitions: {[s.value for s in allowed]}",
             )
 
         return (True, None)
 
     @staticmethod
     def get_agent_message(
-        old_status: CaseStatus,
-        new_status: CaseStatus
+        old_status: CaseStatus, new_status: CaseStatus
     ) -> Optional[str]:
         """
         Get agent message for status transition
@@ -116,7 +117,7 @@ class CaseStatusManager:
         new_status: CaseStatus,
         user_id: str,
         auto: bool = False,
-        reason: Optional[str] = None
+        reason: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Build status change audit record
@@ -142,8 +143,7 @@ class CaseStatusManager:
 
     @staticmethod
     def get_terminal_state_fields(
-        new_status: CaseStatus,
-        user_id: str
+        new_status: CaseStatus, user_id: str
     ) -> Dict[str, Any]:
         """
         Get fields to update for terminal states

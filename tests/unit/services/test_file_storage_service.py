@@ -17,13 +17,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.exceptions import NotFoundError, ServiceError, ValidationException
 from faultmaven.services.file_storage_service import FileStorageService
-from faultmaven.exceptions import ValidationException, ServiceError, NotFoundError
-
 
 # ============================================================
 # Fixtures
 # ============================================================
+
 
 @pytest.fixture
 def temp_storage_dir():
@@ -73,16 +73,17 @@ def sample_image_data():
     """Create sample PNG file data (minimal valid PNG)."""
     # Minimal 1x1 pixel PNG
     return (
-        b'\x89PNG\r\n\x1a\n'  # PNG signature
-        b'\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde'
-        b'\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N'
-        b'\x00\x00\x00\x00IEND\xaeB`\x82'
+        b"\x89PNG\r\n\x1a\n"  # PNG signature
+        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+        b"\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
     )
 
 
 # ============================================================
 # Store File Tests
 # ============================================================
+
 
 class TestStoreFile:
     """Test store_file method."""
@@ -237,6 +238,7 @@ class TestStoreFile:
 # Retrieve File Tests
 # ============================================================
 
+
 class TestRetrieveFile:
     """Test retrieve_file method."""
 
@@ -265,9 +267,7 @@ class TestRetrieveFile:
     ):
         """Test that missing file raises NotFoundError."""
         with pytest.raises(NotFoundError) as exc_info:
-            await file_storage_service.retrieve_file(
-                "nonexistent/path/file.txt"
-            )
+            await file_storage_service.retrieve_file("nonexistent/path/file.txt")
 
         assert exc_info.value.resource_type == "File"
 
@@ -294,6 +294,7 @@ class TestRetrieveFile:
 # ============================================================
 # Delete File Tests
 # ============================================================
+
 
 class TestDeleteFile:
     """Test delete_file method."""
@@ -336,19 +337,16 @@ class TestDeleteFile:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_delete_file_returns_false_if_not_found(
-        self, file_storage_service
-    ):
+    async def test_delete_file_returns_false_if_not_found(self, file_storage_service):
         """Test that delete_file returns False for missing file."""
-        result = await file_storage_service.delete_file(
-            "nonexistent/path/file.txt"
-        )
+        result = await file_storage_service.delete_file("nonexistent/path/file.txt")
         assert result is False
 
 
 # ============================================================
 # Get File Info Tests
 # ============================================================
+
 
 class TestGetFileInfo:
     """Test get_file_info method."""
@@ -375,19 +373,16 @@ class TestGetFileInfo:
         assert info["file_path"] == store_result["file_path"]
 
     @pytest.mark.asyncio
-    async def test_get_file_info_returns_none_if_not_found(
-        self, file_storage_service
-    ):
+    async def test_get_file_info_returns_none_if_not_found(self, file_storage_service):
         """Test that get_file_info returns None for missing file."""
-        info = await file_storage_service.get_file_info(
-            "nonexistent/path/file.txt"
-        )
+        info = await file_storage_service.get_file_info("nonexistent/path/file.txt")
         assert info is None
 
 
 # ============================================================
 # Validate File Tests
 # ============================================================
+
 
 class TestValidateFile:
     """Test validate_file method."""
@@ -401,7 +396,9 @@ class TestValidateFile:
             original_filename="test.txt",
         )
 
-    def test_validate_file_zero_size_raises_validation_error(self, file_storage_service):
+    def test_validate_file_zero_size_raises_validation_error(
+        self, file_storage_service
+    ):
         """Test that zero-size file raises ValidationException."""
         with pytest.raises(ValidationException) as exc_info:
             file_storage_service.validate_file(
@@ -412,7 +409,9 @@ class TestValidateFile:
 
         assert "file_size" in str(exc_info.value).lower()
 
-    def test_validate_file_negative_size_raises_validation_error(self, file_storage_service):
+    def test_validate_file_negative_size_raises_validation_error(
+        self, file_storage_service
+    ):
         """Test that negative size raises ValidationException."""
         with pytest.raises(ValidationException) as exc_info:
             file_storage_service.validate_file(
@@ -493,6 +492,7 @@ class TestValidateFile:
 # Path Generation Tests
 # ============================================================
 
+
 class TestGenerateStoragePath:
     """Test _generate_storage_path method."""
 
@@ -513,7 +513,9 @@ class TestGenerateStoragePath:
         # Paths should be different due to UUID
         assert path1[1] != path2[1]
 
-    def test_generate_storage_path_includes_uuid_in_filename(self, file_storage_service):
+    def test_generate_storage_path_includes_uuid_in_filename(
+        self, file_storage_service
+    ):
         """Test that stored filename includes UUID prefix."""
         stored_filename, file_path = file_storage_service._generate_storage_path(
             organization_id="org_123",
@@ -559,6 +561,7 @@ class TestGenerateStoragePath:
 # Sanitize Filename Tests
 # ============================================================
 
+
 class TestSanitizeFilename:
     """Test _sanitize_filename method."""
 
@@ -575,7 +578,9 @@ class TestSanitizeFilename:
         assert "?" not in result
         assert "*" not in result
 
-    def test_sanitize_filename_removes_leading_trailing_dots(self, file_storage_service):
+    def test_sanitize_filename_removes_leading_trailing_dots(
+        self, file_storage_service
+    ):
         """Test that leading/trailing dots are removed."""
         result = file_storage_service._sanitize_filename("...file.txt...")
         assert not result.startswith(".")
@@ -592,7 +597,9 @@ class TestSanitizeFilename:
         result = file_storage_service._sanitize_filename(long_name)
         assert len(result) <= 200
 
-    def test_sanitize_filename_preserves_extension_on_truncation(self, file_storage_service):
+    def test_sanitize_filename_preserves_extension_on_truncation(
+        self, file_storage_service
+    ):
         """Test that extension is preserved when truncating."""
         long_name = "a" * 300 + ".pdf"
         result = file_storage_service._sanitize_filename(long_name)
@@ -602,6 +609,7 @@ class TestSanitizeFilename:
 # ============================================================
 # Path Validation Tests
 # ============================================================
+
 
 class TestValidatePath:
     """Test _validate_path method."""
@@ -628,6 +636,7 @@ class TestValidatePath:
 # ============================================================
 # Storage Stats Tests
 # ============================================================
+
 
 class TestGetStorageStats:
     """Test get_storage_stats method."""
@@ -657,6 +666,7 @@ class TestGetStorageStats:
 # Health Check Tests
 # ============================================================
 
+
 class TestHealthCheck:
     """Test health_check method."""
 
@@ -672,6 +682,7 @@ class TestHealthCheck:
 # ============================================================
 # Edge Cases and Error Handling
 # ============================================================
+
 
 class TestEdgeCases:
     """Test edge cases and error handling."""

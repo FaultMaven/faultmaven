@@ -27,7 +27,6 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     ExecutionStatus,
 )
 
-
 # ============================================================
 # AgentExecutionRequest Tests
 # ============================================================
@@ -71,7 +70,10 @@ class TestAgentExecutionRequest:
             AgentExecutionRequest(user_message="")
 
         errors = exc_info.value.errors()
-        assert any("min_length" in str(e).lower() or "at least 1" in str(e).lower() for e in errors)
+        assert any(
+            "min_length" in str(e).lower() or "at least 1" in str(e).lower()
+            for e in errors
+        )
 
     def test_user_message_max_length(self):
         """Test user_message maximum length validation."""
@@ -79,7 +81,10 @@ class TestAgentExecutionRequest:
             AgentExecutionRequest(user_message="x" * 10001)
 
         errors = exc_info.value.errors()
-        assert any("max_length" in str(e).lower() or "at most 10000" in str(e).lower() for e in errors)
+        assert any(
+            "max_length" in str(e).lower() or "at most 10000" in str(e).lower()
+            for e in errors
+        )
 
     def test_user_message_at_max_length(self):
         """Test user_message at exactly max length is valid."""
@@ -93,7 +98,13 @@ class TestAgentExecutionRequest:
 
     def test_agent_type_valid_values(self):
         """Test valid agent_type values."""
-        for agent_type in ["investigator", "debugger", "researcher", "validator", "reporter"]:
+        for agent_type in [
+            "investigator",
+            "debugger",
+            "researcher",
+            "validator",
+            "reporter",
+        ]:
             request = AgentExecutionRequest(
                 user_message="Test",
                 agent_type=agent_type,
@@ -400,7 +411,15 @@ class TestExecutionEventSSEModel:
 
     def test_event_types(self):
         """Test various event types."""
-        for event_type in ["started", "thinking", "tool_call", "tool_result", "response", "error", "completed"]:
+        for event_type in [
+            "started",
+            "thinking",
+            "tool_call",
+            "tool_result",
+            "response",
+            "error",
+            "completed",
+        ]:
             event = ExecutionEventSSE(event=event_type, data={})
             assert event.event == event_type
 
@@ -452,7 +471,7 @@ class TestModelEdgeCases:
             user_message='Error: "Connection refused" <socket> & timeout',
         )
         assert '"' in request.user_message
-        assert '<' in request.user_message
+        assert "<" in request.user_message
 
     def test_response_serialization(self):
         """Test response can be serialized to JSON."""

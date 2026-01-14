@@ -12,21 +12,20 @@ Coverage:
         --cov-report=term-missing
 """
 
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.infrastructure.persistence.models import Base, SessionModel
+from faultmaven.modules.auth.domain.models.session import Session
 from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
     DatabaseSessionRepository,
     InMemorySessionRepository,
     SessionRepositoryException,
 )
-from faultmaven.modules.auth.domain.models.session import Session
-
 
 # ============================================================
 # Test Fixtures
@@ -97,7 +96,9 @@ def sample_session_no_expiry() -> Session:
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_create_session(repository: DatabaseSessionRepository, sample_session: Session):
+async def test_create_session(
+    repository: DatabaseSessionRepository, sample_session: Session
+):
     """Test creating a new session in database."""
     # Act
     created = await repository.create_session(sample_session)
@@ -112,8 +113,7 @@ async def test_create_session(repository: DatabaseSessionRepository, sample_sess
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_create_session_no_expiry(
-    repository: DatabaseSessionRepository,
-    sample_session_no_expiry: Session
+    repository: DatabaseSessionRepository, sample_session_no_expiry: Session
 ):
     """Test creating a session without expiry."""
     # Act
@@ -157,7 +157,9 @@ async def test_create_session_with_metadata(repository: DatabaseSessionRepositor
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_get_session(repository: DatabaseSessionRepository, sample_session: Session):
+async def test_get_session(
+    repository: DatabaseSessionRepository, sample_session: Session
+):
     """Test retrieving session by ID."""
     # Arrange
     await repository.create_session(sample_session)
@@ -228,7 +230,9 @@ async def test_get_sessions_by_user_empty(repository: DatabaseSessionRepository)
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_update_last_accessed(repository: DatabaseSessionRepository, sample_session: Session):
+async def test_update_last_accessed(
+    repository: DatabaseSessionRepository, sample_session: Session
+):
     """Test updating session last_accessed timestamp."""
     # Arrange
     await repository.create_session(sample_session)
@@ -236,6 +240,7 @@ async def test_update_last_accessed(repository: DatabaseSessionRepository, sampl
 
     # Small delay to ensure timestamp difference
     import asyncio
+
     await asyncio.sleep(0.01)
 
     # Act
@@ -267,7 +272,9 @@ async def test_update_last_accessed_not_found(repository: DatabaseSessionReposit
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_update_session_metadata(repository: DatabaseSessionRepository, sample_session: Session):
+async def test_update_session_metadata(
+    repository: DatabaseSessionRepository, sample_session: Session
+):
     """Test updating session metadata."""
     # Arrange
     await repository.create_session(sample_session)
@@ -275,8 +282,7 @@ async def test_update_session_metadata(repository: DatabaseSessionRepository, sa
 
     # Act
     result = await repository.update_session_metadata(
-        sample_session.session_id,
-        new_metadata
+        sample_session.session_id, new_metadata
     )
 
     # Assert
@@ -294,8 +300,7 @@ async def test_update_session_metadata_not_found(repository: DatabaseSessionRepo
     """Test updating metadata for non-existent session."""
     # Act
     result = await repository.update_session_metadata(
-        "nonexistent-session-id",
-        {"key": "value"}
+        "nonexistent-session-id", {"key": "value"}
     )
 
     # Assert
@@ -309,7 +314,9 @@ async def test_update_session_metadata_not_found(repository: DatabaseSessionRepo
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_delete_session(repository: DatabaseSessionRepository, sample_session: Session):
+async def test_delete_session(
+    repository: DatabaseSessionRepository, sample_session: Session
+):
     """Test deleting session."""
     # Arrange
     await repository.create_session(sample_session)
@@ -391,7 +398,9 @@ async def test_cleanup_expired_sessions(repository: DatabaseSessionRepository):
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_cleanup_expired_sessions_none_expired(repository: DatabaseSessionRepository):
+async def test_cleanup_expired_sessions_none_expired(
+    repository: DatabaseSessionRepository,
+):
     """Test cleanup when no sessions are expired."""
     # Arrange
     session = Session(

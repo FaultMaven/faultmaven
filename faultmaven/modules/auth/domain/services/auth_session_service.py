@@ -20,14 +20,14 @@ Version: 2.0 (Spec-Compliant Refactor - 2025-10-23)
 Reference: docs/architecture/case-and-session-concepts.md
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from faultmaven.services.base import BaseService
-from faultmaven.models import SessionContext
+from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.models import SessionContext
+from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
 
 
@@ -60,11 +60,20 @@ class AuthSessionService(BaseService):
         self._settings = settings
 
         # Use settings if available, otherwise use defaults
-        if settings and hasattr(settings, 'session'):
-            self.max_sessions_per_user = getattr(settings.session, 'max_sessions_per_user', max_sessions_per_user)
-            timeout_hours = getattr(settings.session, 'timeout_minutes', inactive_threshold_hours * 60) / 60
+        if settings and hasattr(settings, "session"):
+            self.max_sessions_per_user = getattr(
+                settings.session, "max_sessions_per_user", max_sessions_per_user
+            )
+            timeout_hours = (
+                getattr(
+                    settings.session, "timeout_minutes", inactive_threshold_hours * 60
+                )
+                / 60
+            )
             self.inactive_threshold = timedelta(hours=timeout_hours)
-            self.session_ttl = timedelta(hours=getattr(settings.session, 'ttl_hours', session_ttl_hours))
+            self.session_ttl = timedelta(
+                hours=getattr(settings.session, "ttl_hours", session_ttl_hours)
+            )
         else:
             self.max_sessions_per_user = max_sessions_per_user
             self.inactive_threshold = timedelta(hours=inactive_threshold_hours)
@@ -106,7 +115,9 @@ class AuthSessionService(BaseService):
         # Check for existing session for this (user_id, client_id) pair
         # Implements session resumption (spec lines 397-402)
         if client_id:
-            existing_session = await self._find_session_by_user_and_client(user_id, client_id)
+            existing_session = await self._find_session_by_user_and_client(
+                user_id, client_id
+            )
             if existing_session:
                 # Session resumption - extend expiry and return
                 await self.extend_session(existing_session.session_id)
@@ -130,7 +141,7 @@ class AuthSessionService(BaseService):
             last_activity=now,
             updated_at=now,
             expires_at=now + self.session_ttl,
-            metadata=metadata or {}
+            metadata=metadata or {},
         )
 
         # Persist session
@@ -140,10 +151,22 @@ class AuthSessionService(BaseService):
             # Index by (user_id, client_id) for resumption if client_id provided
             if client_id:
                 # Calculate TTL in seconds from expires_at
-                ttl_seconds = int((session.expires_at - datetime.now(timezone.utc)).total_seconds()) if session.expires_at else self.session_ttl.total_seconds()
-                await self.session_store.index_session_by_client(user_id, client_id, session.session_id, int(ttl_seconds))
+                ttl_seconds = (
+                    int(
+                        (
+                            session.expires_at - datetime.now(timezone.utc)
+                        ).total_seconds()
+                    )
+                    if session.expires_at
+                    else self.session_ttl.total_seconds()
+                )
+                await self.session_store.index_session_by_client(
+                    user_id, client_id, session.session_id, int(ttl_seconds)
+                )
 
-        self.logger.info(f"Created new session for user {user_id}: {session.session_id}")
+        self.logger.info(
+            f"Created new session for user {user_id}: {session.session_id}"
+        )
         return session, False
 
     @trace("session_service_get_session")
@@ -225,7 +248,12 @@ class AuthSessionService(BaseService):
             raise ValidationException("updates cannot be empty")
 
         # Validate no case data in updates (spec compliance)
-        forbidden_fields = {'case_history', 'current_case_id', 'data_uploads', 'agent_state'}
+        forbidden_fields = {
+            "case_history",
+            "current_case_id",
+            "data_uploads",
+            "agent_state",
+        }
         if any(field in updates for field in forbidden_fields):
             raise ValidationException(
                 f"Cannot update session with case data. Forbidden fields: {forbidden_fields}. "
@@ -343,14 +371,15 @@ class AuthSessionService(BaseService):
 
         all_sessions = await self.session_store.list_sessions()
         user_sessions = [
-            s for s in all_sessions
-            if s.user_id == user_id and await self._is_active(s)
+            s for s in all_sessions if s.user_id == user_id and await self._is_active(s)
         ]
 
         return user_sessions
 
     @trace("session_service_list_sessions")
-    async def list_sessions(self, user_id: Optional[str] = None) -> List[SessionContext]:
+    async def list_sessions(
+        self, user_id: Optional[str] = None
+    ) -> List[SessionContext]:
         """List sessions, optionally filtered by user
 
         Args:
@@ -452,9 +481,13 @@ class AuthSessionService(BaseService):
             "total_sessions": len(all_sessions),
             "active_sessions": len(active_sessions),
             "unique_users": len(sessions_by_user),
-            "multi_device_users": len([u for u, sessions in sessions_by_user.items() if len(sessions) > 1]),
-            "average_sessions_per_user": len(active_sessions) / len(sessions_by_user) if sessions_by_user else 0,
-            "timestamp": to_json_compatible(now)
+            "multi_device_users": len(
+                [u for u, sessions in sessions_by_user.items() if len(sessions) > 1]
+            ),
+            "average_sessions_per_user": (
+                len(active_sessions) / len(sessions_by_user) if sessions_by_user else 0
+            ),
+            "timestamp": to_json_compatible(now),
         }
 
     @trace("session_service_get_user_session_analytics")
@@ -479,10 +512,12 @@ class AuthSessionService(BaseService):
                     "client_id": s.client_id,
                     "created_at": to_json_compatible(s.created_at),
                     "last_activity": to_json_compatible(s.last_activity),
-                    "expires_at": to_json_compatible(s.expires_at) if s.expires_at else None,
+                    "expires_at": (
+                        to_json_compatible(s.expires_at) if s.expires_at else None
+                    ),
                 }
                 for s in user_sessions
-            ]
+            ],
         }
 
     @trace("session_service_get_session_health")
@@ -506,7 +541,7 @@ class AuthSessionService(BaseService):
             "total_sessions": len(all_sessions),
             "active_sessions": active,
             "expired_sessions": expired,
-            "timestamp": to_json_compatible(now)
+            "timestamp": to_json_compatible(now),
         }
 
     # =========================================================================
@@ -514,9 +549,7 @@ class AuthSessionService(BaseService):
     # =========================================================================
 
     async def _find_session_by_user_and_client(
-        self,
-        user_id: str,
-        client_id: str
+        self, user_id: str, client_id: str
     ) -> Optional[SessionContext]:
         """Find existing session for (user, client) pair for resumption
 
@@ -531,8 +564,10 @@ class AuthSessionService(BaseService):
             return None
 
         # Check if store has index lookup capability
-        if hasattr(self.session_store, 'find_by_user_and_client'):
-            session_id = await self.session_store.find_by_user_and_client(user_id, client_id)
+        if hasattr(self.session_store, "find_by_user_and_client"):
+            session_id = await self.session_store.find_by_user_and_client(
+                user_id, client_id
+            )
             if session_id:
                 return await self.get_session(session_id)
 
@@ -617,15 +652,15 @@ class AuthSessionService(BaseService):
         # Status filter
         if status:
             filtered = [
-                s for s in filtered
-                if s.metadata.get("status", "active") == status
+                s for s in filtered if s.metadata.get("status", "active") == status
             ]
 
         # Text query filter (searches in metadata)
         if query:
             query_lower = query.lower()
             filtered = [
-                s for s in filtered
+                s
+                for s in filtered
                 if any(
                     query_lower in str(v).lower()
                     for v in s.metadata.values()

@@ -59,7 +59,9 @@ class InvestigationSession:
     status: SessionStatus = SessionStatus.ACTIVE
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     ended_at: Optional[datetime] = None
-    last_activity_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    last_activity_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
     total_duration_ms: Optional[int] = None
     session_goal: Optional[str] = None
     findings_summary: Optional[str] = None

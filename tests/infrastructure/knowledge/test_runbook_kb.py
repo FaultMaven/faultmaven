@@ -4,19 +4,20 @@ Unit tests for RunbookKnowledgeBase service.
 Tests dual-source runbook similarity search and indexing.
 """
 
-import pytest
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from datetime import datetime
-from typing import List, Dict
+from typing import Dict, List
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
+import pytest
 
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.report import (
     CaseReport,
-    ReportType,
     ReportStatus,
-    RunbookSource,
+    ReportType,
     RunbookMetadata,
-    SimilarRunbook
+    RunbookSource,
+    SimilarRunbook,
 )
 
 
@@ -55,8 +56,8 @@ def sample_incident_runbook():
             source=RunbookSource.INCIDENT_DRIVEN,
             domain="database",
             tags=["postgresql", "connection-pool", "performance"],
-            case_context={"root_cause": "Connection pool size too small"}
-        )
+            case_context={"root_cause": "Connection pool size too small"},
+        ),
     )
 
 
@@ -81,8 +82,8 @@ def sample_document_runbook():
             domain="database",
             tags=["postgresql", "performance"],
             document_title="PostgreSQL Operations Guide",
-            original_document_id="doc-789"
-        )
+            original_document_id="doc-789",
+        ),
     )
 
 
@@ -90,25 +91,32 @@ def sample_document_runbook():
 # Test: search_runbooks
 # =============================================================================
 
+
 @pytest.mark.asyncio
-async def test_search_runbooks_high_similarity(runbook_kb, mock_vector_store, sample_incident_runbook):
+async def test_search_runbooks_high_similarity(
+    runbook_kb, mock_vector_store, sample_incident_runbook
+):
     """Test searching for runbooks with high similarity match."""
     # Mock ChromaDB response
     mock_vector_store.query_by_embedding.return_value = {
         "ids": [["report-123"]],
         "distances": [[0.26]],  # Distance 0.26 → Similarity 0.87 (high)
-        "metadatas": [[{
-            "report_id": "report-123",
-            "case_id": "case-abc",
-            "case_title": "Database Connection Pool Exhaustion",
-            "title": "Runbook: Database Connection Pool Exhaustion",
-            "report_type": "runbook",
-            "runbook_source": "incident_driven",
-            "domain": "database",
-            "tags": "postgresql,connection-pool,performance",
-            "created_at": "2025-10-13T10:30:00Z"
-        }]],
-        "documents": [["# Runbook\n\n## Problem Description\n..."]]
+        "metadatas": [
+            [
+                {
+                    "report_id": "report-123",
+                    "case_id": "case-abc",
+                    "case_title": "Database Connection Pool Exhaustion",
+                    "title": "Runbook: Database Connection Pool Exhaustion",
+                    "report_type": "runbook",
+                    "runbook_source": "incident_driven",
+                    "domain": "database",
+                    "tags": "postgresql,connection-pool,performance",
+                    "created_at": "2025-10-13T10:30:00Z",
+                }
+            ]
+        ],
+        "documents": [["# Runbook\n\n## Problem Description\n..."]],
     }
 
     # Search for similar runbooks
@@ -117,7 +125,7 @@ async def test_search_runbooks_high_similarity(runbook_kb, mock_vector_store, sa
         query_embedding=query_embedding,
         filters={"domain": "database"},
         top_k=5,
-        min_similarity=0.65
+        min_similarity=0.65,
     )
 
     # Assertions
@@ -143,43 +151,46 @@ async def test_search_runbooks_no_results(runbook_kb, mock_vector_store):
         "ids": [[]],
         "distances": [[]],
         "metadatas": [[]],
-        "documents": [[]]
+        "documents": [[]],
     }
 
     query_embedding = [0.1] * 1024
     results = await runbook_kb.search_runbooks(
-        query_embedding=query_embedding,
-        top_k=5,
-        min_similarity=0.65
+        query_embedding=query_embedding, top_k=5, min_similarity=0.65
     )
 
     assert len(results) == 0
 
 
 @pytest.mark.asyncio
-async def test_search_runbooks_filters_by_similarity_threshold(runbook_kb, mock_vector_store):
+async def test_search_runbooks_filters_by_similarity_threshold(
+    runbook_kb, mock_vector_store
+):
     """Test that results below minimum similarity are filtered out."""
     # Mock response with low similarity (distance 1.0 → similarity 0.50)
     mock_vector_store.query_by_embedding.return_value = {
         "ids": [["report-123"]],
         "distances": [[1.0]],  # Low similarity
-        "metadatas": [[{
-            "report_id": "report-123",
-            "case_id": "case-abc",
-            "case_title": "Test Runbook",
-            "title": "Runbook: Test",
-            "report_type": "runbook",
-            "runbook_source": "incident_driven",
-            "domain": "general",
-            "tags": "",
-            "created_at": "2025-10-13T10:30:00Z"
-        }]],
-        "documents": [["Test content"]]
+        "metadatas": [
+            [
+                {
+                    "report_id": "report-123",
+                    "case_id": "case-abc",
+                    "case_title": "Test Runbook",
+                    "title": "Runbook: Test",
+                    "report_type": "runbook",
+                    "runbook_source": "incident_driven",
+                    "domain": "general",
+                    "tags": "",
+                    "created_at": "2025-10-13T10:30:00Z",
+                }
+            ]
+        ],
+        "documents": [["Test content"]],
     }
 
     results = await runbook_kb.search_runbooks(
-        query_embedding=[0.1] * 1024,
-        min_similarity=0.65  # 65% threshold
+        query_embedding=[0.1] * 1024, min_similarity=0.65  # 65% threshold
     )
 
     # Result should be filtered out (similarity 0.50 < 0.65)
@@ -193,47 +204,48 @@ async def test_search_runbooks_sorts_by_similarity(runbook_kb, mock_vector_store
     mock_vector_store.query_by_embedding.return_value = {
         "ids": [["report-1", "report-2", "report-3"]],
         "distances": [[0.4, 0.2, 0.6]],  # Similarities: 0.80, 0.90, 0.70
-        "metadatas": [[
-            {
-                "report_id": "report-1",
-                "case_id": "case-1",
-                "case_title": "Database Case 1",
-                "title": "Runbook: Database Issue 1",
-                "report_type": "runbook",
-                "runbook_source": "incident_driven",
-                "domain": "general",
-                "tags": "",
-                "created_at": "2025-10-13T10:00:00Z"
-            },
-            {
-                "report_id": "report-2",
-                "case_id": "case-2",
-                "case_title": "Database Case 2",
-                "title": "Runbook: Database Issue 2",
-                "report_type": "runbook",
-                "runbook_source": "document_driven",
-                "domain": "general",
-                "tags": "",
-                "created_at": "2025-10-13T11:00:00Z"
-            },
-            {
-                "report_id": "report-3",
-                "case_id": "case-3",
-                "case_title": "Database Case 3",
-                "title": "Runbook: Database Issue 3",
-                "report_type": "runbook",
-                "runbook_source": "incident_driven",
-                "domain": "general",
-                "tags": "",
-                "created_at": "2025-10-13T12:00:00Z"
-            }
-        ]],
-        "documents": [["Content 1", "Content 2", "Content 3"]]
+        "metadatas": [
+            [
+                {
+                    "report_id": "report-1",
+                    "case_id": "case-1",
+                    "case_title": "Database Case 1",
+                    "title": "Runbook: Database Issue 1",
+                    "report_type": "runbook",
+                    "runbook_source": "incident_driven",
+                    "domain": "general",
+                    "tags": "",
+                    "created_at": "2025-10-13T10:00:00Z",
+                },
+                {
+                    "report_id": "report-2",
+                    "case_id": "case-2",
+                    "case_title": "Database Case 2",
+                    "title": "Runbook: Database Issue 2",
+                    "report_type": "runbook",
+                    "runbook_source": "document_driven",
+                    "domain": "general",
+                    "tags": "",
+                    "created_at": "2025-10-13T11:00:00Z",
+                },
+                {
+                    "report_id": "report-3",
+                    "case_id": "case-3",
+                    "case_title": "Database Case 3",
+                    "title": "Runbook: Database Issue 3",
+                    "report_type": "runbook",
+                    "runbook_source": "incident_driven",
+                    "domain": "general",
+                    "tags": "",
+                    "created_at": "2025-10-13T12:00:00Z",
+                },
+            ]
+        ],
+        "documents": [["Content 1", "Content 2", "Content 3"]],
     }
 
     results = await runbook_kb.search_runbooks(
-        query_embedding=[0.1] * 1024,
-        min_similarity=0.65
+        query_embedding=[0.1] * 1024, min_similarity=0.65
     )
 
     # Should be sorted: report-2 (0.90), report-1 (0.80), report-3 (0.70)
@@ -250,11 +262,11 @@ async def test_search_runbooks_sorts_by_similarity(runbook_kb, mock_vector_store
 async def test_search_runbooks_handles_error_gracefully(runbook_kb, mock_vector_store):
     """Test that search errors are handled gracefully."""
     # Mock vector store to raise exception
-    mock_vector_store.query_by_embedding.side_effect = Exception("ChromaDB connection failed")
-
-    results = await runbook_kb.search_runbooks(
-        query_embedding=[0.1] * 1024
+    mock_vector_store.query_by_embedding.side_effect = Exception(
+        "ChromaDB connection failed"
     )
+
+    results = await runbook_kb.search_runbooks(query_embedding=[0.1] * 1024)
 
     # Should return empty list instead of raising exception
     assert len(results) == 0
@@ -264,15 +276,18 @@ async def test_search_runbooks_handles_error_gracefully(runbook_kb, mock_vector_
 # Test: index_runbook
 # =============================================================================
 
+
 @pytest.mark.asyncio
-async def test_index_runbook_incident_driven(runbook_kb, mock_vector_store, sample_incident_runbook):
+async def test_index_runbook_incident_driven(
+    runbook_kb, mock_vector_store, sample_incident_runbook
+):
     """Test indexing an incident-driven runbook."""
     await runbook_kb.index_runbook(
         runbook=sample_incident_runbook,
         source=RunbookSource.INCIDENT_DRIVEN,
         case_title="Database Connection Pool Exhaustion",
         domain="database",
-        tags=["postgresql", "connection-pool", "performance"]
+        tags=["postgresql", "connection-pool", "performance"],
     )
 
     # Verify vector store was called
@@ -290,14 +305,16 @@ async def test_index_runbook_incident_driven(runbook_kb, mock_vector_store, samp
 
 
 @pytest.mark.asyncio
-async def test_index_runbook_document_driven(runbook_kb, mock_vector_store, sample_document_runbook):
+async def test_index_runbook_document_driven(
+    runbook_kb, mock_vector_store, sample_document_runbook
+):
     """Test indexing a document-driven runbook."""
     await runbook_kb.index_runbook(
         runbook=sample_document_runbook,
         source=RunbookSource.DOCUMENT_DRIVEN,
         case_title="PostgreSQL Operations Guide",
         domain="database",
-        tags=["postgresql", "performance"]
+        tags=["postgresql", "performance"],
     )
 
     # Verify vector store was called
@@ -324,12 +341,11 @@ async def test_index_runbook_skips_non_runbook_types(runbook_kb, mock_vector_sto
         generated_at="2025-10-13T10:30:00Z",
         generation_time_ms=10000,
         is_current=True,
-        version=1
+        version=1,
     )
 
     await runbook_kb.index_runbook(
-        runbook=incident_report,
-        source=RunbookSource.INCIDENT_DRIVEN
+        runbook=incident_report, source=RunbookSource.INCIDENT_DRIVEN
     )
 
     # Should NOT call vector store for non-runbook types
@@ -340,6 +356,7 @@ async def test_index_runbook_skips_non_runbook_types(runbook_kb, mock_vector_sto
 # Test: index_document_derived_runbook
 # =============================================================================
 
+
 @pytest.mark.asyncio
 async def test_index_document_derived_runbook(runbook_kb, mock_vector_store):
     """Test convenience method for indexing document-derived runbooks."""
@@ -348,7 +365,7 @@ async def test_index_document_derived_runbook(runbook_kb, mock_vector_store):
         document_title="PostgreSQL Operations Guide",
         domain="database",
         tags=["postgresql", "performance", "troubleshooting"],
-        original_document_id="doc-abc123"
+        original_document_id="doc-abc123",
     )
 
     # Should return a UUID
@@ -373,44 +390,48 @@ async def test_index_document_derived_runbook(runbook_kb, mock_vector_store):
 # Test: Dual-Source Runbook Architecture
 # =============================================================================
 
+
 @pytest.mark.asyncio
-async def test_search_finds_both_incident_and_document_runbooks(runbook_kb, mock_vector_store):
+async def test_search_finds_both_incident_and_document_runbooks(
+    runbook_kb, mock_vector_store
+):
     """Test that search returns runbooks from both sources."""
     # Mock response with mixed sources
     mock_vector_store.query_by_embedding.return_value = {
         "ids": [["report-incident", "report-document"]],
         "distances": [[0.2, 0.3]],  # Both high similarity
-        "metadatas": [[
-            {
-                "report_id": "report-incident",
-                "case_id": "case-abc",
-                "case_title": "Incident Case",
-                "title": "Runbook from Incident",
-                "report_type": "runbook",
-                "runbook_source": "incident_driven",
-                "domain": "database",
-                "tags": "postgresql",
-                "created_at": "2025-10-13T10:00:00Z"
-            },
-            {
-                "report_id": "report-document",
-                "case_id": "doc-derived",
-                "case_title": "PostgreSQL Guide",
-                "title": "Runbook from Documentation",
-                "report_type": "runbook",
-                "runbook_source": "document_driven",
-                "domain": "database",
-                "tags": "postgresql",
-                "created_at": "2025-09-01T08:00:00Z",
-                "document_title": "PostgreSQL Guide"
-            }
-        ]],
-        "documents": [["Incident runbook content", "Document runbook content"]]
+        "metadatas": [
+            [
+                {
+                    "report_id": "report-incident",
+                    "case_id": "case-abc",
+                    "case_title": "Incident Case",
+                    "title": "Runbook from Incident",
+                    "report_type": "runbook",
+                    "runbook_source": "incident_driven",
+                    "domain": "database",
+                    "tags": "postgresql",
+                    "created_at": "2025-10-13T10:00:00Z",
+                },
+                {
+                    "report_id": "report-document",
+                    "case_id": "doc-derived",
+                    "case_title": "PostgreSQL Guide",
+                    "title": "Runbook from Documentation",
+                    "report_type": "runbook",
+                    "runbook_source": "document_driven",
+                    "domain": "database",
+                    "tags": "postgresql",
+                    "created_at": "2025-09-01T08:00:00Z",
+                    "document_title": "PostgreSQL Guide",
+                },
+            ]
+        ],
+        "documents": [["Incident runbook content", "Document runbook content"]],
     }
 
     results = await runbook_kb.search_runbooks(
-        query_embedding=[0.1] * 1024,
-        min_similarity=0.65
+        query_embedding=[0.1] * 1024, min_similarity=0.65
     )
 
     # Should find both types

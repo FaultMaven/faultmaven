@@ -22,7 +22,6 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional
 
-
 # Available jobs registry
 AVAILABLE_JOBS: Dict[str, str] = {
     "case_cleanup": "faultmaven.jobs.case_cleanup",
@@ -132,6 +131,7 @@ def main(args: Optional[List[str]] = None) -> int:
     """
     # Load environment variables at function level, not module level
     from dotenv import load_dotenv
+
     load_dotenv()
 
     parser = argparse.ArgumentParser(
@@ -156,7 +156,8 @@ Examples:
         help="List available jobs",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Enable verbose logging",
     )

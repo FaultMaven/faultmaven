@@ -14,13 +14,14 @@ Design Reference:
 - 3-attempt clarification with graceful fallback
 """
 
-from typing import List, Dict, Optional, Any
-from faultmaven.modules.agent.domain.models.investigation import InvestigationState
+from typing import Any, Dict, List, Optional
 
+from faultmaven.modules.agent.domain.models.investigation import InvestigationState
 
 # =============================================================================
 # Scenario 1: Start Systematic Investigation (CONSULTING → INVESTIGATING)
 # =============================================================================
+
 
 def get_start_investigation_prompt(
     problem_summary: str,
@@ -48,8 +49,7 @@ def get_start_investigation_prompt(
     }
 
     why_investigate = "\n".join(
-        f"• {indicator_map.get(ind, ind)}"
-        for ind in complexity_indicators
+        f"• {indicator_map.get(ind, ind)}" for ind in complexity_indicators
     )
 
     return f"""# 🔍 Ready to Start Systematic Investigation
@@ -164,21 +164,45 @@ def parse_start_investigation_response(user_response: str) -> tuple[str, bool]:
 
     # Start investigation keywords
     start_keywords = [
-        "start investigation", "start", "let's do it", "yes", "ok", "sure",
-        "investigate", "systematic", "let's figure", "find root cause",
-        "troubleshoot", "go ahead", "proceed", "do it"
+        "start investigation",
+        "start",
+        "let's do it",
+        "yes",
+        "ok",
+        "sure",
+        "investigate",
+        "systematic",
+        "let's figure",
+        "find root cause",
+        "troubleshoot",
+        "go ahead",
+        "proceed",
+        "do it",
     ]
 
     # Decline/continue consulting keywords
     decline_keywords = [
-        "not yet", "keep consulting", "no", "continue", "just questions",
-        "stay in q&a", "not now", "maybe later", "decline"
+        "not yet",
+        "keep consulting",
+        "no",
+        "continue",
+        "just questions",
+        "stay in q&a",
+        "not now",
+        "maybe later",
+        "decline",
     ]
 
     # More info keywords
     more_info_keywords = [
-        "tell me more", "explain", "what does", "how long", "what happens",
-        "more details", "clarify", "what's involved"
+        "tell me more",
+        "explain",
+        "what does",
+        "how long",
+        "what happens",
+        "more details",
+        "clarify",
+        "what's involved",
     ]
 
     # Check for start indicators
@@ -205,6 +229,7 @@ def parse_start_investigation_response(user_response: str) -> tuple[str, bool]:
 # =============================================================================
 # Scenario 2: Mark Investigation Complete (INVESTIGATING → RESOLVED)
 # =============================================================================
+
 
 def get_mark_complete_prompt(
     root_cause: str,
@@ -314,20 +339,38 @@ def parse_mark_complete_response(user_response: str) -> tuple[str, bool]:
 
     # Complete keywords
     complete_keywords = [
-        "mark as complete", "complete", "we're done", "yes", "close it",
-        "done", "finish", "resolved", "fixed", "good to close"
+        "mark as complete",
+        "complete",
+        "we're done",
+        "yes",
+        "close it",
+        "done",
+        "finish",
+        "resolved",
+        "fixed",
+        "good to close",
     ]
 
     # More verification keywords
     more_keywords = [
-        "not yet", "more verification", "keep monitoring", "wait",
-        "not ready", "need more time", "continue", "not complete"
+        "not yet",
+        "more verification",
+        "keep monitoring",
+        "wait",
+        "not ready",
+        "need more time",
+        "continue",
+        "not complete",
     ]
 
     # Questions keywords
     question_keywords = [
-        "i have questions", "question", "clarify", "explain",
-        "what about", "concerns"
+        "i have questions",
+        "question",
+        "clarify",
+        "explain",
+        "what about",
+        "concerns",
     ]
 
     if any(kw in response_lower for kw in complete_keywords):
@@ -348,6 +391,7 @@ def parse_mark_complete_response(user_response: str) -> tuple[str, bool]:
 # =============================================================================
 # Scenario 3: Suggest Escalation/Closure (INVESTIGATING → CLOSED)
 # =============================================================================
+
 
 def get_suggest_escalation_prompt(
     limitation_type: str,
@@ -470,20 +514,36 @@ def parse_suggest_escalation_response(user_response: str) -> tuple[str, bool]:
 
     # Escalate keywords
     escalate_keywords = [
-        "close and escalate", "escalate", "close", "get help",
-        "bring in", "need expert", "hand off", "transfer"
+        "close and escalate",
+        "escalate",
+        "close",
+        "get help",
+        "bring in",
+        "need expert",
+        "hand off",
+        "transfer",
     ]
 
     # Continue keywords
     continue_keywords = [
-        "keep trying", "continue", "keep going", "don't give up",
-        "we can figure", "keep investigating", "try anyway"
+        "keep trying",
+        "continue",
+        "keep going",
+        "don't give up",
+        "we can figure",
+        "keep investigating",
+        "try anyway",
     ]
 
     # Questions keywords
     question_keywords = [
-        "questions", "wait", "hold on", "clarify", "explain",
-        "what do you mean", "tell me more"
+        "questions",
+        "wait",
+        "hold on",
+        "clarify",
+        "explain",
+        "what do you mean",
+        "tell me more",
     ]
 
     if any(kw in response_lower for kw in escalate_keywords):
@@ -501,6 +561,7 @@ def parse_suggest_escalation_response(user_response: str) -> tuple[str, bool]:
 # =============================================================================
 # Tracking and State Management
 # =============================================================================
+
 
 def get_workflow_transition_confirmation(
     transition_type: str,

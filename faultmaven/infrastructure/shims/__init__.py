@@ -48,34 +48,33 @@ Usage:
     print(f"Metrics active: {metrics['active']}")
 """
 
-from .observability import (
-    track,
-    get_tracing_status,
-    is_tracing_active,
-    OPIK_AVAILABLE,
-)
-from .security import (
-    PIIRedactor,
-    get_pii_redaction_status,
-    PRESIDIO_AVAILABLE,
-)
-from .metrics import (
-    Counter,
-    Histogram,
-    Gauge,
-    Summary,
-    Info,
-    get_metrics_status,
-    is_metrics_active,
+from .metrics import (  # Pre-defined common metrics
     PROMETHEUS_AVAILABLE,
-    # Pre-defined common metrics
-    request_counter,
-    request_duration,
+    Counter,
+    Gauge,
+    Histogram,
+    Info,
+    Summary,
     active_sessions,
     case_operations,
+    get_metrics_status,
+    is_metrics_active,
     knowledge_queries,
-    llm_requests,
     llm_latency,
+    llm_requests,
+    request_counter,
+    request_duration,
+)
+from .observability import (
+    OPIK_AVAILABLE,
+    get_tracing_status,
+    is_tracing_active,
+    track,
+)
+from .security import (
+    PRESIDIO_AVAILABLE,
+    PIIRedactor,
+    get_pii_redaction_status,
 )
 
 __all__ = [

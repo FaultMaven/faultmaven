@@ -2,16 +2,18 @@
 
 Tests the business logic of the Evidence Service with mocked dependencies.
 """
-import pytest
+
 from unittest.mock import AsyncMock
 from uuid import uuid4
+
+import pytest
 
 from faultmaven.modules.evidence.domain.models import EvidenceListFilter
 from faultmaven.modules.evidence.domain.services.evidence_service import EvidenceService
 
 from .conftest import (
-    MockEvidenceStorageAdapter,
     MockEvidenceRepository,
+    MockEvidenceStorageAdapter,
     MockUploadFile,
     create_sample_evidence,
 )
@@ -29,7 +31,9 @@ class TestEvidenceServiceUpload:
         )
 
     @pytest.mark.asyncio
-    async def test_upload_evidence_success(self, service, mock_upload_file, sample_user_id):
+    async def test_upload_evidence_success(
+        self, service, mock_upload_file, sample_user_id
+    ):
         """Test successful evidence upload."""
         result = await service.upload_evidence(
             file=mock_upload_file,
@@ -43,7 +47,9 @@ class TestEvidenceServiceUpload:
         assert "test" in result.tags
 
     @pytest.mark.asyncio
-    async def test_upload_evidence_with_case_id(self, service, mock_upload_file, sample_user_id, sample_case_id):
+    async def test_upload_evidence_with_case_id(
+        self, service, mock_upload_file, sample_user_id, sample_case_id
+    ):
         """Test upload with auto-linking to a case."""
         result = await service.upload_evidence(
             file=mock_upload_file,
@@ -56,7 +62,9 @@ class TestEvidenceServiceUpload:
         service.case_repository.link_standalone_evidence_to_case.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_upload_evidence_without_optional_fields(self, service, mock_upload_file, sample_user_id):
+    async def test_upload_evidence_without_optional_fields(
+        self, service, mock_upload_file, sample_user_id
+    ):
         """Test upload without description or tags."""
         result = await service.upload_evidence(
             file=mock_upload_file,
@@ -67,7 +75,9 @@ class TestEvidenceServiceUpload:
         assert result.original_filename == mock_upload_file.filename
 
     @pytest.mark.asyncio
-    async def test_upload_stores_file_first(self, service, mock_upload_file, sample_user_id):
+    async def test_upload_stores_file_first(
+        self, service, mock_upload_file, sample_user_id
+    ):
         """Test that file is stored before database record is created."""
         await service.upload_evidence(
             file=mock_upload_file,
@@ -119,7 +129,9 @@ class TestEvidenceServiceGet:
 
         await service.get_evidence(evidence_id)
 
-        service.case_repository.get_standalone_evidence.assert_called_once_with(str(evidence_id))
+        service.case_repository.get_standalone_evidence.assert_called_once_with(
+            str(evidence_id)
+        )
 
 
 class TestEvidenceServiceList:
@@ -142,7 +154,9 @@ class TestEvidenceServiceList:
         assert total == 0
 
     @pytest.mark.asyncio
-    async def test_list_evidence_with_results(self, service, sample_evidence_list, sample_filters):
+    async def test_list_evidence_with_results(
+        self, service, sample_evidence_list, sample_filters
+    ):
         """Test listing returns all evidence."""
         # Pre-populate repository
         for evidence in sample_evidence_list:
@@ -191,7 +205,9 @@ class TestEvidenceServiceList:
         assert "tag0" in results[0].tags
 
     @pytest.mark.asyncio
-    async def test_list_evidence_filter_by_filename(self, service, sample_evidence_list):
+    async def test_list_evidence_filter_by_filename(
+        self, service, sample_evidence_list
+    ):
         """Test filtering by filename contains."""
         for evidence in sample_evidence_list:
             service.case_repository._storage[evidence.evidence_id] = evidence
@@ -243,7 +259,9 @@ class TestEvidenceServiceDelete:
 
         # Both storage and repository delete should be called
         service.storage.delete_file.assert_called_once_with(sample_evidence.file_path)
-        service.case_repository.delete_standalone_evidence.assert_called_once_with(sample_evidence.evidence_id)
+        service.case_repository.delete_standalone_evidence.assert_called_once_with(
+            sample_evidence.evidence_id
+        )
 
 
 class TestEvidenceServiceLinkToCase:
@@ -276,7 +294,9 @@ class TestEvidenceServiceLinkToCase:
             await service.link_to_case(non_existent_id, sample_case_id)
 
     @pytest.mark.asyncio
-    async def test_link_to_case_idempotent(self, service, sample_evidence, sample_case_id):
+    async def test_link_to_case_idempotent(
+        self, service, sample_evidence, sample_case_id
+    ):
         """Test linking same case twice doesn't create duplicates."""
         service.case_repository._storage[sample_evidence.evidence_id] = sample_evidence
 
@@ -325,4 +345,6 @@ class TestEvidenceServiceGetFileUrl:
 
         await service.get_file_url(sample_evidence.evidence_id)
 
-        service.storage.get_download_url.assert_called_once_with(sample_evidence.file_path)
+        service.storage.get_download_url.assert_called_once_with(
+            sample_evidence.file_path
+        )

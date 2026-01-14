@@ -1,11 +1,10 @@
-import os
 import contextlib
+import os
 
 import pytest
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app
-
 
 pytestmark = pytest.mark.integration
 
@@ -29,7 +28,3 @@ def test_readiness_reports_ready_with_redis_and_chroma():
     body = r.json()
     # In CI with dependencies up, expect ready; if not, this test can be adjusted per environment
     assert body.get("status") in {"ready", "unready"}
-
-
-
-

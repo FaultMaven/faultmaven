@@ -31,7 +31,7 @@ Anchoring Prevention:
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -39,8 +39,8 @@ if TYPE_CHECKING:
 
 from faultmaven.modules.agent.contracts import (
     Hypothesis,
-    HypothesisStatus,
     HypothesisGenerationMode,
+    HypothesisStatus,
     HypothesisTest,
     InvestigationPhase,
 )
@@ -114,7 +114,9 @@ class HypothesisManager:
             generation_mode=generation_mode,
             captured_in_phase=captured_in_phase,
             captured_at_turn=current_turn,
-            promoted_to_active_at_turn=current_turn if status == HypothesisStatus.ACTIVE else None,
+            promoted_to_active_at_turn=(
+                current_turn if status == HypothesisStatus.ACTIVE else None
+            ),
             triggering_observation=triggering_observation,
             last_updated_turn=current_turn,
             last_progress_at_turn=current_turn,
@@ -312,10 +314,15 @@ class HypothesisManager:
             )
 
         # Check for retirement due to low confidence
-        elif hypothesis.likelihood < 0.3 and hypothesis.status != HypothesisStatus.RETIRED:
+        elif (
+            hypothesis.likelihood < 0.3
+            and hypothesis.status != HypothesisStatus.RETIRED
+        ):
             hypothesis.status = HypothesisStatus.RETIRED
             hypothesis.retirement_reason = "Low confidence after testing"
-            self.logger.info(f"Hypothesis {hypothesis.hypothesis_id} RETIRED (confidence < 30%)")
+            self.logger.info(
+                f"Hypothesis {hypothesis.hypothesis_id} RETIRED (confidence < 30%)"
+            )
 
     def apply_confidence_decay(
         self,
@@ -645,32 +652,49 @@ class HypothesisManager:
         """
         summary = {
             "total": len(hypotheses),
-            "captured": sum(1 for h in hypotheses if h.status == HypothesisStatus.CAPTURED),
+            "captured": sum(
+                1 for h in hypotheses if h.status == HypothesisStatus.CAPTURED
+            ),
             "active": sum(1 for h in hypotheses if h.status == HypothesisStatus.ACTIVE),
-            "validated": sum(1 for h in hypotheses if h.status == HypothesisStatus.VALIDATED),
-            "refuted": sum(1 for h in hypotheses if h.status == HypothesisStatus.REFUTED),
-            "retired": sum(1 for h in hypotheses if h.status == HypothesisStatus.RETIRED),
-            "superseded": sum(1 for h in hypotheses if h.status == HypothesisStatus.SUPERSEDED),
+            "validated": sum(
+                1 for h in hypotheses if h.status == HypothesisStatus.VALIDATED
+            ),
+            "refuted": sum(
+                1 for h in hypotheses if h.status == HypothesisStatus.REFUTED
+            ),
+            "retired": sum(
+                1 for h in hypotheses if h.status == HypothesisStatus.RETIRED
+            ),
+            "superseded": sum(
+                1 for h in hypotheses if h.status == HypothesisStatus.SUPERSEDED
+            ),
         }
 
         # Count by generation mode
         summary["opportunistic"] = sum(
-            1 for h in hypotheses
+            1
+            for h in hypotheses
             if h.generation_mode == HypothesisGenerationMode.OPPORTUNISTIC
         )
         summary["systematic"] = sum(
-            1 for h in hypotheses
+            1
+            for h in hypotheses
             if h.generation_mode == HypothesisGenerationMode.SYSTEMATIC
         )
         summary["forced_alternative"] = sum(
-            1 for h in hypotheses
+            1
+            for h in hypotheses
             if h.generation_mode == HypothesisGenerationMode.FORCED_ALTERNATIVE
         )
 
         # Active hypotheses statistics
-        active_hypotheses = [h for h in hypotheses if h.status == HypothesisStatus.ACTIVE]
+        active_hypotheses = [
+            h for h in hypotheses if h.status == HypothesisStatus.ACTIVE
+        ]
 
-        summary["max_confidence"] = max((h.likelihood for h in active_hypotheses), default=0.0)
+        summary["max_confidence"] = max(
+            (h.likelihood for h in active_hypotheses), default=0.0
+        )
         summary["avg_confidence"] = (
             sum(h.likelihood for h in active_hypotheses) / len(active_hypotheses)
             if active_hypotheses
@@ -693,8 +717,7 @@ class HypothesisManager:
             Hypothesis with highest likelihood, or None if no active hypotheses
         """
         active_hypotheses = [
-            h for h in hypotheses
-            if h.status == HypothesisStatus.ACTIVE
+            h for h in hypotheses if h.status == HypothesisStatus.ACTIVE
         ]
 
         if not active_hypotheses:
@@ -730,10 +753,7 @@ class HypothesisManager:
         Returns:
             True if at least one hypothesis is validated
         """
-        return any(
-            h.status == HypothesisStatus.VALIDATED
-            for h in hypotheses
-        )
+        return any(h.status == HypothesisStatus.VALIDATED for h in hypotheses)
 
 
 def create_hypothesis_manager() -> HypothesisManager:

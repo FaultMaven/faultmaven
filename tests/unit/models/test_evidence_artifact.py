@@ -3,8 +3,9 @@
 Tests the EvidenceArtifact dataclass and related enums.
 """
 
-import pytest
 from datetime import datetime, timezone
+
+import pytest
 
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
@@ -388,6 +389,7 @@ class TestEvidenceArtifactMethods:
 
         # Wait a tiny bit to ensure timestamp difference
         import time
+
         time.sleep(0.001)
 
         sample_evidence.touch()

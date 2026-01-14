@@ -15,76 +15,81 @@ import redis.asyncio as redis
 
 logger = logging.getLogger(__name__)
 
+
 class RedisClientFactory:
     """Factory for creating configured Redis clients."""
-    
+
     @staticmethod
     def create_client(
         redis_url: Optional[str] = None,
         host: Optional[str] = None,
         port: Optional[int] = None,
         password: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> redis.Redis:
         """
         Create a Redis client with proper configuration.
-        
+
         Args:
             redis_url: Complete Redis URL (takes precedence)
             host: Redis host
             port: Redis port
             password: Redis password
             **kwargs: Additional Redis client parameters
-            
+
         Returns:
             Configured Redis client
         """
         # Priority: explicit parameters > environment variables > defaults
         config = RedisClientFactory._build_config(redis_url, host, port, password)
-        
+
         # Add connection pool settings for better performance
         pool_kwargs = {
-            'max_connections': kwargs.pop('max_connections', 20),
-            'socket_connect_timeout': kwargs.pop('socket_connect_timeout', 5),
-            'socket_timeout': kwargs.pop('socket_timeout', 10),
+            "max_connections": kwargs.pop("max_connections", 20),
+            "socket_connect_timeout": kwargs.pop("socket_connect_timeout", 5),
+            "socket_timeout": kwargs.pop("socket_timeout", 10),
         }
-        
+
         # Note: retry_on_timeout is deprecated in redis-py 6.0.0+
         # TimeoutError is included by default in retry behavior
-        
+
         try:
-            if config['url']:
+            if config["url"]:
                 # Use URL-based connection (includes auth)
                 client = redis.from_url(
-                    config['url'],
-                    decode_responses=True,
-                    **pool_kwargs,
-                    **kwargs
+                    config["url"], decode_responses=True, **pool_kwargs, **kwargs
                 )
-                logger.info(f"Redis client created from URL: {RedisClientFactory._mask_url(config['url'])}")
+                logger.info(
+                    f"Redis client created from URL: {RedisClientFactory._mask_url(config['url'])}"
+                )
             else:
                 # Use parameter-based connection
                 client = redis.Redis(
-                    host=config['host'],
-                    port=config['port'],
-                    password=config['password'],
+                    host=config["host"],
+                    port=config["port"],
+                    password=config["password"],
                     decode_responses=True,
                     **pool_kwargs,
-                    **kwargs
+                    **kwargs,
                 )
-                logger.info(f"Redis client created: {config['host']}:{config['port']} (auth: {'yes' if config['password'] else 'no'})")
-            
+                logger.info(
+                    f"Redis client created: {config['host']}:{config['port']} (auth: {'yes' if config['password'] else 'no'})"
+                )
+
             # Validate connection (fail-fast) - Skip during container initialization
             # Note: We skip the connection test during initialization because it can
             # cause event loop conflicts when called from async contexts.
             # The first actual Redis operation will validate the connection.
             try:
                 import asyncio
+
                 # Check if we're in an async context
                 try:
                     asyncio.get_running_loop()
                     # Event loop is running, skip validation to avoid conflicts
-                    logger.debug("Async context detected; skipping Redis ping validation during initialization")
+                    logger.debug(
+                        "Async context detected; skipping Redis ping validation during initialization"
+                    )
                 except RuntimeError:
                     # No event loop running, safe to test connection
                     is_ok = asyncio.run(RedisClientFactory.test_connection(client))
@@ -95,17 +100,17 @@ class RedisClientFactory:
                 # Don't fail initialization due to connection test issues
                 logger.warning(f"Redis connection test skipped due to: {e}")
             return client
-            
+
         except Exception as e:
             logger.error(f"Failed to create Redis client: {e}")
             raise ConnectionError(f"Cannot connect to Redis: {e}")
-    
+
     @staticmethod
     def _build_config(
         redis_url: Optional[str],
         host: Optional[str],
         port: Optional[int],
-        password: Optional[str]
+        password: Optional[str],
     ) -> dict:
         """Build Redis configuration from various sources.
 
@@ -118,48 +123,61 @@ class RedisClientFactory:
         """
         # 1. Check for explicit URL parameter
         if redis_url:
-            return {'url': redis_url, 'host': None, 'port': None, 'password': None}
+            return {"url": redis_url, "host": None, "port": None, "password": None}
 
         # 2. Use unified settings system
         from faultmaven.config.settings import get_settings
+
         settings = get_settings()
         db_config = settings.database
 
         # Check if settings has a Redis URL configured
         if db_config.redis_url:
-            return {'url': db_config.redis_url, 'host': None, 'port': None, 'password': None}
+            return {
+                "url": db_config.redis_url,
+                "host": None,
+                "port": None,
+                "password": None,
+            }
 
         # Build from individual settings fields
         config = {
-            'url': None,
-            'host': host or db_config.redis_host,
-            'port': port or db_config.redis_port,
-            'password': password or (db_config.redis_password.get_secret_value() if db_config.redis_password is not None else None)
+            "url": None,
+            "host": host or db_config.redis_host,
+            "port": port or db_config.redis_port,
+            "password": password
+            or (
+                db_config.redis_password.get_secret_value()
+                if db_config.redis_password is not None
+                else None
+            ),
         }
-        logger.debug(f"Built Redis config from settings: {config['host']}:{config['port']}")
+        logger.debug(
+            f"Built Redis config from settings: {config['host']}:{config['port']}"
+        )
 
         return config
-    
+
     @staticmethod
     def _mask_url(url: str) -> str:
         """Mask password in URL for logging."""
         try:
             parsed = urlparse(url)
             if parsed.password:
-                masked_netloc = parsed.netloc.replace(parsed.password, '***')
+                masked_netloc = parsed.netloc.replace(parsed.password, "***")
                 return url.replace(parsed.netloc, masked_netloc)
             return url
         except Exception:
-            return url.replace('://', '://***@') if '://' in url else url
-    
+            return url.replace("://", "://***@") if "://" in url else url
+
     @staticmethod
     async def test_connection(client: redis.Redis) -> bool:
         """
         Test Redis connection health.
-        
+
         Args:
             client: Redis client to test
-            
+
         Returns:
             True if connection is healthy
         """
@@ -179,21 +197,21 @@ class RedisClientFactory:
 def create_redis_client(**kwargs) -> redis.Redis:
     """
     Convenience function to create a Redis client.
-    
+
     Usage:
         # Local development
         client = create_redis_client()
-        
+
         # K8s with environment variables
         client = create_redis_client()  # Uses REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
-        
+
         # Explicit configuration
         client = create_redis_client(
             host='192.168.0.111',
             port=30379,
             password='your-password'
         )
-        
+
         # URL-based
         client = create_redis_client(redis_url='redis://:password@host:port/0')
     """
@@ -203,10 +221,10 @@ def create_redis_client(**kwargs) -> redis.Redis:
 async def validate_redis_connection(client: redis.Redis) -> None:
     """
     Validate Redis connection and log results.
-    
+
     Args:
         client: Redis client to validate
-        
+
     Raises:
         ConnectionError: If Redis is not accessible
     """
@@ -219,10 +237,10 @@ async def validate_redis_connection(client: redis.Redis) -> None:
 def create_k8s_redis_client() -> redis.Redis:
     """
     Create Redis client specifically configured for K8s cluster.
-    
-    Note: This function is now redundant since create_redis_client() 
+
+    Note: This function is now redundant since create_redis_client()
     defaults to K8s configuration. Use create_redis_client() instead.
-    
+
     Expected environment variables:
         REDIS_HOST=192.168.0.111
         REDIS_PORT=30379

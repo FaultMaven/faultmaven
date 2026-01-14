@@ -23,7 +23,11 @@ from redis.asyncio import Redis
 
 from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import AuthorizationError, ServiceError, ValidationException
-from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser, TokenClaims, TokenPair
+from faultmaven.modules.auth.domain.models.auth import (
+    AuthenticatedUser,
+    TokenClaims,
+    TokenPair,
+)
 from faultmaven.modules.auth.domain.models.rbac import get_permissions_for_roles
 
 logger = logging.getLogger(__name__)

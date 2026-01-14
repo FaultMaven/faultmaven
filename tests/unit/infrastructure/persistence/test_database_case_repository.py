@@ -12,27 +12,26 @@ Coverage:
         --cov-report=term-missing
 """
 
-import pytest
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.infrastructure.persistence.case_repository import RepositoryException
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.infrastructure.persistence.case_repository import RepositoryException
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
-    InvestigationProgress,
     ConsultingData,
+    InvestigationProgress,
     InvestigationStrategy,
 )
-
 
 # ============================================================
 # Test Fixtures
@@ -264,7 +263,11 @@ async def test_list_cases_by_status(repository: DatabaseCaseRepository):
     user_id = "test-user-status"
 
     # Create cases with different statuses
-    for status in [CaseStatus.CONSULTING, CaseStatus.CONSULTING, CaseStatus.INVESTIGATING]:
+    for status in [
+        CaseStatus.CONSULTING,
+        CaseStatus.CONSULTING,
+        CaseStatus.INVESTIGATING,
+    ]:
         if status == CaseStatus.INVESTIGATING:
             # Create ConsultingData with all required fields for INVESTIGATING status
             consulting = ConsultingData()
@@ -334,24 +337,30 @@ async def test_search_cases(repository: DatabaseCaseRepository):
     user_id = "test-user-search"
 
     # Create cases with specific titles
-    await repository.save(Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id=user_id,
-        organization_id="test-org",
-        title="Database Connection Error",
-    ))
-    await repository.save(Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id=user_id,
-        organization_id="test-org",
-        title="API Performance Issue",
-    ))
-    await repository.save(Case(
-        case_id=f"case_{uuid4().hex[:12]}",
-        user_id=user_id,
-        organization_id="test-org",
-        title="Memory Leak Investigation",
-    ))
+    await repository.save(
+        Case(
+            case_id=f"case_{uuid4().hex[:12]}",
+            user_id=user_id,
+            organization_id="test-org",
+            title="Database Connection Error",
+        )
+    )
+    await repository.save(
+        Case(
+            case_id=f"case_{uuid4().hex[:12]}",
+            user_id=user_id,
+            organization_id="test-org",
+            title="API Performance Issue",
+        )
+    )
+    await repository.save(
+        Case(
+            case_id=f"case_{uuid4().hex[:12]}",
+            user_id=user_id,
+            organization_id="test-org",
+            title="Memory Leak Investigation",
+        )
+    )
 
     # Act
     results, count = await repository.search(
@@ -402,8 +411,7 @@ async def test_add_message_to_nonexistent_case(repository: DatabaseCaseRepositor
     """Test adding message to a case that doesn't exist."""
     # Act
     result = await repository.add_message(
-        "case_nonexistent1",
-        {"role": "user", "content": "Test"}
+        "case_nonexistent1", {"role": "user", "content": "Test"}
     )
 
     # Assert
@@ -412,7 +420,9 @@ async def test_add_message_to_nonexistent_case(repository: DatabaseCaseRepositor
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_get_messages_with_pagination(repository: DatabaseCaseRepository, sample_case: Case):
+async def test_get_messages_with_pagination(
+    repository: DatabaseCaseRepository, sample_case: Case
+):
     """Test getting messages with pagination."""
     # Arrange
     await repository.save(sample_case)
@@ -452,6 +462,7 @@ async def test_status_transition(repository: DatabaseCaseRepository, sample_case
 
     # Add status transition
     from faultmaven.modules.case.domain.models import CaseStatusTransition
+
     transition = CaseStatusTransition(
         from_status=CaseStatus.CONSULTING,
         to_status=CaseStatus.INVESTIGATING,
@@ -484,7 +495,9 @@ async def test_status_transition(repository: DatabaseCaseRepository, sample_case
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_get_analytics(repository: DatabaseCaseRepository, sample_case_with_data: Case):
+async def test_get_analytics(
+    repository: DatabaseCaseRepository, sample_case_with_data: Case
+):
     """Test computing analytics for a case."""
     # Arrange
     await repository.save(sample_case_with_data)
@@ -518,7 +531,9 @@ async def test_get_analytics_nonexistent_case(repository: DatabaseCaseRepository
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_update_activity_timestamp(repository: DatabaseCaseRepository, sample_case: Case):
+async def test_update_activity_timestamp(
+    repository: DatabaseCaseRepository, sample_case: Case
+):
     """Test updating activity timestamp."""
     # Arrange
     await repository.save(sample_case)
@@ -540,7 +555,9 @@ async def test_update_activity_timestamp(repository: DatabaseCaseRepository, sam
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_update_activity_timestamp_nonexistent(repository: DatabaseCaseRepository):
+async def test_update_activity_timestamp_nonexistent(
+    repository: DatabaseCaseRepository,
+):
     """Test updating activity timestamp for nonexistent case."""
     # Act
     result = await repository.update_activity_timestamp("case_nonexistent1")
@@ -613,8 +630,12 @@ async def test_cleanup_expired(repository: DatabaseCaseRepository):
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-@pytest.mark.xfail(reason="SQLAlchemy transaction isolation - needs harness refactor", strict=False)
-async def test_concurrent_updates(repository: DatabaseCaseRepository, sample_case: Case):
+@pytest.mark.xfail(
+    reason="SQLAlchemy transaction isolation - needs harness refactor", strict=False
+)
+async def test_concurrent_updates(
+    repository: DatabaseCaseRepository, sample_case: Case
+):
     """Test multiple updates don't corrupt data."""
     # Arrange
     await repository.save(sample_case)
@@ -673,7 +694,9 @@ async def test_rollback_on_error(async_session: AsyncSession):
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_case_data_integrity(repository: DatabaseCaseRepository, sample_case_with_data: Case):
+async def test_case_data_integrity(
+    repository: DatabaseCaseRepository, sample_case_with_data: Case
+):
     """Test that complex case data is preserved correctly."""
     # Arrange
     await repository.save(sample_case_with_data)
@@ -685,7 +708,9 @@ async def test_case_data_integrity(repository: DatabaseCaseRepository, sample_ca
     assert retrieved.case_id == sample_case_with_data.case_id
     assert retrieved.title == sample_case_with_data.title
     assert retrieved.status == sample_case_with_data.status
-    assert retrieved.investigation_strategy == sample_case_with_data.investigation_strategy
+    assert (
+        retrieved.investigation_strategy == sample_case_with_data.investigation_strategy
+    )
 
     # Verify consulting data preserved
     assert retrieved.consulting.quick_suggestions == ["Check logs", "Verify deployment"]
@@ -742,6 +767,7 @@ async def test_case_lifecycle(repository: DatabaseCaseRepository):
 # ============================================================
 # Bug Fix Tests: closed_at Timestamp Handling (Priority 1)
 # ============================================================
+
 
 class TestClosedAtTimestampHandling:
     """Tests for closed_at timestamp handling in case cleanup (BUGFIX: Priority 1).
@@ -883,7 +909,9 @@ class TestClosedAtTimestampHandling:
         assert retrieved.closed_at == original_closed_at
 
     @pytest.mark.asyncio
-    async def test_cleanup_expired_handles_missing_closed_at_gracefully(self, repository):
+    async def test_cleanup_expired_handles_missing_closed_at_gracefully(
+        self, repository
+    ):
         """Cleanup should handle cases with missing closed_at gracefully.
 
         NOTE: Current Case model validation prevents creating cases without closed_at,
@@ -960,7 +988,7 @@ class TestClosedAtTimestampHandling:
                 created_at=created_at,
                 closed_at=recent_closed_at,
                 updated_at=now,
-            closure_reason="other",
+                closure_reason="other",
             )
             await repository.save(case)
             recent_ids.append(case.case_id)

@@ -12,22 +12,25 @@ Tests cover:
 Design Reference: Phase 3, Week 14-15 - DI Container Implementation
 """
 
+from unittest.mock import MagicMock, Mock, call
+
 import pytest
-from unittest.mock import Mock, MagicMock, call
+
 from faultmaven.core.container import (
+    CircularDependencyError,
     ServiceContainer,
     ServiceContainerError,
     ServiceNotFoundError,
-    CircularDependencyError,
 )
-
 
 # ============================================================================
 # Test Fixtures
 # ============================================================================
 
+
 class MockServiceA:
     """Mock service for testing."""
+
     def __init__(self, value: str = "A"):
         self.value = value
         self.initialized = True
@@ -35,6 +38,7 @@ class MockServiceA:
 
 class MockServiceB:
     """Another mock service for testing."""
+
     def __init__(self, value: str = "B"):
         self.value = value
         self.initialized = True
@@ -42,6 +46,7 @@ class MockServiceB:
 
 class MockServiceWithDependency:
     """Mock service that depends on another service."""
+
     def __init__(self, dependency: MockServiceA):
         self.dependency = dependency
         self.initialized = True
@@ -58,6 +63,7 @@ def clean_container():
 # ============================================================================
 # Test Service Registration
 # ============================================================================
+
 
 class TestServiceRegistration:
     """Test service registration functionality."""
@@ -108,6 +114,7 @@ class TestServiceRegistration:
 # ============================================================================
 # Test Service Retrieval
 # ============================================================================
+
 
 class TestServiceRetrieval:
     """Test service retrieval and singleton behavior."""
@@ -167,6 +174,7 @@ class TestServiceRetrieval:
 
     def test_get_service_with_factory_error(self):
         """Test that factory errors are propagated correctly."""
+
         def failing_factory():
             raise RuntimeError("Factory initialization failed")
 
@@ -181,6 +189,7 @@ class TestServiceRetrieval:
 # ============================================================================
 # Test Container State Management
 # ============================================================================
+
 
 class TestContainerStateManagement:
     """Test container state management (clear, status)."""
@@ -252,8 +261,8 @@ class TestContainerStateManagement:
         status = ServiceContainer.get_registered_services()
 
         assert status == {
-            'MockServiceA': True,  # Has instance
-            'MockServiceB': False,  # No instance yet
+            "MockServiceA": True,  # Has instance
+            "MockServiceB": False,  # No instance yet
         }
 
 
@@ -261,20 +270,25 @@ class TestContainerStateManagement:
 # Test Dependency Injection Patterns
 # ============================================================================
 
+
 class TestDependencyInjection:
     """Test dependency injection patterns."""
 
     def test_inject_dependency_via_container(self):
         """Test injecting one service into another via container."""
         # Register dependency
-        ServiceContainer.register_factory(MockServiceA, lambda: MockServiceA("dependency"))
+        ServiceContainer.register_factory(
+            MockServiceA, lambda: MockServiceA("dependency")
+        )
 
         # Register service that needs dependency
         def create_dependent_service():
             dependency = ServiceContainer.get(MockServiceA)
             return MockServiceWithDependency(dependency)
 
-        ServiceContainer.register_factory(MockServiceWithDependency, create_dependent_service)
+        ServiceContainer.register_factory(
+            MockServiceWithDependency, create_dependent_service
+        )
 
         # Get service
         service = ServiceContainer.get(MockServiceWithDependency)
@@ -289,7 +303,9 @@ class TestDependencyInjection:
         # def __init__(self, embedding_service=None):
         #     self.embedding_service = embedding_service or ServiceContainer.get(EmbeddingService)
 
-        ServiceContainer.register_factory(MockServiceA, lambda: MockServiceA("from-container"))
+        ServiceContainer.register_factory(
+            MockServiceA, lambda: MockServiceA("from-container")
+        )
 
         # Case 1: Dependency provided directly (testing, manual wiring)
         manual_dep = MockServiceA("manual")
@@ -303,7 +319,9 @@ class TestDependencyInjection:
     def test_mock_service_for_testing(self):
         """Test replacing service with mock for testing."""
         # Production factory
-        ServiceContainer.register_factory(MockServiceA, lambda: MockServiceA("production"))
+        ServiceContainer.register_factory(
+            MockServiceA, lambda: MockServiceA("production")
+        )
 
         # Replace with mock for testing
         mock_service = Mock(spec=MockServiceA)
@@ -320,6 +338,7 @@ class TestDependencyInjection:
 # Test Error Handling
 # ============================================================================
 
+
 class TestErrorHandling:
     """Test error handling and edge cases."""
 
@@ -335,6 +354,7 @@ class TestErrorHandling:
 
     def test_factory_exception_propagates(self):
         """Test that exceptions in factory are propagated with context."""
+
         def bad_factory():
             raise ValueError("Configuration error")
 
@@ -357,6 +377,7 @@ class TestErrorHandling:
 # ============================================================================
 # Test Integration Scenarios
 # ============================================================================
+
 
 class TestIntegrationScenarios:
     """Test realistic integration scenarios."""
@@ -458,6 +479,7 @@ class TestIntegrationScenarios:
 # Test Thread Safety (Basic)
 # ============================================================================
 
+
 class TestThreadSafety:
     """Basic thread safety tests (container has simple lock mechanism)."""
 
@@ -487,6 +509,7 @@ class TestThreadSafety:
 # ============================================================================
 # Test Custom Exception Classes
 # ============================================================================
+
 
 class TestCustomExceptions:
     """Test custom exception classes."""

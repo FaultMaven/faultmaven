@@ -24,16 +24,23 @@ import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 
-from faultmaven.main import app as main_app
-from faultmaven.modules.agent.domain.events.execution_events import ExecutionEvent, ExecutionEventType
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
     LLMException,
     NotFoundError,
 )
+from faultmaven.main import app as main_app
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
+from faultmaven.modules.agent.domain.events.execution_events import (
+    ExecutionEvent,
+    ExecutionEventType,
+)
+from faultmaven.modules.agent.domain.models.agent_execution import (
+    AgentExecution,
+    AgentType,
+    ExecutionStatus,
+)
 
 
 @pytest.fixture
@@ -63,7 +70,11 @@ def mock_execution():
     mock.response = "The error is caused by a misconfigured database connection."
     mock.prompt = "What is causing the errors?"
     mock.error_message = None
-    mock.token_usage = {"prompt_tokens": 100, "completion_tokens": 200, "total_tokens": 300}
+    mock.token_usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 200,
+        "total_tokens": 300,
+    }
     mock.tool_calls = []
     mock.get_total_tokens.return_value = 300
     return mock
@@ -156,9 +167,7 @@ class TestExecuteAgentNonStreaming:
         assert data["status"] == "completed"
         assert data["tokens_used"] == 300
 
-    def test_execute_agent_session_not_found(
-        self, client, mock_agent_service, headers
-    ):
+    def test_execute_agent_session_not_found(self, client, mock_agent_service, headers):
         """Test execution when session is not found."""
 
         async def mock_execute(*args, **kwargs):
@@ -182,6 +191,7 @@ class TestExecuteAgentNonStreaming:
         self, client, mock_agent_service, headers
     ):
         """Test execution with wrong organization."""
+
         async def mock_execute(*args, **kwargs):
             raise AuthorizationError("Session does not belong to organization")
             yield  # Make it a generator (unreachable but required for async generator)
@@ -203,6 +213,7 @@ class TestExecuteAgentNonStreaming:
         self, client, mock_agent_service, headers
     ):
         """Test execution when session is not active."""
+
         async def mock_execute(*args, **kwargs):
             raise ConflictError(
                 "Session is not active",
@@ -225,10 +236,9 @@ class TestExecuteAgentNonStreaming:
 
         assert response.status_code == status.HTTP_409_CONFLICT
 
-    def test_execute_agent_budget_exceeded(
-        self, client, mock_agent_service, headers
-    ):
+    def test_execute_agent_budget_exceeded(self, client, mock_agent_service, headers):
         """Test execution when token budget is exceeded."""
+
         async def mock_execute(*args, **kwargs):
             raise ConflictError(
                 "Token budget exceeded for session",
@@ -634,9 +644,7 @@ class TestListExecutions:
         assert len(data) == 1
         assert data[0]["execution_id"] == "exec_test123"
 
-    def test_list_executions_empty(
-        self, client, mock_agent_service, headers
-    ):
+    def test_list_executions_empty(self, client, mock_agent_service, headers):
         """Test empty execution list."""
         mock_agent_service.list_executions.return_value = ([], 0)
 
@@ -648,11 +656,11 @@ class TestListExecutions:
         assert response.status_code == status.HTTP_200_OK
         assert response.json() == []
 
-    def test_list_executions_case_not_found(
-        self, client, mock_agent_service, headers
-    ):
+    def test_list_executions_case_not_found(self, client, mock_agent_service, headers):
         """Test listing executions for non-existent case."""
-        mock_agent_service.list_executions.side_effect = NotFoundError("Case", "nonexistent")
+        mock_agent_service.list_executions.side_effect = NotFoundError(
+            "Case", "nonexistent"
+        )
 
         response = client.get(
             "/api/v1/cases/nonexistent/sessions/session_123abc/executions",
@@ -661,11 +669,11 @@ class TestListExecutions:
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_list_executions_forbidden(
-        self, client, mock_agent_service, headers
-    ):
+    def test_list_executions_forbidden(self, client, mock_agent_service, headers):
         """Test listing executions with wrong organization."""
-        mock_agent_service.list_executions.side_effect = AuthorizationError("Not authorized")
+        mock_agent_service.list_executions.side_effect = AuthorizationError(
+            "Not authorized"
+        )
 
         response = client.get(
             "/api/v1/cases/case_456def/sessions/session_123abc/executions",
@@ -674,9 +682,7 @@ class TestListExecutions:
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    def test_list_executions_pagination(
-        self, client, mock_agent_service, headers
-    ):
+    def test_list_executions_pagination(self, client, mock_agent_service, headers):
         """Test execution list pagination parameters."""
         mock_agent_service.list_executions.return_value = ([], 0)
 
@@ -714,11 +720,12 @@ class TestGetExecution:
         data = response.json()
         assert data["execution_id"] == "exec_test123"
         assert data["status"] == "completed"
-        assert data["agent_response"] == "The error is caused by a misconfigured database connection."
+        assert (
+            data["agent_response"]
+            == "The error is caused by a misconfigured database connection."
+        )
 
-    def test_get_execution_not_found(
-        self, client, mock_agent_service, headers
-    ):
+    def test_get_execution_not_found(self, client, mock_agent_service, headers):
         """Test execution not found."""
         mock_agent_service.get_execution.return_value = None
 
@@ -752,9 +759,7 @@ class TestGetExecution:
 class TestCancelExecution:
     """Tests for POST cancel execution endpoint."""
 
-    def test_cancel_execution_success(
-        self, client, mock_agent_service, headers
-    ):
+    def test_cancel_execution_success(self, client, mock_agent_service, headers):
         """Test successful execution cancellation."""
         mock_agent_service.cancel_execution.return_value = True
 
@@ -768,9 +773,7 @@ class TestCancelExecution:
         assert data["status"] == "cancelled"
         assert data["execution_id"] == "exec_test123"
 
-    def test_cancel_execution_not_found(
-        self, client, mock_agent_service, headers
-    ):
+    def test_cancel_execution_not_found(self, client, mock_agent_service, headers):
         """Test cancelling non-existent execution."""
         mock_agent_service.cancel_execution.return_value = False
 
@@ -790,13 +793,16 @@ class TestCancelExecution:
 class TestAgentTypes:
     """Tests for different agent types."""
 
-    @pytest.mark.parametrize("agent_type", [
-        "investigator",
-        "debugger",
-        "researcher",
-        "validator",
-        "reporter",
-    ])
+    @pytest.mark.parametrize(
+        "agent_type",
+        [
+            "investigator",
+            "debugger",
+            "researcher",
+            "validator",
+            "reporter",
+        ],
+    )
     def test_execute_with_valid_agent_types(
         self, client, mock_agent_service, mock_execution, headers, agent_type
     ):

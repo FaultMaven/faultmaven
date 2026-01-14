@@ -5,9 +5,9 @@ This module provides strategy-specific guidance for Active Incident vs Post-Mort
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from typing import Dict, Any
-from faultmaven.modules.agent.domain.models.investigation import InvestigationStrategy
+from typing import Any, Dict
 
+from faultmaven.modules.agent.domain.models.investigation import InvestigationStrategy
 
 # =============================================================================
 # Active Incident Strategy Guidance
@@ -204,7 +204,6 @@ This will be more rigorous than the initial incident response. I'll:
 
 Ready to begin the post-mortem?
 """,
-
     "postmortem_to_active": """
 # Urgency Escalated - Switching to Active Incident Mode
 
@@ -230,9 +229,15 @@ def get_strategy_transition_message(
     Returns:
         Transition message
     """
-    if from_strategy == InvestigationStrategy.ACTIVE_INCIDENT and to_strategy == InvestigationStrategy.POST_MORTEM:
+    if (
+        from_strategy == InvestigationStrategy.ACTIVE_INCIDENT
+        and to_strategy == InvestigationStrategy.POST_MORTEM
+    ):
         return STRATEGY_TRANSITION_MESSAGES["active_to_postmortem"]
-    elif from_strategy == InvestigationStrategy.POST_MORTEM and to_strategy == InvestigationStrategy.ACTIVE_INCIDENT:
+    elif (
+        from_strategy == InvestigationStrategy.POST_MORTEM
+        and to_strategy == InvestigationStrategy.ACTIVE_INCIDENT
+    ):
         return STRATEGY_TRANSITION_MESSAGES["postmortem_to_active"]
     else:
         return ""

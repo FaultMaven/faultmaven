@@ -1,13 +1,12 @@
-import os
-import io
 import asyncio
+import io
+import os
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app
-
 
 pytestmark = pytest.mark.integration
 
@@ -68,10 +67,6 @@ def test_upload_lists_and_indexes_in_chroma(tmp_path):
         return []
 
     results = asyncio.get_event_loop().run_until_complete(_search())
-    assert any(r.get("id") == document_id for r in results), (
-        f"Expected document {document_id} to be retrievable by vector search"
-    )
-
-
-
-
+    assert any(
+        r.get("id") == document_id for r in results
+    ), f"Expected document {document_id} to be retrievable by vector search"

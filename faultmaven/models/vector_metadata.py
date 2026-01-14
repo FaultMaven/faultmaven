@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, HttpUrl, field_validator
+
 from faultmaven.utils.serialization import to_json_compatible
 
 
@@ -53,7 +55,3 @@ class VectorMetadata(BaseModel):
         if self.updated_at:
             data["updated_at"] = to_json_compatible(self.updated_at)
         return data
-
-
-
-

@@ -11,28 +11,27 @@ Coverage:
         --cov-report=term-missing
 """
 
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base, SessionModel
+from faultmaven.infrastructure.persistence.case_repository import RepositoryException
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
+from faultmaven.infrastructure.persistence.models import Base, SessionModel
+from faultmaven.modules.auth.domain.models.session import Session
 from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
     DatabaseSessionRepository,
 )
-from faultmaven.infrastructure.persistence.case_repository import RepositoryException
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationStrategy,
 )
-from faultmaven.modules.auth.domain.models.session import Session
-
 
 # ============================================================
 # Test Fixtures
@@ -113,7 +112,7 @@ async def test_save_case_with_session(
     case_repository: DatabaseCaseRepository,
     session_repository: DatabaseSessionRepository,
     sample_case: Case,
-    sample_session: Session
+    sample_session: Session,
 ):
     """Test creating case linked to session."""
     # Arrange - Create session first
@@ -121,8 +120,7 @@ async def test_save_case_with_session(
 
     # Act
     saved_case = await case_repository.save_with_session(
-        sample_case,
-        session_id=sample_session.session_id
+        sample_case, session_id=sample_session.session_id
     )
 
     # Assert
@@ -137,8 +135,7 @@ async def test_save_case_with_session(
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_save_case_without_session(
-    case_repository: DatabaseCaseRepository,
-    sample_case: Case
+    case_repository: DatabaseCaseRepository, sample_case: Case
 ):
     """Test creating case without session (session_id=NULL)."""
     # Act
@@ -162,7 +159,7 @@ async def test_save_case_without_session(
 async def test_get_cases_by_session(
     case_repository: DatabaseCaseRepository,
     session_repository: DatabaseSessionRepository,
-    sample_session: Session
+    sample_session: Session,
 ):
     """Test retrieving all cases for a session."""
     # Arrange - Create session
@@ -176,7 +173,9 @@ async def test_get_cases_by_session(
             organization_id="test-org-001",
             title=f"Test Case {i}",
         )
-        await case_repository.save_with_session(case, session_id=sample_session.session_id)
+        await case_repository.save_with_session(
+            case, session_id=sample_session.session_id
+        )
 
     # Create case for different session
     other_session = Session(
@@ -191,7 +190,9 @@ async def test_get_cases_by_session(
         organization_id="test-org-001",
         title="Other Session Case",
     )
-    await case_repository.save_with_session(other_case, session_id=other_session.session_id)
+    await case_repository.save_with_session(
+        other_case, session_id=other_session.session_id
+    )
 
     # Act
     cases = await case_repository.get_cases_by_session(sample_session.session_id)
@@ -205,7 +206,7 @@ async def test_get_cases_by_session(
 async def test_get_cases_by_session_empty(
     case_repository: DatabaseCaseRepository,
     session_repository: DatabaseSessionRepository,
-    sample_session: Session
+    sample_session: Session,
 ):
     """Test retrieving cases for session with no cases."""
     # Arrange
@@ -220,7 +221,9 @@ async def test_get_cases_by_session_empty(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_get_cases_by_nonexistent_session(case_repository: DatabaseCaseRepository):
+async def test_get_cases_by_nonexistent_session(
+    case_repository: DatabaseCaseRepository,
+):
     """Test retrieving cases for nonexistent session returns empty list."""
     # Act
     cases = await case_repository.get_cases_by_session("nonexistent-session-id")
@@ -239,7 +242,7 @@ async def test_get_cases_by_nonexistent_session(case_repository: DatabaseCaseRep
 async def test_get_orphaned_cases(
     case_repository: DatabaseCaseRepository,
     session_repository: DatabaseSessionRepository,
-    sample_session: Session
+    sample_session: Session,
 ):
     """Test retrieving cases with no session."""
     # Arrange - Create session and linked case
@@ -251,7 +254,9 @@ async def test_get_orphaned_cases(
         organization_id="test-org-001",
         title="Linked Case",
     )
-    await case_repository.save_with_session(linked_case, session_id=sample_session.session_id)
+    await case_repository.save_with_session(
+        linked_case, session_id=sample_session.session_id
+    )
 
     # Create orphaned cases (no session)
     for i in range(2):
@@ -328,7 +333,7 @@ async def test_link_case_to_session(
     case_repository: DatabaseCaseRepository,
     session_repository: DatabaseSessionRepository,
     sample_case: Case,
-    sample_session: Session
+    sample_session: Session,
 ):
     """Test linking an existing case to a session."""
     # Arrange - Create case without session
@@ -339,8 +344,7 @@ async def test_link_case_to_session(
 
     # Act
     result = await case_repository.link_case_to_session(
-        sample_case.case_id,
-        sample_session.session_id
+        sample_case.case_id, sample_session.session_id
     )
 
     # Assert
@@ -358,12 +362,14 @@ async def test_unlink_case_from_session(
     case_repository: DatabaseCaseRepository,
     session_repository: DatabaseSessionRepository,
     sample_case: Case,
-    sample_session: Session
+    sample_session: Session,
 ):
     """Test unlinking a case from a session."""
     # Arrange - Create session and linked case
     await session_repository.create_session(sample_session)
-    await case_repository.save_with_session(sample_case, session_id=sample_session.session_id)
+    await case_repository.save_with_session(
+        sample_case, session_id=sample_session.session_id
+    )
 
     # Verify case is linked
     cases = await case_repository.get_cases_by_session(sample_session.session_id)
@@ -386,12 +392,13 @@ async def test_unlink_case_from_session(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_link_nonexistent_case_to_session(case_repository: DatabaseCaseRepository):
+async def test_link_nonexistent_case_to_session(
+    case_repository: DatabaseCaseRepository,
+):
     """Test linking nonexistent case returns False."""
     # Act
     result = await case_repository.link_case_to_session(
-        "nonexistent-case-id",
-        "some-session-id"
+        "nonexistent-case-id", "some-session-id"
     )
 
     # Assert
@@ -410,7 +417,7 @@ async def test_session_delete_orphans_cases(
     session_repository: DatabaseSessionRepository,
     sample_case: Case,
     sample_session: Session,
-    async_session: AsyncSession
+    async_session: AsyncSession,
 ):
     """Test deleting session sets case.session_id to NULL (orphans case).
 
@@ -420,7 +427,9 @@ async def test_session_delete_orphans_cases(
     """
     # Arrange - Create session and linked case
     await session_repository.create_session(sample_session)
-    await case_repository.save_with_session(sample_case, session_id=sample_session.session_id)
+    await case_repository.save_with_session(
+        sample_case, session_id=sample_session.session_id
+    )
 
     # Verify case is linked
     cases = await case_repository.get_cases_by_session(sample_session.session_id)
@@ -447,7 +456,7 @@ async def test_session_delete_orphans_cases(
 async def test_multiple_cases_linked_to_session(
     case_repository: DatabaseCaseRepository,
     session_repository: DatabaseSessionRepository,
-    sample_session: Session
+    sample_session: Session,
 ):
     """Test multiple cases can be linked to the same session."""
     # Arrange
@@ -461,7 +470,9 @@ async def test_multiple_cases_linked_to_session(
             organization_id="test-org-001",
             title=f"Multi Case {i}",
         )
-        await case_repository.save_with_session(case, session_id=sample_session.session_id)
+        await case_repository.save_with_session(
+            case, session_id=sample_session.session_id
+        )
         case_ids.append(case.case_id)
 
     # Act
@@ -479,7 +490,7 @@ async def test_multiple_cases_linked_to_session(
 async def test_case_can_change_sessions(
     case_repository: DatabaseCaseRepository,
     session_repository: DatabaseSessionRepository,
-    sample_case: Case
+    sample_case: Case,
 ):
     """Test a case can be moved from one session to another."""
     # Arrange - Create two sessions

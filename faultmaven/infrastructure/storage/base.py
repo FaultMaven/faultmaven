@@ -16,19 +16,19 @@ Usage:
     download_url = await backend.generate_download_url("evidence/file.log")
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, Optional
-import logging
-
 
 logger = logging.getLogger(__name__)
 
 
 class StorageType(str, Enum):
     """Storage backend type."""
+
     FILESYSTEM = "filesystem"
     S3 = "s3"
 
@@ -43,6 +43,7 @@ class PresignedUrl:
         method: HTTP method (PUT for upload, GET for download)
         headers: Optional headers required for the request
     """
+
     url: str
     expires_at: datetime
     method: str
@@ -71,6 +72,7 @@ class StoredFile:
         created_at: When the file was stored
         metadata: Additional file metadata
     """
+
     key: str
     size_bytes: int
     content_type: str

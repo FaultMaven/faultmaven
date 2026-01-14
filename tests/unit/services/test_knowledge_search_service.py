@@ -11,26 +11,33 @@ Tests cover:
 - Error handling
 """
 
-import pytest
 from datetime import datetime, timezone
+from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
-from typing import List, Dict, Any
 
-from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
-from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
-from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
-from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
-    InMemoryKnowledgeItemRepository,
-)
-from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-    KnowledgeItem,
-    KnowledgeItemType,
-    EMBEDDING_DIMENSIONS,
-)
+import pytest
+
 from faultmaven.exceptions import (
     EmbeddingGenerationError,
-    VectorStoreOperationError,
     KnowledgeBaseException,
+    VectorStoreOperationError,
+)
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
+    KnowledgeItem,
+    KnowledgeItemType,
+)
+from faultmaven.modules.knowledge.domain.services.embedding_service import (
+    EmbeddingService,
+)
+from faultmaven.modules.knowledge.domain.services.search_service import (
+    KnowledgeSearchService,
+)
+from faultmaven.modules.knowledge.domain.services.vector_store_service import (
+    VectorStoreService,
+)
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+    InMemoryKnowledgeItemRepository,
 )
 
 
@@ -115,6 +122,7 @@ def create_knowledge_item(
 # Test: semantic_search() - Success Cases
 # =============================================================================
 
+
 class TestSemanticSearchSuccess:
     """Tests for successful semantic search."""
 
@@ -132,10 +140,12 @@ class TestSemanticSearchSuccess:
             await knowledge_repo.create(item)
 
         # Mock vector store results
-        mock_vector_store.search_similar = AsyncMock(return_value=[
-            {"item_id": "item_0", "distance": 0.1, "metadata": {}, "document": ""},
-            {"item_id": "item_1", "distance": 0.2, "metadata": {}, "document": ""},
-        ])
+        mock_vector_store.search_similar = AsyncMock(
+            return_value=[
+                {"item_id": "item_0", "distance": 0.1, "metadata": {}, "document": ""},
+                {"item_id": "item_1", "distance": 0.2, "metadata": {}, "document": ""},
+            ]
+        )
 
         results = await search_service.semantic_search(
             query="test query",
@@ -156,9 +166,11 @@ class TestSemanticSearchSuccess:
             create_knowledge_item(item_id="faq_1", item_type=KnowledgeItemType.FAQ)
         )
 
-        mock_vector_store.search_similar = AsyncMock(return_value=[
-            {"item_id": "faq_1", "distance": 0.1, "metadata": {}, "document": ""},
-        ])
+        mock_vector_store.search_similar = AsyncMock(
+            return_value=[
+                {"item_id": "faq_1", "distance": 0.1, "metadata": {}, "document": ""},
+            ]
+        )
 
         results = await search_service.semantic_search(
             query="test",
@@ -180,9 +192,11 @@ class TestSemanticSearchSuccess:
             create_knowledge_item(item_id="net_1", category="networking")
         )
 
-        mock_vector_store.search_similar = AsyncMock(return_value=[
-            {"item_id": "net_1", "distance": 0.1, "metadata": {}, "document": ""},
-        ])
+        mock_vector_store.search_similar = AsyncMock(
+            return_value=[
+                {"item_id": "net_1", "distance": 0.1, "metadata": {}, "document": ""},
+            ]
+        )
 
         results = await search_service.semantic_search(
             query="test",
@@ -201,9 +215,16 @@ class TestSemanticSearchSuccess:
         item = create_knowledge_item(item_id="retrieve_test")
         await knowledge_repo.create(item)
 
-        mock_vector_store.search_similar = AsyncMock(return_value=[
-            {"item_id": "retrieve_test", "distance": 0.1, "metadata": {}, "document": ""},
-        ])
+        mock_vector_store.search_similar = AsyncMock(
+            return_value=[
+                {
+                    "item_id": "retrieve_test",
+                    "distance": 0.1,
+                    "metadata": {},
+                    "document": "",
+                },
+            ]
+        )
 
         await search_service.semantic_search(
             query="test",
@@ -223,9 +244,16 @@ class TestSemanticSearchSuccess:
         item = create_knowledge_item(item_id="no_mark_test")
         await knowledge_repo.create(item)
 
-        mock_vector_store.search_similar = AsyncMock(return_value=[
-            {"item_id": "no_mark_test", "distance": 0.1, "metadata": {}, "document": ""},
-        ])
+        mock_vector_store.search_similar = AsyncMock(
+            return_value=[
+                {
+                    "item_id": "no_mark_test",
+                    "distance": 0.1,
+                    "metadata": {},
+                    "document": "",
+                },
+            ]
+        )
 
         await search_service.semantic_search(
             query="test",
@@ -255,6 +283,7 @@ class TestSemanticSearchSuccess:
 # Test: hybrid_search() - Success Cases
 # =============================================================================
 
+
 class TestHybridSearchSuccess:
     """Tests for successful hybrid search."""
 
@@ -270,9 +299,16 @@ class TestHybridSearchSuccess:
         await knowledge_repo.create(item2)
 
         # Mock vector store (semantic) results
-        mock_vector_store.search_similar = AsyncMock(return_value=[
-            {"item_id": "semantic_hit", "distance": 0.1, "metadata": {}, "document": ""},
-        ])
+        mock_vector_store.search_similar = AsyncMock(
+            return_value=[
+                {
+                    "item_id": "semantic_hit",
+                    "distance": 0.1,
+                    "metadata": {},
+                    "document": "",
+                },
+            ]
+        )
 
         results = await search_service.hybrid_search(
             query="match",
@@ -291,9 +327,16 @@ class TestHybridSearchSuccess:
         item = create_knowledge_item(item_id="weight_test", content="test content")
         await knowledge_repo.create(item)
 
-        mock_vector_store.search_similar = AsyncMock(return_value=[
-            {"item_id": "weight_test", "distance": 0.1, "metadata": {}, "document": ""},
-        ])
+        mock_vector_store.search_similar = AsyncMock(
+            return_value=[
+                {
+                    "item_id": "weight_test",
+                    "distance": 0.1,
+                    "metadata": {},
+                    "document": "",
+                },
+            ]
+        )
 
         results = await search_service.hybrid_search(
             query="test",
@@ -314,10 +357,17 @@ class TestHybridSearchSuccess:
                 create_knowledge_item(item_id=f"limit_{i}", content="test content")
             )
 
-        mock_vector_store.search_similar = AsyncMock(return_value=[
-            {"item_id": f"limit_{i}", "distance": 0.1 * i, "metadata": {}, "document": ""}
-            for i in range(10)
-        ])
+        mock_vector_store.search_similar = AsyncMock(
+            return_value=[
+                {
+                    "item_id": f"limit_{i}",
+                    "distance": 0.1 * i,
+                    "metadata": {},
+                    "document": "",
+                }
+                for i in range(10)
+            ]
+        )
 
         results = await search_service.hybrid_search(
             query="test",
@@ -335,9 +385,16 @@ class TestHybridSearchSuccess:
         item = create_knowledge_item(item_id="hybrid_retrieve")
         await knowledge_repo.create(item)
 
-        mock_vector_store.search_similar = AsyncMock(return_value=[
-            {"item_id": "hybrid_retrieve", "distance": 0.1, "metadata": {}, "document": ""},
-        ])
+        mock_vector_store.search_similar = AsyncMock(
+            return_value=[
+                {
+                    "item_id": "hybrid_retrieve",
+                    "distance": 0.1,
+                    "metadata": {},
+                    "document": "",
+                },
+            ]
+        )
 
         await search_service.hybrid_search(
             query="test",
@@ -352,6 +409,7 @@ class TestHybridSearchSuccess:
 # =============================================================================
 # Test: index_item()
 # =============================================================================
+
 
 class TestIndexItem:
     """Tests for item indexing."""
@@ -433,6 +491,7 @@ class TestIndexItem:
 # Test: index_items_batch()
 # =============================================================================
 
+
 class TestIndexItemsBatch:
     """Tests for batch indexing."""
 
@@ -441,10 +500,7 @@ class TestIndexItemsBatch:
         self, search_service, knowledge_repo, mock_embedding_service, mock_vector_store
     ):
         """Test successful batch indexing."""
-        items = [
-            create_knowledge_item(item_id=f"batch_{i}")
-            for i in range(5)
-        ]
+        items = [create_knowledge_item(item_id=f"batch_{i}") for i in range(5)]
         for item in items:
             await knowledge_repo.create(item)
 
@@ -485,6 +541,7 @@ class TestIndexItemsBatch:
 # Test: reindex_item()
 # =============================================================================
 
+
 class TestReindexItem:
     """Tests for item reindexing."""
 
@@ -515,6 +572,7 @@ class TestReindexItem:
 # =============================================================================
 # Test: delete_item()
 # =============================================================================
+
 
 class TestDeleteItem:
     """Tests for item deletion."""
@@ -560,6 +618,7 @@ class TestDeleteItem:
 # =============================================================================
 # Test: get_indexing_stats()
 # =============================================================================
+
 
 class TestGetIndexingStats:
     """Tests for indexing statistics."""
@@ -611,6 +670,7 @@ class TestGetIndexingStats:
 # =============================================================================
 # Test: Error Handling
 # =============================================================================
+
 
 class TestErrorHandling:
     """Tests for error handling."""
@@ -679,6 +739,7 @@ class TestErrorHandling:
 # =============================================================================
 # Test: Health Check
 # =============================================================================
+
 
 class TestHealthCheck:
     """Tests for health check."""

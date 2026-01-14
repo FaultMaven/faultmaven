@@ -32,10 +32,10 @@ from faultmaven.api.models import (
 )
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.auth import AuthenticatedUser
+
 # Import from contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.evidence.contracts import EvidenceArtifactType
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
-
 
 router = APIRouter(prefix="/api/v1/cases/{case_id}/evidence", tags=["Evidence"])
 
@@ -53,7 +53,9 @@ async def upload_evidence(
     description: Optional[str] = Form(None),
     is_primary: bool = Form(False),
     current_user: AuthenticatedUser = Depends(get_current_user),
-    evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
+    evidence_service: APIEvidenceArtifactService = Depends(
+        get_evidence_artifact_service
+    ),
 ) -> EvidenceResponse:
     """Upload evidence artifact for case.
 
@@ -124,7 +126,9 @@ async def get_evidence(
     case_id: str,
     evidence_id: str,
     current_user: AuthenticatedUser = Depends(get_current_user),
-    evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
+    evidence_service: APIEvidenceArtifactService = Depends(
+        get_evidence_artifact_service
+    ),
 ) -> EvidenceResponse:
     """Get evidence metadata by ID.
 
@@ -147,7 +151,9 @@ async def get_evidence(
         401: Authentication required
         404: Evidence not found
     """
-    evidence = await evidence_service.get_evidence(evidence_id, current_user.organization_id)
+    evidence = await evidence_service.get_evidence(
+        evidence_id, current_user.organization_id
+    )
 
     if not evidence:
         raise NotFoundError("Evidence", evidence_id)
@@ -164,7 +170,9 @@ async def download_evidence(
     case_id: str,
     evidence_id: str,
     current_user: AuthenticatedUser = Depends(get_current_user),
-    evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
+    evidence_service: APIEvidenceArtifactService = Depends(
+        get_evidence_artifact_service
+    ),
 ) -> StreamingResponse:
     """Download evidence file.
 
@@ -194,7 +202,9 @@ async def download_evidence(
         content-disposition: attachment; filename="screenshot.png"
     """
     # Verify evidence belongs to the case first
-    evidence = await evidence_service.get_evidence(evidence_id, current_user.organization_id)
+    evidence = await evidence_service.get_evidence(
+        evidence_id, current_user.organization_id
+    )
     if not evidence or evidence.case_id != case_id:
         raise NotFoundError("Evidence", evidence_id)
 
@@ -222,7 +232,9 @@ async def list_evidence(
     evidence_type: Optional[EvidenceArtifactType] = Query(None),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
+    evidence_service: APIEvidenceArtifactService = Depends(
+        get_evidence_artifact_service
+    ),
 ) -> List[EvidenceResponse]:
     """List evidence for case.
 
@@ -268,7 +280,9 @@ async def update_evidence(
     evidence_id: str,
     request: EvidenceUpdateRequest,
     current_user: AuthenticatedUser = Depends(get_current_user),
-    evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
+    evidence_service: APIEvidenceArtifactService = Depends(
+        get_evidence_artifact_service
+    ),
 ) -> EvidenceResponse:
     """Update evidence metadata.
 
@@ -295,7 +309,9 @@ async def update_evidence(
         422: Validation error
     """
     # Verify evidence belongs to the case first
-    evidence = await evidence_service.get_evidence(evidence_id, current_user.organization_id)
+    evidence = await evidence_service.get_evidence(
+        evidence_id, current_user.organization_id
+    )
     if not evidence or evidence.case_id != case_id:
         raise NotFoundError("Evidence", evidence_id)
 
@@ -326,7 +342,9 @@ async def delete_evidence(
     case_id: str,
     evidence_id: str,
     current_user: AuthenticatedUser = Depends(get_current_user),
-    evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
+    evidence_service: APIEvidenceArtifactService = Depends(
+        get_evidence_artifact_service
+    ),
 ) -> None:
     """Delete evidence artifact and file.
 
@@ -347,11 +365,15 @@ async def delete_evidence(
         404: Evidence not found
     """
     # Verify evidence belongs to the case first
-    evidence = await evidence_service.get_evidence(evidence_id, current_user.organization_id)
+    evidence = await evidence_service.get_evidence(
+        evidence_id, current_user.organization_id
+    )
     if not evidence or evidence.case_id != case_id:
         raise NotFoundError("Evidence", evidence_id)
 
-    deleted = await evidence_service.delete_evidence(evidence_id, current_user.organization_id)
+    deleted = await evidence_service.delete_evidence(
+        evidence_id, current_user.organization_id
+    )
 
     if not deleted:
         raise NotFoundError("Evidence", evidence_id)
@@ -362,7 +384,9 @@ async def set_primary_evidence(
     case_id: str,
     evidence_id: str,
     current_user: AuthenticatedUser = Depends(get_current_user),
-    evidence_service: APIEvidenceArtifactService = Depends(get_evidence_artifact_service),
+    evidence_service: APIEvidenceArtifactService = Depends(
+        get_evidence_artifact_service
+    ),
 ) -> EvidenceResponse:
     """Set artifact as primary evidence for case.
 
@@ -387,7 +411,9 @@ async def set_primary_evidence(
         404: Evidence not found
     """
     # Verify evidence belongs to the case first
-    evidence = await evidence_service.get_evidence(evidence_id, current_user.organization_id)
+    evidence = await evidence_service.get_evidence(
+        evidence_id, current_user.organization_id
+    )
     if not evidence or evidence.case_id != case_id:
         raise NotFoundError("Evidence", evidence_id)
 

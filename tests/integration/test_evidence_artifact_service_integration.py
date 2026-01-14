@@ -13,13 +13,18 @@ Requirements:
 
 import os
 import tempfile
-import pytest
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.exceptions import (
+    AuthorizationError,
+    NotFoundError,
+    ServiceError,
+    ValidationException,
+)
 from faultmaven.infrastructure.persistence.database import reset_engine
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
@@ -27,22 +32,20 @@ from faultmaven.infrastructure.persistence.database_case_repository import (
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
 )
-from faultmaven.services.file_storage_service import FileStorageService
-from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
+from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationStrategy,
+)
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,
 )
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ValidationException,
-    ServiceError,
-)
+from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
+from faultmaven.services.file_storage_service import FileStorageService
 from tests.utils import generate_case_id, generate_evidence_id
-
 
 # ============================================================
 # Helper Functions
@@ -163,10 +166,10 @@ def sample_file_data() -> bytes:
 def sample_image_data() -> bytes:
     """Create sample PNG image data (minimal valid PNG)."""
     return (
-        b'\x89PNG\r\n\x1a\n'
-        b'\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde'
-        b'\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N'
-        b'\x00\x00\x00\x00IEND\xaeB`\x82'
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+        b"\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
     )
 
 
@@ -715,7 +718,9 @@ class TestEvidenceStatistics:
         assert stats["total_artifacts"] == 3
         assert stats["by_type"]["log_file"] == 2
         assert stats["by_type"]["screenshot"] == 1
-        assert stats["total_file_size_bytes"] == (len(sample_file_data) * 2) + len(sample_image_data)
+        assert stats["total_file_size_bytes"] == (len(sample_file_data) * 2) + len(
+            sample_image_data
+        )
         assert stats["primary_evidence_id"] == primary.evidence_id
 
 
@@ -857,9 +862,7 @@ class TestErrorHandling:
     """Test error handling scenarios."""
 
     @pytest.mark.asyncio
-    async def test_upload_to_nonexistent_case(
-        self, evidence_service, sample_file_data
-    ):
+    async def test_upload_to_nonexistent_case(self, evidence_service, sample_file_data):
         """Test uploading to a case that doesn't exist."""
         with pytest.raises(NotFoundError):
             await evidence_service.upload_evidence(
@@ -876,9 +879,7 @@ class TestErrorHandling:
     @pytest.mark.skip(
         reason="Requires unimplemented get_standalone_evidence method in DatabaseCaseRepository"
     )
-    async def test_download_nonexistent_evidence(
-        self, evidence_service
-    ):
+    async def test_download_nonexistent_evidence(self, evidence_service):
         """Test downloading evidence that doesn't exist."""
         with pytest.raises(NotFoundError):
             await evidence_service.download_evidence(

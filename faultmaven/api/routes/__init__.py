@@ -10,12 +10,12 @@ This package provides FastAPI router modules for:
 - agent: AI agent execution endpoints (TASK-016)
 """
 
-from faultmaven.api.routes.auth import router as auth_router
 from faultmaven.api.routes.admin import router as admin_router
-from faultmaven.api.routes.users import router as users_router
+from faultmaven.api.routes.auth import router as auth_router
 from faultmaven.api.routes.cases import router as cases_router
-from faultmaven.api.routes.sessions import router as sessions_router
 from faultmaven.api.routes.evidence import router as evidence_router
+from faultmaven.api.routes.sessions import router as sessions_router
+from faultmaven.api.routes.users import router as users_router
 from faultmaven.modules.agent.api.routes import router as agent_router
 
 __all__ = [

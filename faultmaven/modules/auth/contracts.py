@@ -8,19 +8,20 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
+from abc import ABC
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, Optional, List, TYPE_CHECKING, runtime_checkable
-from abc import ABC
+from typing import TYPE_CHECKING, List, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from faultmaven.modules.auth.domain.models.user import User
     from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser, TokenPair
+    from faultmaven.modules.auth.domain.models.user import User
 
 
 # ============================================================
 # DTOs (Data Transfer Objects) for Cross-Module Use
 # ============================================================
+
 
 @dataclass
 class UserDTO:
@@ -29,6 +30,7 @@ class UserDTO:
     This DTO exposes only the fields needed by other modules,
     hiding internal auth implementation details.
     """
+
     user_id: str
     username: str
     email: str
@@ -40,6 +42,7 @@ class UserDTO:
 @dataclass
 class SessionDTO:
     """Public session representation for cross-module use."""
+
     session_id: str
     user_id: str
     created_at: datetime
@@ -51,29 +54,30 @@ class SessionDTO:
 # Repository Contracts
 # ============================================================
 
+
 class IUserRepository(Protocol):
     """Repository interface for User persistence operations."""
-    
-    async def save(self, user: 'User') -> 'User':
+
+    async def save(self, user: "User") -> "User":
         """Save user to persistence layer."""
         ...
-    
-    async def get(self, user_id: str) -> Optional['User']:
+
+    async def get(self, user_id: str) -> Optional["User"]:
         """Retrieve user by ID."""
         ...
-    
-    async def get_by_username(self, username: str) -> Optional['User']:
+
+    async def get_by_username(self, username: str) -> Optional["User"]:
         """Retrieve user by username."""
         ...
-    
-    async def get_by_email(self, email: str) -> Optional['User']:
+
+    async def get_by_email(self, email: str) -> Optional["User"]:
         """Retrieve user by email."""
         ...
-    
-    async def list(self, limit: int = 50, offset: int = 0) -> tuple[List['User'], int]:
+
+    async def list(self, limit: int = 50, offset: int = 0) -> tuple[List["User"], int]:
         """List users with pagination."""
         ...
-    
+
     async def delete(self, user_id: str) -> bool:
         """Delete user by ID."""
         ...
@@ -81,12 +85,12 @@ class IUserRepository(Protocol):
 
 class IUserQuery(Protocol):
     """Read-only user query interface (for high fan-in scenarios)."""
-    
-    async def get_user(self, user_id: str) -> Optional['User']:
+
+    async def get_user(self, user_id: str) -> Optional["User"]:
         """Get user by ID (read-only)."""
         ...
-    
-    async def get_by_email(self, email: str) -> Optional['User']:
+
+    async def get_by_email(self, email: str) -> Optional["User"]:
         """Get user by email (read-only)."""
         ...
 
@@ -95,8 +99,10 @@ class IUserQuery(Protocol):
 # Service Contracts
 # ============================================================
 
+
 class IAuthService(ABC):
     """Interface for authentication business logic."""
+
     pass
 
 
@@ -147,7 +153,10 @@ class ISessionService(Protocol):
 # ============================================================
 
 # Import and re-export UserRepository as IUserRepository for convenience
-from faultmaven.modules.auth.infrastructure.repositories.user_repository import UserRepository as _UserRepository
+from faultmaven.modules.auth.infrastructure.repositories.user_repository import (
+    UserRepository as _UserRepository,
+)
+
 IUserRepository = _UserRepository  # Alias for consistency
 
 

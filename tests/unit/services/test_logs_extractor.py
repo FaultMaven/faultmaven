@@ -5,7 +5,10 @@ Tests the severity-based error detection and adaptive context extraction.
 """
 
 import pytest
-from faultmaven.services.preprocessing.extractors.logs_extractor import LogsAndErrorsExtractor
+
+from faultmaven.services.preprocessing.extractors.logs_extractor import (
+    LogsAndErrorsExtractor,
+)
 
 
 class TestLogsAndErrorsExtractor:
@@ -20,9 +23,9 @@ class TestLogsAndErrorsExtractor:
         """Test extraction of single error with context"""
         # Create log with one ERROR
         log_lines = (
-            ["INFO: Starting application"] * 50 +
-            ["ERROR: Database connection failed"] +
-            ["INFO: Retrying connection"] * 50
+            ["INFO: Starting application"] * 50
+            + ["ERROR: Database connection failed"]
+            + ["INFO: Retrying connection"] * 50
         )
         content = "\n".join(log_lines)
 
@@ -36,11 +39,11 @@ class TestLogsAndErrorsExtractor:
     def test_severity_prioritization(self, extractor):
         """Test that FATAL takes priority over ERROR"""
         log_lines = (
-            ["INFO: Normal operation"] * 10 +
-            ["ERROR: Minor issue at line 11"] +
-            ["INFO: Continuing"] * 20 +
-            ["FATAL: System crash at line 32"] +
-            ["INFO: Aftermath"] * 10
+            ["INFO: Normal operation"] * 10
+            + ["ERROR: Minor issue at line 11"]
+            + ["INFO: Continuing"] * 20
+            + ["FATAL: System crash at line 32"]
+            + ["INFO: Aftermath"] * 10
         )
         content = "\n".join(log_lines)
 
@@ -50,16 +53,20 @@ class TestLogsAndErrorsExtractor:
         assert "FATAL: System crash" in result
         # Extractor detects both ERROR and FATAL, so it reports "Multiple crime scenes"
         # The FATAL is prioritized (included in output), but both are detected
-        assert "FATAL" in result and ("Multiple crime scenes" in result or "Single FATAL" in result or "ERROR burst" in result)
+        assert "FATAL" in result and (
+            "Multiple crime scenes" in result
+            or "Single FATAL" in result
+            or "ERROR burst" in result
+        )
 
     def test_multiple_crime_scenes(self, extractor):
         """Test detection of first + last errors"""
         log_lines = (
-            ["INFO: Startup"] * 20 +
-            ["ERROR: First problem at line 21"] +
-            ["INFO: Normal operation"] * 300 +  # Large gap
-            ["ERROR: Last problem at line 322"] +
-            ["INFO: Shutdown"] * 20
+            ["INFO: Startup"] * 20
+            + ["ERROR: First problem at line 21"]
+            + ["INFO: Normal operation"] * 300  # Large gap
+            + ["ERROR: Last problem at line 322"]
+            + ["INFO: Shutdown"] * 20
         )
         content = "\n".join(log_lines)
 
@@ -73,10 +80,11 @@ class TestLogsAndErrorsExtractor:
     def test_error_burst_detection(self, extractor):
         """Test detection of error clustering"""
         log_lines = (
-            ["INFO: Normal"] * 30 +
+            ["INFO: Normal"] * 30
+            +
             # Create burst of 15 errors in close proximity
-            ["ERROR: Problem 1", "ERROR: Problem 2", "ERROR: Problem 3"] * 5 +
-            ["INFO: After burst"] * 30
+            ["ERROR: Problem 1", "ERROR: Problem 2", "ERROR: Problem 3"] * 5
+            + ["INFO: After burst"] * 30
         )
         content = "\n".join(log_lines)
 
@@ -100,25 +108,27 @@ class TestLogsAndErrorsExtractor:
         """Test that output is truncated if too large"""
         # Create very large error context
         log_lines = (
-            ["INFO: Line"] * 100 +
-            ["ERROR: Problem"] +
-            ["INFO: Context line"] * 1000  # Massive context
+            ["INFO: Line"] * 100
+            + ["ERROR: Problem"]
+            + ["INFO: Context line"] * 1000  # Massive context
         )
         content = "\n".join(log_lines)
 
         result = extractor.extract(content)
 
         # Should be truncated to MAX_SNIPPET_LINES (500)
-        result_line_count = len(result.split('\n'))
-        assert result_line_count <= extractor.MAX_SNIPPET_LINES + 10  # Some buffer for headers
+        result_line_count = len(result.split("\n"))
+        assert (
+            result_line_count <= extractor.MAX_SNIPPET_LINES + 10
+        )  # Some buffer for headers
 
     def test_panic_keyword_go_lang(self, extractor):
         """Test Go language panic detection"""
         log_lines = (
-            ["INFO: Starting Go service"] * 20 +
-            ["panic: runtime error: index out of range"] +
-            ["goroutine 1 [running]:"] +
-            ["main.main()"] * 10
+            ["INFO: Starting Go service"] * 20
+            + ["panic: runtime error: index out of range"]
+            + ["goroutine 1 [running]:"]
+            + ["main.main()"] * 10
         )
         content = "\n".join(log_lines)
 

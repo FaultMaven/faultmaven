@@ -9,7 +9,8 @@ Enhanced for Task 2: Includes response-type-specific and intent-aware examples
 that integrate with the intelligent prompt system.
 """
 
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+
 from faultmaven.models.api import ResponseType
 from faultmaven.modules.agent.domain.models.agentic import QueryIntent
 
@@ -223,8 +224,7 @@ def get_response_pattern(response_type: ResponseType) -> str:
 
 
 def format_pattern_prompt(
-    response_type: Optional[ResponseType] = None,
-    domain: Optional[str] = None
+    response_type: Optional[ResponseType] = None, domain: Optional[str] = None
 ) -> str:
     """Format pattern templates into a concise prompt section
 
@@ -301,7 +301,14 @@ def get_examples_for_context(user_query: str, limit: int = 2) -> str:
 
     # Keyword matching for categories
     category_keywords = {
-        "kubernetes": ["pod", "deployment", "kubernetes", "k8s", "container", "crashloop"],
+        "kubernetes": [
+            "pod",
+            "deployment",
+            "kubernetes",
+            "k8s",
+            "container",
+            "crashloop",
+        ],
         "redis": ["redis", "cache", "connection refused"],
         "postgresql": ["postgresql", "postgres", "database", "query", "sql"],
         "network": ["502", "503", "timeout", "connection", "network", "load balancer"],
@@ -323,10 +330,8 @@ def get_examples_for_context(user_query: str, limit: int = 2) -> str:
 # OPTIMIZED EXAMPLE SELECTION FUNCTIONS (Phase 3)
 # =============================================================================
 
-def get_examples_by_response_type(
-    response_type: ResponseType,
-    limit: int = 1
-) -> str:
+
+def get_examples_by_response_type(response_type: ResponseType, limit: int = 1) -> str:
     """
     Get pattern template for a specific response type.
 
@@ -344,10 +349,7 @@ def get_examples_by_response_type(
     return get_response_pattern(response_type)
 
 
-def get_examples_by_intent(
-    intent: QueryIntent,
-    limit: int = 1
-) -> str:
+def get_examples_by_intent(intent: QueryIntent, limit: int = 1) -> str:
     """
     Get pattern template for a specific query intent.
 
@@ -382,7 +384,7 @@ def select_intelligent_examples(
     response_type: ResponseType,
     intent: Optional[QueryIntent] = None,
     domain: Optional[str] = None,
-    limit: int = 2
+    limit: int = 2,
 ) -> str:
     """
     Intelligently select pattern template based on response type, intent, and domain.
@@ -422,7 +424,7 @@ def format_intelligent_few_shot_prompt(
     response_type: ResponseType,
     intent: Optional[QueryIntent] = None,
     domain: Optional[str] = None,
-    limit: int = 2
+    limit: int = 2,
 ) -> str:
     """
     Format intelligently-selected pattern templates into a prompt string.

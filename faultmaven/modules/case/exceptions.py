@@ -10,22 +10,16 @@ from faultmaven.exceptions import FaultMavenException, ServiceError
 
 class CaseException(FaultMavenException):
     """Base exception for case management errors."""
+
     pass
 
 
 class CaseNotFoundError(CaseException):
     """Raised when a case is not found."""
 
-    def __init__(
-        self,
-        message: str = "Case not found",
-        case_id: Optional[str] = None
-    ):
+    def __init__(self, message: str = "Case not found", case_id: Optional[str] = None):
         self.case_id = case_id
-        super().__init__(
-            message,
-            details={"case_id": case_id}
-        )
+        super().__init__(message, details={"case_id": case_id})
 
 
 class CaseStateError(CaseException):
@@ -40,7 +34,7 @@ class CaseStateError(CaseException):
         message: str,
         case_id: Optional[str] = None,
         current_state: Optional[str] = None,
-        requested_state: Optional[str] = None
+        requested_state: Optional[str] = None,
     ):
         self.case_id = case_id
         self.current_state = current_state
@@ -50,8 +44,8 @@ class CaseStateError(CaseException):
             details={
                 "case_id": case_id,
                 "current_state": current_state,
-                "requested_state": requested_state
-            }
+                "requested_state": requested_state,
+            },
         )
 
 
@@ -67,7 +61,7 @@ class CaseAccessError(CaseException):
         message: str = "Access denied",
         case_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        required_permission: Optional[str] = None
+        required_permission: Optional[str] = None,
     ):
         self.case_id = case_id
         self.organization_id = organization_id
@@ -77,8 +71,8 @@ class CaseAccessError(CaseException):
             details={
                 "case_id": case_id,
                 "organization_id": organization_id,
-                "required_permission": required_permission
-            }
+                "required_permission": required_permission,
+            },
         )
 
 
@@ -94,7 +88,7 @@ class CaseValidationError(CaseException):
         message: str,
         field: Optional[str] = None,
         value: Optional[Any] = None,
-        constraint: Optional[str] = None
+        constraint: Optional[str] = None,
     ):
         self.field = field
         self.value = value
@@ -104,8 +98,8 @@ class CaseValidationError(CaseException):
             details={
                 "field": field,
                 "value": str(value) if value is not None else None,
-                "constraint": constraint
-            }
+                "constraint": constraint,
+            },
         )
 
 
@@ -121,7 +115,7 @@ class CaseOperationError(CaseException):
         message: str,
         case_id: Optional[str] = None,
         operation: Optional[str] = None,
-        error_code: Optional[str] = None
+        error_code: Optional[str] = None,
     ):
         self.case_id = case_id
         self.operation = operation
@@ -131,6 +125,6 @@ class CaseOperationError(CaseException):
             details={
                 "case_id": case_id,
                 "operation": operation,
-                "error_code": error_code
-            }
+                "error_code": error_code,
+            },
         )

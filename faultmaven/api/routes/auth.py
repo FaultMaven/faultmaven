@@ -32,7 +32,7 @@ from faultmaven.api.middleware.auth import (
 )
 from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.models.auth import AuthenticatedUser, TokenPair
-from faultmaven.models.rbac import get_permissions_for_roles, Role
+from faultmaven.models.rbac import Role, get_permissions_for_roles
 from faultmaven.services.auth_service import (
     AuthenticationError,
     AuthService,
@@ -53,7 +53,9 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 class LoginRequest(BaseModel):
     """Login request with credentials."""
 
-    email: str = Field(..., description="User email address", pattern=r"^[^@]+@[^@]+\.[^@]+$")
+    email: str = Field(
+        ..., description="User email address", pattern=r"^[^@]+@[^@]+\.[^@]+$"
+    )
     password: str = Field(..., min_length=1, description="User password")
 
 
@@ -91,11 +93,15 @@ class TokenVerifyResponse(BaseModel):
 
     valid: bool = Field(..., description="Whether token is valid")
     user_id: Optional[str] = Field(None, description="User ID from token")
-    organization_id: Optional[str] = Field(None, description="Organization ID from token")
+    organization_id: Optional[str] = Field(
+        None, description="Organization ID from token"
+    )
     email: Optional[str] = Field(None, description="User email from token")
     roles: Optional[List[str]] = Field(None, description="User roles")
     permissions: Optional[List[str]] = Field(None, description="User permissions")
-    expires_at: Optional[str] = Field(None, description="Token expiration time (ISO 8601)")
+    expires_at: Optional[str] = Field(
+        None, description="Token expiration time (ISO 8601)"
+    )
     error: Optional[str] = Field(None, description="Error message if invalid")
 
 
@@ -106,8 +112,12 @@ class UserRegistrationRequest(BaseModel):
     """User registration request."""
 
     email: EmailStr = Field(..., description="User email address")
-    password: str = Field(..., min_length=8, description="User password (min 8 characters)")
-    full_name: str = Field(..., min_length=1, max_length=200, description="User's full name")
+    password: str = Field(
+        ..., min_length=8, description="User password (min 8 characters)"
+    )
+    full_name: str = Field(
+        ..., min_length=1, max_length=200, description="User's full name"
+    )
 
 
 class UserResponse(BaseModel):
@@ -120,7 +130,9 @@ class UserResponse(BaseModel):
     is_verified: bool = Field(..., description="Whether email is verified")
     created_at: str = Field(..., description="Account creation timestamp (ISO 8601)")
     updated_at: str = Field(..., description="Last update timestamp (ISO 8601)")
-    last_login_at: Optional[str] = Field(None, description="Last login timestamp (ISO 8601)")
+    last_login_at: Optional[str] = Field(
+        None, description="Last login timestamp (ISO 8601)"
+    )
 
 
 class PasswordResetRequestRequest(BaseModel):
@@ -133,14 +145,18 @@ class PasswordResetRequest(BaseModel):
     """Password reset with token."""
 
     token: str = Field(..., description="Password reset token")
-    new_password: str = Field(..., min_length=8, description="New password (min 8 characters)")
+    new_password: str = Field(
+        ..., min_length=8, description="New password (min 8 characters)"
+    )
 
 
 class PasswordChangeRequest(BaseModel):
     """Password change request (authenticated)."""
 
     current_password: str = Field(..., description="Current password")
-    new_password: str = Field(..., min_length=8, description="New password (min 8 characters)")
+    new_password: str = Field(
+        ..., min_length=8, description="New password (min 8 characters)"
+    )
 
 
 # ============================================================
@@ -163,7 +179,7 @@ async def get_user_service(request: Request):
     Raises:
         RuntimeError: If UserService not available in app.state
     """
-    user_service = getattr(request.app.state, 'user_service', None)
+    user_service = getattr(request.app.state, "user_service", None)
     if user_service:
         return user_service
     else:
@@ -337,7 +353,9 @@ async def login(
 
     except AuthenticationError as e:
         # User not found or password mismatch - try dev users fallback
-        logger.debug(f"UserService auth failed for {credentials.email}, trying dev users fallback: {e.message}")
+        logger.debug(
+            f"UserService auth failed for {credentials.email}, trying dev users fallback: {e.message}"
+        )
         user_service_failed = True
 
     except Exception:
@@ -373,7 +391,9 @@ async def login(
     )
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED
+)
 async def register(
     request: UserRegistrationRequest,
 ) -> UserResponse:

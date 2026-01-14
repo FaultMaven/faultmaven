@@ -18,32 +18,39 @@ Performance targets:
 - Indexing job (100 items): <60000ms p95
 """
 
-import pytest
-import time
+import shutil
 import statistics
 import tempfile
-import shutil
+import time
 from datetime import datetime, timezone
 from typing import List
 from unittest.mock import AsyncMock, MagicMock
 
-from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
-from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
-from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
+import pytest
+
 from faultmaven.jobs.knowledge_indexing_job import KnowledgeIndexingJob
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
+    KnowledgeItem,
+    KnowledgeItemType,
+)
+from faultmaven.modules.knowledge.domain.services.embedding_service import (
+    EmbeddingService,
+)
+from faultmaven.modules.knowledge.domain.services.search_service import (
+    KnowledgeSearchService,
+)
+from faultmaven.modules.knowledge.domain.services.vector_store_service import (
+    VectorStoreService,
+)
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     InMemoryKnowledgeItemRepository,
 )
-from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-    KnowledgeItem,
-    KnowledgeItemType,
-    EMBEDDING_DIMENSIONS,
-)
-
 
 # =============================================================================
 # Benchmark Utilities
 # =============================================================================
+
 
 def create_embedding(value: float = 0.1) -> List[float]:
     """Create test embedding vector."""
@@ -110,6 +117,7 @@ class BenchmarkResult:
 # Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def temp_chroma_dir():
     """Create temporary directory for ChromaDB."""
@@ -128,11 +136,13 @@ def mock_embedding_service():
     # Simulate realistic latency
     async def mock_generate(text):
         import asyncio
+
         await asyncio.sleep(0.01)  # 10ms simulated latency
         return create_embedding()
 
     async def mock_generate_batch(texts):
         import asyncio
+
         await asyncio.sleep(0.01 * len(texts) / 10)  # Batch efficiency
         return [create_embedding() for _ in texts]
 
@@ -171,6 +181,7 @@ def search_service(knowledge_repo, mock_embedding_service, vector_store):
 # =============================================================================
 # Benchmark: Vector Store Add Operations
 # =============================================================================
+
 
 @pytest.mark.benchmark
 class TestVectorStoreAddBenchmarks:
@@ -239,6 +250,7 @@ class TestVectorStoreAddBenchmarks:
 # =============================================================================
 # Benchmark: Semantic Search Operations
 # =============================================================================
+
 
 @pytest.mark.benchmark
 class TestSemanticSearchBenchmarks:
@@ -331,6 +343,7 @@ class TestSemanticSearchBenchmarks:
 # Benchmark: Hybrid Search Operations
 # =============================================================================
 
+
 @pytest.mark.benchmark
 class TestHybridSearchBenchmarks:
     """Benchmarks for hybrid search operations."""
@@ -422,14 +435,13 @@ class TestHybridSearchBenchmarks:
 # Benchmark: Index Operations
 # =============================================================================
 
+
 @pytest.mark.benchmark
 class TestIndexingBenchmarks:
     """Benchmarks for indexing operations."""
 
     @pytest.mark.asyncio
-    async def test_benchmark_index_single_item(
-        self, search_service, knowledge_repo
-    ):
+    async def test_benchmark_index_single_item(self, search_service, knowledge_repo):
         """Benchmark: Index single item (end-to-end).
 
         Target: <600ms p95
@@ -454,9 +466,7 @@ class TestIndexingBenchmarks:
         assert result.meets_target, f"Benchmark failed: {result}"
 
     @pytest.mark.asyncio
-    async def test_benchmark_index_batch_50(
-        self, search_service, knowledge_repo
-    ):
+    async def test_benchmark_index_batch_50(self, search_service, knowledge_repo):
         """Benchmark: Index batch of 50 items.
 
         Target: <5000ms p95
@@ -487,6 +497,7 @@ class TestIndexingBenchmarks:
 # =============================================================================
 # Benchmark: Indexing Job
 # =============================================================================
+
 
 @pytest.mark.benchmark
 class TestIndexingJobBenchmarks:
@@ -534,6 +545,7 @@ class TestIndexingJobBenchmarks:
 # =============================================================================
 # Benchmark: Vector Store Delete Operations
 # =============================================================================
+
 
 @pytest.mark.benchmark
 class TestVectorStoreDeleteBenchmarks:

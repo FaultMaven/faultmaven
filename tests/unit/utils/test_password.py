@@ -35,7 +35,10 @@ class TestHashPassword:
         """Hash should include the configured cost factor."""
         hashed = hash_password("TestP@ssw0rd!")
         # Check for cost factor 12 in the hash
-        assert f"$2b${BCRYPT_COST_FACTOR}$" in hashed or f"$2a${BCRYPT_COST_FACTOR}$" in hashed
+        assert (
+            f"$2b${BCRYPT_COST_FACTOR}$" in hashed
+            or f"$2a${BCRYPT_COST_FACTOR}$" in hashed
+        )
 
     def test_same_password_produces_different_hashes(self):
         """Same password should produce different hashes due to salt."""

@@ -12,17 +12,21 @@ Test Coverage:
 5. owner_id requirement in Case creation (security validation)
 """
 
-import pytest
 import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
+import pytest
+
+from faultmaven.exceptions import ValidationException
+from faultmaven.models.common import SessionContext
+from faultmaven.modules.auth.domain.services.auth_session_service import (
+    AuthSessionService as SessionService,
+)
+from faultmaven.modules.case.domain.models import Case
+
 # Legacy services/domain/* was removed; use extracted module path.
 from faultmaven.modules.case.domain.services.case_service import CaseService
-from faultmaven.models.common import SessionContext
-from faultmaven.modules.case.domain.models import Case
-from faultmaven.exceptions import ValidationException
 
 
 def unique_id(prefix: str) -> str:
@@ -57,8 +61,7 @@ class TestArchitecturalCompliance:
 
         # Create initial session with client_id
         session1, was_resumed1 = await session_service.create_session(
-            user_id=user_id,
-            client_id=client_id
+            user_id=user_id, client_id=client_id
         )
 
         assert session1 is not None
@@ -68,15 +71,16 @@ class TestArchitecturalCompliance:
 
         # Simulate browser restart - same client_id should resume
         session2, was_resumed2 = await session_service.create_session(
-            user_id=user_id,
-            client_id=client_id
+            user_id=user_id, client_id=client_id
         )
 
         # ✅ SPEC COMPLIANCE: Session should be resumed
-        assert session1.session_id == session2.session_id, \
-            "Same client_id must resume existing session (spec lines 669-676)"
-        assert was_resumed2 is True, \
-            "session_resumed flag must be True when resuming (spec line 675)"
+        assert (
+            session1.session_id == session2.session_id
+        ), "Same client_id must resume existing session (spec lines 669-676)"
+        assert (
+            was_resumed2 is True
+        ), "session_resumed flag must be True when resuming (spec line 675)"
         assert session2.client_id == client_id
 
     async def test_different_client_ids_create_separate_sessions(
@@ -95,21 +99,19 @@ class TestArchitecturalCompliance:
 
         # Create session from device 1
         session1, was_resumed1 = await session_service.create_session(
-            user_id=user_id,
-            client_id=client_id_1
+            user_id=user_id, client_id=client_id_1
         )
 
         # Create session from device 2
         session2, was_resumed2 = await session_service.create_session(
-            user_id=user_id,
-            client_id=client_id_2
+            user_id=user_id, client_id=client_id_2
         )
 
         # ✅ SPEC COMPLIANCE: Different sessions for different devices
-        assert session1.session_id != session2.session_id, \
-            "Different client_ids must create separate sessions (spec lines 657-667)"
-        assert session1.user_id == session2.user_id, \
-            "Both sessions belong to same user"
+        assert (
+            session1.session_id != session2.session_id
+        ), "Different client_ids must create separate sessions (spec lines 657-667)"
+        assert session1.user_id == session2.user_id, "Both sessions belong to same user"
         assert was_resumed1 is False
         assert was_resumed2 is False
 
@@ -129,8 +131,7 @@ class TestArchitecturalCompliance:
 
         # All should be different sessions
         session_ids = {session1.session_id, session2.session_id, session3.session_id}
-        assert len(session_ids) == 3, \
-            "Sessions without client_id should all be unique"
+        assert len(session_ids) == 3, "Sessions without client_id should all be unique"
 
     # ============================================================================
     # Test 2: Multi-Device Support for Same User
@@ -152,21 +153,21 @@ class TestArchitecturalCompliance:
             unique_id("device-chrome-laptop"),
             unique_id("device-firefox-desktop"),
             unique_id("device-safari-iphone"),
-            unique_id("device-edge-surface")
+            unique_id("device-edge-surface"),
         ]
 
         sessions = []
         for device_id in devices:
             session, _ = await session_service.create_session(
-                user_id=user_id,
-                client_id=device_id
+                user_id=user_id, client_id=device_id
             )
             sessions.append(session)
 
         # ✅ SPEC COMPLIANCE: All sessions valid but separate
         session_ids = [s.session_id for s in sessions]
-        assert len(set(session_ids)) == len(devices), \
-            "Each device must have unique session_id (spec lines 657-667)"
+        assert len(set(session_ids)) == len(
+            devices
+        ), "Each device must have unique session_id (spec lines 657-667)"
 
         # All sessions belong to same user
         for session in sessions:
@@ -194,8 +195,9 @@ class TestArchitecturalCompliance:
 
         # Session 2 should still be valid
         session2_check = await session_service.get_session(session2.session_id)
-        assert session2_check is not None, \
-            "Deleting one session should not affect other device sessions"
+        assert (
+            session2_check is not None
+        ), "Deleting one session should not affect other device sessions"
         assert session2_check.session_id == session2.session_id
 
     # ============================================================================
@@ -204,8 +206,7 @@ class TestArchitecturalCompliance:
     # ============================================================================
 
     async def test_cases_accessible_from_all_user_sessions(
-        self, session_service: SessionService,
-        case_service: CaseService
+        self, session_service: SessionService, case_service: CaseService
     ):
         """Test that cases are accessible from all sessions of the same user
 
@@ -226,7 +227,7 @@ class TestArchitecturalCompliance:
         case = await case_service.create_case(
             title="Multi-Device Test Case",
             initial_message="Test case accessibility across sessions",
-            owner_id=user_id  # ✅ SPEC: Case owned by user, not session
+            owner_id=user_id,  # ✅ SPEC: Case owned by user, not session
         )
 
         # Retrieve cases via both sessions - use list_user_cases method
@@ -237,14 +238,15 @@ class TestArchitecturalCompliance:
         case_ids_session1 = {c.case_id for c in cases_via_session1}
         case_ids_session2 = {c.case_id for c in cases_via_session2}
 
-        assert case_ids_session1 == case_ids_session2, \
-            "Same user's cases must be identical from all sessions (spec lines 650-655)"
-        assert case.case_id in case_ids_session1, \
-            "Created case must be visible from all user sessions"
+        assert (
+            case_ids_session1 == case_ids_session2
+        ), "Same user's cases must be identical from all sessions (spec lines 650-655)"
+        assert (
+            case.case_id in case_ids_session1
+        ), "Created case must be visible from all user sessions"
 
     async def test_cases_persist_after_session_deletion(
-        self, session_service: SessionService,
-        case_service: CaseService
+        self, session_service: SessionService, case_service: CaseService
     ):
         """Test that cases persist after creating session is deleted
 
@@ -261,7 +263,7 @@ class TestArchitecturalCompliance:
         case = await case_service.create_case(
             title="Persistent Case",
             initial_message="This case should survive session deletion",
-            owner_id=user_id
+            owner_id=user_id,
         )
         case_id = case.case_id
 
@@ -276,12 +278,12 @@ class TestArchitecturalCompliance:
         case_ids = {c.case_id for c in cases}
 
         # ✅ SPEC COMPLIANCE: Case persists beyond session
-        assert case_id in case_ids, \
-            "Cases must persist after session expiry (spec lines 678-690)"
+        assert (
+            case_id in case_ids
+        ), "Cases must persist after session expiry (spec lines 678-690)"
 
     async def test_direct_case_access_matches_session_case_access(
-        self, session_service: SessionService,
-        case_service: CaseService
+        self, session_service: SessionService, case_service: CaseService
     ):
         """Test that direct user case access matches session-based access
 
@@ -299,9 +301,7 @@ class TestArchitecturalCompliance:
         created_cases = []
         for title in case_titles:
             case = await case_service.create_case(
-                title=title,
-                initial_message=f"Query for {title}",
-                owner_id=user_id
+                title=title, initial_message=f"Query for {title}", owner_id=user_id
             )
             created_cases.append(case)
 
@@ -313,8 +313,9 @@ class TestArchitecturalCompliance:
         first_case_ids = sorted([c.case_id for c in first_access])
         second_case_ids = sorted([c.case_id for c in second_access])
 
-        assert first_case_ids == second_case_ids, \
-            "Multiple accesses to user cases must return identical results (spec lines 650-655)"
+        assert (
+            first_case_ids == second_case_ids
+        ), "Multiple accesses to user cases must return identical results (spec lines 650-655)"
 
     # ============================================================================
     # Test 4: Session Updates Reject Case Data
@@ -336,7 +337,10 @@ class TestArchitecturalCompliance:
         # Attempt to update with forbidden case_history field
         forbidden_update = {
             "case_history": [
-                {"case_id": "case_001", "timestamp": datetime.now(timezone.utc).isoformat()}
+                {
+                    "case_id": "case_001",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
             ]
         }
 
@@ -344,9 +348,10 @@ class TestArchitecturalCompliance:
         with pytest.raises(ValidationException) as exc_info:
             await session_service.update_session(session.session_id, forbidden_update)
 
-        assert "case_history" in str(exc_info.value).lower() or \
-               "forbidden" in str(exc_info.value).lower(), \
-            "Session updates must reject case_history field (spec lines 102-107)"
+        assert (
+            "case_history" in str(exc_info.value).lower()
+            or "forbidden" in str(exc_info.value).lower()
+        ), "Session updates must reject case_history field (spec lines 102-107)"
 
     async def test_session_update_rejects_current_case_id(
         self, session_service: SessionService
@@ -361,17 +366,16 @@ class TestArchitecturalCompliance:
         session, _ = await session_service.create_session(user_id)
 
         # Attempt to update with forbidden current_case_id field
-        forbidden_update = {
-            "current_case_id": "case_123"
-        }
+        forbidden_update = {"current_case_id": "case_123"}
 
         # ✅ SPEC COMPLIANCE: Should reject forbidden field
         with pytest.raises(ValidationException) as exc_info:
             await session_service.update_session(session.session_id, forbidden_update)
 
-        assert "current_case_id" in str(exc_info.value).lower() or \
-               "forbidden" in str(exc_info.value).lower(), \
-            "Session updates must reject current_case_id field (spec lines 102-107)"
+        assert (
+            "current_case_id" in str(exc_info.value).lower()
+            or "forbidden" in str(exc_info.value).lower()
+        ), "Session updates must reject current_case_id field (spec lines 102-107)"
 
     async def test_session_update_rejects_data_uploads(
         self, session_service: SessionService
@@ -386,17 +390,16 @@ class TestArchitecturalCompliance:
         session, _ = await session_service.create_session(user_id)
 
         # Attempt to update with forbidden data_uploads field
-        forbidden_update = {
-            "data_uploads": ["upload_001", "upload_002"]
-        }
+        forbidden_update = {"data_uploads": ["upload_001", "upload_002"]}
 
         # ✅ SPEC COMPLIANCE: Should reject forbidden field
         with pytest.raises(ValidationException) as exc_info:
             await session_service.update_session(session.session_id, forbidden_update)
 
-        assert "data_uploads" in str(exc_info.value).lower() or \
-               "forbidden" in str(exc_info.value).lower(), \
-            "Session updates must reject data_uploads field (spec lines 102-107)"
+        assert (
+            "data_uploads" in str(exc_info.value).lower()
+            or "forbidden" in str(exc_info.value).lower()
+        ), "Session updates must reject data_uploads field (spec lines 102-107)"
 
     async def test_session_update_accepts_valid_fields(
         self, session_service: SessionService
@@ -413,14 +416,15 @@ class TestArchitecturalCompliance:
             "metadata": {
                 "last_ip": "192.168.1.1",
                 "user_agent": "Mozilla/5.0",
-                "login_time": datetime.now(timezone.utc).isoformat()
+                "login_time": datetime.now(timezone.utc).isoformat(),
             }
         }
 
         # Should succeed
         success = await session_service.update_session(session.session_id, valid_update)
-        assert success is True, \
-            "Session updates should accept valid authentication metadata"
+        assert (
+            success is True
+        ), "Session updates should accept valid authentication metadata"
 
         # Verify update was applied
         updated_session = await session_service.get_session(session.session_id)
@@ -431,9 +435,7 @@ class TestArchitecturalCompliance:
     # Spec Reference: Lines 273-277
     # ============================================================================
 
-    async def test_case_creation_requires_owner_id(
-        self, case_service: CaseService
-    ):
+    async def test_case_creation_requires_owner_id(self, case_service: CaseService):
         """Test that case creation requires owner_id field
 
         Spec Lines 273-277:
@@ -447,17 +449,17 @@ class TestArchitecturalCompliance:
             await case_service.create_case(
                 title="Missing Owner Case",
                 initial_message="This should fail",
-                owner_id=None  # ✅ SPEC: owner_id is required
+                owner_id=None,  # ✅ SPEC: owner_id is required
             )
 
         # Should reject missing owner_id
         error_msg = str(exc_info.value).lower()
-        assert "owner" in error_msg or "required" in error_msg, \
-            "Case creation must require owner_id (spec lines 273-277)"
+        assert (
+            "owner" in error_msg or "required" in error_msg
+        ), "Case creation must require owner_id (spec lines 273-277)"
 
     async def test_case_creation_with_valid_owner_id(
-        self, session_service: SessionService,
-        case_service: CaseService
+        self, session_service: SessionService, case_service: CaseService
     ):
         """Test that case creation succeeds with valid owner_id
 
@@ -474,18 +476,17 @@ class TestArchitecturalCompliance:
         case = await case_service.create_case(
             title="Valid Owner Case",
             initial_message="Case with valid owner",
-            owner_id=user_id  # ✅ SPEC: owner_id provided
+            owner_id=user_id,  # ✅ SPEC: owner_id provided
         )
 
         # ✅ SPEC COMPLIANCE: user_id must be set and non-optional (Case model uses user_id)
-        assert case.user_id == user_id, \
-            "Created case must have user_id set (spec lines 273-277)"
-        assert case.user_id is not None, \
-            "user_id must not be None"
+        assert (
+            case.user_id == user_id
+        ), "Created case must have user_id set (spec lines 273-277)"
+        assert case.user_id is not None, "user_id must not be None"
 
     async def test_case_ownership_enforced_in_retrieval(
-        self, session_service: SessionService,
-        case_service: CaseService
+        self, session_service: SessionService, case_service: CaseService
     ):
         """Test that case ownership is enforced when retrieving cases
 
@@ -502,33 +503,33 @@ class TestArchitecturalCompliance:
         case1 = await case_service.create_case(
             title="User 1 Case",
             initial_message="Case owned by user 1",
-            owner_id=user1_id
+            owner_id=user1_id,
         )
 
         # User 2 creates a case
         case2 = await case_service.create_case(
             title="User 2 Case",
             initial_message="Case owned by user 2",
-            owner_id=user2_id
+            owner_id=user2_id,
         )
 
         # User 1 should only see their case
         user1_cases = await case_service.list_user_cases(user1_id)
         user1_case_ids = {c.case_id for c in user1_cases}
 
-        assert case1.case_id in user1_case_ids, \
-            "User should see their own cases"
-        assert case2.case_id not in user1_case_ids, \
-            "User should not see other users' cases"
+        assert case1.case_id in user1_case_ids, "User should see their own cases"
+        assert (
+            case2.case_id not in user1_case_ids
+        ), "User should not see other users' cases"
 
         # User 2 should only see their case
         user2_cases = await case_service.list_user_cases(user2_id)
         user2_case_ids = {c.case_id for c in user2_cases}
 
-        assert case2.case_id in user2_case_ids, \
-            "User should see their own cases"
-        assert case1.case_id not in user2_case_ids, \
-            "User should not see other users' cases"
+        assert case2.case_id in user2_case_ids, "User should see their own cases"
+        assert (
+            case1.case_id not in user2_case_ids
+        ), "User should not see other users' cases"
 
     # ============================================================================
     # Test 6: Additional Compliance Validations
@@ -548,17 +549,19 @@ class TestArchitecturalCompliance:
         client_id = unique_id("device-test")
 
         session, was_resumed = await session_service.create_session(
-            user_id=user_id,
-            client_id=client_id
+            user_id=user_id, client_id=client_id
         )
 
         # ✅ SPEC COMPLIANCE: Multi-device fields present
-        assert hasattr(session, 'client_id'), \
-            "SessionContext must have client_id field (spec lines 263-269)"
-        assert hasattr(session, 'session_resumed'), \
-            "SessionContext must have session_resumed field (spec lines 263-269)"
-        assert hasattr(session, 'expires_at'), \
-            "SessionContext must have expires_at field (spec lines 263-269)"
+        assert hasattr(
+            session, "client_id"
+        ), "SessionContext must have client_id field (spec lines 263-269)"
+        assert hasattr(
+            session, "session_resumed"
+        ), "SessionContext must have session_resumed field (spec lines 263-269)"
+        assert hasattr(
+            session, "expires_at"
+        ), "SessionContext must have expires_at field (spec lines 263-269)"
 
         # Verify values are set correctly
         assert session.client_id == client_id
@@ -577,6 +580,5 @@ class TestArchitecturalCompliance:
         session, _ = await session_service.create_session(user_id="test_user")
 
         # user_id should be set and non-None
-        assert session.user_id is not None, \
-            "SessionContext user_id should be set"
+        assert session.user_id is not None, "SessionContext user_id should be set"
         assert session.user_id == "test_user"

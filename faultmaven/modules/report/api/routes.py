@@ -17,44 +17,44 @@ Authentication:
 Design Reference: docs/architecture/document-generation-and-closure-design.md
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional
-import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Path, Body
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
+from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.api.v1.dependencies import (
+    get_case_repository,
+    get_case_service,
+    get_report_generation_service,
+    get_report_recommendation_service,
+    get_tenant_provider,
+)
+from faultmaven.exceptions import (
+    NotFoundError,
+    ServiceException,
+    ValidationException,
+)
+from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.models.interfaces_case import ICaseService
+
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.auth.contracts import UserDTO
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.modules.report.domain.models import (
+    CaseClosureRequest,
+    CaseClosureResponse,
     CaseReport,
-    ReportType,
-    ReportStatus,
     ReportGenerationRequest,
     ReportGenerationResponse,
     ReportRecommendation,
-    CaseClosureRequest,
-    CaseClosureResponse,
-)
-from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.auth.contracts import UserDTO
-from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.api.v1.dependencies import (
-    get_case_service,
-    get_case_repository,
-    get_tenant_provider,
-    get_report_generation_service,
-    get_report_recommendation_service,
+    ReportStatus,
+    ReportType,
 )
 from faultmaven.providers.tenancy.base import TenantProvider
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import (
-    ValidationException,
-    ServiceException,
-    NotFoundError,
-)
 from faultmaven.utils.serialization import to_json_compatible
-
 
 # Create router
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -70,6 +70,7 @@ logger = logging.getLogger(__name__)
 
 class ReportResponse(BaseModel):
     """API response model for a report."""
+
     report_id: str
     case_id: str
     report_type: str
@@ -106,6 +107,7 @@ class ReportResponse(BaseModel):
 
 class ReportListResponse(BaseModel):
     """API response for list of reports."""
+
     reports: List[ReportResponse]
     total: int
     case_id: str
@@ -113,12 +115,16 @@ class ReportListResponse(BaseModel):
 
 class ReportUpdateRequest(BaseModel):
     """Request model for updating a report."""
+
     title: Optional[str] = Field(None, min_length=10, max_length=200)
-    content: Optional[str] = Field(None, description="Updated report content in markdown")
+    content: Optional[str] = Field(
+        None, description="Updated report content in markdown"
+    )
 
 
 class ReportVersionResponse(BaseModel):
     """Version history entry for a report."""
+
     report_id: str
     version: int
     title: str
@@ -129,17 +135,20 @@ class ReportVersionResponse(BaseModel):
 
 class ReportVersionListResponse(BaseModel):
     """List of report versions."""
+
     versions: List[ReportVersionResponse]
     total: int
 
 
 class LinkCaseRequest(BaseModel):
     """Request to link report to case closure."""
+
     closure_note: Optional[str] = Field(None, max_length=500)
 
 
 class LinkCaseResponse(BaseModel):
     """Response after linking report to case closure."""
+
     status: str
     message: str
     report_id: str
@@ -149,6 +158,7 @@ class LinkCaseResponse(BaseModel):
 
 class ReportRecommendationResponse(BaseModel):
     """API response for report recommendations."""
+
     case_id: str
     available_for_generation: List[str]
     runbook_recommendation: dict
@@ -159,12 +169,14 @@ class ReportRecommendationResponse(BaseModel):
 # ============================================================
 
 
-def check_case_repository_available(case_repository: Optional[CaseRepository]) -> CaseRepository:
+def check_case_repository_available(
+    case_repository: Optional[CaseRepository],
+) -> CaseRepository:
     """Check if case repository is available and raise appropriate error if not."""
     if case_repository is None:
         raise HTTPException(
             status_code=503,
-            detail="Case repository unavailable - report service not available"
+            detail="Case repository unavailable - report service not available",
         )
     return case_repository
 
@@ -172,27 +184,23 @@ def check_case_repository_available(case_repository: Optional[CaseRepository]) -
 def check_case_service_available(case_service: Optional[ICaseService]) -> ICaseService:
     """Check if case service is available."""
     if case_service is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Case service unavailable"
-        )
+        raise HTTPException(status_code=503, detail="Case service unavailable")
     return case_service
 
 
-def check_tenant_provider_available(tenant_provider: Optional[TenantProvider]) -> TenantProvider:
+def check_tenant_provider_available(
+    tenant_provider: Optional[TenantProvider],
+) -> TenantProvider:
     """Check if tenant provider is available."""
     if tenant_provider is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Tenant provider unavailable"
-        )
+        raise HTTPException(status_code=503, detail="Tenant provider unavailable")
     return tenant_provider
 
 
 async def validate_organization_access(
     tenant_provider: TenantProvider,
     current_user: UserDTO,
-    case_organization_id: Optional[str] = None
+    case_organization_id: Optional[str] = None,
 ) -> None:
     """Validate user has access to the organization context.
 
@@ -209,26 +217,28 @@ async def validate_organization_access(
         organization = await tenant_provider.get_current_organization(current_user)
 
         # If case has organization_id, verify it matches
-        if case_organization_id and organization.organization_id != case_organization_id:
+        if (
+            case_organization_id
+            and organization.organization_id != case_organization_id
+        ):
             logger.warning(
                 "Organization access denied",
                 extra={
                     "user_id": current_user.user_id,
                     "requested_org": case_organization_id,
-                    "user_org": organization.organization_id
-                }
+                    "user_org": organization.organization_id,
+                },
             )
             raise HTTPException(
                 status_code=403,
-                detail="Access denied - resource belongs to different organization"
+                detail="Access denied - resource belongs to different organization",
             )
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Organization validation failed: {e}")
         raise HTTPException(
-            status_code=403,
-            detail="Unable to validate organization access"
+            status_code=403, detail="Unable to validate organization access"
         )
 
 
@@ -242,7 +252,7 @@ async def validate_organization_access(
     response_model=ReportGenerationResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Generate reports for a case",
-    description="Generate post-mortem, executive summary, or technical analysis reports using LLM"
+    description="Generate post-mortem, executive summary, or technical analysis reports using LLM",
 )
 @trace("api_generate_report")
 async def generate_report(
@@ -251,7 +261,7 @@ async def generate_report(
     current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_service: Optional[ICaseService] = Depends(get_case_service),
-    generation_service = Depends(get_report_generation_service),
+    generation_service=Depends(get_report_generation_service),
 ) -> ReportGenerationResponse:
     """Generate reports for a case.
 
@@ -286,21 +296,18 @@ async def generate_report(
         extra={
             "case_id": case_id,
             "user_id": current_user.user_id,
-            "report_types": [t.value for t in request.report_types]
-        }
+            "report_types": [t.value for t in request.report_types],
+        },
     )
 
     try:
         # Get case to validate it exists and user has access
         case = await case_service.get_case(case_id, user_id=current_user.user_id)
         if not case:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Case {case_id} not found"
-            )
+            raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
 
         # Validate organization ownership of case (multi-tenant isolation)
-        if tenant_provider and hasattr(case, 'organization_id'):
+        if tenant_provider and hasattr(case, "organization_id"):
             await validate_organization_access(
                 tenant_provider, current_user, case.organization_id
             )
@@ -308,22 +315,17 @@ async def generate_report(
         # Validate generation service is available
         if not generation_service:
             raise HTTPException(
-                status_code=503,
-                detail="Report generation service unavailable"
+                status_code=503, detail="Report generation service unavailable"
             )
 
         # Generate reports
         response = await generation_service.generate_reports(
-            case=case,
-            report_types=request.report_types
+            case=case, report_types=request.report_types
         )
 
         logger.info(
             f"Reports generated successfully",
-            extra={
-                "case_id": case_id,
-                "report_count": len(response.reports)
-            }
+            extra={"case_id": case_id, "report_count": len(response.reports)},
         )
 
         return response
@@ -342,7 +344,7 @@ async def generate_report(
     "/recommendations/{case_id}",
     response_model=ReportRecommendationResponse,
     summary="Get report recommendations for a case",
-    description="Get intelligent recommendations for which reports to generate"
+    description="Get intelligent recommendations for which reports to generate",
 )
 @trace("api_get_report_recommendations")
 async def get_report_recommendations(
@@ -350,7 +352,7 @@ async def get_report_recommendations(
     current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
     case_service: Optional[ICaseService] = Depends(get_case_service),
-    rec_service = Depends(get_report_recommendation_service),
+    rec_service=Depends(get_report_recommendation_service),
 ) -> ReportRecommendationResponse:
     """Get report generation recommendations.
 
@@ -381,7 +383,7 @@ async def get_report_recommendations(
             raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
 
         # Validate organization ownership (multi-tenant isolation)
-        if tenant_provider and hasattr(case, 'organization_id'):
+        if tenant_provider and hasattr(case, "organization_id"):
             await validate_organization_access(
                 tenant_provider, current_user, case.organization_id
             )
@@ -397,8 +399,8 @@ async def get_report_recommendations(
                 ],
                 runbook_recommendation={
                     "action": "generate",
-                    "reason": "Recommendation service unavailable - all report types available"
-                }
+                    "reason": "Recommendation service unavailable - all report types available",
+                },
             )
 
         # Get recommendations
@@ -406,7 +408,9 @@ async def get_report_recommendations(
 
         return ReportRecommendationResponse(
             case_id=recommendation.case_id,
-            available_for_generation=[t.value for t in recommendation.available_for_generation],
+            available_for_generation=[
+                t.value for t in recommendation.available_for_generation
+            ],
             runbook_recommendation={
                 "action": recommendation.runbook_recommendation.action,
                 "similarity_score": recommendation.runbook_recommendation.similarity_score,
@@ -415,8 +419,8 @@ async def get_report_recommendations(
                     recommendation.runbook_recommendation.existing_runbook.report_id
                     if recommendation.runbook_recommendation.existing_runbook
                     else None
-                )
-            }
+                ),
+            },
         )
 
     except NotFoundError as e:
@@ -427,7 +431,7 @@ async def get_report_recommendations(
     "/{report_id}",
     response_model=ReportResponse,
     summary="Get report by ID",
-    description="Retrieve a specific report by its UUID"
+    description="Retrieve a specific report by its UUID",
 )
 @trace("api_get_report")
 async def get_report(
@@ -459,22 +463,21 @@ async def get_report(
 
     logger.info(
         f"Getting report",
-        extra={"report_id": report_id, "user_id": current_user.user_id}
+        extra={"report_id": report_id, "user_id": current_user.user_id},
     )
 
     try:
         report = await case_repository.get_report(report_id)
 
         if not report:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Report {report_id} not found"
-            )
+            raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
         # Validate organization ownership via case (multi-tenant isolation)
         if tenant_provider and case_service and report.case_id:
-            case = await case_service.get_case(report.case_id, user_id=current_user.user_id)
-            if case and hasattr(case, 'organization_id'):
+            case = await case_service.get_case(
+                report.case_id, user_id=current_user.user_id
+            )
+            if case and hasattr(case, "organization_id"):
                 await validate_organization_access(
                     tenant_provider, current_user, case.organization_id
                 )
@@ -492,7 +495,7 @@ async def get_report(
     "/{report_id}",
     response_model=ReportResponse,
     summary="Update report",
-    description="Update report title or content"
+    description="Update report title or content",
 )
 @trace("api_update_report")
 async def update_report(
@@ -532,7 +535,7 @@ async def update_report(
 
     logger.info(
         f"Updating report",
-        extra={"report_id": report_id, "user_id": current_user.user_id}
+        extra={"report_id": report_id, "user_id": current_user.user_id},
     )
 
     try:
@@ -543,15 +546,19 @@ async def update_report(
 
         # Validate organization ownership via case (multi-tenant isolation)
         if tenant_provider and case_service and existing_report.case_id:
-            case = await case_service.get_case(existing_report.case_id, user_id=current_user.user_id)
-            if case and hasattr(case, 'organization_id'):
+            case = await case_service.get_case(
+                existing_report.case_id, user_id=current_user.user_id
+            )
+            if case and hasattr(case, "organization_id"):
                 await validate_organization_access(
                     tenant_provider, current_user, case.organization_id
                 )
 
         # Update fields
         updated_title = request.title if request.title else existing_report.title
-        updated_content = request.content if request.content else existing_report.content
+        updated_content = (
+            request.content if request.content else existing_report.content
+        )
 
         # Create updated report (new version)
         # Note: When creating a new version via update, generated_at is set to current time
@@ -580,10 +587,7 @@ async def update_report(
 
         logger.info(
             f"Report updated",
-            extra={
-                "report_id": report_id,
-                "new_version": updated_report.version
-            }
+            extra={"report_id": report_id, "new_version": updated_report.version},
         )
 
         return ReportResponse.from_domain(updated_report)
@@ -601,7 +605,7 @@ async def update_report(
     "/{report_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete report",
-    description="Permanently delete a report (runbooks cannot be deleted)"
+    description="Permanently delete a report (runbooks cannot be deleted)",
 )
 @trace("api_delete_report")
 async def delete_report(
@@ -634,7 +638,7 @@ async def delete_report(
 
     logger.info(
         f"Deleting report",
-        extra={"report_id": report_id, "user_id": current_user.user_id}
+        extra={"report_id": report_id, "user_id": current_user.user_id},
     )
 
     try:
@@ -647,13 +651,15 @@ async def delete_report(
         if report.report_type == ReportType.RUNBOOK:
             raise HTTPException(
                 status_code=403,
-                detail="Runbooks cannot be deleted - they persist independently in the knowledge base"
+                detail="Runbooks cannot be deleted - they persist independently in the knowledge base",
             )
 
         # Validate organization ownership via case (multi-tenant isolation)
         if tenant_provider and case_service and report.case_id:
-            case = await case_service.get_case(report.case_id, user_id=current_user.user_id)
-            if case and hasattr(case, 'organization_id'):
+            case = await case_service.get_case(
+                report.case_id, user_id=current_user.user_id
+            )
+            if case and hasattr(case, "organization_id"):
                 await validate_organization_access(
                     tenant_provider, current_user, case.organization_id
                 )
@@ -665,7 +671,7 @@ async def delete_report(
 
         logger.info(
             f"Report deleted successfully",
-            extra={"report_id": report_id, "case_id": report.case_id}
+            extra={"report_id": report_id, "case_id": report.case_id},
         )
 
     except HTTPException:
@@ -681,12 +687,14 @@ async def delete_report(
     "/case/{case_id}",
     response_model=ReportListResponse,
     summary="List reports for case",
-    description="Get all reports associated with a specific case"
+    description="Get all reports associated with a specific case",
 )
 @trace("api_list_reports_for_case")
 async def list_reports_for_case(
     case_id: str = Path(..., description="Case UUID"),
-    include_history: bool = Query(False, description="Include all versions or only current"),
+    include_history: bool = Query(
+        False, description="Include all versions or only current"
+    ),
     report_type: Optional[str] = Query(None, description="Filter by report type"),
     current_user: UserDTO = Depends(require_authentication),
     tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
@@ -717,7 +725,7 @@ async def list_reports_for_case(
     # Validate organization ownership via case (multi-tenant isolation)
     if tenant_provider and case_service:
         case = await case_service.get_case(case_id, user_id=current_user.user_id)
-        if case and hasattr(case, 'organization_id'):
+        if case and hasattr(case, "organization_id"):
             await validate_organization_access(
                 tenant_provider, current_user, case.organization_id
             )
@@ -727,8 +735,8 @@ async def list_reports_for_case(
         extra={
             "case_id": case_id,
             "user_id": current_user.user_id,
-            "include_history": include_history
-        }
+            "include_history": include_history,
+        },
     )
 
     try:
@@ -740,20 +748,18 @@ async def list_reports_for_case(
             except ValueError:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid report type: {report_type}. Valid types: incident_report, runbook, post_mortem"
+                    detail=f"Invalid report type: {report_type}. Valid types: incident_report, runbook, post_mortem",
                 )
 
         # Get reports
         reports = await case_repository.get_reports(
-            case_id=case_id,
-            report_type=type_filter,
-            include_history=include_history
+            case_id=case_id, report_type=type_filter, include_history=include_history
         )
 
         return ReportListResponse(
             reports=[ReportResponse.from_domain(r) for r in reports],
             total=len(reports),
-            case_id=case_id
+            case_id=case_id,
         )
 
     except HTTPException:
@@ -767,7 +773,7 @@ async def list_reports_for_case(
     "/{report_id}/versions",
     response_model=ReportVersionListResponse,
     summary="Get report version history",
-    description="Retrieve all versions of a report"
+    description="Retrieve all versions of a report",
 )
 @trace("api_get_report_versions")
 async def get_report_versions(
@@ -800,7 +806,7 @@ async def get_report_versions(
 
     logger.info(
         f"Getting report versions",
-        extra={"report_id": report_id, "user_id": current_user.user_id}
+        extra={"report_id": report_id, "user_id": current_user.user_id},
     )
 
     try:
@@ -811,17 +817,17 @@ async def get_report_versions(
 
         # Validate organization ownership via case (multi-tenant isolation)
         if tenant_provider and case_service and report.case_id:
-            case = await case_service.get_case(report.case_id, user_id=current_user.user_id)
-            if case and hasattr(case, 'organization_id'):
+            case = await case_service.get_case(
+                report.case_id, user_id=current_user.user_id
+            )
+            if case and hasattr(case, "organization_id"):
                 await validate_organization_access(
                     tenant_provider, current_user, case.organization_id
                 )
 
         # Get all versions for this report type in this case
         all_reports = await case_repository.get_reports(
-            case_id=report.case_id,
-            report_type=report.report_type,
-            include_history=True
+            case_id=report.case_id, report_type=report.report_type, include_history=True
         )
 
         # Build version list
@@ -832,7 +838,7 @@ async def get_report_versions(
                 title=r.title,
                 generated_at=r.generated_at,
                 is_current=r.is_current,
-                linked_to_closure=r.linked_to_closure
+                linked_to_closure=r.linked_to_closure,
             )
             for r in all_reports
         ]
@@ -840,15 +846,14 @@ async def get_report_versions(
         # Sort by version descending
         versions.sort(key=lambda v: v.version, reverse=True)
 
-        return ReportVersionListResponse(
-            versions=versions,
-            total=len(versions)
-        )
+        return ReportVersionListResponse(versions=versions, total=len(versions))
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting versions for report {report_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error getting versions for report {report_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to get report versions")
 
 
@@ -856,7 +861,7 @@ async def get_report_versions(
     "/{report_id}/link-case",
     response_model=LinkCaseResponse,
     summary="Link report to case closure",
-    description="Mark case as closed and link final report"
+    description="Mark case as closed and link final report",
 )
 @trace("api_link_report_to_case")
 async def link_report_to_case_closure(
@@ -896,7 +901,7 @@ async def link_report_to_case_closure(
 
     logger.info(
         f"Linking report to case closure",
-        extra={"report_id": report_id, "user_id": current_user.user_id}
+        extra={"report_id": report_id, "user_id": current_user.user_id},
     )
 
     try:
@@ -907,8 +912,10 @@ async def link_report_to_case_closure(
 
         # Validate organization ownership via case (multi-tenant isolation)
         if tenant_provider and report.case_id:
-            case = await case_service.get_case(report.case_id, user_id=current_user.user_id)
-            if case and hasattr(case, 'organization_id'):
+            case = await case_service.get_case(
+                report.case_id, user_id=current_user.user_id
+            )
+            if case and hasattr(case, "organization_id"):
                 await validate_organization_access(
                     tenant_provider, current_user, case.organization_id
                 )
@@ -916,14 +923,12 @@ async def link_report_to_case_closure(
         # Check if already linked
         if report.linked_to_closure:
             raise HTTPException(
-                status_code=400,
-                detail="Report already linked to case closure"
+                status_code=400, detail="Report already linked to case closure"
             )
 
         # Get all current reports for the case
         current_reports = await case_repository.get_reports(
-            case_id=report.case_id,
-            only_current=True
+            case_id=report.case_id, only_current=True
         )
         report_ids = [r.report_id for r in current_reports]
 
@@ -936,10 +941,7 @@ async def link_report_to_case_closure(
 
         logger.info(
             f"Reports linked to case closure",
-            extra={
-                "case_id": report.case_id,
-                "report_count": len(report_ids)
-            }
+            extra={"case_id": report.case_id, "report_count": len(report_ids)},
         )
 
         return LinkCaseResponse(
@@ -947,7 +949,7 @@ async def link_report_to_case_closure(
             message=f"Linked {len(report_ids)} reports to case closure",
             report_id=report_id,
             case_id=report.case_id,
-            linked_at=linked_at
+            linked_at=linked_at,
         )
 
     except HTTPException:
@@ -956,4 +958,6 @@ async def link_report_to_case_closure(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error linking report {report_id} to closure: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to link report to case closure")
+        raise HTTPException(
+            status_code=500, detail="Failed to link report to case closure"
+        )

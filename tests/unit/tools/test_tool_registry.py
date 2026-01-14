@@ -8,18 +8,18 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 
 from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
+# Import Tool from the correct location used by AgentTool.to_tool()
+from faultmaven.domain.events import Tool
+from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import (
     AgentTool,
     AgentToolRegistry,
     ToolContext,
     tool_registry,
 )
-from faultmaven.models.interfaces import ToolResult
-# Import Tool from the correct location used by AgentTool.to_tool()
-from faultmaven.domain.events import Tool
-
 
 # =============================================================================
 # Test Fixtures
@@ -313,7 +313,9 @@ class TestToolRegistry:
         assert "test_input" in result.data["result"]
 
     @pytest.mark.asyncio
-    async def test_registry_execute_nonexistent_tool(self, fresh_registry, sample_context):
+    async def test_registry_execute_nonexistent_tool(
+        self, fresh_registry, sample_context
+    ):
         """Test executing nonexistent tool returns error."""
         result = await fresh_registry.execute_tool(
             tool_name="nonexistent",
@@ -325,7 +327,9 @@ class TestToolRegistry:
         assert "not found" in result.error.lower()
 
     @pytest.mark.asyncio
-    async def test_registry_execute_tool_validates_params(self, fresh_registry, sample_context):
+    async def test_registry_execute_tool_validates_params(
+        self, fresh_registry, sample_context
+    ):
         """Test execute_tool validates parameters."""
         fresh_registry.register(MockTool("validate_tool"))
 
@@ -339,7 +343,9 @@ class TestToolRegistry:
         assert "input" in result.error.lower()
 
     @pytest.mark.asyncio
-    async def test_registry_execute_tool_handles_exception(self, fresh_registry, sample_context):
+    async def test_registry_execute_tool_handles_exception(
+        self, fresh_registry, sample_context
+    ):
         """Test execute_tool handles tool exceptions."""
 
         class FailingTool(AgentTool):

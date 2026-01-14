@@ -21,17 +21,19 @@ Usage:
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from faultmaven.services.base import BaseService
+from faultmaven.exceptions import (
+    EmbeddingException,
+    KnowledgeBaseException,
+    VectorStoreException,
+)
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    KnowledgeItem,
+    KnowledgeItemType,
+)
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
-from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem, KnowledgeItemType
-from faultmaven.exceptions import (
-    KnowledgeBaseException,
-    EmbeddingException,
-    VectorStoreException,
-)
-
+from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +176,10 @@ class KnowledgeSearchService(BaseService):
         except Exception as e:
             raise KnowledgeBaseException(
                 f"Failed to search vector store: {e}",
-                details={"organization_id": organization_id, "error_type": type(e).__name__},
+                details={
+                    "organization_id": organization_id,
+                    "error_type": type(e).__name__,
+                },
             ) from e
 
         # Step 4: Fetch full KnowledgeItem objects
@@ -271,7 +276,9 @@ class KnowledgeSearchService(BaseService):
     ) -> List[Tuple[KnowledgeItem, float]]:
         """Internal implementation of hybrid search."""
         # Use default weights if not provided
-        sem_weight = semantic_weight if semantic_weight is not None else self.semantic_weight
+        sem_weight = (
+            semantic_weight if semantic_weight is not None else self.semantic_weight
+        )
         txt_weight = text_weight if text_weight is not None else self.text_weight
 
         # Normalize weights
@@ -308,7 +315,9 @@ class KnowledgeSearchService(BaseService):
         # Add semantic results with normalized scores
         max_semantic_score = max((s for _, s in semantic_results), default=1.0)
         for item, score in semantic_results:
-            normalized_score = score / max_semantic_score if max_semantic_score > 0 else 0
+            normalized_score = (
+                score / max_semantic_score if max_semantic_score > 0 else 0
+            )
             item_scores[item.item_id] = {
                 "item": item,
                 "semantic_score": normalized_score * sem_weight,
@@ -347,7 +356,9 @@ class KnowledgeSearchService(BaseService):
                     item.mark_retrieved()
                     await self.knowledge_repo.update(item)
                 except Exception as e:
-                    logger.warning(f"Failed to mark item {item.item_id} as retrieved: {e}")
+                    logger.warning(
+                        f"Failed to mark item {item.item_id} as retrieved: {e}"
+                    )
 
         self.log_metric(
             "hybrid_search_performed",
@@ -491,13 +502,15 @@ class KnowledgeSearchService(BaseService):
 
         # Process in batches
         for i in range(0, len(items), batch_size):
-            batch = items[i:i + batch_size]
+            batch = items[i : i + batch_size]
 
             # Generate embeddings for batch
             texts = [f"{item.title}\n\n{item.content}" for item in batch]
 
             try:
-                embeddings = await self.embedding_service.generate_embeddings_batch(texts)
+                embeddings = await self.embedding_service.generate_embeddings_batch(
+                    texts
+                )
             except Exception as e:
                 logger.error(f"Failed to generate batch embeddings: {e}")
                 failed += len(batch)
@@ -524,12 +537,14 @@ class KnowledgeSearchService(BaseService):
                         "is_published": item.is_published,
                         "language": item.language,
                     }
-                    vector_store_items.append({
-                        "item_id": item.item_id,
-                        "embedding": embedding,
-                        "metadata": metadata,
-                        "document": texts[j],
-                    })
+                    vector_store_items.append(
+                        {
+                            "item_id": item.item_id,
+                            "embedding": embedding,
+                            "metadata": metadata,
+                            "document": texts[j],
+                        }
+                    )
                     succeeded += 1
                 except Exception as e:
                     logger.error(f"Failed to index item {item.item_id}: {e}")
@@ -687,7 +702,9 @@ class KnowledgeSearchService(BaseService):
         # Get repository stats
         if organization_id:
             try:
-                total_items = await self.knowledge_repo.count_by_organization_id(organization_id)
+                total_items = await self.knowledge_repo.count_by_organization_id(
+                    organization_id
+                )
                 pending_items = await self.knowledge_repo.get_items_without_embeddings(
                     organization_id=organization_id,
                     limit=10000,
@@ -702,7 +719,11 @@ class KnowledgeSearchService(BaseService):
             total_items = -1
             pending_count = -1
 
-        indexed_count = total_items - pending_count if total_items >= 0 and pending_count >= 0 else -1
+        indexed_count = (
+            total_items - pending_count
+            if total_items >= 0 and pending_count >= 0
+            else -1
+        )
 
         return {
             "organization_id": organization_id,
@@ -738,10 +759,16 @@ class KnowledgeSearchService(BaseService):
             vector_status = "unhealthy"
             base_health["vector_store_error"] = str(e)
 
-        base_health.update({
-            "embedding_status": embedding_status,
-            "vector_store_status": vector_status,
-            "overall_status": "healthy" if embedding_status == "healthy" and vector_status == "healthy" else "degraded",
-        })
+        base_health.update(
+            {
+                "embedding_status": embedding_status,
+                "vector_store_status": vector_status,
+                "overall_status": (
+                    "healthy"
+                    if embedding_status == "healthy" and vector_status == "healthy"
+                    else "degraded"
+                ),
+            }
+        )
 
         return base_health

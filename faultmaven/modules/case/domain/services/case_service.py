@@ -17,26 +17,26 @@ Core Responsibilities:
 
 import asyncio
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from faultmaven.services.base import BaseService
-from faultmaven.modules.case.domain.models import Case, CaseStatus, MessageType
+from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.infrastructure.persistence.case_repository import CaseRepository
+from faultmaven.models import parse_utc_timestamp
 from faultmaven.models.api_models import (
     CaseCreateRequest,
-    CaseUpdateRequest,
-    CaseSummary,
     CaseListFilter,
-    CaseSearchRequest,
     CaseMessage,
     CaseParticipant,
+    CaseSearchRequest,
+    CaseSummary,
+    CaseUpdateRequest,
 )
-from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.models.interfaces import ISessionStore
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import ValidationException, ServiceException
-from faultmaven.models import parse_utc_timestamp
+from faultmaven.models.interfaces_case import ICaseService
+from faultmaven.modules.case.domain.models import Case, CaseStatus, MessageType
+from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
 
 
@@ -49,7 +49,7 @@ class CaseService(BaseService, ICaseService):
         session_store: Optional[ISessionStore] = None,
         case_vector_store: Optional[Any] = None,
         settings: Optional[Any] = None,
-        max_cases_per_user: int = 100
+        max_cases_per_user: int = 100,
     ):
         """
         Initialize the Case Service
@@ -68,8 +68,10 @@ class CaseService(BaseService, ICaseService):
         self._settings = settings
 
         # Use settings values if available, otherwise use parameter defaults
-        if settings and hasattr(settings, 'case'):
-            self.max_cases_per_user = getattr(settings.case, 'max_per_user', max_cases_per_user)
+        if settings and hasattr(settings, "case"):
+            self.max_cases_per_user = getattr(
+                settings.case, "max_per_user", max_cases_per_user
+            )
         else:
             self.max_cases_per_user = max_cases_per_user
 
@@ -80,7 +82,7 @@ class CaseService(BaseService, ICaseService):
         description: Optional[str] = None,
         owner_id: Optional[str] = None,
         session_id: Optional[str] = None,
-        initial_message: Optional[str] = None
+        initial_message: Optional[str] = None,
     ) -> Case:
         """
         Create a new troubleshooting case
@@ -105,12 +107,20 @@ class CaseService(BaseService, ICaseService):
 
         try:
             # Check user case limits and prepare for title auto-generation
-            user_cases_list, total = await self.repository.list(user_id=owner_id.strip())
+            user_cases_list, total = await self.repository.list(
+                user_id=owner_id.strip()
+            )
             # Only count non-terminal cases
-            active_cases = [c for c in user_cases_list if c.status not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]]
+            active_cases = [
+                c
+                for c in user_cases_list
+                if c.status not in [CaseStatus.RESOLVED, CaseStatus.CLOSED]
+            ]
 
             if len(active_cases) >= self.max_cases_per_user:
-                raise ValidationException(f"User has reached maximum case limit ({self.max_cases_per_user})")
+                raise ValidationException(
+                    f"User has reached maximum case limit ({self.max_cases_per_user})"
+                )
 
             # Auto-generate title if not provided (API spec: Case-MMDD-N)
             if not title or not title.strip():
@@ -121,7 +131,9 @@ class CaseService(BaseService, ICaseService):
 
                 # Count today's cases for this user to get sequence number
                 today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                today_cases = [c for c in user_cases_list if c.created_at >= today_start]
+                today_cases = [
+                    c for c in user_cases_list if c.created_at >= today_start
+                ]
                 sequence = len(today_cases) + 1
 
                 title = f"Case-{date_suffix}-{sequence}"
@@ -137,7 +149,7 @@ class CaseService(BaseService, ICaseService):
                 title=title,
                 description=description.strip() if description else "",
                 user_id=owner_id.strip(),
-                organization_id=owner_id.strip()  # TODO: Get from user context
+                organization_id=owner_id.strip(),  # TODO: Get from user context
             )
 
             # Add initial message if provided (restored from old implementation)
@@ -150,7 +162,7 @@ class CaseService(BaseService, ICaseService):
                     "content": initial_message.strip(),
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "turn_number": 1,
-                    "metadata": {}
+                    "metadata": {},
                 }
                 case.messages.append(message_dict)
                 case.message_count = len(case.messages)
@@ -161,7 +173,7 @@ class CaseService(BaseService, ICaseService):
                     await self.session_store.set(
                         f"session:{session_id}:current_case_id",
                         case.case_id,
-                        ttl=86400  # 24 hours
+                        ttl=86400,  # 24 hours
                     )
                 except Exception as e:
                     self.logger.warning(f"Failed to update session with case ID: {e}")
@@ -180,9 +192,7 @@ class CaseService(BaseService, ICaseService):
 
     @trace("case_service_get_case")
     async def get_case(
-        self,
-        case_id: str,
-        user_id: Optional[str] = None
+        self, case_id: str, user_id: Optional[str] = None
     ) -> Optional[Case]:
         """
         Get a case with optional access control
@@ -205,7 +215,9 @@ class CaseService(BaseService, ICaseService):
             # Apply access control if user_id provided
             # Simple check: must be case owner
             if user_id and case.user_id != user_id:
-                self.logger.warning(f"User {user_id} denied access to case {case_id} (owner: {case.user_id})")
+                self.logger.warning(
+                    f"User {user_id} denied access to case {case_id} (owner: {case.user_id})"
+                )
                 return None
 
             return case
@@ -216,10 +228,7 @@ class CaseService(BaseService, ICaseService):
 
     @trace("case_service_update_case")
     async def update_case(
-        self,
-        case_id: str,
-        updates: Dict[str, Any],
-        user_id: Optional[str] = None
+        self, case_id: str, updates: Dict[str, Any], user_id: Optional[str] = None
     ) -> bool:
         """
         Update case with access control
@@ -245,7 +254,7 @@ class CaseService(BaseService, ICaseService):
                 return False
 
             # Validate and apply updates directly to Case object
-            allowed_fields = {'title', 'description', 'status', 'closure_reason'}
+            allowed_fields = {"title", "description", "status", "closure_reason"}
 
             for key, value in updates.items():
                 if key in allowed_fields and hasattr(case, key):
@@ -265,10 +274,7 @@ class CaseService(BaseService, ICaseService):
 
     @trace("case_service_add_message")
     async def add_message_to_case(
-        self,
-        case_id: str,
-        message: CaseMessage,
-        session_id: Optional[str] = None
+        self, case_id: str, message: CaseMessage, session_id: Optional[str] = None
     ) -> bool:
         """
         Add a message to a case conversation
@@ -298,13 +304,21 @@ class CaseService(BaseService, ICaseService):
                 "message_id": message.message_id,
                 "case_id": case_id,
                 "author_id": message.author_id,
-                "role": getattr(message, 'role', 'system'),
-                "message_type": message.message_type.value if hasattr(message.message_type, 'value') else str(message.message_type),
+                "role": getattr(message, "role", "system"),
+                "message_type": (
+                    message.message_type.value
+                    if hasattr(message.message_type, "value")
+                    else str(message.message_type)
+                ),
                 "content": message.content,
-                "created_at": message.created_at.isoformat() if hasattr(message.created_at, 'isoformat') else str(message.created_at),
+                "created_at": (
+                    message.created_at.isoformat()
+                    if hasattr(message.created_at, "isoformat")
+                    else str(message.created_at)
+                ),
                 "turn_number": case.current_turn,
-                "token_count": getattr(message, 'token_count', None),
-                "metadata": message.metadata or {}
+                "token_count": getattr(message, "token_count", None),
+                "metadata": message.metadata or {},
             }
 
             # Delegate to repository - it handles storage-specific logic
@@ -327,7 +341,7 @@ class CaseService(BaseService, ICaseService):
         session_id: str,
         user_id: Optional[str] = None,
         force_new: bool = False,
-        title: Optional[str] = None
+        title: Optional[str] = None,
     ) -> str:
         """
         Get existing case for session or create new one
@@ -348,12 +362,16 @@ class CaseService(BaseService, ICaseService):
             # Try to get existing case for session if not forcing new
             if not force_new and self.session_store:
                 try:
-                    existing_case_id = await self.session_store.get(f"session:{session_id}:current_case_id")
+                    existing_case_id = await self.session_store.get(
+                        f"session:{session_id}:current_case_id"
+                    )
                     if existing_case_id:
                         # Verify case still exists and is accessible
                         case = await self.get_case(existing_case_id, user_id)
                         if case:
-                            self.logger.debug(f"Using existing case {existing_case_id} for session {session_id}")
+                            self.logger.debug(
+                                f"Using existing case {existing_case_id} for session {session_id}"
+                            )
                             return existing_case_id
                 except Exception as e:
                     self.logger.warning(f"Failed to get existing case for session: {e}")
@@ -364,16 +382,20 @@ class CaseService(BaseService, ICaseService):
                 title=case_title,
                 description="Auto-created case for troubleshooting session",
                 owner_id=user_id,
-                session_id=session_id
+                session_id=session_id,
             )
 
-            self.logger.info(f"Created new case {case.case_id} for session {session_id}")
+            self.logger.info(
+                f"Created new case {case.case_id} for session {session_id}"
+            )
             return case.case_id
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to get/create case for session {session_id}: {e}")
+            self.logger.error(
+                f"Failed to get/create case for session {session_id}: {e}"
+            )
             raise ServiceException(f"Case management failed: {str(e)}") from e
 
     @trace("case_service_link_session_to_case")
@@ -406,7 +428,7 @@ class CaseService(BaseService, ICaseService):
                     await self.session_store.set(
                         f"session:{session_id}:current_case_id",
                         case_id,
-                        ttl=86400  # 24 hours
+                        ttl=86400,  # 24 hours
                     )
                 except Exception as e:
                     self.logger.warning(f"Failed to update session store: {e}")
@@ -421,11 +443,7 @@ class CaseService(BaseService, ICaseService):
             return False
 
     @trace("case_service_get_conversation_context")
-    async def get_case_conversation_context(
-        self,
-        case_id: str,
-        limit: int = 10
-    ) -> str:
+    async def get_case_conversation_context(self, case_id: str, limit: int = 10) -> str:
         """
         Get formatted conversation context for LLM
 
@@ -459,8 +477,12 @@ class CaseService(BaseService, ICaseService):
                         context_lines.append(f"{i}. [{timestamp}] User: {content}")
                     elif message_type == "agent_response":
                         # Truncate long agent responses
-                        truncated = content[:200] + "..." if len(content) > 200 else content
-                        context_lines.append(f"{i}. [{timestamp}] Assistant: {truncated}")
+                        truncated = (
+                            content[:200] + "..." if len(content) > 200 else content
+                        )
+                        context_lines.append(
+                            f"{i}. [{timestamp}] Assistant: {truncated}"
+                        )
                     elif message_type == "system_event":
                         context_lines.append(f"{i}. [{timestamp}] System: {content}")
                 except Exception as e:
@@ -475,7 +497,9 @@ class CaseService(BaseService, ICaseService):
                 return ""
 
         except Exception as e:
-            self.logger.warning(f"Failed to get conversation context for case {case_id}: {e}")
+            self.logger.warning(
+                f"Failed to get conversation context for case {case_id}: {e}"
+            )
             return ""
 
     @trace("case_service_resume_case")
@@ -496,7 +520,7 @@ class CaseService(BaseService, ICaseService):
         try:
             # Link session to case
             success = await self.link_session_to_case(session_id, case_id)
-            
+
             if success:
                 # Log resume event
                 resume_message = CaseMessage(
@@ -504,9 +528,9 @@ class CaseService(BaseService, ICaseService):
                     session_id=session_id,
                     message_type=MessageType.SYSTEM_EVENT,
                     content=f"Case resumed in session {session_id}",
-                    metadata={"event_type": "case_resumed"}
+                    metadata={"event_type": "case_resumed"},
                 )
-                
+
                 await self.add_message_to_case(case_id, resume_message, session_id)
                 self.logger.info(f"Resumed case {case_id} in session {session_id}")
 
@@ -515,38 +539,38 @@ class CaseService(BaseService, ICaseService):
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to resume case {case_id} in session {session_id}: {e}")
+            self.logger.error(
+                f"Failed to resume case {case_id} in session {session_id}: {e}"
+            )
             return False
 
     @trace("case_service_hard_delete_case")
     async def hard_delete_case(
-        self,
-        case_id: str,
-        user_id: Optional[str] = None
+        self, case_id: str, user_id: Optional[str] = None
     ) -> bool:
         """
         Permanently delete a case and all associated data
-        
+
         This method performs a hard delete of the case, removing:
         - The case record
         - All associated messages
         - All uploaded data files
         - All index entries
         - Any cached data
-        
+
         The operation is idempotent - subsequent calls will return True
         even if the case has already been deleted.
-        
+
         Args:
             case_id: Case identifier
             user_id: Optional user ID for access control
-            
+
         Returns:
             True if case was deleted successfully (or already deleted)
         """
         if not case_id:
             raise ValidationException("Case ID cannot be empty")
-            
+
         try:
             # Check if case exists and user has permissions
             if user_id:
@@ -557,9 +581,11 @@ class CaseService(BaseService, ICaseService):
 
                 # Check if user can delete (only owner can delete)
                 if case.user_id != user_id:
-                    self.logger.warning(f"User {user_id} denied delete access to case {case_id} (not owner)")
+                    self.logger.warning(
+                        f"User {user_id} denied delete access to case {case_id} (not owner)"
+                    )
                     return False
-            
+
             # Perform hard delete through repository
             # Note: Reports are automatically deleted via CASCADE FK constraint (TD-001: reports stored in PostgreSQL)
             success = await self.repository.delete(case_id)
@@ -571,9 +597,13 @@ class CaseService(BaseService, ICaseService):
                 if self.case_vector_store:
                     try:
                         await self.case_vector_store.delete_case_collection(case_id)
-                        self.logger.info(f"Deleted Working Memory collection for deleted case {case_id}")
+                        self.logger.info(
+                            f"Deleted Working Memory collection for deleted case {case_id}"
+                        )
                     except Exception as e:
-                        self.logger.error(f"Failed to delete Working Memory for case {case_id}: {e}")
+                        self.logger.error(
+                            f"Failed to delete Working Memory for case {case_id}: {e}"
+                        )
                         # Don't fail the delete operation if cleanup fails
 
                 # TODO: Cascade delete other associated data:
@@ -586,7 +616,7 @@ class CaseService(BaseService, ICaseService):
             # Always return True for idempotent behavior
             # Even if delete failed, we consider it "successful" for idempotency
             return True
-            
+
         except ValidationException:
             raise
         except Exception as e:
@@ -597,9 +627,7 @@ class CaseService(BaseService, ICaseService):
 
     @trace("case_service_list_user_cases")
     async def list_user_cases(
-        self,
-        user_id: str,
-        filters: Optional[CaseListFilter] = None
+        self, user_id: str, filters: Optional[CaseListFilter] = None
     ) -> List[CaseSummary]:
         """
         List cases for a user
@@ -617,7 +645,9 @@ class CaseService(BaseService, ICaseService):
         try:
             # Get cases from repository
             status_filter = filters.status if filters else None
-            cases_list, total = await self.repository.list(user_id=user_id, status=status_filter)
+            cases_list, total = await self.repository.list(
+                user_id=user_id, status=status_filter
+            )
 
             # Apply additional filters in service layer (restored from old implementation)
             if filters:
@@ -629,10 +659,13 @@ class CaseService(BaseService, ICaseService):
                 # Filter archived cases unless include_archived=True
                 # Note: New model uses CLOSED status instead of ARCHIVED
                 if not filters.include_archived:
-                    cases_list = [c for c in cases_list if c.status != CaseStatus.CLOSED]
+                    cases_list = [
+                        c for c in cases_list if c.status != CaseStatus.CLOSED
+                    ]
 
             # Convert to CaseSummary
             from faultmaven.models.api_models import CaseSummary
+
             summaries = [CaseSummary.from_case(case) for case in cases_list]
 
             return summaries
@@ -643,9 +676,7 @@ class CaseService(BaseService, ICaseService):
 
     @trace("case_service_search_cases")
     async def search_cases(
-        self,
-        search_request: CaseSearchRequest,
-        user_id: Optional[str] = None
+        self, search_request: CaseSearchRequest, user_id: Optional[str] = None
     ) -> List[CaseSummary]:
         """
         Search cases with access control
@@ -667,6 +698,7 @@ class CaseService(BaseService, ICaseService):
 
             # Convert to CaseSummary
             from faultmaven.models.api_models import CaseSummary
+
             summaries = [CaseSummary.from_case(case) for case in cases_list]
 
             return summaries
@@ -704,7 +736,9 @@ class CaseService(BaseService, ICaseService):
         """
         try:
             # Delegate to repository - it handles cleanup efficiently
-            cleaned_count = await self.repository.cleanup_expired(max_age_days=90, batch_size=100)
+            cleaned_count = await self.repository.cleanup_expired(
+                max_age_days=90, batch_size=100
+            )
 
             if cleaned_count > 0:
                 self.logger.info(f"Cleaned up {cleaned_count} expired cases")
@@ -717,10 +751,7 @@ class CaseService(BaseService, ICaseService):
 
     @trace("case_service_list_cases_by_session")
     async def list_cases_by_session(
-        self,
-        session_id: str,
-        limit: int = 50,
-        offset: int = 0
+        self, session_id: str, limit: int = 50, offset: int = 0
     ) -> List[Case]:
         """
         List cases owned by the user authenticated via session.
@@ -745,7 +776,7 @@ class CaseService(BaseService, ICaseService):
             if self.session_store:
                 session_data = await self.session_store.get(f"session:{session_id}")
                 if session_data:
-                    user_id = session_data.get('user_id')
+                    user_id = session_data.get("user_id")
 
             if not user_id:
                 self.logger.warning(f"No user_id found for session {session_id}")
@@ -753,9 +784,7 @@ class CaseService(BaseService, ICaseService):
 
             # Step 2: Get user's cases (authorization via ownership)
             cases, _ = await self.repository.list(
-                user_id=user_id,
-                limit=limit,
-                offset=offset
+                user_id=user_id, limit=limit, offset=offset
             )
             return cases
 
@@ -785,16 +814,14 @@ class CaseService(BaseService, ICaseService):
             if self.session_store:
                 session_data = await self.session_store.get(f"session:{session_id}")
                 if session_data:
-                    user_id = session_data.get('user_id')
+                    user_id = session_data.get("user_id")
 
             if not user_id:
                 return 0
 
             # Step 2: Count user's cases
             cases, total_count = await self.repository.list(
-                user_id=user_id,
-                limit=0,
-                offset=0
+                user_id=user_id, limit=0, offset=0
             )
             return total_count
 
@@ -815,25 +842,19 @@ class CaseService(BaseService, ICaseService):
                 "service_status": "healthy",
                 "repository_connected": self.repository is not None,
                 "session_store_connected": self.session_store is not None,
-                "max_cases_per_user": self.max_cases_per_user
+                "max_cases_per_user": self.max_cases_per_user,
             }
 
         except Exception as e:
             self.logger.error(f"Failed to get case service health: {e}")
-            return {
-                "service_status": "unhealthy",
-                "error": str(e)
-            }
+            return {"service_status": "unhealthy", "error": str(e)}
 
     # Message and Query Management Methods
     # Following design principles: delegate to case_store, proper error handling, interface compliance
 
     @trace("case_service_get_case_messages")
     async def get_case_messages(
-        self,
-        case_id: str,
-        limit: int = 50,
-        offset: int = 0
+        self, case_id: str, limit: int = 50, offset: int = 0
     ) -> List[CaseMessage]:
         """
         Get messages for a case with pagination (FIXED IMPLEMENTATION)
@@ -856,7 +877,9 @@ class CaseService(BaseService, ICaseService):
                 raise ValidationException(f"Case {case_id} not found")
 
             # DEBUG: Log case.messages length
-            self.logger.info(f"Case {case_id} has {len(case.messages)} messages in case.messages array, message_count={case.message_count}")
+            self.logger.info(
+                f"Case {case_id} has {len(case.messages)} messages in case.messages array, message_count={case.message_count}"
+            )
 
             # Convert dict messages to CaseMessage objects
             case_messages = []
@@ -873,12 +896,14 @@ class CaseService(BaseService, ICaseService):
                     author_id=msg_dict.get("author_id"),
                     token_count=msg_dict.get("token_count"),
                     metadata=msg_dict.get("metadata", {}),
-                    attachments=msg_dict.get("attachments")
+                    attachments=msg_dict.get("attachments"),
                 )
                 case_messages.append(case_msg)
 
             # Log for observability
-            self.logger.debug(f"Retrieved {len(case_messages)} messages for case {case_id}")
+            self.logger.debug(
+                f"Retrieved {len(case_messages)} messages for case {case_id}"
+            )
 
             return case_messages
 
@@ -888,10 +913,7 @@ class CaseService(BaseService, ICaseService):
 
     @trace("case_service_add_case_query")
     async def add_case_query(
-        self,
-        case_id: str,
-        query_text: str,
-        user_id: Optional[str] = None
+        self, case_id: str, query_text: str, user_id: Optional[str] = None
     ) -> bool:
         """
         Add a user query to case conversation
@@ -918,6 +940,7 @@ class CaseService(BaseService, ICaseService):
 
             # Create user message and add to conversation (FIXED IMPLEMENTATION)
             from uuid import uuid4
+
             # Per case-storage-design.md Section 4.7, use "created_at"
             user_message = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
@@ -928,7 +951,7 @@ class CaseService(BaseService, ICaseService):
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "author_id": user_id,
                 "token_count": None,
-                "metadata": {}
+                "metadata": {},
             }
 
             case.messages.append(user_message)
@@ -938,7 +961,9 @@ class CaseService(BaseService, ICaseService):
             # Save updated case with message
             await self.repository.save(case)
 
-            self.logger.debug(f"Added user message to case {case_id}, message_count now {case.message_count}")
+            self.logger.debug(
+                f"Added user message to case {case_id}, message_count now {case.message_count}"
+            )
             return True
 
         except ValidationException:
@@ -949,10 +974,7 @@ class CaseService(BaseService, ICaseService):
 
     @trace("case_service_list_case_queries")
     async def list_case_queries(
-        self,
-        case_id: str,
-        limit: int = 50,
-        offset: int = 0
+        self, case_id: str, limit: int = 50, offset: int = 0
     ) -> List[Dict[str, Any]]:
         """
         List user queries for a case
@@ -974,16 +996,19 @@ class CaseService(BaseService, ICaseService):
         try:
             # Get all messages and filter for queries
             # Note: For better performance, this could be optimized with store-level filtering
-            all_messages = await self.get_case_messages(case_id, limit=limit+offset+50, offset=0)
+            all_messages = await self.get_case_messages(
+                case_id, limit=limit + offset + 50, offset=0
+            )
 
             # Filter for USER_QUERY messages only
             query_messages = [
-                msg for msg in all_messages
+                msg
+                for msg in all_messages
                 if msg.message_type == MessageType.USER_QUERY
             ]
 
             # Apply pagination to filtered results
-            paginated_queries = query_messages[offset:offset+limit]
+            paginated_queries = query_messages[offset : offset + limit]
 
             # Convert to API format
             queries = []
@@ -993,7 +1018,7 @@ class CaseService(BaseService, ICaseService):
                     "query_text": msg.content,
                     "created_at": to_json_compatible(msg.created_at),
                     "user_id": msg.author_id,
-                    "metadata": msg.metadata or {}
+                    "metadata": msg.metadata or {},
                 }
                 queries.append(query_dict)
 
@@ -1028,8 +1053,7 @@ class CaseService(BaseService, ICaseService):
             all_messages = await self.get_case_messages(case_id, limit=1000, offset=0)
 
             query_count = sum(
-                1 for msg in all_messages
-                if msg.message_type == MessageType.USER_QUERY
+                1 for msg in all_messages if msg.message_type == MessageType.USER_QUERY
             )
 
             self.logger.debug(f"Counted {query_count} queries for case {case_id}")
@@ -1043,9 +1067,7 @@ class CaseService(BaseService, ICaseService):
 
     @trace("case_service_count_user_cases")
     async def count_user_cases(
-        self,
-        user_id: str,
-        filters: Optional[CaseListFilter] = None
+        self, user_id: str, filters: Optional[CaseListFilter] = None
     ) -> int:
         """
         Count total cases for a user
@@ -1078,7 +1100,9 @@ class CaseService(BaseService, ICaseService):
             return 0  # Graceful degradation for pagination
 
     @trace("case_service_get_query_result")
-    async def get_query_result(self, case_id: str, query_id: str) -> Optional[Dict[str, Any]]:
+    async def get_query_result(
+        self, case_id: str, query_id: str
+    ) -> Optional[Dict[str, Any]]:
         """
         Get result for a specific query
 
@@ -1104,7 +1128,10 @@ class CaseService(BaseService, ICaseService):
             query_index = -1
 
             for i, msg in enumerate(messages):
-                if msg.message_id == query_id and msg.message_type == MessageType.USER_QUERY:
+                if (
+                    msg.message_id == query_id
+                    and msg.message_type == MessageType.USER_QUERY
+                ):
                     query_message = msg
                     query_index = i
                     break
@@ -1125,24 +1152,32 @@ class CaseService(BaseService, ICaseService):
                         "confidence_score": msg.metadata.get("confidence_score", 0.8),
                         "created_at": to_json_compatible(msg.created_at),
                         "query_id": query_id,
-                        "response_id": msg.message_id
+                        "response_id": msg.message_id,
                     }
 
-                    self.logger.debug(f"Found query result for {query_id} in case {case_id}")
+                    self.logger.debug(
+                        f"Found query result for {query_id} in case {case_id}"
+                    )
                     return response_dict
 
             # No agent response found after this query
-            self.logger.debug(f"No agent response found for query {query_id} in case {case_id}")
+            self.logger.debug(
+                f"No agent response found for query {query_id} in case {case_id}"
+            )
             return None
 
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to get query result for {query_id} in case {case_id}: {e}")
+            self.logger.error(
+                f"Failed to get query result for {query_id} in case {case_id}: {e}"
+            )
             return None
 
     @trace("case_service_check_idempotency_key")
-    async def check_idempotency_key(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
+    async def check_idempotency_key(
+        self, idempotency_key: str
+    ) -> Optional[Dict[str, Any]]:
         """
         Check if an idempotency key has been used before
 
@@ -1178,7 +1213,7 @@ class CaseService(BaseService, ICaseService):
         idempotency_key: str,
         status_code: int,
         content: Dict[str, Any],
-        headers: Dict[str, str]
+        headers: Dict[str, str],
     ) -> bool:
         """
         Store result for an idempotency key
@@ -1200,7 +1235,9 @@ class CaseService(BaseService, ICaseService):
             # For now, implement a simple logging approach
             # In production, this would be stored in Redis with TTL (e.g., 24 hours)
 
-            self.logger.debug(f"Storing idempotency result for key {idempotency_key}: {status_code}")
+            self.logger.debug(
+                f"Storing idempotency result for key {idempotency_key}: {status_code}"
+            )
 
             # For now, just log and return success
             # A full implementation would store in Redis:
@@ -1214,7 +1251,9 @@ class CaseService(BaseService, ICaseService):
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to store idempotency result for {idempotency_key}: {e}")
+            self.logger.error(
+                f"Failed to store idempotency result for {idempotency_key}: {e}"
+            )
             return False
 
     @trace("case_service_get_case_messages_enhanced")
@@ -1223,7 +1262,7 @@ class CaseService(BaseService, ICaseService):
         case_id: str,
         limit: int = 50,
         offset: int = 0,
-        include_debug: bool = False
+        include_debug: bool = False,
     ) -> "CaseMessagesResponse":
         """
         Enhanced message retrieval with debugging support and metadata.
@@ -1248,8 +1287,13 @@ class CaseService(BaseService, ICaseService):
             raise ValidationException("Case ID is required")
 
         # Import here to avoid circular dependencies
-        from faultmaven.models.api import CaseMessagesResponse, MessageRetrievalDebugInfo, Message
         import time
+
+        from faultmaven.models.api import (
+            CaseMessagesResponse,
+            Message,
+            MessageRetrievalDebugInfo,
+        )
 
         start_time = time.time()
         debug_info = None
@@ -1262,7 +1306,7 @@ class CaseService(BaseService, ICaseService):
             total_count = len(all_messages)
 
             # Apply pagination to the messages
-            paginated_messages = all_messages[offset:offset + limit]
+            paginated_messages = all_messages[offset : offset + limit]
             retrieved_count = len(paginated_messages)
 
             # Convert CaseMessage objects to API Message format
@@ -1271,18 +1315,20 @@ class CaseService(BaseService, ICaseService):
                 try:
                     # CaseMessage already has 'role' field, use it directly
                     # No need to map from message_type (that field doesn't exist in CaseMessage)
-                    role = case_msg.role if hasattr(case_msg, 'role') else "system"
+                    role = case_msg.role if hasattr(case_msg, "role") else "system"
 
                     # Format created_at
                     created_at_str = None
                     if case_msg.created_at:
                         try:
-                            if hasattr(case_msg.created_at, 'isoformat'):
+                            if hasattr(case_msg.created_at, "isoformat"):
                                 created_at_str = to_json_compatible(case_msg.created_at)
                             else:
                                 created_at_str = str(case_msg.created_at)
                         except Exception as e:
-                            self.logger.warning(f"Failed to format created_at for message {case_msg.message_id}: {e}")
+                            self.logger.warning(
+                                f"Failed to format created_at for message {case_msg.message_id}: {e}"
+                            )
                             created_at_str = str(case_msg.created_at)
 
                     # Create API Message object
@@ -1295,13 +1341,15 @@ class CaseService(BaseService, ICaseService):
                         created_at=created_at_str,
                         author_id=case_msg.author_id,
                         token_count=case_msg.token_count,
-                        metadata=case_msg.metadata
+                        metadata=case_msg.metadata,
                     )
                     messages.append(api_message)
 
                 except Exception as e:
                     message_parsing_errors += 1
-                    self.logger.warning(f"Failed to convert message {getattr(case_msg, 'message_id', 'unknown')}: {e}")
+                    self.logger.warning(
+                        f"Failed to convert message {getattr(case_msg, 'message_id', 'unknown')}: {e}"
+                    )
                     if include_debug:
                         storage_errors.append(f"Message parsing error: {str(e)}")
 
@@ -1319,7 +1367,7 @@ class CaseService(BaseService, ICaseService):
                     offset_used=offset,
                     processing_time_ms=processing_time_ms,
                     storage_errors=storage_errors,
-                    message_parsing_errors=message_parsing_errors
+                    message_parsing_errors=message_parsing_errors,
                 )
 
             # Determine if there are more messages
@@ -1331,7 +1379,7 @@ class CaseService(BaseService, ICaseService):
                 total_count=total_count,
                 retrieved_count=retrieved_count,
                 has_more=has_more,
-                debug_info=debug_info
+                debug_info=debug_info,
             )
 
             self.logger.debug(
@@ -1344,7 +1392,9 @@ class CaseService(BaseService, ICaseService):
         except ValidationException:
             raise
         except Exception as e:
-            self.logger.error(f"Failed to get enhanced messages for case {case_id}: {e}")
+            self.logger.error(
+                f"Failed to get enhanced messages for case {case_id}: {e}"
+            )
             # Return empty response with error info for graceful degradation
             if include_debug:
                 debug_info = MessageRetrievalDebugInfo(
@@ -1356,7 +1406,7 @@ class CaseService(BaseService, ICaseService):
                     offset_used=offset,
                     processing_time_ms=int((time.time() - start_time) * 1000),
                     storage_errors=[f"Service error: {str(e)}"],
-                    message_parsing_errors=0
+                    message_parsing_errors=0,
                 )
 
             return CaseMessagesResponse(
@@ -1364,7 +1414,7 @@ class CaseService(BaseService, ICaseService):
                 total_count=0,
                 retrieved_count=0,
                 has_more=False,
-                debug_info=debug_info
+                debug_info=debug_info,
             )
 
     # ============================================================
@@ -1377,7 +1427,7 @@ class CaseService(BaseService, ICaseService):
         case_id: str,
         target_user_id: str,
         role: str,  # 'owner', 'collaborator', 'viewer'
-        sharer_user_id: str
+        sharer_user_id: str,
     ) -> bool:
         """
         Share a case with another user.
@@ -1404,13 +1454,10 @@ class CaseService(BaseService, ICaseService):
             # Check if sharer is a participant with appropriate permissions
             participants = await self.repository.get_case_participants(case_id)
             sharer_participant = next(
-                (p for p in participants if p["user_id"] == sharer_user_id),
-                None
+                (p for p in participants if p["user_id"] == sharer_user_id), None
             )
             if not sharer_participant or sharer_participant["role"] == "viewer":
-                raise ValidationException(
-                    "User lacks permission to share this case"
-                )
+                raise ValidationException("User lacks permission to share this case")
 
         # Share the case
         success = await self.repository.share_case(
@@ -1427,10 +1474,7 @@ class CaseService(BaseService, ICaseService):
 
     @trace("case_service_unshare_case")
     async def unshare_case(
-        self,
-        case_id: str,
-        target_user_id: str,
-        unsharer_user_id: str
+        self, case_id: str, target_user_id: str, unsharer_user_id: str
     ) -> bool:
         """
         Unshare a case from a user.
@@ -1459,13 +1503,10 @@ class CaseService(BaseService, ICaseService):
         if case.user_id != unsharer_user_id:
             participants = await self.repository.get_case_participants(case_id)
             unsharer_participant = next(
-                (p for p in participants if p["user_id"] == unsharer_user_id),
-                None
+                (p for p in participants if p["user_id"] == unsharer_user_id), None
             )
             if not unsharer_participant or unsharer_participant["role"] != "owner":
-                raise ValidationException(
-                    "User lacks permission to unshare this case"
-                )
+                raise ValidationException("User lacks permission to unshare this case")
 
         # Unshare the case
         success = await self.repository.unshare_case(

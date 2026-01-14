@@ -12,8 +12,8 @@ import logging
 from typing import TYPE_CHECKING, Any, List
 
 if TYPE_CHECKING:
-    from faultmaven.container.base import BaseDIContainer
     from faultmaven.config.settings import FaultMavenSettings
+    from faultmaven.container.base import BaseDIContainer
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,8 @@ def create_registry_tools(
     if ingester is not None:
         try:
             from faultmaven.modules.agent.tools.knowledge_base import (
-                KnowledgeBaseTool,
                 KnowledgeBaseFilteredTool,
+                KnowledgeBaseTool,
             )
 
             tools.append(KnowledgeBaseTool(knowledge_ingester=ingester))
@@ -97,13 +97,17 @@ def create_document_qa_tools(
     }
 
     if settings.server.skip_service_checks or not case_vector_store:
-        logger.debug("Document Q&A tools skipped (no case_vector_store or SKIP_SERVICE_CHECKS=True)")
+        logger.debug(
+            "Document Q&A tools skipped (no case_vector_store or SKIP_SERVICE_CHECKS=True)"
+        )
         return result
 
     try:
-        from faultmaven.modules.agent.tools.case_evidence_qa import AnswerFromCaseEvidence
-        from faultmaven.modules.agent.tools.user_kb_qa import AnswerFromUserKB
+        from faultmaven.modules.agent.tools.case_evidence_qa import (
+            AnswerFromCaseEvidence,
+        )
         from faultmaven.modules.agent.tools.global_kb_qa import AnswerFromGlobalKB
+        from faultmaven.modules.agent.tools.user_kb_qa import AnswerFromUserKB
 
         # Tool 1: Case Evidence (case-scoped forensic analysis)
         result["case_evidence_qa_tool"] = AnswerFromCaseEvidence(
@@ -118,7 +122,9 @@ def create_document_qa_tools(
                 llm_router=llm_provider,
             )
         else:
-            logger.warning("User KB QA tool skipped (user_kb_vector_store not available)")
+            logger.warning(
+                "User KB QA tool skipped (user_kb_vector_store not available)"
+            )
 
         # Tool 3: Global KB (system-wide best practices)
         result["global_kb_qa_tool"] = AnswerFromGlobalKB(

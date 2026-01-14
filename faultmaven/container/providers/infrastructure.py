@@ -14,8 +14,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from faultmaven.container.base import BaseDIContainer
     from faultmaven.config.settings import FaultMavenSettings
+    from faultmaven.container.base import BaseDIContainer
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,9 @@ def create_tracer(settings: FaultMavenSettings) -> Any:
     """Create distributed tracer."""
     from faultmaven.infrastructure.observability.tracing import OpikTracer
 
-    logger.debug(f"Observability config: enabled={settings.observability.tracing_enabled}")
+    logger.debug(
+        f"Observability config: enabled={settings.observability.tracing_enabled}"
+    )
     return OpikTracer(settings=settings)
 
 
@@ -64,17 +66,17 @@ def create_extractors() -> dict[str, Any]:
         Dict mapping extractor names to instances
     """
     from faultmaven.services.preprocessing.extractors import (
-        LogsAndErrorsExtractor,
-        StructuredConfigExtractor,
-        MetricsAndPerformanceExtractor,
-        UnstructuredTextExtractor,
-        SourceCodeExtractor,
-        VisualEvidenceExtractor,
-        TraceDataExtractor,
-        ProfilingDataExtractor,
-        ErrorReportExtractor,
-        DocumentationExtractor,
         CommandOutputExtractor,
+        DocumentationExtractor,
+        ErrorReportExtractor,
+        LogsAndErrorsExtractor,
+        MetricsAndPerformanceExtractor,
+        ProfilingDataExtractor,
+        SourceCodeExtractor,
+        StructuredConfigExtractor,
+        TraceDataExtractor,
+        UnstructuredTextExtractor,
+        VisualEvidenceExtractor,
     )
 
     return {
@@ -115,7 +117,9 @@ def create_preprocessing_service(
     settings: FaultMavenSettings,
 ) -> Any:
     """Create preprocessing service with all extractors."""
-    from faultmaven.services.preprocessing.preprocessing_service import PreprocessingService
+    from faultmaven.services.preprocessing.preprocessing_service import (
+        PreprocessingService,
+    )
 
     return PreprocessingService(
         classifier=data_classifier,
@@ -148,7 +152,9 @@ def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
 
     if is_chroma:
         if not settings.server.skip_service_checks:
-            from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+            from faultmaven.infrastructure.persistence.chromadb_store import (
+                ChromaDBVectorStore,
+            )
 
             store = ChromaDBVectorStore()
             logger.info(f"✅ Vector store: ChromaDB @ {settings.database.chromadb_url}")
@@ -157,7 +163,9 @@ def create_vector_store(settings: FaultMavenSettings) -> tuple[Any, bool]:
             logger.info("Skipping vector store (SKIP_SERVICE_CHECKS=True)")
             return None, True
     else:
-        from faultmaven.infrastructure.persistence.inmemory_vector_store import InMemoryVectorStore
+        from faultmaven.infrastructure.persistence.inmemory_vector_store import (
+            InMemoryVectorStore,
+        )
 
         store = InMemoryVectorStore()
         logger.debug("Vector store: InMemory (RAM)")
@@ -171,7 +179,9 @@ def create_case_vector_store(settings: FaultMavenSettings) -> Any | None:
         return None
 
     try:
-        from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
+        from faultmaven.infrastructure.persistence.case_vector_store import (
+            CaseVectorStore,
+        )
 
         store = CaseVectorStore()
         logger.debug("Case vector store initialized")
@@ -197,7 +207,9 @@ async def create_redis_client(settings: FaultMavenSettings) -> Any | None:
             decode_responses=True,
         )
         await client.ping()
-        logger.info(f"✅ Redis client connected @ {settings.database.redis_host}:{settings.database.redis_port}")
+        logger.info(
+            f"✅ Redis client connected @ {settings.database.redis_host}:{settings.database.redis_port}"
+        )
         return client
     except Exception as e:
         logger.warning(f"Redis client initialization failed: {e}")
@@ -207,13 +219,17 @@ async def create_redis_client(settings: FaultMavenSettings) -> Any | None:
 def create_session_store(redis_client: Any | None, settings: FaultMavenSettings) -> Any:
     """Create session store (Redis or InMemory)."""
     if redis_client and not settings.server.skip_service_checks:
-        from faultmaven.modules.auth.infrastructure.stores.redis_session_store import RedisSessionStore
+        from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
+            RedisSessionStore,
+        )
 
         store = RedisSessionStore(redis_client)
         logger.info("✅ Session store: Redis")
         return store
     else:
-        from faultmaven.modules.auth.infrastructure.stores.inmemory_session_store import InMemorySessionStore
+        from faultmaven.modules.auth.infrastructure.stores.inmemory_session_store import (
+            InMemorySessionStore,
+        )
 
         store = InMemorySessionStore()
         logger.debug("Session store: InMemory (RAM)")
@@ -255,6 +271,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
 
     # Create a separate sanitizer for preprocessing (stateless)
     from faultmaven.infrastructure.security.redaction import DataSanitizer
+
     data_sanitizer = DataSanitizer()
     container._register_service("data_sanitizer", data_sanitizer)
 

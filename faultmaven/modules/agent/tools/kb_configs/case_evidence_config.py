@@ -5,6 +5,7 @@ KB-specific configuration for case-scoped forensic evidence (logs, configs, metr
 """
 
 from typing import Optional
+
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 
@@ -29,29 +30,25 @@ class CaseEvidenceConfig(KBConfig):
         """Format with forensic precision: filenames, line numbers, timestamps"""
         parts = [f"Score: {score:.2f}"]
 
-        if 'filename' in metadata:
+        if "filename" in metadata:
             parts.append(f"Source: {metadata['filename']}")
-        if 'line_number' in metadata:
+        if "line_number" in metadata:
             parts.append(f"Line: {metadata['line_number']}")
-        if 'timestamp' in metadata:
+        if "timestamp" in metadata:
             parts.append(f"Time: {metadata['timestamp']}")
 
-        return ', '.join(parts)
+        return ", ".join(parts)
 
     def extract_source_name(self, metadata: dict) -> str:
         """Extract filename as source"""
-        return metadata.get('filename', metadata.get('source_id', 'Unknown'))
+        return metadata.get("filename", metadata.get("source_id", "Unknown"))
 
     def get_citation_format(self) -> str:
         """Cite with line numbers and timestamps"""
         return "line numbers and timestamps"
 
     def format_response(
-        self,
-        answer: str,
-        sources: list,
-        chunk_count: int,
-        confidence: float
+        self, answer: str, sources: list, chunk_count: int, confidence: float
     ) -> str:
         """Format with file citations and relevance metrics"""
         response = f"{answer}\n\n"

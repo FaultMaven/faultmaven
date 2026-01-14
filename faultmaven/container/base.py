@@ -4,16 +4,16 @@ This module provides the core DIContainer class that uses the modular
 registry and utilities for clean dependency injection.
 """
 
-from typing import Any, Optional, List, Dict
 import logging
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-from faultmaven.container.registry import DependencyRegistry, ServiceStatus
 from faultmaven.container.errors import (
     ContainerError,
-    ServiceUnavailableError,
     InitializationError,
+    ServiceUnavailableError,
 )
+from faultmaven.container.registry import DependencyRegistry, ServiceStatus
 from faultmaven.container.utils import LazyService
 
 
@@ -222,7 +222,7 @@ class BaseDIContainer:
         if it hasn't happened yet. Base implementation just calls initialize().
         Subclasses can override with async-aware logic.
         """
-        if not self._initialized and not getattr(self, '_initializing', False):
+        if not self._initialized and not getattr(self, "_initializing", False):
             self.initialize()
 
     def get_agent_service(self) -> Any:

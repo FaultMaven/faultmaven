@@ -23,16 +23,23 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from openai import AsyncOpenAI, APIError, RateLimitError, APIConnectionError, APITimeoutError
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    AsyncOpenAI,
+    RateLimitError,
+)
 
-from faultmaven.services.base import BaseService
 from faultmaven.exceptions import (
     EmbeddingGenerationError,
-    EmbeddingRateLimitError,
     EmbeddingInvalidInputError,
+    EmbeddingRateLimitError,
 )
-from faultmaven.modules.knowledge.domain.models.knowledge_item import EMBEDDING_DIMENSIONS
-
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
+)
+from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +128,7 @@ class EmbeddingService(BaseService):
                 )
 
                 # Track token usage
-                if hasattr(response, 'usage') and response.usage:
+                if hasattr(response, "usage") and response.usage:
                     self._total_tokens += response.usage.total_tokens
 
                 embedding = response.data[0].embedding
@@ -137,7 +144,7 @@ class EmbeddingService(BaseService):
 
             except RateLimitError as e:
                 last_error = e
-                wait_time = self.retry_delay * (2 ** attempt)
+                wait_time = self.retry_delay * (2**attempt)
                 logger.warning(
                     f"Rate limit hit, waiting {wait_time}s before retry "
                     f"(attempt {attempt + 1}/{self.max_retries})"
@@ -152,7 +159,7 @@ class EmbeddingService(BaseService):
 
             except (APIConnectionError, APITimeoutError) as e:
                 last_error = e
-                wait_time = self.retry_delay * (2 ** attempt)
+                wait_time = self.retry_delay * (2**attempt)
                 logger.warning(
                     f"Transient API error: {e}, waiting {wait_time}s before retry "
                     f"(attempt {attempt + 1}/{self.max_retries})"
@@ -176,7 +183,7 @@ class EmbeddingService(BaseService):
                     f"API error generating embedding: {e}",
                     details={
                         "model": self.model,
-                        "status_code": getattr(e, 'status_code', None),
+                        "status_code": getattr(e, "status_code", None),
                         "error_type": type(e).__name__,
                     },
                 ) from e
@@ -238,7 +245,7 @@ class EmbeddingService(BaseService):
 
         # Process in batches
         for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+            batch = texts[i : i + batch_size]
             batch_embeddings = await self._process_batch(batch)
             all_embeddings.extend(batch_embeddings)
 
@@ -264,7 +271,7 @@ class EmbeddingService(BaseService):
                 )
 
                 # Track token usage
-                if hasattr(response, 'usage') and response.usage:
+                if hasattr(response, "usage") and response.usage:
                     self._total_tokens += response.usage.total_tokens
 
                 # Sort by index to maintain order
@@ -276,7 +283,7 @@ class EmbeddingService(BaseService):
 
             except RateLimitError as e:
                 last_error = e
-                wait_time = self.retry_delay * (2 ** attempt)
+                wait_time = self.retry_delay * (2**attempt)
                 logger.warning(
                     f"Rate limit hit on batch, waiting {wait_time}s before retry "
                     f"(attempt {attempt + 1}/{self.max_retries})"
@@ -295,7 +302,7 @@ class EmbeddingService(BaseService):
 
             except (APIConnectionError, APITimeoutError) as e:
                 last_error = e
-                wait_time = self.retry_delay * (2 ** attempt)
+                wait_time = self.retry_delay * (2**attempt)
                 logger.warning(
                     f"Transient API error on batch: {e}, waiting {wait_time}s "
                     f"(attempt {attempt + 1}/{self.max_retries})"
@@ -320,7 +327,7 @@ class EmbeddingService(BaseService):
                     details={
                         "model": self.model,
                         "batch_size": len(batch),
-                        "status_code": getattr(e, 'status_code', None),
+                        "status_code": getattr(e, "status_code", None),
                         "error_type": type(e).__name__,
                     },
                 ) from e
@@ -440,16 +447,20 @@ class EmbeddingService(BaseService):
         try:
             # Try generating a simple embedding to verify API connectivity
             test_embedding = await self._generate_embedding_impl("health check")
-            api_status = "healthy" if len(test_embedding) == self.dimensions else "degraded"
+            api_status = (
+                "healthy" if len(test_embedding) == self.dimensions else "degraded"
+            )
         except Exception as e:
             api_status = "unhealthy"
             base_health["error"] = str(e)
 
-        base_health.update({
-            "api_status": api_status,
-            "model": self.model,
-            "dimensions": self.dimensions,
-            "total_tokens_used": self._total_tokens,
-        })
+        base_health.update(
+            {
+                "api_status": api_status,
+                "model": self.model,
+                "dimensions": self.dimensions,
+                "total_tokens_used": self._total_tokens,
+            }
+        )
 
         return base_health

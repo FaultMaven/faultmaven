@@ -8,13 +8,14 @@ Verifies:
 """
 
 import os
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # =============================================================================
 # Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def clean_env():
@@ -44,7 +45,9 @@ def mock_container():
 
     # Mock case_store
     mock_case_store = AsyncMock()
-    mock_case_store.get_all_case_ids = AsyncMock(return_value=["case_1", "case_2", "case_3"])
+    mock_case_store.get_all_case_ids = AsyncMock(
+        return_value=["case_1", "case_2", "case_3"]
+    )
     container.case_store = mock_case_store
 
     # Mock initialize
@@ -65,6 +68,7 @@ def mock_settings():
 # Case Cleanup Job Tests
 # =============================================================================
 
+
 class TestCaseCleanupJob:
     """Tests for case_cleanup job entrypoint."""
 
@@ -80,7 +84,9 @@ class TestCaseCleanupJob:
         assert result["active_cases"] == 3
 
     @pytest.mark.asyncio
-    async def test_case_cleanup_skips_when_vector_store_unavailable(self, mock_settings):
+    async def test_case_cleanup_skips_when_vector_store_unavailable(
+        self, mock_settings
+    ):
         """Test job skips gracefully when case_vector_store is not available."""
         from faultmaven.jobs.case_cleanup import run
 
@@ -141,6 +147,7 @@ class TestCaseCleanupJob:
 # CLI Runner Tests
 # =============================================================================
 
+
 class TestJobsRunner:
     """Tests for the CLI job runner."""
 
@@ -185,8 +192,12 @@ class TestJobsRunner:
         """Test run_job function with mocked dependencies."""
         from faultmaven.jobs.run import run_job
 
-        with patch("faultmaven.config.settings.get_settings", return_value=mock_settings), \
-             patch("faultmaven.container.container", mock_container):
+        with (
+            patch(
+                "faultmaven.config.settings.get_settings", return_value=mock_settings
+            ),
+            patch("faultmaven.container.container", mock_container),
+        ):
             result = await run_job("case_cleanup", verbose=False)
 
         assert result["status"] == "completed"
@@ -196,6 +207,7 @@ class TestJobsRunner:
 # App Boot Tests (without scheduler)
 # =============================================================================
 
+
 class TestAppBootWithoutScheduler:
     """Tests that app boots correctly without scheduler threads."""
 
@@ -204,7 +216,8 @@ class TestAppBootWithoutScheduler:
         # Remove any existing RUN_SCHEDULER
         os.environ.pop("RUN_SCHEDULER", None)
 
-        from faultmaven.config.settings import reset_settings, get_settings
+        from faultmaven.config.settings import get_settings, reset_settings
+
         reset_settings()
 
         settings = get_settings()
@@ -214,7 +227,8 @@ class TestAppBootWithoutScheduler:
         """Test that RUN_SCHEDULER can be set to True."""
         os.environ["RUN_SCHEDULER"] = "true"
 
-        from faultmaven.config.settings import reset_settings, get_settings
+        from faultmaven.config.settings import get_settings, reset_settings
+
         reset_settings()
 
         settings = get_settings()
@@ -234,11 +248,14 @@ class TestAppBootWithoutScheduler:
 # Integration Tests (job works without server)
 # =============================================================================
 
+
 class TestJobsWorkWithoutServer:
     """Tests that jobs work independently of a running server."""
 
     @pytest.mark.asyncio
-    async def test_case_cleanup_no_server_dependency(self, mock_container, mock_settings):
+    async def test_case_cleanup_no_server_dependency(
+        self, mock_container, mock_settings
+    ):
         """Test case cleanup job has no dependency on running server."""
         from faultmaven.jobs.case_cleanup import run
 

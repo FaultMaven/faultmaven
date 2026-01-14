@@ -16,10 +16,13 @@ Design Reference:
 
 import logging
 from enum import Enum
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from faultmaven.modules.agent.contracts import InvestigationState, InvestigationPhase
+    from faultmaven.modules.agent.contracts import (
+        InvestigationState,
+        InvestigationPhase,
+    )
 
 from faultmaven.modules.agent.contracts import InvestigationPhase
 
@@ -29,12 +32,14 @@ logger = logging.getLogger(__name__)
 class PhaseOutcome(str, Enum):
     """Phase completion outcomes that determine next phase (v3.0)"""
 
-    COMPLETED = "completed"                  # Normal completion → advance to next phase
-    HYPOTHESIS_REFUTED = "hypothesis_refuted"  # All hypotheses refuted → loop to Phase 3
-    SCOPE_CHANGED = "scope_changed"          # New info expanded blast radius → loop to Phase 1
-    TIMELINE_WRONG = "timeline_wrong"        # Timeline analysis incorrect → loop to Phase 2
-    NEED_MORE_DATA = "need_more_data"        # Insufficient evidence → stay in current phase
-    STALLED = "stalled"                      # No progress → enter degraded mode (v3.0)
+    COMPLETED = "completed"  # Normal completion → advance to next phase
+    HYPOTHESIS_REFUTED = (
+        "hypothesis_refuted"  # All hypotheses refuted → loop to Phase 3
+    )
+    SCOPE_CHANGED = "scope_changed"  # New info expanded blast radius → loop to Phase 1
+    TIMELINE_WRONG = "timeline_wrong"  # Timeline analysis incorrect → loop to Phase 2
+    NEED_MORE_DATA = "need_more_data"  # Insufficient evidence → stay in current phase
+    STALLED = "stalled"  # No progress → enter degraded mode (v3.0)
     ESCALATION_NEEDED = "escalation_needed"  # Requires human guidance
 
 
@@ -145,12 +150,14 @@ class PhaseLoopBackHandler:
 
         # Record loop-back
         state.lifecycle.loop_back_count += 1
-        self.loop_back_history.append({
-            "from_phase": current_phase,
-            "to_phase": InvestigationPhase.HYPOTHESIS,
-            "reason": reason,
-            "turn": state.metadata.current_turn,
-        })
+        self.loop_back_history.append(
+            {
+                "from_phase": current_phase,
+                "to_phase": InvestigationPhase.HYPOTHESIS,
+                "reason": reason,
+                "turn": state.metadata.current_turn,
+            }
+        )
 
         message = (
             f"All hypotheses refuted. Looping back to Phase 3 (Hypothesis) "
@@ -181,12 +188,14 @@ class PhaseLoopBackHandler:
 
         # Record loop-back
         state.lifecycle.loop_back_count += 1
-        self.loop_back_history.append({
-            "from_phase": current_phase,
-            "to_phase": InvestigationPhase.BLAST_RADIUS,
-            "reason": reason,
-            "turn": state.metadata.current_turn,
-        })
+        self.loop_back_history.append(
+            {
+                "from_phase": current_phase,
+                "to_phase": InvestigationPhase.BLAST_RADIUS,
+                "reason": reason,
+                "turn": state.metadata.current_turn,
+            }
+        )
 
         message = (
             f"Blast radius changed significantly. Looping back to Phase 1 (Blast Radius) "
@@ -217,12 +226,14 @@ class PhaseLoopBackHandler:
 
         # Record loop-back
         state.lifecycle.loop_back_count += 1
-        self.loop_back_history.append({
-            "from_phase": current_phase,
-            "to_phase": InvestigationPhase.TIMELINE,
-            "reason": reason,
-            "turn": state.metadata.current_turn,
-        })
+        self.loop_back_history.append(
+            {
+                "from_phase": current_phase,
+                "to_phase": InvestigationPhase.TIMELINE,
+                "reason": reason,
+                "turn": state.metadata.current_turn,
+            }
+        )
 
         message = (
             f"Timeline analysis needs revision. Looping back to Phase 2 (Timeline) "
@@ -370,11 +381,15 @@ class PhaseLoopBackHandler:
             "total_loop_backs": state.lifecycle.loop_back_count,
             "max_allowed": self.MAX_LOOP_BACKS,
             "loop_back_history": self.loop_back_history,
-            "loops_remaining": max(0, self.MAX_LOOP_BACKS - state.lifecycle.loop_back_count),
+            "loops_remaining": max(
+                0, self.MAX_LOOP_BACKS - state.lifecycle.loop_back_count
+            ),
         }
 
 
-def should_loop_back_from_validation(state: "InvestigationState") -> tuple[bool, Optional[PhaseOutcome], Optional[LoopBackReason]]:
+def should_loop_back_from_validation(
+    state: "InvestigationState",
+) -> tuple[bool, Optional[PhaseOutcome], Optional[LoopBackReason]]:
     """Check if Phase 4 (Validation) should loop back
 
     Checks:
@@ -390,7 +405,9 @@ def should_loop_back_from_validation(state: "InvestigationState") -> tuple[bool,
 
     # Count hypothesis states
     active_count = sum(1 for h in hypotheses if h.status == HypothesisStatus.ACTIVE)
-    validated_count = sum(1 for h in hypotheses if h.status == HypothesisStatus.VALIDATED)
+    validated_count = sum(
+        1 for h in hypotheses if h.status == HypothesisStatus.VALIDATED
+    )
     refuted_count = sum(1 for h in hypotheses if h.status == HypothesisStatus.REFUTED)
 
     # Check if we have a validated hypothesis
@@ -407,7 +424,11 @@ def should_loop_back_from_validation(state: "InvestigationState") -> tuple[bool,
                 "refuted": refuted_count,
             },
         )
-        return True, PhaseOutcome.HYPOTHESIS_REFUTED, LoopBackReason.ALL_HYPOTHESES_REFUTED
+        return (
+            True,
+            PhaseOutcome.HYPOTHESIS_REFUTED,
+            LoopBackReason.ALL_HYPOTHESES_REFUTED,
+        )
 
     # Check if insufficient hypotheses remaining
     if active_count < 2 and validated_count == 0:
@@ -418,7 +439,11 @@ def should_loop_back_from_validation(state: "InvestigationState") -> tuple[bool,
                 "refuted": refuted_count,
             },
         )
-        return True, PhaseOutcome.HYPOTHESIS_REFUTED, LoopBackReason.INSUFFICIENT_HYPOTHESES
+        return (
+            True,
+            PhaseOutcome.HYPOTHESIS_REFUTED,
+            LoopBackReason.INSUFFICIENT_HYPOTHESES,
+        )
 
     # All good, continue validation
     return False, None, None

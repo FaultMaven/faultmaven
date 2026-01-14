@@ -16,20 +16,13 @@ Architecture:
 """
 
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore
 
 # Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import (
-    Case,
-    CaseStatus,
-    HypothesisStatus,
-    InvestigationPath,
-    ConsultingData,
-)
 from faultmaven.models.case_ui import (
     CaseUIResponse,
     CaseUIResponse_Consulting,
@@ -51,6 +44,13 @@ from faultmaven.models.case_ui import (
     UserRequestSummary,
     VerificationStatus,
     WorkingConclusionSummary,
+)
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseStatus,
+    ConsultingData,
+    HypothesisStatus,
+    InvestigationPath,
 )
 
 
@@ -76,28 +76,32 @@ def transform_case_for_ui(case: Case) -> CaseUIResponse:
         # CLOSED cases: return RESOLVED format with closure details
         return _transform_resolved(case)
     else:
-        raise ValueError(f"Unsupported case status for UI transformation: {case.status}")
+        raise ValueError(
+            f"Unsupported case status for UI transformation: {case.status}"
+        )
 
 
 # ============================================================
 # Helper Functions for Data Extraction
 # ============================================================
 
+
 def _get_investigation_strategy_data(case: Case) -> Optional[InvestigationStrategyData]:
     """Extract investigation strategy from case state."""
 
     # Map investigation path to descriptive approach
     approach_map = {
-        InvestigationPath.MITIGATION_FIRST:
-            "Mitigation-first - quick fix now, comprehensive RCA after service restored",
-        InvestigationPath.ROOT_CAUSE:
-            "Root cause analysis - thorough investigation before permanent solution",
-        InvestigationPath.USER_CHOICE:
-            "User choice - awaiting path selection based on requirements"
+        InvestigationPath.MITIGATION_FIRST: "Mitigation-first - quick fix now, comprehensive RCA after service restored",
+        InvestigationPath.ROOT_CAUSE: "Root cause analysis - thorough investigation before permanent solution",
+        InvestigationPath.USER_CHOICE: "User choice - awaiting path selection based on requirements",
     }
 
     # Get path from path_selection if available, otherwise use default
-    path = case.path_selection.path if case.path_selection else InvestigationPath.ROOT_CAUSE
+    path = (
+        case.path_selection.path
+        if case.path_selection
+        else InvestigationPath.ROOT_CAUSE
+    )
     approach = approach_map.get(path, "Standard investigation")
 
     # Extract next steps from pending milestones
@@ -114,7 +118,7 @@ def _get_investigation_strategy_data(case: Case) -> Optional[InvestigationStrate
             "solution_proposed": "Propose solution or mitigation",
             "solution_applied": "Apply solution or mitigation",
             "solution_verified": "Verify solution effectiveness",
-            "mitigation_applied": "Apply quick mitigation (MITIGATION_FIRST path)"
+            "mitigation_applied": "Apply quick mitigation (MITIGATION_FIRST path)",
         }
         next_steps = [
             milestone_steps.get(m, f"Complete {m.replace('_', ' ')}")
@@ -122,8 +126,7 @@ def _get_investigation_strategy_data(case: Case) -> Optional[InvestigationStrate
         ]
 
     return InvestigationStrategyData(
-        approach=approach,
-        next_steps=next_steps if next_steps else None
+        approach=approach, next_steps=next_steps if next_steps else None
     )
 
 
@@ -140,13 +143,17 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
     # Extract temporal state from evidence timeline
     temporal_state = None
     if case.evidence:
-        timestamps = [e.collected_at for e in case.evidence if hasattr(e, 'collected_at') and e.collected_at]
+        timestamps = [
+            e.collected_at
+            for e in case.evidence
+            if hasattr(e, "collected_at") and e.collected_at
+        ]
         if timestamps:
             sorted_times = sorted(timestamps)
             temporal_state = TemporalStateData(
                 started_at=sorted_times[0],
                 last_occurrence_at=sorted_times[-1] if len(sorted_times) > 1 else None,
-                state="ongoing"  # Could be determined from evidence recency
+                state="ongoing",  # Could be determined from evidence recency
             )
 
     # Extract impact from case description (simple keyword extraction)
@@ -157,7 +164,16 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
 
     if case.description:
         # Simple keyword extraction for services
-        common_services = ['api', 'service', 'database', 'db', 'cache', 'auth', 'payment', 'checkout']
+        common_services = [
+            "api",
+            "service",
+            "database",
+            "db",
+            "cache",
+            "auth",
+            "payment",
+            "checkout",
+        ]
         text_lower = case.description.lower()
 
         for service in common_services:
@@ -165,14 +181,14 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
                 affected_services.append(service)
 
         # Check for user impact indicators
-        if any(word in text_lower for word in ['users', 'customers', 'all']):
+        if any(word in text_lower for word in ["users", "customers", "all"]):
             affected_users = "Multiple users affected"
 
     if affected_services or affected_users:
         impact = ImpactData(
             affected_services=affected_services if affected_services else None,
             affected_users=affected_users,
-            affected_regions=affected_regions if affected_regions else None
+            affected_regions=affected_regions if affected_regions else None,
         )
 
     # User impact summary
@@ -187,13 +203,14 @@ def _extract_problem_verification(case: Case) -> Optional[ProblemVerificationDat
         severity=severity,
         temporal_state=temporal_state,
         impact=impact,
-        user_impact=user_impact
+        user_impact=user_impact,
     )
 
 
 # ============================================================
 # Phase-Specific Transformation Functions
 # ============================================================
+
 
 def _transform_consulting(case: Case) -> CaseUIResponse_Consulting:
     """Transform case into CONSULTING phase UI response."""
@@ -210,10 +227,22 @@ def _transform_consulting(case: Case) -> CaseUIResponse_Consulting:
         problem_statement_confirmed=case.consulting.problem_statement_confirmed,
         decided_to_investigate=case.consulting.decided_to_investigate,
         consultation_turns=case.consulting.consultation_turns,
-        problem_confirmation={
-            "problem_type": case.consulting.problem_confirmation.problem_type if case.consulting.problem_confirmation else None,
-            "severity_guess": case.consulting.problem_confirmation.severity_guess if case.consulting.problem_confirmation else "unknown"
-        } if case.consulting.problem_confirmation else None
+        problem_confirmation=(
+            {
+                "problem_type": (
+                    case.consulting.problem_confirmation.problem_type
+                    if case.consulting.problem_confirmation
+                    else None
+                ),
+                "severity_guess": (
+                    case.consulting.problem_confirmation.severity_guess
+                    if case.consulting.problem_confirmation
+                    else "unknown"
+                ),
+            }
+            if case.consulting.problem_confirmation
+            else None
+        ),
     )
 
     return CaseUIResponse_Consulting(
@@ -224,7 +253,7 @@ def _transform_consulting(case: Case) -> CaseUIResponse_Consulting:
         created_at=case.created_at,
         updated_at=case.updated_at,
         uploaded_files_count=len(case.uploaded_files),
-        consulting=consulting_data
+        consulting=consulting_data,
     )
 
 
@@ -236,57 +265,59 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         milestones_completed=len(case.progress.completed_milestones),
         total_milestones=9,  # 9 milestones: 4 verification + 1 root_cause + 3 solution + 1 mitigation
         completed_milestone_ids=case.progress.completed_milestones,
-        current_stage=case.progress.current_stage
+        current_stage=case.progress.current_stage,
     )
 
     # Build working conclusion from highest-confidence active hypothesis
     working_conclusion = None
     if case.hypotheses:
-        active_hypotheses = [h for h in case.hypotheses.values() if h.status == HypothesisStatus.ACTIVE]
+        active_hypotheses = [
+            h for h in case.hypotheses.values() if h.status == HypothesisStatus.ACTIVE
+        ]
         if active_hypotheses:
             # Get hypothesis with highest likelihood
             best_hypothesis = max(active_hypotheses, key=lambda h: h.likelihood)
             working_conclusion = WorkingConclusionSummary(
                 summary=best_hypothesis.description,
                 confidence=best_hypothesis.likelihood,
-                last_updated=case.updated_at  # Could track hypothesis update time separately
+                last_updated=case.updated_at,  # Could track hypothesis update time separately
             )
 
     # Build hypothesis summaries (top 5 by likelihood)
     hypothesis_summaries = []
     if case.hypotheses:
         sorted_hypotheses = sorted(
-            case.hypotheses.values(),
-            key=lambda h: h.likelihood,
-            reverse=True
+            case.hypotheses.values(), key=lambda h: h.likelihood, reverse=True
         )[:5]
 
         for hyp in sorted_hypotheses:
-            hypothesis_summaries.append(HypothesisSummary(
-                hypothesis_id=hyp.hypothesis_id,
-                text=hyp.description,
-                likelihood=hyp.likelihood,
-                status=hyp.status,
-                evidence_count=len(hyp.evidence_links)
-            ))
+            hypothesis_summaries.append(
+                HypothesisSummary(
+                    hypothesis_id=hyp.hypothesis_id,
+                    text=hyp.description,
+                    likelihood=hyp.likelihood,
+                    status=hyp.status,
+                    evidence_count=len(hyp.evidence_links),
+                )
+            )
 
     # Build evidence summaries (last 5 evidence items)
     evidence_summaries = []
     if case.evidence:
         sorted_evidence = sorted(
-            case.evidence,
-            key=lambda e: e.collected_at,
-            reverse=True
+            case.evidence, key=lambda e: e.collected_at, reverse=True
         )[:5]
 
         for ev in sorted_evidence:
-            evidence_summaries.append(EvidenceSummary(
-                evidence_id=ev.evidence_id,
-                type=ev.evidence_type.value,
-                summary=ev.summary,
-                timestamp=ev.collected_at,
-                relevance_score=0.8  # Could compute from hypothesis links
-            ))
+            evidence_summaries.append(
+                EvidenceSummary(
+                    evidence_id=ev.evidence_id,
+                    type=ev.evidence_type.value,
+                    summary=ev.summary,
+                    timestamp=ev.collected_at,
+                    relevance_score=0.8,  # Could compute from hypothesis links
+                )
+            )
 
     # Agent status message
     agent_status = f"Working on {case.progress.current_stage.value.replace('_', ' ')}"
@@ -298,7 +329,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
     pending = case.progress.pending_milestones[:3]  # First 3 pending
     for milestone_id in pending:
         # Convert milestone ID to action description
-        action = milestone_id.replace('_', ' ').title()
+        action = milestone_id.replace("_", " ").title()
         next_actions.append(action)
 
     # Extract investigation strategy and problem verification
@@ -320,7 +351,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
         is_stuck=case.is_stuck,
         degraded_mode=case.degraded_mode is not None and case.degraded_mode.is_active,
         investigation_strategy=investigation_strategy_data,
-        problem_verification=problem_verification_data
+        problem_verification=problem_verification_data,
     )
 
 
@@ -348,7 +379,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         description=root_cause_desc,
         root_cause_id=root_cause_id,
         category=root_cause_category,
-        severity=root_cause_severity
+        severity=root_cause_severity,
     )
 
     # Extract solution from case (if solutions tracked)
@@ -372,14 +403,14 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
     solution_applied = SolutionSummary(
         description=solution_desc,
         applied_at=solution_applied_at,
-        applied_by=solution_applied_by
+        applied_by=solution_applied_by,
     )
 
     # Verification status
     verification_status = VerificationStatus(
         verified=True,  # Assumed if case is RESOLVED
         verification_method="Post-resolution monitoring",
-        details="Solution applied and verified effective"
+        details="Solution applied and verified effective",
     )
 
     # Calculate duration
@@ -397,9 +428,15 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
     resolution_summary = ResolutionSummary(
         total_duration_minutes=duration_minutes,
         milestones_completed=len(case.progress.completed_milestones),
-        hypotheses_tested=len([h for h in case.hypotheses.values() if h.status != HypothesisStatus.CAPTURED]),
+        hypotheses_tested=len(
+            [
+                h
+                for h in case.hypotheses.values()
+                if h.status != HypothesisStatus.CAPTURED
+            ]
+        ),
         evidence_collected=len(case.evidence),
-        key_insights=key_insights
+        key_insights=key_insights,
     )
 
     # Report availability
@@ -407,18 +444,18 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         ReportAvailability(
             report_type="incident_report",
             status="recommended",
-            reason="Standard incident documentation"
+            reason="Standard incident documentation",
         ),
         ReportAvailability(
             report_type="post_mortem",
             status="recommended",
-            reason="Detailed analysis for future reference"
+            reason="Detailed analysis for future reference",
         ),
         ReportAvailability(
             report_type="timeline",
             status="available",
-            reason="Investigation timeline reconstructed"
-        )
+            reason="Investigation timeline reconstructed",
+        ),
     ]
 
     return CaseUIResponse_Resolved(
@@ -432,5 +469,5 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
         solution_applied=solution_applied,
         verification_status=verification_status,
         resolution_summary=resolution_summary,
-        reports_available=reports_available
+        reports_available=reports_available,
     )

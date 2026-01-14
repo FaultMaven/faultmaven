@@ -11,15 +11,14 @@ Requirements:
 """
 
 import os
-import pytest
-from datetime import datetime, timezone, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
-import time
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.database import reset_engine
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
@@ -28,10 +27,10 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
 )
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.repository_factory import (
     reset_inmemory_investigation_session_repository,
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus, ConsultingData
 from faultmaven.models.investigation_session import (
     InvestigationSession,
     SessionStatus,
@@ -42,8 +41,8 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentType,
     ExecutionStatus,
 )
+from faultmaven.modules.case.domain.models import Case, CaseStatus, ConsultingData
 from tests.utils import generate_case_id, generate_session_id
-
 
 # ============================================================
 # Test Fixtures
@@ -238,7 +237,9 @@ async def test_full_session_lifecycle(
     session.complete("Root cause identified: connection pool exhaustion")
     updated = await session_repository.update(session)
     assert updated.status == SessionStatus.COMPLETED
-    assert updated.findings_summary == "Root cause identified: connection pool exhaustion"
+    assert (
+        updated.findings_summary == "Root cause identified: connection pool exhaustion"
+    )
     assert updated.ended_at is not None
 
     # Step 7: Delete session
@@ -341,12 +342,14 @@ async def test_four_level_cascade_delete_chain(
     Note: InvestigationSession → AgentExecution link is ON DELETE SET NULL,
     but AgentExecution → Case is CASCADE, so deleting the case cascades down.
     """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
     from faultmaven.infrastructure.persistence.models import (
         AgentExecutionModel,
         AgentToolCallV2Model,
     )
-    from sqlalchemy import select
-    from datetime import datetime, timezone
 
     # Create case
     case = Case(
@@ -450,7 +453,9 @@ async def test_four_level_cascade_delete_chain(
 
     # Verify tool calls exist
     result = await test_session.execute(
-        select(AgentToolCallV2Model).where(AgentToolCallV2Model.execution_id == exec1_id)
+        select(AgentToolCallV2Model).where(
+            AgentToolCallV2Model.execution_id == exec1_id
+        )
     )
     tool_calls = result.scalars().all()
     assert len(tool_calls) == 2
@@ -471,7 +476,9 @@ async def test_four_level_cascade_delete_chain(
 
     # 3. Tool calls should be gone (CASCADE from execution deletion)
     result = await test_session.execute(
-        select(AgentToolCallV2Model).where(AgentToolCallV2Model.execution_id.in_([exec1_id, exec2_id]))
+        select(AgentToolCallV2Model).where(
+            AgentToolCallV2Model.execution_id.in_([exec1_id, exec2_id])
+        )
     )
     remaining_tool_calls = result.scalars().all()
     assert len(remaining_tool_calls) == 0
@@ -490,9 +497,15 @@ async def test_list_sessions_by_case_with_status_filter(
 ):
     """Test filtering sessions by status."""
     # Create sessions with different statuses
-    active_session = create_sample_session(sample_case.case_id, status=SessionStatus.ACTIVE)
-    paused_session = create_sample_session(sample_case.case_id, status=SessionStatus.PAUSED)
-    completed_session = create_sample_session(sample_case.case_id, status=SessionStatus.COMPLETED)
+    active_session = create_sample_session(
+        sample_case.case_id, status=SessionStatus.ACTIVE
+    )
+    paused_session = create_sample_session(
+        sample_case.case_id, status=SessionStatus.PAUSED
+    )
+    completed_session = create_sample_session(
+        sample_case.case_id, status=SessionStatus.COMPLETED
+    )
 
     await session_repository.create(active_session)
     await session_repository.create(paused_session)
@@ -574,7 +587,7 @@ async def test_list_sessions_by_user_pagination(
             description="Testing pagination",
             status=CaseStatus.INVESTIGATING,
             consulting=ConsultingData(
-            proposed_problem_statement="Test problem statement",
+                proposed_problem_statement="Test problem statement",
                 problem_statement_confirmed=True,
                 decided_to_investigate=True,
             ),
@@ -969,7 +982,9 @@ async def test_session_goal_persistence(
     sample_case: Case,
 ):
     """Test session goal is correctly persisted and retrieved."""
-    session_goal = "Identify the root cause of the production timeout affecting user checkout flow"
+    session_goal = (
+        "Identify the root cause of the production timeout affecting user checkout flow"
+    )
     session = create_sample_session(sample_case.case_id, session_goal=session_goal)
     await session_repository.create(session)
 

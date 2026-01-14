@@ -149,9 +149,11 @@ class ReadFileTool(AgentTool):
                 )
 
             # Download file contents
-            file_data, filename, mime_type = await context.evidence_service.download_evidence(
-                evidence_id=evidence_id,
-                organization_id=context.organization_id,
+            file_data, filename, mime_type = (
+                await context.evidence_service.download_evidence(
+                    evidence_id=evidence_id,
+                    organization_id=context.organization_id,
+                )
             )
 
             # Process based on file type
@@ -232,7 +234,9 @@ class ReadFileTool(AgentTool):
                 f"Base64 encoded content:\n{encoded}"
             )
 
-        return f"[Binary file: {filename}, {len(file_data)} bytes, content not displayed]"
+        return (
+            f"[Binary file: {filename}, {len(file_data)} bytes, content not displayed]"
+        )
 
     def _is_text_file(self, mime_type: str, filename: str) -> bool:
         """Check if file is a text file."""
@@ -244,11 +248,35 @@ class ReadFileTool(AgentTool):
 
         # Check extension
         text_extensions = {
-            ".txt", ".log", ".json", ".xml", ".yaml", ".yml",
-            ".csv", ".md", ".py", ".js", ".ts", ".java", ".c",
-            ".cpp", ".h", ".go", ".rs", ".rb", ".sh", ".bash",
-            ".sql", ".html", ".css", ".conf", ".ini", ".cfg",
-            ".env", ".properties", ".toml",
+            ".txt",
+            ".log",
+            ".json",
+            ".xml",
+            ".yaml",
+            ".yml",
+            ".csv",
+            ".md",
+            ".py",
+            ".js",
+            ".ts",
+            ".java",
+            ".c",
+            ".cpp",
+            ".h",
+            ".go",
+            ".rs",
+            ".rb",
+            ".sh",
+            ".bash",
+            ".sql",
+            ".html",
+            ".css",
+            ".conf",
+            ".ini",
+            ".cfg",
+            ".env",
+            ".properties",
+            ".toml",
         }
         ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
         return ext in text_extensions
@@ -309,7 +337,9 @@ class ReadFileTool(AgentTool):
             # Return first and last 50 lines
             preview_lines = 50
             first_lines = lines[:preview_lines]
-            last_lines = lines[-preview_lines:] if total_lines > preview_lines * 2 else []
+            last_lines = (
+                lines[-preview_lines:] if total_lines > preview_lines * 2 else []
+            )
 
             result = [
                 f"[Large file: {filename}, {len(file_data)} bytes, {total_lines} lines]",
@@ -322,7 +352,9 @@ class ReadFileTool(AgentTool):
 
             if last_lines:
                 result.append("")
-                result.append(f"--- ... {total_lines - preview_lines * 2} lines omitted ... ---")
+                result.append(
+                    f"--- ... {total_lines - preview_lines * 2} lines omitted ... ---"
+                )
                 result.append("")
                 result.append("--- Last lines ---")
                 start_line = total_lines - preview_lines + 1
@@ -337,7 +369,9 @@ class ReadFileTool(AgentTool):
             return "\n".join(result)
 
         except Exception as e:
-            return f"[Large file: {filename}, {len(file_data)} bytes, error reading: {e}]"
+            return (
+                f"[Large file: {filename}, {len(file_data)} bytes, error reading: {e}]"
+            )
 
     def _summarize_image(
         self,

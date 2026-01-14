@@ -26,19 +26,21 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
+import json
 import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
+
 import requests
-import json
-from faultmaven.models.interfaces import ISanitizer
+
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.models.interfaces import ISanitizer
 
 
 class DataSanitizer(BaseExternalClient, ISanitizer):
     """Sanitizes sensitive information from text data
-    
+
     Implements ISanitizer interface for privacy-first data processing.
     Supports both Presidio-based PII detection and custom regex patterns.
     """
@@ -55,7 +57,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             service_name="Presidio_Services",
             enable_circuit_breaker=True,
             circuit_breaker_threshold=3,  # Lower threshold for privacy-critical service
-            circuit_breaker_timeout=30    # Shorter timeout for privacy service recovery
+            circuit_breaker_timeout=30,  # Shorter timeout for privacy service recovery
         )
 
         # Lazy import to avoid circular import at module import time
@@ -79,21 +81,26 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         # Configure K8s Presidio service endpoints using unified protection settings
         if not analyzer_url or not anonymizer_url:
             from faultmaven.config.settings import get_settings
+
             settings = get_settings()
             analyzer_url = analyzer_url or settings.protection.presidio_analyzer_url
-            anonymizer_url = anonymizer_url or settings.protection.presidio_anonymizer_url
+            anonymizer_url = (
+                anonymizer_url or settings.protection.presidio_anonymizer_url
+            )
 
         self.analyzer_url = analyzer_url
         self.anonymizer_url = anonymizer_url
-        
+
         # HTTP client configuration
         self.request_timeout = 10.0  # seconds
         self.session = requests.Session()
-        self.session.headers.update({
-            'Content-Type': 'application/json',
-            'User-Agent': 'FaultMaven-DataSanitizer/1.0'
-        })
-        
+        self.session.headers.update(
+            {
+                "Content-Type": "application/json",
+                "User-Agent": "FaultMaven-DataSanitizer/1.0",
+            }
+        )
+
         # Determine whether to skip external checks (e.g., in tests)
         skip_checks = False
         if settings is not None and getattr(settings, "server", None):
@@ -106,14 +113,18 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         if skip_checks:
             self.analyzer_available = False
             self.anonymizer_available = False
-            self.logger.info("Skipping Presidio health checks (SKIP_SERVICE_CHECKS=True)")
+            self.logger.info(
+                "Skipping Presidio health checks (SKIP_SERVICE_CHECKS=True)"
+            )
         else:
             self.analyzer_available = self._test_service_health(self.analyzer_url)
             self.anonymizer_available = self._test_service_health(self.anonymizer_url)
             if self.analyzer_available and self.anonymizer_available:
                 self.logger.info("✅ Connected to K8s Presidio services")
             else:
-                self.logger.warning(f"⚠️ Limited Presidio connectivity - Analyzer: {self.analyzer_available}, Anonymizer: {self.anonymizer_available}")
+                self.logger.warning(
+                    f"⚠️ Limited Presidio connectivity - Analyzer: {self.analyzer_available}, Anonymizer: {self.anonymizer_available}"
+                )
                 self.logger.info("📝 Falling back to regex-only sanitization")
 
         # Pattern-to-replacement mapping (in priority order)
@@ -129,25 +140,40 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             # Database URLs
             (r"(mongodb|postgresql|mysql)://[^@]+@[^/\s]+", "[DATABASE_URL_REDACTED]"),
             # JWT tokens
-            (r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*", "[JWT_TOKEN_REDACTED]"),
+            (
+                r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*",
+                "[JWT_TOKEN_REDACTED]",
+            ),
             # Private keys
-            (r"-----BEGIN PRIVATE KEY-----[^-]+-----END PRIVATE KEY-----", "[PRIVATE_KEY_REDACTED]"),
-            (r"-----BEGIN RSA PRIVATE KEY-----[^-]+-----END RSA PRIVATE KEY-----", "[PRIVATE_KEY_REDACTED]"),
+            (
+                r"-----BEGIN PRIVATE KEY-----[^-]+-----END PRIVATE KEY-----",
+                "[PRIVATE_KEY_REDACTED]",
+            ),
+            (
+                r"-----BEGIN RSA PRIVATE KEY-----[^-]+-----END RSA PRIVATE KEY-----",
+                "[PRIVATE_KEY_REDACTED]",
+            ),
             # Docker registry credentials
-            (r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}:[a-zA-Z0-9._%+-]+", "[CREDENTIALS_REDACTED]"),
+            (
+                r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}:[a-zA-Z0-9._%+-]+",
+                "[CREDENTIALS_REDACTED]",
+            ),
             # Kubernetes secrets
             (r"k8s[_-]?secret[_-]?[0-9a-fA-F]{32,}", "[K8S_SECRET_REDACTED]"),
             # Password patterns
             (r"password[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
             (r"passwd[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
             # IP addresses (internal ranges)
-            (r"\b(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)\d{1,3}\.\d{1,3}\b", "[IP_ADDRESS_REDACTED]"),
+            (
+                r"\b(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)\d{1,3}\.\d{1,3}\b",
+                "[IP_ADDRESS_REDACTED]",
+            ),
             # MAC addresses
             (r"([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})", "[MAC_ADDRESS_REDACTED]"),
             # AWS Secret Access Keys (very generic - put last to avoid conflicts)
-            (r"\b[0-9a-zA-Z/+]{40}\b", "[AWS_SECRET_KEY_REDACTED]")
+            (r"\b[0-9a-zA-Z/+]{40}\b", "[AWS_SECRET_KEY_REDACTED]"),
         ]
-        
+
         # Keep original custom_patterns for backwards compatibility but not used
         self.custom_patterns = []
 
@@ -167,18 +193,18 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
     def sanitize(self, data: Any) -> Any:
         """
         ISanitizer interface implementation
-        
+
         Sanitize sensitive information from data of various types.
-        
+
         Args:
             data: Data to sanitize (can be string, dict, list, etc.)
-            
+
         Returns:
             Sanitized data of the same type
         """
         if data is None:
             return data
-            
+
         if isinstance(data, str):
             return self._sanitize_text(data)
         elif isinstance(data, dict):
@@ -191,7 +217,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         else:
             # For other types, convert to string, sanitize, and return as string
             return self._sanitize_text(str(data))
-    
+
     def _sanitize_text(self, text: str) -> str:
         """
         Sanitize sensitive information from text
@@ -217,21 +243,21 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             sanitized_text = self._apply_presidio(sanitized_text)
 
         return sanitized_text
-    
+
     def _sanitize_dict(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Sanitize dictionary data recursively
-        
+
         Args:
             data: Dictionary to sanitize
-            
+
         Returns:
             Sanitized dictionary
         """
         # Sensitive key patterns - if key matches these, sanitize the value
         sensitive_key_patterns = [
             r"password",
-            r"passwd", 
+            r"passwd",
             r"secret",
             r"token",
             r"key",
@@ -239,14 +265,14 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             r"access[_-]?key",
             r"secret[_-]?key",
             r"private[_-]?key",
-            r"auth[_-]?token"
+            r"auth[_-]?token",
         ]
-        
+
         sanitized = {}
         for key, value in data.items():
             # Sanitize the key itself
             sanitized_key = self.sanitize(key)
-            
+
             # Check if key indicates sensitive data
             key_is_sensitive = False
             key_lower = str(key).lower()
@@ -254,7 +280,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                 if re.search(pattern, key_lower, re.IGNORECASE):
                     key_is_sensitive = True
                     break
-            
+
             if key_is_sensitive and isinstance(value, str):
                 # For sensitive keys, replace the value with appropriate redaction
                 if "password" in key_lower or "passwd" in key_lower:
@@ -270,17 +296,17 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             else:
                 # Normal sanitization for non-sensitive keys
                 sanitized_value = self.sanitize(value)
-            
+
             sanitized[sanitized_key] = sanitized_value
         return sanitized
-    
+
     def _sanitize_list(self, data: List[Any]) -> List[Any]:
         """
         Sanitize list data recursively
-        
+
         Args:
             data: List to sanitize
-            
+
         Returns:
             Sanitized list
         """
@@ -291,17 +317,18 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
     def _test_service_health(self, service_url: str) -> bool:
         """Test if a Presidio service is available with external call wrapping"""
+
         def health_check():
             health_url = f"{service_url}/health"
             response = self.session.get(health_url, timeout=5.0)
             return response.status_code == 200
-        
+
         try:
             return self.call_external_sync(
                 operation_name="health_check",
                 call_func=health_check,
                 retries=1,
-                retry_delay=1.0
+                retry_delay=1.0,
             )
         except Exception as e:
             self.logger.debug(f"Health check failed for {service_url}: {e}")
@@ -312,7 +339,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         if not (self.analyzer_available and self.anonymizer_available):
             self.logger.debug("Presidio services not available, skipping PII detection")
             return text
-            
+
         try:
             # Step 1: Analyze text for PII entities using K8s analyzer service
             def analyze_text():
@@ -334,56 +361,57 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                         "US_DRIVER_LICENSE",
                         "US_BANK_NUMBER",
                     ],
-                    "score_threshold": 0.6  # Require 60% confidence to reduce false positives
+                    "score_threshold": 0.6,  # Require 60% confidence to reduce false positives
                 }
 
                 analyze_response = self.session.post(
                     f"{self.analyzer_url}/analyze",
                     json=analyze_payload,
-                    timeout=self.request_timeout
+                    timeout=self.request_timeout,
                 )
-                
+
                 if analyze_response.status_code != 200:
-                    raise RuntimeError(f"Presidio analyzer failed with status {analyze_response.status_code}")
-                    
+                    raise RuntimeError(
+                        f"Presidio analyzer failed with status {analyze_response.status_code}"
+                    )
+
                 return analyze_response.json()
-            
+
             analyzer_results = self.call_external_sync(
                 operation_name="analyze_pii",
                 call_func=analyze_text,
                 retries=1,
-                retry_delay=1.0
+                retry_delay=1.0,
             )
-            
+
             if not analyzer_results:
                 # No PII detected
                 return text
-            
+
             # Step 2: Anonymize text using K8s anonymizer service
             def anonymize_text():
-                anonymize_payload = {
-                    "text": text,
-                    "analyzer_results": analyzer_results
-                }
-                
+                anonymize_payload = {"text": text, "analyzer_results": analyzer_results}
+
                 anonymize_response = self.session.post(
-                    f"{self.anonymizer_url}/anonymize", 
+                    f"{self.anonymizer_url}/anonymize",
                     json=anonymize_payload,
-                    timeout=self.request_timeout
+                    timeout=self.request_timeout,
                 )
-                
+
                 if anonymize_response.status_code != 200:
-                    raise RuntimeError(f"Presidio anonymizer failed with status {anonymize_response.status_code}")
-                    
+                    raise RuntimeError(
+                        f"Presidio anonymizer failed with status {anonymize_response.status_code}"
+                    )
+
                 return anonymize_response.json()
-            
+
             anonymize_result = self.call_external_sync(
                 operation_name="anonymize_pii",
                 call_func=anonymize_text,
                 retries=1,
-                retry_delay=1.0
+                retry_delay=1.0,
             )
-            
+
             return anonymize_result.get("text", text)
 
         except Exception as e:
@@ -406,12 +434,14 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         """
         if data is None:
             return False
-            
+
         if isinstance(data, str):
             return self._is_text_sensitive(data)
         elif isinstance(data, dict):
-            return any(self.is_sensitive(key) or self.is_sensitive(value) 
-                      for key, value in data.items())
+            return any(
+                self.is_sensitive(key) or self.is_sensitive(value)
+                for key, value in data.items()
+            )
         elif isinstance(data, list):
             return any(self.is_sensitive(item) for item in data)
         elif isinstance(data, (int, float, bool)):
@@ -420,7 +450,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         else:
             # For other types, convert to string and check
             return self._is_text_sensitive(str(data))
-    
+
     def _is_text_sensitive(self, text: str) -> bool:
         """
         Check if text contains sensitive information with external call wrapping
@@ -443,6 +473,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         # Check with K8s Presidio analyzer if available
         if self.analyzer_available:
             try:
+
                 def check_sensitivity():
                     # Use same entity list as _apply_presidio
                     analyze_payload = {
@@ -462,58 +493,58 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                             "US_DRIVER_LICENSE",
                             "US_BANK_NUMBER",
                         ],
-                        "score_threshold": 0.6  # Require 60% confidence to reduce false positives
+                        "score_threshold": 0.6,  # Require 60% confidence to reduce false positives
                     }
 
                     analyze_response = self.session.post(
                         f"{self.analyzer_url}/analyze",
                         json=analyze_payload,
-                        timeout=self.request_timeout
+                        timeout=self.request_timeout,
                     )
-                    
+
                     if analyze_response.status_code == 200:
                         analyzer_results = analyze_response.json()
                         return len(analyzer_results) > 0
                     return False
-                
+
                 return self.call_external_sync(
                     operation_name="check_sensitivity",
                     call_func=check_sensitivity,
                     retries=1,
-                    retry_delay=0.5
+                    retry_delay=0.5,
                 )
-                    
+
             except Exception as e:
                 self.logger.warning(f"Presidio K8s sensitivity check failed: {e}")
 
         return False
-    
+
     async def health_check(self) -> Dict[str, Any]:
         """
         Perform comprehensive health check for DataSanitizer.
-        
+
         Returns:
             Dictionary containing health status and metrics
         """
         base_health = await super().health_check()
-        
+
         # Add sanitizer-specific health data
         try:
             # Test service connectivity
             analyzer_health = self._test_service_health(self.analyzer_url)
             anonymizer_health = self._test_service_health(self.anonymizer_url)
-            
+
             sanitizer_health = {
                 "analyzer_available": analyzer_health,
                 "anonymizer_available": anonymizer_health,
                 "presidio_services": {
                     "analyzer_url": self.analyzer_url,
-                    "anonymizer_url": self.anonymizer_url
+                    "anonymizer_url": self.anonymizer_url,
                 },
                 "custom_patterns_count": len(self.pattern_replacements),
-                "replacement_patterns_count": len(self.replacements)
+                "replacement_patterns_count": len(self.replacements),
             }
-            
+
             # Determine overall status
             if analyzer_health and anonymizer_health:
                 status = "healthy"
@@ -521,16 +552,14 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                 status = "degraded"  # Partial functionality
             else:
                 status = "degraded"  # Custom patterns still work
-            
-            base_health.update({
-                "sanitizer_specific": sanitizer_health,
-                "status": status
-            })
-            
+
+            base_health.update(
+                {"sanitizer_specific": sanitizer_health, "status": status}
+            )
+
         except Exception as e:
-            base_health.update({
-                "sanitizer_specific": {"error": str(e)},
-                "status": "unhealthy"
-            })
-        
+            base_health.update(
+                {"sanitizer_specific": {"error": str(e)}, "status": "unhealthy"}
+            )
+
         return base_health

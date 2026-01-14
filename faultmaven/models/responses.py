@@ -7,10 +7,10 @@ defined in the prompt files, enabling the three-tier fallback parsing strategy.
 Design Reference: docs/architecture/RESPONSE_FORMAT_INTEGRATION_SPEC.md
 """
 
-from typing import List, Optional, Literal, Dict, Any
-from pydantic import BaseModel, Field
 from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
 
+from pydantic import BaseModel, Field
 
 # =============================================================================
 # Supporting Field Models
@@ -32,13 +32,9 @@ class SuggestedAction(BaseModel):
         "question_template", "command", "upload_data", "transition", "create_runbook"
     ] = Field(..., description="Type of action determining behavior")
 
-    label: str = Field(
-        ..., max_length=100, description="Display text for button"
-    )
+    label: str = Field(..., max_length=100, description="Display text for button")
 
-    description: str = Field(
-        ..., max_length=200, description="What this action does"
-    )
+    description: str = Field(..., max_length=200, description="What this action does")
 
     data: Dict[str, Any] = Field(
         default_factory=dict, description="Action-specific data payload"
@@ -52,9 +48,7 @@ class SuggestedAction(BaseModel):
 class CommandSuggestion(BaseModel):
     """Diagnostic command suggestion with safety classification"""
 
-    command: str = Field(
-        ..., max_length=500, description="The command to run"
-    )
+    command: str = Field(..., max_length=500, description="The command to run")
 
     description: str = Field(
         ..., max_length=200, description="Brief description of what command does"
@@ -123,9 +117,7 @@ class OODAEvidenceRequest(BaseModel):
         "implementation_proof",
     ] = Field(..., description="Type of evidence needed")
 
-    description: str = Field(
-        ..., max_length=300, description="What you need and why"
-    )
+    description: str = Field(..., max_length=300, description="What you need and why")
 
     collection_method: str = Field(
         ...,
@@ -170,9 +162,7 @@ class ScopeAssessment(BaseModel):
 class TimelineUpdate(BaseModel):
     """Timeline information (Phase 2)"""
 
-    problem_start_time: str = Field(
-        ..., description="ISO 8601 timestamp or 'unknown'"
-    )
+    problem_start_time: str = Field(..., description="ISO 8601 timestamp or 'unknown'")
 
     recent_changes: List[str] = Field(
         default_factory=list, description="Recent changes (deployments, configs)"
@@ -196,9 +186,7 @@ class Hypothesis(BaseModel):
         ..., ge=0.0, le=1.0, description="Probability/confidence score (0.0-1.0)"
     )
 
-    rationale: str = Field(
-        ..., max_length=300, description="Why this is likely"
-    )
+    rationale: str = Field(..., max_length=300, description="Why this is likely")
 
     testing_approach: str = Field(
         ..., max_length=300, description="How to test this hypothesis"
@@ -251,13 +239,9 @@ class CaseSummary(BaseModel):
 
     root_cause: str = Field(..., max_length=300, description="Final determination")
 
-    solution_applied: str = Field(
-        ..., max_length=300, description="What was done"
-    )
+    solution_applied: str = Field(..., max_length=300, description="What was done")
 
-    lessons_learned: List[str] = Field(
-        default_factory=list, description="Key lessons"
-    )
+    lessons_learned: List[str] = Field(default_factory=list, description="Key lessons")
 
     prevention_measures: List[str] = Field(
         default_factory=list, description="How to prevent recurrence"
@@ -373,9 +357,7 @@ class LeadInvestigatorResponse(OODAResponse):
         None, max_length=200, description="Hypothesis being tested (Phase 4)"
     )
 
-    test_result: Optional[TestResult] = Field(
-        None, description="Test result (Phase 4)"
-    )
+    test_result: Optional[TestResult] = Field(None, description="Test result (Phase 4)")
 
     # Phase 5: Solution
     solution_proposal: Optional[SolutionProposal] = Field(
@@ -425,6 +407,8 @@ def create_minimal_response(answer: str) -> OODAResponse:
     """
     # Provide default answer if empty
     if not answer or not answer.strip():
-        answer = "I'm here to assist you. How can I help with your troubleshooting needs?"
+        answer = (
+            "I'm here to assist you. How can I help with your troubleshooting needs?"
+        )
 
     return OODAResponse(answer=answer)

@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-
 # OpenAI text-embedding-3-small produces 1536-dimensional vectors
 EMBEDDING_DIMENSIONS = 1536
 
@@ -107,7 +106,9 @@ class KnowledgeItem:
         if not self.content:
             raise ValueError("content is required")
         if not isinstance(self.item_type, KnowledgeItemType):
-            raise ValueError(f"item_type must be a KnowledgeItemType, got {type(self.item_type)}")
+            raise ValueError(
+                f"item_type must be a KnowledgeItemType, got {type(self.item_type)}"
+            )
 
         # Validate counts
         if self.view_count < 0:

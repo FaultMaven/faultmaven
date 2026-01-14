@@ -11,18 +11,23 @@ Tests cover:
 - Metadata filtering
 """
 
-import pytest
-import tempfile
 import shutil
-from typing import List, Dict, Any
+import tempfile
+from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
-from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
+import pytest
+
 from faultmaven.exceptions import (
     VectorStoreConnectionError,
     VectorStoreOperationError,
 )
-from faultmaven.modules.knowledge.domain.models.knowledge_item import EMBEDDING_DIMENSIONS
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
+)
+from faultmaven.modules.knowledge.domain.services.vector_store_service import (
+    VectorStoreService,
+)
 
 
 # Test fixtures
@@ -74,6 +79,7 @@ def create_item_data(
 # Test: Initialization
 # =============================================================================
 
+
 class TestVectorStoreInitialization:
     """Tests for vector store initialization."""
 
@@ -89,7 +95,9 @@ class TestVectorStoreInitialization:
 
     def test_initialization_with_invalid_path(self):
         """Test initialization with ChromaDB failure raises error."""
-        with patch("faultmaven.modules.knowledge.domain.services.vector_store_service.chromadb.PersistentClient") as mock_client:
+        with patch(
+            "faultmaven.modules.knowledge.domain.services.vector_store_service.chromadb.PersistentClient"
+        ) as mock_client:
             mock_client.side_effect = Exception("Failed to initialize ChromaDB")
             with pytest.raises(VectorStoreConnectionError):
                 VectorStoreService(
@@ -114,6 +122,7 @@ class TestVectorStoreInitialization:
 # =============================================================================
 # Test: add_item()
 # =============================================================================
+
 
 class TestAddItem:
     """Tests for adding items to vector store."""
@@ -223,6 +232,7 @@ class TestAddItem:
 # Test: add_items_batch()
 # =============================================================================
 
+
 class TestAddItemsBatch:
     """Tests for batch item addition."""
 
@@ -278,6 +288,7 @@ class TestAddItemsBatch:
 # =============================================================================
 # Test: search_similar()
 # =============================================================================
+
 
 class TestSearchSimilar:
     """Tests for similarity search."""
@@ -452,6 +463,7 @@ class TestSearchSimilar:
 # Test: delete_item()
 # =============================================================================
 
+
 class TestDeleteItem:
     """Tests for deleting items."""
 
@@ -498,6 +510,7 @@ class TestDeleteItem:
 # Test: delete_items_batch()
 # =============================================================================
 
+
 class TestDeleteItemsBatch:
     """Tests for batch deletion."""
 
@@ -512,9 +525,7 @@ class TestDeleteItemsBatch:
                 document=f"Doc {i}",
             )
 
-        await vector_store.delete_items_batch(
-            [f"batch_del_{i}" for i in range(3)]
-        )
+        await vector_store.delete_items_batch([f"batch_del_{i}" for i in range(3)])
 
         stats = await vector_store.get_collection_stats()
         assert stats["item_count"] == 2
@@ -528,6 +539,7 @@ class TestDeleteItemsBatch:
 # =============================================================================
 # Test: update_item()
 # =============================================================================
+
 
 class TestUpdateItem:
     """Tests for updating items."""
@@ -571,6 +583,7 @@ class TestUpdateItem:
 # Test: get_item()
 # =============================================================================
 
+
 class TestGetItem:
     """Tests for getting items by ID."""
 
@@ -604,6 +617,7 @@ class TestGetItem:
 # Test: get_collection_stats()
 # =============================================================================
 
+
 class TestGetCollectionStats:
     """Tests for collection statistics."""
 
@@ -635,6 +649,7 @@ class TestGetCollectionStats:
 # Test: clear_collection()
 # =============================================================================
 
+
 class TestClearCollection:
     """Tests for clearing collection."""
 
@@ -658,6 +673,7 @@ class TestClearCollection:
 # =============================================================================
 # Test: delete_by_organization()
 # =============================================================================
+
 
 class TestDeleteByOrganization:
     """Tests for organization-level deletion."""
@@ -699,6 +715,7 @@ class TestDeleteByOrganization:
 # =============================================================================
 # Test: Health Check
 # =============================================================================
+
 
 class TestHealthCheck:
     """Tests for health check."""

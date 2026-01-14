@@ -5,15 +5,16 @@ Converts structured OODAResponse from phase handlers into AgentResponse for API 
 This maintains separation between internal OODA framework and external API contracts.
 """
 
-from typing import Dict, Any
+from typing import Any, Dict
+
+from faultmaven.models.api import AgentResponse, ResponseType, Source, SourceType
+from faultmaven.models.llm_schemas import EvidenceRequestToAdd
 from faultmaven.models.responses import (
-    OODAResponse,
     ConsultantResponse,
     LeadInvestigatorResponse,
     OODAEvidenceRequest,
+    OODAResponse,
 )
-from faultmaven.models.api import AgentResponse, ResponseType, Source, SourceType
-from faultmaven.models.llm_schemas import EvidenceRequestToAdd
 
 
 def ooda_to_agent_response(
@@ -67,7 +68,10 @@ def _determine_response_type(ooda_response: OODAResponse) -> ResponseType:
     """
 
     # Check for clarifying questions
-    if ooda_response.clarifying_questions and len(ooda_response.clarifying_questions) > 0:
+    if (
+        ooda_response.clarifying_questions
+        and len(ooda_response.clarifying_questions) > 0
+    ):
         return ResponseType.CLARIFICATION_REQUEST
 
     # Check for ConsultantResponse problem detection
@@ -93,7 +97,10 @@ def _determine_response_type(ooda_response: OODAResponse) -> ResponseType:
             return ResponseType.NEEDS_MORE_DATA
 
         # Check for plan proposals (Phase 1-2)
-        if ooda_response.suggested_actions and len(ooda_response.suggested_actions) >= 3:
+        if (
+            ooda_response.suggested_actions
+            and len(ooda_response.suggested_actions) >= 3
+        ):
             return ResponseType.PLAN_PROPOSAL
 
         # Default for investigation responses
@@ -117,33 +124,42 @@ def _extract_sources(ooda_response: OODAResponse) -> list[Source]:
     # Add knowledge base sources if referenced
     if "kb_sources" in metadata:
         for kb_source in metadata.get("kb_sources", []):
-            sources.append(Source(
-                type=SourceType.KNOWLEDGE_BASE,
-                content=kb_source.get("content", ""),
-                confidence=kb_source.get("confidence", 0.0),
-                metadata=kb_source.get("metadata", {})
-            ))
+            sources.append(
+                Source(
+                    type=SourceType.KNOWLEDGE_BASE,
+                    content=kb_source.get("content", ""),
+                    confidence=kb_source.get("confidence", 0.0),
+                    metadata=kb_source.get("metadata", {}),
+                )
+            )
 
     # Add previous analysis if this is a follow-up
     if "previous_phase" in metadata:
-        sources.append(Source(
-            type=SourceType.PREVIOUS_ANALYSIS,
-            content=f"Previous phase: {metadata['previous_phase']}",
-            confidence=metadata.get("confidence", 0.8),
-            metadata={"phase": metadata["previous_phase"]}
-        ))
+        sources.append(
+            Source(
+                type=SourceType.PREVIOUS_ANALYSIS,
+                content=f"Previous phase: {metadata['previous_phase']}",
+                confidence=metadata.get("confidence", 0.8),
+                metadata={"phase": metadata["previous_phase"]},
+            )
+        )
 
     return sources
 
 
-def _convert_to_evidence_requests(ooda_response: OODAResponse) -> list[EvidenceRequestToAdd]:
+def _convert_to_evidence_requests(
+    ooda_response: OODAResponse,
+) -> list[EvidenceRequestToAdd]:
     """
     Convert OODA evidence requests to canonical EvidenceRequestToAdd.
     """
     evidence_requests = []
 
     # Check for explicit evidence request (LeadInvestigatorResponse)
-    if isinstance(ooda_response, LeadInvestigatorResponse) and ooda_response.evidence_request:
+    if (
+        isinstance(ooda_response, LeadInvestigatorResponse)
+        and ooda_response.evidence_request
+    ):
         ev_req = ooda_response.evidence_request
 
         urgency = getattr(ev_req, "urgency", "normal") or "normal"
@@ -162,7 +178,9 @@ def _convert_to_evidence_requests(ooda_response: OODAResponse) -> list[EvidenceR
             request_text_parts.append(f"Expected result: {ev_req.expected_result}")
 
         request_text = "\n".join([p for p in request_text_parts if p]).strip()[:500]
-        purpose = (ev_req.description or "Evidence requested for investigation").strip()[:500]
+        purpose = (
+            ev_req.description or "Evidence requested for investigation"
+        ).strip()[:500]
 
         evidence_requests.append(
             EvidenceRequestToAdd(
@@ -173,10 +191,13 @@ def _convert_to_evidence_requests(ooda_response: OODAResponse) -> list[EvidenceR
         )
 
     # Convert suggested_actions to evidence requests (if they request data)
-    for action in (ooda_response.suggested_actions or []):
+    for action in ooda_response.suggested_actions or []:
         if _is_evidence_action(action):
             description = getattr(action, "description", "") or ""
-            request_text = description.strip()[:500] or "Please provide additional diagnostic evidence."
+            request_text = (
+                description.strip()[:500]
+                or "Please provide additional diagnostic evidence."
+            )
             evidence_requests.append(
                 EvidenceRequestToAdd(
                     request_text=request_text,
@@ -192,8 +213,17 @@ def _is_evidence_action(action: Any) -> bool:
     """Determine if a suggested action is requesting evidence."""
     # Check if action description indicates data/evidence request
     evidence_keywords = [
-        "check", "show", "provide", "upload", "share", "run",
-        "collect", "gather", "inspect", "review", "analyze"
+        "check",
+        "show",
+        "provide",
+        "upload",
+        "share",
+        "run",
+        "collect",
+        "gather",
+        "inspect",
+        "review",
+        "analyze",
     ]
     desc_lower = action.description.lower()
     return any(keyword in desc_lower for keyword in evidence_keywords)

@@ -13,15 +13,16 @@ Design Reference: docs/architecture/RESPONSE_FORMAT_INTEGRATION_SPEC.md
 """
 
 import json
-import re
 import logging
-from typing import Optional, Type, TypeVar, Dict, Any
+import re
+from typing import Any, Dict, Optional, Type, TypeVar
+
 from pydantic import BaseModel, ValidationError
 
 from faultmaven.models.responses import (
-    OODAResponse,
     ConsultantResponse,
     LeadInvestigatorResponse,
+    OODAResponse,
     create_minimal_response,
 )
 
@@ -49,13 +50,13 @@ class ResponseParser:
     def __init__(self):
         """Initialize response parser with detailed statistics tracking"""
         self.stats = {
-            "tier1_success": 0,                    # Function calling succeeded
-            "tier2_direct_json": 0,                # Pure JSON parsed successfully
-            "tier2_markdown_extraction": 0,        # Had to extract from markdown blocks
-            "tier2_brace_extraction": 0,           # Had to extract from {...} pattern
-            "tier3_success": 0,                    # Heuristic extraction succeeded
-            "total_failures": 0,                   # All tiers failed
-            "total_attempts": 0,                   # Total parse attempts
+            "tier1_success": 0,  # Function calling succeeded
+            "tier2_direct_json": 0,  # Pure JSON parsed successfully
+            "tier2_markdown_extraction": 0,  # Had to extract from markdown blocks
+            "tier2_brace_extraction": 0,  # Had to extract from {...} pattern
+            "tier3_success": 0,  # Heuristic extraction succeeded
+            "total_failures": 0,  # All tiers failed
+            "total_attempts": 0,  # Total parse attempts
         }
 
     def parse(
@@ -82,7 +83,6 @@ class ResponseParser:
         """
         # Increment total attempts
         self.stats["total_attempts"] += 1
-
 
         # Tier 1: Function Calling (if dict provided)
         if isinstance(raw_response, dict):
@@ -120,7 +120,7 @@ class ResponseParser:
             extra={
                 "raw_response_preview": str(raw_response)[:200],
                 "raw_response_type": type(raw_response).__name__,
-                "expected_schema": expected_schema.__name__
+                "expected_schema": expected_schema.__name__,
             },
         )
 
@@ -128,7 +128,7 @@ class ResponseParser:
         answer = self._extract_answer_text(raw_response)
         logger.warning(
             f"Minimal fallback created, answer_preview={answer[:100] if answer else 'EMPTY'}",
-            extra={"answer_length": len(answer) if answer else 0}
+            extra={"answer_length": len(answer) if answer else 0},
         )
         return create_minimal_response(answer)  # type: ignore
 
@@ -146,31 +146,37 @@ class ResponseParser:
         Returns:
             Fixed response object
         """
-        if hasattr(validated, 'answer') and isinstance(validated.answer, str):
+        if hasattr(validated, "answer") and isinstance(validated.answer, str):
             max_iterations = 5  # Prevent infinite loop
             iteration = 0
-            while iteration < max_iterations and validated.answer.strip().startswith('{'):
+            while iteration < max_iterations and validated.answer.strip().startswith(
+                "{"
+            ):
                 try:
                     parsed_inner = json.loads(validated.answer)
-                    if isinstance(parsed_inner, dict) and 'answer' in parsed_inner:
+                    if isinstance(parsed_inner, dict) and "answer" in parsed_inner:
                         logger.warning(
                             f"{tier_name}: Detected double-encoded JSON in answer field (iteration {iteration + 1}) - extracting inner answer",
                             extra={
                                 "outer_answer_preview": validated.answer[:100],
-                                "inner_answer_preview": str(parsed_inner['answer'])[:100]
-                            }
+                                "inner_answer_preview": str(parsed_inner["answer"])[
+                                    :100
+                                ],
+                            },
                         )
                         # Extract the actual answer from the inner JSON
-                        if isinstance(parsed_inner['answer'], (dict, list)):
+                        if isinstance(parsed_inner["answer"], (dict, list)):
                             # Still nested - convert to JSON string to continue unwrapping
-                            validated.answer = json.dumps(parsed_inner['answer'])
+                            validated.answer = json.dumps(parsed_inner["answer"])
                             logger.error(
                                 f"🐛 DOUBLE ENCODING BUG: answer field contained nested dict/list at iteration {iteration + 1}",
-                                extra={"nested_content": str(parsed_inner['answer'])[:200]}
+                                extra={
+                                    "nested_content": str(parsed_inner["answer"])[:200]
+                                },
                             )
                         else:
                             # Plain string/value - extract it
-                            validated.answer = str(parsed_inner['answer'])
+                            validated.answer = str(parsed_inner["answer"])
                         iteration += 1
                     elif isinstance(parsed_inner, dict):
                         # LLM returned nested structure - extract text flexibly
@@ -178,17 +184,31 @@ class ResponseParser:
                             "LLM returned malformed response: nested structure in answer field",
                             extra={
                                 "keys": list(parsed_inner.keys()),
-                                "full_content": json.dumps(parsed_inner)  # Log full content, no truncation
-                            }
+                                "full_content": json.dumps(
+                                    parsed_inner
+                                ),  # Log full content, no truncation
+                            },
                         )
 
                         # Flexible extraction: try common field names first (fast path for correct behavior)
                         extracted = None
-                        for field in ['answer', 'response', 'content', 'message', 'text']:
-                            if field in parsed_inner and isinstance(parsed_inner[field], str):
+                        for field in [
+                            "answer",
+                            "response",
+                            "content",
+                            "message",
+                            "text",
+                        ]:
+                            if field in parsed_inner and isinstance(
+                                parsed_inner[field], str
+                            ):
                                 extracted = parsed_inner[field]
-                                if field != 'answer':  # Log if we had to use fallback field
-                                    logger.warning(f"Extracted text from unexpected field: {field}")
+                                if (
+                                    field != "answer"
+                                ):  # Log if we had to use fallback field
+                                    logger.warning(
+                                        f"Extracted text from unexpected field: {field}"
+                                    )
                                 break
 
                         # Fallback: find first substantial string (LLM might use different field name)
@@ -196,32 +216,43 @@ class ResponseParser:
                             for key, value in parsed_inner.items():
                                 if isinstance(value, str) and len(value) > 50:
                                     extracted = value
-                                    logger.warning(f"Extracted text from unknown field: {key}")
+                                    logger.warning(
+                                        f"Extracted text from unknown field: {key}"
+                                    )
                                     break
 
                         # Use extracted text or graceful fallback
-                        validated.answer = extracted if extracted else json.dumps(parsed_inner, indent=2)
+                        validated.answer = (
+                            extracted
+                            if extracted
+                            else json.dumps(parsed_inner, indent=2)
+                        )
                         break
                     else:
                         # Not a dict - unexpected
                         break
                 except (json.JSONDecodeError, KeyError) as e:
                     # JSON parsing failed - but if answer looks like truncated JSON, try to salvage it
-                    if isinstance(validated.answer, str) and validated.answer.strip().startswith('{'):
+                    if isinstance(
+                        validated.answer, str
+                    ) and validated.answer.strip().startswith("{"):
                         logger.error(
                             "Malformed JSON in answer field (truncated or invalid)",
                             extra={
                                 "parse_error": str(e),
-                                "answer_preview": validated.answer[:200]
-                            }
+                                "answer_preview": validated.answer[:200],
+                            },
                         )
                         # Extract whatever text we can find between quotes
                         import re
+
                         # Look for "answer": "actual text here..."
                         match = re.search(r'"answer"\s*:\s*"([^"]+)', validated.answer)
                         if match:
                             extracted_text = match.group(1)
-                            logger.warning(f"Extracted text from malformed JSON: {extracted_text[:100]}")
+                            logger.warning(
+                                f"Extracted text from malformed JSON: {extracted_text[:100]}"
+                            )
                             validated.answer = extracted_text
                     # Not double-encoded, keep as-is
                     break
@@ -255,7 +286,10 @@ class ResponseParser:
         except ValidationError as e:
             logger.warning(
                 "Tier 1 validation failed",
-                extra={"validation_errors": e.errors(), "schema": expected_schema.__name__},
+                extra={
+                    "validation_errors": e.errors(),
+                    "schema": expected_schema.__name__,
+                },
             )
             return None
 
@@ -293,7 +327,9 @@ class ResponseParser:
                 # Check for double-encoding and fix if needed
                 validated = self._fix_double_encoding(validated, "Tier 2 (direct)")
                 self.stats["tier2_direct_json"] += 1
-                logger.debug("Tier 2: Direct JSON parse succeeded (LLM returned clean JSON)")
+                logger.debug(
+                    "Tier 2: Direct JSON parse succeeded (LLM returned clean JSON)"
+                )
                 return validated
             except json.JSONDecodeError:
                 pass
@@ -307,11 +343,13 @@ class ResponseParser:
                     data = json.loads(match)
                     validated = expected_schema(**data)
                     # Check for double-encoding and fix if needed
-                    validated = self._fix_double_encoding(validated, "Tier 2 (markdown)")
+                    validated = self._fix_double_encoding(
+                        validated, "Tier 2 (markdown)"
+                    )
                     self.stats["tier2_markdown_extraction"] += 1
                     logger.warning(
                         "Tier 2: Markdown extraction used - LLM wrapped JSON in code blocks despite instructions",
-                        extra={"preview": response_text[:100]}
+                        extra={"preview": response_text[:100]},
                     )
                     return validated
                 except (json.JSONDecodeError, ValidationError):
@@ -330,7 +368,7 @@ class ResponseParser:
                     self.stats["tier2_brace_extraction"] += 1
                     logger.warning(
                         "Tier 2: Brace extraction used - LLM buried JSON in surrounding text",
-                        extra={"preview": response_text[:100]}
+                        extra={"preview": response_text[:100]},
                     )
                     return validated
                 except (json.JSONDecodeError, ValidationError):
@@ -381,8 +419,15 @@ class ResponseParser:
 
             # Extract problem detection keywords
             problem_keywords = [
-                "error", "failure", "down", "not working", "issue",
-                "problem", "broken", "crash", "timeout"
+                "error",
+                "failure",
+                "down",
+                "not working",
+                "issue",
+                "problem",
+                "broken",
+                "crash",
+                "timeout",
             ]
             text_lower = response_text.lower()
             problem_detected = any(kw in text_lower for kw in problem_keywords)
@@ -390,7 +435,7 @@ class ResponseParser:
             if problem_detected and expected_schema == ConsultantResponse:
                 extracted["problem_detected"] = True
                 # Try to extract problem summary (first sentence with problem keyword)
-                sentences = re.split(r'[.!?]\s+', response_text)
+                sentences = re.split(r"[.!?]\s+", response_text)
                 for sentence in sentences[:3]:
                     if any(kw in sentence.lower() for kw in problem_keywords):
                         extracted["problem_summary"] = sentence.strip()[:200]
@@ -433,8 +478,7 @@ class ResponseParser:
 
         # Pattern 1: Lines ending with ?
         question_lines = [
-            line.strip() for line in text.split("\n")
-            if line.strip().endswith("?")
+            line.strip() for line in text.split("\n") if line.strip().endswith("?")
         ]
 
         for line in question_lines:
@@ -456,7 +500,14 @@ class ResponseParser:
         """
         if isinstance(raw_response, dict):
             # Try to find answer field (case-insensitive)
-            for key in ["answer", "Answer", "content", "Content", "response", "Response"]:
+            for key in [
+                "answer",
+                "Answer",
+                "content",
+                "Content",
+                "response",
+                "Response",
+            ]:
                 if key in raw_response and isinstance(raw_response[key], str):
                     # Check if the answer itself is JSON (double-encoding issue)
                     answer_value = raw_response[key]
@@ -466,7 +517,7 @@ class ResponseParser:
                         if isinstance(parsed_inner, dict) and "answer" in parsed_inner:
                             logger.warning(
                                 "Detected double-encoded JSON in answer field - extracting inner answer",
-                                extra={"outer_key": key, "inner_has_answer": True}
+                                extra={"outer_key": key, "inner_has_answer": True},
                             )
                             return str(parsed_inner["answer"])
                     except (json.JSONDecodeError, TypeError):
@@ -478,7 +529,9 @@ class ResponseParser:
                 if isinstance(value, str) and len(value) > 10:  # Skip short metadata
                     return value
             # Last resort: stringify the dict
-            logger.warning(f"No answer field found in dict, keys: {list(raw_response.keys())}")
+            logger.warning(
+                f"No answer field found in dict, keys: {list(raw_response.keys())}"
+            )
             return str(raw_response)
 
         if isinstance(raw_response, str):
@@ -488,7 +541,7 @@ class ResponseParser:
                 if isinstance(parsed, dict) and "answer" in parsed:
                     logger.warning(
                         "Detected unparsed JSON string in _extract_answer_text - extracting answer field",
-                        extra={"preview": raw_response[:100]}
+                        extra={"preview": raw_response[:100]},
                     )
                     # Recursively call to handle potential double-encoding
                     return self._extract_answer_text(parsed)
@@ -497,7 +550,9 @@ class ResponseParser:
                 pass
 
             # Remove JSON artifacts if present
-            clean = re.sub(r"```(?:json)?\s*\n.*?\n```", "", raw_response, flags=re.DOTALL)
+            clean = re.sub(
+                r"```(?:json)?\s*\n.*?\n```", "", raw_response, flags=re.DOTALL
+            )
             clean = re.sub(r"\{.*?\}", "", clean, flags=re.DOTALL)
             return clean.strip() or raw_response
 

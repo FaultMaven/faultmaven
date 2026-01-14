@@ -19,18 +19,17 @@ Compression Strategy:
 - Automatic promotion/demotion between tiers
 """
 
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
-import json
 
 from faultmaven.modules.agent.contracts import (
     HierarchicalMemory,
+    InvestigationState,
     MemorySnapshot,
     OODAIteration,
-    InvestigationState,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +93,9 @@ class MemoryCompressionEngine:
 
             # Track confidence changes
             if iteration.confidence_delta != 0:
-                confidence_changes[f"iter_{iteration.iteration_number}"] = iteration.confidence_delta
+                confidence_changes[f"iter_{iteration.iteration_number}"] = (
+                    iteration.confidence_delta
+                )
 
             # Collect evidence
             if iteration.new_evidence_collected > 0:
@@ -249,9 +250,9 @@ class HierarchicalMemoryManager:
         """
         self.compression_engine = MemoryCompressionEngine(llm_provider)
         self.logger = logging.getLogger(__name__)
-        
+
         # Load token budgets from settings or use defaults
-        if settings and hasattr(settings, 'ooda'):
+        if settings and hasattr(settings, "ooda"):
             self.hot_memory_tokens = settings.ooda.hot_memory_tokens
             self.warm_memory_tokens = settings.ooda.warm_memory_tokens
             self.cold_memory_tokens = settings.ooda.cold_memory_tokens
@@ -262,11 +263,15 @@ class HierarchicalMemoryManager:
             self.warm_memory_tokens = self.DEFAULT_WARM_MEMORY_TOKENS
             self.cold_memory_tokens = self.DEFAULT_COLD_MEMORY_TOKENS
             self.persistent_tokens = self.DEFAULT_PERSISTENT_TOKENS
-        
+
         # Calculate total budget
-        self.total_budget = (self.hot_memory_tokens + self.warm_memory_tokens + 
-                            self.cold_memory_tokens + self.persistent_tokens)
-        
+        self.total_budget = (
+            self.hot_memory_tokens
+            + self.warm_memory_tokens
+            + self.cold_memory_tokens
+            + self.persistent_tokens
+        )
+
         self.logger.info(
             f"Memory Manager initialized with token budget: "
             f"HOT={self.hot_memory_tokens}, WARM={self.warm_memory_tokens}, "
@@ -501,7 +506,9 @@ class HierarchicalMemoryManager:
                 if iteration.new_insights:
                     parts.extend(f"  • {insight}" for insight in iteration.new_insights)
                 if iteration.made_progress:
-                    parts.append(f"  ✓ Progress made (Δconfidence: {iteration.confidence_delta:+.2f})")
+                    parts.append(
+                        f"  ✓ Progress made (Δconfidence: {iteration.confidence_delta:+.2f})"
+                    )
                 else:
                     parts.append(f"  ⚠ No progress in this iteration")
             parts.append("")

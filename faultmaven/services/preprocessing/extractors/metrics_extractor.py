@@ -5,13 +5,14 @@ Analyzes quantitative performance data (CSV, JSON time-series) and detects
 anomalies using statistical methods. No LLM calls required.
 """
 
-import re
 import json
-from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
+import re
 from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class MetricsAndPerformanceExtractor:
@@ -59,11 +60,13 @@ class MetricsAndPerformanceExtractor:
 
         # Safety truncation
         if len(output) > self.MAX_OUTPUT_LENGTH:
-            output = output[:self.MAX_OUTPUT_LENGTH] + "\n\n... [Truncated for length]"
+            output = output[: self.MAX_OUTPUT_LENGTH] + "\n\n... [Truncated for length]"
 
         return output
 
-    def _parse_metrics(self, content: str) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+    def _parse_metrics(
+        self, content: str
+    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
         """
         Parse metrics data from various formats
 
@@ -88,7 +91,9 @@ class MetricsAndPerformanceExtractor:
 
         return None
 
-    def _parse_json_metrics(self, content: str) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+    def _parse_json_metrics(
+        self, content: str
+    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
         """Parse JSON time-series data"""
         try:
             data = json.loads(content)
@@ -105,15 +110,17 @@ class MetricsAndPerformanceExtractor:
         except (json.JSONDecodeError, ValueError, KeyError):
             return None
 
-    def _parse_json_array(self, data: List[Dict]) -> Dict[str, List[Tuple[Optional[str], float]]]:
+    def _parse_json_array(
+        self, data: List[Dict]
+    ) -> Dict[str, List[Tuple[Optional[str], float]]]:
         """Parse JSON array format: [{timestamp, cpu, memory, ...}, ...]"""
         result = {}
 
         for entry in data:
-            timestamp = entry.get('timestamp') or entry.get('time') or entry.get('ts')
+            timestamp = entry.get("timestamp") or entry.get("time") or entry.get("ts")
 
             for key, value in entry.items():
-                if key in ('timestamp', 'time', 'ts'):
+                if key in ("timestamp", "time", "ts"):
                     continue
 
                 if isinstance(value, (int, float)):
@@ -123,7 +130,9 @@ class MetricsAndPerformanceExtractor:
 
         return result if result else None
 
-    def _parse_json_dict(self, data: Dict) -> Dict[str, List[Tuple[Optional[str], float]]]:
+    def _parse_json_dict(
+        self, data: Dict
+    ) -> Dict[str, List[Tuple[Optional[str], float]]]:
         """Parse JSON dict format: {metric: [{timestamp, value}, ...]}"""
         result = {}
 
@@ -134,8 +143,10 @@ class MetricsAndPerformanceExtractor:
             values = []
             for entry in entries:
                 if isinstance(entry, dict):
-                    timestamp = entry.get('timestamp') or entry.get('time') or entry.get('ts')
-                    value = entry.get('value') or entry.get('val')
+                    timestamp = (
+                        entry.get("timestamp") or entry.get("time") or entry.get("ts")
+                    )
+                    value = entry.get("value") or entry.get("val")
                     if value is not None and isinstance(value, (int, float)):
                         values.append((timestamp, float(value)))
 
@@ -144,14 +155,16 @@ class MetricsAndPerformanceExtractor:
 
         return result if result else None
 
-    def _parse_csv_metrics(self, content: str) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+    def _parse_csv_metrics(
+        self, content: str
+    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
         """Parse CSV format with header row"""
-        lines = content.strip().split('\n')
+        lines = content.strip().split("\n")
         if len(lines) < 2:
             return None
 
         # Parse header
-        header = [col.strip() for col in lines[0].split(',')]
+        header = [col.strip() for col in lines[0].split(",")]
         if not header:
             return None
 
@@ -160,7 +173,7 @@ class MetricsAndPerformanceExtractor:
 
         # Parse data rows
         for line in lines[1:]:
-            parts = [p.strip() for p in line.split(',')]
+            parts = [p.strip() for p in line.split(",")]
             if len(parts) != len(header):
                 continue
 
@@ -179,16 +192,18 @@ class MetricsAndPerformanceExtractor:
 
         return result if result else None
 
-    def _parse_prometheus_metrics(self, content: str) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
+    def _parse_prometheus_metrics(
+        self, content: str
+    ) -> Optional[Dict[str, List[Tuple[Optional[str], float]]]]:
         """Parse Prometheus text exposition format"""
         result = {}
 
         # Match lines like: metric_name{labels} value timestamp
-        pattern = r'^([a-zA-Z_:][a-zA-Z0-9_:]*)\s+([\d.eE+-]+)'
+        pattern = r"^([a-zA-Z_:][a-zA-Z0-9_:]*)\s+([\d.eE+-]+)"
 
-        for line in content.split('\n'):
+        for line in content.split("\n"):
             line = line.strip()
-            if not line or line.startswith('#'):
+            if not line or line.startswith("#"):
                 continue
 
             match = re.match(pattern, line)
@@ -203,7 +218,9 @@ class MetricsAndPerformanceExtractor:
 
         return result if result else None
 
-    def _analyze_metric(self, metric_name: str, data_points: List[Tuple[Optional[str], float]]) -> Dict[str, Any]:
+    def _analyze_metric(
+        self, metric_name: str, data_points: List[Tuple[Optional[str], float]]
+    ) -> Dict[str, Any]:
         """
         Analyze single metric time-series
 
@@ -213,11 +230,7 @@ class MetricsAndPerformanceExtractor:
         timestamps = [t for t, _ in data_points]
 
         if not values:
-            return {
-                'metric': metric_name,
-                'count': 0,
-                'error': 'No data points'
-            }
+            return {"metric": metric_name, "count": 0, "error": "No data points"}
 
         # Calculate statistics
         stats = self._calculate_statistics(values)
@@ -226,10 +239,10 @@ class MetricsAndPerformanceExtractor:
         anomalies = self._detect_anomalies(data_points, stats)
 
         return {
-            'metric': metric_name,
-            'count': len(values),
-            'stats': stats,
-            'anomalies': anomalies[:self.MAX_ANOMALIES_REPORTED]
+            "metric": metric_name,
+            "count": len(values),
+            "stats": stats,
+            "anomalies": anomalies[: self.MAX_ANOMALIES_REPORTED],
         }
 
     def _calculate_statistics(self, values: List[float]) -> Dict[str, float]:
@@ -239,22 +252,20 @@ class MetricsAndPerformanceExtractor:
 
         mean = sum(values) / n
         variance = sum((x - mean) ** 2 for x in values) / n
-        std_dev = variance ** 0.5
+        std_dev = variance**0.5
 
         return {
-            'min': min(values),
-            'max': max(values),
-            'mean': mean,
-            'std_dev': std_dev,
-            'p50': sorted_values[n // 2],
-            'p95': sorted_values[int(n * 0.95)] if n > 20 else sorted_values[-1],
-            'p99': sorted_values[int(n * 0.99)] if n > 100 else sorted_values[-1]
+            "min": min(values),
+            "max": max(values),
+            "mean": mean,
+            "std_dev": std_dev,
+            "p50": sorted_values[n // 2],
+            "p95": sorted_values[int(n * 0.95)] if n > 20 else sorted_values[-1],
+            "p99": sorted_values[int(n * 0.99)] if n > 100 else sorted_values[-1],
         }
 
     def _detect_anomalies(
-        self,
-        data_points: List[Tuple[Optional[str], float]],
-        stats: Dict[str, float]
+        self, data_points: List[Tuple[Optional[str], float]], stats: Dict[str, float]
     ) -> List[Dict[str, Any]]:
         """
         Detect anomalies using statistical methods
@@ -264,8 +275,8 @@ class MetricsAndPerformanceExtractor:
         - Drops: Values <50% of baseline (non-zero mean)
         """
         anomalies = []
-        mean = stats['mean']
-        std_dev = stats['std_dev']
+        mean = stats["mean"]
+        std_dev = stats["std_dev"]
 
         spike_threshold = mean + (self.SPIKE_SIGMA_THRESHOLD * std_dev)
         drop_threshold = mean * (1 - self.DROP_PERCENT_THRESHOLD) if mean > 0 else None
@@ -274,24 +285,28 @@ class MetricsAndPerformanceExtractor:
             # Detect spikes
             if value > spike_threshold and std_dev > 0:
                 sigma = (value - mean) / std_dev
-                anomalies.append({
-                    'type': 'spike',
-                    'timestamp': timestamp,
-                    'value': value,
-                    'sigma': round(sigma, 2),
-                    'threshold': round(spike_threshold, 2)
-                })
+                anomalies.append(
+                    {
+                        "type": "spike",
+                        "timestamp": timestamp,
+                        "value": value,
+                        "sigma": round(sigma, 2),
+                        "threshold": round(spike_threshold, 2),
+                    }
+                )
 
             # Detect drops
             elif drop_threshold is not None and value < drop_threshold:
                 drop_percent = ((mean - value) / mean) * 100
-                anomalies.append({
-                    'type': 'drop',
-                    'timestamp': timestamp,
-                    'value': value,
-                    'drop_percent': round(drop_percent, 1),
-                    'baseline': round(mean, 2)
-                })
+                anomalies.append(
+                    {
+                        "type": "drop",
+                        "timestamp": timestamp,
+                        "value": value,
+                        "drop_percent": round(drop_percent, 1),
+                        "baseline": round(mean, 2),
+                    }
+                )
 
         return anomalies
 
@@ -300,41 +315,47 @@ class MetricsAndPerformanceExtractor:
         lines = ["=== METRICS ANALYSIS SUMMARY ===\n"]
 
         total_metrics = len(summaries)
-        total_anomalies = sum(len(s.get('anomalies', [])) for s in summaries)
+        total_anomalies = sum(len(s.get("anomalies", [])) for s in summaries)
 
         lines.append(f"Analyzed {total_metrics} metric(s)")
         lines.append(f"Detected {total_anomalies} anomaly/anomalies\n")
 
         for summary in summaries:
-            metric_name = summary['metric']
-            count = summary['count']
+            metric_name = summary["metric"]
+            count = summary["count"]
 
-            if 'error' in summary:
+            if "error" in summary:
                 lines.append(f"❌ {metric_name}: {summary['error']}")
                 continue
 
-            stats = summary['stats']
-            anomalies = summary['anomalies']
+            stats = summary["stats"]
+            anomalies = summary["anomalies"]
 
             lines.append(f"📊 {metric_name} ({count} data points):")
             lines.append(f"   Range: {stats['min']:.2f} - {stats['max']:.2f}")
             lines.append(f"   Mean: {stats['mean']:.2f} (±{stats['std_dev']:.2f})")
-            lines.append(f"   Percentiles: p50={stats['p50']:.2f}, p95={stats['p95']:.2f}, p99={stats['p99']:.2f}")
+            lines.append(
+                f"   Percentiles: p50={stats['p50']:.2f}, p95={stats['p95']:.2f}, p99={stats['p99']:.2f}"
+            )
 
             if anomalies:
                 lines.append(f"   ⚠️  {len(anomalies)} anomaly/anomalies detected:")
 
                 for anomaly in anomalies[:10]:  # Show first 10
-                    anom_type = anomaly['type']
-                    timestamp = anomaly.get('timestamp', 'unknown')
-                    value = anomaly['value']
+                    anom_type = anomaly["type"]
+                    timestamp = anomaly.get("timestamp", "unknown")
+                    value = anomaly["value"]
 
-                    if anom_type == 'spike':
-                        sigma = anomaly['sigma']
-                        lines.append(f"      • SPIKE at {timestamp}: {value:.2f} ({sigma}σ above mean)")
-                    elif anom_type == 'drop':
-                        drop_pct = anomaly['drop_percent']
-                        lines.append(f"      • DROP at {timestamp}: {value:.2f} ({drop_pct}% below baseline)")
+                    if anom_type == "spike":
+                        sigma = anomaly["sigma"]
+                        lines.append(
+                            f"      • SPIKE at {timestamp}: {value:.2f} ({sigma}σ above mean)"
+                        )
+                    elif anom_type == "drop":
+                        drop_pct = anomaly["drop_percent"]
+                        lines.append(
+                            f"      • DROP at {timestamp}: {value:.2f} ({drop_pct}% below baseline)"
+                        )
 
                 if len(anomalies) > 10:
                     lines.append(f"      ... and {len(anomalies) - 10} more")
@@ -343,4 +364,4 @@ class MetricsAndPerformanceExtractor:
 
             lines.append("")
 
-        return '\n'.join(lines)
+        return "\n".join(lines)

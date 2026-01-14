@@ -10,9 +10,10 @@ Tests:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-import pytest
 from datetime import datetime
 from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 from faultmaven.core.investigation.memory_manager import (
     HierarchicalMemoryManager,
@@ -22,9 +23,9 @@ from faultmaven.core.investigation.memory_manager import (
 )
 from faultmaven.modules.agent.domain.models.investigation import (
     HierarchicalMemory,
+    InvestigationPhase,
     MemorySnapshot,
     OODAIteration,
-    InvestigationPhase,
     OODAStep,
 )
 
@@ -88,16 +89,16 @@ class TestMemoryInitialization:
         assert memory_manager.HOT_TIER_SIZE == 2
         assert memory_manager.WARM_TIER_SIZE == 3
         assert memory_manager.COLD_TIER_SIZE == 5
-        assert memory_manager.total_budget == 1000  # Default: 500 + 300 + 100 + 100 = 1000
+        assert (
+            memory_manager.total_budget == 1000
+        )  # Default: 500 + 300 + 100 + 100 = 1000
 
 
 class TestMemoryUpdate:
     """Test memory updates and tier management"""
 
     @pytest.mark.asyncio
-    async def test_update_memory_adds_to_hot(
-        self, memory_manager, sample_iteration
-    ):
+    async def test_update_memory_adds_to_hot(self, memory_manager, sample_iteration):
         """Test adding iteration to hot memory"""
         memory = initialize_memory()
 
@@ -449,7 +450,12 @@ class TestTokenEstimation:
                 started_at_turn=i * 3,
                 completed_at_turn=i * 3 + 2,
                 duration_turns=2,
-                steps_completed=[OODAStep.OBSERVE, OODAStep.ORIENT, OODAStep.DECIDE, OODAStep.ACT],
+                steps_completed=[
+                    OODAStep.OBSERVE,
+                    OODAStep.ORIENT,
+                    OODAStep.DECIDE,
+                    OODAStep.ACT,
+                ],
                 new_evidence_collected=5,
                 hypotheses_generated=2,
                 hypotheses_tested=1,
@@ -493,12 +499,15 @@ class TestTokenEstimation:
         optimized_tokens = memory_manager.estimate_token_usage(memory_managed)
 
         # Verify reduction
-        reduction_percent = ((baseline_tokens - optimized_tokens) / baseline_tokens) * 100
+        reduction_percent = (
+            (baseline_tokens - optimized_tokens) / baseline_tokens
+        ) * 100
 
         # Should achieve at least 50% reduction (target is 64%)
-        assert reduction_percent >= 50, \
-            f"Expected 50%+ reduction, got {reduction_percent:.1f}% " \
+        assert reduction_percent >= 50, (
+            f"Expected 50%+ reduction, got {reduction_percent:.1f}% "
             f"(baseline: {baseline_tokens}, optimized: {optimized_tokens})"
+        )
 
 
 class TestMemoryStats:

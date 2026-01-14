@@ -15,7 +15,6 @@ from typing import Any, Dict, Optional
 
 from faultmaven.config.settings import FaultMavenSettings
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -52,8 +51,8 @@ async def run(
 
     try:
         # Get required services from container
-        case_vector_store = getattr(container, 'case_vector_store', None)
-        case_store = getattr(container, 'case_store', None)
+        case_vector_store = getattr(container, "case_vector_store", None)
+        case_store = getattr(container, "case_store", None)
 
         if not case_vector_store:
             logger.warning("CaseVectorStore not available, skipping cleanup")
@@ -73,17 +72,23 @@ async def run(
             result["active_cases"] = len(active_case_ids)
             logger.debug(f"Found {len(active_case_ids)} active cases in case store")
         except AttributeError:
-            logger.warning("CaseStore doesn't support get_all_case_ids(), skipping cleanup")
+            logger.warning(
+                "CaseStore doesn't support get_all_case_ids(), skipping cleanup"
+            )
             result["status"] = "skipped"
             result["reason"] = "get_all_case_ids_not_supported"
             return result
 
         # Clean up orphaned collections
-        deleted_count = await case_vector_store.cleanup_orphaned_collections(active_case_ids)
+        deleted_count = await case_vector_store.cleanup_orphaned_collections(
+            active_case_ids
+        )
         result["deleted_count"] = deleted_count
 
         if deleted_count > 0:
-            logger.info(f"Case cleanup completed: {deleted_count} orphaned collections deleted")
+            logger.info(
+                f"Case cleanup completed: {deleted_count} orphaned collections deleted"
+            )
         else:
             logger.debug("Case cleanup completed: no orphaned collections found")
 

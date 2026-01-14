@@ -9,27 +9,24 @@ Design Reference: WORKFLOW_PROGRESSION_IMPLEMENTATION_STATUS.md
 """
 
 import pytest
-from faultmaven.prompts.investigation.workflow_progression_prompts import (
-    # Start Investigation
-    get_start_investigation_prompt,
-    parse_start_investigation_response,
-    get_start_investigation_clarification,
-    # Mark Complete
-    get_mark_complete_prompt,
-    parse_mark_complete_response,
-    get_mark_complete_clarification,
-    # Suggest Escalation
-    get_suggest_escalation_prompt,
-    parse_suggest_escalation_response,
-    get_suggest_escalation_clarification,
-    # Workflow Transition
-    get_workflow_transition_confirmation,
-)
 
+from faultmaven.prompts.investigation.workflow_progression_prompts import (  # Start Investigation; Mark Complete; Suggest Escalation; Workflow Transition
+    get_mark_complete_clarification,
+    get_mark_complete_prompt,
+    get_start_investigation_clarification,
+    get_start_investigation_prompt,
+    get_suggest_escalation_clarification,
+    get_suggest_escalation_prompt,
+    get_workflow_transition_confirmation,
+    parse_mark_complete_response,
+    parse_start_investigation_response,
+    parse_suggest_escalation_response,
+)
 
 # =============================================================================
 # Start Investigation Tests
 # =============================================================================
+
 
 class TestStartInvestigationPrompt:
     """Test start investigation prompt generation"""
@@ -71,58 +68,70 @@ class TestStartInvestigationPrompt:
 class TestStartInvestigationResponseParsing:
     """Test parsing of user responses to start investigation prompt"""
 
-    @pytest.mark.parametrize("response,expected_decision", [
-        ("start investigation", "start"),
-        ("Start Investigation", "start"),
-        ("let's do it", "start"),
-        ("yes", "start"),
-        ("ok", "start"),
-        ("sure", "start"),
-        ("investigate", "start"),
-        ("go ahead", "start"),
-        ("proceed", "start"),
-    ])
+    @pytest.mark.parametrize(
+        "response,expected_decision",
+        [
+            ("start investigation", "start"),
+            ("Start Investigation", "start"),
+            ("let's do it", "start"),
+            ("yes", "start"),
+            ("ok", "start"),
+            ("sure", "start"),
+            ("investigate", "start"),
+            ("go ahead", "start"),
+            ("proceed", "start"),
+        ],
+    )
     def test_start_keywords(self, response, expected_decision):
         """Test various ways of confirming investigation start"""
         decision, is_ambiguous = parse_start_investigation_response(response)
         assert decision == expected_decision
         assert not is_ambiguous
 
-    @pytest.mark.parametrize("response,expected_decision", [
-        ("not yet", "decline"),
-        ("keep consulting", "decline"),
-        ("no", "decline"),
-        ("continue", "decline"),
-        ("just questions", "decline"),
-        ("not now", "decline"),
-        ("maybe later", "decline"),
-    ])
+    @pytest.mark.parametrize(
+        "response,expected_decision",
+        [
+            ("not yet", "decline"),
+            ("keep consulting", "decline"),
+            ("no", "decline"),
+            ("continue", "decline"),
+            ("just questions", "decline"),
+            ("not now", "decline"),
+            ("maybe later", "decline"),
+        ],
+    )
     def test_decline_keywords(self, response, expected_decision):
         """Test various ways of declining investigation"""
         decision, is_ambiguous = parse_start_investigation_response(response)
         assert decision == expected_decision
         assert not is_ambiguous
 
-    @pytest.mark.parametrize("response,expected_decision", [
-        ("tell me more", "more_info"),
-        ("explain", "more_info"),
-        ("what does this mean", "more_info"),
-        ("how long", "more_info"),
-        ("what happens", "more_info"),
-    ])
+    @pytest.mark.parametrize(
+        "response,expected_decision",
+        [
+            ("tell me more", "more_info"),
+            ("explain", "more_info"),
+            ("what does this mean", "more_info"),
+            ("how long", "more_info"),
+            ("what happens", "more_info"),
+        ],
+    )
     def test_more_info_keywords(self, response, expected_decision):
         """Test requests for more information"""
         decision, is_ambiguous = parse_start_investigation_response(response)
         assert decision == expected_decision
         assert not is_ambiguous
 
-    @pytest.mark.parametrize("response", [
-        "what is the database name?",  # Question, not confirmation
-        "yes, but what about...",  # Question despite "yes"
-        "random text here",
-        "",
-        "maybe",
-    ])
+    @pytest.mark.parametrize(
+        "response",
+        [
+            "what is the database name?",  # Question, not confirmation
+            "yes, but what about...",  # Question despite "yes"
+            "random text here",
+            "",
+            "maybe",
+        ],
+    )
     def test_ambiguous_responses(self, response):
         """Test responses that are ambiguous"""
         decision, is_ambiguous = parse_start_investigation_response(response)
@@ -156,6 +165,7 @@ class TestStartInvestigationClarification:
 # =============================================================================
 # Mark Complete Tests
 # =============================================================================
+
 
 class TestMarkCompletePrompt:
     """Test mark complete prompt generation"""
@@ -193,27 +203,33 @@ class TestMarkCompletePrompt:
 class TestMarkCompleteResponseParsing:
     """Test parsing of mark complete responses"""
 
-    @pytest.mark.parametrize("response,expected_decision", [
-        ("mark as complete", "complete"),
-        ("we're done", "complete"),
-        ("yes", "complete"),
-        ("close it", "complete"),
-        ("done", "complete"),
-        ("resolved", "complete"),
-    ])
+    @pytest.mark.parametrize(
+        "response,expected_decision",
+        [
+            ("mark as complete", "complete"),
+            ("we're done", "complete"),
+            ("yes", "complete"),
+            ("close it", "complete"),
+            ("done", "complete"),
+            ("resolved", "complete"),
+        ],
+    )
     def test_complete_keywords(self, response, expected_decision):
         """Test various ways of confirming completion"""
         decision, is_ambiguous = parse_mark_complete_response(response)
         assert decision == expected_decision
         assert not is_ambiguous
 
-    @pytest.mark.parametrize("response,expected_decision", [
-        ("not yet", "more_verification"),
-        ("more verification", "more_verification"),
-        ("keep monitoring", "more_verification"),
-        ("wait", "more_verification"),
-        ("not ready", "more_verification"),
-    ])
+    @pytest.mark.parametrize(
+        "response,expected_decision",
+        [
+            ("not yet", "more_verification"),
+            ("more verification", "more_verification"),
+            ("keep monitoring", "more_verification"),
+            ("wait", "more_verification"),
+            ("not ready", "more_verification"),
+        ],
+    )
     def test_more_verification_keywords(self, response, expected_decision):
         """Test requests for more verification"""
         decision, is_ambiguous = parse_mark_complete_response(response)
@@ -229,6 +245,7 @@ class TestMarkCompleteResponseParsing:
 # =============================================================================
 # Suggest Escalation Tests
 # =============================================================================
+
 
 class TestSuggestEscalationPrompt:
     """Test escalation suggestion prompt generation"""
@@ -271,26 +288,32 @@ class TestSuggestEscalationPrompt:
 class TestSuggestEscalationResponseParsing:
     """Test parsing of escalation responses"""
 
-    @pytest.mark.parametrize("response,expected_decision", [
-        ("close and escalate", "escalate"),
-        ("escalate", "escalate"),
-        ("close", "escalate"),
-        ("get help", "escalate"),
-        ("need expert", "escalate"),
-    ])
+    @pytest.mark.parametrize(
+        "response,expected_decision",
+        [
+            ("close and escalate", "escalate"),
+            ("escalate", "escalate"),
+            ("close", "escalate"),
+            ("get help", "escalate"),
+            ("need expert", "escalate"),
+        ],
+    )
     def test_escalate_keywords(self, response, expected_decision):
         """Test various ways of confirming escalation"""
         decision, is_ambiguous = parse_suggest_escalation_response(response)
         assert decision == expected_decision
         assert not is_ambiguous
 
-    @pytest.mark.parametrize("response,expected_decision", [
-        ("keep trying", "continue"),
-        ("continue", "continue"),
-        ("keep going", "continue"),
-        ("don't give up", "continue"),
-        ("try anyway", "continue"),
-    ])
+    @pytest.mark.parametrize(
+        "response,expected_decision",
+        [
+            ("keep trying", "continue"),
+            ("continue", "continue"),
+            ("keep going", "continue"),
+            ("don't give up", "continue"),
+            ("try anyway", "continue"),
+        ],
+    )
     def test_continue_keywords(self, response, expected_decision):
         """Test various ways of continuing despite limitations"""
         decision, is_ambiguous = parse_suggest_escalation_response(response)
@@ -301,6 +324,7 @@ class TestSuggestEscalationResponseParsing:
 # =============================================================================
 # Workflow Transition Confirmation Tests
 # =============================================================================
+
 
 class TestWorkflowTransitionConfirmation:
     """Test confirmation messages after transitions"""
@@ -358,6 +382,7 @@ class TestWorkflowTransitionConfirmation:
 # Edge Cases and Integration Tests
 # =============================================================================
 
+
 class TestEdgeCases:
     """Test edge cases and error handling"""
 
@@ -393,6 +418,8 @@ class TestEdgeCases:
 
     def test_whitespace_handling(self):
         """Test that extra whitespace is handled"""
-        decision, is_ambiguous = parse_start_investigation_response("  start investigation  ")
+        decision, is_ambiguous = parse_start_investigation_response(
+            "  start investigation  "
+        )
         assert decision == "start"
         assert not is_ambiguous

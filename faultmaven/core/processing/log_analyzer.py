@@ -35,25 +35,30 @@ Core Design Principles:
 import logging
 import re
 import time
+from collections import defaultdict, deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
-from collections import defaultdict, deque
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
-from faultmaven.models.common import AgentStateEnum as AgentState
-from faultmaven.models import DataInsightsResponse, DataType
-from faultmaven.models.interfaces import ILogProcessor, IMemoryService, ConversationContext
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.models import DataInsightsResponse, DataType
+from faultmaven.models.common import AgentStateEnum as AgentState
+from faultmaven.models.interfaces import (
+    ConversationContext,
+    ILogProcessor,
+    IMemoryService,
+)
 
 
 @dataclass
 class EnhancedProcessingResult:
     """Enhanced processing result with context and learning information"""
+
     insights: Dict[str, Any]
     anomalies: List[Dict[str, Any]]
     recommendations: List[str]
@@ -72,13 +77,13 @@ class EnhancedLogProcessor(ILogProcessor):
     def __init__(self, memory_service: Optional[IMemoryService] = None):
         self.logger = logging.getLogger(__name__)
         self._memory_service = memory_service
-        
+
         # Pattern learning components
         self._learned_anomaly_patterns = defaultdict(list)
         self._learned_error_patterns = defaultdict(list)
         self._processing_history = deque(maxlen=1000)
         self._user_preferences = defaultdict(dict)
-        
+
         # Performance metrics
         self._metrics = {
             "processes": 0,
@@ -87,13 +92,16 @@ class EnhancedLogProcessor(ILogProcessor):
             "patterns_learned": 0,
             "avg_confidence": 0.0,
             "avg_context_relevance": 0.0,
-            "avg_processing_time": 0.0
+            "avg_processing_time": 0.0,
         }
 
         # Enhanced log patterns with weights for memory-aware processing
         self.enhanced_log_patterns = {
             "timestamp": [
-                (r"(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)", 3.0),
+                (
+                    r"(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)",
+                    3.0,
+                ),
                 (r"(\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2})", 2.5),
                 (r"(\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}:\d{2})", 2.0),
             ],
@@ -133,7 +141,7 @@ class EnhancedLogProcessor(ILogProcessor):
                 (r"deadlock", 3.5),
                 (r"transaction\s+(?:rollback|timeout)", 3.0),
                 (r"table\s+[\w.]+", 2.0),
-            ]
+            ],
         }
 
         # Compile patterns with weights
@@ -150,9 +158,17 @@ class EnhancedLogProcessor(ILogProcessor):
             "phone": re.compile(r"\b\d{3}-\d{3}-\d{4}\b|\b\(\d{3}\)\s*\d{3}-\d{4}\b"),
             "ssn": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
             "credit_card": re.compile(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b"),
-            "api_key": re.compile(r"(?:api[_-]?key|token)[:\s=]+['\"]?[A-Za-z0-9]{16,}['\"]?", re.IGNORECASE),
-            "password": re.compile(r"(?:password|passwd|pwd)[:\s=]+['\"]?[^\s'\"]+['\"]?", re.IGNORECASE),
-            "session_id": re.compile(r"(?:session[_-]?id|sessionid)[:\s=]+['\"]?[A-Za-z0-9]{16,}['\"]?", re.IGNORECASE),
+            "api_key": re.compile(
+                r"(?:api[_-]?key|token)[:\s=]+['\"]?[A-Za-z0-9]{16,}['\"]?",
+                re.IGNORECASE,
+            ),
+            "password": re.compile(
+                r"(?:password|passwd|pwd)[:\s=]+['\"]?[^\s'\"]+['\"]?", re.IGNORECASE
+            ),
+            "session_id": re.compile(
+                r"(?:session[_-]?id|sessionid)[:\s=]+['\"]?[A-Za-z0-9]{16,}['\"]?",
+                re.IGNORECASE,
+            ),
             "bearer_token": re.compile(r"bearer\s+[A-Za-z0-9._-]+", re.IGNORECASE),
             "jwt": re.compile(r"ey[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
             "aws_key": re.compile(r"AKIA[0-9A-Z]{16}"),
@@ -160,12 +176,24 @@ class EnhancedLogProcessor(ILogProcessor):
 
         # Standard log patterns for parsing
         self.log_patterns = {
-            "timestamp": [pattern for pattern, _ in self.enhanced_log_patterns["timestamp"]],
-            "log_level": [pattern for pattern, _ in self.enhanced_log_patterns["log_level"]],
-            "http_status": [pattern for pattern, _ in self.enhanced_log_patterns["http_status"]],
-            "ip_address": [pattern for pattern, _ in self.enhanced_log_patterns["ip_address"]],
-            "error_code": [pattern for pattern, _ in self.enhanced_log_patterns["error_code"]],
-            "duration": [pattern for pattern, _ in self.enhanced_log_patterns["duration"]],
+            "timestamp": [
+                pattern for pattern, _ in self.enhanced_log_patterns["timestamp"]
+            ],
+            "log_level": [
+                pattern for pattern, _ in self.enhanced_log_patterns["log_level"]
+            ],
+            "http_status": [
+                pattern for pattern, _ in self.enhanced_log_patterns["http_status"]
+            ],
+            "ip_address": [
+                pattern for pattern, _ in self.enhanced_log_patterns["ip_address"]
+            ],
+            "error_code": [
+                pattern for pattern, _ in self.enhanced_log_patterns["error_code"]
+            ],
+            "duration": [
+                pattern for pattern, _ in self.enhanced_log_patterns["duration"]
+            ],
         }
 
         # Compile standard patterns
@@ -181,92 +209,102 @@ class EnhancedLogProcessor(ILogProcessor):
         content: str,
         session_id: str,
         data_type: Optional[DataType] = None,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
     ) -> EnhancedProcessingResult:
         """
         Memory-aware log processing with conversation context integration
-        
+
         This method leverages conversation history, user preferences, and domain
         context from the memory system to provide more accurate and relevant
         log analysis with personalized insights and recommendations.
-        
+
         Args:
             content: Raw log content to process
             session_id: Session identifier for memory context retrieval
             data_type: Optional data type hint for processing optimization
             context: Optional additional context data
-            
+
         Returns:
             EnhancedProcessingResult with memory-enhanced analysis
         """
         start_time = time.time()
-        
+
         # Retrieve memory context if available
         memory_context = None
         memory_enhanced = False
-        
+
         if self._memory_service and session_id:
             try:
                 # Create a query from log content preview for context retrieval
-                content_preview = content[:300] + "..." if len(content) > 300 else content
-                memory_context = await self._memory_service.retrieve_context(session_id, content_preview)
+                content_preview = (
+                    content[:300] + "..." if len(content) > 300 else content
+                )
+                memory_context = await self._memory_service.retrieve_context(
+                    session_id, content_preview
+                )
                 memory_enhanced = True
                 self._metrics["memory_enhanced"] += 1
             except Exception as e:
-                self.logger.warning(f"Failed to retrieve memory context for log processing: {e}")
+                self.logger.warning(
+                    f"Failed to retrieve memory context for log processing: {e}"
+                )
                 memory_context = None
-        
+
         # Combine context sources
         combined_context = {
             "memory": memory_context,
             "additional": context or {},
             "session_id": session_id,
-            "data_type": data_type
+            "data_type": data_type,
         }
-        
+
         # Perform enhanced log processing
-        result = await self._process_with_memory_context(content, combined_context, start_time)
-        
+        result = await self._process_with_memory_context(
+            content, combined_context, start_time
+        )
+
         # Update metrics
         self._metrics["processes"] += 1
         self._update_avg_metric("avg_confidence", result.confidence_score)
         self._update_avg_metric("avg_context_relevance", result.context_relevance)
         self._update_avg_metric("avg_processing_time", result.processing_time_ms)
-        
+
         # Store processing for learning
-        self._processing_history.append({
-            "content_hash": hash(content) % 1000000,
-            "result": result,
-            "context": combined_context,
-            "timestamp": time.time()
-        })
-        
+        self._processing_history.append(
+            {
+                "content_hash": hash(content) % 1000000,
+                "result": result,
+                "context": combined_context,
+                "timestamp": time.time(),
+            }
+        )
+
         return result
-    
+
     async def _process_with_memory_context(
-        self,
-        content: str,
-        context: Dict[str, Any],
-        start_time: float
+        self, content: str, context: Dict[str, Any], start_time: float
     ) -> EnhancedProcessingResult:
         """
         Perform log processing enhanced with memory context
-        
+
         Args:
             content: Log content to process
             context: Combined context including memory and additional data
             start_time: Start time for performance measurement
-            
+
         Returns:
             EnhancedProcessingResult with memory-enhanced processing
         """
         try:
             # Parse logs into structured format with enhanced patterns
             df = self._parse_logs_with_context(content, context)
-            
+
             if df.empty:
                 return EnhancedProcessingResult(
-                    insights={"error": "No valid log entries found", "total_entries": 0},
+                    insights={
+                        "error": "No valid log entries found",
+                        "total_entries": 0,
+                    },
                     anomalies=[],
                     recommendations=["Check log format and content validity"],
                     confidence_score=0.0,
@@ -275,46 +313,52 @@ class EnhancedLogProcessor(ILogProcessor):
                     security_flags=[],
                     learned_patterns=[],
                     processing_time_ms=(time.time() - start_time) * 1000,
-                    pattern_matches=[]
+                    pattern_matches=[],
                 )
-            
+
             # Detect security issues first
             security_flags = self._detect_log_security_issues(content)
-            
+
             # Extract memory context insights for processing
             memory_context = context.get("memory")
-            context_insights = self._extract_log_context_insights(memory_context, content)
-            
+            context_insights = self._extract_log_context_insights(
+                memory_context, content
+            )
+
             # Enhanced insights extraction with context awareness
             insights = self._extract_memory_aware_insights(df, context_insights)
-            
+
             # Enhanced anomaly detection with memory context
             anomalies = self._detect_context_aware_anomalies(df, context_insights)
-            
+
             # Apply learned patterns for anomaly detection
             learned_anomalies = self._apply_learned_anomaly_patterns(df, context)
             anomalies.extend(learned_anomalies)
-            
+
             # Generate context-aware recommendations
             recommendations = self._generate_memory_aware_recommendations(
                 insights, anomalies, context_insights, memory_context
             )
-            
+
             # Calculate confidence and context relevance
-            confidence_score = self._calculate_processing_confidence(df, insights, anomalies, context_insights)
-            context_relevance = self._calculate_log_context_relevance(insights, context_insights, memory_context)
-            
+            confidence_score = self._calculate_processing_confidence(
+                df, insights, anomalies, context_insights
+            )
+            context_relevance = self._calculate_log_context_relevance(
+                insights, context_insights, memory_context
+            )
+
             # Get contributing learned patterns
             learned_patterns = self._get_contributing_log_patterns(content, insights)
-            
+
             # Get pattern matches for transparency
             pattern_matches = self._get_pattern_matches(content, context_insights)
-            
+
             processing_time = (time.time() - start_time) * 1000
-            
+
             # Update anomaly detection metrics
             self._metrics["anomalies_detected"] += len(anomalies)
-            
+
             return EnhancedProcessingResult(
                 insights=insights,
                 anomalies=anomalies,
@@ -325,9 +369,9 @@ class EnhancedLogProcessor(ILogProcessor):
                 security_flags=security_flags,
                 learned_patterns=learned_patterns,
                 processing_time_ms=processing_time,
-                pattern_matches=pattern_matches
+                pattern_matches=pattern_matches,
             )
-            
+
         except Exception as e:
             self.logger.error(f"Enhanced log processing failed: {e}")
             return EnhancedProcessingResult(
@@ -340,21 +384,21 @@ class EnhancedLogProcessor(ILogProcessor):
                 security_flags=[],
                 learned_patterns=[],
                 processing_time_ms=(time.time() - start_time) * 1000,
-                pattern_matches=[]
+                pattern_matches=[],
             )
-    
+
     def _detect_log_security_issues(self, content: str) -> List[str]:
         """
         Detect potential security and PII issues in log content
-        
+
         Args:
             content: Log content to analyze for security issues
-            
+
         Returns:
             List of detected security flags
         """
         flags = []
-        
+
         for security_type, pattern in self.security_patterns.items():
             matches = pattern.findall(content)
             if matches:
@@ -364,21 +408,19 @@ class EnhancedLogProcessor(ILogProcessor):
                 self.logger.warning(
                     f"Detected {security_type} in logs: {sample_count} instances found"
                 )
-        
+
         return flags
-    
+
     def _extract_log_context_insights(
-        self,
-        memory_context: Optional[ConversationContext],
-        content: str
+        self, memory_context: Optional[ConversationContext], content: str
     ) -> Dict[str, Any]:
         """
         Extract log processing insights from memory context
-        
+
         Args:
             memory_context: Retrieved conversation context
             content: Log content being processed
-            
+
         Returns:
             Dictionary of context insights for log processing
         """
@@ -389,116 +431,153 @@ class EnhancedLogProcessor(ILogProcessor):
             "service_context": [],
             "urgency_level": "medium",  # v3.0: renamed from "normal"
             "expected_patterns": [],
-            "case_keywords": []
+            "case_keywords": [],
         }
 
         if not memory_context:
             return insights
-        
+
         # Extract technical focus from conversation history
         if memory_context.conversation_history:
             for item in memory_context.conversation_history[-10:]:  # Last 10 items
                 content_lower = item.get("content", "").lower()
-                
+
                 # Identify technical domains
-                if any(term in content_lower for term in ["kubernetes", "k8s", "docker", "container"]):
+                if any(
+                    term in content_lower
+                    for term in ["kubernetes", "k8s", "docker", "container"]
+                ):
                     insights["technical_focus"].append("containerization")
-                if any(term in content_lower for term in ["database", "sql", "mysql", "postgres", "db"]):
+                if any(
+                    term in content_lower
+                    for term in ["database", "sql", "mysql", "postgres", "db"]
+                ):
                     insights["technical_focus"].append("database")
-                if any(term in content_lower for term in ["api", "rest", "graphql", "endpoint", "service"]):
+                if any(
+                    term in content_lower
+                    for term in ["api", "rest", "graphql", "endpoint", "service"]
+                ):
                     insights["technical_focus"].append("api")
-                if any(term in content_lower for term in ["network", "connection", "timeout", "latency"]):
+                if any(
+                    term in content_lower
+                    for term in ["network", "connection", "timeout", "latency"]
+                ):
                     insights["technical_focus"].append("network")
-                if any(term in content_lower for term in ["memory", "cpu", "disk", "performance"]):
+                if any(
+                    term in content_lower
+                    for term in ["memory", "cpu", "disk", "performance"]
+                ):
                     insights["technical_focus"].append("performance")
-                
+
                 # Extract previous issue patterns
-                if any(term in content_lower for term in ["error", "failure", "crash", "down"]):
+                if any(
+                    term in content_lower
+                    for term in ["error", "failure", "crash", "down"]
+                ):
                     insights["previous_issues"].append("errors")
-                if any(term in content_lower for term in ["slow", "timeout", "latency", "performance"]):
+                if any(
+                    term in content_lower
+                    for term in ["slow", "timeout", "latency", "performance"]
+                ):
                     insights["previous_issues"].append("performance")
-                if any(term in content_lower for term in ["security", "breach", "unauthorized", "attack"]):
+                if any(
+                    term in content_lower
+                    for term in ["security", "breach", "unauthorized", "attack"]
+                ):
                     insights["previous_issues"].append("security")
-                
+
                 # Extract service context
-                services = re.findall(r'\b(\w+[-_]?\w*service|\w+[-_]?\w*api|\w+[-_]?\w*server)\b', content_lower)
+                services = re.findall(
+                    r"\b(\w+[-_]?\w*service|\w+[-_]?\w*api|\w+[-_]?\w*server)\b",
+                    content_lower,
+                )
                 insights["service_context"].extend(services[:5])  # Limit to 5 services
-                
+
                 # Determine urgency level
-                if any(term in content_lower for term in ["urgent", "critical", "emergency", "down", "outage"]):
+                if any(
+                    term in content_lower
+                    for term in ["urgent", "critical", "emergency", "down", "outage"]
+                ):
                     insights["urgency_level"] = "high"
-                elif any(term in content_lower for term in ["important", "priority", "investigate"]):
+                elif any(
+                    term in content_lower
+                    for term in ["important", "priority", "investigate"]
+                ):
                     insights["urgency_level"] = "medium"
-                
+
                 # Extract investigation keywords
-                keywords = re.findall(r'\b(\w{4,})\b', content_lower)
+                keywords = re.findall(r"\b(\w{4,})\b", content_lower)
                 insights["case_keywords"].extend(keywords[:10])  # Limit to 10 keywords
-        
+
         # Extract user expertise level
         if memory_context.user_profile:
-            insights["user_expertise"] = memory_context.user_profile.get("skill_level", "unknown")
-        
+            insights["user_expertise"] = memory_context.user_profile.get(
+                "skill_level", "unknown"
+            )
+
         # Clean up duplicates
-        for key in ["technical_focus", "previous_issues", "service_context", "case_keywords"]:
+        for key in [
+            "technical_focus",
+            "previous_issues",
+            "service_context",
+            "case_keywords",
+        ]:
             insights[key] = list(set(insights[key]))
-        
+
         return insights
-    
+
     def _parse_logs_with_context(
-        self,
-        content: str,
-        context: Dict[str, Any]
+        self, content: str, context: Dict[str, Any]
     ) -> pd.DataFrame:
         """
         Parse log content with context-aware pattern recognition
-        
+
         Args:
             content: Raw log content
             context: Processing context including memory insights
-            
+
         Returns:
             DataFrame with parsed log entries enhanced with context
         """
         lines = content.strip().split("\n")
         parsed_entries = []
-        
+
         # Get context insights for enhanced parsing
         memory_context = context.get("memory")
         if memory_context:
-            context_insights = self._extract_log_context_insights(memory_context, content)
+            context_insights = self._extract_log_context_insights(
+                memory_context, content
+            )
         else:
             context_insights = {}
-        
+
         for line_num, line in enumerate(lines, 1):
             if not line.strip():
                 continue
-            
+
             entry = self._parse_log_line_with_context(line, line_num, context_insights)
             if entry:
                 parsed_entries.append(entry)
-        
+
         return pd.DataFrame(parsed_entries)
-    
+
     def _parse_log_line_with_context(
-        self,
-        line: str,
-        line_num: int,
-        context_insights: Dict[str, Any]
+        self, line: str, line_num: int, context_insights: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """
         Parse a single log line with context awareness
-        
+
         Args:
             line: Single log line
             line_num: Line number for reference
             context_insights: Context insights for enhanced parsing
-            
+
         Returns:
             Parsed log entry dictionary with context enhancements
         """
         if line is None:
             return None
-        
+
         entry = {
             "line_number": line_num,
             "raw_line": line,
@@ -512,14 +591,16 @@ class EnhancedLogProcessor(ILogProcessor):
             "service": None,
             "component": None,
             "context_relevance": 0.0,
-            "severity_weight": 1.0
+            "severity_weight": 1.0,
         }
-        
+
         # Enhanced pattern matching with context weights
         technical_focus = context_insights.get("technical_focus", [])
-        urgency_level = context_insights.get("urgency_level", "medium")  # v3.0: renamed from "normal"
+        urgency_level = context_insights.get(
+            "urgency_level", "medium"
+        )  # v3.0: renamed from "normal"
         case_keywords = context_insights.get("case_keywords", [])
-        
+
         # Standard field extraction with enhanced patterns
         for category, patterns in self.compiled_enhanced_patterns.items():
             for pattern, weight in patterns:
@@ -552,7 +633,10 @@ class EnhancedLogProcessor(ILogProcessor):
                                 entry["duration_ms"] = duration * 1000  # Convert to ms
                         except ValueError:
                             pass
-                    elif category == "kubernetes" and "containerization" in technical_focus:
+                    elif (
+                        category == "kubernetes"
+                        and "containerization" in technical_focus
+                    ):
                         # Extract Kubernetes-specific information
                         k8s_resource = match.group(0)
                         if k8s_resource.startswith("pod/"):
@@ -564,240 +648,273 @@ class EnhancedLogProcessor(ILogProcessor):
                         entry["component"] = "database"
                         if "deadlock" in match.group(0).lower():
                             entry["severity_weight"] = 3.5
-        
+
         # Context relevance scoring
         entry["context_relevance"] = self._calculate_line_context_relevance(
             line, context_insights
         )
-        
+
         # Adjust severity weight based on context
         if urgency_level == "high":
             entry["severity_weight"] *= 1.3
         elif urgency_level == "medium":
             entry["severity_weight"] *= 1.1
-        
+
         # Check for case keywords
         if case_keywords:
             line_lower = line.lower()
-            keyword_matches = sum(1 for keyword in case_keywords if keyword in line_lower)
+            keyword_matches = sum(
+                1 for keyword in case_keywords if keyword in line_lower
+            )
             if keyword_matches > 0:
                 entry["context_relevance"] += min(0.3, keyword_matches * 0.1)
-        
+
         return entry
-    
+
     def _calculate_line_context_relevance(
-        self,
-        line: str,
-        context_insights: Dict[str, Any]
+        self, line: str, context_insights: Dict[str, Any]
     ) -> float:
         """
         Calculate context relevance for a single log line
-        
+
         Args:
             line: Log line content
             context_insights: Context insights from memory
-            
+
         Returns:
             Context relevance score (0.0 to 1.0)
         """
         relevance = 0.0
         line_lower = line.lower()
-        
+
         # Check technical focus alignment
         technical_focus = context_insights.get("technical_focus", [])
         for focus in technical_focus:
             if focus == "containerization" and any(
-                term in line_lower for term in ["pod", "container", "k8s", "kubernetes", "docker"]
+                term in line_lower
+                for term in ["pod", "container", "k8s", "kubernetes", "docker"]
             ):
                 relevance += 0.2
             elif focus == "database" and any(
-                term in line_lower for term in ["db", "database", "sql", "query", "connection"]
+                term in line_lower
+                for term in ["db", "database", "sql", "query", "connection"]
             ):
                 relevance += 0.2
             elif focus == "api" and any(
-                term in line_lower for term in ["api", "endpoint", "rest", "http", "request"]
+                term in line_lower
+                for term in ["api", "endpoint", "rest", "http", "request"]
             ):
                 relevance += 0.2
             elif focus == "network" and any(
-                term in line_lower for term in ["network", "connection", "timeout", "latency"]
+                term in line_lower
+                for term in ["network", "connection", "timeout", "latency"]
             ):
                 relevance += 0.2
             elif focus == "performance" and any(
-                term in line_lower for term in ["memory", "cpu", "performance", "slow", "timeout"]
+                term in line_lower
+                for term in ["memory", "cpu", "performance", "slow", "timeout"]
             ):
                 relevance += 0.2
-        
+
         # Check previous issues alignment
         previous_issues = context_insights.get("previous_issues", [])
         for issue in previous_issues:
             if issue == "errors" and any(
-                term in line_lower for term in ["error", "exception", "failed", "failure"]
+                term in line_lower
+                for term in ["error", "exception", "failed", "failure"]
             ):
                 relevance += 0.15
             elif issue == "performance" and any(
-                term in line_lower for term in ["slow", "timeout", "latency", "performance"]
+                term in line_lower
+                for term in ["slow", "timeout", "latency", "performance"]
             ):
                 relevance += 0.15
             elif issue == "security" and any(
-                term in line_lower for term in ["security", "unauthorized", "forbidden", "breach"]
+                term in line_lower
+                for term in ["security", "unauthorized", "forbidden", "breach"]
             ):
                 relevance += 0.15
-        
+
         # Check service context
         service_context = context_insights.get("service_context", [])
         for service in service_context:
             if service.lower() in line_lower:
                 relevance += 0.1
-        
+
         return min(1.0, relevance)
-    
+
     def _update_avg_metric(self, metric_name: str, new_value: float):
         """Update running average for a metric"""
         current_avg = self._metrics[metric_name]
         count = self._metrics["processes"]
-        
+
         if count == 1:
             self._metrics[metric_name] = new_value
         else:
             self._metrics[metric_name] = (current_avg * (count - 1) + new_value) / count
-    
-    def _extract_memory_aware_insights(self, df: pd.DataFrame, context_insights: Dict[str, Any]) -> Dict[str, Any]:
+
+    def _extract_memory_aware_insights(
+        self, df: pd.DataFrame, context_insights: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Extract insights enhanced with memory context"""
         # Use the standard extraction but enhance with context
         insights = self._extract_basic_insights(df, context_insights)
-        
+
         # Add memory-aware enhancements
         if "context_relevance" in df.columns:
             insights["context_analysis"] = {
                 "avg_relevance": df["context_relevance"].mean(),
                 "high_relevance_entries": len(df[df["context_relevance"] > 0.7]),
-                "relevant_percentage": len(df[df["context_relevance"] > 0.3]) / len(df) * 100
+                "relevant_percentage": len(df[df["context_relevance"] > 0.3])
+                / len(df)
+                * 100,
             }
-        
+
         return insights
-    
-    def _detect_context_aware_anomalies(self, df: pd.DataFrame, context_insights: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _detect_context_aware_anomalies(
+        self, df: pd.DataFrame, context_insights: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
         """Detect anomalies with context awareness"""
         # Use the standard detection but enhance with context
         anomalies = self._detect_anomalies(df)
-        
+
         # Add context-aware anomaly detection
         if "severity_weight" in df.columns:
             high_severity = df[df["severity_weight"] > 3.0]
             if len(high_severity) > 0:
-                anomalies.append({
-                    "type": "high_severity_events",
-                    "severity": "high",
-                    "description": f"Detected {len(high_severity)} high-severity log entries",
-                    "value": len(high_severity),
-                    "context_aware": True
-                })
-        
+                anomalies.append(
+                    {
+                        "type": "high_severity_events",
+                        "severity": "high",
+                        "description": f"Detected {len(high_severity)} high-severity log entries",
+                        "value": len(high_severity),
+                        "context_aware": True,
+                    }
+                )
+
         return anomalies
-    
-    def _apply_learned_anomaly_patterns(self, df: pd.DataFrame, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    def _apply_learned_anomaly_patterns(
+        self, df: pd.DataFrame, context: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
         """Apply learned patterns for anomaly detection"""
         anomalies = []
-        
+
         # This would be enhanced with actual learned patterns
         # For now, return empty list
         return anomalies
-    
+
     def _generate_memory_aware_recommendations(
-        self, 
-        insights: Dict[str, Any], 
-        anomalies: List[Dict[str, Any]], 
-        context_insights: Dict[str, Any], 
-        memory_context: Optional[ConversationContext]
+        self,
+        insights: Dict[str, Any],
+        anomalies: List[Dict[str, Any]],
+        context_insights: Dict[str, Any],
+        memory_context: Optional[ConversationContext],
     ) -> List[str]:
         """Generate recommendations enhanced with memory context"""
         # Use the standard generation but enhance with context
-        recommendations = self._generate_recommendations(insights, anomalies, context_insights)
-        
+        recommendations = self._generate_recommendations(
+            insights, anomalies, context_insights
+        )
+
         # Add memory-aware recommendations
         user_expertise = context_insights.get("user_expertise", "unknown")
         if user_expertise == "beginner":
-            recommendations.append("Consider reviewing log analysis basics for better understanding")
+            recommendations.append(
+                "Consider reviewing log analysis basics for better understanding"
+            )
         elif user_expertise == "expert":
-            recommendations.append("Focus on advanced pattern analysis and correlation with other systems")
-        
+            recommendations.append(
+                "Focus on advanced pattern analysis and correlation with other systems"
+            )
+
         return recommendations
-    
+
     def _calculate_processing_confidence(
-        self, 
-        df: pd.DataFrame, 
-        insights: Dict[str, Any], 
-        anomalies: List[Dict[str, Any]], 
-        context_insights: Dict[str, Any]
+        self,
+        df: pd.DataFrame,
+        insights: Dict[str, Any],
+        anomalies: List[Dict[str, Any]],
+        context_insights: Dict[str, Any],
     ) -> float:
         """Calculate confidence score for processing"""
         # Use the standard calculation but enhance with context
         confidence = self._calculate_confidence(df, insights, anomalies)
-        
+
         # Adjust based on context relevance
         if "context_analysis" in insights:
             avg_relevance = insights["context_analysis"].get("avg_relevance", 0.0)
             confidence = (confidence + avg_relevance) / 2
-        
+
         return confidence
-    
+
     def _calculate_log_context_relevance(
-        self, 
-        insights: Dict[str, Any], 
-        context_insights: Dict[str, Any], 
-        memory_context: Optional[ConversationContext]
+        self,
+        insights: Dict[str, Any],
+        context_insights: Dict[str, Any],
+        memory_context: Optional[ConversationContext],
     ) -> float:
         """Calculate context relevance for log processing"""
         if not memory_context:
             return 0.5  # Neutral relevance without context
-        
+
         relevance = 0.5
-        
+
         # Boost relevance based on context alignment
         if context_insights.get("technical_focus"):
             relevance += 0.2
-        
+
         if context_insights.get("previous_issues"):
             relevance += 0.15
-        
+
         if context_insights.get("service_context"):
             relevance += 0.1
-        
+
         # Context analysis from insights
         if "context_analysis" in insights:
             avg_relevance = insights["context_analysis"].get("avg_relevance", 0.0)
             relevance = (relevance + avg_relevance) / 2
-        
+
         return min(1.0, relevance)
-    
-    def _get_contributing_log_patterns(self, content: str, insights: Dict[str, Any]) -> List[str]:
+
+    def _get_contributing_log_patterns(
+        self, content: str, insights: Dict[str, Any]
+    ) -> List[str]:
         """Get patterns that contributed to the processing"""
         patterns = []
-        
+
         # This would be enhanced with actual learned patterns
         # For now, return basic patterns based on insights
-        if "error_summary" in insights and insights["error_summary"].get("total_errors", 0) > 0:
+        if (
+            "error_summary" in insights
+            and insights["error_summary"].get("total_errors", 0) > 0
+        ):
             patterns.append("Error pattern detection")
-        
+
         if "performance_metrics" in insights:
             patterns.append("Performance pattern analysis")
-        
+
         return patterns
-    
-    def _get_pattern_matches(self, content: str, context_insights: Dict[str, Any]) -> List[str]:
+
+    def _get_pattern_matches(
+        self, content: str, context_insights: Dict[str, Any]
+    ) -> List[str]:
         """Get pattern matches for transparency"""
         matches = []
-        
+
         # Check which enhanced patterns matched
         for category, patterns in self.compiled_enhanced_patterns.items():
             for pattern, weight in patterns:
                 if pattern.search(content):
                     matches.append(f"{category}_pattern")
-        
+
         return list(set(matches))  # Remove duplicates
-    
+
     # Standard methods used by enhanced processing
-    def _extract_basic_insights(self, df: pd.DataFrame, agent_state: Dict[str, Any]) -> Dict[str, Any]:
+    def _extract_basic_insights(
+        self, df: pd.DataFrame, agent_state: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Extract basic insights from parsed log data with context awareness"""
         insights: Dict[str, Any] = {
             "total_entries": len(df),
@@ -905,7 +1022,7 @@ class EnhancedLogProcessor(ILogProcessor):
             insights["unique_ips"] = df["ip_address"].nunique()
 
         return insights
-    
+
     def _detect_anomalies(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         """Detect anomalies in log data"""
         anomalies = []
@@ -965,7 +1082,7 @@ class EnhancedLogProcessor(ILogProcessor):
                     self.logger.warning(f"Performance anomaly detection failed: {e}")
 
         return anomalies
-    
+
     def _generate_recommendations(
         self,
         insights: Dict[str, Any],
@@ -974,7 +1091,7 @@ class EnhancedLogProcessor(ILogProcessor):
     ) -> List[str]:
         """Generate recommendations based on insights and anomalies"""
         recommendations = []
-        
+
         # Error rate recommendations
         if insights.get("error_summary", {}).get("error_rate", 0) > 0.1:
             recommendations.append(
@@ -998,7 +1115,7 @@ class EnhancedLogProcessor(ILogProcessor):
                 )
 
         return recommendations
-    
+
     def _calculate_confidence(
         self,
         df: pd.DataFrame,
@@ -1027,8 +1144,10 @@ class EnhancedLogProcessor(ILogProcessor):
             confidence += 0.1
 
         return min(1.0, max(0.0, confidence))
-    
-    async def process(self, content: str, data_type: Optional[DataType] = None) -> Dict[str, Any]:
+
+    async def process(
+        self, content: str, data_type: Optional[DataType] = None
+    ) -> Dict[str, Any]:
         """Process logs and return extracted insights (ILogProcessor contract).
 
         This is implemented on the enhanced processor for direct use via the
@@ -1084,7 +1203,9 @@ class LogProcessor(ILogProcessor):
             ]
 
     @trace("log_processor_process")
-    async def process(self, content: str, data_type: Optional[DataType] = None) -> Dict[str, Any]:
+    async def process(
+        self, content: str, data_type: Optional[DataType] = None
+    ) -> Dict[str, Any]:
         """
         Process log content and extract insights (interface-compliant method)
 
@@ -1103,14 +1224,14 @@ class LogProcessor(ILogProcessor):
                 return {
                     "error": "No valid log entries found",
                     "total_entries": 0,
-                    "processing_error": True
+                    "processing_error": True,
                 }
 
             # Create mock agent state for context-aware processing
             mock_agent_state = {
                 "user_query": "",
                 "case_context": {},
-                "current_phase": "analyze"
+                "current_phase": "analyze",
             }
 
             # Extract basic insights
@@ -1127,11 +1248,7 @@ class LogProcessor(ILogProcessor):
 
         except Exception as e:
             self.logger.error(f"Log processing failed: {e}")
-            return {
-                "error": str(e),
-                "processing_error": True,
-                "total_entries": 0
-            }
+            return {"error": str(e), "processing_error": True, "total_entries": 0}
 
     @trace("log_processor_process_detailed")
     async def process_detailed(

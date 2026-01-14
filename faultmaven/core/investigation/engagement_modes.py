@@ -22,7 +22,7 @@ Problem Signal Detection:
 import logging
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.modules.agent.contracts import (
     EngagementMode,
@@ -30,7 +30,6 @@ from faultmaven.modules.agent.contracts import (
     InvestigationStrategy,
     ProblemConfirmation,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +153,9 @@ class ProblemSignalDetector:
     @classmethod
     def detect_signal_strength(
         cls, query: str
-    ) -> Tuple[ProblemSignalStrength, List[str], Optional[str], Optional[str], Optional[str]]:
+    ) -> Tuple[
+        ProblemSignalStrength, List[str], Optional[str], Optional[str], Optional[str]
+    ]:
         """Detect problem signal strength and contextual hints in user query
 
         Args:
@@ -182,16 +183,22 @@ class ProblemSignalDetector:
         temporal_hint: Optional[str] = None
         if any(kw in query_lower for kw in cls.TEMPORAL_ACTIVE_KEYWORDS):
             temporal_hint = "active"
-        elif any(word in query_lower for word in ["today", "this morning", "this hour"]):
+        elif any(
+            word in query_lower for word in ["today", "this morning", "this hour"]
+        ):
             temporal_hint = "recent"
-        elif any(word in query_lower for word in ["yesterday", "last week", "last month"]):
+        elif any(
+            word in query_lower for word in ["yesterday", "last week", "last month"]
+        ):
             temporal_hint = "historical"
 
         # Detect scope
         scope_hint: Optional[str] = None
         if any(kw in query_lower for kw in cls.SCOPE_TOTAL_KEYWORDS):
             scope_hint = "total"
-        elif any(word in query_lower for word in ["some users", "one customer", "specific"]):
+        elif any(
+            word in query_lower for word in ["some users", "one customer", "specific"]
+        ):
             scope_hint = "partial"
         elif any(word in query_lower for word in ["my machine", "local", "just me"]):
             scope_hint = "isolated"
@@ -202,7 +209,13 @@ class ProblemSignalDetector:
                 detected_keywords.append(keyword)
 
         if detected_keywords:
-            return ProblemSignalStrength.NONE, detected_keywords, urgency_hint, temporal_hint, scope_hint
+            return (
+                ProblemSignalStrength.NONE,
+                detected_keywords,
+                urgency_hint,
+                temporal_hint,
+                scope_hint,
+            )
 
         # Check for strong problem signals
         for keyword in cls.STRONG_PROBLEM_KEYWORDS:
@@ -210,7 +223,13 @@ class ProblemSignalDetector:
                 detected_keywords.append(keyword)
 
         if detected_keywords:
-            return ProblemSignalStrength.STRONG, detected_keywords, urgency_hint, temporal_hint, scope_hint
+            return (
+                ProblemSignalStrength.STRONG,
+                detected_keywords,
+                urgency_hint,
+                temporal_hint,
+                scope_hint,
+            )
 
         # Check for moderate signals
         for keyword in cls.MODERATE_PROBLEM_KEYWORDS:
@@ -218,7 +237,13 @@ class ProblemSignalDetector:
                 detected_keywords.append(keyword)
 
         if detected_keywords:
-            return ProblemSignalStrength.MODERATE, detected_keywords, urgency_hint, temporal_hint, scope_hint
+            return (
+                ProblemSignalStrength.MODERATE,
+                detected_keywords,
+                urgency_hint,
+                temporal_hint,
+                scope_hint,
+            )
 
         # Check for weak signals
         for keyword in cls.WEAK_PROBLEM_KEYWORDS:
@@ -226,12 +251,20 @@ class ProblemSignalDetector:
                 detected_keywords.append(keyword)
 
         if detected_keywords:
-            return ProblemSignalStrength.WEAK, detected_keywords, urgency_hint, temporal_hint, scope_hint
+            return (
+                ProblemSignalStrength.WEAK,
+                detected_keywords,
+                urgency_hint,
+                temporal_hint,
+                scope_hint,
+            )
 
         return ProblemSignalStrength.NONE, [], urgency_hint, temporal_hint, scope_hint
 
     @classmethod
-    def requires_problem_confirmation(cls, signal_strength: ProblemSignalStrength) -> bool:
+    def requires_problem_confirmation(
+        cls, signal_strength: ProblemSignalStrength
+    ) -> bool:
         """Determine if problem confirmation needed
 
         Args:
@@ -275,8 +308,9 @@ class EngagementModeManager:
         Returns:
             Analysis result with signal strength, recommended mode, and contextual hints
         """
-        signal_strength, keywords, urgency_hint, temporal_hint, scope_hint = \
+        signal_strength, keywords, urgency_hint, temporal_hint, scope_hint = (
             self.signal_detector.detect_signal_strength(query)
+        )
 
         result = {
             "signal_strength": signal_strength.value,
@@ -291,7 +325,9 @@ class EngagementModeManager:
 
         # Determine recommended mode
         if signal_strength == ProblemSignalStrength.STRONG:
-            result["recommended_mode"] = EngagementMode.CONSULTANT  # Start in Consultant
+            result["recommended_mode"] = (
+                EngagementMode.CONSULTANT
+            )  # Start in Consultant
             result["requires_confirmation"] = True
             result["suggested_response_type"] = "problem_confirmation"
             self.logger.info(f"Strong problem signal detected: {keywords}")
@@ -329,11 +365,14 @@ class EngagementModeManager:
             ProblemConfirmation object with urgency_signals metadata
         """
         # Enhanced signal detection with urgency/temporal/scope hints
-        signal_strength, keywords, urgency_hint, temporal_hint, scope_hint = \
+        signal_strength, keywords, urgency_hint, temporal_hint, scope_hint = (
             self.signal_detector.detect_signal_strength(query)
+        )
 
         # More nuanced severity estimation using contextual hints
-        if urgency_hint == "critical" or (signal_strength == ProblemSignalStrength.STRONG and scope_hint == "total"):
+        if urgency_hint == "critical" or (
+            signal_strength == ProblemSignalStrength.STRONG and scope_hint == "total"
+        ):
             severity = "critical"
         elif urgency_hint == "high" or signal_strength == ProblemSignalStrength.STRONG:
             severity = "high"
@@ -365,8 +404,8 @@ class EngagementModeManager:
                 "urgency_hint": urgency_hint,
                 "temporal_hint": temporal_hint,
                 "scope_hint": scope_hint,
-                "source": "initial_query_keywords"
-            }
+                "source": "initial_query_keywords",
+            },
         )
 
         return confirmation
@@ -418,7 +457,9 @@ class EngagementModeManager:
 
         # Critical/High urgency → Active Incident (speed priority)
         if urgency_level in ["critical", "high"]:
-            self.logger.info(f"Selecting ACTIVE_INCIDENT strategy due to {urgency_level} urgency")
+            self.logger.info(
+                f"Selecting ACTIVE_INCIDENT strategy due to {urgency_level} urgency"
+            )
             return InvestigationStrategy.ACTIVE_INCIDENT
 
         # Check severity from problem confirmation
@@ -532,7 +573,11 @@ class EngagementModeManager:
             if current_mode == EngagementMode.CONSULTANT:
                 # Check if we can resume
                 if investigation_state.problem_confirmation:
-                    return True, EngagementMode.LEAD_INVESTIGATOR, "User requested resume"
+                    return (
+                        True,
+                        EngagementMode.LEAD_INVESTIGATOR,
+                        "User requested resume",
+                    )
 
         elif user_intent == "stop_investigation":
             if current_mode == EngagementMode.LEAD_INVESTIGATOR:

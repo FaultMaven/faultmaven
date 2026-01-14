@@ -14,21 +14,26 @@ Run with:
     pytest tests/benchmarks/test_investigation_session_operations.py -m benchmark -v
 """
 
-import pytest
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
-from faultmaven.models.investigation_session import (
-    InvestigationSession,
-    SessionStatus,
-)
+import pytest
+
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
+)
+from faultmaven.models.investigation_session import (
+    InvestigationSession,
+    SessionStatus,
+)
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationStrategy,
 )
 
 from .conftest import generate_case_id
@@ -62,7 +67,9 @@ def create_sample_session(
 
 
 @pytest.fixture
-async def session_repository(benchmark_session) -> DatabaseInvestigationSessionRepository:
+async def session_repository(
+    benchmark_session,
+) -> DatabaseInvestigationSessionRepository:
     """Create investigation session repository for benchmarks."""
     return DatabaseInvestigationSessionRepository(benchmark_session)
 
@@ -104,9 +111,9 @@ class TestSessionCreationPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.200, (
-            f"Session creation latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"Session creation latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  Session creation latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -134,9 +141,9 @@ class TestSessionCreationPerformance:
 
         assert result is not None
         assert result.metadata is not None
-        assert latency < 0.200, (
-            f"Session with metadata creation latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"Session with metadata creation latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  Session with metadata creation latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -164,10 +171,7 @@ class TestSessionCreationPerformance:
             saved = await case_repository.save(case)
             cases.append(saved)
 
-        sessions = [
-            create_sample_session(case.case_id)
-            for case in cases
-        ]
+        sessions = [create_sample_session(case.case_id) for case in cases]
 
         start = time.perf_counter()
         for session in sessions:
@@ -175,9 +179,9 @@ class TestSessionCreationPerformance:
         duration = time.perf_counter() - start
 
         throughput = len(sessions) / duration
-        assert throughput > 20, (
-            f"Session creation throughput {throughput:.1f}/sec below 20/sec target"
-        )
+        assert (
+            throughput > 20
+        ), f"Session creation throughput {throughput:.1f}/sec below 20/sec target"
         print(
             f"\n  Batch creation throughput: {throughput:.1f} sessions/sec "
             f"({len(sessions)} items in {duration:.2f}s)"
@@ -209,9 +213,9 @@ class TestSessionRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.100, (
-            f"Session retrieval latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Session retrieval latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Session retrieval latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -236,9 +240,9 @@ class TestSessionRetrievalPerformance:
 
         assert result is not None
         assert result.status == SessionStatus.ACTIVE
-        assert latency < 0.100, (
-            f"Get active session latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Get active session latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Get active session latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -264,9 +268,9 @@ class TestSessionRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert len(result) == 100
-        assert latency < 0.200, (
-            f"List sessions latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"List sessions latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  List sessions latency: {latency*1000:.1f}ms ({len(result)} items)")
 
     @pytest.mark.asyncio
@@ -304,9 +308,9 @@ class TestSessionRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert len(result) == 50
-        assert latency < 0.150, (
-            f"Filtered list latency {latency*1000:.1f}ms exceeds 150ms target"
-        )
+        assert (
+            latency < 0.150
+        ), f"Filtered list latency {latency*1000:.1f}ms exceeds 150ms target"
         print(f"\n  Filtered list latency: {latency*1000:.1f}ms ({len(result)} items)")
 
     @pytest.mark.asyncio
@@ -343,9 +347,9 @@ class TestSessionRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert len(result) == 50
-        assert latency < 0.200, (
-            f"List by user latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"List by user latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  List by user latency: {latency*1000:.1f}ms ({len(result)} items)")
 
 
@@ -378,9 +382,9 @@ class TestSessionUpdatePerformance:
 
         assert result is not None
         assert result.status == SessionStatus.PAUSED
-        assert latency < 0.150, (
-            f"Status update latency {latency*1000:.1f}ms exceeds 150ms target"
-        )
+        assert (
+            latency < 0.150
+        ), f"Status update latency {latency*1000:.1f}ms exceeds 150ms target"
         print(f"\n  Session status update latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -400,7 +404,9 @@ class TestSessionUpdatePerformance:
         await session_repository.create(session)
 
         # Complete session
-        session.complete("Root cause identified: connection pool exhaustion in database layer")
+        session.complete(
+            "Root cause identified: connection pool exhaustion in database layer"
+        )
 
         # Benchmark update
         start = time.perf_counter()
@@ -409,9 +415,9 @@ class TestSessionUpdatePerformance:
 
         assert result is not None
         assert result.status == SessionStatus.COMPLETED
-        assert latency < 0.150, (
-            f"Completion update latency {latency*1000:.1f}ms exceeds 150ms target"
-        )
+        assert (
+            latency < 0.150
+        ), f"Completion update latency {latency*1000:.1f}ms exceeds 150ms target"
         print(f"\n  Session completion update latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -445,9 +451,9 @@ class TestSessionUpdatePerformance:
         assert result is not None
         assert result.total_token_usage == 2250
         assert result.total_agent_executions == 3
-        assert latency < 0.150, (
-            f"Token usage update latency {latency*1000:.1f}ms exceeds 150ms target"
-        )
+        assert (
+            latency < 0.150
+        ), f"Token usage update latency {latency*1000:.1f}ms exceeds 150ms target"
         print(f"\n  Token usage update latency: {latency*1000:.1f}ms")
 
 
@@ -476,9 +482,9 @@ class TestSessionDeletePerformance:
         latency = time.perf_counter() - start
 
         assert result is True
-        assert latency < 0.150, (
-            f"Session delete latency {latency*1000:.1f}ms exceeds 150ms target"
-        )
+        assert (
+            latency < 0.150
+        ), f"Session delete latency {latency*1000:.1f}ms exceeds 150ms target"
         print(f"\n  Session delete latency: {latency*1000:.1f}ms")
 
 
@@ -508,9 +514,9 @@ class TestSessionCountPerformance:
         latency = time.perf_counter() - start
 
         assert count == 50
-        assert latency < 0.050, (
-            f"Count latency {latency*1000:.1f}ms exceeds 50ms target"
-        )
+        assert (
+            latency < 0.050
+        ), f"Count latency {latency*1000:.1f}ms exceeds 50ms target"
         print(f"\n  Count sessions latency: {latency*1000:.1f}ms ({count} items)")
 
 
@@ -553,9 +559,9 @@ class TestSessionMixedWorkloadPerformance:
         total_latency = time.perf_counter() - start
 
         assert session.status == SessionStatus.COMPLETED
-        assert total_latency < 0.600, (
-            f"Lifecycle workload latency {total_latency*1000:.1f}ms exceeds 600ms target"
-        )
+        assert (
+            total_latency < 0.600
+        ), f"Lifecycle workload latency {total_latency*1000:.1f}ms exceeds 600ms target"
         print(f"\n  Session lifecycle workload latency: {total_latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -601,7 +607,7 @@ class TestSessionMixedWorkloadPerformance:
         total_latency = time.perf_counter() - start
 
         assert session.status == SessionStatus.COMPLETED
-        assert total_latency < 0.900, (
-            f"Pause/resume workload latency {total_latency*1000:.1f}ms exceeds 900ms target"
-        )
+        assert (
+            total_latency < 0.900
+        ), f"Pause/resume workload latency {total_latency*1000:.1f}ms exceeds 900ms target"
         print(f"\n  Pause/resume workload latency: {total_latency*1000:.1f}ms")

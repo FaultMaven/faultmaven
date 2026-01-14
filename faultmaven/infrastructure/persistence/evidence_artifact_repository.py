@@ -37,12 +37,12 @@ from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.infrastructure.persistence.models import EvidenceArtifactModel
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,
 )
-from faultmaven.infrastructure.persistence.models import EvidenceArtifactModel
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,9 @@ class DatabaseEvidenceArtifactRepository(EvidenceArtifactRepository):
                 storage_backend=evidence.storage_backend.value,
                 created_at=evidence.created_at,
                 updated_at=evidence.updated_at,
-                artifact_metadata=json.dumps(evidence.metadata) if evidence.metadata else "{}",
+                artifact_metadata=(
+                    json.dumps(evidence.metadata) if evidence.metadata else "{}"
+                ),
                 description=evidence.description,
                 is_primary=evidence.is_primary,
             )
@@ -226,7 +228,9 @@ class DatabaseEvidenceArtifactRepository(EvidenceArtifactRepository):
                 logger.error(f"Case {evidence.case_id} not found")
                 raise ValueError(f"Case {evidence.case_id} not found") from e
             logger.error(f"Evidence artifact {evidence.evidence_id} already exists")
-            raise ValueError(f"Evidence artifact {evidence.evidence_id} already exists") from e
+            raise ValueError(
+                f"Evidence artifact {evidence.evidence_id} already exists"
+            ) from e
 
         except Exception as e:
             await self.db.rollback()
@@ -315,7 +319,9 @@ class DatabaseEvidenceArtifactRepository(EvidenceArtifactRepository):
                 .values(
                     description=evidence.description,
                     is_primary=evidence.is_primary,
-                    artifact_metadata=json.dumps(evidence.metadata) if evidence.metadata else "{}",
+                    artifact_metadata=(
+                        json.dumps(evidence.metadata) if evidence.metadata else "{}"
+                    ),
                     updated_at=evidence.updated_at,
                 )
                 .execution_options(synchronize_session=False)
@@ -523,9 +529,7 @@ class InMemoryEvidenceArtifactRepository(EvidenceArtifactRepository):
     ) -> Tuple[List[EvidenceArtifact], int]:
         """List evidence artifacts for a case."""
         # Filter by case
-        evidence_list = [
-            e for e in self._evidence.values() if e.case_id == case_id
-        ]
+        evidence_list = [e for e in self._evidence.values() if e.case_id == case_id]
 
         # Filter by type if specified
         if evidence_type:

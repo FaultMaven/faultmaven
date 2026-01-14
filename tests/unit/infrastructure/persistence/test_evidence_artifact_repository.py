@@ -3,16 +3,17 @@
 Tests the InMemoryEvidenceArtifactRepository implementation.
 """
 
-import pytest
 from datetime import datetime, timezone
 
+import pytest
+
+from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
+    InMemoryEvidenceArtifactRepository,
+)
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,
-)
-from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
-    InMemoryEvidenceArtifactRepository,
 )
 from tests.utils import generate_case_id, generate_evidence_id
 
@@ -170,6 +171,7 @@ class TestEvidenceUpdate:
         original_updated = evidence.updated_at
 
         import time
+
         time.sleep(0.001)
 
         evidence.description = "Changed"
@@ -258,7 +260,9 @@ class TestEvidenceListByCase:
 
         assert len(screenshots) == 3
         assert total == 3
-        assert all(e.evidence_type == EvidenceArtifactType.SCREENSHOT for e in screenshots)
+        assert all(
+            e.evidence_type == EvidenceArtifactType.SCREENSHOT for e in screenshots
+        )
 
     @pytest.mark.asyncio
     async def test_list_evidence_by_case_pagination(self, repository):

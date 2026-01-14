@@ -27,28 +27,36 @@ Public API:
         - router: FastAPI router for /knowledge/* endpoints
 """
 
-# Domain services
-from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
-from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
-from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
-from faultmaven.modules.knowledge.domain.services.knowledge_service import KnowledgeService
+# API routes
+from faultmaven.modules.knowledge.api.routes import router
 
 # Domain models
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
     KnowledgeItem,
     KnowledgeItemType,
-    EMBEDDING_DIMENSIONS,
+)
+from faultmaven.modules.knowledge.domain.services.embedding_service import (
+    EmbeddingService,
+)
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    KnowledgeService,
+)
+
+# Domain services
+from faultmaven.modules.knowledge.domain.services.search_service import (
+    KnowledgeSearchService,
+)
+from faultmaven.modules.knowledge.domain.services.vector_store_service import (
+    VectorStoreService,
 )
 
 # Infrastructure persistence
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
-    KnowledgeItemRepository,
     DatabaseKnowledgeItemRepository,
     InMemoryKnowledgeItemRepository,
+    KnowledgeItemRepository,
 )
-
-# API routes
-from faultmaven.modules.knowledge.api.routes import router
 
 __all__ = [
     # Services

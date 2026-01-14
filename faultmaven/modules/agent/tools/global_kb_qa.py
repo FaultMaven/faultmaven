@@ -5,10 +5,10 @@ Wrapper for DocumentQATool configured for Global Knowledge Base.
 Provides system-wide access to troubleshooting documentation and best practices.
 """
 
+from faultmaven.infrastructure.llm.router import LLMRouter
+from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.global_kb_config import GlobalKBConfig
-from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
-from faultmaven.infrastructure.llm.router import LLMRouter
 
 
 class AnswerFromGlobalKB(DocumentQATool):
@@ -45,11 +45,7 @@ Use this tool for general troubleshooting guidance, best practices, and standard
 **Note**: This is system-wide documentation, not case-specific or user-specific.
 Use answer_from_case_evidence for case files or answer_from_user_kb for personal runbooks."""
 
-    def __init__(
-        self,
-        vector_store: CaseVectorStore,
-        llm_router: LLMRouter
-    ):
+    def __init__(self, vector_store: CaseVectorStore, llm_router: LLMRouter):
         """
         Initialize global KB Q&A tool.
 
@@ -60,7 +56,7 @@ Use answer_from_case_evidence for case files or answer_from_user_kb for personal
         super().__init__(
             vector_store=vector_store,
             llm_router=llm_router,
-            kb_config=GlobalKBConfig()  # Inject global KB strategy
+            kb_config=GlobalKBConfig(),  # Inject global KB strategy
         )
 
     async def _arun(self, question: str, k: int = 5) -> str:

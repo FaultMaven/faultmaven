@@ -13,21 +13,21 @@ Core Responsibilities:
 - Multi-tenancy isolation
 """
 
-from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
 import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-from faultmaven.services.base import BaseService
+from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.auth.domain.models.organization import (
+    AuditCategory,
+    AuditEventType,
     IOrganizationRepository,
     Organization,
     OrganizationMember,
     OrgPlanTier,
-    AuditEventType,
-    AuditCategory
 )
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.services.base import BaseService
 
 
 class OrganizationService(BaseService):
@@ -37,7 +37,7 @@ class OrganizationService(BaseService):
         self,
         organization_repository: IOrganizationRepository,
         audit_repository: Optional[Any] = None,
-        settings: Optional[Any] = None
+        settings: Optional[Any] = None,
     ):
         """
         Initialize the Organization Service.
@@ -59,7 +59,7 @@ class OrganizationService(BaseService):
         slug: str,
         creator_user_id: str,
         description: Optional[str] = None,
-        plan_tier: OrgPlanTier = OrgPlanTier.FREE
+        plan_tier: OrgPlanTier = OrgPlanTier.FREE,
     ) -> Organization:
         """
         Create a new organization.
@@ -78,7 +78,7 @@ class OrganizationService(BaseService):
             ValidationException: If slug is invalid or already exists
         """
         # Validate slug format (lowercase, hyphens only)
-        if not slug.replace('-', '').replace('_', '').isalnum():
+        if not slug.replace("-", "").replace("_", "").isalnum():
             raise ValidationException(
                 "Slug must contain only lowercase letters, numbers, and hyphens"
             )
@@ -96,7 +96,7 @@ class OrganizationService(BaseService):
         max_members = {
             OrgPlanTier.FREE: 5,
             OrgPlanTier.PRO: 50,
-            OrgPlanTier.ENTERPRISE: 999999  # Unlimited
+            OrgPlanTier.ENTERPRISE: 999999,  # Unlimited
         }.get(plan_tier, 5)
 
         org = Organization(
@@ -109,7 +109,7 @@ class OrganizationService(BaseService):
             max_cases=None,  # Unlimited for now
             settings={},
             created_at=now,
-            updated_at=now
+            updated_at=now,
         )
 
         created_org = await self.repository.create_organization(org)
@@ -126,10 +126,12 @@ class OrganizationService(BaseService):
                 resource_type="organization",
                 resource_id=org_id,
                 org_id=org_id,
-                details={"name": name, "slug": slug, "plan_tier": plan_tier.value}
+                details={"name": name, "slug": slug, "plan_tier": plan_tier.value},
             )
 
-        self.logger.info(f"Created organization {org_id} ({name}) by user {creator_user_id}")
+        self.logger.info(
+            f"Created organization {org_id} ({name}) by user {creator_user_id}"
+        )
         return created_org
 
     @trace("org_service_get_organization")
@@ -149,7 +151,7 @@ class OrganizationService(BaseService):
         user_id: str,
         name: Optional[str] = None,
         description: Optional[str] = None,
-        settings: Optional[Dict[str, Any]] = None
+        settings: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Update organization details.
@@ -198,7 +200,7 @@ class OrganizationService(BaseService):
                 resource_type="organization",
                 resource_id=org_id,
                 org_id=org_id,
-                details={"name": name, "description": description}
+                details={"name": name, "description": description},
             )
 
         return success
@@ -235,18 +237,14 @@ class OrganizationService(BaseService):
                 event_category=AuditCategory.ADMINISTRATION,
                 resource_type="organization",
                 resource_id=org_id,
-                org_id=org_id
+                org_id=org_id,
             )
 
         return success
 
     @trace("org_service_add_member")
     async def add_member(
-        self,
-        org_id: str,
-        user_id: str,
-        role_id: str,
-        added_by: str
+        self, org_id: str, user_id: str, role_id: str, added_by: str
     ) -> bool:
         """
         Add user to organization with role.
@@ -292,18 +290,13 @@ class OrganizationService(BaseService):
                 resource_type="organization_member",
                 resource_id=user_id,
                 org_id=org_id,
-                details={"target_user_id": user_id, "role_id": role_id}
+                details={"target_user_id": user_id, "role_id": role_id},
             )
 
         return success
 
     @trace("org_service_remove_member")
-    async def remove_member(
-        self,
-        org_id: str,
-        user_id: str,
-        removed_by: str
-    ) -> bool:
+    async def remove_member(self, org_id: str, user_id: str, removed_by: str) -> bool:
         """
         Remove user from organization.
 
@@ -342,18 +335,14 @@ class OrganizationService(BaseService):
                 resource_type="organization_member",
                 resource_id=user_id,
                 org_id=org_id,
-                details={"target_user_id": user_id}
+                details={"target_user_id": user_id},
             )
 
         return success
 
     @trace("org_service_update_member_role")
     async def update_member_role(
-        self,
-        org_id: str,
-        user_id: str,
-        role_id: str,
-        updated_by: str
+        self, org_id: str, user_id: str, role_id: str, updated_by: str
     ) -> bool:
         """
         Update user's role in organization.
@@ -385,7 +374,7 @@ class OrganizationService(BaseService):
                 resource_type="organization_member",
                 resource_id=user_id,
                 org_id=org_id,
-                details={"target_user_id": user_id, "role_id": role_id}
+                details={"target_user_id": user_id, "role_id": role_id},
             )
 
         return success
@@ -407,10 +396,7 @@ class OrganizationService(BaseService):
 
     @trace("org_service_user_has_permission")
     async def user_has_permission(
-        self,
-        user_id: str,
-        org_id: str,
-        permission: str
+        self, user_id: str, org_id: str, permission: str
     ) -> bool:
         """
         Check if user has permission in organization.

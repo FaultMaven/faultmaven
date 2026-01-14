@@ -20,26 +20,29 @@ Pattern:
         return request.app.state.session_service
 """
 
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import Depends, HTTPException, Request
 
 from ...models import SessionContext
-from ...models.interfaces_case import ICaseService
+
 # TD-001: IReportStore removed - reports now stored via CaseRepository
 from ...models.interfaces import IJobService
+from ...models.interfaces_case import ICaseService
+from ...providers.tenancy.base import TenantProvider
+
 # Lazy import to avoid circular dependency - DataService, SessionService, KnowledgeService imported in functions or TYPE_CHECKING
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
 from ...services.preprocessing import PreprocessingService
-from ...providers.tenancy.base import TenantProvider
 
 # Type hints for lazy imports
 if TYPE_CHECKING:
-    from ...services import DataService, SessionService
     from ...modules.knowledge.domain.services.knowledge_service import KnowledgeService
+    from ...services import DataService, SessionService
 
 
 # Service Dependencies (Composition Root pattern - access via app.state)
+
 
 async def get_session_service(request: Request):
     """Get SessionService instance from app.state (Composition Root)"""
@@ -57,8 +60,7 @@ async def get_preprocessing_service(request: Request) -> PreprocessingService:
     preprocessing_service = request.app.state.preprocessing_service
     if preprocessing_service is None:
         raise HTTPException(
-            status_code=503,
-            detail="Preprocessing service not available"
+            status_code=503, detail="Preprocessing service not available"
         )
     return preprocessing_service
 
@@ -80,7 +82,7 @@ async def get_planning_service(request: Request):
 
 async def get_case_service(request: Request) -> Optional[ICaseService]:
     """Get CaseService instance from app.state (Composition Root)"""
-    return getattr(request.app.state, 'case_service', None)
+    return getattr(request.app.state, "case_service", None)
 
 
 async def get_investigation_service(request: Request):
@@ -88,8 +90,7 @@ async def get_investigation_service(request: Request):
     service = request.app.state.investigation_service
     if service is None:
         raise HTTPException(
-            status_code=503,
-            detail="Investigation service not available"
+            status_code=503, detail="Investigation service not available"
         )
     return service
 
@@ -99,8 +100,7 @@ async def get_investigation_orchestrator(request: Request):
     orchestrator = request.app.state.investigation_orchestrator
     if orchestrator is None:
         raise HTTPException(
-            status_code=503,
-            detail="Investigation orchestrator not available"
+            status_code=503, detail="Investigation orchestrator not available"
         )
     return orchestrator
 
@@ -125,17 +125,17 @@ async def get_tenant_provider(request: Request) -> Optional[TenantProvider]:
 
     Returns TenantProvider for multi-tenant isolation in API endpoints.
     """
-    return getattr(request.app.state, 'tenant_provider', None)
+    return getattr(request.app.state, "tenant_provider", None)
 
 
 async def get_report_generation_service(request: Request):
     """Get ReportGenerationService instance from app.state (TASK-024)"""
-    return getattr(request.app.state, 'report_generation_service', None)
+    return getattr(request.app.state, "report_generation_service", None)
 
 
 async def get_report_recommendation_service(request: Request):
     """Get ReportRecommendationService instance from app.state (TASK-024)"""
-    return getattr(request.app.state, 'report_recommendation_service', None)
+    return getattr(request.app.state, "report_recommendation_service", None)
 
 
 async def get_case_vector_store(request: Request):
@@ -143,7 +143,7 @@ async def get_case_vector_store(request: Request):
     try:
         container = request.app.extra.get("di_container")
         if container:
-            return getattr(container, 'case_vector_store', None)
+            return getattr(container, "case_vector_store", None)
         return None
     except Exception:
         # Case vector store is optional - return None if not available
@@ -151,6 +151,7 @@ async def get_case_vector_store(request: Request):
 
 
 # Authentication Dependencies
+
 
 async def get_session_id(request: Request) -> Optional[str]:
     """
@@ -217,7 +218,7 @@ async def require_authenticated_user(request: Request) -> str:
     if not user_id:
         raise HTTPException(
             status_code=401,
-            detail="Authentication required. Please log in to access this resource."
+            detail="Authentication required. Please log in to access this resource.",
         )
     return user_id
 
@@ -246,30 +247,27 @@ async def get_protection_system(request: Request):
     """Get protection system instance from app.extra"""
     protection_system = request.app.extra.get("protection_system")
     if not protection_system:
-        raise HTTPException(
-            status_code=503, 
-            detail="Protection system not available"
-        )
+        raise HTTPException(status_code=503, detail="Protection system not available")
     return protection_system
-
 
 
 # Session Dependencies
 
+
 async def get_current_session(
     session_id: str,
-    session_service = Depends(get_session_service),
+    session_service=Depends(get_session_service),
 ) -> SessionContext:
     """
     Get and validate current session
-    
+
     Args:
         session_id: Session ID from request
         session_service: Injected session service
-        
+
     Returns:
         Valid SessionContext
-        
+
     Raises:
         HTTPException: If session not found or invalid
     """
@@ -281,33 +279,34 @@ async def get_current_session(
 
 async def get_optional_session(
     session_id: Optional[str] = None,
-    session_service = Depends(get_session_service),
+    session_service=Depends(get_session_service),
 ) -> Optional[SessionContext]:
     """
     Get optional session if ID provided
-    
+
     Args:
         session_id: Optional session ID
         session_service: Injected session service
-        
+
     Returns:
         SessionContext or None
     """
     if not session_id:
         return None
-        
+
     return await session_service.get_session(session_id, validate=True)
 
 
 # Request Context Dependencies
 
+
 async def get_request_metadata(request: Request) -> dict:
     """
     Extract metadata from request
-    
+
     Args:
         request: FastAPI request object
-        
+
     Returns:
         Dictionary of request metadata
     """
@@ -321,13 +320,14 @@ async def get_request_metadata(request: Request) -> dict:
 
 # Authentication Dependencies (placeholder for future implementation)
 
+
 async def get_current_user(request: Request) -> Optional[dict]:
     """
     Get current authenticated user
-    
+
     Args:
         request: FastAPI request object
-        
+
     Returns:
         User info dict or None
     """
@@ -340,9 +340,8 @@ async def get_current_user(request: Request) -> Optional[dict]:
     return None
 
 
-
-
 # Rate Limiting Dependencies (placeholder)
+
 
 async def check_rate_limit(
     request: Request,
@@ -350,14 +349,14 @@ async def check_rate_limit(
 ) -> bool:
     """
     Check rate limits
-    
+
     Args:
         request: FastAPI request
         user: Optional authenticated user
-        
+
     Returns:
         True if within limits
-        
+
     Raises:
         HTTPException: If rate limit exceeded
     """
@@ -368,32 +367,33 @@ async def check_rate_limit(
 
 # Validation Dependencies
 
+
 async def validate_content_size(
     content: str,
     max_size_mb: int = 10,
 ) -> str:
     """
     Validate content size
-    
+
     Args:
         content: Content to validate
         max_size_mb: Maximum size in MB
-        
+
     Returns:
         Validated content
-        
+
     Raises:
         HTTPException: If content too large
     """
     size_bytes = len(content.encode("utf-8"))
     size_mb = size_bytes / (1024 * 1024)
-    
+
     if size_mb > max_size_mb:
         raise HTTPException(
             status_code=413,
             detail=f"Content too large: {size_mb:.2f}MB (max: {max_size_mb}MB)",
         )
-    
+
     return content
 
 
@@ -403,6 +403,7 @@ async def validate_content_size(
 
 
 # Health Check Dependencies
+
 
 async def check_service_health(request: Request) -> dict:
     """
@@ -435,9 +436,10 @@ async def check_service_health(request: Request) -> dict:
 
 # Job Service Dependencies
 
+
 async def get_job_service(request: Request) -> Optional[IJobService]:
     """Get JobService instance from app.state (Composition Root)"""
-    return getattr(request.app.state, 'job_service', None)
+    return getattr(request.app.state, "job_service", None)
 
 
 async def get_classification_engine(request: Request):
@@ -450,8 +452,7 @@ async def get_organization_service(request: Request):
     service = request.app.state.organization_service
     if service is None:
         raise HTTPException(
-            status_code=503,
-            detail="Organization service not available"
+            status_code=503, detail="Organization service not available"
         )
     return service
 
@@ -460,10 +461,5 @@ async def get_team_service(request: Request):
     """Get TeamService instance from app.state (Composition Root)"""
     service = request.app.state.team_service
     if service is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Team service not available"
-        )
+        raise HTTPException(status_code=503, detail="Team service not available")
     return service
-
-

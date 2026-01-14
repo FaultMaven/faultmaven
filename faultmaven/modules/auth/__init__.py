@@ -20,24 +20,20 @@ Structure:
 """
 
 # Domain models (already eagerly imported in domain/models/__init__.py)
-from faultmaven.modules.auth.domain.models import (
-    # RBAC
-    Role,
-    Permission,
-    # User & Session
-    User,
-    Session,
-    # Auth
+from faultmaven.modules.auth.domain.models import (  # RBAC; User & Session; Auth; API Auth
     AuthToken,
-    TokenPair,
-    TokenClaims,
-    TokenStatus,
-    DevUser,
-    # API Auth
-    DevLoginRequest,
-    UserProfile,
     AuthTokenResponse,
+    DevLoginRequest,
+    DevUser,
     LogoutResponse,
+    Permission,
+    Role,
+    Session,
+    TokenClaims,
+    TokenPair,
+    TokenStatus,
+    User,
+    UserProfile,
 )
 
 # Domain services - import directly to avoid circular imports:

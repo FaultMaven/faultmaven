@@ -84,7 +84,9 @@ def app(mock_session_service, mock_user):
     from faultmaven.api.dependencies import get_investigation_session_service
     from faultmaven.api.middleware.auth import get_current_user
 
-    app.dependency_overrides[get_investigation_session_service] = get_mock_session_service
+    app.dependency_overrides[get_investigation_session_service] = (
+        get_mock_session_service
+    )
     app.dependency_overrides[get_current_user] = get_mock_current_user
 
     return app
@@ -110,7 +112,9 @@ def headers():
 class TestCreateSession:
     """Tests for POST /api/v1/cases/{case_id}/sessions endpoint."""
 
-    def test_create_session_success(self, client, mock_session_service, mock_session, headers):
+    def test_create_session_success(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test successful session creation."""
         mock_session_service.create_session.return_value = mock_session
 
@@ -125,7 +129,9 @@ class TestCreateSession:
         assert data["session_id"] == "session_123abc"
         assert data["status"] == "active"
 
-    def test_create_session_with_budget(self, client, mock_session_service, mock_session, headers):
+    def test_create_session_with_budget(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test session creation with token budget."""
         mock_session_service.create_session.return_value = mock_session
 
@@ -141,7 +147,9 @@ class TestCreateSession:
         assert response.status_code == status.HTTP_201_CREATED
         mock_session_service.create_session.assert_called_once()
 
-    def test_create_session_minimal(self, client, mock_session_service, mock_session, headers):
+    def test_create_session_minimal(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test session creation with minimal data."""
         mock_session_service.create_session.return_value = mock_session
 
@@ -156,7 +164,10 @@ class TestCreateSession:
     def test_create_session_case_not_found(self, client, mock_session_service, headers):
         """Test session creation for non-existent case."""
         from faultmaven.exceptions import NotFoundError
-        mock_session_service.create_session.side_effect = NotFoundError("Case", "nonexistent")
+
+        mock_session_service.create_session.side_effect = NotFoundError(
+            "Case", "nonexistent"
+        )
 
         response = client.post(
             "/api/v1/cases/nonexistent/sessions",
@@ -169,6 +180,7 @@ class TestCreateSession:
     def test_create_session_active_exists(self, client, mock_session_service, headers):
         """Test session creation when active session exists."""
         from faultmaven.exceptions import ConflictError
+
         mock_session_service.create_session.side_effect = ConflictError(
             "Active session already exists",
             resource_type="Session",
@@ -208,7 +220,9 @@ class TestCreateSession:
 class TestGetSession:
     """Tests for GET /api/v1/cases/{case_id}/sessions/{session_id} endpoint."""
 
-    def test_get_session_success(self, client, mock_session_service, mock_session, headers):
+    def test_get_session_success(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test successful session retrieval."""
         mock_session_service.get_session.return_value = mock_session
 
@@ -233,7 +247,9 @@ class TestGetSession:
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_get_session_wrong_case(self, client, mock_session_service, mock_session, headers):
+    def test_get_session_wrong_case(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test session retrieval with wrong case ID."""
         mock_session.case_id = "different_case"
         mock_session_service.get_session.return_value = mock_session
@@ -254,7 +270,9 @@ class TestGetSession:
 class TestListSessions:
     """Tests for GET /api/v1/cases/{case_id}/sessions endpoint."""
 
-    def test_list_sessions_success(self, client, mock_session_service, mock_session, headers):
+    def test_list_sessions_success(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test successful session list."""
         mock_session_service.list_sessions.return_value = [mock_session]
 
@@ -281,7 +299,9 @@ class TestListSessions:
         data = response.json()
         assert data == []
 
-    def test_list_sessions_with_status_filter(self, client, mock_session_service, headers):
+    def test_list_sessions_with_status_filter(
+        self, client, mock_session_service, headers
+    ):
         """Test session list with status filter."""
         mock_session_service.list_sessions.return_value = []
 
@@ -298,7 +318,10 @@ class TestListSessions:
     def test_list_sessions_case_not_found(self, client, mock_session_service, headers):
         """Test listing sessions for non-existent case."""
         from faultmaven.exceptions import NotFoundError
-        mock_session_service.list_sessions.side_effect = NotFoundError("Case", "nonexistent")
+
+        mock_session_service.list_sessions.side_effect = NotFoundError(
+            "Case", "nonexistent"
+        )
 
         response = client.get(
             "/api/v1/cases/nonexistent/sessions",
@@ -330,7 +353,9 @@ class TestListSessions:
 class TestUpdateSession:
     """Tests for PATCH /api/v1/cases/{case_id}/sessions/{session_id} endpoint."""
 
-    def test_update_session_success(self, client, mock_session_service, mock_session, headers):
+    def test_update_session_success(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test successful session update."""
         mock_session.session_goal = "Updated goal"
         mock_session_service.update_session.return_value = mock_session
@@ -345,7 +370,9 @@ class TestUpdateSession:
         data = response.json()
         assert data["session_goal"] == "Updated goal"
 
-    def test_update_session_budget(self, client, mock_session_service, mock_session, headers):
+    def test_update_session_budget(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test updating session budget."""
         mock_session.token_budget_limit = 25000
         mock_session_service.update_session.return_value = mock_session
@@ -361,6 +388,7 @@ class TestUpdateSession:
     def test_update_session_not_found(self, client, mock_session_service, headers):
         """Test updating non-existent session."""
         from faultmaven.exceptions import NotFoundError
+
         mock_session_service.update_session.side_effect = NotFoundError(
             "Session", "nonexistent"
         )
@@ -373,7 +401,9 @@ class TestUpdateSession:
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_update_session_empty_request(self, client, mock_session_service, mock_session, headers):
+    def test_update_session_empty_request(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test update with empty request."""
         mock_session_service.get_session.return_value = mock_session
 
@@ -394,7 +424,9 @@ class TestUpdateSession:
 class TestPauseSession:
     """Tests for POST /api/v1/cases/{case_id}/sessions/{session_id}/pause endpoint."""
 
-    def test_pause_session_success(self, client, mock_session_service, mock_session, headers):
+    def test_pause_session_success(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test successful session pause."""
         mock_session.status = SessionStatus.PAUSED
         mock_session_service.pause_session.return_value = mock_session
@@ -411,6 +443,7 @@ class TestPauseSession:
     def test_pause_session_not_active(self, client, mock_session_service, headers):
         """Test pausing session that's not active."""
         from faultmaven.exceptions import ValidationException
+
         mock_session_service.pause_session.side_effect = ValidationException(
             "Cannot pause session in paused status"
         )
@@ -426,6 +459,7 @@ class TestPauseSession:
     def test_pause_session_not_found(self, client, mock_session_service, headers):
         """Test pausing non-existent session."""
         from faultmaven.exceptions import NotFoundError
+
         mock_session_service.pause_session.side_effect = NotFoundError(
             "Session", "nonexistent"
         )
@@ -446,7 +480,9 @@ class TestPauseSession:
 class TestResumeSession:
     """Tests for POST /api/v1/cases/{case_id}/sessions/{session_id}/resume endpoint."""
 
-    def test_resume_session_success(self, client, mock_session_service, mock_session, headers):
+    def test_resume_session_success(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test successful session resume."""
         mock_session.status = SessionStatus.ACTIVE
         mock_session_service.resume_session.return_value = mock_session
@@ -463,6 +499,7 @@ class TestResumeSession:
     def test_resume_session_not_paused(self, client, mock_session_service, headers):
         """Test resuming session that's not paused."""
         from faultmaven.exceptions import ValidationException
+
         mock_session_service.resume_session.side_effect = ValidationException(
             "Cannot resume session in active status"
         )
@@ -484,7 +521,9 @@ class TestResumeSession:
 class TestCompleteSession:
     """Tests for POST /api/v1/cases/{case_id}/sessions/{session_id}/complete endpoint."""
 
-    def test_complete_session_success(self, client, mock_session_service, mock_session, headers):
+    def test_complete_session_success(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test successful session completion."""
         mock_session.status = SessionStatus.COMPLETED
         mock_session.findings_summary = "Root cause identified"
@@ -511,9 +550,12 @@ class TestCompleteSession:
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
-    def test_complete_session_already_completed(self, client, mock_session_service, headers):
+    def test_complete_session_already_completed(
+        self, client, mock_session_service, headers
+    ):
         """Test completing already completed session."""
         from faultmaven.exceptions import ValidationException
+
         mock_session_service.complete_session.side_effect = ValidationException(
             "Cannot complete session in completed status"
         )
@@ -536,7 +578,9 @@ class TestCompleteSession:
 class TestGetActiveSession:
     """Tests for GET /api/v1/cases/{case_id}/sessions/active endpoint."""
 
-    def test_get_active_session_success(self, client, mock_session_service, mock_session, headers):
+    def test_get_active_session_success(
+        self, client, mock_session_service, mock_session, headers
+    ):
         """Test successful active session retrieval."""
         mock_session_service.get_active_session.return_value = mock_session
 
@@ -562,9 +606,12 @@ class TestGetActiveSession:
         assert response.status_code == status.HTTP_200_OK
         assert response.json() is None
 
-    def test_get_active_session_case_not_found(self, client, mock_session_service, headers):
+    def test_get_active_session_case_not_found(
+        self, client, mock_session_service, headers
+    ):
         """Test getting active session for non-existent case."""
         from faultmaven.exceptions import NotFoundError
+
         mock_session_service.get_active_session.side_effect = NotFoundError(
             "Case", "nonexistent"
         )
@@ -588,6 +635,7 @@ class TestSessionAuthorization:
     def test_create_session_forbidden(self, client, mock_session_service, headers):
         """Test session creation with wrong organization."""
         from faultmaven.exceptions import AuthorizationError
+
         mock_session_service.create_session.side_effect = AuthorizationError(
             "Case not accessible by organization"
         )
@@ -602,7 +650,9 @@ class TestSessionAuthorization:
 
     def test_get_session_forbidden(self, client, mock_session_service, headers):
         """Test session retrieval with wrong organization."""
-        mock_session_service.get_session.return_value = None  # Unauthorized returns None
+        mock_session_service.get_session.return_value = (
+            None  # Unauthorized returns None
+        )
 
         response = client.get(
             "/api/v1/cases/case_456def/sessions/session_123abc",
@@ -614,6 +664,7 @@ class TestSessionAuthorization:
     def test_list_sessions_forbidden(self, client, mock_session_service, headers):
         """Test session list with wrong organization."""
         from faultmaven.exceptions import AuthorizationError
+
         mock_session_service.list_sessions.side_effect = AuthorizationError(
             "Not authorized"
         )

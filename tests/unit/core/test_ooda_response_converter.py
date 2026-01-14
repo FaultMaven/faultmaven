@@ -5,21 +5,22 @@ Tests conversion from internal OODA framework responses to external API response
 """
 
 import pytest
+
 from faultmaven.core.ooda_response_converter import (
-    ooda_to_agent_response,
+    _convert_to_evidence_requests,
     _determine_response_type,
     _extract_sources,
-    _convert_to_evidence_requests,
-)
-from faultmaven.models.responses import (
-    OODAResponse,
-    ConsultantResponse,
-    LeadInvestigatorResponse,
-    SuggestedAction,
-    OODAEvidenceRequest,
-    SolutionProposal,
+    ooda_to_agent_response,
 )
 from faultmaven.models.api import ResponseType, SourceType
+from faultmaven.models.responses import (
+    ConsultantResponse,
+    LeadInvestigatorResponse,
+    OODAEvidenceRequest,
+    OODAResponse,
+    SolutionProposal,
+    SuggestedAction,
+)
 
 
 class TestOODAToAgentResponseConversion:
@@ -101,7 +102,7 @@ class TestOODAToAgentResponseConversion:
 
     def test_convert_with_view_state(self):
         """Test conversion preserves view_state"""
-        from faultmaven.models.api import ViewState, User, Case
+        from faultmaven.models.api import Case, User, ViewState
 
         ooda_response = OODAResponse(
             answer="Test answer",
@@ -197,9 +198,15 @@ class TestDetermineResponseType:
         ooda_response = LeadInvestigatorResponse(
             answer="Here's the plan",
             suggested_actions=[
-                SuggestedAction(action_type="command", label="Step 1", description="Execute step 1"),
-                SuggestedAction(action_type="command", label="Step 2", description="Execute step 2"),
-                SuggestedAction(action_type="command", label="Step 3", description="Execute step 3"),
+                SuggestedAction(
+                    action_type="command", label="Step 1", description="Execute step 1"
+                ),
+                SuggestedAction(
+                    action_type="command", label="Step 2", description="Execute step 2"
+                ),
+                SuggestedAction(
+                    action_type="command", label="Step 3", description="Execute step 3"
+                ),
             ],
         )
 

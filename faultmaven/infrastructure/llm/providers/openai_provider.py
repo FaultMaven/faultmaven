@@ -4,33 +4,31 @@ OpenAI provider implementation.
 This module implements the OpenAI LLM provider for GPT models.
 """
 
-import aiohttp
 import json
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
+
+import aiohttp
+
+from faultmaven.exceptions import LLMException
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
-from faultmaven.exceptions import LLMException
 
 
 class OpenAIProvider(BaseLLMProvider):
     """OpenAI LLM provider implementation"""
-    
+
     @property
     def provider_name(self) -> str:
         return "openai"
-    
+
     def is_available(self) -> bool:
         """Check if OpenAI provider is properly configured"""
-        return bool(
-            self.config.api_key and
-            self.config.base_url and
-            self.config.models
-        )
-    
+        return bool(self.config.api_key and self.config.base_url and self.config.models)
+
     def get_supported_models(self) -> List[str]:
         """Get list of supported models"""
         return self.config.models.copy()
-    
+
     async def generate(
         self,
         prompt: str,
@@ -39,7 +37,7 @@ class OpenAIProvider(BaseLLMProvider):
         temperature: float = 0.7,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> LLMResponse:
         """Generate response using OpenAI API
 
@@ -83,7 +81,7 @@ class OpenAIProvider(BaseLLMProvider):
 
         # Add any additional kwargs
         payload.update(kwargs)
-        
+
         # Make request
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -92,13 +90,13 @@ class OpenAIProvider(BaseLLMProvider):
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout),
             ) as response:
-                
+
                 if response.status != 200:
                     error_text = await response.text()
                     raise LLMException(
                         f"OpenAI API error {response.status}: {error_text}"
                     )
-                
+
                 data = await response.json()
 
                 # Extract response content
@@ -116,11 +114,7 @@ class OpenAIProvider(BaseLLMProvider):
                 tool_calls = None
                 if "tool_calls" in message and message["tool_calls"]:
                     tool_calls = [
-                        ToolCall(
-                            id=tc["id"],
-                            type=tc["type"],
-                            function=tc["function"]
-                        )
+                        ToolCall(id=tc["id"], type=tc["type"], function=tc["function"])
                         for tc in message["tool_calls"]
                     ]
 

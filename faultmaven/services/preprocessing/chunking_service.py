@@ -17,6 +17,7 @@ import asyncio
 import logging
 import re
 from typing import List, Optional
+
 from faultmaven.models.api import DataType
 from faultmaven.models.interfaces import ILLMProvider
 
@@ -31,7 +32,7 @@ class ChunkingService:
         llm_router: ILLMProvider,
         chunk_size_tokens: int = 4000,
         overlap_tokens: int = 200,
-        max_parallel_chunks: int = 5
+        max_parallel_chunks: int = 5,
     ):
         """
         Initialize chunking service
@@ -48,10 +49,7 @@ class ChunkingService:
         self.max_parallel_chunks = max_parallel_chunks
 
     async def process_long_text(
-        self,
-        content: str,
-        data_type: DataType,
-        filename: Optional[str] = None
+        self, content: str, data_type: DataType, filename: Optional[str] = None
     ) -> str:
         """
         Process long document using map-reduce pattern
@@ -85,9 +83,7 @@ class ChunkingService:
 
         # Step 3: REDUCE - Synthesize all summaries into final summary
         final_summary = await self._reduce_synthesize(
-            chunk_summaries,
-            data_type,
-            filename
+            chunk_summaries, data_type, filename
         )
 
         final_token_count = self._estimate_tokens(final_summary)
@@ -117,7 +113,7 @@ class ChunkingService:
         current_tokens = 0
 
         # Split on paragraphs (separated by blank lines)
-        paragraphs = re.split(r'\n\s*\n', content)
+        paragraphs = re.split(r"\n\s*\n", content)
 
         for i, para in enumerate(paragraphs):
             para = para.strip()
@@ -130,7 +126,7 @@ class ChunkingService:
             if para_tokens > self.chunk_size_tokens:
                 # Save current chunk if exists
                 if current_chunk:
-                    chunks.append('\n\n'.join(current_chunk))
+                    chunks.append("\n\n".join(current_chunk))
                     current_chunk = []
                     current_tokens = 0
 
@@ -144,7 +140,7 @@ class ChunkingService:
 
                     if sentence_tokens + sent_tokens > self.chunk_size_tokens:
                         if sentence_chunk:
-                            chunks.append(' '.join(sentence_chunk))
+                            chunks.append(" ".join(sentence_chunk))
                         sentence_chunk = [sentence]
                         sentence_tokens = sent_tokens
                     else:
@@ -152,7 +148,7 @@ class ChunkingService:
                         sentence_tokens += sent_tokens
 
                 if sentence_chunk:
-                    chunks.append(' '.join(sentence_chunk))
+                    chunks.append(" ".join(sentence_chunk))
 
                 continue
 
@@ -160,7 +156,7 @@ class ChunkingService:
             if current_tokens + para_tokens > self.chunk_size_tokens:
                 # Chunk full - save it
                 if current_chunk:
-                    chunks.append('\n\n'.join(current_chunk))
+                    chunks.append("\n\n".join(current_chunk))
 
                 # Start new chunk with overlap (last paragraph)
                 if current_chunk and self.overlap_tokens > 0:
@@ -183,22 +179,20 @@ class ChunkingService:
 
         # Save last chunk
         if current_chunk:
-            chunks.append('\n\n'.join(current_chunk))
+            chunks.append("\n\n".join(current_chunk))
 
         return chunks
 
     def _split_on_sentences(self, paragraph: str) -> List[str]:
         """Split paragraph into sentences (simple sentence boundary detection)"""
         # Simple sentence splitter - splits on ". " or ".\n"
-        sentences = re.split(r'\.(?:\s+|\n)', paragraph)
+        sentences = re.split(r"\.(?:\s+|\n)", paragraph)
         # Re-add periods
-        sentences = [s.strip() + '.' for s in sentences if s.strip()]
+        sentences = [s.strip() + "." for s in sentences if s.strip()]
         return sentences
 
     async def _map_summarize_chunks(
-        self,
-        chunks: List[str],
-        data_type: DataType
+        self, chunks: List[str], data_type: DataType
     ) -> List[str]:
         """
         MAP phase: Summarize each chunk in parallel (batched)
@@ -223,26 +217,21 @@ class ChunkingService:
             )
 
             # Summarize batch in parallel
-            batch_summaries = await asyncio.gather(*[
-                self._summarize_chunk(
-                    chunk,
-                    data_type,
-                    batch_start + idx,
-                    len(chunks)
-                )
-                for idx, chunk in enumerate(batch_chunks)
-            ])
+            batch_summaries = await asyncio.gather(
+                *[
+                    self._summarize_chunk(
+                        chunk, data_type, batch_start + idx, len(chunks)
+                    )
+                    for idx, chunk in enumerate(batch_chunks)
+                ]
+            )
 
             summaries.extend(batch_summaries)
 
         return summaries
 
     async def _summarize_chunk(
-        self,
-        chunk: str,
-        data_type: DataType,
-        chunk_idx: int,
-        total_chunks: int
+        self, chunk: str, data_type: DataType, chunk_idx: int, total_chunks: int
     ) -> str:
         """
         Summarize a single chunk with data type-specific instructions
@@ -340,7 +329,7 @@ OMIT:
 
 Format: Code structure with key logic.
 Target: 200-400 words per chunk.
-"""
+""",
         }
 
         system_prompt = prompts.get(data_type, prompts[DataType.UNSTRUCTURED_TEXT])
@@ -349,10 +338,10 @@ Target: 200-400 words per chunk.
             response = await self.llm_router.call_llm(
                 messages=[
                     {"role": "system", "content": system_prompt.strip()},
-                    {"role": "user", "content": chunk}
+                    {"role": "user", "content": chunk},
                 ],
                 provider="synthesis",  # Use cheap synthesis provider
-                max_tokens=1000  # Each summary ~1K tokens max
+                max_tokens=1000,  # Each summary ~1K tokens max
             )
 
             return response
@@ -365,7 +354,7 @@ Target: 200-400 words per chunk.
         self,
         chunk_summaries: List[str],
         data_type: DataType,
-        filename: Optional[str] = None
+        filename: Optional[str] = None,
     ) -> str:
         """
         REDUCE phase: Synthesize all chunk summaries into final summary
@@ -379,10 +368,12 @@ Target: 200-400 words per chunk.
             Final synthesized summary (~2K tokens)
         """
         # Combine all chunk summaries with section markers
-        combined = "\n\n".join([
-            f"=== Section {i + 1} of {len(chunk_summaries)} ===\n{summary}"
-            for i, summary in enumerate(chunk_summaries)
-        ])
+        combined = "\n\n".join(
+            [
+                f"=== Section {i + 1} of {len(chunk_summaries)} ===\n{summary}"
+                for i, summary in enumerate(chunk_summaries)
+            ]
+        )
 
         synthesis_prompt = f"""
 You are synthesizing {len(chunk_summaries)} section summaries from a {data_type.value} document{' named ' + filename if filename else ''}.
@@ -405,10 +396,10 @@ Preserve all technical details, error messages, and actionable information.
             response = await self.llm_router.call_llm(
                 messages=[
                     {"role": "system", "content": synthesis_prompt.strip()},
-                    {"role": "user", "content": combined}
+                    {"role": "user", "content": combined},
                 ],
                 provider="synthesis",
-                max_tokens=2500  # Final summary can be longer
+                max_tokens=2500,  # Final summary can be longer
             )
 
             return response

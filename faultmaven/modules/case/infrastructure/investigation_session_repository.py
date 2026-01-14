@@ -39,12 +39,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from faultmaven.infrastructure.persistence.models import (
+    InvestigationSessionModel,
+)
 from faultmaven.modules.case.domain.investigation_session import (
     InvestigationSession,
     SessionStatus,
-)
-from faultmaven.infrastructure.persistence.models import (
-    InvestigationSessionModel,
 )
 
 logger = logging.getLogger(__name__)
@@ -218,7 +218,9 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
                 total_token_usage=session.total_token_usage,
                 total_agent_executions=session.total_agent_executions,
                 token_budget_limit=session.token_budget_limit,
-                session_metadata=json.dumps(session.metadata) if session.metadata else "{}",
+                session_metadata=(
+                    json.dumps(session.metadata) if session.metadata else "{}"
+                ),
                 created_at=session.created_at,
                 updated_at=session.updated_at,
             )
@@ -237,7 +239,9 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
                 logger.error(f"Case {session.case_id} not found")
                 raise ValueError(f"Case {session.case_id} not found") from e
             logger.error(f"Investigation session {session.session_id} already exists")
-            raise ValueError(f"Investigation session {session.session_id} already exists") from e
+            raise ValueError(
+                f"Investigation session {session.session_id} already exists"
+            ) from e
 
         except Exception as e:
             await self.db.rollback()
@@ -249,9 +253,8 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
     async def get_by_id(self, session_id: str) -> Optional[InvestigationSession]:
         """Get session by ID."""
         try:
-            stmt = (
-                select(InvestigationSessionModel)
-                .where(InvestigationSessionModel.session_id == session_id)
+            stmt = select(InvestigationSessionModel).where(
+                InvestigationSessionModel.session_id == session_id
             )
             result = await self.db.execute(stmt)
             session_model = result.scalar_one_or_none()
@@ -285,7 +288,9 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
                     total_token_usage=session.total_token_usage,
                     total_agent_executions=session.total_agent_executions,
                     token_budget_limit=session.token_budget_limit,
-                    session_metadata=json.dumps(session.metadata) if session.metadata else "{}",
+                    session_metadata=(
+                        json.dumps(session.metadata) if session.metadata else "{}"
+                    ),
                     updated_at=session.updated_at,
                 )
                 .execution_options(synchronize_session=False)
@@ -294,7 +299,9 @@ class DatabaseInvestigationSessionRepository(InvestigationSessionRepository):
             result = await self.db.execute(stmt)
 
             if result.rowcount == 0:
-                raise ValueError(f"Investigation session {session.session_id} not found")
+                raise ValueError(
+                    f"Investigation session {session.session_id} not found"
+                )
 
             await self.db.commit()
             logger.debug(f"Updated investigation session {session.session_id}")
@@ -495,7 +502,9 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
     async def create(self, session: InvestigationSession) -> InvestigationSession:
         """Create new investigation session record in memory."""
         if session.session_id in self._sessions:
-            raise ValueError(f"Investigation session {session.session_id} already exists")
+            raise ValueError(
+                f"Investigation session {session.session_id} already exists"
+            )
 
         # Store a deep copy to prevent mutation
         self._sessions[session.session_id] = deepcopy(session)
@@ -534,9 +543,7 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
         status: Optional[SessionStatus] = None,
     ) -> List[InvestigationSession]:
         """List all sessions for a case, optionally filtered by status."""
-        sessions = [
-            s for s in self._sessions.values() if s.case_id == case_id
-        ]
+        sessions = [s for s in self._sessions.values() if s.case_id == case_id]
 
         if status:
             sessions = [s for s in sessions if s.status == status]
@@ -549,7 +556,8 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
     async def get_active_session(self, case_id: str) -> Optional[InvestigationSession]:
         """Get the currently active session for a case (if any)."""
         active_sessions = [
-            s for s in self._sessions.values()
+            s
+            for s in self._sessions.values()
             if s.case_id == case_id and s.status == SessionStatus.ACTIVE
         ]
 
@@ -567,9 +575,7 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
         offset: int = 0,
     ) -> List[InvestigationSession]:
         """List sessions by user (paginated)."""
-        sessions = [
-            s for s in self._sessions.values() if s.user_id == user_id
-        ]
+        sessions = [s for s in self._sessions.values() if s.user_id == user_id]
 
         # Sort by started_at descending
         sessions.sort(key=lambda s: s.started_at, reverse=True)
@@ -597,9 +603,7 @@ class InMemoryInvestigationSessionRepository(InvestigationSessionRepository):
         Returns:
             Number of sessions deleted
         """
-        to_delete = [
-            s_id for s_id, s in self._sessions.items() if s.case_id == case_id
-        ]
+        to_delete = [s_id for s_id, s in self._sessions.items() if s.case_id == case_id]
 
         for s_id in to_delete:
             del self._sessions[s_id]

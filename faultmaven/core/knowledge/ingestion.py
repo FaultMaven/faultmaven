@@ -37,10 +37,10 @@ import pypdf
 from chromadb.config import Settings
 from docx import Document
 
-from faultmaven.models import KnowledgeBaseDocument
+from faultmaven.infrastructure.model_cache import model_cache
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.security.redaction import DataSanitizer
-from faultmaven.infrastructure.model_cache import model_cache
+from faultmaven.models import KnowledgeBaseDocument
 
 
 class KnowledgeIngester:
@@ -49,15 +49,16 @@ class KnowledgeIngester:
     def __init__(self, chroma_persist_directory: str = "./chroma_db", settings=None):
         self.logger = logging.getLogger(__name__)
         self.sanitizer = DataSanitizer()
-        
+
         # Get settings if not provided
         if settings is None:
             try:
                 from faultmaven.config.settings import get_settings
+
                 settings = get_settings()
             except Exception:
                 settings = None
-        
+
         # Initialize ChromaDB - default to K8s cluster for production-like development
         if settings:
             # Use settings-based configuration
@@ -65,19 +66,20 @@ class KnowledgeIngester:
             chromadb_host = settings.database.chromadb_host
             chromadb_port = settings.database.chromadb_port
             chromadb_auth_token = (
-                settings.database.chromadb_auth_token.get_secret_value() 
-                if settings.database.chromadb_auth_token 
+                settings.database.chromadb_auth_token.get_secret_value()
+                if settings.database.chromadb_auth_token
                 else "faultmaven-dev-chromadb-2025"
             )
         else:
             # No fallback - unified settings system is mandatory
             from faultmaven.models.exceptions import KnowledgeBaseError
+
             raise KnowledgeBaseError(
                 "Knowledge ingestion requires unified settings system to be available",
                 error_code="KNOWLEDGE_CONFIG_ERROR",
-                context={"settings_available": settings is not None}
+                context={"settings_available": settings is not None},
             )
-        
+
         if chromadb_url:
             # Legacy URL-based configuration
             self.logger.info(f"Using ChromaDB HTTP client at {chromadb_url}")
@@ -90,7 +92,9 @@ class KnowledgeIngester:
             )
         elif chromadb_host != "localhost":
             # K8s cluster or external HTTP client (default)
-            self.logger.info(f"Using ChromaDB HTTP client at {chromadb_host}:{chromadb_port}")
+            self.logger.info(
+                f"Using ChromaDB HTTP client at {chromadb_host}:{chromadb_port}"
+            )
             self.chroma_client = chromadb.HttpClient(
                 host=chromadb_host,
                 port=chromadb_port,
@@ -98,7 +102,7 @@ class KnowledgeIngester:
                     anonymized_telemetry=False,
                     allow_reset=True,
                     chroma_client_auth_provider="chromadb.auth.token_authn.TokenAuthClientProvider",
-                    chroma_client_auth_credentials=chromadb_auth_token
+                    chroma_client_auth_credentials=chromadb_auth_token,
                 ),
             )
         else:
@@ -120,7 +124,9 @@ class KnowledgeIngester:
         self.embedding_model = model_cache.get_bge_m3_model()
         if self.embedding_model is None:
             self.logger.error("Failed to load BGE-M3 embedding model from cache")
-            raise RuntimeError("BGE-M3 model unavailable - knowledge ingestion cannot proceed")
+            raise RuntimeError(
+                "BGE-M3 model unavailable - knowledge ingestion cannot proceed"
+            )
         else:
             self.logger.debug("Using cached BGE-M3 embedding model")
 

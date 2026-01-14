@@ -2,47 +2,59 @@
 Integration test configuration and fixtures.
 
 Provides shared fixtures for integration tests that interact with the
-full application stack via docker-compose. Enhanced with Phase 2 
+full application stack via docker-compose. Enhanced with Phase 2
 integration testing capabilities including memory, planning, reasoning,
 knowledge, and orchestration system testing.
 """
+
+import os
 
 # CRITICAL: Import root conftest mocks FIRST before any other imports
 # This ensures _ctypes and _sqlite3 mocks are loaded before chromadb/protobuf imports
 # The import chain: CaseService -> persistence -> chromadb -> protobuf -> ctypes -> _ctypes
 # Must happen BEFORE any faultmaven imports that might trigger this chain
 import sys
-import os
+
 # Add parent directory to path to import root conftest mocks
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-# Import root conftest to load _ctypes and _sqlite3 mocks BEFORE any other imports
-import conftest as root_conftest  # noqa: F401
-
 # Now safe to import other modules
 import asyncio
 import io
 import time
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Dict
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import AsyncMock, Mock
 
+# Import root conftest to load _ctypes and _sqlite3 mocks BEFORE any other imports
+import conftest as root_conftest  # noqa: F401
 import httpx
 import pytest
 import pytest_asyncio
 import redis.asyncio as redis
 
-from .mock_servers import MockServerManager
-from faultmaven.models.interfaces import (
-    IMemoryService, IPlanningService, ILLMProvider, ITracer, IVectorStore, ISanitizer
-)
 # WorkflowContext removed - using dict instead
 from faultmaven.exceptions import ServiceException, ValidationException
-from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
+from faultmaven.models.interfaces import (
+    ILLMProvider,
+    IMemoryService,
+    IPlanningService,
+    ISanitizer,
+    ITracer,
+    IVectorStore,
+)
+from faultmaven.modules.auth.domain.services.auth_session_service import (
+    AuthSessionService as SessionService,
+)
+from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
+    RedisSessionStore,
+)
+
 # Legacy services/domain/* was removed; use extracted module path.
 # This import triggers: CaseService -> persistence -> chromadb -> protobuf -> ctypes
 # But _ctypes mock is already loaded from root conftest above
 from faultmaven.modules.case.domain.services.case_service import CaseService
-from faultmaven.modules.auth.infrastructure.stores.redis_session_store import RedisSessionStore
+
+from .mock_servers import MockServerManager
 
 # Configure pytest-asyncio to fix deprecation warnings
 pytest_asyncio.asyncio_default_fixture_loop_scope = "function"
@@ -53,7 +65,11 @@ BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost:8000")
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}" if REDIS_PASSWORD else f"redis://{REDIS_HOST}:{REDIS_PORT}"
+REDIS_URL = (
+    f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}"
+    if REDIS_PASSWORD
+    else f"redis://{REDIS_HOST}:{REDIS_PORT}"
+)
 TIMEOUT = 30.0  # seconds
 
 
@@ -372,12 +388,12 @@ async def mock_web_search_responses(mock_servers: MockServerManager) -> Dict[str
 async def wait_for_services():
     """Wait for all required services to be ready before running tests."""
     import os
-    
+
     # Skip service checks if in test mode without real services
     if os.environ.get("SKIP_SERVICE_CHECKS", "false").lower() == "true":
         print("Skipping service checks (SKIP_SERVICE_CHECKS=true)")
         return
-    
+
     # Wait for the backend API
     if not wait_for_service(f"{BASE_URL}/health"):
         pytest.fail(f"Backend API not ready at {BASE_URL}")
@@ -418,11 +434,12 @@ def kb_document_upload(sample_kb_document: str) -> Dict[str, Any]:
 
 # Phase 2 Integration Test Fixtures
 
+
 @pytest.fixture
 async def mock_vector_store_integration():
     """Comprehensive mock vector store for Phase 2 integration testing"""
     vector_store = Mock()
-    
+
     # Enhanced search functionality with realistic responses
     async def mock_search(query, k=10, **kwargs):
         # Simulate different response types based on query content
@@ -431,23 +448,35 @@ async def mock_vector_store_integration():
                 {
                     "id": "db_doc_1",
                     "content": "Database connection pool optimization strategies for high-throughput applications",
-                    "metadata": {"source": "database-optimization.md", "type": "guide", "complexity": "advanced"},
-                    "score": 0.95
+                    "metadata": {
+                        "source": "database-optimization.md",
+                        "type": "guide",
+                        "complexity": "advanced",
+                    },
+                    "score": 0.95,
                 },
                 {
-                    "id": "db_doc_2", 
+                    "id": "db_doc_2",
                     "content": "Troubleshooting PostgreSQL connection timeout issues in production environments",
-                    "metadata": {"source": "postgres-troubleshooting.md", "type": "troubleshooting", "complexity": "intermediate"},
-                    "score": 0.88
-                }
+                    "metadata": {
+                        "source": "postgres-troubleshooting.md",
+                        "type": "troubleshooting",
+                        "complexity": "intermediate",
+                    },
+                    "score": 0.88,
+                },
             ]
         elif "performance" in query.lower():
             return [
                 {
                     "id": "perf_doc_1",
                     "content": "API performance optimization techniques for microservices architecture",
-                    "metadata": {"source": "api-performance.md", "type": "guide", "complexity": "advanced"},
-                    "score": 0.92
+                    "metadata": {
+                        "source": "api-performance.md",
+                        "type": "guide",
+                        "complexity": "advanced",
+                    },
+                    "score": 0.92,
                 }
             ]
         else:
@@ -455,12 +484,16 @@ async def mock_vector_store_integration():
                 {
                     "id": f"generic_doc_{i}",
                     "content": f"Generic troubleshooting document {i} related to: {query[:50]}",
-                    "metadata": {"source": f"generic-{i}.md", "type": "reference", "complexity": "basic"},
-                    "score": 0.7 - (i * 0.1)
+                    "metadata": {
+                        "source": f"generic-{i}.md",
+                        "type": "reference",
+                        "complexity": "basic",
+                    },
+                    "score": 0.7 - (i * 0.1),
                 }
                 for i in range(min(k, 3))
             ]
-    
+
     vector_store.search = AsyncMock(side_effect=mock_search)
     return vector_store
 
@@ -469,23 +502,25 @@ async def mock_vector_store_integration():
 async def mock_llm_provider_integration():
     """Sophisticated mock LLM provider for Phase 2 integration testing"""
     llm = Mock()
-    
+
     # Counter to track usage for realistic learning simulation
     call_count = 0
     interaction_history = []
-    
+
     async def mock_generate(prompt, context=None, **kwargs):
         nonlocal call_count, interaction_history
         call_count += 1
-        
+
         # Store interaction for learning simulation
-        interaction_history.append({
-            "prompt": prompt,
-            "context": context,
-            "timestamp": datetime.utcnow(),
-            "call_number": call_count
-        })
-        
+        interaction_history.append(
+            {
+                "prompt": prompt,
+                "context": context,
+                "timestamp": datetime.utcnow(),
+                "call_number": call_count,
+            }
+        )
+
         # Simulate different response types based on prompt content
         if "troubleshoot" in prompt.lower() or "diagnose" in prompt.lower():
             return {
@@ -495,9 +530,9 @@ async def mock_llm_provider_integration():
                 "issue_type": "database_connectivity",
                 "recommendations": [
                     "Immediate: Check system logs for error patterns",
-                    "Short-term: Implement monitoring for early detection", 
-                    "Long-term: Review architecture for resilience"
-                ]
+                    "Short-term: Implement monitoring for early detection",
+                    "Long-term: Review architecture for resilience",
+                ],
             }
         elif "plan" in prompt.lower() or "strategy" in prompt.lower():
             return {
@@ -507,19 +542,19 @@ async def mock_llm_provider_integration():
                 "plan_type": "systematic_approach",
                 "phases": [
                     "Assessment and scoping",
-                    "Root cause analysis", 
+                    "Root cause analysis",
                     "Solution implementation",
-                    "Validation and monitoring"
-                ]
+                    "Validation and monitoring",
+                ],
             }
         else:
             return {
                 "response": f"AI analysis of the provided information: {prompt[:100]}...",
                 "confidence": 0.70,
                 "reasoning": "General analysis without specific domain expertise",
-                "analysis_type": "general"
+                "analysis_type": "general",
             }
-    
+
     llm.generate = AsyncMock(side_effect=mock_generate)
     return llm
 
@@ -540,24 +575,29 @@ def sample_complex_workflow_context():
             "monitoring_alerts": [
                 "High database connection count",
                 "API response time SLA breach",
-                "Authentication failure rate spike"
+                "Authentication failure rate spike",
             ],
             "recent_changes": [
                 "Database schema migration deployed 2 hours ago",
-                "Auth service scaling policy updated yesterday", 
-                "New rate limiting rules activated this morning"
+                "Auth service scaling policy updated yesterday",
+                "New rate limiting rules activated this morning",
             ],
             "business_impact": {
                 "severity": "high",
                 "affected_users": 15000,
                 "revenue_impact": "moderate",
-                "customer_complaints": 47
-            }
+                "customer_complaints": 47,
+            },
         },
         "priority_level": "critical",
         "domain_expertise": "expert",
         "time_constraints": 1800,  # 30 minutes
-        "available_tools": ["enhanced_knowledge_search", "knowledge_discovery", "web_search", "log_analysis"]
+        "available_tools": [
+            "enhanced_knowledge_search",
+            "knowledge_discovery",
+            "web_search",
+            "log_analysis",
+        ],
     }
 
 
@@ -572,11 +612,17 @@ def workflow_test_scenarios():
                 "service": "user-api",
                 "database": "postgresql",
                 "environment": "production",
-                "symptoms": ["timeouts", "connection_pool_exhaustion", "high_latency"]
+                "symptoms": ["timeouts", "connection_pool_exhaustion", "high_latency"],
             },
             "priority": "high",
-            "expected_phases": ["define_blast_radius", "establish_timeline", "formulate_hypothesis", "validate_hypothesis", "propose_solution"],
-            "expected_insights": ["database_performance", "connection_management"]
+            "expected_phases": [
+                "define_blast_radius",
+                "establish_timeline",
+                "formulate_hypothesis",
+                "validate_hypothesis",
+                "propose_solution",
+            ],
+            "expected_insights": ["database_performance", "connection_management"],
         },
         {
             "name": "Security Incident",
@@ -585,12 +631,23 @@ def workflow_test_scenarios():
                 "service": "auth-service",
                 "issue_type": "security_breach",
                 "environment": "production",
-                "symptoms": ["unauthorized_access", "suspicious_logs", "authentication_failures"]
+                "symptoms": [
+                    "unauthorized_access",
+                    "suspicious_logs",
+                    "authentication_failures",
+                ],
             },
             "priority": "critical",
-            "expected_phases": ["define_blast_radius", "establish_timeline", "formulate_hypothesis", "validate_hypothesis", "propose_solution", "verification"],
-            "expected_insights": ["security_analysis", "access_patterns"]
-        }
+            "expected_phases": [
+                "define_blast_radius",
+                "establish_timeline",
+                "formulate_hypothesis",
+                "validate_hypothesis",
+                "propose_solution",
+                "verification",
+            ],
+            "expected_insights": ["security_analysis", "access_patterns"],
+        },
     ]
 
 
@@ -606,21 +663,21 @@ def memory_test_interactions():
                 "issue_type": "database_connection",
                 "resolution": "parameter_tuning",
                 "success": True,
-                "resolution_time": 450
-            }
+                "resolution_time": 450,
+            },
         },
         {
-            "session_id": "memory-test-session-2", 
+            "session_id": "memory-test-session-2",
             "user_input": "API response times degraded after deployment",
             "ai_response": "Deployment introduced inefficient queries - optimized query performance",
             "context": {
                 "issue_type": "performance_degradation",
                 "trigger": "deployment",
-                "resolution": "query_optimization", 
+                "resolution": "query_optimization",
                 "success": True,
-                "improvement": "60% faster"
-            }
-        }
+                "improvement": "60% faster",
+            },
+        },
     ]
 
 
@@ -631,64 +688,76 @@ async def integration_test_metrics():
         "start_time": time.time(),
         "operations": [],
         "errors": [],
-        "performance_data": {}
+        "performance_data": {},
     }
-    
+
     def record_operation(operation_type, duration, success=True, metadata=None):
-        metrics["operations"].append({
-            "type": operation_type,
-            "duration": duration,
-            "success": success,
-            "metadata": metadata or {},
-            "timestamp": time.time()
-        })
-    
+        metrics["operations"].append(
+            {
+                "type": operation_type,
+                "duration": duration,
+                "success": success,
+                "metadata": metadata or {},
+                "timestamp": time.time(),
+            }
+        )
+
     def record_error(error_type, error_message, context=None):
-        metrics["errors"].append({
-            "type": error_type,
-            "message": error_message,
-            "context": context or {},
-            "timestamp": time.time()
-        })
-    
+        metrics["errors"].append(
+            {
+                "type": error_type,
+                "message": error_message,
+                "context": context or {},
+                "timestamp": time.time(),
+            }
+        )
+
     def get_summary():
         total_time = time.time() - metrics["start_time"]
         total_operations = len(metrics["operations"])
-        successful_operations = len([op for op in metrics["operations"] if op["success"]])
-        
+        successful_operations = len(
+            [op for op in metrics["operations"] if op["success"]]
+        )
+
         return {
             "total_time": total_time,
             "total_operations": total_operations,
             "successful_operations": successful_operations,
-            "success_rate": successful_operations / total_operations if total_operations > 0 else 0,
-            "avg_operation_time": sum(op["duration"] for op in metrics["operations"]) / total_operations if total_operations > 0 else 0,
+            "success_rate": (
+                successful_operations / total_operations if total_operations > 0 else 0
+            ),
+            "avg_operation_time": (
+                sum(op["duration"] for op in metrics["operations"]) / total_operations
+                if total_operations > 0
+                else 0
+            ),
             "total_errors": len(metrics["errors"]),
-            "throughput": total_operations / total_time if total_time > 0 else 0
+            "throughput": total_operations / total_time if total_time > 0 else 0,
         }
-    
+
     metrics["record_operation"] = record_operation
     metrics["record_error"] = record_error
     metrics["get_summary"] = get_summary
-    
+
     return metrics
 
 
 # Performance testing utilities
 class PerformanceTimer:
     """Utility class for measuring performance in integration tests"""
-    
+
     def __init__(self, name):
         self.name = name
         self.start_time = None
         self.end_time = None
-        
+
     def __enter__(self):
         self.start_time = time.time()
         return self
-        
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.end_time = time.time()
-        
+
     @property
     def duration(self):
         if self.start_time and self.end_time:
@@ -705,18 +774,20 @@ def performance_timer():
 # Async utilities for integration testing
 class AsyncTestUtilities:
     """Utilities for async integration testing"""
-    
+
     @staticmethod
     async def run_concurrent_tasks(tasks, max_concurrency=10):
         """Run tasks with controlled concurrency"""
         semaphore = asyncio.Semaphore(max_concurrency)
-        
+
         async def run_with_semaphore(task):
             async with semaphore:
                 return await task
-        
-        return await asyncio.gather(*[run_with_semaphore(task) for task in tasks], return_exceptions=True)
-    
+
+        return await asyncio.gather(
+            *[run_with_semaphore(task) for task in tasks], return_exceptions=True
+        )
+
     @staticmethod
     async def measure_async_performance(async_func, *args, **kwargs):
         """Measure performance of async function"""
@@ -730,12 +801,12 @@ class AsyncTestUtilities:
             success = False
             error = str(e)
         end_time = time.time()
-        
+
         return {
             "result": result,
             "duration": end_time - start_time,
             "success": success,
-            "error": error
+            "error": error,
         }
 
 
@@ -747,6 +818,7 @@ def async_test_utils():
 
 # Architectural Compliance Test Fixtures
 
+
 @pytest_asyncio.fixture
 async def session_service() -> SessionService:
     """Create SessionService with real Redis for integration testing
@@ -755,7 +827,9 @@ async def session_service() -> SessionService:
     Does NOT clean Redis - tests work with existing data to simulate
     production environment where FLUSHDB may be disabled.
     """
-    from faultmaven.modules.auth.infrastructure.stores.redis_session_store import RedisSessionStore
+    from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
+        RedisSessionStore,
+    )
 
     # Create RedisSessionStore - it will use create_redis_client() from .env
     session_store = RedisSessionStore()
@@ -764,7 +838,7 @@ async def session_service() -> SessionService:
     service = SessionService(
         session_store=session_store,
         max_sessions_per_user=10,
-        inactive_threshold_hours=24
+        inactive_threshold_hours=24,
     )
 
     return service
@@ -785,7 +859,9 @@ async def case_service() -> CaseService:
     # Return the case service from the container
     service = container.get_case_service()
     if service is None:
-        raise RuntimeError("case_service is None - container initialization may have failed")
+        raise RuntimeError(
+            "case_service is None - container initialization may have failed"
+        )
     return service
 
 

@@ -53,7 +53,9 @@ SYSTEM_PROMPT_VARIANTS: Dict[str, str] = {
 }
 
 
-def get_system_prompt(variant: str = "default", user_expertise: str = "intermediate") -> str:
+def get_system_prompt(
+    variant: str = "default", user_expertise: str = "intermediate"
+) -> str:
     """Get system prompt based on variant and user expertise level
 
     Selects appropriate system prompt variant based on explicit variant choice
@@ -92,7 +94,7 @@ def get_system_prompt(variant: str = "default", user_expertise: str = "intermedi
 def get_system_prompt_with_context(
     variant: str = "default",
     user_expertise: str = "intermediate",
-    additional_context: str = ""
+    additional_context: str = "",
 ) -> str:
     """Get system prompt with additional context appended
 
@@ -114,9 +116,7 @@ def get_system_prompt_with_context(
 
 
 def get_tiered_prompt(
-    response_type: str = "ANSWER",
-    complexity: str = "simple",
-    intent: str = None
+    response_type: str = "ANSWER", complexity: str = "simple", intent: str = None
 ) -> str:
     """Get optimized system prompt based on response type, complexity, and intent
 
@@ -144,8 +144,11 @@ def get_tiered_prompt(
     """
     # Neutral identity for non-troubleshooting intents
     NON_TROUBLESHOOTING_INTENTS = [
-        "GREETING", "GRATITUDE", "OFF_TOPIC",
-        "META_FAULTMAVEN", "CONVERSATION_CONTROL"
+        "GREETING",
+        "GRATITUDE",
+        "OFF_TOPIC",
+        "META_FAULTMAVEN",
+        "CONVERSATION_CONTROL",
     ]
 
     if intent and intent.upper() in NON_TROUBLESHOOTING_INTENTS:

@@ -3,9 +3,10 @@
 Tests the AgentExecution and AgentToolCall dataclasses and related enums.
 """
 
-import pytest
-from datetime import datetime, timezone, timedelta
 import time
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
@@ -309,7 +310,11 @@ class TestAgentExecutionCreation:
             execution_duration_ms=59000,
             prompt="Debug this code",
             response="Here is the fix...",
-            token_usage={"prompt_tokens": 100, "completion_tokens": 200, "total_tokens": 300},
+            token_usage={
+                "prompt_tokens": 100,
+                "completion_tokens": 200,
+                "total_tokens": 300,
+            },
             metadata={"session_id": "sess_123"},
             created_at=created,
             updated_at=created,
@@ -319,7 +324,11 @@ class TestAgentExecutionCreation:
         assert execution.execution_duration_ms == 59000
         assert execution.prompt == "Debug this code"
         assert execution.response == "Here is the fix..."
-        assert execution.token_usage == {"prompt_tokens": 100, "completion_tokens": 200, "total_tokens": 300}
+        assert execution.token_usage == {
+            "prompt_tokens": 100,
+            "completion_tokens": 200,
+            "total_tokens": 300,
+        }
 
     def test_default_timestamps(self):
         """Test that timestamps are auto-generated if not provided."""
@@ -373,7 +382,9 @@ class TestAgentExecutionValidation:
 
     def test_negative_duration_fails(self):
         """Test that negative execution_duration_ms raises ValueError."""
-        with pytest.raises(ValueError, match="execution_duration_ms cannot be negative"):
+        with pytest.raises(
+            ValueError, match="execution_duration_ms cannot be negative"
+        ):
             AgentExecution(
                 execution_id="exec_123",
                 case_id="case_123",

@@ -3,9 +3,10 @@
 Tests the InvestigationSession dataclass and SessionStatus enum.
 """
 
-import pytest
-from datetime import datetime, timezone, timedelta
 import time
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from faultmaven.models.investigation_session import (
     InvestigationSession,
@@ -94,7 +95,10 @@ class TestInvestigationSessionCreation:
         assert session.status == SessionStatus.COMPLETED
         assert session.total_duration_ms == 3599000
         assert session.session_goal == "Identify root cause of timeout"
-        assert session.findings_summary == "Root cause was database connection pool exhaustion"
+        assert (
+            session.findings_summary
+            == "Root cause was database connection pool exhaustion"
+        )
         assert session.total_token_usage == 5000
         assert session.total_agent_executions == 10
         assert session.token_budget_limit == 10000
@@ -185,7 +189,9 @@ class TestInvestigationSessionValidation:
 
     def test_negative_agent_executions_fails(self):
         """Test that negative total_agent_executions raises ValueError."""
-        with pytest.raises(ValueError, match="total_agent_executions cannot be negative"):
+        with pytest.raises(
+            ValueError, match="total_agent_executions cannot be negative"
+        ):
             InvestigationSession(
                 session_id="sess_123",
                 case_id="case_456",
@@ -319,7 +325,10 @@ class TestInvestigationSessionLifecycleMethods:
         after = datetime.now(timezone.utc)
 
         assert sample_session.status == SessionStatus.COMPLETED
-        assert sample_session.findings_summary == "Root cause identified: DB connection leak"
+        assert (
+            sample_session.findings_summary
+            == "Root cause identified: DB connection leak"
+        )
         assert before <= sample_session.ended_at <= after
         assert before <= sample_session.updated_at <= after
         assert sample_session.total_duration_ms is not None

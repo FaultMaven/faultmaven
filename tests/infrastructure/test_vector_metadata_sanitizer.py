@@ -8,19 +8,21 @@ Property-like tests for metadata sanitization:
 - Edge cases
 """
 
-import pytest
-from datetime import datetime, date
+from datetime import date, datetime
 from uuid import UUID, uuid4
 
+import pytest
 
 # =============================================================================
 # Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def sanitizer():
     """Create a sanitizer with default settings."""
     from faultmaven.infrastructure.vector.sanitizer import VectorMetadataSanitizer
+
     return VectorMetadataSanitizer()
 
 
@@ -28,6 +30,7 @@ def sanitizer():
 def chroma_sanitizer():
     """Create a sanitizer configured for ChromaDB."""
     from faultmaven.infrastructure.vector.sanitizer import create_chroma_sanitizer
+
     return create_chroma_sanitizer()
 
 
@@ -35,12 +38,14 @@ def chroma_sanitizer():
 def pinecone_sanitizer():
     """Create a sanitizer configured for Pinecone."""
     from faultmaven.infrastructure.vector.sanitizer import create_pinecone_sanitizer
+
     return create_pinecone_sanitizer()
 
 
 # =============================================================================
 # None Handling Tests
 # =============================================================================
+
 
 class TestNoneHandling:
     """Tests for None value handling."""
@@ -93,6 +98,7 @@ class TestNoneHandling:
 # =============================================================================
 # Nested Dict Flattening Tests
 # =============================================================================
+
 
 class TestNestedFlattening:
     """Tests for nested dictionary flattening."""
@@ -155,6 +161,7 @@ class TestNestedFlattening:
 # Max String Length Tests
 # =============================================================================
 
+
 class TestMaxStringLength:
     """Tests for string length enforcement."""
 
@@ -193,6 +200,7 @@ class TestMaxStringLength:
 # =============================================================================
 # Type Coercion Tests
 # =============================================================================
+
 
 class TestTypeCoercion:
     """Tests for type conversion."""
@@ -259,6 +267,7 @@ class TestTypeCoercion:
 
     def test_complex_object_stringified(self, sanitizer):
         """Test that complex objects are stringified."""
+
         class CustomObject:
             def __str__(self):
                 return "custom_value"
@@ -272,6 +281,7 @@ class TestTypeCoercion:
 # =============================================================================
 # Edge Cases Tests
 # =============================================================================
+
 
 class TestEdgeCases:
     """Tests for edge cases and special values."""
@@ -353,6 +363,7 @@ class TestEdgeCases:
 # Convenience Function Tests
 # =============================================================================
 
+
 class TestConvenienceFunctions:
     """Tests for convenience functions."""
 
@@ -390,6 +401,7 @@ class TestConvenienceFunctions:
 # Cross-Backend Compatibility Tests
 # =============================================================================
 
+
 class TestCrossBackendCompatibility:
     """Tests to ensure sanitized metadata works with both backends."""
 
@@ -421,5 +433,6 @@ class TestCrossBackendCompatibility:
         result = sanitizer.sanitize(metadata)
 
         for key, value in result.items():
-            assert isinstance(value, (str, int, float, bool, list)), \
-                f"Key {key} has non-primitive type: {type(value)}"
+            assert isinstance(
+                value, (str, int, float, bool, list)
+            ), f"Key {key} has non-primitive type: {type(value)}"

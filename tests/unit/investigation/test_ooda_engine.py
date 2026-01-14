@@ -11,26 +11,27 @@ Tests:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-import pytest
 from datetime import datetime
 
+import pytest
+
 from faultmaven.core.investigation.ooda_engine import (
-    OODAEngine,
     AdaptiveIntensityController,
+    OODAEngine,
     create_ooda_engine,
 )
 from faultmaven.modules.agent.domain.models.investigation import (
-    InvestigationState,
-    InvestigationPhase,
-    OODAStep,
-    OODAIteration,
+    EvidenceLayer,
     Hypothesis,
     HypothesisStatus,
-    InvestigationMetadata,
     InvestigationLifecycle,
-    OODAEngineState,
-    EvidenceLayer,
+    InvestigationMetadata,
+    InvestigationPhase,
+    InvestigationState,
     MemoryLayer,
+    OODAEngineState,
+    OODAIteration,
+    OODAStep,
 )
 
 
@@ -73,8 +74,14 @@ class TestAdaptiveIntensityController:
         """Test intensity for Phase 1 (always light)"""
         controller = AdaptiveIntensityController()
 
-        assert controller.get_intensity_level(1, InvestigationPhase.BLAST_RADIUS) == "light"
-        assert controller.get_intensity_level(2, InvestigationPhase.BLAST_RADIUS) == "light"
+        assert (
+            controller.get_intensity_level(1, InvestigationPhase.BLAST_RADIUS)
+            == "light"
+        )
+        assert (
+            controller.get_intensity_level(2, InvestigationPhase.BLAST_RADIUS)
+            == "light"
+        )
 
     def test_get_intensity_phase_2_timeline(self):
         """Test intensity for Phase 2 (always light)"""
@@ -87,25 +94,43 @@ class TestAdaptiveIntensityController:
         """Test intensity for Phase 3 (light -> medium)"""
         controller = AdaptiveIntensityController()
 
-        assert controller.get_intensity_level(1, InvestigationPhase.HYPOTHESIS) == "light"
-        assert controller.get_intensity_level(2, InvestigationPhase.HYPOTHESIS) == "light"
-        assert controller.get_intensity_level(3, InvestigationPhase.HYPOTHESIS) == "medium"
+        assert (
+            controller.get_intensity_level(1, InvestigationPhase.HYPOTHESIS) == "light"
+        )
+        assert (
+            controller.get_intensity_level(2, InvestigationPhase.HYPOTHESIS) == "light"
+        )
+        assert (
+            controller.get_intensity_level(3, InvestigationPhase.HYPOTHESIS) == "medium"
+        )
 
     def test_get_intensity_phase_4_validation(self):
         """Test intensity for Phase 4 (medium -> full)"""
         controller = AdaptiveIntensityController()
 
-        assert controller.get_intensity_level(1, InvestigationPhase.VALIDATION) == "medium"
-        assert controller.get_intensity_level(2, InvestigationPhase.VALIDATION) == "medium"
-        assert controller.get_intensity_level(3, InvestigationPhase.VALIDATION) == "full"
-        assert controller.get_intensity_level(6, InvestigationPhase.VALIDATION) == "full"
+        assert (
+            controller.get_intensity_level(1, InvestigationPhase.VALIDATION) == "medium"
+        )
+        assert (
+            controller.get_intensity_level(2, InvestigationPhase.VALIDATION) == "medium"
+        )
+        assert (
+            controller.get_intensity_level(3, InvestigationPhase.VALIDATION) == "full"
+        )
+        assert (
+            controller.get_intensity_level(6, InvestigationPhase.VALIDATION) == "full"
+        )
 
     def test_get_intensity_phase_5_solution(self):
         """Test intensity for Phase 5 (always medium)"""
         controller = AdaptiveIntensityController()
 
-        assert controller.get_intensity_level(1, InvestigationPhase.SOLUTION) == "medium"
-        assert controller.get_intensity_level(3, InvestigationPhase.SOLUTION) == "medium"
+        assert (
+            controller.get_intensity_level(1, InvestigationPhase.SOLUTION) == "medium"
+        )
+        assert (
+            controller.get_intensity_level(3, InvestigationPhase.SOLUTION) == "medium"
+        )
 
     def test_get_intensity_phase_6_document(self):
         """Test intensity for Phase 6 (always light)"""
@@ -166,7 +191,7 @@ class TestAnchoringPrevention:
         )
 
         assert should_trigger is True
-        assert ("same category" in reason.lower() or "category" in reason.lower())
+        assert "same category" in reason.lower() or "category" in reason.lower()
 
     def test_anchoring_stalled_hypotheses(self):
         """Test anchoring detection when hypotheses stalled 3+ iterations"""
@@ -264,7 +289,9 @@ class TestIterationManagement:
         assert iter1.iteration_number == 1
         assert iter2.iteration_number == 2
 
-    def test_complete_iteration_with_progress(self, ooda_engine, investigation_state_phase4):
+    def test_complete_iteration_with_progress(
+        self, ooda_engine, investigation_state_phase4
+    ):
         """Test completing iteration that made progress"""
         iteration = OODAIteration(
             iteration_number=1,
@@ -284,7 +311,9 @@ class TestIterationManagement:
         assert iteration.made_progress is True
         assert iteration.completed_at_turn == 5
 
-    def test_complete_iteration_no_progress(self, ooda_engine, investigation_state_phase4):
+    def test_complete_iteration_no_progress(
+        self, ooda_engine, investigation_state_phase4
+    ):
         """Test completing iteration with no progress"""
         iteration = OODAIteration(
             iteration_number=1,
@@ -406,7 +435,9 @@ class TestShouldContinueIterations:
         assert should_continue is False
         assert "Max iterations" in reason
 
-    def test_continue_no_validated_hypothesis(self, ooda_engine, investigation_state_phase4):
+    def test_continue_no_validated_hypothesis(
+        self, ooda_engine, investigation_state_phase4
+    ):
         """Test continuation when no hypothesis validated"""
         investigation_state_phase4.ooda_engine.current_iteration = 3
         investigation_state_phase4.ooda_engine.hypotheses.append(

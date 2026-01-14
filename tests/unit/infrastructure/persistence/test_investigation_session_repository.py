@@ -3,15 +3,16 @@
 Tests both InMemoryInvestigationSessionRepository and the repository interface.
 """
 
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
+import pytest
+
+from faultmaven.infrastructure.persistence.investigation_session_repository import (
+    InMemoryInvestigationSessionRepository,
+)
 from faultmaven.models.investigation_session import (
     InvestigationSession,
     SessionStatus,
-)
-from faultmaven.infrastructure.persistence.investigation_session_repository import (
-    InMemoryInvestigationSessionRepository,
 )
 from tests.utils import generate_case_id, generate_session_id
 
@@ -182,6 +183,7 @@ class TestInMemoryRepositoryUpdate:
         original_updated = session.updated_at
 
         import time
+
         time.sleep(0.001)
 
         session.session_goal = "New goal"
@@ -315,8 +317,12 @@ class TestInMemoryRepositoryListByCaseId:
         case_id = generate_case_id()
         base_time = datetime.now(timezone.utc)
 
-        s1 = create_sample_session(case_id=case_id, started_at=base_time - timedelta(hours=2))
-        s2 = create_sample_session(case_id=case_id, started_at=base_time - timedelta(hours=1))
+        s1 = create_sample_session(
+            case_id=case_id, started_at=base_time - timedelta(hours=2)
+        )
+        s2 = create_sample_session(
+            case_id=case_id, started_at=base_time - timedelta(hours=1)
+        )
         s3 = create_sample_session(case_id=case_id, started_at=base_time)
 
         await repository.create(s1)
@@ -334,9 +340,15 @@ class TestInMemoryRepositoryListByCaseId:
         """Test filtering by status."""
         case_id = generate_case_id()
 
-        active_session = create_sample_session(case_id=case_id, status=SessionStatus.ACTIVE)
-        paused_session = create_sample_session(case_id=case_id, status=SessionStatus.PAUSED)
-        completed_session = create_sample_session(case_id=case_id, status=SessionStatus.COMPLETED)
+        active_session = create_sample_session(
+            case_id=case_id, status=SessionStatus.ACTIVE
+        )
+        paused_session = create_sample_session(
+            case_id=case_id, status=SessionStatus.PAUSED
+        )
+        completed_session = create_sample_session(
+            case_id=case_id, status=SessionStatus.COMPLETED
+        )
 
         await repository.create(active_session)
         await repository.create(paused_session)
@@ -360,7 +372,9 @@ class TestInMemoryRepositoryGetActiveSession:
     async def test_get_active_session_found(self, repository):
         """Test getting active session when one exists."""
         case_id = generate_case_id()
-        active_session = create_sample_session(case_id=case_id, status=SessionStatus.ACTIVE)
+        active_session = create_sample_session(
+            case_id=case_id, status=SessionStatus.ACTIVE
+        )
         await repository.create(active_session)
 
         result = await repository.get_active_session(case_id)
@@ -373,7 +387,9 @@ class TestInMemoryRepositoryGetActiveSession:
     async def test_get_active_session_none_when_no_active(self, repository):
         """Test getting active session when none is active."""
         case_id = generate_case_id()
-        paused_session = create_sample_session(case_id=case_id, status=SessionStatus.PAUSED)
+        paused_session = create_sample_session(
+            case_id=case_id, status=SessionStatus.PAUSED
+        )
         await repository.create(paused_session)
 
         result = await repository.get_active_session(case_id)
@@ -411,7 +427,9 @@ class TestInMemoryRepositoryGetActiveSession:
         case_id2 = generate_case_id()
 
         # Active session for case 2
-        await repository.create(create_sample_session(case_id=case_id2, status=SessionStatus.ACTIVE))
+        await repository.create(
+            create_sample_session(case_id=case_id2, status=SessionStatus.ACTIVE)
+        )
 
         result = await repository.get_active_session(case_id1)
 

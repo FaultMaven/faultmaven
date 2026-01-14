@@ -119,14 +119,19 @@ class TestObservabilityIntegration:
 
     def test_agent_has_tracing(self):
         """Verify agent service methods have trace decorators."""
-        from faultmaven.modules.agent.domain.services.investigation_service import InvestigationService
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            InvestigationService,
+        )
 
         # Check that key methods have been wrapped with @trace
         # InvestigationService has @trace decorators on key methods
         traced_methods = [
             ("process_turn", InvestigationService.process_turn),
             ("get_progress", InvestigationService.get_progress),
-            ("transition_to_investigating", InvestigationService.transition_to_investigating),
+            (
+                "transition_to_investigating",
+                InvestigationService.transition_to_investigating,
+            ),
             ("close_case", InvestigationService.close_case),
         ]
 
@@ -145,8 +150,8 @@ class TestObservabilityIntegration:
 
     def test_data_processing_has_tracing(self):
         """Verify data processing methods have trace decorators."""
-        import sys
         import importlib
+        import sys
 
         # Remove the mock from sys.modules to import the real class
         if "faultmaven.core.processing.log_analyzer" in sys.modules:
@@ -182,8 +187,11 @@ class TestObservabilityIntegration:
 
     def test_api_endpoints_have_tracing(self):
         """Verify API endpoints have trace decorators."""
-        from faultmaven.modules.knowledge.api.routes import upload_document, search_documents
         from faultmaven.modules.auth.api.session import create_session
+        from faultmaven.modules.knowledge.api.routes import (
+            search_documents,
+            upload_document,
+        )
 
         # Check that key endpoints have been wrapped with @trace
         assert hasattr(upload_document, "__wrapped__")
@@ -282,7 +290,9 @@ class TestObservabilityErrorResilience:
     def test_trace_decorator_with_tracing_failures(self):
         """Test that functions work even when tracing fails."""
 
-        with patch("faultmaven.infrastructure.observability.tracing.OPIK_AVAILABLE", False):
+        with patch(
+            "faultmaven.infrastructure.observability.tracing.OPIK_AVAILABLE", False
+        ):
 
             @trace("resilience_test")
             def test_function():

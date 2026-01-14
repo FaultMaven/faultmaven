@@ -37,7 +37,12 @@ class InitializationError(ContainerError):
     prevents the application from functioning correctly.
     """
 
-    def __init__(self, message: str, service_name: str | None = None, cause: Exception | None = None):
+    def __init__(
+        self,
+        message: str,
+        service_name: str | None = None,
+        cause: Exception | None = None,
+    ):
         super().__init__(message, service_name=service_name)
         self.cause = cause
         self.__cause__ = cause

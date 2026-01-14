@@ -24,12 +24,11 @@ from typing import Any, Dict, List, Optional
 import chromadb
 from chromadb.config import Settings
 
-from faultmaven.services.base import BaseService
 from faultmaven.exceptions import (
     VectorStoreConnectionError,
     VectorStoreOperationError,
 )
-
+from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 
@@ -194,13 +193,12 @@ class VectorStoreService(BaseService):
         try:
             # Process in batches
             for i in range(0, len(items), batch_size):
-                batch = items[i:i + batch_size]
+                batch = items[i : i + batch_size]
 
                 ids = [item["item_id"] for item in batch]
                 embeddings = [item["embedding"] for item in batch]
                 metadatas = [
-                    self._sanitize_metadata(item["metadata"])
-                    for item in batch
+                    self._sanitize_metadata(item["metadata"]) for item in batch
                 ]
                 documents = [item["document"] for item in batch]
 
@@ -280,7 +278,7 @@ class VectorStoreService(BaseService):
                     if value is not None:
                         if isinstance(value, (str, int, float, bool)):
                             conditions.append({key: value})
-                        elif hasattr(value, 'value'):
+                        elif hasattr(value, "value"):
                             # Handle enums
                             conditions.append({key: value.value})
 
@@ -307,12 +305,26 @@ class VectorStoreService(BaseService):
             formatted_results = []
             if results and results["ids"] and results["ids"][0]:
                 for i, item_id in enumerate(results["ids"][0]):
-                    formatted_results.append({
-                        "item_id": item_id,
-                        "distance": results["distances"][0][i] if results["distances"] else None,
-                        "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
-                        "document": results["documents"][0][i] if results["documents"] else "",
-                    })
+                    formatted_results.append(
+                        {
+                            "item_id": item_id,
+                            "distance": (
+                                results["distances"][0][i]
+                                if results["distances"]
+                                else None
+                            ),
+                            "metadata": (
+                                results["metadatas"][0][i]
+                                if results["metadatas"]
+                                else {}
+                            ),
+                            "document": (
+                                results["documents"][0][i]
+                                if results["documents"]
+                                else ""
+                            ),
+                        }
+                    )
 
             self.log_metric(
                 "vector_search_performed",
@@ -511,7 +523,7 @@ class VectorStoreService(BaseService):
             if result.get("embeddings") is not None and len(result["embeddings"]) > 0:
                 emb = result["embeddings"][0]
                 # Convert numpy array to list if necessary
-                embedding = emb.tolist() if hasattr(emb, 'tolist') else list(emb)
+                embedding = emb.tolist() if hasattr(emb, "tolist") else list(emb)
 
             metadata = {}
             if result.get("metadatas") is not None and len(result["metadatas"]) > 0:
@@ -654,7 +666,9 @@ class VectorStoreService(BaseService):
             return deleted_count
 
         except Exception as e:
-            logger.error(f"Failed to delete items for organization {organization_id}: {e}")
+            logger.error(
+                f"Failed to delete items for organization {organization_id}: {e}"
+            )
             raise VectorStoreOperationError(
                 f"Failed to delete items for organization: {e}",
                 details={
@@ -680,7 +694,7 @@ class VectorStoreService(BaseService):
                 continue
             elif isinstance(value, (str, int, float, bool)):
                 sanitized[key] = value
-            elif hasattr(value, 'value'):
+            elif hasattr(value, "value"):
                 # Handle enums
                 sanitized[key] = value.value
             elif isinstance(value, (list, dict)):
@@ -707,11 +721,13 @@ class VectorStoreService(BaseService):
             stats = {}
             base_health["error"] = str(e)
 
-        base_health.update({
-            "store_status": store_status,
-            "collection_name": self.collection_name,
-            "persist_directory": self.persist_directory,
-            "item_count": stats.get("item_count", 0),
-        })
+        base_health.update(
+            {
+                "store_status": store_status,
+                "collection_name": self.collection_name,
+                "persist_directory": self.persist_directory,
+                "item_count": stats.get("item_count", 0),
+            }
+        )
 
         return base_health

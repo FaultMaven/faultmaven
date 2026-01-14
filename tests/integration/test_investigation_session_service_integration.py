@@ -20,34 +20,49 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import (
-    create_async_engine,
-    async_sessionmaker,
     AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
 
-from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
-from faultmaven.modules.case.infrastructure.case_repository import InMemoryCaseRepository
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    ValidationException,
+)
+from faultmaven.infrastructure.persistence.database_case_repository import (
+    DatabaseCaseRepository,
+)
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
 )
-from faultmaven.services.investigation_session_service import APIInvestigationSessionService
-from faultmaven.services.case_service import APICaseService
-from faultmaven.modules.case.domain.models import Case, CaseStatus, CaseSeverity, InvestigationStrategy
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ConflictError,
-    ValidationException,
+from faultmaven.modules.agent.domain.models.agent_execution import (
+    AgentExecution,
+    AgentType,
+    ExecutionStatus,
 )
-
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseSeverity,
+    CaseStatus,
+    InvestigationStrategy,
+)
+from faultmaven.modules.case.infrastructure.case_repository import (
+    InMemoryCaseRepository,
+)
+from faultmaven.services.case_service import APICaseService
+from faultmaven.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
 
 # ============================================================
 # Fixtures
 # ============================================================
+
 
 @pytest.fixture(scope="function")
 async def async_engine():
@@ -106,6 +121,7 @@ def execution_repo(case_repo):
     The case_repo now handles agent executions (migrated from AgentExecutionRepository).
     This fixture provides a compatibility layer for tests.
     """
+
     class ExecutionRepoAdapter:
         """Adapter to map execution_repo interface to case_repo methods."""
 
@@ -147,6 +163,7 @@ async def sample_case(case_repo) -> Case:
 # Test Data Helpers
 # ============================================================
 
+
 def create_test_session_id() -> str:
     """Generate unique test session ID."""
     return f"session_{uuid4().hex[:12]}"
@@ -170,6 +187,7 @@ def create_test_execution_id() -> str:
 # ============================================================
 # End-to-End Session Lifecycle Tests
 # ============================================================
+
 
 class TestSessionLifecycle:
     """Test complete session lifecycle."""
@@ -239,7 +257,9 @@ class TestSessionLifecycle:
         assert abandoned.findings_summary is None
 
     @pytest.mark.asyncio
-    async def test_session_lifecycle_pause_and_abandon(self, session_service, sample_case):
+    async def test_session_lifecycle_pause_and_abandon(
+        self, session_service, sample_case
+    ):
         """Test pausing then abandoning a session."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
@@ -248,7 +268,9 @@ class TestSessionLifecycle:
         )
 
         # Pause first
-        await session_service.pause_session(session.session_id, sample_case.organization_id)
+        await session_service.pause_session(
+            session.session_id, sample_case.organization_id
+        )
 
         # Then abandon
         abandoned = await session_service.abandon_session(
@@ -258,7 +280,9 @@ class TestSessionLifecycle:
         assert abandoned.status == SessionStatus.ABANDONED
 
     @pytest.mark.asyncio
-    async def test_multiple_sessions_for_case_sequential(self, session_service, sample_case):
+    async def test_multiple_sessions_for_case_sequential(
+        self, session_service, sample_case
+    ):
         """Test creating multiple sessions for a case sequentially."""
         # Create first session
         session1 = await session_service.create_session(
@@ -291,11 +315,14 @@ class TestSessionLifecycle:
 # Authorization Enforcement Tests
 # ============================================================
 
+
 class TestAuthorizationEnforcement:
     """Test authorization checks via parent case."""
 
     @pytest.mark.asyncio
-    async def test_authorization_via_parent_case_get(self, session_service, sample_case):
+    async def test_authorization_via_parent_case_get(
+        self, session_service, sample_case
+    ):
         """Test that get_session checks authorization via parent case."""
         # Create session
         session = await session_service.create_session(
@@ -315,7 +342,9 @@ class TestAuthorizationEnforcement:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_authorization_via_parent_case_update(self, session_service, sample_case):
+    async def test_authorization_via_parent_case_update(
+        self, session_service, sample_case
+    ):
         """Test that update_session checks authorization via parent case."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
@@ -332,7 +361,9 @@ class TestAuthorizationEnforcement:
             )
 
     @pytest.mark.asyncio
-    async def test_authorization_via_parent_case_pause(self, session_service, sample_case):
+    async def test_authorization_via_parent_case_pause(
+        self, session_service, sample_case
+    ):
         """Test that pause_session checks authorization via parent case."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
@@ -344,7 +375,9 @@ class TestAuthorizationEnforcement:
             await session_service.pause_session(session.session_id, "different_org")
 
     @pytest.mark.asyncio
-    async def test_authorization_via_parent_case_resume(self, session_service, sample_case):
+    async def test_authorization_via_parent_case_resume(
+        self, session_service, sample_case
+    ):
         """Test that resume_session checks authorization via parent case."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
@@ -352,13 +385,17 @@ class TestAuthorizationEnforcement:
             user_id=sample_case.user_id,
         )
 
-        await session_service.pause_session(session.session_id, sample_case.organization_id)
+        await session_service.pause_session(
+            session.session_id, sample_case.organization_id
+        )
 
         with pytest.raises(AuthorizationError):
             await session_service.resume_session(session.session_id, "different_org")
 
     @pytest.mark.asyncio
-    async def test_authorization_via_parent_case_complete(self, session_service, sample_case):
+    async def test_authorization_via_parent_case_complete(
+        self, session_service, sample_case
+    ):
         """Test that complete_session checks authorization via parent case."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
@@ -372,7 +409,9 @@ class TestAuthorizationEnforcement:
             )
 
     @pytest.mark.asyncio
-    async def test_authorization_via_parent_case_abandon(self, session_service, sample_case):
+    async def test_authorization_via_parent_case_abandon(
+        self, session_service, sample_case
+    ):
         """Test that abandon_session checks authorization via parent case."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
@@ -384,21 +423,28 @@ class TestAuthorizationEnforcement:
             await session_service.abandon_session(session.session_id, "different_org")
 
     @pytest.mark.asyncio
-    async def test_authorization_via_parent_case_list(self, session_service, sample_case):
+    async def test_authorization_via_parent_case_list(
+        self, session_service, sample_case
+    ):
         """Test that list_sessions checks authorization via parent case."""
         with pytest.raises(AuthorizationError):
             await session_service.list_sessions(sample_case.case_id, "different_org")
 
     @pytest.mark.asyncio
-    async def test_authorization_via_parent_case_active_session(self, session_service, sample_case):
+    async def test_authorization_via_parent_case_active_session(
+        self, session_service, sample_case
+    ):
         """Test that get_active_session checks authorization via parent case."""
         with pytest.raises(AuthorizationError):
-            await session_service.get_active_session(sample_case.case_id, "different_org")
+            await session_service.get_active_session(
+                sample_case.case_id, "different_org"
+            )
 
 
 # ============================================================
 # Active Session Enforcement Tests
 # ============================================================
+
 
 class TestActiveSessionEnforcement:
     """Test single active session per case enforcement."""
@@ -426,7 +472,9 @@ class TestActiveSessionEnforcement:
         assert "active session already exists" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_can_create_new_session_after_complete(self, session_service, sample_case):
+    async def test_can_create_new_session_after_complete(
+        self, session_service, sample_case
+    ):
         """Test that new session can be created after completing existing one."""
         # Create and complete first session
         session1 = await session_service.create_session(
@@ -452,7 +500,9 @@ class TestActiveSessionEnforcement:
         assert session2.status == SessionStatus.ACTIVE
 
     @pytest.mark.asyncio
-    async def test_can_create_new_session_after_abandon(self, session_service, sample_case):
+    async def test_can_create_new_session_after_abandon(
+        self, session_service, sample_case
+    ):
         """Test that new session can be created after abandoning existing one."""
         # Create and abandon first session
         session1 = await session_service.create_session(
@@ -461,7 +511,9 @@ class TestActiveSessionEnforcement:
             user_id=sample_case.user_id,
         )
 
-        await session_service.abandon_session(session1.session_id, sample_case.organization_id)
+        await session_service.abandon_session(
+            session1.session_id, sample_case.organization_id
+        )
 
         # Create new session - should succeed
         session2 = await session_service.create_session(
@@ -473,7 +525,9 @@ class TestActiveSessionEnforcement:
         assert session2 is not None
 
     @pytest.mark.asyncio
-    async def test_paused_session_still_blocks_new_creation(self, session_service, sample_case):
+    async def test_paused_session_still_blocks_new_creation(
+        self, session_service, sample_case
+    ):
         """Test that paused session still counts as 'blocking' new session creation."""
         # Create and pause session
         session1 = await session_service.create_session(
@@ -482,7 +536,9 @@ class TestActiveSessionEnforcement:
             user_id=sample_case.user_id,
         )
 
-        await session_service.pause_session(session1.session_id, sample_case.organization_id)
+        await session_service.pause_session(
+            session1.session_id, sample_case.organization_id
+        )
 
         # Paused session should NOT block new creation (paused != active)
         # The behavior depends on implementation - checking what actually happens
@@ -503,11 +559,14 @@ class TestActiveSessionEnforcement:
 # Token Budget Tracking Tests
 # ============================================================
 
+
 class TestTokenBudgetTracking:
     """Test token usage and budget enforcement."""
 
     @pytest.mark.asyncio
-    async def test_token_budget_tracking(self, session_service, execution_repo, sample_case):
+    async def test_token_budget_tracking(
+        self, session_service, execution_repo, sample_case
+    ):
         """Test token usage and budget enforcement."""
         # Create session with budget limit
         session = await session_service.create_session(
@@ -549,7 +608,9 @@ class TestTokenBudgetTracking:
         assert budget_status["usage_percentage"] == 20.0
 
     @pytest.mark.asyncio
-    async def test_token_budget_exceeds_limit(self, session_service, execution_repo, sample_case):
+    async def test_token_budget_exceeds_limit(
+        self, session_service, execution_repo, sample_case
+    ):
         """Test detection when budget is exceeded."""
         # Create session with low budget
         session = await session_service.create_session(
@@ -587,7 +648,9 @@ class TestTokenBudgetTracking:
         assert budget_status["usage_percentage"] == 150.0
 
     @pytest.mark.asyncio
-    async def test_token_budget_no_limit(self, session_service, execution_repo, sample_case):
+    async def test_token_budget_no_limit(
+        self, session_service, execution_repo, sample_case
+    ):
         """Test token tracking without budget limit."""
         # Create session without budget limit
         session = await session_service.create_session(
@@ -627,11 +690,14 @@ class TestTokenBudgetTracking:
 # Execution Linking Tests
 # ============================================================
 
+
 class TestExecutionLinking:
     """Test linking agent executions to session."""
 
     @pytest.mark.asyncio
-    async def test_link_executions_to_session(self, session_service, execution_repo, sample_case):
+    async def test_link_executions_to_session(
+        self, session_service, execution_repo, sample_case
+    ):
         """Test linking agent executions to session."""
         # Create session
         session = await session_service.create_session(
@@ -671,7 +737,9 @@ class TestExecutionLinking:
         assert updated_session.total_token_usage == 300
 
     @pytest.mark.asyncio
-    async def test_link_execution_updates_last_activity(self, session_service, execution_repo, sample_case):
+    async def test_link_execution_updates_last_activity(
+        self, session_service, execution_repo, sample_case
+    ):
         """Test that linking execution updates last_activity_at."""
         session = await session_service.create_session(
             case_id=sample_case.case_id,
@@ -683,6 +751,7 @@ class TestExecutionLinking:
 
         # Wait a tiny bit and add execution
         import time
+
         time.sleep(0.01)
 
         execution = AgentExecution(
@@ -744,11 +813,14 @@ class TestExecutionLinking:
 # Session Statistics Tests
 # ============================================================
 
+
 class TestSessionStatistics:
     """Test session statistics calculation."""
 
     @pytest.mark.asyncio
-    async def test_session_statistics_calculation(self, session_service, execution_repo, sample_case):
+    async def test_session_statistics_calculation(
+        self, session_service, execution_repo, sample_case
+    ):
         """Test session statistics calculation."""
         # Create multiple sessions with different statuses
         sessions = []
@@ -782,7 +854,9 @@ class TestSessionStatistics:
             organization_id=sample_case.organization_id,
             user_id=sample_case.user_id,
         )
-        await session_service.abandon_session(s3.session_id, sample_case.organization_id)
+        await session_service.abandon_session(
+            s3.session_id, sample_case.organization_id
+        )
 
         # Fourth session - leave active
         s4 = await session_service.create_session(
@@ -802,7 +876,9 @@ class TestSessionStatistics:
         assert stats["by_status"]["active"] == 1
 
     @pytest.mark.asyncio
-    async def test_session_statistics_token_totals(self, session_service, execution_repo, sample_case):
+    async def test_session_statistics_token_totals(
+        self, session_service, execution_repo, sample_case
+    ):
         """Test that statistics correctly sum token usage."""
         # Create and add executions to a session
         session = await session_service.create_session(
@@ -842,6 +918,7 @@ class TestSessionStatistics:
 # ============================================================
 # List and Query Tests
 # ============================================================
+
 
 class TestListAndQuery:
     """Test list and query operations."""
@@ -955,6 +1032,7 @@ class TestListAndQuery:
 # Cross-Organization Isolation Tests
 # ============================================================
 
+
 class TestOrganizationIsolation:
     """Test that organizations are properly isolated."""
 
@@ -1014,6 +1092,7 @@ class TestOrganizationIsolation:
 # Edge Case Tests
 # ============================================================
 
+
 class TestEdgeCases:
     """Test edge cases and boundary conditions."""
 
@@ -1062,6 +1141,7 @@ class TestEdgeCases:
 # ============================================================
 # Concurrent Operations Tests
 # ============================================================
+
 
 class TestConcurrentOperations:
     """Test concurrent session operations."""

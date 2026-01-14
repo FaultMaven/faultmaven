@@ -9,9 +9,9 @@ Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
 from faultmaven.providers.tenancy.base import TenantProvider
-from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
-from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 from faultmaven.providers.tenancy.factory import create_tenant_provider
+from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
+from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 __all__ = [
     "TenantProvider",

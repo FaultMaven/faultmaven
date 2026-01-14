@@ -5,9 +5,10 @@ This module provides a RAM-based session store for development and testing.
 Data is stored in Python dictionaries and lost on application restart.
 """
 
-from typing import Dict, Optional
-from datetime import datetime, timezone, timedelta
 import asyncio
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Optional
+
 from faultmaven.models.interfaces import ISessionStore
 
 
@@ -54,8 +55,8 @@ class InMemorySessionStore(ISessionStore):
             ttl = ttl or 1800  # Default 30 minutes
 
             # Add last_activity timestamp if not present
-            if 'last_activity' not in value:
-                value['last_activity'] = datetime.now(timezone.utc).isoformat()
+            if "last_activity" not in value:
+                value["last_activity"] = datetime.now(timezone.utc).isoformat()
 
             self._sessions[key] = value
             self._ttls[key] = datetime.now(timezone.utc) + timedelta(seconds=ttl)
@@ -120,7 +121,9 @@ class InMemorySessionStore(ISessionStore):
             self._ttls[key] = datetime.now(timezone.utc) + timedelta(seconds=ttl)
             return True
 
-    async def find_by_user_and_client(self, user_id: str, client_id: str) -> Optional[str]:
+    async def find_by_user_and_client(
+        self, user_id: str, client_id: str
+    ) -> Optional[str]:
         """
         Find session ID by user_id and client_id combination.
 
@@ -146,7 +149,9 @@ class InMemorySessionStore(ISessionStore):
 
             return session_id if session_id in self._sessions else None
 
-    async def index_session_by_client(self, user_id: str, client_id: str, session_id: str, ttl: int) -> None:
+    async def index_session_by_client(
+        self, user_id: str, client_id: str, session_id: str, ttl: int
+    ) -> None:
         """
         Create or update client index entry.
 
@@ -190,7 +195,8 @@ class InMemorySessionStore(ISessionStore):
 
         # Remove client indexes pointing to this session
         indexes_to_remove = [
-            index_key for index_key, session_id in self._client_index.items()
+            index_key
+            for index_key, session_id in self._client_index.items()
             if session_id == key
         ]
         for index_key in indexes_to_remove:

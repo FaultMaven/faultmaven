@@ -9,15 +9,16 @@ Design Reference:
 """
 
 from typing import List, Optional, Tuple
+
 from faultmaven.modules.agent.contracts import (
-    InvestigationState,
-    WorkingConclusion,
-    ProgressMetrics,
     ConfidenceLevel,
-    InvestigationMomentum,
     Hypothesis,
     HypothesisStatus,
+    InvestigationMomentum,
     InvestigationPhase,
+    InvestigationState,
+    ProgressMetrics,
+    WorkingConclusion,
 )
 
 
@@ -43,7 +44,8 @@ def generate_working_conclusion(
 
     # Find active or validated hypothesis with highest confidence
     active_hypotheses = [
-        h for h in hypotheses
+        h
+        for h in hypotheses
         if h.status in [HypothesisStatus.ACTIVE, HypothesisStatus.VALIDATED]
     ]
 
@@ -77,10 +79,14 @@ def generate_working_conclusion(
         h.statement
         for h in active_hypotheses
         if h.hypothesis_id != best_hypothesis.hypothesis_id and h.likelihood >= 0.30
-    ][:3]  # Top 3 alternatives
+    ][
+        :3
+    ]  # Top 3 alternatives
 
     # Determine next evidence needed
-    next_evidence = _determine_next_evidence_needed(best_hypothesis, investigation_state)
+    next_evidence = _determine_next_evidence_needed(
+        best_hypothesis, investigation_state
+    )
 
     # Check if can proceed with solution (≥70% confidence)
     can_proceed = confidence >= 0.70
@@ -131,35 +137,40 @@ def calculate_progress_metrics(
 
     # Count evidence states
     evidence_blocked_count = len(evidence_blocked)
-    evidence_pending_count = len(investigation_state.evidence.evidence_requests) - len(evidence_provided)
+    evidence_pending_count = len(investigation_state.evidence.evidence_requests) - len(
+        evidence_provided
+    )
 
     # Determine investigation momentum
     momentum = _determine_investigation_momentum(investigation_state, current_turn)
 
     # Calculate turns since last progress
-    turns_since_progress = _calculate_turns_since_progress(investigation_state, current_turn)
+    turns_since_progress = _calculate_turns_since_progress(
+        investigation_state, current_turn
+    )
 
     # Count active hypotheses
     active_hypotheses = [
-        h for h in hypotheses
+        h
+        for h in hypotheses
         if h.status in [HypothesisStatus.ACTIVE, HypothesisStatus.VALIDATED]
     ]
     active_count = len(active_hypotheses)
 
     # Count hypotheses with sufficient evidence (≥70%)
     sufficient_evidence_count = sum(
-        1 for h in active_hypotheses
+        1
+        for h in active_hypotheses
         if _calculate_hypothesis_evidence_completeness(h) >= 0.70
     )
 
     # Get highest hypothesis confidence
-    highest_confidence = max(
-        (h.likelihood for h in active_hypotheses),
-        default=0.0
-    )
+    highest_confidence = max((h.likelihood for h in active_hypotheses), default=0.0)
 
     # Generate next steps
-    next_steps = _generate_next_steps(investigation_state, momentum, evidence_completeness)
+    next_steps = _generate_next_steps(
+        investigation_state, momentum, evidence_completeness
+    )
 
     # Generate blocked reasons if momentum low
     blocked_reasons = []
@@ -222,7 +233,8 @@ def _calculate_overall_evidence_completeness(
         return 0.0
 
     active_hypotheses = [
-        h for h in hypotheses
+        h
+        for h in hypotheses
         if h.status in [HypothesisStatus.ACTIVE, HypothesisStatus.VALIDATED]
     ]
 
@@ -230,8 +242,7 @@ def _calculate_overall_evidence_completeness(
         return 0.0
 
     completeness_scores = [
-        _calculate_hypothesis_evidence_completeness(h)
-        for h in active_hypotheses
+        _calculate_hypothesis_evidence_completeness(h) for h in active_hypotheses
     ]
 
     return sum(completeness_scores) / len(completeness_scores)
@@ -264,9 +275,7 @@ def _determine_investigation_momentum(
 
     # Check evidence collection rate
     iterations = investigation_state.ooda_engine.iterations[-3:]
-    evidence_collected_recently = sum(
-        it.new_evidence_collected for it in iterations
-    )
+    evidence_collected_recently = sum(it.new_evidence_collected for it in iterations)
 
     # Determine momentum
     if recent_delta > 0.10 and evidence_collected_recently >= 2:
@@ -292,14 +301,20 @@ def _calculate_turns_since_progress(
     # Check confidence trajectory for changes
     trajectory = investigation_state.ooda_engine.confidence_trajectory
     for i in range(len(trajectory) - 1, 0, -1):
-        if abs(trajectory[i] - trajectory[i-1]) > 0.05:
-            last_progress_turn = max(last_progress_turn, current_turn - (len(trajectory) - i))
+        if abs(trajectory[i] - trajectory[i - 1]) > 0.05:
+            last_progress_turn = max(
+                last_progress_turn, current_turn - (len(trajectory) - i)
+            )
             break
 
     # Check iterations for evidence collection
     for iteration in reversed(investigation_state.ooda_engine.iterations):
         if iteration.new_evidence_collected > 0:
-            turns_back = current_turn - iteration.completed_at_turn if iteration.completed_at_turn else 0
+            turns_back = (
+                current_turn - iteration.completed_at_turn
+                if iteration.completed_at_turn
+                else 0
+            )
             last_progress_turn = max(last_progress_turn, current_turn - turns_back)
             break
 
@@ -312,7 +327,7 @@ def _find_last_confidence_change_turn(investigation_state: InvestigationState) -
     current_turn = investigation_state.metadata.current_turn
 
     for i in range(len(trajectory) - 1, 0, -1):
-        if abs(trajectory[i] - trajectory[i-1]) > 0.05:
+        if abs(trajectory[i] - trajectory[i - 1]) > 0.05:
             return current_turn - (len(trajectory) - i)
 
     return current_turn  # No change found, return current

@@ -23,7 +23,6 @@ from faultmaven.infrastructure.vector.base import (
 )
 from faultmaven.infrastructure.vector.sanitizer import create_chroma_sanitizer
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -31,6 +30,7 @@ logger = logging.getLogger(__name__)
 try:
     import chromadb
     from chromadb.config import Settings as ChromaSettings
+
     CHROMADB_AVAILABLE = True
 except ImportError:
     CHROMADB_AVAILABLE = False
@@ -220,12 +220,22 @@ class ChromaVectorBackend(IVectorBackend):
                 distance = results["distances"][0][i] if results.get("distances") else 0
                 score = 1.0 - distance  # Assuming cosine distance
 
-                search_results.append(VectorSearchResult(
-                    id=doc_id,
-                    content=results["documents"][0][i] if results.get("documents") else "",
-                    score=score,
-                    metadata=results["metadatas"][0][i] if results.get("metadatas") else {},
-                ))
+                search_results.append(
+                    VectorSearchResult(
+                        id=doc_id,
+                        content=(
+                            results["documents"][0][i]
+                            if results.get("documents")
+                            else ""
+                        ),
+                        score=score,
+                        metadata=(
+                            results["metadatas"][0][i]
+                            if results.get("metadatas")
+                            else {}
+                        ),
+                    )
+                )
 
         return search_results
 
@@ -268,12 +278,22 @@ class ChromaVectorBackend(IVectorBackend):
                 distance = results["distances"][0][i] if results.get("distances") else 0
                 score = 1.0 - distance
 
-                search_results.append(VectorSearchResult(
-                    id=doc_id,
-                    content=results["documents"][0][i] if results.get("documents") else "",
-                    score=score,
-                    metadata=results["metadatas"][0][i] if results.get("metadatas") else {},
-                ))
+                search_results.append(
+                    VectorSearchResult(
+                        id=doc_id,
+                        content=(
+                            results["documents"][0][i]
+                            if results.get("documents")
+                            else ""
+                        ),
+                        score=score,
+                        metadata=(
+                            results["metadatas"][0][i]
+                            if results.get("metadatas")
+                            else {}
+                        ),
+                    )
+                )
 
         return search_results
 
@@ -326,12 +346,24 @@ class ChromaVectorBackend(IVectorBackend):
         documents = []
         if results and results["ids"]:
             for i, doc_id in enumerate(results["ids"]):
-                documents.append(VectorDocument(
-                    id=doc_id,
-                    content=results["documents"][i] if results.get("documents") else "",
-                    embedding=results["embeddings"][i] if results.get("embeddings") else None,
-                    metadata=results["metadatas"][i] if results.get("metadatas") else None,
-                ))
+                documents.append(
+                    VectorDocument(
+                        id=doc_id,
+                        content=(
+                            results["documents"][i] if results.get("documents") else ""
+                        ),
+                        embedding=(
+                            results["embeddings"][i]
+                            if results.get("embeddings")
+                            else None
+                        ),
+                        metadata=(
+                            results["metadatas"][i]
+                            if results.get("metadatas")
+                            else None
+                        ),
+                    )
+                )
 
         return documents
 

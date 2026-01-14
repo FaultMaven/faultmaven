@@ -1,13 +1,18 @@
 """Test fixtures for Agent module unit tests."""
 
-import pytest
 from datetime import datetime, timezone
-from typing import Optional, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import pytest
+
+from faultmaven.exceptions import (
+    NotFoundError,
+    PermissionDeniedException,
+    ServiceException,
+)
 from faultmaven.modules.case.domain.models import Case, CaseStatus
-from faultmaven.exceptions import NotFoundError, PermissionDeniedException, ServiceException
 
 if TYPE_CHECKING:
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
@@ -24,10 +29,11 @@ def create_sample_case(
 ) -> Case:
     """Create a sample Case for testing."""
     from faultmaven.modules.case.domain.models import InvestigationProgress
+
     case_id = case_id or f"case_{uuid4().hex[:12]}"
     user_id = user_id or str(uuid4())
     now = datetime.now(timezone.utc)
-    
+
     # Create case with all required fields
     # Case model has default_factory for progress, consulting, etc., so they're auto-initialized
     # Required fields: case_id, user_id, organization_id, title, created_at, updated_at, last_activity_at
@@ -47,7 +53,7 @@ def create_sample_case(
     )
     # Progress, consulting, evidence, hypotheses, solutions, etc. are created by default_factory
     # No need to manually set them
-    
+
     return case
 
 
@@ -84,16 +90,16 @@ class MockCaseRepository:
     ) -> tuple[list[Case], int]:
         """List cases with filters."""
         results = list(self._storage.values())
-        
+
         if user_id:
             results = [c for c in results if c.user_id == user_id]
         if organization_id:
             results = [c for c in results if c.organization_id == organization_id]
         if status:
             results = [c for c in results if c.status == status]
-        
+
         total = len(results)
-        paginated = results[offset:offset + limit]
+        paginated = results[offset : offset + limit]
         return paginated, total
 
     async def _delete(self, case_id: str) -> bool:
@@ -106,7 +112,7 @@ class MockCaseRepository:
 
 class MockMilestoneEngine:
     """Mock MilestoneEngine for testing InvestigationService.
-    
+
     Note: Real MilestoneEngine saves case via repository internally.
     Mock doesn't need to save since InvestigationService also saves after adding agent message.
     """
@@ -121,16 +127,16 @@ class MockMilestoneEngine:
         attachments: Optional[list] = None,
     ) -> dict[str, Any]:
         """Mock turn processing.
-        
+
         Note: The service adds user message to case BEFORE calling this,
         so case.messages already contains the user message.
-        
+
         Real engine:
         - Increments current_turn
         - Updates case state
         - Saves case via repository (but we don't need to mock that since service saves again)
         - Returns updated case
-        
+
         Mock behavior:
         - Increments current_turn to match expected behavior
         - Returns case with updated state
@@ -139,7 +145,7 @@ class MockMilestoneEngine:
         # Note: The service expects the engine to increment current_turn
         case.current_turn += 1
         case.updated_at = datetime.now(timezone.utc)
-        
+
         # Return the same case object - real engine returns the mutated case
         return {
             "case_updated": case,
@@ -179,6 +185,7 @@ def sample_user_id() -> str:
 def sample_case_query_request():
     """Create a sample CaseQueryRequest."""
     from faultmaven.models.api_models import CaseQueryRequest
+
     return CaseQueryRequest(
         message="Test user message",
         attachments=None,

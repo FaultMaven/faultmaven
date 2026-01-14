@@ -8,15 +8,17 @@ Tests all three parsing tiers:
 """
 
 import json
+
 import pytest
+
 from faultmaven.core.response_parser import (
     ResponseParser,
     parse_ooda_response,
 )
 from faultmaven.models.responses import (
-    OODAResponse,
     ConsultantResponse,
     LeadInvestigatorResponse,
+    OODAResponse,
     SuggestedAction,
     create_minimal_response,
 )
@@ -118,11 +120,13 @@ class TestTier2JSONParsing:
         """Test parsing clean JSON string"""
         parser = ResponseParser()
 
-        raw_response = json.dumps({
-            "answer": "Clean JSON response",
-            "clarifying_questions": ["Question 1"],
-            "suggested_actions": [],
-        })
+        raw_response = json.dumps(
+            {
+                "answer": "Clean JSON response",
+                "clarifying_questions": ["Question 1"],
+                "suggested_actions": [],
+            }
+        )
 
         result = parser.parse(raw_response, OODAResponse)
 
@@ -250,7 +254,9 @@ Check systemctl status myapp.service & verify port 8080."""
         result = parser.parse(raw_response, OODAResponse)
 
         assert isinstance(result, OODAResponse)
-        assert "Connection refused" in result.answer or "server is down" in result.answer
+        assert (
+            "Connection refused" in result.answer or "server is down" in result.answer
+        )
         assert parser.stats["tier3_success"] == 1
 
     def test_minimal_fallback_on_empty_content(self):
@@ -283,10 +289,12 @@ class TestParseHelperFunction:
 
     def test_parse_ooda_response_with_json_string(self):
         """Test parse_ooda_response with JSON string"""
-        raw_response = json.dumps({
-            "answer": "JSON string test",
-            "clarifying_questions": [],
-        })
+        raw_response = json.dumps(
+            {
+                "answer": "JSON string test",
+                "clarifying_questions": [],
+            }
+        )
 
         result = parse_ooda_response(raw_response, OODAResponse)
 
@@ -401,7 +409,7 @@ class TestEdgeCases:
         parser = ResponseParser()
 
         raw_response = {
-            "answer": "Check this config: {\"port\": 8080, \"host\": \"localhost\"}",
+            "answer": 'Check this config: {"port": 8080, "host": "localhost"}',
             "clarifying_questions": [],
         }
 

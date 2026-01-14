@@ -6,6 +6,6 @@ This package provides infrastructure for managing concurrent access to shared
 resources in a distributed FaultMaven deployment.
 """
 
-from .report_lock_manager import ReportLockManager, LockAcquisitionError
+from .report_lock_manager import LockAcquisitionError, ReportLockManager
 
 __all__ = ["ReportLockManager", "LockAcquisitionError"]

@@ -24,11 +24,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import status
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 from faultmaven.main import app as main_app
-from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.models.api_models import CaseSummary
+from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseStatus
 
 
@@ -97,7 +97,7 @@ def mock_case_summary():
         milestones_completed=2,
         total_milestones=8,
         is_stuck=False,
-        is_terminal=False
+        is_terminal=False,
     )
 
 
@@ -134,11 +134,16 @@ def app(mock_case_service, mock_session_service, mock_user):
 
     # Import the actual dependencies used by case routes
     # Note: Case routes use wrapper functions, so we override those
-    from faultmaven.modules.case.api.routes import _di_get_case_service_dependency, _di_get_session_service_dependency
     from faultmaven.api.v1.auth_dependencies import require_authentication
+    from faultmaven.modules.case.api.routes import (
+        _di_get_case_service_dependency,
+        _di_get_session_service_dependency,
+    )
 
     app.dependency_overrides[_di_get_case_service_dependency] = get_mock_case_service
-    app.dependency_overrides[_di_get_session_service_dependency] = get_mock_session_service
+    app.dependency_overrides[_di_get_session_service_dependency] = (
+        get_mock_session_service
+    )
     app.dependency_overrides[require_authentication] = get_mock_current_user
 
     yield app
@@ -151,8 +156,7 @@ def app(mock_case_service, mock_session_service, mock_user):
 async def client(app):
     """Create async test client with proper lifespan handling."""
     async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         yield client
 
@@ -172,7 +176,9 @@ def headers():
 class TestCreateCase:
     """Tests for POST /api/v1/cases endpoint."""
 
-    async def test_create_case_success(self, client, mock_case_service, mock_case, headers):
+    async def test_create_case_success(
+        self, client, mock_case_service, mock_case, headers
+    ):
         """Test successful case creation."""
         mock_case_service.create_case.return_value = mock_case
 
@@ -192,7 +198,9 @@ class TestCreateCase:
         assert data["title"] == "Test Case"
         mock_case_service.create_case.assert_called_once()
 
-    async def test_create_case_with_metadata(self, client, mock_case_service, mock_case, headers):
+    async def test_create_case_with_metadata(
+        self, client, mock_case_service, mock_case, headers
+    ):
         """Test case creation with metadata."""
         mock_case.metadata = {"source": "api"}
         mock_case_service.create_case.return_value = mock_case
@@ -210,7 +218,9 @@ class TestCreateCase:
 
         assert response.status_code == status.HTTP_201_CREATED
 
-    async def test_create_case_missing_title(self, client, mock_case_service, mock_case, headers):
+    async def test_create_case_missing_title(
+        self, client, mock_case_service, mock_case, headers
+    ):
         """Test case creation without title - should auto-generate title (v2.0 behavior)."""
         # Configure mock to return case with auto-generated title
         mock_case.title = "Auto-generated Title: Test"
@@ -235,7 +245,9 @@ class TestCreateCase:
         call_args = mock_case_service.create_case.call_args
         assert call_args.kwargs["title"] is None  # Should pass None for auto-generation
 
-    async def test_create_case_empty_title(self, client, mock_case_service, mock_case, headers):
+    async def test_create_case_empty_title(
+        self, client, mock_case_service, mock_case, headers
+    ):
         """Test case creation with empty title - should auto-generate (v2.0 behavior)."""
         # Configure mock to return case with auto-generated title
         mock_case.title = "Auto-generated Title: Test"
@@ -257,13 +269,19 @@ class TestCreateCase:
         assert data["title"] is not None
         assert len(data["title"]) > 0
 
-    async def test_create_case_missing_authentication(self, mock_case_service, mock_session_service):
+    async def test_create_case_missing_authentication(
+        self, mock_case_service, mock_session_service
+    ):
         """Test case creation without JWT authentication returns 401."""
         # Create app WITH service mocks but WITHOUT auth override
         # This allows dependencies to resolve but auth to fail naturally
+        from httpx import ASGITransport, AsyncClient
+
         from faultmaven.main import app as main_app
-        from httpx import AsyncClient, ASGITransport
-        from faultmaven.modules.case.api.routes import _di_get_case_service_dependency, _di_get_session_service_dependency
+        from faultmaven.modules.case.api.routes import (
+            _di_get_case_service_dependency,
+            _di_get_session_service_dependency,
+        )
 
         app = main_app
 
@@ -274,11 +292,17 @@ class TestCreateCase:
         async def get_mock_session_service():
             return mock_session_service
 
-        app.dependency_overrides[_di_get_case_service_dependency] = get_mock_case_service
-        app.dependency_overrides[_di_get_session_service_dependency] = get_mock_session_service
+        app.dependency_overrides[_di_get_case_service_dependency] = (
+            get_mock_case_service
+        )
+        app.dependency_overrides[_di_get_session_service_dependency] = (
+            get_mock_session_service
+        )
 
         try:
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
                 response = await client.post(
                     "/api/v1/cases",
                     json={
@@ -293,7 +317,9 @@ class TestCreateCase:
             # Clean up overrides
             app.dependency_overrides.clear()
 
-    async def test_create_case_all_severities(self, client, mock_case_service, mock_case, headers):
+    async def test_create_case_all_severities(
+        self, client, mock_case_service, mock_case, headers
+    ):
         """Test case creation with all severity levels."""
         mock_case_service.create_case.return_value = mock_case
 
@@ -309,6 +335,7 @@ class TestCreateCase:
             )
             assert response.status_code == status.HTTP_201_CREATED
 
+
 # ============================================================
 # GET /api/v1/cases/{case_id} Tests
 # ============================================================
@@ -317,7 +344,9 @@ class TestCreateCase:
 class TestGetCase:
     """Tests for GET /api/v1/cases/{case_id} endpoint."""
 
-    async def test_get_case_success(self, client, mock_case_service, mock_case, headers):
+    async def test_get_case_success(
+        self, client, mock_case_service, mock_case, headers
+    ):
         """Test successful case retrieval."""
         mock_case_service.get_case.return_value = mock_case
 
@@ -330,9 +359,7 @@ class TestGetCase:
         data = response.json()
         assert data["case_id"] == "case_123abc"
         # v2.0 API passes user_id (from current_user), not organization_id
-        mock_case_service.get_case.assert_called_once_with(
-            "case_123abc", "user_789"
-        )
+        mock_case_service.get_case.assert_called_once_with("case_123abc", "user_789")
 
     async def test_get_case_not_found(self, client, mock_case_service, headers):
         """Test case not found - v2.0 API returns FastAPI standard error format."""
@@ -347,13 +374,17 @@ class TestGetCase:
         data = response.json()
         # v2.0 API: FastAPI standard error format {"detail": "message"}
         assert "detail" in data
-        assert "not found" in data["detail"].lower() or "access denied" in data["detail"].lower()
+        assert (
+            "not found" in data["detail"].lower()
+            or "access denied" in data["detail"].lower()
+        )
 
     async def test_get_case_missing_authentication(self):
         """Test get case without JWT authentication returns 401."""
         # Create app without auth override to test unauthenticated request
-        from faultmaven.main import app as main_app
         from fastapi.testclient import TestClient
+
+        from faultmaven.main import app as main_app
 
         app = main_app
         unauthenticated_client = TestClient(app)
@@ -371,7 +402,9 @@ class TestGetCase:
 class TestListCases:
     """Tests for GET /api/v1/cases endpoint."""
 
-    async def test_list_cases_success(self, client, mock_case_service, mock_case_summary, headers):
+    async def test_list_cases_success(
+        self, client, mock_case_service, mock_case_summary, headers
+    ):
         """Test successful case list."""
         mock_case_service.list_user_cases.return_value = [mock_case_summary]
 
@@ -400,7 +433,9 @@ class TestListCases:
         assert data["cases"] == []
         assert data["total_count"] == 0
 
-    async def test_list_cases_with_status_filter(self, client, mock_case_service, mock_case_summary, headers):
+    async def test_list_cases_with_status_filter(
+        self, client, mock_case_service, mock_case_summary, headers
+    ):
         """Test case list with status filter."""
         mock_case_service.list_user_cases.return_value = [mock_case_summary]
 
@@ -413,10 +448,16 @@ class TestListCases:
         mock_case_service.list_user_cases.assert_called_once()
         # Verify the filter object passed to list_user_cases has the status filter
         call_args = mock_case_service.list_user_cases.call_args
-        filters = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("filters")
+        filters = (
+            call_args[0][1]
+            if len(call_args[0]) > 1
+            else call_args.kwargs.get("filters")
+        )
         assert filters.status == CaseStatus.CONSULTING
 
-    async def test_list_cases_with_severity_filter(self, client, mock_case_service, mock_case_summary, headers):
+    async def test_list_cases_with_severity_filter(
+        self, client, mock_case_service, mock_case_summary, headers
+    ):
         """Test case list with severity filter."""
         mock_case_service.list_user_cases.return_value = [mock_case_summary]
 
@@ -469,7 +510,9 @@ class TestListCases:
 class TestUpdateCase:
     """Tests for PUT /api/v1/cases/{case_id} endpoint (v2.0 uses PUT not PATCH)."""
 
-    async def test_update_case_success(self, client, mock_case_service, mock_case, headers):
+    async def test_update_case_success(
+        self, client, mock_case_service, mock_case, headers
+    ):
         """Test successful case update - v2.0 uses PUT and returns status response."""
         mock_case.title = "Updated Title"
         mock_case_service.update_case.return_value = mock_case
@@ -487,7 +530,9 @@ class TestUpdateCase:
         assert data["case_id"] == "case_123abc"
         assert "updated successfully" in data["message"].lower()
 
-    async def test_update_case_multiple_fields(self, client, mock_case_service, mock_case, headers):
+    async def test_update_case_multiple_fields(
+        self, client, mock_case_service, mock_case, headers
+    ):
         """Test updating multiple fields - v2.0 uses PUT method."""
         mock_case.title = "Updated"
         mock_case.status = CaseStatus.INVESTIGATING
@@ -507,6 +552,7 @@ class TestUpdateCase:
     async def test_update_case_not_found(self, client, mock_case_service, headers):
         """Test updating non-existent case - v2.0 uses PUT method."""
         from faultmaven.exceptions import NotFoundError
+
         mock_case_service.update_case.side_effect = NotFoundError("Case", "nonexistent")
 
         response = await client.put(
@@ -520,6 +566,7 @@ class TestUpdateCase:
     async def test_update_case_forbidden(self, client, mock_case_service, headers):
         """Test updating case from different organization - v2.0 uses PUT method."""
         from faultmaven.exceptions import AuthorizationError
+
         mock_case_service.update_case.side_effect = AuthorizationError(
             "Case not accessible by organization"
         )
@@ -532,7 +579,9 @@ class TestUpdateCase:
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    async def test_update_case_empty_request(self, client, mock_case_service, mock_case, headers):
+    async def test_update_case_empty_request(
+        self, client, mock_case_service, mock_case, headers
+    ):
         """Test update with empty request body - v2.0 rejects empty updates."""
         mock_case_service.get_case.return_value = mock_case
 
@@ -546,7 +595,9 @@ class TestUpdateCase:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         data = response.json()
         assert "detail" in data
-        assert "no updates" in data["detail"].lower() or "update" in data["detail"].lower()
+        assert (
+            "no updates" in data["detail"].lower() or "update" in data["detail"].lower()
+        )
 
 
 # ============================================================
@@ -571,7 +622,10 @@ class TestDeleteCase:
     async def test_delete_case_not_found(self, client, mock_case_service, headers):
         """Test deleting non-existent case - v2.0 DELETE is idempotent."""
         from faultmaven.exceptions import NotFoundError
-        mock_case_service.hard_delete_case.side_effect = NotFoundError("Case", "nonexistent")
+
+        mock_case_service.hard_delete_case.side_effect = NotFoundError(
+            "Case", "nonexistent"
+        )
 
         response = await client.delete(
             "/api/v1/cases/nonexistent",
@@ -585,6 +639,7 @@ class TestDeleteCase:
     async def test_delete_case_forbidden(self, client, mock_case_service, headers):
         """Test deleting case from different organization - still returns 403."""
         from faultmaven.exceptions import AuthorizationError
+
         mock_case_service.hard_delete_case.side_effect = AuthorizationError(
             "Not authorized"
         )
@@ -596,7 +651,6 @@ class TestDeleteCase:
 
         # Authorization errors are NOT treated as idempotent success
         assert response.status_code == status.HTTP_403_FORBIDDEN
-
 
         """Test statistics for non-existent case."""
         mock_case_service.get_case.return_value = None
@@ -620,6 +674,7 @@ class TestErrorHandling:
     async def test_service_error_returns_500(self, client, mock_case_service, headers):
         """Test that service errors return 500."""
         from faultmaven.exceptions import ServiceError
+
         mock_case_service.create_case.side_effect = ServiceError("Database error")
 
         response = await client.post(
@@ -634,9 +689,12 @@ class TestErrorHandling:
 
         assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
 
-    async def test_validation_error_returns_400(self, client, mock_case_service, headers):
+    async def test_validation_error_returns_400(
+        self, client, mock_case_service, headers
+    ):
         """Test that validation errors return 400."""
         from faultmaven.exceptions import ValidationException
+
         mock_case_service.create_case.side_effect = ValidationException(
             "title: Title is required"
         )

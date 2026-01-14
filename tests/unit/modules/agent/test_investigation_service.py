@@ -3,25 +3,32 @@
 Tests the InvestigationService which manages milestone-based troubleshooting workflow.
 """
 
-import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from faultmaven.modules.agent.domain.services.investigation_service import InvestigationService
-from faultmaven.modules.case.domain.models import Case, CaseStatus
+import pytest
+
+from faultmaven.exceptions import (
+    NotFoundError,
+    PermissionDeniedException,
+    ServiceException,
+)
 from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
-from faultmaven.exceptions import NotFoundError, PermissionDeniedException, ServiceException
+from faultmaven.modules.agent.domain.services.investigation_service import (
+    InvestigationService,
+)
+from faultmaven.modules.case.domain.models import Case, CaseStatus
 
 from .conftest import (
     MockCaseRepository,
     MockMilestoneEngine,
     create_sample_case,
-    sample_case,
-    sample_user_id,
-    sample_case_query_request,
     mock_case_repository,
     mock_milestone_engine,
+    sample_case,
+    sample_case_query_request,
+    sample_user_id,
 )
 
 
@@ -38,7 +45,13 @@ class TestInvestigationServiceProcessTurn:
 
     @pytest.mark.asyncio
     async def test_process_turn_success(
-        self, service, mock_case_repository, mock_milestone_engine, sample_case, sample_user_id, sample_case_query_request
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+        sample_case_query_request,
     ):
         """Test successful turn processing."""
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
@@ -52,9 +65,14 @@ class TestInvestigationServiceProcessTurn:
         )
 
         assert isinstance(response, CaseQueryResponse)
-        assert response.agent_response == f"Agent response to: {sample_case_query_request.message}"
+        assert (
+            response.agent_response
+            == f"Agent response to: {sample_case_query_request.message}"
+        )
         # Mock engine increments turn from 0 to 1, so response should have turn_number = 1
-        assert response.turn_number == 1, f"Expected turn_number=1, got {response.turn_number} (initial was {sample_case.current_turn})"
+        assert (
+            response.turn_number == 1
+        ), f"Expected turn_number=1, got {response.turn_number} (initial was {sample_case.current_turn})"
         assert mock_milestone_engine.process_turn.called
         assert mock_case_repository.save.called
 
@@ -90,7 +108,13 @@ class TestInvestigationServiceProcessTurn:
 
     @pytest.mark.asyncio
     async def test_process_turn_saves_user_message(
-        self, service, mock_case_repository, mock_milestone_engine, sample_case, sample_user_id, sample_case_query_request
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+        sample_case_query_request,
     ):
         """Test that user message is saved before processing."""
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
@@ -106,19 +130,30 @@ class TestInvestigationServiceProcessTurn:
 
         # Verify case was saved with user message and agent response
         saved_case = await mock_case_repository.get(sample_case.case_id)
-        assert saved_case.message_count == initial_message_count + 2  # User message + agent response
-        assert len(saved_case.messages) >= 2, f"Expected at least 2 messages, got {len(saved_case.messages)}"
+        assert (
+            saved_case.message_count == initial_message_count + 2
+        )  # User message + agent response
+        assert (
+            len(saved_case.messages) >= 2
+        ), f"Expected at least 2 messages, got {len(saved_case.messages)}"
         # Messages are added in order: user message first (index 0), then agent response (index 1)
         # So messages[-2] should be the user message if there are exactly 2, or second-to-last otherwise
         user_messages = [m for m in saved_case.messages if m.get("role") == "user"]
         assert len(user_messages) >= 1, "User message should be saved"
         # Check that our test message is in the user messages
-        assert any(m["content"] == sample_case_query_request.message for m in user_messages), \
-            f"User message '{sample_case_query_request.message}' not found in saved messages"
+        assert any(
+            m["content"] == sample_case_query_request.message for m in user_messages
+        ), f"User message '{sample_case_query_request.message}' not found in saved messages"
 
     @pytest.mark.asyncio
     async def test_process_turn_saves_agent_response(
-        self, service, mock_case_repository, mock_milestone_engine, sample_case, sample_user_id, sample_case_query_request
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+        sample_case_query_request,
     ):
         """Test that agent response is saved after processing."""
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
@@ -139,7 +174,13 @@ class TestInvestigationServiceProcessTurn:
 
     @pytest.mark.asyncio
     async def test_process_turn_increments_turn_number(
-        self, service, mock_case_repository, mock_milestone_engine, sample_case, sample_user_id, sample_case_query_request
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+        sample_case_query_request,
     ):
         """Test that turn number is incremented."""
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
@@ -160,17 +201,24 @@ class TestInvestigationServiceProcessTurn:
         # 4. Service adds agent message with turn_number = updated_case.current_turn (e.g., 1)
         # 5. Response has turn_number = updated_case.current_turn (e.g., 1)
         expected_turn = initial_turn + 1  # Engine increments by 1
-        assert response.turn_number == expected_turn, \
-            f"Expected turn_number={expected_turn}, got {response.turn_number} (initial was {initial_turn})"
-        
+        assert (
+            response.turn_number == expected_turn
+        ), f"Expected turn_number={expected_turn}, got {response.turn_number} (initial was {initial_turn})"
+
         saved_case = await mock_case_repository.get(sample_case.case_id)
         # The saved case should have current_turn incremented by the engine
-        assert saved_case.current_turn == expected_turn, \
-            f"Expected saved_case.current_turn={expected_turn}, got {saved_case.current_turn}"
+        assert (
+            saved_case.current_turn == expected_turn
+        ), f"Expected saved_case.current_turn={expected_turn}, got {saved_case.current_turn}"
 
     @pytest.mark.asyncio
     async def test_process_turn_with_attachments(
-        self, service, mock_case_repository, mock_milestone_engine, sample_case, sample_user_id
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
     ):
         """Test turn processing with file attachments."""
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
@@ -226,9 +274,15 @@ class TestInvestigationServiceGetProgress:
         assert progress["case_id"] == sample_case.case_id
         assert progress["status"] == sample_case.status.value
         assert "current_turn" in progress
-        assert "milestones_completed" in progress  # InvestigationProgress.completed_milestones property
-        assert "pending_milestones" in progress  # InvestigationProgress.pending_milestones property
-        assert "completion_percentage" in progress  # InvestigationProgress.completion_percentage property
+        assert (
+            "milestones_completed" in progress
+        )  # InvestigationProgress.completed_milestones property
+        assert (
+            "pending_milestones" in progress
+        )  # InvestigationProgress.pending_milestones property
+        assert (
+            "completion_percentage" in progress
+        )  # InvestigationProgress.completion_percentage property
 
     @pytest.mark.asyncio
     async def test_get_progress_case_not_found(
@@ -336,27 +390,31 @@ class TestInvestigationServiceTransitionToInvestigating:
         # Pre-populate repository with case in INVESTIGATING status (cannot transition from non-CONSULTING)
         # INVESTIGATING status requires: confirmed problem statement, decided to investigate, and description
         from datetime import datetime, timezone
-        
+
         sample_case.user_id = sample_user_id
         sample_case.description = "Test description"  # Required for INVESTIGATING
         # Set up consulting data required for INVESTIGATING status
         sample_case.consulting.proposed_problem_statement = "Test problem statement"
         sample_case.consulting.problem_statement_confirmed = True
-        sample_case.consulting.problem_statement_confirmed_at = datetime.now(timezone.utc)
+        sample_case.consulting.problem_statement_confirmed_at = datetime.now(
+            timezone.utc
+        )
         sample_case.consulting.decided_to_investigate = True
         sample_case.consulting.decision_made_at = datetime.now(timezone.utc)
-        
+
         # Now set status to INVESTIGATING (all requirements are met)
         sample_case.status = CaseStatus.INVESTIGATING
         await mock_case_repository.save(sample_case)
-        
+
         # Verify the case is stored with INVESTIGATING status
         stored_case = await mock_case_repository.get(sample_case.case_id)
         assert stored_case is not None, "Case should be stored in repository"
-        assert stored_case.status == CaseStatus.INVESTIGATING, \
-            f"Case status should be INVESTIGATING, got {stored_case.status}"
-        assert stored_case.status != CaseStatus.CONSULTING, \
-            "Case should NOT be in CONSULTING status for this test"
+        assert (
+            stored_case.status == CaseStatus.INVESTIGATING
+        ), f"Case status should be INVESTIGATING, got {stored_case.status}"
+        assert (
+            stored_case.status != CaseStatus.CONSULTING
+        ), "Case should NOT be in CONSULTING status for this test"
 
         # The service should raise ServiceException when trying to transition from non-CONSULTING status
         with pytest.raises(ServiceException) as exc_info:
@@ -365,12 +423,14 @@ class TestInvestigationServiceTransitionToInvestigating:
                 user_id=sample_user_id,
                 confirmed_description="Test description",
             )
-        
+
         # Verify the exception message contains "Cannot transition"
-        assert "Cannot transition" in str(exc_info.value), \
-            f"Exception message should contain 'Cannot transition', got: {str(exc_info.value)}"
-        assert "investigating" in str(exc_info.value).lower() or "INVESTIGATING" in str(exc_info.value), \
-            f"Exception message should mention the current status, got: {str(exc_info.value)}"
+        assert "Cannot transition" in str(
+            exc_info.value
+        ), f"Exception message should contain 'Cannot transition', got: {str(exc_info.value)}"
+        assert "investigating" in str(exc_info.value).lower() or "INVESTIGATING" in str(
+            exc_info.value
+        ), f"Exception message should mention the current status, got: {str(exc_info.value)}"
 
 
 class TestInvestigationServiceCloseCase:

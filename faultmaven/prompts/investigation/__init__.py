@@ -13,17 +13,17 @@ Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
 from faultmaven.prompts.investigation.consultant_mode import (
-    get_consultant_mode_prompt,
     CONSULTANT_SYSTEM_PROMPT,
+    get_consultant_mode_prompt,
 )
 from faultmaven.prompts.investigation.lead_investigator import (
-    get_lead_investigator_prompt,
     LEAD_INVESTIGATOR_SYSTEM_PROMPT,
+    get_lead_investigator_prompt,
 )
 from faultmaven.prompts.investigation.strategy_prompts import (
-    get_strategy_specific_guidance,
     ACTIVE_INCIDENT_GUIDANCE,
     POST_MORTEM_GUIDANCE,
+    get_strategy_specific_guidance,
 )
 
 __all__ = [

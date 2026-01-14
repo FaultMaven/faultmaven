@@ -13,20 +13,21 @@ Usage:
         pass
 """
 
-import os
-import logging
-from typing import Callable, Any, TypeVar, Union
-from functools import wraps
 import asyncio
+import logging
+import os
+from functools import wraps
+from typing import Any, Callable, TypeVar, Union
 
 logger = logging.getLogger(__name__)
 
 # Type variable for preserving function signatures
-F = TypeVar('F', bound=Callable[..., Any])
+F = TypeVar("F", bound=Callable[..., Any])
 
 # Feature detection
 try:
     from opik import track as opik_track
+
     OPIK_AVAILABLE = True
     logger.info("Opik tracing library available")
 except ImportError:
@@ -75,14 +76,18 @@ def track(name: str) -> Callable[[F], F]:
         def no_op_decorator(func: F) -> F:
             """No-op decorator that preserves function behavior."""
             if asyncio.iscoroutinefunction(func):
+
                 @wraps(func)
                 async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                     return await func(*args, **kwargs)
+
                 return async_wrapper  # type: ignore
             else:
+
                 @wraps(func)
                 def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
                     return func(*args, **kwargs)
+
                 return sync_wrapper  # type: ignore
 
         logger.debug(

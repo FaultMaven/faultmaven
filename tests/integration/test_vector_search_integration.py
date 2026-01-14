@@ -9,30 +9,37 @@ Tests cover:
 - Concurrent operations
 """
 
-import pytest
-import tempfile
 import shutil
+import tempfile
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
 from typing import List
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
-from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
-from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
+import pytest
+
 from faultmaven.jobs.knowledge_indexing_job import KnowledgeIndexingJob
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
+    KnowledgeItem,
+    KnowledgeItemType,
+)
+from faultmaven.modules.knowledge.domain.services.embedding_service import (
+    EmbeddingService,
+)
+from faultmaven.modules.knowledge.domain.services.search_service import (
+    KnowledgeSearchService,
+)
+from faultmaven.modules.knowledge.domain.services.vector_store_service import (
+    VectorStoreService,
+)
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     InMemoryKnowledgeItemRepository,
 )
-from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-    KnowledgeItem,
-    KnowledgeItemType,
-    EMBEDDING_DIMENSIONS,
-)
-
 
 # =============================================================================
 # Test Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def temp_chroma_dir():
@@ -52,6 +59,7 @@ def mock_embedding_service():
     def create_deterministic_embedding(text: str) -> List[float]:
         """Create embedding based on text hash for consistency."""
         import hashlib
+
         hash_val = int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
         base_val = (hash_val % 1000) / 1000.0
         return [base_val + (i % 100) / 10000 for i in range(EMBEDDING_DIMENSIONS)]
@@ -129,6 +137,7 @@ def create_knowledge_item(
 # =============================================================================
 # Test: End-to-End Semantic Search
 # =============================================================================
+
 
 class TestE2ESemanticSearch:
     """End-to-end tests for semantic search workflow."""
@@ -242,13 +251,12 @@ class TestE2ESemanticSearch:
 # Test: Hybrid Search
 # =============================================================================
 
+
 class TestHybridSearch:
     """Tests for hybrid search combining semantic and text results."""
 
     @pytest.mark.asyncio
-    async def test_hybrid_search_combines_results(
-        self, search_service, knowledge_repo
-    ):
+    async def test_hybrid_search_combines_results(self, search_service, knowledge_repo):
         """Test hybrid search merges semantic and text results."""
         items = [
             create_knowledge_item(
@@ -346,6 +354,7 @@ class TestHybridSearch:
 # Test: Indexing Job
 # =============================================================================
 
+
 class TestIndexingJob:
     """Tests for background indexing job."""
 
@@ -355,10 +364,7 @@ class TestIndexingJob:
     ):
         """Test that indexing job processes items without embeddings."""
         # Create items without embeddings
-        items = [
-            create_knowledge_item(item_id=f"unindexed_{i}")
-            for i in range(5)
-        ]
+        items = [create_knowledge_item(item_id=f"unindexed_{i}") for i in range(5)]
         for item in items:
             await knowledge_repo.create(item)
 
@@ -395,15 +401,11 @@ class TestIndexingJob:
         assert result["processed"] == 1
 
     @pytest.mark.asyncio
-    async def test_indexing_job_respects_max_items(
-        self, indexing_job, knowledge_repo
-    ):
+    async def test_indexing_job_respects_max_items(self, indexing_job, knowledge_repo):
         """Test that indexing job respects max_items limit."""
         # Create many items
         for i in range(20):
-            await knowledge_repo.create(
-                create_knowledge_item(item_id=f"many_{i}")
-            )
+            await knowledge_repo.create(create_knowledge_item(item_id=f"many_{i}"))
 
         # Run with limit
         result = await indexing_job.run(
@@ -414,14 +416,10 @@ class TestIndexingJob:
         assert result["processed"] == 5
 
     @pytest.mark.asyncio
-    async def test_indexing_job_returns_statistics(
-        self, indexing_job, knowledge_repo
-    ):
+    async def test_indexing_job_returns_statistics(self, indexing_job, knowledge_repo):
         """Test that indexing job returns proper statistics."""
         for i in range(3):
-            await knowledge_repo.create(
-                create_knowledge_item(item_id=f"stats_{i}")
-            )
+            await knowledge_repo.create(create_knowledge_item(item_id=f"stats_{i}"))
 
         result = await indexing_job.run(organization_id="org_1")
 
@@ -438,13 +436,12 @@ class TestIndexingJob:
 # Test: Organization Isolation
 # =============================================================================
 
+
 class TestOrganizationIsolation:
     """Tests for organization-level data isolation."""
 
     @pytest.mark.asyncio
-    async def test_search_filters_by_organization(
-        self, search_service, knowledge_repo
-    ):
+    async def test_search_filters_by_organization(self, search_service, knowledge_repo):
         """Test that search only returns items from the specified organization."""
         items = [
             create_knowledge_item(
@@ -534,6 +531,7 @@ class TestOrganizationIsolation:
 # Test: Multi-Organization Scenarios
 # =============================================================================
 
+
 class TestMultiOrgScenarios:
     """Tests for multi-organization scenarios."""
 
@@ -595,28 +593,21 @@ class TestMultiOrgScenarios:
 # Test: Concurrent Operations
 # =============================================================================
 
+
 class TestConcurrentOperations:
     """Tests for concurrent operations."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_indexing(
-        self, search_service, knowledge_repo
-    ):
+    async def test_concurrent_indexing(self, search_service, knowledge_repo):
         """Test concurrent item indexing."""
         import asyncio
 
-        items = [
-            create_knowledge_item(item_id=f"concurrent_{i}")
-            for i in range(10)
-        ]
+        items = [create_knowledge_item(item_id=f"concurrent_{i}") for i in range(10)]
         for item in items:
             await knowledge_repo.create(item)
 
         # Index concurrently
-        await asyncio.gather(*[
-            search_service.index_item(item)
-            for item in items
-        ])
+        await asyncio.gather(*[search_service.index_item(item) for item in items])
 
         # Verify all indexed
         for item in items:
@@ -624,9 +615,7 @@ class TestConcurrentOperations:
             assert updated.has_embedding()
 
     @pytest.mark.asyncio
-    async def test_concurrent_search_and_index(
-        self, search_service, knowledge_repo
-    ):
+    async def test_concurrent_search_and_index(self, search_service, knowledge_repo):
         """Test concurrent search and indexing operations."""
         import asyncio
 
@@ -637,10 +626,7 @@ class TestConcurrentOperations:
             await search_service.index_item(item)
 
         # Create items to index
-        new_items = [
-            create_knowledge_item(item_id=f"new_{i}")
-            for i in range(5)
-        ]
+        new_items = [create_knowledge_item(item_id=f"new_{i}") for i in range(5)]
         for item in new_items:
             await knowledge_repo.create(item)
 
@@ -668,13 +654,12 @@ class TestConcurrentOperations:
 # Test: Edge Cases
 # =============================================================================
 
+
 class TestEdgeCases:
     """Tests for edge cases."""
 
     @pytest.mark.asyncio
-    async def test_search_with_empty_query(
-        self, search_service, knowledge_repo
-    ):
+    async def test_search_with_empty_query(self, search_service, knowledge_repo):
         """Test search handles empty query gracefully."""
         item = create_knowledge_item(item_id="empty_query_test")
         await knowledge_repo.create(item)
@@ -690,9 +675,7 @@ class TestEdgeCases:
         assert isinstance(results, list)
 
     @pytest.mark.asyncio
-    async def test_search_with_special_characters(
-        self, search_service, knowledge_repo
-    ):
+    async def test_search_with_special_characters(self, search_service, knowledge_repo):
         """Test search handles special characters."""
         item = create_knowledge_item(
             item_id="special_chars",

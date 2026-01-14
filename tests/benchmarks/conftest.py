@@ -8,17 +8,22 @@ import asyncio
 from typing import AsyncGenerator
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
-from faultmaven.modules.auth.infrastructure.repositories.session_repository import DatabaseSessionRepository
+from faultmaven.infrastructure.persistence.database_case_repository import (
+    DatabaseCaseRepository,
+)
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
 )
+
 # AgentExecutionRepository removed - agent executions now handled by ICaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
+)
+from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
+    DatabaseSessionRepository,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
@@ -89,7 +94,9 @@ async def session_repository(benchmark_session) -> DatabaseSessionRepository:
 
 
 @pytest.fixture
-async def evidence_artifact_repository(benchmark_session) -> DatabaseEvidenceArtifactRepository:
+async def evidence_artifact_repository(
+    benchmark_session,
+) -> DatabaseEvidenceArtifactRepository:
     """Create evidence artifact repository for benchmarks."""
     return DatabaseEvidenceArtifactRepository(benchmark_session)
 
@@ -98,12 +105,16 @@ async def evidence_artifact_repository(benchmark_session) -> DatabaseEvidenceArt
 
 
 @pytest.fixture
-async def investigation_session_repository(benchmark_session) -> DatabaseInvestigationSessionRepository:
+async def investigation_session_repository(
+    benchmark_session,
+) -> DatabaseInvestigationSessionRepository:
     """Create investigation session repository for benchmarks."""
     return DatabaseInvestigationSessionRepository(benchmark_session)
 
 
 @pytest.fixture
-async def knowledge_item_repository(benchmark_session) -> DatabaseKnowledgeItemRepository:
+async def knowledge_item_repository(
+    benchmark_session,
+) -> DatabaseKnowledgeItemRepository:
     """Create knowledge item repository for benchmarks."""
     return DatabaseKnowledgeItemRepository(benchmark_session)

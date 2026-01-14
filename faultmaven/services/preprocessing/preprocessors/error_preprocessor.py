@@ -16,12 +16,17 @@ Key Features:
 """
 
 import logging
-import uuid
-import time
 import re
-from typing import Optional, Dict, Any, List, Tuple
+import time
+import uuid
+from typing import Any, Dict, List, Optional, Tuple
 
-from faultmaven.models.api import DataType, PreprocessedData, SourceMetadata, ExtractionMetadata
+from faultmaven.models.api import (
+    DataType,
+    ExtractionMetadata,
+    PreprocessedData,
+    SourceMetadata,
+)
 from faultmaven.models.interfaces import IPreprocessor
 
 
@@ -66,7 +71,7 @@ class ErrorPreprocessor(IPreprocessor):
         self,
         content: str,
         filename: str,
-        source_metadata: Optional[SourceMetadata] = None
+        source_metadata: Optional[SourceMetadata] = None,
     ) -> PreprocessedData:
         """
         Process error report into LLM-ready summary
@@ -98,9 +103,7 @@ class ErrorPreprocessor(IPreprocessor):
 
             # Step 3: Format summary
             summary = self._format_error_summary(
-                parsed=parsed,
-                filename=filename,
-                source_metadata=source_metadata
+                parsed=parsed, filename=filename, source_metadata=source_metadata
             )
 
             # Step 4: Build PreprocessedData with correct structure
@@ -113,15 +116,17 @@ class ErrorPreprocessor(IPreprocessor):
                     data_type=DataType.LOGS_AND_ERRORS,
                     extraction_strategy="ast_parse",  # Stack trace parsing
                     llm_calls_used=0,  # Rule-based parsing, no LLM calls
-                    confidence=0.9 if parsed.get('exception_type') != 'Unknown' else 0.5,
+                    confidence=(
+                        0.9 if parsed.get("exception_type") != "Unknown" else 0.5
+                    ),
                     source="rule_based",
-                    processing_time_ms=processing_time
+                    processing_time_ms=processing_time,
                 ),
                 original_size=len(content),
                 processed_size=len(llm_ready_content),
                 security_flags=[],
                 source_metadata=source_metadata,
-                insights=parsed  # Preserve parsed stack trace structure
+                insights=parsed,  # Preserve parsed stack trace structure
             )
 
         except Exception as e:
@@ -138,13 +143,13 @@ class ErrorPreprocessor(IPreprocessor):
                     llm_calls_used=0,
                     confidence=0.0,  # Zero confidence on error
                     source="error",
-                    processing_time_ms=processing_time
+                    processing_time_ms=processing_time,
                 ),
                 original_size=len(content),
                 processed_size=len(error_content),
                 security_flags=["preprocessing_error"],
                 source_metadata=source_metadata,
-                insights={"error": str(e)}
+                insights={"error": str(e)},
             )
 
     def _detect_language(self, content: str) -> str:
@@ -170,11 +175,7 @@ class ErrorPreprocessor(IPreprocessor):
 
         return "unknown"
 
-    def _parse_stack_trace(
-        self,
-        content: str,
-        language: str
-    ) -> Dict[str, Any]:
+    def _parse_stack_trace(self, content: str, language: str) -> Dict[str, Any]:
         """
         Parse stack trace based on detected language
 
@@ -206,12 +207,12 @@ class ErrorPreprocessor(IPreprocessor):
             "root_cause": None,
         }
 
-        lines = content.split('\n')
+        lines = content.split("\n")
 
         # Extract exception type and message (usually last line)
         for line in reversed(lines):
-            if ':' in line and not line.strip().startswith('File'):
-                parts = line.split(':', 1)
+            if ":" in line and not line.strip().startswith("File"):
+                parts = line.split(":", 1)
                 if len(parts) == 2:
                     parsed["exception_type"] = parts[0].strip()
                     parsed["message"] = parts[1].strip()
@@ -237,7 +238,7 @@ class ErrorPreprocessor(IPreprocessor):
 
         # Root cause is typically the last frame
         if parsed["frames"]:
-            parsed["root_cause"] = parsed["frames"][-1].split('\n')[0]
+            parsed["root_cause"] = parsed["frames"][-1].split("\n")[0]
 
         return parsed
 
@@ -249,16 +250,16 @@ class ErrorPreprocessor(IPreprocessor):
             "message": "",
             "frames": [],
             "root_cause": None,
-            "caused_by": []
+            "caused_by": [],
         }
 
-        lines = content.split('\n')
+        lines = content.split("\n")
 
         # Extract exception type and message (first non-empty line)
         for line in lines:
-            if line.strip() and ':' in line:
-                parts = line.split(':', 1)
-                if 'Exception' in parts[0] or 'Error' in parts[0]:
+            if line.strip() and ":" in line:
+                parts = line.split(":", 1)
+                if "Exception" in parts[0] or "Error" in parts[0]:
                     parsed["exception_type"] = parts[0].strip()
                     if len(parts) > 1:
                         parsed["message"] = parts[1].strip()
@@ -267,13 +268,13 @@ class ErrorPreprocessor(IPreprocessor):
         # Extract stack frames
         for line in lines:
             # Java frame: at com.example.Class.method(File.java:123)
-            match = re.match(r'\s*at\s+([\w.$<>]+)\(([^)]+)\)', line)
+            match = re.match(r"\s*at\s+([\w.$<>]+)\(([^)]+)\)", line)
             if match:
                 method_path, location = match.groups()
                 parsed["frames"].append(f"at {method_path}({location})")
 
             # Caused by chain
-            if line.strip().startswith('Caused by:'):
+            if line.strip().startswith("Caused by:"):
                 parsed["caused_by"].append(line.strip())
 
         # Root cause is first frame
@@ -292,13 +293,13 @@ class ErrorPreprocessor(IPreprocessor):
             "root_cause": None,
         }
 
-        lines = content.split('\n')
+        lines = content.split("\n")
 
         # Extract error type and message (first line)
         if lines:
             first_line = lines[0].strip()
-            if ':' in first_line:
-                parts = first_line.split(':', 1)
+            if ":" in first_line:
+                parts = first_line.split(":", 1)
                 parsed["exception_type"] = parts[0].strip()
                 if len(parts) > 1:
                     parsed["message"] = parts[1].strip()
@@ -306,13 +307,15 @@ class ErrorPreprocessor(IPreprocessor):
         # Extract stack frames
         for line in lines:
             # JS frame: at Function.name (file.js:123:45)
-            match = re.match(r'\s*at\s+(.+?)\s+\((.+?):(\d+):(\d+)\)', line)
+            match = re.match(r"\s*at\s+(.+?)\s+\((.+?):(\d+):(\d+)\)", line)
             if match:
                 func_name, file_path, line_num, col_num = match.groups()
-                parsed["frames"].append(f"at {func_name} ({file_path}:{line_num}:{col_num})")
+                parsed["frames"].append(
+                    f"at {func_name} ({file_path}:{line_num}:{col_num})"
+                )
             else:
                 # Alternative format: at file.js:123:45
-                match = re.match(r'\s*at\s+(.+?):(\d+):(\d+)', line)
+                match = re.match(r"\s*at\s+(.+?):(\d+):(\d+)", line)
                 if match:
                     file_path, line_num, col_num = match.groups()
                     parsed["frames"].append(f"at {file_path}:{line_num}:{col_num}")
@@ -331,38 +334,38 @@ class ErrorPreprocessor(IPreprocessor):
             "message": "",
             "frames": [],
             "root_cause": None,
-            "goroutine": None
+            "goroutine": None,
         }
 
-        lines = content.split('\n')
+        lines = content.split("\n")
 
         # Extract panic message
         for line in lines:
-            if line.strip().startswith('panic:'):
-                parsed["message"] = line.replace('panic:', '').strip()
+            if line.strip().startswith("panic:"):
+                parsed["message"] = line.replace("panic:", "").strip()
                 break
 
         # Extract goroutine info
         for line in lines:
-            match = re.match(r'goroutine (\d+)', line)
+            match = re.match(r"goroutine (\d+)", line)
             if match:
                 parsed["goroutine"] = match.group(1)
                 break
 
         # Extract stack frames (Go format: package/path.function)
         for i, line in enumerate(lines):
-            if re.match(r'^\s+[a-z]+/[a-z]+.*\.go:\d+', line):
+            if re.match(r"^\s+[a-z]+/[a-z]+.*\.go:\d+", line):
                 frame = line.strip()
                 # Get function name from previous line if available
                 if i > 0:
                     func_line = lines[i - 1].strip()
-                    if func_line and not func_line.startswith('panic:'):
+                    if func_line and not func_line.startswith("panic:"):
                         frame = f"{func_line}\n    {frame}"
                 parsed["frames"].append(frame)
 
         # Root cause is first frame
         if parsed["frames"]:
-            parsed["root_cause"] = parsed["frames"][0].split('\n')[0]
+            parsed["root_cause"] = parsed["frames"][0].split("\n")[0]
 
         return parsed
 
@@ -371,15 +374,18 @@ class ErrorPreprocessor(IPreprocessor):
         parsed = {
             "language": "unknown",
             "exception_type": "Error",
-            "message": content.split('\n')[0] if content else "No message",
+            "message": content.split("\n")[0] if content else "No message",
             "frames": [],
             "root_cause": None,
         }
 
         # Try to extract anything that looks like a stack frame
-        lines = content.split('\n')
+        lines = content.split("\n")
         for line in lines[:20]:  # Limit to first 20 lines
-            if any(indicator in line.lower() for indicator in ['at ', 'file ', 'line ', ':']):
+            if any(
+                indicator in line.lower()
+                for indicator in ["at ", "file ", "line ", ":"]
+            ):
                 parsed["frames"].append(line.strip())
 
         return parsed
@@ -388,7 +394,7 @@ class ErrorPreprocessor(IPreprocessor):
         self,
         parsed: Dict[str, Any],
         filename: str,
-        source_metadata: Optional[SourceMetadata]
+        source_metadata: Optional[SourceMetadata],
     ) -> str:
         """
         Format parsed error into LLM-ready summary
@@ -420,24 +426,24 @@ class ErrorPreprocessor(IPreprocessor):
         sections.append("")
 
         # Goroutine info for Go
-        if parsed.get('goroutine'):
+        if parsed.get("goroutine"):
             sections.append(f"Goroutine: {parsed['goroutine']}")
             sections.append("")
 
         # Root cause
-        root_cause = parsed.get('root_cause')
+        root_cause = parsed.get("root_cause")
         if root_cause:
             sections.append("ROOT CAUSE:")
             sections.append(root_cause)
             sections.append("")
 
         # Call stack
-        frames = parsed.get('frames', [])
+        frames = parsed.get("frames", [])
         if frames:
             sections.append(f"CALL STACK (top {min(15, len(frames))} frames):")
             for i, frame in enumerate(frames[:15], 1):
                 # Indent multi-line frames
-                frame_lines = frame.split('\n')
+                frame_lines = frame.split("\n")
                 sections.append(f"{i}. {frame_lines[0]}")
                 for line in frame_lines[1:]:
                     sections.append(f"   {line}")
@@ -446,7 +452,7 @@ class ErrorPreprocessor(IPreprocessor):
             sections.append("")
 
         # Caused by chain (Java)
-        caused_by = parsed.get('caused_by', [])
+        caused_by = parsed.get("caused_by", [])
         if caused_by:
             sections.append("CAUSED BY CHAIN:")
             for cause in caused_by[:5]:  # Limit to 5

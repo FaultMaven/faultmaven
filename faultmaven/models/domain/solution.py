@@ -22,6 +22,7 @@ class SolutionStatus(str, Enum):
     - VERIFIED: Solution confirmed effective
     - REJECTED: Solution rejected or rolled back
     """
+
     PROPOSED = "proposed"
     IN_PROGRESS = "in_progress"
     IMPLEMENTED = "implemented"
@@ -31,6 +32,7 @@ class SolutionStatus(str, Enum):
 
 class RiskLevel(str, Enum):
     """Solution risk level classification."""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -129,7 +131,9 @@ class Solution:
             description=data["description"],
             implementation_steps=implementation_steps,
             status=SolutionStatus(data["status"]),
-            risk_level=RiskLevel(data["risk_level"]) if data.get("risk_level") else None,
+            risk_level=(
+                RiskLevel(data["risk_level"]) if data.get("risk_level") else None
+            ),
             estimated_effort=data.get("estimated_effort"),
             created_by=data["created_by"],
             created_at=data["created_at"],
@@ -155,8 +159,16 @@ class Solution:
             "title": self.title,
             "description": self.description,
             "implementation_steps": self.implementation_steps,
-            "status": self.status.value if isinstance(self.status, SolutionStatus) else self.status,
-            "risk_level": self.risk_level.value if isinstance(self.risk_level, RiskLevel) else self.risk_level,
+            "status": (
+                self.status.value
+                if isinstance(self.status, SolutionStatus)
+                else self.status
+            ),
+            "risk_level": (
+                self.risk_level.value
+                if isinstance(self.risk_level, RiskLevel)
+                else self.risk_level
+            ),
             "estimated_effort": self.estimated_effort,
             "created_by": self.created_by,
             "created_at": self.created_at,

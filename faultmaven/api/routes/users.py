@@ -25,8 +25,8 @@ from faultmaven.api.middleware.auth import (
 )
 from faultmaven.api.routes.auth import (
     UserResponse,
-    get_user_service,
     _user_to_response,
+    get_user_service,
 )
 from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.models.auth import AuthenticatedUser

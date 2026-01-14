@@ -22,12 +22,12 @@ Design Principles:
 - Easy to test and mock
 """
 
-import uuid
 import logging
+import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import HTTPException, Depends, Header, Request
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPBearer
 
 from faultmaven.models.auth import DevUser
@@ -52,16 +52,12 @@ async def get_token_manager(request: Request):
         if not token_manager:
             logger.error("Token manager not available from app.state")
             raise HTTPException(
-                status_code=503,
-                detail="Authentication service unavailable"
+                status_code=503, detail="Authentication service unavailable"
             )
         return token_manager
     except Exception as e:
         logger.error(f"Failed to get token manager: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="Authentication service error"
-        )
+        raise HTTPException(status_code=503, detail="Authentication service error")
 
 
 async def get_user_store(request: Request):
@@ -78,16 +74,12 @@ async def get_user_store(request: Request):
         if not user_store:
             logger.error("User store not available from app.state")
             raise HTTPException(
-                status_code=503,
-                detail="User management service unavailable"
+                status_code=503, detail="User management service unavailable"
             )
         return user_store
     except Exception as e:
         logger.error(f"Failed to get user store: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="User management service error"
-        )
+        raise HTTPException(status_code=503, detail="User management service error")
 
 
 # Token Extraction
@@ -124,8 +116,7 @@ async def extract_bearer_token(
 
 # User Authentication Dependencies
 async def get_current_user_optional(
-    request: Request,
-    token: Optional[str] = Depends(extract_bearer_token)
+    request: Request, token: Optional[str] = Depends(extract_bearer_token)
 ) -> Optional[DevUser]:
     """Get current user from token (optional - no error if missing/invalid)
 
@@ -162,13 +153,14 @@ async def get_current_user_optional(
     except Exception as e:
         # Log unexpected errors but don't fail the request for optional auth
         correlation_id = str(uuid.uuid4())
-        logger.warning(f"Unexpected error in optional auth: {e} (correlation: {correlation_id})")
+        logger.warning(
+            f"Unexpected error in optional auth: {e} (correlation: {correlation_id})"
+        )
         return None
 
 
-
 async def require_authentication(
-    user: Optional[DevUser] = Depends(get_current_user_optional)
+    user: Optional[DevUser] = Depends(get_current_user_optional),
 ) -> DevUser:
     """Require authenticated user (raises 401 if not authenticated)
 
@@ -188,11 +180,13 @@ async def require_authentication(
     """
     if not user:
         correlation_id = str(uuid.uuid4())
-        logger.info(f"Authentication required but not provided (correlation: {correlation_id})")
+        logger.info(
+            f"Authentication required but not provided (correlation: {correlation_id})"
+        )
         raise HTTPException(
             status_code=401,
             detail="Authentication required. Please log in to access this resource.",
-            headers={"WWW-Authenticate": "Bearer"}
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     logger.debug(f"Authentication successful for user: {user.user_id}")
@@ -200,9 +194,7 @@ async def require_authentication(
 
 
 # Service Layer Dependencies (for clean separation)
-async def get_current_user_id(
-    user: DevUser = Depends(require_authentication)
-) -> str:
+async def get_current_user_id(user: DevUser = Depends(require_authentication)) -> str:
     """Extract just the user ID for service layer operations
 
     Args:
@@ -220,7 +212,7 @@ async def get_current_user_id(
 
 
 async def get_current_user_id_optional(
-    user: Optional[DevUser] = Depends(get_current_user_optional)
+    user: Optional[DevUser] = Depends(get_current_user_optional),
 ) -> Optional[str]:
     """Extract user ID for optional authentication scenarios
 
@@ -252,37 +244,32 @@ async def check_auth_services_health(request: Request) -> dict:
         - Does not raise exceptions on service failures
         - Returns detailed status for monitoring
     """
-    health_status = {
-        "authentication": {
-            "status": "unknown",
-            "services": {}
-        }
-    }
+    health_status = {"authentication": {"status": "unknown", "services": {}}}
 
     # Check token manager
     try:
-        token_manager = getattr(request.app.state, 'token_manager', None)
+        token_manager = getattr(request.app.state, "token_manager", None)
         health_status["authentication"]["services"]["token_manager"] = {
             "status": "available" if token_manager else "unavailable",
-            "type": "DevTokenManager" if token_manager else None
+            "type": "DevTokenManager" if token_manager else None,
         }
     except Exception as e:
         health_status["authentication"]["services"]["token_manager"] = {
             "status": "error",
-            "error": str(e)
+            "error": str(e),
         }
 
     # Check user store
     try:
-        user_store = getattr(request.app.state, 'user_store', None)
+        user_store = getattr(request.app.state, "user_store", None)
         health_status["authentication"]["services"]["user_store"] = {
             "status": "available" if user_store else "unavailable",
-            "type": "DevUserStore" if user_store else None
+            "type": "DevUserStore" if user_store else None,
         }
     except Exception as e:
         health_status["authentication"]["services"]["user_store"] = {
             "status": "error",
-            "error": str(e)
+            "error": str(e),
         }
 
     # Determine overall status
@@ -291,15 +278,16 @@ async def check_auth_services_health(request: Request) -> dict:
         for service in health_status["authentication"]["services"].values()
     )
 
-    health_status["authentication"]["status"] = "healthy" if all_services_healthy else "degraded"
+    health_status["authentication"]["status"] = (
+        "healthy" if all_services_healthy else "degraded"
+    )
 
     return health_status
 
 
 # Convenience Dependencies (commonly used patterns)
 async def get_authenticated_user_context(
-    user: DevUser = Depends(require_authentication),
-    correlation_id: str = None
+    user: DevUser = Depends(require_authentication), correlation_id: str = None
 ) -> dict:
     """Get complete authenticated user context for request processing
 
@@ -324,13 +312,13 @@ async def get_authenticated_user_context(
         "email": user.email,
         "is_dev_user": user.is_dev_user,
         "correlation_id": correlation_id,
-        "authenticated": True
+        "authenticated": True,
     }
 
 
 async def get_optional_user_context(
     user: Optional[DevUser] = Depends(get_current_user_optional),
-    correlation_id: str = None
+    correlation_id: str = None,
 ) -> dict:
     """Get user context for optional authentication scenarios
 
@@ -356,7 +344,7 @@ async def get_optional_user_context(
             "email": user.email,
             "is_dev_user": user.is_dev_user,
             "correlation_id": correlation_id,
-            "authenticated": True
+            "authenticated": True,
         }
     else:
         return {
@@ -365,14 +353,12 @@ async def get_optional_user_context(
             "email": None,
             "is_dev_user": False,
             "correlation_id": correlation_id,
-            "authenticated": False
+            "authenticated": False,
         }
 
 
 # Development Utilities (remove in production)
-async def require_dev_user(
-    user: DevUser = Depends(require_authentication)
-) -> DevUser:
+async def require_dev_user(user: DevUser = Depends(require_authentication)) -> DevUser:
     """Require authenticated development user
 
     Args:
@@ -391,9 +377,6 @@ async def require_dev_user(
     """
     if not user.is_dev_user:
         logger.warning(f"Non-dev user attempted to access dev endpoint: {user.user_id}")
-        raise HTTPException(
-            status_code=403,
-            detail="Development user access required"
-        )
+        raise HTTPException(status_code=403, detail="Development user access required")
 
     return user

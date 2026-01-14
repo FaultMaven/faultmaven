@@ -4,9 +4,11 @@ Unit tests for Pydantic to OpenAI Schema Converter
 Tests conversion of Pydantic models to OpenAI function calling format.
 """
 
+from typing import List, Optional
+
 import pytest
 from pydantic import BaseModel, Field
-from typing import List, Optional
+
 from faultmaven.utils.schema_converter import (
     pydantic_to_openai_function,
     pydantic_to_openai_tools,
@@ -16,12 +18,14 @@ from faultmaven.utils.schema_converter import (
 # Test Models
 class SimpleModel(BaseModel):
     """Simple model for testing basic conversion"""
+
     name: str = Field(..., description="The name field")
     age: int = Field(..., description="The age field", ge=0)
 
 
 class OptionalFieldModel(BaseModel):
     """Model with optional fields"""
+
     required_field: str
     optional_field: Optional[str] = None
     default_field: str = "default_value"
@@ -29,6 +33,7 @@ class OptionalFieldModel(BaseModel):
 
 class NestedModel(BaseModel):
     """Model with nested structure"""
+
     id: str
     metadata: dict = Field(default_factory=dict)
     tags: List[str] = Field(default_factory=list)
@@ -36,6 +41,7 @@ class NestedModel(BaseModel):
 
 class ComplexModel(BaseModel):
     """Complex model with multiple field types"""
+
     string_field: str = Field(..., description="A string field")
     int_field: int = Field(default=42, description="An integer field")
     float_field: float = Field(..., description="A float field")
@@ -62,24 +68,21 @@ class TestPydanticToOpenAIFunction:
 
     def test_model_with_custom_name(self):
         """Test converting model with custom name"""
-        result = pydantic_to_openai_function(
-            SimpleModel,
-            name="custom_function_name"
-        )
+        result = pydantic_to_openai_function(SimpleModel, name="custom_function_name")
 
         assert result["name"] == "custom_function_name"
 
     def test_model_with_custom_description(self):
         """Test converting model with custom description"""
         result = pydantic_to_openai_function(
-            SimpleModel,
-            description="Custom description for the function"
+            SimpleModel, description="Custom description for the function"
         )
 
         assert result["description"] == "Custom description for the function"
 
     def test_model_without_docstring(self):
         """Test converting model without docstring"""
+
         class NoDocModel(BaseModel):
             field: str
 
@@ -127,6 +130,7 @@ class TestPydanticToOpenAIFunction:
 
     def test_model_with_field_constraints(self):
         """Test that field constraints are preserved"""
+
         class ConstrainedModel(BaseModel):
             positive_int: int = Field(..., ge=0, le=100)
             bounded_str: str = Field(..., min_length=1, max_length=50)
@@ -156,18 +160,14 @@ class TestPydanticToOpenAITools:
 
     def test_tools_with_custom_name(self):
         """Test tools format with custom name"""
-        result = pydantic_to_openai_tools(
-            SimpleModel,
-            name="custom_tool_name"
-        )
+        result = pydantic_to_openai_tools(SimpleModel, name="custom_tool_name")
 
         assert result[0]["function"]["name"] == "custom_tool_name"
 
     def test_tools_with_custom_description(self):
         """Test tools format with custom description"""
         result = pydantic_to_openai_tools(
-            SimpleModel,
-            description="Custom tool description"
+            SimpleModel, description="Custom tool description"
         )
 
         assert result[0]["function"]["description"] == "Custom tool description"
@@ -188,6 +188,7 @@ class TestEdgeCases:
 
     def test_empty_model(self):
         """Test converting model with no fields"""
+
         class EmptyModel(BaseModel):
             pass
 
@@ -200,6 +201,7 @@ class TestEdgeCases:
 
     def test_model_with_only_optional_fields(self):
         """Test model where all fields are optional"""
+
         class AllOptionalModel(BaseModel):
             field1: Optional[str] = None
             field2: Optional[int] = None
@@ -223,6 +225,7 @@ class TestEdgeCases:
 
     def test_model_with_list_of_models(self):
         """Test model with list of nested models"""
+
         class ItemModel(BaseModel):
             name: str
             value: int
@@ -238,6 +241,7 @@ class TestEdgeCases:
 
     def test_model_with_dict_field(self):
         """Test model with dict field"""
+
         class DictModel(BaseModel):
             metadata: dict
 
@@ -309,6 +313,7 @@ class TestFunctionNaming:
 
     def test_default_name_uses_class_name(self):
         """Test that default name matches class name"""
+
         class MyCustomModel(BaseModel):
             field: str
 
@@ -317,12 +322,12 @@ class TestFunctionNaming:
 
     def test_name_parameter_overrides_class_name(self):
         """Test that name parameter overrides class name"""
+
         class MyCustomModel(BaseModel):
             field: str
 
         result = pydantic_to_openai_function(
-            MyCustomModel,
-            name="respond_with_custom_name"
+            MyCustomModel, name="respond_with_custom_name"
         )
         assert result["name"] == "respond_with_custom_name"
         assert result["name"] != "MyCustomModel"

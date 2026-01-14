@@ -22,6 +22,7 @@ class HypothesisStatus(str, Enum):
     - INVALIDATED: Hypothesis refuted with confidence <= 0.3
     - DEFERRED: Hypothesis postponed for later investigation
     """
+
     PROPOSED = "proposed"
     TESTING = "testing"
     VALIDATED = "validated"
@@ -80,7 +81,9 @@ class Hypothesis:
 
         # Validate confidence range
         if self.confidence < 0.0 or self.confidence > 1.0:
-            raise ValueError(f"Confidence must be between 0.0 and 1.0, got {self.confidence}")
+            raise ValueError(
+                f"Confidence must be between 0.0 and 1.0, got {self.confidence}"
+            )
 
         # Validate description length
         if not self.description or len(self.description.strip()) < 10:
@@ -104,7 +107,9 @@ class Hypothesis:
             organization_id=data["organization_id"],
             title=data.get("title", ""),
             description=data["description"],
-            confidence=float(data["confidence"]) if data.get("confidence") is not None else 0.5,
+            confidence=(
+                float(data["confidence"]) if data.get("confidence") is not None else 0.5
+            ),
             status=HypothesisStatus(data["status"]),
             evidence_supporting=data.get("evidence_supporting", []),
             evidence_against=data.get("evidence_against", []),
@@ -130,7 +135,11 @@ class Hypothesis:
             "title": self.title,
             "description": self.description,
             "confidence": self.confidence,
-            "status": self.status.value if isinstance(self.status, HypothesisStatus) else self.status,
+            "status": (
+                self.status.value
+                if isinstance(self.status, HypothesisStatus)
+                else self.status
+            ),
             "evidence_supporting": self.evidence_supporting,
             "evidence_against": self.evidence_against,
             "created_by": self.created_by,

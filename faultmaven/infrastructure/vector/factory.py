@@ -16,7 +16,6 @@ from typing import Optional
 from faultmaven.config.settings import VectorBackend
 from faultmaven.infrastructure.vector.base import IVectorBackend, VectorBackendType
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +62,7 @@ def get_vector_backend(
 
     # Get settings
     from faultmaven.config.settings import get_settings
+
     settings = get_settings()
 
     # Determine backend type

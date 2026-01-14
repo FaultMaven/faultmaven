@@ -9,7 +9,8 @@ Verifies that the shim works correctly:
 """
 
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 
@@ -21,19 +22,19 @@ class TestMetricCreation:
         with patch.dict(os.environ, {}, clear=True):
             from faultmaven.infrastructure.shims.metrics import Counter
 
-            counter = Counter('test_counter', 'Test counter description')
+            counter = Counter("test_counter", "Test counter description")
 
             # Should be a NoOpMetric
             counter.inc()  # Should not raise
             counter.inc(5)
-            counter.labels(method='GET').inc()
+            counter.labels(method="GET").inc()
 
     def test_counter_creation_when_disabled(self):
         """Test Counter creation when ENABLE_METRICS=false."""
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Counter
 
-            counter = Counter('test_counter', 'Test counter')
+            counter = Counter("test_counter", "Test counter")
             counter.inc()  # Should not raise
 
     def test_histogram_creation_disabled_by_default(self):
@@ -41,27 +42,27 @@ class TestMetricCreation:
         with patch.dict(os.environ, {}, clear=True):
             from faultmaven.infrastructure.shims.metrics import Histogram
 
-            histogram = Histogram('test_histogram', 'Test histogram')
+            histogram = Histogram("test_histogram", "Test histogram")
             histogram.observe(1.5)  # Should not raise
-            histogram.labels(method='POST').observe(2.5)
+            histogram.labels(method="POST").observe(2.5)
 
     def test_gauge_creation_disabled_by_default(self):
         """Test Gauge creation when ENABLE_METRICS is not set."""
         with patch.dict(os.environ, {}, clear=True):
             from faultmaven.infrastructure.shims.metrics import Gauge
 
-            gauge = Gauge('test_gauge', 'Test gauge')
+            gauge = Gauge("test_gauge", "Test gauge")
             gauge.set(42)  # Should not raise
             gauge.inc()
             gauge.dec()
-            gauge.labels(status='active').set(10)
+            gauge.labels(status="active").set(10)
 
     def test_summary_creation_disabled_by_default(self):
         """Test Summary creation when ENABLE_METRICS is not set."""
         with patch.dict(os.environ, {}, clear=True):
             from faultmaven.infrastructure.shims.metrics import Summary
 
-            summary = Summary('test_summary', 'Test summary')
+            summary = Summary("test_summary", "Test summary")
             summary.observe(3.14)  # Should not raise
 
     def test_info_creation_disabled_by_default(self):
@@ -69,8 +70,8 @@ class TestMetricCreation:
         with patch.dict(os.environ, {}, clear=True):
             from faultmaven.infrastructure.shims.metrics import Info
 
-            info = Info('test_info', 'Test info')
-            info.info({'version': '1.0.0'})  # Should not raise
+            info = Info("test_info", "Test info")
+            info.info({"version": "1.0.0"})  # Should not raise
 
 
 class TestNoOpMetricBehavior:
@@ -81,7 +82,7 @@ class TestNoOpMetricBehavior:
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Counter
 
-            counter = Counter('noop_counter', 'Test')
+            counter = Counter("noop_counter", "Test")
 
             # All methods should work without raising
             counter.inc()
@@ -89,7 +90,7 @@ class TestNoOpMetricBehavior:
             counter.inc(amount=10)
 
             # Labels should return self for chaining
-            labeled = counter.labels(method='GET', endpoint='/api')
+            labeled = counter.labels(method="GET", endpoint="/api")
             labeled.inc()
             labeled.inc(2)
 
@@ -98,14 +99,14 @@ class TestNoOpMetricBehavior:
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Histogram
 
-            histogram = Histogram('noop_histogram', 'Test')
+            histogram = Histogram("noop_histogram", "Test")
 
             # All methods should work
             histogram.observe(1.5)
             histogram.observe(amount=2.5)
 
             # Labels and chaining
-            labeled = histogram.labels(method='POST')
+            labeled = histogram.labels(method="POST")
             labeled.observe(3.5)
 
             # Time context manager
@@ -117,7 +118,7 @@ class TestNoOpMetricBehavior:
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Gauge
 
-            gauge = Gauge('noop_gauge', 'Test')
+            gauge = Gauge("noop_gauge", "Test")
 
             # All methods should work
             gauge.set(42)
@@ -127,7 +128,7 @@ class TestNoOpMetricBehavior:
             gauge.dec(3)
 
             # Labels and chaining
-            labeled = gauge.labels(status='active')
+            labeled = gauge.labels(status="active")
             labeled.set(10)
             labeled.inc()
             labeled.dec()
@@ -137,20 +138,20 @@ class TestNoOpMetricBehavior:
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Summary
 
-            summary = Summary('noop_summary', 'Test')
+            summary = Summary("noop_summary", "Test")
 
             summary.observe(1.23)
-            summary.labels(endpoint='/api').observe(4.56)
+            summary.labels(endpoint="/api").observe(4.56)
 
     def test_noop_info_all_methods(self):
         """Test all Info methods work as no-ops."""
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Info
 
-            info = Info('noop_info', 'Test')
+            info = Info("noop_info", "Test")
 
-            info.info({'version': '1.0.0', 'environment': 'test'})
-            info.labels(service='api').info({'status': 'running'})
+            info.info({"version": "1.0.0", "environment": "test"})
+            info.labels(service="api").info({"status": "running"})
 
 
 class TestMetricParameters:
@@ -162,12 +163,12 @@ class TestMetricParameters:
             from faultmaven.infrastructure.shims.metrics import Counter
 
             counter = Counter(
-                'labeled_counter',
-                'Counter with labels',
-                labelnames=['method', 'endpoint', 'status']
+                "labeled_counter",
+                "Counter with labels",
+                labelnames=["method", "endpoint", "status"],
             )
 
-            counter.labels(method='GET', endpoint='/api', status='200').inc()
+            counter.labels(method="GET", endpoint="/api", status="200").inc()
 
     def test_histogram_with_buckets(self):
         """Test Histogram creation with custom buckets."""
@@ -175,9 +176,9 @@ class TestMetricParameters:
             from faultmaven.infrastructure.shims.metrics import Histogram
 
             histogram = Histogram(
-                'bucketed_histogram',
-                'Histogram with custom buckets',
-                buckets=[0.1, 0.5, 1.0, 2.5, 5.0]
+                "bucketed_histogram",
+                "Histogram with custom buckets",
+                buckets=[0.1, 0.5, 1.0, 2.5, 5.0],
             )
 
             histogram.observe(0.75)
@@ -188,10 +189,10 @@ class TestMetricParameters:
             from faultmaven.infrastructure.shims.metrics import Counter
 
             counter = Counter(
-                'namespaced_counter',
-                'Counter with namespace',
-                namespace='faultmaven',
-                subsystem='api'
+                "namespaced_counter",
+                "Counter with namespace",
+                namespace="faultmaven",
+                subsystem="api",
             )
 
             counter.inc()
@@ -201,11 +202,7 @@ class TestMetricParameters:
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Histogram
 
-            histogram = Histogram(
-                'duration',
-                'Request duration',
-                unit='seconds'
-            )
+            histogram = Histogram("duration", "Request duration", unit="seconds")
 
             histogram.observe(1.5)
 
@@ -229,7 +226,9 @@ class TestMetricsStatus:
     def test_get_metrics_status_enabled_without_prometheus(self):
         """Test get_metrics_status when enabled but Prometheus not available."""
         with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
-            with patch("faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False):
+            with patch(
+                "faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False
+            ):
                 from faultmaven.infrastructure.shims import metrics
 
                 status = metrics.get_metrics_status()
@@ -247,7 +246,9 @@ class TestMetricsStatus:
     def test_is_metrics_active_when_enabled_without_prometheus(self):
         """Test is_metrics_active when enabled but Prometheus not installed."""
         with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
-            with patch("faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False):
+            with patch(
+                "faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False
+            ):
                 from faultmaven.infrastructure.shims import metrics
 
                 result = metrics.is_metrics_active()
@@ -266,46 +267,55 @@ class TestPrometheusAvailability:
     def test_counter_with_prometheus_unavailable(self):
         """Test Counter when Prometheus is simulated as unavailable."""
         with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
-            with patch("faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False):
+            with patch(
+                "faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False
+            ):
                 from faultmaven.infrastructure.shims import metrics
 
-                counter = metrics.Counter('test_counter', 'Test')
+                counter = metrics.Counter("test_counter", "Test")
                 counter.inc()  # Should work as no-op
 
     def test_histogram_with_prometheus_unavailable(self):
         """Test Histogram when Prometheus is simulated as unavailable."""
         with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
-            with patch("faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False):
+            with patch(
+                "faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False
+            ):
                 from faultmaven.infrastructure.shims import metrics
 
-                histogram = metrics.Histogram('test_histogram', 'Test')
+                histogram = metrics.Histogram("test_histogram", "Test")
                 histogram.observe(1.5)  # Should work as no-op
 
     def test_gauge_with_prometheus_unavailable(self):
         """Test Gauge when Prometheus is simulated as unavailable."""
         with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
-            with patch("faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False):
+            with patch(
+                "faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False
+            ):
                 from faultmaven.infrastructure.shims import metrics
 
-                gauge = metrics.Gauge('test_gauge', 'Test')
+                gauge = metrics.Gauge("test_gauge", "Test")
                 gauge.set(42)  # Should work as no-op
 
 
 class TestEnvironmentVariableHandling:
     """Tests for environment variable edge cases."""
 
-    @pytest.mark.parametrize("value,expected", [
-        ("true", True),
-        ("True", True),
-        ("TRUE", True),
-        ("false", False),
-        ("False", False),
-        ("FALSE", False),
-        ("0", False),
-        ("1", False),  # Only "true" (case-insensitive) enables
-        ("yes", False),
-        ("", False),
-    ])
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("true", True),
+            ("True", True),
+            ("TRUE", True),
+            ("false", False),
+            ("False", False),
+            ("FALSE", False),
+            ("0", False),
+            ("1", False),  # Only "true" (case-insensitive) enables
+            ("yes", False),
+            ("", False),
+        ],
+    )
     def test_enable_metrics_values(self, value: str, expected: bool):
         """Test various ENABLE_METRICS values."""
         with patch.dict(os.environ, {"ENABLE_METRICS": value}):
@@ -323,45 +333,45 @@ class TestPredefinedMetrics:
         from faultmaven.infrastructure.shims.metrics import request_counter
 
         # Should work regardless of metrics being enabled
-        request_counter.labels(method='GET', endpoint='/api', status_code='200').inc()
+        request_counter.labels(method="GET", endpoint="/api", status_code="200").inc()
 
     def test_request_duration_exists(self):
         """Test that request_duration is exported and works."""
         from faultmaven.infrastructure.shims.metrics import request_duration
 
-        request_duration.labels(method='POST', endpoint='/api').observe(1.5)
+        request_duration.labels(method="POST", endpoint="/api").observe(1.5)
 
     def test_active_sessions_exists(self):
         """Test that active_sessions is exported and works."""
         from faultmaven.infrastructure.shims.metrics import active_sessions
 
-        active_sessions.labels(status='active').set(10)
-        active_sessions.labels(status='active').inc()
-        active_sessions.labels(status='active').dec()
+        active_sessions.labels(status="active").set(10)
+        active_sessions.labels(status="active").inc()
+        active_sessions.labels(status="active").dec()
 
     def test_case_operations_exists(self):
         """Test that case_operations is exported and works."""
         from faultmaven.infrastructure.shims.metrics import case_operations
 
-        case_operations.labels(operation='create', status='success').inc()
+        case_operations.labels(operation="create", status="success").inc()
 
     def test_knowledge_queries_exists(self):
         """Test that knowledge_queries is exported and works."""
         from faultmaven.infrastructure.shims.metrics import knowledge_queries
 
-        knowledge_queries.labels(query_type='vector', status='success').inc()
+        knowledge_queries.labels(query_type="vector", status="success").inc()
 
     def test_llm_requests_exists(self):
         """Test that llm_requests is exported and works."""
         from faultmaven.infrastructure.shims.metrics import llm_requests
 
-        llm_requests.labels(provider='openai', model='gpt-4', status='success').inc()
+        llm_requests.labels(provider="openai", model="gpt-4", status="success").inc()
 
     def test_llm_latency_exists(self):
         """Test that llm_latency is exported and works."""
         from faultmaven.infrastructure.shims.metrics import llm_latency
 
-        llm_latency.labels(provider='openai', model='gpt-4').observe(2.5)
+        llm_latency.labels(provider="openai", model="gpt-4").observe(2.5)
 
 
 class TestIntegrationWithPrometheus:
@@ -377,7 +387,7 @@ class TestIntegrationWithPrometheus:
         with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
             from faultmaven.infrastructure.shims.metrics import Counter
 
-            counter = Counter('integration_test_counter', 'Integration test counter')
+            counter = Counter("integration_test_counter", "Integration test counter")
             counter.inc()
             counter.inc(5)
 
@@ -391,7 +401,9 @@ class TestIntegrationWithPrometheus:
         with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
             from faultmaven.infrastructure.shims.metrics import Histogram
 
-            histogram = Histogram('integration_test_histogram', 'Integration test histogram')
+            histogram = Histogram(
+                "integration_test_histogram", "Integration test histogram"
+            )
             histogram.observe(1.5)
 
     def test_gauge_with_prometheus_enabled(self):
@@ -404,7 +416,7 @@ class TestIntegrationWithPrometheus:
         with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
             from faultmaven.infrastructure.shims.metrics import Gauge
 
-            gauge = Gauge('integration_test_gauge', 'Integration test gauge')
+            gauge = Gauge("integration_test_gauge", "Integration test gauge")
             gauge.set(42)
             gauge.inc()
             gauge.dec()
@@ -435,7 +447,7 @@ class TestHistogramTimerContextManager:
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Histogram
 
-            histogram = Histogram('timer_test', 'Test')
+            histogram = Histogram("timer_test", "Test")
 
             with histogram.time():
                 # Do some work
@@ -452,7 +464,7 @@ class TestHistogramTimerContextManager:
         with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
             from faultmaven.infrastructure.shims.metrics import Histogram
 
-            histogram = Histogram('timer_test_enabled', 'Test')
+            histogram = Histogram("timer_test_enabled", "Test")
 
             # Should work and record timing
             with histogram.time():
@@ -467,33 +479,33 @@ class TestShimExports:
         """Test Counter is exported from shims package."""
         from faultmaven.infrastructure.shims import Counter
 
-        counter = Counter('package_test', 'Test')
+        counter = Counter("package_test", "Test")
         counter.inc()
 
     def test_histogram_exported_from_shims_package(self):
         """Test Histogram is exported from shims package."""
         from faultmaven.infrastructure.shims import Histogram
 
-        histogram = Histogram('package_test', 'Test')
+        histogram = Histogram("package_test", "Test")
         histogram.observe(1.0)
 
     def test_gauge_exported_from_shims_package(self):
         """Test Gauge is exported from shims package."""
         from faultmaven.infrastructure.shims import Gauge
 
-        gauge = Gauge('package_test', 'Test')
+        gauge = Gauge("package_test", "Test")
         gauge.set(5)
 
     def test_predefined_metrics_exported_from_shims_package(self):
         """Test pre-defined metrics are exported from shims package."""
         from faultmaven.infrastructure.shims import (
-            request_counter,
-            request_duration,
             active_sessions,
             case_operations,
             knowledge_queries,
-            llm_requests,
             llm_latency,
+            llm_requests,
+            request_counter,
+            request_duration,
         )
 
         # All should be accessible
@@ -507,7 +519,10 @@ class TestShimExports:
 
     def test_metrics_status_functions_exported(self):
         """Test metrics status functions are exported."""
-        from faultmaven.infrastructure.shims import get_metrics_status, is_metrics_active
+        from faultmaven.infrastructure.shims import (
+            get_metrics_status,
+            is_metrics_active,
+        )
 
         status = get_metrics_status()
         assert isinstance(status, dict)
@@ -524,7 +539,7 @@ class TestNoOpMetricEdgeCases:
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Counter
 
-            counter = Counter('edge_case_test', 'Test')
+            counter = Counter("edge_case_test", "Test")
 
             # Should handle various argument patterns
             counter.inc(1, extra_arg="ignored")
@@ -535,10 +550,12 @@ class TestNoOpMetricEdgeCases:
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Counter
 
-            counter = Counter('chain_test', 'Test', labelnames=['method', 'endpoint'])
+            counter = Counter("chain_test", "Test", labelnames=["method", "endpoint"])
 
             # Should support chaining
-            result = counter.labels(method='GET', endpoint='/api').labels(extra='ignored')
+            result = counter.labels(method="GET", endpoint="/api").labels(
+                extra="ignored"
+            )
             result.inc()
 
     def test_noop_context_manager_exception_handling(self):
@@ -546,7 +563,7 @@ class TestNoOpMetricEdgeCases:
         with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
             from faultmaven.infrastructure.shims.metrics import Histogram
 
-            histogram = Histogram('exception_test', 'Test')
+            histogram = Histogram("exception_test", "Test")
 
             # Exception should propagate through context manager
             with pytest.raises(ValueError):

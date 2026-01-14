@@ -17,21 +17,17 @@ Structure:
 """
 
 # Domain models - core case types
-from faultmaven.modules.case.domain.models import (
-    # Core
+from faultmaven.modules.case.domain.models import (  # Core; Investigation; Evidence & Hypothesis; Solution
     Case,
-    CaseStatus,
     CaseSeverity,
-    MessageType,
-    # Investigation
-    InvestigationProgress,
-    InvestigationStrategy,
-    # Evidence & Hypothesis
+    CaseStatus,
     Evidence,
     EvidenceCategory,
     Hypothesis,
     HypothesisStatus,
-    # Solution
+    InvestigationProgress,
+    InvestigationStrategy,
+    MessageType,
     Solution,
     SolutionType,
 )

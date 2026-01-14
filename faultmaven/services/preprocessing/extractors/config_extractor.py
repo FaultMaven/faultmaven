@@ -5,12 +5,13 @@ Parses configuration files (YAML, JSON, TOML, INI, .env) and extracts
 key settings while redacting secrets. No LLM calls required.
 """
 
-import re
 import json
-from typing import Dict, Any, List, Optional, TYPE_CHECKING
+import re
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class StructuredConfigExtractor:
@@ -18,22 +19,22 @@ class StructuredConfigExtractor:
 
     # Patterns that indicate secrets (case-insensitive)
     SECRET_PATTERNS = [
-        r'password',
-        r'passwd',
-        r'secret',
-        r'api[_-]?key',
-        r'token',
-        r'credentials?',
-        r'auth',
-        r'private[_-]?key',
-        r'access[_-]?key',
+        r"password",
+        r"passwd",
+        r"secret",
+        r"api[_-]?key",
+        r"token",
+        r"credentials?",
+        r"auth",
+        r"private[_-]?key",
+        r"access[_-]?key",
     ]
 
     # Values that should be redacted
     SECRET_VALUE_PATTERNS = [
-        r'^[a-zA-Z0-9]{20,}$',  # Long alphanumeric strings (likely tokens)
-        r'^sk-[a-zA-Z0-9]+$',  # OpenAI-style keys
-        r'^[A-Z0-9]{32,}$',  # All-caps hex strings
+        r"^[a-zA-Z0-9]{20,}$",  # Long alphanumeric strings (likely tokens)
+        r"^sk-[a-zA-Z0-9]+$",  # OpenAI-style keys
+        r"^[A-Z0-9]{32,}$",  # All-caps hex strings
     ]
 
     MAX_OUTPUT_LINES = 500  # Safety limit
@@ -84,6 +85,7 @@ class StructuredConfigExtractor:
         # Try YAML (if available)
         try:
             import yaml
+
             result = yaml.safe_load(content)
             # YAML might parse plain text as a string - we need a dict
             if isinstance(result, dict):
@@ -94,6 +96,7 @@ class StructuredConfigExtractor:
         # Try TOML (if available)
         try:
             import tomli
+
             return tomli.loads(content)
         except (ImportError, Exception):
             pass
@@ -113,22 +116,22 @@ class StructuredConfigExtractor:
         result = {}
         current_section = None
 
-        for line in content.split('\n'):
+        for line in content.split("\n"):
             line = line.strip()
 
             # Skip empty lines and comments
-            if not line or line.startswith('#') or line.startswith(';'):
+            if not line or line.startswith("#") or line.startswith(";"):
                 continue
 
             # Section header [section]
-            if line.startswith('[') and line.endswith(']'):
+            if line.startswith("[") and line.endswith("]"):
                 current_section = line[1:-1]
                 result[current_section] = {}
                 continue
 
             # Key=value pair
-            if '=' in line:
-                key, _, value = line.partition('=')
+            if "=" in line:
+                key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip().strip('"').strip("'")
 
@@ -156,7 +159,10 @@ class StructuredConfigExtractor:
                 for key, value in data.items()
             }
         elif isinstance(data, list):
-            return [self._redact_secrets(item, f"{path}[{i}]") for i, item in enumerate(data)]
+            return [
+                self._redact_secrets(item, f"{path}[{i}]")
+                for i, item in enumerate(data)
+            ]
         elif isinstance(data, str):
             # Check if key name suggests secret
             if self._is_secret_key(path):
@@ -215,10 +221,12 @@ class StructuredConfigExtractor:
         output = "\n".join(lines)
 
         # Safety check: truncate if too long
-        output_lines = output.split('\n')
+        output_lines = output.split("\n")
         if len(output_lines) > self.MAX_OUTPUT_LINES:
-            truncated = '\n'.join(output_lines[:self.MAX_OUTPUT_LINES])
-            truncated += f"\n\n... [Truncated {len(output_lines) - self.MAX_OUTPUT_LINES} lines]"
+            truncated = "\n".join(output_lines[: self.MAX_OUTPUT_LINES])
+            truncated += (
+                f"\n\n... [Truncated {len(output_lines) - self.MAX_OUTPUT_LINES} lines]"
+            )
             return truncated
 
         return output

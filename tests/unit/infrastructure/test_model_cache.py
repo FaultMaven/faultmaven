@@ -7,16 +7,18 @@ Tests cover:
 - Thread safety
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
 import threading
 import time
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 @pytest.fixture(autouse=True)
 def clean_model_cache():
     """Ensure clean model cache for each test to avoid singleton state leakage."""
     from faultmaven.infrastructure.model_cache import ModelCache
+
     cache = ModelCache()
     cache.clear_cache()
     yield
@@ -53,13 +55,18 @@ class TestModelCacheLazyLoading:
         # Note: cache is already cleared by fixture
 
         # Mock the SentenceTransformer to avoid actual loading
-        with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
+        with patch(
+            "faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE",
+            False,
+        ):
             cache.get_bge_m3_model(triggered_by="startup")
 
             load_info = cache.get_model_load_info("BAAI/bge-m3")
             assert load_info is not None
             assert load_info.load_triggered_by == "startup"
-            assert load_info.error is not None  # Should have error since ST not available
+            assert (
+                load_info.error is not None
+            )  # Should have error since ST not available
 
     def test_load_info_tracks_lazy_trigger(self):
         """Test that lazy loading is tracked correctly."""
@@ -68,7 +75,10 @@ class TestModelCacheLazyLoading:
         cache = ModelCache()
         # Note: cache is already cleared by fixture
 
-        with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
+        with patch(
+            "faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE",
+            False,
+        ):
             cache.get_bge_m3_model(triggered_by="lazy")
 
             load_info = cache.get_model_load_info("BAAI/bge-m3")
@@ -82,7 +92,10 @@ class TestModelCacheLazyLoading:
         cache = ModelCache()
         # Note: cache is already cleared by fixture
 
-        with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
+        with patch(
+            "faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE",
+            False,
+        ):
             cache.get_bge_m3_model(triggered_by="startup")
 
         info = cache.get_cache_info()
@@ -116,12 +129,17 @@ class TestModelCacheLazyLoading:
         cache = ModelCache()
         # Note: cache is already cleared by fixture
 
-        with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
+        with patch(
+            "faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE",
+            False,
+        ):
             cache.get_bge_m3_model()
 
         # Verify load info was recorded
         load_info = cache.get_model_load_info("BAAI/bge-m3")
-        assert load_info is not None, "Load info should be recorded even when model unavailable"
+        assert (
+            load_info is not None
+        ), "Load info should be recorded even when model unavailable"
 
         cache.clear_cache()
 
@@ -144,6 +162,7 @@ class TestLazyLoadingConfiguration:
     def test_lazy_load_setting_can_be_disabled(self):
         """Test that lazy loading can be disabled via env var."""
         import os
+
         from faultmaven.config.settings import EmbeddingSettings
 
         with patch.dict(os.environ, {"LAZY_LOAD_ML_MODELS": "false"}):
@@ -164,14 +183,15 @@ class TestModelLoadInfo:
 
     def test_model_load_info_creation(self):
         """Test ModelLoadInfo can be created with required fields."""
-        from faultmaven.infrastructure.model_cache import ModelLoadInfo
         from datetime import datetime, timezone
+
+        from faultmaven.infrastructure.model_cache import ModelLoadInfo
 
         info = ModelLoadInfo(
             model_name="BAAI/bge-m3",
             loaded_at=datetime.now(timezone.utc),
             load_time_seconds=2.5,
-            load_triggered_by="startup"
+            load_triggered_by="startup",
         )
 
         assert info.model_name == "BAAI/bge-m3"
@@ -181,15 +201,16 @@ class TestModelLoadInfo:
 
     def test_model_load_info_with_error(self):
         """Test ModelLoadInfo can track errors."""
-        from faultmaven.infrastructure.model_cache import ModelLoadInfo
         from datetime import datetime, timezone
+
+        from faultmaven.infrastructure.model_cache import ModelLoadInfo
 
         info = ModelLoadInfo(
             model_name="BAAI/bge-m3",
             loaded_at=datetime.now(timezone.utc),
             load_time_seconds=0.1,
             load_triggered_by="lazy",
-            error="Model not found"
+            error="Model not found",
         )
 
         assert info.error == "Model not found"

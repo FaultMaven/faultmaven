@@ -10,24 +10,31 @@ Tests cover:
 - Token usage tracking
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 from typing import List
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
-from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
+import pytest
+
 from faultmaven.exceptions import (
     EmbeddingGenerationError,
-    EmbeddingRateLimitError,
     EmbeddingInvalidInputError,
+    EmbeddingRateLimitError,
 )
-from faultmaven.modules.knowledge.domain.models.knowledge_item import EMBEDDING_DIMENSIONS
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
+)
+from faultmaven.modules.knowledge.domain.services.embedding_service import (
+    EmbeddingService,
+)
 
 
 # Test fixtures
 @pytest.fixture
 def mock_openai_client():
     """Create mock OpenAI client."""
-    with patch("faultmaven.modules.knowledge.domain.services.embedding_service.AsyncOpenAI") as mock:
+    with patch(
+        "faultmaven.modules.knowledge.domain.services.embedding_service.AsyncOpenAI"
+    ) as mock:
         client = MagicMock()
         mock.return_value = client
         yield client
@@ -49,7 +56,9 @@ def embedding_service(mock_openai_client):
     return service
 
 
-def create_mock_embedding(dimensions: int = EMBEDDING_DIMENSIONS, value: float = 0.1) -> List[float]:
+def create_mock_embedding(
+    dimensions: int = EMBEDDING_DIMENSIONS, value: float = 0.1
+) -> List[float]:
     """Create mock embedding vector."""
     return [value] * dimensions
 
@@ -76,11 +85,14 @@ def create_mock_batch_response(embeddings: List[List[float]], total_tokens: int 
 # Test: generate_embedding() - Success Cases
 # =============================================================================
 
+
 class TestGenerateEmbeddingSuccess:
     """Tests for successful embedding generation."""
 
     @pytest.mark.asyncio
-    async def test_generate_embedding_success(self, embedding_service, mock_openai_client):
+    async def test_generate_embedding_success(
+        self, embedding_service, mock_openai_client
+    ):
         """Test successful single embedding generation."""
         mock_embedding = create_mock_embedding()
         mock_openai_client.embeddings.create = AsyncMock(
@@ -94,7 +106,9 @@ class TestGenerateEmbeddingSuccess:
         mock_openai_client.embeddings.create.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_generate_embedding_tracks_tokens(self, embedding_service, mock_openai_client):
+    async def test_generate_embedding_tracks_tokens(
+        self, embedding_service, mock_openai_client
+    ):
         """Test that token usage is tracked."""
         mock_embedding = create_mock_embedding()
         mock_openai_client.embeddings.create = AsyncMock(
@@ -106,7 +120,9 @@ class TestGenerateEmbeddingSuccess:
         assert embedding_service.get_total_tokens() == 150
 
     @pytest.mark.asyncio
-    async def test_generate_embedding_with_unicode(self, embedding_service, mock_openai_client):
+    async def test_generate_embedding_with_unicode(
+        self, embedding_service, mock_openai_client
+    ):
         """Test embedding generation with unicode text."""
         mock_embedding = create_mock_embedding()
         mock_openai_client.embeddings.create = AsyncMock(
@@ -118,7 +134,9 @@ class TestGenerateEmbeddingSuccess:
         assert len(result) == EMBEDDING_DIMENSIONS
 
     @pytest.mark.asyncio
-    async def test_generate_embedding_with_long_text(self, embedding_service, mock_openai_client):
+    async def test_generate_embedding_with_long_text(
+        self, embedding_service, mock_openai_client
+    ):
         """Test embedding generation with long text (under limit)."""
         mock_embedding = create_mock_embedding()
         mock_openai_client.embeddings.create = AsyncMock(
@@ -131,7 +149,9 @@ class TestGenerateEmbeddingSuccess:
         assert len(result) == EMBEDDING_DIMENSIONS
 
     @pytest.mark.asyncio
-    async def test_generate_embedding_multiple_calls(self, embedding_service, mock_openai_client):
+    async def test_generate_embedding_multiple_calls(
+        self, embedding_service, mock_openai_client
+    ):
         """Test multiple embedding generations accumulate tokens."""
         mock_embedding = create_mock_embedding()
         mock_openai_client.embeddings.create = AsyncMock(
@@ -149,6 +169,7 @@ class TestGenerateEmbeddingSuccess:
 # Test: generate_embedding() - Validation Errors
 # =============================================================================
 
+
 class TestGenerateEmbeddingValidation:
     """Tests for input validation in embedding generation."""
 
@@ -161,7 +182,9 @@ class TestGenerateEmbeddingValidation:
         assert "cannot be empty" in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_generate_embedding_whitespace_only_raises_error(self, embedding_service):
+    async def test_generate_embedding_whitespace_only_raises_error(
+        self, embedding_service
+    ):
         """Test that whitespace-only text raises error."""
         with pytest.raises(RuntimeError) as exc_info:
             await embedding_service.generate_embedding("   \n\t  ")
@@ -197,11 +220,14 @@ class TestGenerateEmbeddingValidation:
 # Test: generate_embedding() - Retry Logic
 # =============================================================================
 
+
 class TestGenerateEmbeddingRetry:
     """Tests for retry logic on transient failures."""
 
     @pytest.mark.asyncio
-    async def test_retry_on_connection_error(self, embedding_service, mock_openai_client):
+    async def test_retry_on_connection_error(
+        self, embedding_service, mock_openai_client
+    ):
         """Test retry on APIConnectionError."""
         from openai import APIConnectionError
 
@@ -238,7 +264,9 @@ class TestGenerateEmbeddingRetry:
         assert mock_openai_client.embeddings.create.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_max_retries_exceeded_raises_error(self, embedding_service, mock_openai_client):
+    async def test_max_retries_exceeded_raises_error(
+        self, embedding_service, mock_openai_client
+    ):
         """Test that exceeding max retries raises EmbeddingGenerationError."""
         from openai import APIConnectionError
 
@@ -257,11 +285,14 @@ class TestGenerateEmbeddingRetry:
 # Test: generate_embedding() - Rate Limit Handling
 # =============================================================================
 
+
 class TestGenerateEmbeddingRateLimit:
     """Tests for rate limit handling."""
 
     @pytest.mark.asyncio
-    async def test_rate_limit_retry_then_success(self, embedding_service, mock_openai_client):
+    async def test_rate_limit_retry_then_success(
+        self, embedding_service, mock_openai_client
+    ):
         """Test retry on rate limit then success."""
         from openai import RateLimitError
 
@@ -287,7 +318,9 @@ class TestGenerateEmbeddingRateLimit:
         assert mock_openai_client.embeddings.create.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_rate_limit_max_retries_raises_error(self, embedding_service, mock_openai_client):
+    async def test_rate_limit_max_retries_raises_error(
+        self, embedding_service, mock_openai_client
+    ):
         """Test that rate limit after max retries raises EmbeddingRateLimitError."""
         from openai import RateLimitError
 
@@ -312,6 +345,7 @@ class TestGenerateEmbeddingRateLimit:
 # =============================================================================
 # Test: generate_embedding() - API Errors
 # =============================================================================
+
 
 class TestGenerateEmbeddingAPIErrors:
     """Tests for API error handling."""
@@ -358,11 +392,14 @@ class TestGenerateEmbeddingAPIErrors:
 # Test: generate_embeddings_batch() - Success Cases
 # =============================================================================
 
+
 class TestGenerateEmbeddingsBatchSuccess:
     """Tests for successful batch embedding generation."""
 
     @pytest.mark.asyncio
-    async def test_generate_embeddings_batch_success(self, embedding_service, mock_openai_client):
+    async def test_generate_embeddings_batch_success(
+        self, embedding_service, mock_openai_client
+    ):
         """Test successful batch embedding generation."""
         texts = ["Text 1", "Text 2", "Text 3"]
         embeddings = [create_mock_embedding(value=0.1 * i) for i in range(len(texts))]
@@ -429,6 +466,7 @@ class TestGenerateEmbeddingsBatchSuccess:
 # Test: generate_embeddings_batch() - Validation Errors
 # =============================================================================
 
+
 class TestGenerateEmbeddingsBatchValidation:
     """Tests for batch input validation."""
 
@@ -461,6 +499,7 @@ class TestGenerateEmbeddingsBatchValidation:
 # Test: Token Tracking
 # =============================================================================
 
+
 class TestTokenTracking:
     """Tests for token usage tracking."""
 
@@ -487,6 +526,7 @@ class TestTokenTracking:
 # =============================================================================
 # Test: Service Stats
 # =============================================================================
+
 
 class TestServiceStats:
     """Tests for service statistics."""
@@ -517,6 +557,7 @@ class TestServiceStats:
 # =============================================================================
 # Test: Health Check
 # =============================================================================
+
 
 class TestHealthCheck:
     """Tests for health check functionality."""

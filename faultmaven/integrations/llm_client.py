@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
+from faultmaven.exceptions import LLMException, ServiceError
 from faultmaven.modules.agent.domain.events.execution_events import (
     AgentContext,
     LLMEvent,
@@ -22,7 +23,6 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     Tool,
     ToolCall,
 )
-from faultmaven.exceptions import LLMException, ServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -412,7 +412,9 @@ class OpenAIClient(BaseLLMClient):
                                 if tc.function.name:
                                     tool_calls[tc_index]["name"] = tc.function.name
                                 if tc.function.arguments:
-                                    tool_calls[tc_index]["arguments"] += tc.function.arguments
+                                    tool_calls[tc_index][
+                                        "arguments"
+                                    ] += tc.function.arguments
 
                 # Check for usage stats (final chunk)
                 if chunk.usage:
@@ -444,7 +446,11 @@ class OpenAIClient(BaseLLMClient):
                         metadata={
                             "input_tokens": chunk.usage.prompt_tokens,
                             "output_tokens": chunk.usage.completion_tokens,
-                            "stop_reason": chunk.choices[0].finish_reason if chunk.choices else None,
+                            "stop_reason": (
+                                chunk.choices[0].finish_reason
+                                if chunk.choices
+                                else None
+                            ),
                         },
                         index=index,
                     )

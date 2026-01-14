@@ -24,11 +24,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 # Import with graceful fallback
 try:
     from sentence_transformers import SentenceTransformer
+
     SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError:
     SentenceTransformer = None
@@ -38,6 +39,7 @@ except ImportError:
 @dataclass
 class ModelLoadInfo:
     """Information about a loaded model."""
+
     model_name: str
     loaded_at: datetime
     load_time_seconds: float
@@ -68,8 +70,10 @@ class ModelCache:
             self._load_info: Dict[str, ModelLoadInfo] = {}
             self._initialized = True
             self.logger.debug("ModelCache initialized")
-    
-    def get_bge_m3_model(self, triggered_by: str = "lazy") -> Optional[SentenceTransformer]:
+
+    def get_bge_m3_model(
+        self, triggered_by: str = "lazy"
+    ) -> Optional[SentenceTransformer]:
         """
         Get cached BGE-M3 model instance.
 
@@ -88,13 +92,15 @@ class ModelCache:
 
         # Check if sentence transformers is available
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
-            self.logger.warning("sentence-transformers not available, cannot load BGE-M3")
+            self.logger.warning(
+                "sentence-transformers not available, cannot load BGE-M3"
+            )
             self._load_info[model_key] = ModelLoadInfo(
                 model_name=model_key,
                 loaded_at=datetime.now(timezone.utc),
                 load_time_seconds=0,
                 load_triggered_by=triggered_by,
-                error="sentence-transformers not installed"
+                error="sentence-transformers not installed",
             )
             return None
 
@@ -115,10 +121,12 @@ class ModelCache:
                     model_name=model_key,
                     loaded_at=datetime.now(timezone.utc),
                     load_time_seconds=round(load_time, 3),
-                    load_triggered_by=triggered_by
+                    load_triggered_by=triggered_by,
                 )
 
-                self.logger.info(f"✅ BGE-M3 model loaded in {load_time:.2f}s ({triggered_by})")
+                self.logger.info(
+                    f"✅ BGE-M3 model loaded in {load_time:.2f}s ({triggered_by})"
+                )
                 return model
             except Exception as e:
                 load_time = time.time() - start_time
@@ -127,7 +135,7 @@ class ModelCache:
                     loaded_at=datetime.now(timezone.utc),
                     load_time_seconds=round(load_time, 3),
                     load_triggered_by=triggered_by,
-                    error=str(e)
+                    error=str(e),
                 )
                 self.logger.error(f"Failed to load BGE-M3 model: {e}")
                 return None
@@ -136,7 +144,9 @@ class ModelCache:
         """Check if a model is already loaded in cache."""
         return model_key in self._models
 
-    def get_model_load_info(self, model_key: str = "BAAI/bge-m3") -> Optional[ModelLoadInfo]:
+    def get_model_load_info(
+        self, model_key: str = "BAAI/bge-m3"
+    ) -> Optional[ModelLoadInfo]:
         """Get load information for a specific model."""
         return self._load_info.get(model_key)
 
@@ -156,7 +166,7 @@ class ModelCache:
                 "load_time_seconds": info.load_time_seconds,
                 "triggered_by": info.load_triggered_by,
                 "error": info.error,
-                "currently_cached": model_key in self._models
+                "currently_cached": model_key in self._models,
             }
 
         return {
@@ -165,9 +175,10 @@ class ModelCache:
             "sentence_transformers_available": SENTENCE_TRANSFORMERS_AVAILABLE,
             "load_details": load_details,
             "total_load_time_seconds": sum(
-                info.load_time_seconds for info in self._load_info.values()
+                info.load_time_seconds
+                for info in self._load_info.values()
                 if info.error is None
-            )
+            ),
         }
 
 

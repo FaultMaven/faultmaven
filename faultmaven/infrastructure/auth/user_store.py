@@ -19,12 +19,13 @@ Storage Schema:
 - user:email:{email} -> {user_id}
 """
 
-import uuid
 import json
-import re
 import logging
+import re
+import uuid
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import List, Optional
+
 from redis import Redis
 
 from faultmaven.models.auth import DevUser
@@ -60,9 +61,9 @@ class DevUserStore:
         self.user_list_key = "auth:user_list"
 
         # Validation patterns
-        self.email_pattern = re.compile(r'^[^@]+@[^@]+\.[^@]+$')
+        self.email_pattern = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
         # Allow both email addresses and traditional usernames
-        self.username_pattern = re.compile(r'^([^@]+@[^@]+\.[^@]+|[a-zA-Z0-9._-]+)$')
+        self.username_pattern = re.compile(r"^([^@]+@[^@]+\.[^@]+|[a-zA-Z0-9._-]+)$")
 
     async def get_user(self, user_id: str) -> Optional[DevUser]:
         """Get user by ID
@@ -140,7 +141,9 @@ class DevUserStore:
             logger.error(f"Failed to get user by email {email}: {e}")
             return None
 
-    async def create_user(self, username: str, email: str = None, display_name: str = None) -> DevUser:
+    async def create_user(
+        self, username: str, email: str = None, display_name: str = None
+    ) -> DevUser:
         """Create new development user
 
         Args:
@@ -159,7 +162,9 @@ class DevUserStore:
             # Validate inputs
             username = username.strip()
             if not self._validate_username(username):
-                raise ValueError("Invalid username format (3-50 chars, email address or alphanumeric with ., _, -)")
+                raise ValueError(
+                    "Invalid username format (3-50 chars, email address or alphanumeric with ., _, -)"
+                )
 
             if email:
                 email = email.strip().lower()
@@ -197,7 +202,7 @@ class DevUserStore:
                 display_name=display_name,
                 created_at=now,
                 is_dev_user=True,
-                is_active=True
+                is_active=True,
             )
 
             # Store in Redis
@@ -256,7 +261,9 @@ class DevUserStore:
             # Update email index if changed
             if user.email != existing_user.email:
                 # Remove old email mapping
-                old_email_key = self.email_key_pattern.format(existing_user.email.lower())
+                old_email_key = self.email_key_pattern.format(
+                    existing_user.email.lower()
+                )
                 await self._redis_delete(old_email_key)
 
                 # Add new email mapping
@@ -319,7 +326,7 @@ class DevUserStore:
             user_ids = await self._redis_smembers(self.user_list_key)
 
             # Apply pagination
-            paginated_ids = user_ids[offset:offset + limit]
+            paginated_ids = user_ids[offset : offset + limit]
 
             users = []
             for user_id in paginated_ids:
@@ -347,7 +354,12 @@ class DevUserStore:
 
     def _validate_username(self, username: str) -> bool:
         """Validate username format (allows email addresses and traditional usernames)"""
-        return bool(username and self.username_pattern.match(username) and len(username) >= 3 and len(username) <= 50)
+        return bool(
+            username
+            and self.username_pattern.match(username)
+            and len(username) >= 3
+            and len(username) <= 50
+        )
 
     def _validate_email(self, email: str) -> bool:
         """Validate email format"""
@@ -357,13 +369,17 @@ class DevUserStore:
         """Generate display name from username"""
         # If username is an email, use the local part before @
         if self._validate_email(username):
-            local_part = username.split('@')[0]
-            display_name = local_part.replace('.', ' ').replace('_', ' ').replace('-', ' ')
-            return ' '.join(word.capitalize() for word in display_name.split())
+            local_part = username.split("@")[0]
+            display_name = (
+                local_part.replace(".", " ").replace("_", " ").replace("-", " ")
+            )
+            return " ".join(word.capitalize() for word in display_name.split())
         else:
             # Convert username to title case and replace separators
-            display_name = username.replace('.', ' ').replace('_', ' ').replace('-', ' ')
-            return ' '.join(word.capitalize() for word in display_name.split())
+            display_name = (
+                username.replace(".", " ").replace("_", " ").replace("-", " ")
+            )
+            return " ".join(word.capitalize() for word in display_name.split())
 
     # Redis async wrapper methods (using async Redis client)
     async def _redis_set(self, key: str, value: str) -> None:

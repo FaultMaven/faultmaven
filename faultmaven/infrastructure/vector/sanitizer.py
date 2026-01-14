@@ -15,10 +15,9 @@ Usage:
 """
 
 import logging
-from datetime import datetime, date
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Set, Union
 from uuid import UUID
-
 
 logger = logging.getLogger(__name__)
 
@@ -178,9 +177,7 @@ class VectorMetadataSanitizer:
         clean_key = clean_key.replace("-", "_")
 
         # Remove non-alphanumeric except underscore and dot
-        clean_key = "".join(
-            c for c in clean_key if c.isalnum() or c in "_."
-        )
+        clean_key = "".join(c for c in clean_key if c.isalnum() or c in "_.")
 
         # Ensure key is not empty after cleaning
         if not clean_key:
@@ -192,7 +189,9 @@ class VectorMetadataSanitizer:
 
         return clean_key
 
-    def _sanitize_value(self, value: Any) -> Optional[Union[str, int, float, bool, List[str]]]:
+    def _sanitize_value(
+        self, value: Any
+    ) -> Optional[Union[str, int, float, bool, List[str]]]:
         """Sanitize a metadata value.
 
         Args:
@@ -242,7 +241,7 @@ class VectorMetadataSanitizer:
         # Handle bytes
         if isinstance(value, bytes):
             try:
-                return value.decode("utf-8")[:self.max_string_length]
+                return value.decode("utf-8")[: self.max_string_length]
             except UnicodeDecodeError:
                 return None
 
@@ -250,14 +249,15 @@ class VectorMetadataSanitizer:
         if isinstance(value, dict):
             # Convert to string representation
             import json
+
             try:
-                return json.dumps(value)[:self.max_string_length]
+                return json.dumps(value)[: self.max_string_length]
             except (TypeError, ValueError):
-                return str(value)[:self.max_string_length]
+                return str(value)[: self.max_string_length]
 
         # Handle other objects
         try:
-            return str(value)[:self.max_string_length]
+            return str(value)[: self.max_string_length]
         except Exception:
             return None
 
@@ -281,11 +281,13 @@ class VectorMetadataSanitizer:
 
         # Enforce length limit
         if len(clean) > self.max_string_length:
-            clean = clean[:self.max_string_length]
+            clean = clean[: self.max_string_length]
 
         return clean
 
-    def _sanitize_list(self, value: Union[list, tuple, set]) -> Optional[Union[str, List[str]]]:
+    def _sanitize_list(
+        self, value: Union[list, tuple, set]
+    ) -> Optional[Union[str, List[str]]]:
         """Sanitize a list value.
 
         Args:
@@ -304,7 +306,7 @@ class VectorMetadataSanitizer:
                 items.append(str_item)
 
         # Limit number of items
-        items = items[:self.max_list_items]
+        items = items[: self.max_list_items]
 
         if not items:
             return None

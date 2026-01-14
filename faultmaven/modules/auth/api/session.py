@@ -27,28 +27,37 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
-from typing import Optional, List
-from datetime import datetime, timezone, timedelta
-from faultmaven.utils.serialization import to_json_compatible
+import logging
 import time
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.api.v1.dependencies import get_session_service, get_case_service
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService
-from faultmaven.services.converters import CaseConverter
+from faultmaven.api.v1.dependencies import get_case_service, get_session_service
+from faultmaven.config.settings import get_settings
+from faultmaven.exceptions import ValidationException
+from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import utc_timestamp
-from faultmaven.models.api import SessionResponse, SessionCasesResponse, ErrorResponse, ErrorDetail, SessionErrorCode, SessionStatus
+from faultmaven.models.api import (
+    ErrorDetail,
+    ErrorResponse,
+    SessionCasesResponse,
+    SessionErrorCode,
+    SessionResponse,
+    SessionStatus,
+)
 from faultmaven.models.api_models import CaseListFilter
 from faultmaven.modules.auth.domain.models.auth import DevUser
-from faultmaven.exceptions import ValidationException
-from faultmaven.config.settings import get_settings
-import logging
-import uuid
+from faultmaven.modules.auth.domain.services.auth_session_service import (
+    AuthSessionService,
+)
+from faultmaven.services.converters import CaseConverter
+from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
 
@@ -100,7 +109,9 @@ def validate_session_timeout(timeout_minutes: Optional[int]) -> int:
     validated_timeout = max(min_timeout, min(max_timeout, timeout_minutes))
 
     if validated_timeout != original_timeout:
-        logger.info(f"Session timeout clamped from {original_timeout} to {validated_timeout} minutes")
+        logger.info(
+            f"Session timeout clamped from {original_timeout} to {validated_timeout} minutes"
+        )
 
     return validated_timeout
 
@@ -108,13 +119,13 @@ def validate_session_timeout(timeout_minutes: Optional[int]) -> int:
 def _safe_datetime_to_utc_string(dt: datetime) -> str:
     """
     Safely convert a datetime object to UTC string with Z suffix.
-    
+
     Handles both timezone-aware and timezone-naive datetime objects.
     Assumes timezone-naive datetimes are already in UTC.
-    
+
     Args:
         dt: datetime object to convert
-        
+
     Returns:
         UTC timestamp string with Z suffix (e.g., "2025-01-15T10:30:00.123Z")
     """
@@ -131,16 +142,16 @@ def _safe_datetime_to_utc_string(dt: datetime) -> str:
 def _log_session_not_found_rate_limited(session_id: str) -> None:
     """
     Log session not found error with rate limiting to prevent log spam.
-    
+
     Only logs once per 30 seconds per session_id to reduce noise from
     frontend clients that repeatedly send heartbeats for expired sessions.
-    
+
     Args:
         session_id: The session ID that was not found
     """
     current_time = time.time()
     last_logged = _session_not_found_log_tracker.get(session_id, 0)
-    
+
     if current_time - last_logged >= _SESSION_NOT_FOUND_LOG_INTERVAL:
         # Log with count if this is a repeated occurrence
         if last_logged > 0:
@@ -150,9 +161,9 @@ def _log_session_not_found_rate_limited(session_id: str) -> None:
             )
         else:
             logger.warning(f"Session not found for heartbeat: {session_id}")
-        
+
         _session_not_found_log_tracker[session_id] = current_time
-        
+
         # Clean up old entries to prevent memory leak
         cutoff_time = current_time - (2 * _SESSION_NOT_FOUND_LOG_INTERVAL)
         for sid, logged_time in list(_session_not_found_log_tracker.items()):
@@ -162,119 +173,121 @@ def _log_session_not_found_rate_limited(session_id: str) -> None:
 
 class SessionCreateRequest(BaseModel):
     """Request model for session creation."""
+
     timeout_minutes: Optional[int] = Field(
-        default=180, 
-        ge=60, 
-        le=480, 
+        default=180,
+        ge=60,
+        le=480,
         description="Session timeout in minutes. Min: 60 (1 hour), Max: 480 (8 hours), Default: 180 (3 hours)",
-        examples=[180, 240, 360]
+        examples=[180, 240, 360],
     )
     session_type: Optional[str] = Field(default="troubleshooting", min_length=1)
     metadata: Optional[dict] = None
     client_id: Optional[str] = Field(
-        None, 
-        min_length=1, 
-        max_length=255, 
+        None,
+        min_length=1,
+        max_length=255,
         description="Client/device identifier for session resumption. If provided, existing session for this client will be resumed.",
-        examples=["550e8400-e29b-41d4-a716-446655440000"]
+        examples=["550e8400-e29b-41d4-a716-446655440000"],
     )
 
 
 class SessionRestoreRequest(BaseModel):
     """Request model for session restoration."""
+
     restore_point: str = Field(..., min_length=1)
     include_data: bool = Field(default=True)
     type: Optional[str] = Field(default="full")
 
 
-
-
-@router.post("", status_code=201, responses={
-    201: {
-        "description": "Session created or resumed successfully",
-        "content": {
-            "application/json": {
-                "examples": {
-                    "new_session": {
-                        "summary": "New session created",
-                        "value": {
-                            "session_id": "550e8400-e29b-41d4-a716-446655440000",
-                            "user_id": "user_123",
-                            "client_id": "browser-client-abc123",
-                            "created_at": "2025-01-15T10:00:00Z",
-                            "expires_at": "2025-01-15T13:00:00Z",
-                            "status": "consulting",
-                            "session_type": "troubleshooting",
-                            "session_resumed": False,
-                            "timeout_minutes": 180,
-                            "message": "Session created successfully"
-                        }
-                    },
-                    "resumed_session": {
-                        "summary": "Existing session resumed",
-                        "value": {
-                            "session_id": "550e8400-e29b-41d4-a716-446655440000",
-                            "user_id": "user_123", 
-                            "client_id": "browser-client-abc123",
-                            "created_at": "2025-01-15T09:30:00Z",
-                            "expires_at": "2025-01-15T14:30:00Z",
-                            "status": "consulting",
-                            "session_type": "troubleshooting",
-                            "session_resumed": True,
-                            "timeout_minutes": 300,
-                            "message": "Session resumed successfully"
+@router.post(
+    "",
+    status_code=201,
+    responses={
+        201: {
+            "description": "Session created or resumed successfully",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "new_session": {
+                            "summary": "New session created",
+                            "value": {
+                                "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                                "user_id": "user_123",
+                                "client_id": "browser-client-abc123",
+                                "created_at": "2025-01-15T10:00:00Z",
+                                "expires_at": "2025-01-15T13:00:00Z",
+                                "status": "consulting",
+                                "session_type": "troubleshooting",
+                                "session_resumed": False,
+                                "timeout_minutes": 180,
+                                "message": "Session created successfully",
+                            },
+                        },
+                        "resumed_session": {
+                            "summary": "Existing session resumed",
+                            "value": {
+                                "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                                "user_id": "user_123",
+                                "client_id": "browser-client-abc123",
+                                "created_at": "2025-01-15T09:30:00Z",
+                                "expires_at": "2025-01-15T14:30:00Z",
+                                "status": "consulting",
+                                "session_type": "troubleshooting",
+                                "session_resumed": True,
+                                "timeout_minutes": 300,
+                                "message": "Session resumed successfully",
+                            },
+                        },
+                    }
+                }
+            },
+        },
+        404: {
+            "description": "Session expired or not found (when resuming with client_id)",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "session_expired": {
+                            "summary": "Session expired",
+                            "value": {
+                                "detail": "Session expired after 180 minutes of inactivity"
+                            },
                         }
                     }
                 }
-            }
-        }
+            },
+        },
+        410: {
+            "description": "Session gone (alternative to 404 for expired sessions)",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "session_gone": {
+                            "summary": "Session no longer available",
+                            "value": {"detail": "Session not found"},
+                        }
+                    }
+                }
+            },
+        },
+        422: {
+            "description": "Validation error (invalid timeout_minutes)",
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "invalid_timeout": {
+                            "summary": "Invalid timeout value",
+                            "value": {
+                                "detail": "timeout_minutes must be between 60 and 480 minutes"
+                            },
+                        }
+                    }
+                }
+            },
+        },
     },
-    404: {
-        "description": "Session expired or not found (when resuming with client_id)",
-        "content": {
-            "application/json": {
-                "examples": {
-                    "session_expired": {
-                        "summary": "Session expired",
-                        "value": {
-                            "detail": "Session expired after 180 minutes of inactivity"
-                        }
-                    }
-                }
-            }
-        }
-    },
-    410: {
-        "description": "Session gone (alternative to 404 for expired sessions)",
-        "content": {
-            "application/json": {
-                "examples": {
-                    "session_gone": {
-                        "summary": "Session no longer available",
-                        "value": {
-                            "detail": "Session not found"
-                        }
-                    }
-                }
-            }
-        }
-    },
-    422: {
-        "description": "Validation error (invalid timeout_minutes)",
-        "content": {
-            "application/json": {
-                "examples": {
-                    "invalid_timeout": {
-                        "summary": "Invalid timeout value",
-                        "value": {
-                            "detail": "timeout_minutes must be between 60 and 480 minutes"
-                        }
-                    }
-                }
-            }
-        }
-    }
-})
+)
 @trace("api_create_session")
 async def create_session(
     request: Optional[SessionCreateRequest] = Body(None),
@@ -313,19 +326,20 @@ async def create_session(
         validated_timeout_minutes = validate_session_timeout(
             request.timeout_minutes if request else None
         )
-        
+
         if request:
             if request.session_type:
                 metadata["session_type"] = request.session_type
             if request.metadata:
                 metadata.update(request.metadata)
-        
+
         # Always set validated timeout in metadata
         metadata["timeout_minutes"] = validated_timeout_minutes
 
         # Auto-generate user_id for development if not provided
         if not user_id:
             import uuid
+
             user_id = f"user_{str(uuid.uuid4())[:8]}"
             logger.info(f"Auto-generated user_id for session: {user_id}")
 
@@ -333,17 +347,17 @@ async def create_session(
         session_result = await session_service.create_session(
             user_id,
             metadata=metadata if metadata else None,
-            client_id=request.client_id if request else None
+            client_id=request.client_id if request else None,
         )
-        
+
         # Handle both new session and resumed session scenarios
         if isinstance(session_result, tuple):
             session, was_resumed = session_result
         else:
             session, was_resumed = session_result, False
-            
+
         action_verb = "resumed" if was_resumed else "created"
-        
+
         # Enhanced logging for session lifecycle tracking
         log_details = {
             "session_id": session.session_id,
@@ -351,22 +365,26 @@ async def create_session(
             "client_id": request.client_id if request else None,
             "timeout_minutes": validated_timeout_minutes,
             "session_type": metadata.get("session_type", "troubleshooting"),
-            "was_resumed": was_resumed
+            "was_resumed": was_resumed,
         }
-        logger.info(f"Session {action_verb} successfully: {session.session_id} (timeout: {validated_timeout_minutes}min, client: {request.client_id if request else 'none'})")
-        
+        logger.info(
+            f"Session {action_verb} successfully: {session.session_id} (timeout: {validated_timeout_minutes}min, client: {request.client_id if request else 'none'})"
+        )
+
         # Set Location header for REST compliance
         response.headers["Location"] = f"/api/v1/sessions/{session.session_id}"
-        
+
         # Calculate expires_at timestamp
         expires_at = session.created_at + timedelta(minutes=validated_timeout_minutes)
-        
+
         return {
             "session_id": session.session_id,
             "user_id": session.user_id,
             "client_id": request.client_id if request else None,
             "created_at": _safe_datetime_to_utc_string(session.created_at),
-            "expires_at": _safe_datetime_to_utc_string(expires_at),  # NEW: Session expiration time
+            "expires_at": _safe_datetime_to_utc_string(
+                expires_at
+            ),  # NEW: Session expiration time
             "status": SessionStatus.ACTIVE.value,
             "session_type": metadata.get("session_type", "troubleshooting"),
             "session_resumed": was_resumed,
@@ -399,12 +417,12 @@ async def get_session(
         if not session:
             _log_session_not_found_rate_limited(session_id)
             raise HTTPException(
-                status_code=404, 
+                status_code=404,
                 detail=ErrorDetail(
                     code=SessionErrorCode.SESSION_NOT_FOUND.value,
                     message=f"Session not found: {session_id}",
-                    session_id=session_id
-                ).model_dump()
+                    session_id=session_id,
+                ).model_dump(),
             )
 
         return SessionResponse(
@@ -416,15 +434,13 @@ async def get_session(
                 "last_activity": _safe_datetime_to_utc_string(session.last_activity),
                 "data_uploads_count": len(session.data_uploads),
                 "case_history_count": len(session.case_history),
-            }
+            },
         )
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to get session {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to get session: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to get session: {str(e)}")
 
 
 @router.get("")
@@ -450,7 +466,7 @@ async def list_sessions(
     try:
         # Get sessions from SessionManager and apply filters/pagination
         all_sessions = await session_service.list_sessions(user_id=user_id)
-        
+
         # Apply session type filtering
         if session_type:
             filtered_sessions = []
@@ -458,28 +474,40 @@ async def list_sessions(
                 try:
                     # Check session metadata for session_type or usage_type
                     session_data = None
-                    if (hasattr(session_service, 'session_manager') and 
-                        hasattr(session_service.session_manager, 'session_store') and
-                        hasattr(session_service.session_manager.session_store, 'get')):
-                        session_data = await session_service.session_manager.session_store.get(session.session_id)
-                    
+                    if (
+                        hasattr(session_service, "session_manager")
+                        and hasattr(session_service.session_manager, "session_store")
+                        and hasattr(
+                            session_service.session_manager.session_store, "get"
+                        )
+                    ):
+                        session_data = (
+                            await session_service.session_manager.session_store.get(
+                                session.session_id
+                            )
+                        )
+
                     if session_data:
-                        metadata_type = session_data.get("session_type") or "troubleshooting"
+                        metadata_type = (
+                            session_data.get("session_type") or "troubleshooting"
+                        )
                         if metadata_type == session_type:
                             filtered_sessions.append(session)
                     elif session_type == "troubleshooting":  # Default type
                         filtered_sessions.append(session)
                 except Exception as e:
-                    logger.warning(f"Failed to get session metadata for {session.session_id}: {e}")
+                    logger.warning(
+                        f"Failed to get session metadata for {session.session_id}: {e}"
+                    )
                     # Include session if we can't determine its type and filter is for default type
                     if session_type == "troubleshooting":
                         filtered_sessions.append(session)
             all_sessions = filtered_sessions
-        
+
         # Apply pagination
         total = len(all_sessions)
-        paginated_sessions = all_sessions[offset:offset + limit]
-        
+        paginated_sessions = all_sessions[offset : offset + limit]
+
         # Format response
         sessions_response = []
         for session in paginated_sessions:
@@ -487,27 +515,41 @@ async def list_sessions(
             session_type_val = "troubleshooting"  # default
             try:
                 session_data = None
-                if (hasattr(session_service, 'session_manager') and 
-                    hasattr(session_service.session_manager, 'session_store') and
-                    hasattr(session_service.session_manager.session_store, 'get')):
-                    session_data = await session_service.session_manager.session_store.get(session.session_id)
-                
+                if (
+                    hasattr(session_service, "session_manager")
+                    and hasattr(session_service.session_manager, "session_store")
+                    and hasattr(session_service.session_manager.session_store, "get")
+                ):
+                    session_data = (
+                        await session_service.session_manager.session_store.get(
+                            session.session_id
+                        )
+                    )
+
                 if session_data:
-                    session_type_val = session_data.get("session_type") or "troubleshooting"
+                    session_type_val = (
+                        session_data.get("session_type") or "troubleshooting"
+                    )
             except Exception as e:
-                logger.warning(f"Failed to get session metadata for display {session.session_id}: {e}")
-            
-            sessions_response.append({
-                "session_id": session.session_id,
-                "user_id": session.user_id,
-                "created_at": _safe_datetime_to_utc_string(session.created_at),
-                "last_activity": _safe_datetime_to_utc_string(session.last_activity),
-                "status": "consulting",
-                "session_type": session_type_val,
-                "data_uploads_count": len(session.data_uploads),
-                "case_history_count": len(session.case_history),
-            })
-        
+                logger.warning(
+                    f"Failed to get session metadata for display {session.session_id}: {e}"
+                )
+
+            sessions_response.append(
+                {
+                    "session_id": session.session_id,
+                    "user_id": session.user_id,
+                    "created_at": _safe_datetime_to_utc_string(session.created_at),
+                    "last_activity": _safe_datetime_to_utc_string(
+                        session.last_activity
+                    ),
+                    "status": "consulting",
+                    "session_type": session_type_val,
+                    "data_uploads_count": len(session.data_uploads),
+                    "case_history_count": len(session.case_history),
+                }
+            )
+
         return {
             "sessions": sessions_response,
             "total_count": total,
@@ -528,23 +570,29 @@ async def list_session_cases(
     limit: int = Query(50, le=100, ge=1),
     offset: int = Query(0, ge=0),
     # Phase 1: New filtering parameters (default to exclude non-active cases)
-    include_empty: bool = Query(False, description="Include cases with message_count == 0"),
-    include_terminal: bool = Query(False, description="Include terminal state cases (resolved/closed)"),
-    include_deleted: bool = Query(False, description="Include deleted cases (admin only)"),
+    include_empty: bool = Query(
+        False, description="Include cases with message_count == 0"
+    ),
+    include_terminal: bool = Query(
+        False, description="Include terminal state cases (resolved/closed)"
+    ),
+    include_deleted: bool = Query(
+        False, description="Include deleted cases (admin only)"
+    ),
     session_service: AuthSessionService = Depends(get_session_service),
-    case_service = Depends(get_case_service),
-    current_user: DevUser = Depends(require_authentication)
+    case_service=Depends(get_case_service),
+    current_user: DevUser = Depends(require_authentication),
 ):
     """
     List all cases associated with a session.
-    
+
     CRITICAL: Must return 200 [] for empty results, NOT 404
-    
+
     Args:
         session_id: Session identifier
         limit: Maximum number of cases to return (1-100)
         offset: Number of cases to skip for pagination
-    
+
     Returns:
         List of cases (empty list if no cases found)
     """
@@ -553,31 +601,35 @@ async def list_session_cases(
         session = await session_service.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         # Get cases for this session (empty list is valid, not an error)
         cases = []
         total_count = 0
-        
+
         try:
             # Get user's cases with access control, then filter by session
-            if hasattr(case_service, 'list_user_cases'):
+            if hasattr(case_service, "list_user_cases"):
                 # Create filters for user cases with session filtering
                 filters = CaseListFilter(
                     include_empty=include_empty,
                     include_terminal=include_terminal,
                     include_deleted=include_deleted,
                     limit=limit,
-                    offset=offset
+                    offset=offset,
                 )
 
                 # Get user's cases (session provides authentication context)
                 # Architecture: Session → User → User's Cases (indirect relationship)
-                user_cases = await case_service.list_user_cases(current_user.user_id, filters)
-                logger.debug(f"Session {session_id} accessing {len(user_cases)} cases for user {current_user.user_id}")
+                user_cases = await case_service.list_user_cases(
+                    current_user.user_id, filters
+                )
+                logger.debug(
+                    f"Session {session_id} accessing {len(user_cases)} cases for user {current_user.user_id}"
+                )
 
                 # No additional filtering needed - session authenticates access to all user's cases
                 total_count = len(user_cases)
-                paginated_cases = user_cases[offset:offset + limit]
+                paginated_cases = user_cases[offset : offset + limit]
 
                 # Convert Case entities to API objects (consistent with /api/v1/cases)
                 cases = CaseConverter.entities_to_api_list(paginated_cases)
@@ -590,7 +642,7 @@ async def list_session_cases(
             logger.error(f"Error fetching cases for session {session_id}: {e}")
             cases = []
             total_count = 0
-        
+
         # Add required pagination headers
         headers = {"X-Total-Count": str(total_count)}
 
@@ -613,16 +665,21 @@ async def list_session_cases(
         if links:
             headers["Link"] = ", ".join(links)
 
-        logger.info(f"Returning {len(cases)} cases for session {session_id} (total: {total_count})")
+        logger.info(
+            f"Returning {len(cases)} cases for session {session_id} (total: {total_count})"
+        )
         # Convert CaseAPI objects to dictionaries for JSON serialization
         cases_data = [case.dict() for case in cases] if cases else []
         return JSONResponse(status_code=200, content=cases_data, headers=headers)
-        
+
     except HTTPException:
         raise
     except Exception as e:
         correlation_id = str(uuid.uuid4())
-        logger.error(f"Failed to list cases for session {session_id}: {e}", extra={"correlation_id": correlation_id})
+        logger.error(
+            f"Failed to list cases for session {session_id}: {e}",
+            extra={"correlation_id": correlation_id},
+        )
         # Return empty response instead of 500 error for robustness per OpenAPI requirement
         headers = {"X-Total-Count": "0", "x-correlation-id": correlation_id}
         return JSONResponse(status_code=200, content=[], headers=headers)
@@ -648,14 +705,14 @@ async def delete_session(
         if not session:
             _log_session_not_found_rate_limited(session_id)
             raise HTTPException(
-                status_code=404, 
+                status_code=404,
                 detail=ErrorDetail(
                     code=SessionErrorCode.SESSION_NOT_FOUND.value,
                     message=f"Session not found: {session_id}",
-                    session_id=session_id
-                ).model_dump()
+                    session_id=session_id,
+                ).model_dump(),
             )
-        
+
         # Delete session
         success = await session_service.delete_session(session_id)
         if not success:
@@ -678,29 +735,30 @@ async def cleanup_expired_sessions(
 ):
     """
     Manually trigger cleanup of expired sessions.
-    
+
     This endpoint allows manual cleanup of sessions that have exceeded their
     timeout period. It's useful for maintenance operations and ensuring
     database hygiene.
-    
+
     Returns:
         Cleanup results including number of sessions cleaned up
     """
     try:
         cleaned_count = await session_service.cleanup_expired_sessions()
-        
-        logger.info(f"Manual session cleanup completed: {cleaned_count} sessions cleaned")
-        
+
+        logger.info(
+            f"Manual session cleanup completed: {cleaned_count} sessions cleaned"
+        )
+
         return {
             "message": f"Successfully cleaned up {cleaned_count} expired sessions",
             "cleaned_sessions": cleaned_count,
-            "timestamp": to_json_compatible(datetime.now(timezone.utc))
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
         }
     except Exception as e:
         logger.error(f"Failed to cleanup expired sessions: {e}")
         raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to cleanup expired sessions: {str(e)}"
+            status_code=500, detail=f"Failed to cleanup expired sessions: {str(e)}"
         )
 
 
@@ -721,41 +779,49 @@ async def session_heartbeat(
     # Input validation
     if not session_id or not session_id.strip():
         raise HTTPException(status_code=400, detail="Session ID cannot be empty")
-    
+
     try:
         # Check if session service is available
         if not session_service:
             logger.error("Session service is not available")
             raise HTTPException(status_code=503, detail="Session service unavailable")
-        
+
         # Update session activity with specific error handling
         try:
             result = await session_service.update_last_activity(session_id)
         except FileNotFoundError:
             _log_session_not_found_rate_limited(session_id)
             raise HTTPException(
-                status_code=404, 
+                status_code=404,
                 detail=ErrorDetail(
                     code=SessionErrorCode.SESSION_NOT_FOUND.value,
                     message=f"Session not found or expired: {session_id}",
-                    session_id=session_id
-                ).model_dump()
+                    session_id=session_id,
+                ).model_dump(),
             )
         except RuntimeError as e:
             # Handle specific runtime errors from session service
             if "Session store unavailable" in str(e):
-                logger.error(f"Session store connection issue during heartbeat for {session_id}: {e}")
-                raise HTTPException(status_code=503, detail="Session store temporarily unavailable")
+                logger.error(
+                    f"Session store connection issue during heartbeat for {session_id}: {e}"
+                )
+                raise HTTPException(
+                    status_code=503, detail="Session store temporarily unavailable"
+                )
             elif "Activity update operation failed" in str(e):
                 logger.error(f"Session activity update failed for {session_id}: {e}")
-                raise HTTPException(status_code=500, detail="Failed to update session activity")
+                raise HTTPException(
+                    status_code=500, detail="Failed to update session activity"
+                )
             else:
-                logger.error(f"Unexpected runtime error during heartbeat for {session_id}: {e}")
+                logger.error(
+                    f"Unexpected runtime error during heartbeat for {session_id}: {e}"
+                )
                 raise HTTPException(status_code=500, detail="Internal server error")
         except Exception as e:
             logger.error(f"Unexpected error during heartbeat for {session_id}: {e}")
             raise HTTPException(status_code=500, detail="Internal server error")
-        
+
         if not result:
             _log_session_not_found_rate_limited(session_id)
             raise HTTPException(status_code=404, detail="Session not found or expired")
@@ -764,17 +830,22 @@ async def session_heartbeat(
         heartbeat_record = {
             "action": "heartbeat",
             "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-            "endpoint": "heartbeat"
+            "endpoint": "heartbeat",
         }
-        
+
         try:
             # Check if session_manager has a real add_case_history method
-            if (hasattr(session_service, 'session_manager') and 
-                hasattr(session_service.session_manager, 'add_case_history')):
-                await session_service.session_manager.add_case_history(session_id, heartbeat_record)
+            if hasattr(session_service, "session_manager") and hasattr(
+                session_service.session_manager, "add_case_history"
+            ):
+                await session_service.session_manager.add_case_history(
+                    session_id, heartbeat_record
+                )
         except Exception as e:
             # Log warning but don't fail the heartbeat if case history fails
-            logger.warning(f"Failed to record heartbeat operation for {session_id}: {e}")
+            logger.warning(
+                f"Failed to record heartbeat operation for {session_id}: {e}"
+            )
 
         # Get updated session to return current last_activity (best effort)
         last_activity = to_json_compatible(datetime.now(timezone.utc))  # fallback
@@ -784,7 +855,7 @@ async def session_heartbeat(
                 last_activity = _safe_datetime_to_utc_string(session.last_activity)
         except Exception as e:
             logger.warning(f"Failed to get updated session info for {session_id}: {e}")
-        
+
         return {
             "session_id": session_id,
             "status": "consulting",
@@ -798,8 +869,7 @@ async def session_heartbeat(
         # Catch-all for unexpected errors
         logger.error(f"Unexpected error in heartbeat for session {session_id}: {e}")
         raise HTTPException(
-            status_code=500, 
-            detail="Internal server error during heartbeat operation"
+            status_code=500, detail="Internal server error during heartbeat operation"
         )
 
 
@@ -827,13 +897,17 @@ async def get_session_stats(
         stats_record = {
             "action": "stats_request",
             "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-            "endpoint": "stats"
+            "endpoint": "stats",
         }
-        
+
         try:
             # Check if session_manager has a real add_case_history method
-            if hasattr(session_service, 'session_manager') and hasattr(session_service.session_manager, 'add_case_history'):
-                await session_service.session_manager.add_case_history(session_id, stats_record)
+            if hasattr(session_service, "session_manager") and hasattr(
+                session_service.session_manager, "add_case_history"
+            ):
+                await session_service.session_manager.add_case_history(
+                    session_id, stats_record
+                )
         except Exception as e:
             logger.warning(f"Failed to record stats operation: {e}")
 
@@ -841,40 +915,47 @@ async def get_session_stats(
         session = await session_service.get_session(session_id)
 
         # Calculate statistics for this specific session
-        total_cases = len([
-            h for h in session.case_history
-            if h.get("action") == "query_processed"
-        ])
+        total_cases = len(
+            [h for h in session.case_history if h.get("action") == "query_processed"]
+        )
 
         # Count data upload operations from case history instead of data_uploads list
-        total_upload_operations = len([
-            h for h in session.case_history
-            if h.get("action") == "data_uploaded"
-        ])
-        
+        total_upload_operations = len(
+            [h for h in session.case_history if h.get("action") == "data_uploaded"]
+        )
+
         # Count heartbeat operations
-        total_heartbeat_operations = len([
-            h for h in session.case_history
-            if h.get("action") == "heartbeat"
-        ])
-        
+        total_heartbeat_operations = len(
+            [h for h in session.case_history if h.get("action") == "heartbeat"]
+        )
+
         # Count stats request operations
-        total_stats_operations = len([
-            h for h in session.case_history
-            if h.get("action") == "stats_request"
-        ])
-        
+        total_stats_operations = len(
+            [h for h in session.case_history if h.get("action") == "stats_request"]
+        )
+
         # Count all request operations (this is what tests are looking for)
-        total_requests = total_cases + total_upload_operations + total_heartbeat_operations + total_stats_operations
+        total_requests = (
+            total_cases
+            + total_upload_operations
+            + total_heartbeat_operations
+            + total_stats_operations
+        )
 
         # Debug: log what's actually in the history
-        logger.debug(f"Session {session_id} case history: {len(session.case_history)} total entries")
+        logger.debug(
+            f"Session {session_id} case history: {len(session.case_history)} total entries"
+        )
         for i, h in enumerate(session.case_history):
-            logger.debug(f"  History {i}: action={h.get('action')}, keys={list(h.keys())}")
-        logger.debug(f"Query operations: {total_cases}, Upload operations: {total_upload_operations}, Heartbeat operations: {total_heartbeat_operations}, Stats operations: {total_stats_operations}")
+            logger.debug(
+                f"  History {i}: action={h.get('action')}, keys={list(h.keys())}"
+            )
+        logger.debug(
+            f"Query operations: {total_cases}, Upload operations: {total_upload_operations}, Heartbeat operations: {total_heartbeat_operations}, Stats operations: {total_stats_operations}"
+        )
         logger.debug(f"Total requests: {total_requests}")
 
-    # Count unique data uploads as well
+        # Count unique data uploads as well
         total_uploads = len(session.data_uploads)
 
         # Get latest investigation confidence
@@ -928,18 +1009,18 @@ async def cleanup_session(
     try:
         # Perform cleanup operations via service
         result = await session_service.cleanup_session_data(session_id)
-        
+
         if not result.get("success"):
             if "not found" in result.get("error", "").lower():
                 raise HTTPException(status_code=404, detail="Session not found")
             else:
                 raise HTTPException(
-                    status_code=500, 
-                    detail=f"Cleanup failed: {result.get('error', 'Unknown error')}"
+                    status_code=500,
+                    detail=f"Cleanup failed: {result.get('error', 'Unknown error')}",
                 )
-        
+
         return result
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -981,19 +1062,19 @@ async def get_session_recovery_info(
             },
             "metadata": {
                 "test_mode": True,  # For test compatibility
-                "recovery_test": "enabled"  # For test compatibility
+                "recovery_test": "enabled",  # For test compatibility
             },
             "recovery_info": {
                 "can_restore": True,
                 "backup_available": True,
                 "last_backup": _safe_datetime_to_utc_string(session.last_activity),
-                "data_integrity": "good"
+                "data_integrity": "good",
             },
             "restoration_options": {
                 "full_restore": True,
                 "partial_restore": True,
-                "data_only": True
-            }
+                "data_only": True,
+            },
         }
     except HTTPException:
         raise
@@ -1010,26 +1091,27 @@ async def cleanup_expired_sessions(
 ):
     """
     Clean up expired sessions (admin/testing endpoint).
-    
+
     This endpoint triggers immediate cleanup of expired sessions.
     In production, this runs automatically every 30 minutes.
-    
+
     Returns:
         Number of sessions cleaned up
     """
     try:
         cleaned_count = await session_service.cleanup_expired_sessions()
-        logger.info(f"Manual session cleanup completed: {cleaned_count} sessions removed")
-        
+        logger.info(
+            f"Manual session cleanup completed: {cleaned_count} sessions removed"
+        )
+
         return {
             "cleaned_sessions": cleaned_count,
-            "message": f"Successfully cleaned up {cleaned_count} expired sessions"
+            "message": f"Successfully cleaned up {cleaned_count} expired sessions",
         }
     except Exception as e:
         logger.error(f"Failed to cleanup sessions: {e}")
         raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to cleanup sessions: {str(e)}"
+            status_code=500, detail=f"Failed to cleanup sessions: {str(e)}"
         )
 
 
@@ -1054,9 +1136,9 @@ async def restore_session(
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
-        # Simulate restoration process  
+        # Simulate restoration process
         restore_type = restore_request.type
-        
+
         return {
             "session_id": session_id,
             "status": "restored",
@@ -1066,9 +1148,9 @@ async def restore_session(
                 "restored_at": to_json_compatible(datetime.now(timezone.utc)),
                 "items_restored": {
                     "data_uploads": len(session.data_uploads),
-                    "case_history": len(session.case_history)
-                }
-            }
+                    "case_history": len(session.case_history),
+                },
+            },
         }
     except HTTPException:
         raise
@@ -1082,6 +1164,7 @@ async def restore_session(
 # =============================================================================
 # Microservices Parity Endpoints (Phase 3 Week 19-20)
 # =============================================================================
+
 
 @router.put("/{session_id}")
 async def update_session(
@@ -1117,17 +1200,13 @@ async def update_session(
         # Authorization check - users can only update their own sessions
         if session.user_id != current_user.user_id:
             raise HTTPException(
-                status_code=403,
-                detail="Not authorized to update this session"
+                status_code=403, detail="Not authorized to update this session"
             )
 
         # Update session
         success = await session_service.update_session(session_id, updates)
         if not success:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to update session"
-            )
+            raise HTTPException(status_code=500, detail="Failed to update session")
 
         # Get updated session
         updated_session = await session_service.get_session(session_id)
@@ -1139,9 +1218,11 @@ async def update_session(
             "user_id": updated_session.user_id,
             "created_at": _safe_datetime_to_utc_string(updated_session.created_at),
             "updated_at": _safe_datetime_to_utc_string(updated_session.updated_at),
-            "last_activity": _safe_datetime_to_utc_string(updated_session.last_activity),
+            "last_activity": _safe_datetime_to_utc_string(
+                updated_session.last_activity
+            ),
             "metadata": updated_session.metadata,
-            "message": "Session updated successfully"
+            "message": "Session updated successfully",
         }
 
     except HTTPException:
@@ -1151,8 +1232,7 @@ async def update_session(
     except Exception as e:
         logger.error(f"Failed to update session {session_id}: {e}")
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to update session: {str(e)}"
+            status_code=500, detail=f"Failed to update session: {str(e)}"
         )
 
 
@@ -1188,39 +1268,36 @@ async def search_sessions(
 
         # Search sessions
         sessions = await session_service.search_sessions(
-            user_id=current_user.user_id,
-            query=query,
-            status=status,
-            limit=limit
+            user_id=current_user.user_id, query=query, status=status, limit=limit
         )
 
         # Format response
         sessions_response = []
         for session in sessions:
-            sessions_response.append({
-                "session_id": session.session_id,
-                "user_id": session.user_id,
-                "created_at": _safe_datetime_to_utc_string(session.created_at),
-                "last_activity": _safe_datetime_to_utc_string(session.last_activity),
-                "status": session.metadata.get("status", "active"),
-                "metadata": session.metadata
-            })
+            sessions_response.append(
+                {
+                    "session_id": session.session_id,
+                    "user_id": session.user_id,
+                    "created_at": _safe_datetime_to_utc_string(session.created_at),
+                    "last_activity": _safe_datetime_to_utc_string(
+                        session.last_activity
+                    ),
+                    "status": session.metadata.get("status", "active"),
+                    "metadata": session.metadata,
+                }
+            )
 
         logger.info(
             f"Search returned {len(sessions)} sessions for user {current_user.user_id} "
             f"(query={query}, status={status})"
         )
 
-        return {
-            "sessions": sessions_response,
-            "total": len(sessions)
-        }
+        return {"sessions": sessions_response, "total": len(sessions)}
 
     except Exception as e:
         logger.error(f"Failed to search sessions: {e}")
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to search sessions: {str(e)}"
+            status_code=500, detail=f"Failed to search sessions: {str(e)}"
         )
 
 
@@ -1259,24 +1336,20 @@ async def archive_session(
         # Authorization check
         if session.user_id != current_user.user_id:
             raise HTTPException(
-                status_code=403,
-                detail="Not authorized to archive this session"
+                status_code=403, detail="Not authorized to archive this session"
             )
 
         # Archive session
         success = await session_service.archive_session(session_id)
         if not success:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to archive session"
-            )
+            raise HTTPException(status_code=500, detail="Failed to archive session")
 
         logger.info(f"Archived session {session_id} for user {current_user.user_id}")
 
         return {
             "session_id": session_id,
             "status": "archived",
-            "message": "Session archived successfully"
+            "message": "Session archived successfully",
         }
 
     except HTTPException:
@@ -1284,6 +1357,5 @@ async def archive_session(
     except Exception as e:
         logger.error(f"Failed to archive session {session_id}: {e}")
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to archive session: {str(e)}"
+            status_code=500, detail=f"Failed to archive session: {str(e)}"
         )

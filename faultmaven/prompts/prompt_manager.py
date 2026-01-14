@@ -8,45 +8,47 @@ Design: Object-oriented wrapper around functional prompt modules for better
 encapsulation and testability.
 """
 
-from typing import Dict, Any, List, Optional
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
-from faultmaven.prompts.system_prompts import (
-    get_system_prompt,
-    get_tiered_prompt,
-    MINIMAL_PROMPT,
-    BRIEF_PROMPT,
-    STANDARD_PROMPT,
+from faultmaven.prompts.few_shot_examples import (
+    format_intelligent_few_shot_prompt,
+    get_examples_by_intent,
+    get_examples_by_response_type,
+    select_intelligent_examples,
 )
 from faultmaven.prompts.phase_prompts import (
-    get_phase_prompt,
     PHASE_1_BLAST_RADIUS,
     PHASE_2_TIMELINE,
     PHASE_3_HYPOTHESIS,
     PHASE_4_VALIDATION,
     PHASE_5_SOLUTION,
-)
-from faultmaven.prompts.few_shot_examples import (
-    get_examples_by_response_type,
-    get_examples_by_intent,
-    select_intelligent_examples,
-    format_intelligent_few_shot_prompt,
+    get_phase_prompt,
 )
 from faultmaven.prompts.response_prompts import (
-    get_response_type_prompt,
     assemble_intelligent_prompt,
+    get_response_type_prompt,
+)
+from faultmaven.prompts.system_prompts import (
+    BRIEF_PROMPT,
+    MINIMAL_PROMPT,
+    STANDARD_PROMPT,
+    get_system_prompt,
+    get_tiered_prompt,
 )
 
 
 class PromptTier(str, Enum):
     """Tiered prompt levels for token optimization"""
-    MINIMAL = "minimal"      # 30 tokens
-    BRIEF = "brief"          # 90 tokens
-    STANDARD = "standard"    # 210 tokens
+
+    MINIMAL = "minimal"  # 30 tokens
+    BRIEF = "brief"  # 90 tokens
+    STANDARD = "standard"  # 210 tokens
 
 
 class Phase(str, Enum):
     """SRE troubleshooting phases"""
+
     BLAST_RADIUS = "blast_radius"
     TIMELINE = "timeline"
     HYPOTHESIS = "hypothesis"
@@ -106,9 +108,7 @@ class PromptManager:
     # Core API Methods
 
     def get_system_prompt(
-        self,
-        tier: PromptTier = PromptTier.STANDARD,
-        variant: str = "default"
+        self, tier: PromptTier = PromptTier.STANDARD, variant: str = "default"
     ) -> str:
         """
         Get system prompt with specified tier and variant.
@@ -132,10 +132,7 @@ class PromptManager:
             return STANDARD_PROMPT
 
     def get_phase_prompt(
-        self,
-        phase: Phase,
-        query: str,
-        context: Dict[str, Any]
+        self, phase: Phase, query: str, context: Dict[str, Any]
     ) -> str:
         """
         Generate phase-specific prompt with context injection.
@@ -158,10 +155,7 @@ class PromptManager:
         return get_phase_prompt(phase.value, query, context)
 
     def add_few_shot_examples(
-        self,
-        prompt: str,
-        task_type: str,
-        num_examples: int = 3
+        self, prompt: str, task_type: str, num_examples: int = 3
     ) -> str:
         """
         Add few-shot examples to prompt.
@@ -190,7 +184,7 @@ class PromptManager:
         query: str,
         classification: Dict[str, Any],
         context: Dict[str, Any],
-        response_type: Optional[str] = None
+        response_type: Optional[str] = None,
     ) -> str:
         """
         Assemble intelligent prompt with all components.
@@ -222,7 +216,7 @@ class PromptManager:
             query=query,
             classification=classification,
             context=context,
-            response_type=response_type
+            response_type=response_type,
         )
 
     def get_response_type_prompt(self, response_type: str) -> str:
@@ -288,9 +282,7 @@ class PromptManager:
         return complexity_to_tier.get(complexity, PromptTier.STANDARD)
 
     def get_examples_by_intent(
-        self,
-        intent: str,
-        num_examples: int = 3
+        self, intent: str, num_examples: int = 3
     ) -> List[Dict[str, str]]:
         """
         Get few-shot examples for specific intent.
@@ -310,9 +302,7 @@ class PromptManager:
         return get_examples_by_intent(intent, num_examples)
 
     def get_examples_by_response_type(
-        self,
-        response_type: str,
-        num_examples: int = 3
+        self, response_type: str, num_examples: int = 3
     ) -> List[Dict[str, str]]:
         """
         Get few-shot examples for specific response type.
@@ -331,7 +321,6 @@ class PromptManager:
         """
         return get_examples_by_response_type(response_type, num_examples)
 
-
     def inject_v3_context(
         self,
         base_prompt: str,
@@ -348,18 +337,20 @@ class PromptManager:
         Returns:
             Enhanced prompt with v3.0 context injected
         """
-        from faultmaven.modules.agent.domain.models.investigation import InvestigationPhase
+        from faultmaven.modules.agent.domain.models.investigation import (
+            InvestigationPhase,
+        )
 
         enhanced_prompt = base_prompt
         current_phase = investigation_state.lifecycle.current_phase
         context = context or {}
 
         # 1. Loop-back prompt injection (if in loop-back scenario)
-        if context.get('is_loop_back'):
+        if context.get("is_loop_back"):
             loop_back_prompt = self._get_loopback_prompt(
                 investigation_state,
-                context.get('loop_back_pattern'),
-                context.get('loop_back_count', 0),
+                context.get("loop_back_pattern"),
+                context.get("loop_back_count", 0),
             )
             if loop_back_prompt:
                 enhanced_prompt = f"{loop_back_prompt}\n\n---\n\n{enhanced_prompt}"
@@ -375,9 +366,11 @@ class PromptManager:
                 enhanced_prompt = f"{degraded_prompt}\n\n---\n\n{enhanced_prompt}"
 
         # 3. Phase 5 entry mode context injection
-        if current_phase == InvestigationPhase.SOLUTION and context.get('phase5_entry_mode'):
+        if current_phase == InvestigationPhase.SOLUTION and context.get(
+            "phase5_entry_mode"
+        ):
             entry_mode_context = self._get_phase5_entry_context(
-                context['phase5_entry_mode'],
+                context["phase5_entry_mode"],
                 investigation_state,
             )
             if entry_mode_context:
@@ -416,26 +409,26 @@ class PromptManager:
             return ""
 
         wc_dict = {
-            'statement': working_conclusion.statement,
-            'confidence': working_conclusion.confidence,
-            'confidence_level': working_conclusion.confidence_level.value,
-            'generated_at_turn': working_conclusion.generated_at_turn,
+            "statement": working_conclusion.statement,
+            "confidence": working_conclusion.confidence,
+            "confidence_level": working_conclusion.confidence_level.value,
+            "generated_at_turn": working_conclusion.generated_at_turn,
         }
 
-        if pattern == 'hypothesis_refutation':
+        if pattern == "hypothesis_refutation":
             return get_hypothesis_refutation_loopback_prompt(
                 investigation_state,
                 loop_count,
                 wc_dict,
                 "All hypotheses refuted by validation evidence",
             )
-        elif pattern == 'scope_change':
+        elif pattern == "scope_change":
             return get_scope_change_loopback_prompt(
                 investigation_state,
                 loop_count,
                 "Validation revealed broader scope than initially assessed",
             )
-        elif pattern == 'timeline_wrong':
+        elif pattern == "timeline_wrong":
             return get_timeline_wrong_loopback_prompt(
                 investigation_state,
                 loop_count,
@@ -449,7 +442,9 @@ class PromptManager:
         current_turn: int,
     ) -> str:
         """Get degraded mode prompt"""
-        from faultmaven.prompts.investigation.degraded_mode_prompts import get_degraded_mode_prompt
+        from faultmaven.prompts.investigation.degraded_mode_prompts import (
+            get_degraded_mode_prompt,
+        )
 
         if not escalation_state.degraded_mode_type:
             return ""
@@ -467,7 +462,9 @@ class PromptManager:
         investigation_state: Any,
     ) -> str:
         """Get Phase 5 entry mode context"""
-        from faultmaven.prompts.investigation.phase5_entry_modes import get_phase5_entry_mode_context
+        from faultmaven.prompts.investigation.phase5_entry_modes import (
+            get_phase5_entry_mode_context,
+        )
 
         return get_phase5_entry_mode_context(entry_mode, investigation_state)
 

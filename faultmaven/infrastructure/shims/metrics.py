@@ -21,19 +21,20 @@ Usage:
     active_connections.dec()
 """
 
-import os
 import logging
-from typing import Optional, List, Dict, Any
+import os
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # Feature detection
 try:
     from prometheus_client import Counter as PrometheusCounter
-    from prometheus_client import Histogram as PrometheusHistogram
     from prometheus_client import Gauge as PrometheusGauge
+    from prometheus_client import Histogram as PrometheusHistogram
     from prometheus_client import Info as PrometheusInfo
     from prometheus_client import Summary as PrometheusSummary
+
     PROMETHEUS_AVAILABLE = True
     logger.info("Prometheus metrics library available")
 except ImportError:
@@ -414,43 +415,39 @@ def is_metrics_active() -> bool:
 
 # Pre-defined common metrics (follow evolution strategy example from lines 898-913)
 request_counter = Counter(
-    'http_requests_total',
-    'Total HTTP requests',
-    labelnames=['method', 'endpoint', 'status_code']
+    "http_requests_total",
+    "Total HTTP requests",
+    labelnames=["method", "endpoint", "status_code"],
 )
 
 request_duration = Histogram(
-    'http_request_duration_seconds',
-    'HTTP request duration in seconds',
-    labelnames=['method', 'endpoint']
+    "http_request_duration_seconds",
+    "HTTP request duration in seconds",
+    labelnames=["method", "endpoint"],
 )
 
 active_sessions = Gauge(
-    'active_sessions_total',
-    'Number of active sessions',
-    labelnames=['status']
+    "active_sessions_total", "Number of active sessions", labelnames=["status"]
 )
 
 case_operations = Counter(
-    'case_operations_total',
-    'Total case operations',
-    labelnames=['operation', 'status']
+    "case_operations_total", "Total case operations", labelnames=["operation", "status"]
 )
 
 knowledge_queries = Counter(
-    'knowledge_queries_total',
-    'Total knowledge base queries',
-    labelnames=['query_type', 'status']
+    "knowledge_queries_total",
+    "Total knowledge base queries",
+    labelnames=["query_type", "status"],
 )
 
 llm_requests = Counter(
-    'llm_requests_total',
-    'Total LLM requests',
-    labelnames=['provider', 'model', 'status']
+    "llm_requests_total",
+    "Total LLM requests",
+    labelnames=["provider", "model", "status"],
 )
 
 llm_latency = Histogram(
-    'llm_request_duration_seconds',
-    'LLM request duration in seconds',
-    labelnames=['provider', 'model']
+    "llm_request_duration_seconds",
+    "LLM request duration in seconds",
+    labelnames=["provider", "model"],
 )

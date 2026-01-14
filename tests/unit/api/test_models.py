@@ -32,10 +32,9 @@ from faultmaven.api.models import (
     SessionUpdateRequest,
     ValidationErrorResponse,
 )
+from faultmaven.models.investigation_session import SessionStatus
 from faultmaven.modules.case.domain.models import CaseSeverity, CaseStatus
 from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
-from faultmaven.models.investigation_session import SessionStatus
-
 
 # ============================================================
 # CaseCreateRequest Tests
@@ -531,7 +530,11 @@ class TestValidationErrorResponse:
         response = ValidationErrorResponse(
             detail="Invalid input",
             errors=[
-                {"loc": ["body", "title"], "msg": "field required", "type": "value_error.missing"},
+                {
+                    "loc": ["body", "title"],
+                    "msg": "field required",
+                    "type": "value_error.missing",
+                },
             ],
         )
         assert response.error == "Validation Error"

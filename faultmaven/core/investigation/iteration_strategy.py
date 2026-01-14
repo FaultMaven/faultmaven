@@ -31,9 +31,7 @@ class PhaseIterationStrategy:
     """
 
     @staticmethod
-    def get_iteration_requirements(
-        phase: "InvestigationPhase"
-    ) -> dict[str, str]:
+    def get_iteration_requirements(phase: "InvestigationPhase") -> dict[str, str]:
         """Returns step requirements for iterations in this phase
 
         Args:
@@ -76,7 +74,7 @@ class PhaseIterationStrategy:
 
     @staticmethod
     def get_expected_steps_per_iteration(
-        phase: "InvestigationPhase"
+        phase: "InvestigationPhase",
     ) -> list["OODAStep"]:
         """Get steps that should typically occur in each iteration
 
@@ -96,11 +94,7 @@ class PhaseIterationStrategy:
         from faultmaven.modules.agent.contracts import OODAStep
 
         reqs = PhaseIterationStrategy.get_iteration_requirements(phase)
-        return [
-            OODAStep(step)
-            for step, req in reqs.items()
-            if req == "required"
-        ]
+        return [OODAStep(step) for step, req in reqs.items() if req == "required"]
 
     @staticmethod
     def get_guidance_for_phase(phase: "InvestigationPhase") -> str:
@@ -127,32 +121,26 @@ class PhaseIterationStrategy:
         guidance_parts = []
 
         if primary:
-            primary_weights = ", ".join([
-                f"{step} ({norm[step]:.0%})"
-                for step in primary
-            ])
+            primary_weights = ", ".join(
+                [f"{step} ({norm[step]:.0%})" for step in primary]
+            )
             guidance_parts.append(f"**Primary OODA Focus**: {primary_weights}")
 
         if tactical:
-            tactical_weights = ", ".join([
-                f"{step} ({norm[step]:.0%})"
-                for step in tactical
-            ])
+            tactical_weights = ", ".join(
+                [f"{step} ({norm[step]:.0%})" for step in tactical]
+            )
             guidance_parts.append(f"**Tactical Use Allowed**: {tactical_weights}")
 
         if micro:
-            micro_weights = ", ".join([
-                f"{step} ({norm[step]:.0%})"
-                for step in micro
-            ])
+            micro_weights = ", ".join([f"{step} ({norm[step]:.0%})" for step in micro])
             guidance_parts.append(f"**Micro-Actions Permitted**: {micro_weights}")
 
         return "\n".join(guidance_parts)
 
     @staticmethod
     def validate_step_allowed(
-        phase: "InvestigationPhase",
-        declared_step: "OODAStep"
+        phase: "InvestigationPhase", declared_step: "OODAStep"
     ) -> tuple[bool, str | None]:
         """Validate declared OODA step is allowed in phase (post-extraction check)
 
@@ -177,19 +165,16 @@ class PhaseIterationStrategy:
         norm_weight = norm[declared_step.value]
 
         if weight == 0.0:
-            return (
-                False,
-                f"{declared_step.value} not allowed in {phase.name} phase"
-            )
+            return (False, f"{declared_step.value} not allowed in {phase.name} phase")
         elif norm_weight < 0.10:
             return (
                 True,
-                f"Note: {declared_step.value} is micro-action only ({norm_weight:.0%}) in {phase.name}"
+                f"Note: {declared_step.value} is micro-action only ({norm_weight:.0%}) in {phase.name}",
             )
         elif norm_weight < 0.30:
             return (
                 True,
-                f"Note: {declared_step.value} is tactical ({norm_weight:.0%}) in {phase.name}"
+                f"Note: {declared_step.value} is tactical ({norm_weight:.0%}) in {phase.name}",
             )
         else:
             return (True, None)  # Primary or secondary focus

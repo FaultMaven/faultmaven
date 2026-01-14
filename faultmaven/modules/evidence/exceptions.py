@@ -10,6 +10,7 @@ from faultmaven.exceptions import FaultMavenException, ServiceError
 
 class EvidenceException(FaultMavenException):
     """Base exception for evidence management errors."""
+
     pass
 
 
@@ -20,16 +21,12 @@ class EvidenceNotFoundError(EvidenceException):
         self,
         message: str = "Evidence not found",
         evidence_id: Optional[str] = None,
-        case_id: Optional[str] = None
+        case_id: Optional[str] = None,
     ):
         self.evidence_id = evidence_id
         self.case_id = case_id
         super().__init__(
-            message,
-            details={
-                "evidence_id": evidence_id,
-                "case_id": case_id
-            }
+            message, details={"evidence_id": evidence_id, "case_id": case_id}
         )
 
 
@@ -45,17 +42,13 @@ class EvidenceUploadError(EvidenceException):
         message: str,
         filename: Optional[str] = None,
         error_code: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None
+        details: Optional[Dict[str, Any]] = None,
     ):
         self.filename = filename
         self.error_code = error_code
         super().__init__(
             message,
-            details={
-                **(details or {}),
-                "filename": filename,
-                "error_code": error_code
-            }
+            details={**(details or {}), "filename": filename, "error_code": error_code},
         )
 
 
@@ -70,17 +63,11 @@ class EvidenceValidationError(EvidenceException):
         self,
         message: str,
         field: Optional[str] = None,
-        constraint: Optional[str] = None
+        constraint: Optional[str] = None,
     ):
         self.field = field
         self.constraint = constraint
-        super().__init__(
-            message,
-            details={
-                "field": field,
-                "constraint": constraint
-            }
-        )
+        super().__init__(message, details={"field": field, "constraint": constraint})
 
 
 class EvidenceStorageError(EvidenceException):
@@ -95,7 +82,7 @@ class EvidenceStorageError(EvidenceException):
         message: str,
         storage_backend: Optional[str] = None,
         file_path: Optional[str] = None,
-        operation: Optional[str] = None
+        operation: Optional[str] = None,
     ):
         self.storage_backend = storage_backend
         self.file_path = file_path
@@ -105,8 +92,8 @@ class EvidenceStorageError(EvidenceException):
             details={
                 "storage_backend": storage_backend,
                 "file_path": file_path,
-                "operation": operation
-            }
+                "operation": operation,
+            },
         )
 
 
@@ -117,16 +104,13 @@ class EvidenceAccessError(EvidenceException):
         self,
         message: str = "Access denied",
         evidence_id: Optional[str] = None,
-        organization_id: Optional[str] = None
+        organization_id: Optional[str] = None,
     ):
         self.evidence_id = evidence_id
         self.organization_id = organization_id
         super().__init__(
             message,
-            details={
-                "evidence_id": evidence_id,
-                "organization_id": organization_id
-            }
+            details={"evidence_id": evidence_id, "organization_id": organization_id},
         )
 
 
@@ -142,7 +126,7 @@ class EvidenceProcessingError(EvidenceException):
         message: str,
         evidence_id: Optional[str] = None,
         processing_step: Optional[str] = None,
-        error_code: Optional[str] = None
+        error_code: Optional[str] = None,
     ):
         self.evidence_id = evidence_id
         self.processing_step = processing_step
@@ -152,6 +136,6 @@ class EvidenceProcessingError(EvidenceException):
             details={
                 "evidence_id": evidence_id,
                 "processing_step": processing_step,
-                "error_code": error_code
-            }
+                "error_code": error_code,
+            },
         )

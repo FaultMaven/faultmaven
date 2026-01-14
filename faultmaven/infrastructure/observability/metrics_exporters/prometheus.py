@@ -44,17 +44,17 @@ FORBIDDEN_LABELS: Set[str] = {
 
 # Allowed bounded labels for reference
 ALLOWED_LABELS: Set[str] = {
-    "method",           # HTTP method (GET, POST, etc.)
-    "endpoint",         # Endpoint category (cases, knowledge, etc.)
-    "status_code",      # HTTP status code (200, 404, etc.)
-    "status_class",     # Status class (2xx, 3xx, 4xx, 5xx)
-    "operation",        # Operation type (create, read, update, delete)
-    "status",           # Operation status (success, failure)
-    "provider",         # LLM provider name
-    "model",            # LLM model name (bounded set)
-    "query_type",       # Query type (search, lookup, etc.)
-    "service",          # Service name
-    "component",        # Component name
+    "method",  # HTTP method (GET, POST, etc.)
+    "endpoint",  # Endpoint category (cases, knowledge, etc.)
+    "status_code",  # HTTP status code (200, 404, etc.)
+    "status_class",  # Status class (2xx, 3xx, 4xx, 5xx)
+    "operation",  # Operation type (create, read, update, delete)
+    "status",  # Operation status (success, failure)
+    "provider",  # LLM provider name
+    "model",  # LLM model name (bounded set)
+    "query_type",  # Query type (search, lookup, etc.)
+    "service",  # Service name
+    "component",  # Component name
 }
 
 
@@ -68,8 +68,8 @@ def get_prometheus_response() -> Response:
     try:
         from prometheus_client import (
             CONTENT_TYPE_LATEST,
-            generate_latest,
             REGISTRY,
+            generate_latest,
         )
 
         # Generate metrics in Prometheus text exposition format

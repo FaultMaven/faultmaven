@@ -14,8 +14,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from faultmaven.api.models import ExecutionEventSSE
-from faultmaven.modules.agent.domain.events.execution_events import ExecutionEvent, ExecutionEventType
-
+from faultmaven.modules.agent.domain.events.execution_events import (
+    ExecutionEvent,
+    ExecutionEventType,
+)
 
 # ============================================================
 # ExecutionEventSSE Model Tests
@@ -347,15 +349,18 @@ class TestErrorEvents:
 class TestSSEEventTypes:
     """Tests for all SSE event types."""
 
-    @pytest.mark.parametrize("event_type,expected_event", [
-        (ExecutionEventType.STARTED, "started"),
-        (ExecutionEventType.THINKING, "thinking"),
-        (ExecutionEventType.TOOL_CALL, "tool_call"),
-        (ExecutionEventType.TOOL_RESULT, "tool_result"),
-        (ExecutionEventType.RESPONSE, "response"),
-        (ExecutionEventType.ERROR, "error"),
-        (ExecutionEventType.COMPLETED, "completed"),
-    ])
+    @pytest.mark.parametrize(
+        "event_type,expected_event",
+        [
+            (ExecutionEventType.STARTED, "started"),
+            (ExecutionEventType.THINKING, "thinking"),
+            (ExecutionEventType.TOOL_CALL, "tool_call"),
+            (ExecutionEventType.TOOL_RESULT, "tool_result"),
+            (ExecutionEventType.RESPONSE, "response"),
+            (ExecutionEventType.ERROR, "error"),
+            (ExecutionEventType.COMPLETED, "completed"),
+        ],
+    )
     def test_all_event_types_supported(self, event_type, expected_event):
         """Test all event types are properly converted."""
         domain_event = ExecutionEvent(
@@ -452,7 +457,9 @@ class TestSSEEdgeCases:
         lines = sse_str.split("\n")
         data_json = lines[1][6:]
         parsed = json.loads(data_json)
-        assert parsed["metadata"]["level1"]["level2"]["level3"]["level4"] == "deep value"
+        assert (
+            parsed["metadata"]["level1"]["level2"]["level3"]["level4"] == "deep value"
+        )
 
     def test_special_event_name(self):
         """Test SSE with various event names."""

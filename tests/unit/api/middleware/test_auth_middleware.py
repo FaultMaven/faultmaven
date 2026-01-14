@@ -31,7 +31,6 @@ from faultmaven.api.middleware.auth import (
 from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.services.auth_service import AuthenticationError, TokenRevocationError
 
-
 # ============================================================
 # Test Fixtures
 # ============================================================

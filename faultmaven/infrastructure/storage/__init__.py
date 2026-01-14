@@ -33,8 +33,8 @@ AWS credentials are loaded from environment or IAM role.
 from faultmaven.infrastructure.storage.base import (
     IFileStorageBackend,
     PresignedUrl,
-    StoredFile,
     StorageType,
+    StoredFile,
 )
 from faultmaven.infrastructure.storage.factory import (
     get_storage_backend,
@@ -45,6 +45,7 @@ from faultmaven.infrastructure.storage.filesystem import FilesystemStorageBacken
 # S3 backend is optional (requires boto3)
 try:
     from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+
     S3_AVAILABLE = True
 except ImportError:
     S3StorageBackend = None  # type: ignore

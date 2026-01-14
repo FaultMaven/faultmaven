@@ -15,7 +15,7 @@ Per Principle 2 (Vertical Modules with Contracts):
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Protocol, Optional, List, Dict, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
 from uuid import UUID
 
 if TYPE_CHECKING:
@@ -26,8 +26,10 @@ if TYPE_CHECKING:
 # DTOs (Data Transfer Objects) for Cross-Module Use
 # ============================================================
 
+
 class ReportTypeDTO(str, Enum):
     """Public report type enum for cross-module use."""
+
     RCA = "rca"  # Root Cause Analysis
     EXECUTIVE_SUMMARY = "executive_summary"
     RUNBOOK = "runbook"
@@ -36,6 +38,7 @@ class ReportTypeDTO(str, Enum):
 
 class ReportStatusDTO(str, Enum):
     """Public report status enum for cross-module use."""
+
     PENDING = "pending"
     GENERATING = "generating"
     COMPLETED = "completed"
@@ -49,6 +52,7 @@ class ReportDTO:
     This DTO exposes only the fields needed by other modules,
     hiding internal report implementation details.
     """
+
     report_id: UUID
     case_id: str
     report_type: ReportTypeDTO
@@ -64,33 +68,30 @@ class ReportDTO:
 # Re-export domain models for backward compatibility
 # ============================================================
 
-from faultmaven.modules.report.domain.models import (
-    # Enums
-    ReportType,
-    ReportStatus,
-    RunbookSource,
-    # Models
-    CaseReport,
-    RunbookMetadata,
-    SimilarRunbook,
-    RunbookRecommendation,
-    ReportRecommendation,
-    # Request/Response DTOs
-    ReportGenerationRequest,
-    ReportGenerationResponse,
+from faultmaven.modules.report.domain.models import (  # Enums; Models; Request/Response DTOs
     CaseClosureRequest,
     CaseClosureResponse,
+    CaseReport,
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+    ReportRecommendation,
+    ReportStatus,
+    ReportType,
+    RunbookMetadata,
+    RunbookRecommendation,
+    RunbookSource,
+    SimilarRunbook,
 )
-
 
 # ============================================================
 # Service Protocols
 # ============================================================
 
+
 class IReportQuery(Protocol):
     """Read-only report query interface for cross-module use."""
 
-    async def get_report(self, report_id: 'UUID') -> Optional[CaseReport]:
+    async def get_report(self, report_id: "UUID") -> Optional[CaseReport]:
         """Get report by ID."""
         ...
 

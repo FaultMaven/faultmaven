@@ -48,8 +48,9 @@ logger = logging.getLogger(__name__)
 # Check if APScheduler is available
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
-    from apscheduler.triggers.interval import IntervalTrigger
     from apscheduler.triggers.date import DateTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
+
     APSCHEDULER_AVAILABLE = True
 except ImportError:
     BackgroundScheduler = None
@@ -102,8 +103,11 @@ class APSchedulerJobRunner(IJobRunner):
         except Exception as e:
             logger.warning(f"Error stopping APScheduler: {e}")
 
-    def _wrap_async_task(self, task_func: Callable, args: tuple, kwargs: dict) -> Callable:
+    def _wrap_async_task(
+        self, task_func: Callable, args: tuple, kwargs: dict
+    ) -> Callable:
         """Wrap async task function for synchronous execution by APScheduler."""
+
         def sync_wrapper():
             if asyncio.iscoroutinefunction(task_func):
                 try:
@@ -115,6 +119,7 @@ class APSchedulerJobRunner(IJobRunner):
                     task_func(*args, **kwargs)
                 except Exception as e:
                     logger.error(f"Error in sync task: {e}", exc_info=True)
+
         return sync_wrapper
 
     def schedule_recurring(
@@ -125,7 +130,7 @@ class APSchedulerJobRunner(IJobRunner):
         job_name: Optional[str] = None,
         args: tuple = (),
         kwargs: dict = None,
-        replace_existing: bool = True
+        replace_existing: bool = True,
     ) -> str:
         """Schedule a recurring job using APScheduler."""
         if not self._started or not self._scheduler:
@@ -142,10 +147,12 @@ class APSchedulerJobRunner(IJobRunner):
             trigger=IntervalTrigger(seconds=interval_seconds),
             id=job_id,
             name=job_name,
-            replace_existing=replace_existing
+            replace_existing=replace_existing,
         )
 
-        logger.info(f"Scheduled recurring job '{job_name}' ({job_id}) every {interval_seconds}s")
+        logger.info(
+            f"Scheduled recurring job '{job_name}' ({job_id}) every {interval_seconds}s"
+        )
         return job_id
 
     def schedule_once(
@@ -155,7 +162,7 @@ class APSchedulerJobRunner(IJobRunner):
         job_id: Optional[str] = None,
         job_name: Optional[str] = None,
         args: tuple = (),
-        kwargs: dict = None
+        kwargs: dict = None,
     ) -> str:
         """Schedule a one-time job using APScheduler."""
         if not self._started or not self._scheduler:
@@ -171,7 +178,7 @@ class APSchedulerJobRunner(IJobRunner):
             func=wrapped_func,
             trigger=DateTrigger(run_date=run_at),
             id=job_id,
-            name=job_name
+            name=job_name,
         )
 
         logger.info(f"Scheduled one-time job '{job_name}' ({job_id}) at {run_at}")
@@ -201,9 +208,11 @@ class APSchedulerJobRunner(IJobRunner):
         return {
             "job_id": job.id,
             "name": job.name,
-            "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
+            "next_run_time": (
+                job.next_run_time.isoformat() if job.next_run_time else None
+            ),
             "trigger": str(job.trigger),
-            "status": "scheduled" if job.next_run_time else "paused"
+            "status": "scheduled" if job.next_run_time else "paused",
         }
 
     def list_jobs(self) -> List[Dict[str, Any]]:
@@ -213,13 +222,17 @@ class APSchedulerJobRunner(IJobRunner):
 
         jobs = []
         for job in self._scheduler.get_jobs():
-            jobs.append({
-                "job_id": job.id,
-                "name": job.name,
-                "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
-                "trigger": str(job.trigger),
-                "status": "scheduled" if job.next_run_time else "paused"
-            })
+            jobs.append(
+                {
+                    "job_id": job.id,
+                    "name": job.name,
+                    "next_run_time": (
+                        job.next_run_time.isoformat() if job.next_run_time else None
+                    ),
+                    "trigger": str(job.trigger),
+                    "status": "scheduled" if job.next_run_time else "paused",
+                }
+            )
         return jobs
 
     def is_running(self) -> bool:
@@ -230,6 +243,7 @@ class APSchedulerJobRunner(IJobRunner):
 # =============================================================================
 # IN-MEMORY IMPLEMENTATION
 # =============================================================================
+
 
 class InMemoryJobRunner(IJobRunner):
     """Simple in-memory job runner for local development.
@@ -279,7 +293,9 @@ class InMemoryJobRunner(IJobRunner):
 
         logger.info("InMemory job runner stopped")
 
-    def _execute_task(self, job_id: str, task_func: Callable, args: tuple, kwargs: dict):
+    def _execute_task(
+        self, job_id: str, task_func: Callable, args: tuple, kwargs: dict
+    ):
         """Execute a task, handling both sync and async functions."""
         try:
             if asyncio.iscoroutinefunction(task_func):
@@ -301,12 +317,7 @@ class InMemoryJobRunner(IJobRunner):
 
             # Create wrapper that executes and reschedules
             def run_and_reschedule():
-                self._execute_task(
-                    job_id,
-                    job["task_func"],
-                    job["args"],
-                    job["kwargs"]
-                )
+                self._execute_task(job_id, job["task_func"], job["args"], job["kwargs"])
                 # Schedule next run
                 self._schedule_next_run(job_id)
 
@@ -316,7 +327,9 @@ class InMemoryJobRunner(IJobRunner):
             self._timers[job_id] = timer
 
             # Update next run time
-            job["next_run_time"] = datetime.now(timezone.utc).timestamp() + job["interval_seconds"]
+            job["next_run_time"] = (
+                datetime.now(timezone.utc).timestamp() + job["interval_seconds"]
+            )
 
     def schedule_recurring(
         self,
@@ -326,7 +339,7 @@ class InMemoryJobRunner(IJobRunner):
         job_name: Optional[str] = None,
         args: tuple = (),
         kwargs: dict = None,
-        replace_existing: bool = True
+        replace_existing: bool = True,
     ) -> str:
         """Schedule a recurring job."""
         if not self._started:
@@ -351,14 +364,17 @@ class InMemoryJobRunner(IJobRunner):
                 "task_func": task_func,
                 "args": args,
                 "kwargs": kwargs,
-                "next_run_time": datetime.now(timezone.utc).timestamp() + interval_seconds,
-                "created_at": datetime.now(timezone.utc).isoformat()
+                "next_run_time": datetime.now(timezone.utc).timestamp()
+                + interval_seconds,
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
 
         # Schedule first run
         self._schedule_next_run(job_id)
 
-        logger.info(f"Scheduled recurring job '{job_name}' ({job_id}) every {interval_seconds}s")
+        logger.info(
+            f"Scheduled recurring job '{job_name}' ({job_id}) every {interval_seconds}s"
+        )
         return job_id
 
     def schedule_once(
@@ -368,7 +384,7 @@ class InMemoryJobRunner(IJobRunner):
         job_id: Optional[str] = None,
         job_name: Optional[str] = None,
         args: tuple = (),
-        kwargs: dict = None
+        kwargs: dict = None,
     ) -> str:
         """Schedule a one-time job."""
         if not self._started:
@@ -394,7 +410,7 @@ class InMemoryJobRunner(IJobRunner):
                 "args": args,
                 "kwargs": kwargs,
                 "next_run_time": run_at.timestamp(),
-                "created_at": datetime.now(timezone.utc).isoformat()
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
 
             # Create wrapper that executes and cleans up
@@ -437,11 +453,15 @@ class InMemoryJobRunner(IJobRunner):
                 "job_id": job["job_id"],
                 "name": job["name"],
                 "type": job["type"],
-                "next_run_time": datetime.fromtimestamp(
-                    job["next_run_time"], tz=timezone.utc
-                ).isoformat() if job.get("next_run_time") else None,
+                "next_run_time": (
+                    datetime.fromtimestamp(
+                        job["next_run_time"], tz=timezone.utc
+                    ).isoformat()
+                    if job.get("next_run_time")
+                    else None
+                ),
                 "interval_seconds": job.get("interval_seconds"),
-                "status": "scheduled"
+                "status": "scheduled",
             }
 
     def list_jobs(self) -> List[Dict[str, Any]]:
@@ -452,10 +472,14 @@ class InMemoryJobRunner(IJobRunner):
                     "job_id": job["job_id"],
                     "name": job["name"],
                     "type": job["type"],
-                    "next_run_time": datetime.fromtimestamp(
-                        job["next_run_time"], tz=timezone.utc
-                    ).isoformat() if job.get("next_run_time") else None,
-                    "status": "scheduled"
+                    "next_run_time": (
+                        datetime.fromtimestamp(
+                            job["next_run_time"], tz=timezone.utc
+                        ).isoformat()
+                        if job.get("next_run_time")
+                        else None
+                    ),
+                    "status": "scheduled",
                 }
                 for job in self._jobs.values()
             ]
@@ -468,6 +492,7 @@ class InMemoryJobRunner(IJobRunner):
 # =============================================================================
 # FACTORY FUNCTION
 # =============================================================================
+
 
 def get_job_runner(runner_type: Optional[str] = None) -> IJobRunner:
     """Factory function to get the appropriate job runner.

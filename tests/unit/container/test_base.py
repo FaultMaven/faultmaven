@@ -11,8 +11,8 @@ Tests cover:
 import pytest
 
 from faultmaven.container.base import BaseDIContainer
-from faultmaven.container.registry import ServiceStatus
 from faultmaven.container.errors import ServiceUnavailableError
+from faultmaven.container.registry import ServiceStatus
 
 
 @pytest.fixture(autouse=True)

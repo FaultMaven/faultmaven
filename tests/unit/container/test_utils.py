@@ -7,16 +7,17 @@ Tests cover:
 - log_service_status decorator
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from faultmaven.container.errors import ServiceUnavailableError
 from faultmaven.container.utils import (
     LazyService,
-    service_getter,
     check_dependencies,
     log_service_status,
+    service_getter,
 )
-from faultmaven.container.errors import ServiceUnavailableError
 
 
 class TestLazyService:
@@ -82,6 +83,7 @@ class TestLazyService:
 
     def test_name_from_factory(self):
         """Test that name is derived from factory function."""
+
         def my_factory():
             return "result"
 

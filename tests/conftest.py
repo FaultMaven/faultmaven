@@ -1,5 +1,5 @@
 import sys
-from types import SimpleNamespace, ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 
@@ -16,7 +16,9 @@ sys.modules.setdefault(
     "faultmaven.infrastructure.monitoring.apm_integration",
     SimpleNamespace(
         APMIntegration=_DummyAPMIntegration,
-        apm_integration=SimpleNamespace(get_export_statistics=lambda: {"enabled": False}),
+        apm_integration=SimpleNamespace(
+            get_export_statistics=lambda: {"enabled": False}
+        ),
     ),
 )
 
@@ -58,17 +60,22 @@ import pytest
 # This is needed for protobuf/chromadb imports that depend on ctypes
 if "_ctypes" not in sys.modules:
     _mock_ctypes = ModuleType("_ctypes")
+
     # Create minimal ctypes interface that protobuf expects
     class _MockPointer:
         pass
+
     class _MockCData:
         pass
+
     _mock_ctypes.Union = type("Union", (_MockCData,), {})
     _mock_ctypes.Structure = type("Structure", (_MockCData,), {})
     _mock_ctypes.Array = type("Array", (_MockCData,), {})
     _mock_ctypes._Pointer = _MockPointer
     _mock_ctypes._CData = _MockCData
-    _mock_ctypes.POINTER = lambda ctype: type(f"LP_{getattr(ctype, '__name__', 'unknown')}", (_MockPointer,), {})
+    _mock_ctypes.POINTER = lambda ctype: type(
+        f"LP_{getattr(ctype, '__name__', 'unknown')}", (_MockPointer,), {}
+    )
     _mock_ctypes.sizeof = lambda obj: 8
     _mock_ctypes.addressof = Mock(return_value=0)
     _mock_ctypes.byref = Mock()
@@ -85,15 +92,40 @@ if "ctypes" not in sys.modules:
     _mock_ctypes_module = ModuleType("ctypes")
     # Add all common ctypes that protobuf/numpy expect
     for ctype_name in [
-        "c_byte", "c_short", "c_int", "c_long", "c_longlong",
-        "c_ubyte", "c_ushort", "c_uint", "c_ulong", "c_ulonglong",
-        "c_float", "c_double", "c_longdouble",
-        "c_char", "c_wchar", "c_void_p", "c_char_p", "c_wchar_p",
-        "c_size_t", "c_bool",
-        "c_int8", "c_int16", "c_int32", "c_int64",
-        "c_uint8", "c_uint16", "c_uint32", "c_uint64",
+        "c_byte",
+        "c_short",
+        "c_int",
+        "c_long",
+        "c_longlong",
+        "c_ubyte",
+        "c_ushort",
+        "c_uint",
+        "c_ulong",
+        "c_ulonglong",
+        "c_float",
+        "c_double",
+        "c_longdouble",
+        "c_char",
+        "c_wchar",
+        "c_void_p",
+        "c_char_p",
+        "c_wchar_p",
+        "c_size_t",
+        "c_bool",
+        "c_int8",
+        "c_int16",
+        "c_int32",
+        "c_int64",
+        "c_uint8",
+        "c_uint16",
+        "c_uint32",
+        "c_uint64",
     ]:
-        setattr(_mock_ctypes_module, ctype_name, type(ctype_name, (), {"__name__": ctype_name}))
+        setattr(
+            _mock_ctypes_module,
+            ctype_name,
+            type(ctype_name, (), {"__name__": ctype_name}),
+        )
     _mock_ctypes_module.Union = _mock_ctypes.Union
     _mock_ctypes_module.Structure = _mock_ctypes.Structure
     _mock_ctypes_module.Array = _mock_ctypes.Array
@@ -127,7 +159,9 @@ if "sklearn" not in sys.modules:
     )
     sys.modules["sklearn"] = _mock_sklearn
     sys.modules.setdefault("sklearn.ensemble", SimpleNamespace(IsolationForest=Mock))
-    sys.modules.setdefault("sklearn.preprocessing", SimpleNamespace(StandardScaler=Mock))
+    sys.modules.setdefault(
+        "sklearn.preprocessing", SimpleNamespace(StandardScaler=Mock)
+    )
 # NOTE: chromadb stub removed - tests need real ChromaDB
 # If chromadb is not installed, tests using it will fail as expected
 sys.modules.setdefault("pypdf", SimpleNamespace())
@@ -175,9 +209,10 @@ try:
     from faultmaven.infrastructure.llm.router import LLMRouter
 except (ImportError, AttributeError):
     LLMRouter = Mock
-from faultmaven.models.common import AgentStateEnum as AgentState
-from faultmaven.models import DataType, SessionContext
 from faultmaven.infrastructure.security.redaction import DataSanitizer
+from faultmaven.models import DataType, SessionContext
+from faultmaven.models.common import AgentStateEnum as AgentState
+
 # SessionManager has been replaced by SessionService
 # from faultmaven.session_management import SessionManager
 
@@ -193,7 +228,7 @@ def create_agent_state_dict(status=None, case_context=None, current_phase="initi
         "confidence_score": 0.0,
         "tools_used": [],
         "awaiting_user_input": False,
-        "user_feedback": ""
+        "user_feedback": "",
     }
 
 
@@ -202,20 +237,20 @@ def reset_container():
     """Reset the DI container before each test"""
     # Import here to avoid circular dependencies
     from faultmaven.container import container
-    
+
     # Reset container state
     container.reset()
-    
+
     # Ensure SKIP_SERVICE_CHECKS is set for tests
-    os.environ['SKIP_SERVICE_CHECKS'] = 'true'
-    
+    os.environ["SKIP_SERVICE_CHECKS"] = "true"
+
     yield container
-    
+
     # Reset again after test
     container.reset()
 
 
-@pytest.fixture(scope="function")  
+@pytest.fixture(scope="function")
 def initialized_container(reset_container):
     """Provide a properly initialized container for tests"""
     try:
@@ -224,15 +259,16 @@ def initialized_container(reset_container):
     except Exception as e:
         # If real initialization fails, create minimal mock container
         from unittest.mock import MagicMock
+
         mock_container = MagicMock()
-        
+
         # Mock key service methods
         mock_container.get_session_service.return_value = MagicMock()
         mock_container.get_agent_service.return_value = MagicMock()
         mock_container.get_case_service.return_value = MagicMock()
         mock_container.get_knowledge_service.return_value = MagicMock()
         mock_container.get_data_service.return_value = MagicMock()
-        
+
         return mock_container
 
 
@@ -454,8 +490,9 @@ def sample_case():
 @pytest.fixture
 def sample_case_message():
     """Sample case message for testing."""
-    from faultmaven.models.api_models import CaseMessage
     from datetime import datetime, timezone
+
+    from faultmaven.models.api_models import CaseMessage
 
     return CaseMessage(
         message_id="test-msg-123",
@@ -465,30 +502,32 @@ def sample_case_message():
         content="This is a test message for case persistence testing",
         created_at=datetime.now(timezone.utc),
         author_id="test-user-456",
-        metadata={"test": True, "source": "pytest"}
+        metadata={"test": True, "source": "pytest"},
     )
 
 
 @pytest.fixture
 def sample_case_participant():
     """Sample case participant for testing."""
-    from faultmaven.models.api_models import CaseParticipant
     from datetime import datetime, timezone
+
+    from faultmaven.models.api_models import CaseParticipant
 
     return CaseParticipant(
         user_id="test-collaborator-789",
         role="collaborator",
         added_at=datetime.now(timezone.utc),
-        added_by="test-user-456"
+        added_by="test-user-456",
     )
 
 
 @pytest.fixture
 def sample_case_summary():
     """Sample case summary for testing list operations."""
+    from datetime import datetime, timezone
+
     from faultmaven.models.api_models import CaseSummary
     from faultmaven.modules.case.domain.models import CaseStatus
-    from datetime import datetime, timezone
 
     return CaseSummary(
         case_id="case_test12345678",
@@ -511,7 +550,7 @@ def sample_case_summary():
 def mock_case_store():
     """Mock case store for testing."""
     from unittest.mock import AsyncMock, Mock
-    
+
     store = Mock()
     store.create_case = AsyncMock(return_value=True)
     store.get_case = AsyncMock(return_value=None)
@@ -534,7 +573,7 @@ def mock_case_store():
 def mock_case_service():
     """Mock case service for testing."""
     from unittest.mock import AsyncMock, Mock
-    
+
     service = Mock()
     service.create_case = AsyncMock()
     service.get_case = AsyncMock(return_value=None)
@@ -566,7 +605,7 @@ def case_create_request_data():
         "priority": "medium",
         "tags": ["api", "test"],
         "session_id": "test-session-123",
-        "initial_message": "Initial problem description for testing"
+        "initial_message": "Initial problem description for testing",
     }
 
 
@@ -578,7 +617,7 @@ def case_update_request_data():
         "description": "Updated description for testing",
         "status": "investigating",
         "priority": "high",
-        "tags": ["updated", "important"]
+        "tags": ["updated", "important"],
     }
 
 
@@ -588,7 +627,7 @@ def case_share_request_data():
     return {
         "user_id": "test-collaborator-789",
         "role": "collaborator",
-        "message": "Please help with this case"
+        "message": "Please help with this case",
     }
 
 
@@ -599,12 +638,7 @@ def case_search_request_data():
         "query": "database connection error",
         "search_in_messages": True,
         "search_in_context": True,
-        "filters": {
-            "status": "active",
-            "priority": "high",
-            "limit": 20,
-            "offset": 0
-        }
+        "filters": {"status": "active", "priority": "high", "limit": 20, "offset": 0},
     }
 
 
@@ -631,9 +665,10 @@ def multiple_cases():
 @pytest.fixture
 def case_with_conversation():
     """Sample case with a full conversation for testing context generation."""
-    from faultmaven.modules.case.domain.models import Case, CaseStatus
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
     from uuid import uuid4
+
+    from faultmaven.modules.case.domain.models import Case, CaseStatus
 
     now = datetime.now(timezone.utc)
     case_id = "case_conversation1"
@@ -687,7 +722,7 @@ def case_with_conversation():
             "role": "assistant",
             "content": "The database connection pool seems to be exhausted. Try increasing the pool size from 10 to 50 connections.",
             "created_at": (now - timedelta(minutes=25)).isoformat(),
-        }
+        },
     ]
 
     return Case(

@@ -27,7 +27,7 @@ import random
 import string
 import uuid
 
-from locust import HttpUser, task, between
+from locust import HttpUser, between, task
 
 
 def random_string(length: int = 10) -> str:

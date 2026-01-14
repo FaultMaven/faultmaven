@@ -16,8 +16,8 @@ Usage:
 """
 
 import logging
-from typing import Optional
 from functools import lru_cache
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,17 +25,23 @@ logger = logging.getLogger(__name__)
 # Try importing provider-specific tokenizers
 try:
     import tiktoken
+
     TIKTOKEN_AVAILABLE = True
 except ImportError:
     TIKTOKEN_AVAILABLE = False
-    logger.warning("tiktoken not installed - falling back to character-based estimation for OpenAI/Fireworks")
+    logger.warning(
+        "tiktoken not installed - falling back to character-based estimation for OpenAI/Fireworks"
+    )
 
 try:
     from anthropic import Anthropic
+
     ANTHROPIC_AVAILABLE = True
 except ImportError:
     ANTHROPIC_AVAILABLE = False
-    logger.warning("anthropic not installed - falling back to character-based estimation for Claude")
+    logger.warning(
+        "anthropic not installed - falling back to character-based estimation for Claude"
+    )
 
 
 @lru_cache(maxsize=10)
@@ -99,13 +105,17 @@ def estimate_tokens_openai(text: str, model: str = "gpt-4") -> int:
         try:
             return len(encoder.encode(text))
         except Exception as e:
-            logger.warning(f"tiktoken encoding failed: {e}, falling back to char estimate")
+            logger.warning(
+                f"tiktoken encoding failed: {e}, falling back to char estimate"
+            )
 
     # Fallback: rough estimate (4 chars per token for English)
     return len(text) // 4
 
 
-def estimate_tokens_anthropic(text: str, model: str = "claude-3-sonnet-20240229") -> int:
+def estimate_tokens_anthropic(
+    text: str, model: str = "claude-3-sonnet-20240229"
+) -> int:
     """Estimate tokens for Anthropic models using official tokenizer
 
     Args:
@@ -120,13 +130,17 @@ def estimate_tokens_anthropic(text: str, model: str = "claude-3-sonnet-20240229"
         try:
             return client.count_tokens(text)
         except Exception as e:
-            logger.warning(f"Anthropic token counting failed: {e}, falling back to char estimate")
+            logger.warning(
+                f"Anthropic token counting failed: {e}, falling back to char estimate"
+            )
 
     # Fallback: rough estimate (4 chars per token)
     return len(text) // 4
 
 
-def estimate_tokens_fireworks(text: str, model: str = "llama-v3p1-405b-instruct") -> int:
+def estimate_tokens_fireworks(
+    text: str, model: str = "llama-v3p1-405b-instruct"
+) -> int:
     """Estimate tokens for Fireworks models
 
     Many Fireworks models use OpenAI-compatible tokenization, so we use tiktoken.
@@ -157,9 +171,7 @@ def estimate_tokens_fallback(text: str) -> int:
 
 
 def estimate_tokens(
-    text: str,
-    provider: str = "openai",
-    model: Optional[str] = None
+    text: str, provider: str = "openai", model: Optional[str] = None
 ) -> int:
     """Estimate token count for given text and provider
 
@@ -204,7 +216,7 @@ def estimate_prompt_tokens(
     user_message: str,
     conversation_history: str = "",
     provider: str = "openai",
-    model: Optional[str] = None
+    model: Optional[str] = None,
 ) -> dict:
     """Estimate total tokens for a complete prompt assembly
 
@@ -236,11 +248,15 @@ def estimate_prompt_tokens(
     """
     system_tokens = estimate_tokens(system_prompt, provider, model)
     user_tokens = estimate_tokens(user_message, provider, model)
-    history_tokens = estimate_tokens(conversation_history, provider, model) if conversation_history else 0
+    history_tokens = (
+        estimate_tokens(conversation_history, provider, model)
+        if conversation_history
+        else 0
+    )
 
     return {
         "system": system_tokens,
         "user": user_tokens,
         "history": history_tokens,
-        "total": system_tokens + user_tokens + history_tokens
+        "total": system_tokens + user_tokens + history_tokens,
     }

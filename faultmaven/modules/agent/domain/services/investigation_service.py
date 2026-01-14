@@ -12,16 +12,21 @@ This service wraps the MilestoneEngine and provides:
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from faultmaven.utils.serialization import to_json_compatible
 
-from faultmaven.services.base import BaseService
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.exceptions import (
+    NotFoundError,
+    PermissionDeniedException,
+    ServiceException,
+)
+from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
+from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
+
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import Case, CaseStatus
-from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
-from faultmaven.exceptions import NotFoundError, PermissionDeniedException, ServiceException
-from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.services.base import BaseService
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class InvestigationService(BaseService):
@@ -35,9 +40,7 @@ class InvestigationService(BaseService):
     """
 
     def __init__(
-        self,
-        milestone_engine: MilestoneEngine,
-        case_repository: CaseRepository
+        self, milestone_engine: MilestoneEngine, case_repository: CaseRepository
     ):
         """
         Initialize investigation service.
@@ -52,10 +55,7 @@ class InvestigationService(BaseService):
 
     @trace("investigation_service_process_turn")
     async def process_turn(
-        self,
-        case_id: str,
-        user_id: str,
-        request: CaseQueryRequest
+        self, case_id: str, user_id: str, request: CaseQueryRequest
     ) -> CaseQueryResponse:
         """
         Process a user message and update investigation.
@@ -95,8 +95,9 @@ class InvestigationService(BaseService):
                 )
 
             # 3. Save user message to conversation history BEFORE processing
-            from uuid import uuid4
             from datetime import datetime, timezone
+            from uuid import uuid4
+
             # Per case-storage-design.md Section 4.7, use "timestamp" not "created_at"
             user_message_obj = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
@@ -109,8 +110,10 @@ class InvestigationService(BaseService):
                 "token_count": None,
                 "metadata": {
                     "has_attachments": bool(request.attachments),
-                    "attachment_count": len(request.attachments) if request.attachments else 0
-                }
+                    "attachment_count": (
+                        len(request.attachments) if request.attachments else 0
+                    ),
+                },
             }
             case.messages.append(user_message_obj)
             case.message_count += 1
@@ -122,9 +125,7 @@ class InvestigationService(BaseService):
             # - Updating case state (milestones, evidence, hypotheses)
             # - Saving case via repository
             result = await self.engine.process_turn(
-                case=case,
-                user_message=request.message,
-                attachments=request.attachments
+                case=case, user_message=request.message, attachments=request.attachments
             )
 
             # 5. Build response
@@ -132,8 +133,9 @@ class InvestigationService(BaseService):
             agent_response_text = result["agent_response"]
 
             # 6. Save agent response to conversation history
-            from uuid import uuid4
             from datetime import datetime, timezone
+            from uuid import uuid4
+
             # Per case-storage-design.md Section 4.7, use "created_at"
             agent_message = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
@@ -144,7 +146,7 @@ class InvestigationService(BaseService):
                 "created_at": to_json_compatible(datetime.now(timezone.utc)),
                 "author_id": None,  # System/agent has no user_id
                 "token_count": None,
-                "metadata": {}
+                "metadata": {},
             }
 
             updated_case.messages.append(agent_message)
@@ -156,10 +158,16 @@ class InvestigationService(BaseService):
             response = CaseQueryResponse(
                 agent_response=agent_response_text,
                 turn_number=updated_case.current_turn,
-                milestones_completed=result.get("metadata", {}).get("milestones_completed", []),
+                milestones_completed=result.get("metadata", {}).get(
+                    "milestones_completed", []
+                ),
                 case_status=updated_case.status,
                 progress_made=result.get("metadata", {}).get("progress_made", False),
-                is_stuck=updated_case.is_stuck if hasattr(updated_case, 'is_stuck') else False
+                is_stuck=(
+                    updated_case.is_stuck
+                    if hasattr(updated_case, "is_stuck")
+                    else False
+                ),
             )
 
             self.logger.info(
@@ -215,17 +223,19 @@ class InvestigationService(BaseService):
             return {
                 "case_id": case.case_id,
                 "status": case.status.value,
-                "current_stage": case.current_stage.value if case.current_stage else None,
+                "current_stage": (
+                    case.current_stage.value if case.current_stage else None
+                ),
                 "milestones_completed": case.progress.completed_milestones,
                 "pending_milestones": case.progress.pending_milestones,
                 "completion_percentage": case.progress.completion_percentage,
                 "current_turn": case.current_turn,
-                "is_stuck": case.is_stuck if hasattr(case, 'is_stuck') else False,
+                "is_stuck": case.is_stuck if hasattr(case, "is_stuck") else False,
                 "degraded_mode": (
                     case.degraded_mode.is_active
-                    if hasattr(case, 'degraded_mode') and case.degraded_mode
+                    if hasattr(case, "degraded_mode") and case.degraded_mode
                     else False
-                )
+                ),
             }
 
         except (NotFoundError, PermissionDeniedException):
@@ -236,10 +246,7 @@ class InvestigationService(BaseService):
 
     @trace("investigation_service_transition_to_investigating")
     async def transition_to_investigating(
-        self,
-        case_id: str,
-        user_id: str,
-        confirmed_description: str
+        self, case_id: str, user_id: str, confirmed_description: str
     ) -> Case:
         """
         Transition case from CONSULTING to INVESTIGATING.
@@ -284,7 +291,9 @@ class InvestigationService(BaseService):
 
             if not case.consulting.problem_statement_confirmed:
                 case.consulting.problem_statement_confirmed = True
-                case.consulting.problem_statement_confirmed_at = datetime.now(timezone.utc)
+                case.consulting.problem_statement_confirmed_at = datetime.now(
+                    timezone.utc
+                )
 
             if not case.consulting.decided_to_investigate:
                 case.consulting.decided_to_investigate = True
@@ -307,16 +316,13 @@ class InvestigationService(BaseService):
         except (NotFoundError, PermissionDeniedException, ServiceException):
             raise
         except Exception as e:
-            self.logger.error(f"Failed to transition case {case_id} to INVESTIGATING: {e}")
+            self.logger.error(
+                f"Failed to transition case {case_id} to INVESTIGATING: {e}"
+            )
             raise ServiceException(f"Status transition failed: {str(e)}") from e
 
     @trace("investigation_service_close_case")
-    async def close_case(
-        self,
-        case_id: str,
-        user_id: str,
-        closure_reason: str
-    ) -> Case:
+    async def close_case(self, case_id: str, user_id: str, closure_reason: str) -> Case:
         """
         Close a case.
 
@@ -351,9 +357,9 @@ class InvestigationService(BaseService):
                 update={
                     "status": CaseStatus.CLOSED,
                     "closure_reason": closure_reason,
-                    "closed_at": now
+                    "closed_at": now,
                 },
-                deep=True
+                deep=True,
             )
 
             # Save

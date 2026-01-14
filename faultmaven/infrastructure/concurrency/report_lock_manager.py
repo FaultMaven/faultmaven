@@ -15,8 +15,9 @@ Key Features:
 
 import asyncio
 import logging
-from typing import Optional
 from contextlib import asynccontextmanager
+from typing import Optional
+
 import redis.asyncio as redis
 
 
@@ -32,7 +33,7 @@ class ReportLockManager:
         self,
         redis_client: redis.Redis,
         lock_timeout_seconds: int = 300,  # 5 minutes default
-        poll_interval_seconds: float = 0.5
+        poll_interval_seconds: float = 0.5,
     ):
         """
         Initialize the lock manager.
@@ -52,9 +53,7 @@ class ReportLockManager:
         return f"lock:report_generation:case:{case_id}"
 
     async def acquire_lock(
-        self,
-        case_id: str,
-        wait_timeout: Optional[int] = None
+        self, case_id: str, wait_timeout: Optional[int] = None
     ) -> bool:
         """
         Acquire lock for report generation on a case.
@@ -74,13 +73,11 @@ class ReportLockManager:
             lock_key,
             lock_value,
             nx=True,  # Only set if not exists
-            ex=self.lock_timeout  # Auto-expire after timeout
+            ex=self.lock_timeout,  # Auto-expire after timeout
         )
 
         if acquired:
-            self.logger.debug(
-                f"Acquired report generation lock for case {case_id}"
-            )
+            self.logger.debug(f"Acquired report generation lock for case {case_id}")
             return True
 
         # If wait_timeout is None, don't retry
@@ -96,10 +93,7 @@ class ReportLockManager:
             await asyncio.sleep(self.poll_interval)
 
             acquired = await self.redis.set(
-                lock_key,
-                lock_value,
-                nx=True,
-                ex=self.lock_timeout
+                lock_key, lock_value, nx=True, ex=self.lock_timeout
             )
 
             if acquired:
@@ -129,9 +123,7 @@ class ReportLockManager:
         deleted = await self.redis.delete(lock_key)
 
         if deleted:
-            self.logger.debug(
-                f"Released report generation lock for case {case_id}"
-            )
+            self.logger.debug(f"Released report generation lock for case {case_id}")
             return True
         else:
             self.logger.debug(
@@ -140,11 +132,7 @@ class ReportLockManager:
             return False
 
     @asynccontextmanager
-    async def lock(
-        self,
-        case_id: str,
-        wait_timeout: Optional[int] = 30
-    ):
+    async def lock(self, case_id: str, wait_timeout: Optional[int] = 30):
         """
         Context manager for acquiring and auto-releasing locks.
 
@@ -189,4 +177,5 @@ class ReportLockManager:
 
 class LockAcquisitionError(Exception):
     """Raised when lock cannot be acquired within timeout."""
+
     pass
