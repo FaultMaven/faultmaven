@@ -206,3 +206,5 @@ venv-*/
 .faultmaven/
 .faultmaven.pid
 .faultmaven-dev.pid
+# API spec backups
+docs/reference/api/openapi.locked.backup.yaml
