@@ -241,7 +241,7 @@ async def delete_case(
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=error_response.dict(),
+                detail=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
     except NotFoundError:
@@ -260,7 +260,7 @@ async def delete_case(
         )
         raise HTTPException(
             status_code=500,
-            detail=error_response.dict(),
+                detail=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
 
@@ -300,7 +300,7 @@ async def create_case(
                 )
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=error_response.dict(),
+                    detail=error_response.model_dump(),
                     headers={"x-correlation-id": correlation_id}
                 )
 
@@ -328,7 +328,7 @@ async def create_case(
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_response.dict(),
+                detail=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
     except ServiceException as e:
@@ -339,7 +339,7 @@ async def create_case(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=error_response.dict(),
+                detail=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
 
@@ -416,7 +416,7 @@ async def list_cases(
         )
         return JSONResponse(
             status_code=503,
-            content=error_response.dict(),
+                    content=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
         
@@ -431,7 +431,7 @@ async def list_cases(
         )
         return JSONResponse(
             status_code=500,
-            content=error_response.dict(),
+                    content=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
 
@@ -463,7 +463,7 @@ async def get_case(
             )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=error_response.dict(),
+                detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id}
             )
 
@@ -482,7 +482,7 @@ async def get_case(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=error_response.dict(),
+                detail=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
 
@@ -521,7 +521,7 @@ async def get_case_ui(
             )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=error_response.dict(),
+                detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id}
             )
 
@@ -540,7 +540,7 @@ async def get_case_ui(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=error_response.dict(),
+                detail=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
 
@@ -582,7 +582,7 @@ async def update_case(
             )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=error_response.dict(),
+                detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id}
             )
 
@@ -595,7 +595,7 @@ async def update_case(
             )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=error_response.dict(),
+                detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id}
             )
 
@@ -616,7 +616,7 @@ async def update_case(
         )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=error_response.dict(),
+                detail=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
     except AuthorizationError as e:
@@ -627,7 +627,7 @@ async def update_case(
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=error_response.dict(),
+                detail=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
     except ValidationException as e:
@@ -638,7 +638,7 @@ async def update_case(
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_response.dict(),
+                detail=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
     except Exception as e:
@@ -649,7 +649,7 @@ async def update_case(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=error_response.dict(),
+                detail=error_response.model_dump(),
             headers={"x-correlation-id": correlation_id}
         )
 
@@ -776,8 +776,8 @@ async def generate_case_title(
                 )
             )
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=error_response.dict(),
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id}
             )
         
@@ -793,8 +793,8 @@ async def generate_case_title(
                 error=ErrorDetail(code="INSUFFICIENT_CONTEXT", message="Cannot generate meaningful title from available context")
             )
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=error_response.dict(),
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=error_response.model_dump(),
                 headers={"x-correlation-id": correlation_id}
             )
 
@@ -1466,7 +1466,7 @@ async def submit_case_query(
                 await case_service.store_idempotency_result(
                     idempotency_key,
                     200,
-                    response.dict(),
+                    response.model_dump(),
                     {"x-correlation-id": correlation_id}
                 )
 
@@ -2002,7 +2002,7 @@ async def get_report_recommendations(
         )
 
         # Return recommendations
-        return recommendations.dict()
+        return recommendations.model_dump()
 
     except HTTPException:
         raise
@@ -2057,7 +2057,7 @@ async def generate_case_reports(
         response = await report_service.generate_reports(case, request.report_types)
         case.report_generation_count += 1
 
-        return response.dict()
+        return response.model_dump()
 
     except Exception as e:
         logger.error(f"Report generation failed: {e}", exc_info=True)
@@ -2319,7 +2319,7 @@ async def close_case(
             download_available_until=(closed_at + timedelta(days=90)).isoformat() + 'Z'
         )
 
-        return response.dict()
+        return response.model_dump()
 
     except HTTPException:
         raise
@@ -2332,7 +2332,7 @@ async def close_case(
 # Uploaded Files / Evidence Endpoints
 # ============================================================
 
-@router.get("/{case_id}/uploaded-files", response_model=UploadedFilesList)
+@router.get("/{case_id}/uploaded-files", response_model=UploadedFilesList, operation_id="list_uploaded_files_v1")
 @trace("api_list_uploaded_files")
 async def list_uploaded_files(
     case_id: str,
@@ -2394,7 +2394,7 @@ async def list_uploaded_files(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/{case_id}/uploaded-files/{file_id}", response_model=UploadedFileDetails)
+@router.get("/{case_id}/uploaded-files/{file_id}", response_model=UploadedFileDetails, operation_id="get_uploaded_file_details_v1")
 @trace("api_get_uploaded_file_details")
 async def get_uploaded_file_details(
     case_id: str,
@@ -2473,7 +2473,8 @@ async def get_uploaded_file_details(
     "/{case_id}/uploaded-files/{file_id}",
     response_model=UploadedFileDetailsResponse,
     summary="Get uploaded file details with derived evidence",
-    description="Retrieve detailed information about an uploaded file including all evidence derived from it and hypothesis linkage."
+    description="Retrieve detailed information about an uploaded file including all evidence derived from it and hypothesis linkage.",
+    operation_id="get_uploaded_file_details_v2"
 )
 async def get_uploaded_file_details(
     case_id: str = Path(..., description="Case ID"),
@@ -2553,7 +2554,8 @@ async def get_uploaded_file_details(
     "/{case_id}/uploaded-files",
     response_model=UploadedFilesListResponse,
     summary="List uploaded files with evidence counts",
-    description="Get all uploaded files for a case with metadata and evidence linkage counts."
+    description="Get all uploaded files for a case with metadata and evidence linkage counts.",
+    operation_id="list_uploaded_files_v2"
 )
 async def list_uploaded_files(
     case_id: str = Path(..., description="Case ID"),
