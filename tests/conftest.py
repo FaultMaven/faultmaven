@@ -89,14 +89,16 @@ sys.modules.setdefault(
     ),
 )
 
-# from faultmaven.services.preprocessing.classifier import DataClassifier  # May need heavy deps
-# from faultmaven.core.processing.log_analyzer import LogProcessor
-from faultmaven.infrastructure.llm.router import LLMRouter
+# NOTE: Heavy imports moved to lazy fixtures to avoid loading ML dependencies
+# during test collection. This prevents sklearn.__spec__ errors in packaging tests.
+# from faultmaven.infrastructure.llm.router import LLMRouter  # Lazy import in fixture
+# from faultmaven.modules.agent.tools.knowledge_base import KnowledgeBaseTool  # Lazy import
+# from faultmaven.modules.agent.tools.web_search import WebSearchTool  # Lazy import
+
+# Lightweight imports safe for test collection
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import DataType, SessionContext
 from faultmaven.models.common import AgentStateEnum as AgentState
-from faultmaven.modules.agent.tools.knowledge_base import KnowledgeBaseTool
-from faultmaven.modules.agent.tools.web_search import WebSearchTool
 
 # SessionManager has been replaced by SessionService
 # from faultmaven.session_management import SessionManager
