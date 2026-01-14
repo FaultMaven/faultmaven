@@ -28,7 +28,7 @@ Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 """
 
 import logging
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -40,6 +40,10 @@ from faultmaven.services.auth_service import (
     TokenRevocationError,
 )
 
+# Import infrastructure types only for type checking
+if TYPE_CHECKING:
+    from faultmaven.infrastructure.auth.providers.base import AuthProvider
+
 logger = logging.getLogger(__name__)
 
 # HTTP Bearer security scheme for OpenAPI documentation
@@ -48,6 +52,33 @@ bearer_scheme = HTTPBearer(auto_error=False)
 # Module-level test service for backward compatibility with tests
 # This allows unit tests to set a mock service without going through FastAPI DI
 _test_auth_service: Optional[AuthService] = None
+
+
+async def get_auth_provider(request: Request) -> "AuthProvider":
+    """Get AuthProvider instance from app.state (Composition Root).
+    
+    Args:
+        request: FastAPI request object
+        
+    Returns:
+        AuthProvider instance from app.state
+        
+    Note:
+        Uses Composition Root pattern (app.state), not Service Locator.
+        Falls back to NoAuthProvider if not available.
+    """
+    try:
+        # Get auth_provider from app.state (Composition Root pattern)
+        auth_provider = getattr(request.app.state, "auth_provider", None)
+        if auth_provider:
+            return auth_provider
+    except Exception as e:
+        logger.warning(f"Failed to get AuthProvider from app.state: {e}")
+    
+    # Fallback: create NoAuthProvider for local development
+    logger.debug("Creating fallback NoAuthProvider")
+    from faultmaven.infrastructure.auth.providers.no_auth import NoAuthProvider
+    return NoAuthProvider()
 
 
 async def get_auth_service(request: Request) -> AuthService:
@@ -111,26 +142,33 @@ def set_auth_service(
 async def get_current_user(
     authorization: Optional[str] = Header(None, alias="Authorization"),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
-    auth_service: AuthService = Depends(get_auth_service),
+    request: Request = None,
+    auth_provider: "AuthProvider" = Depends(get_auth_provider),
 ) -> AuthenticatedUser:
-    """Extract and verify JWT from Authorization header.
+    """Extract and verify JWT from Authorization header using AuthProvider.
 
-    Validates the token and returns AuthenticatedUser with verified claims.
+    Validates the token using the configured authentication provider (NoAuth, Auth0, Clerk)
+    and returns AuthenticatedUser with verified claims.
 
-    Header format: "Bearer <jwt_token>"
+    Header format: "Bearer <jwt_token>" (optional if auth is disabled)
 
     Args:
         authorization: Authorization header value (legacy support)
         credentials: HTTPBearer credentials (for OpenAPI docs)
-        auth_service: AuthService instance
+        request: FastAPI request object (for container access)
+        auth_provider: AuthProvider instance (injected via DI)
 
     Returns:
         AuthenticatedUser with user_id, organization_id, email, roles, permissions
 
     Raises:
-        HTTPException 401: Missing or invalid token
-        HTTPException 403: Token expired or revoked
+        HTTPException 401: Missing or invalid token (if auth enabled)
     """
+    # Check if authentication is disabled (no-auth mode)
+    if not auth_provider.is_enabled():
+        # Return default authenticated user without token validation
+        return await auth_provider.validate_token("")
+    
     # Extract token from header
     token = _extract_token(authorization, credentials)
 
@@ -142,38 +180,39 @@ async def get_current_user(
         )
 
     try:
-        # Verify token and check revocation (if Redis configured)
-        user = await auth_service.extract_user_from_token_with_revocation_check(token)
-        return user
-
-    except AuthenticationError as e:
-        logger.debug(f"Authentication failed: {e.message} ({e.error_code})")
-
-        if e.error_code == "TOKEN_EXPIRED":
+        # Validate token using provider
+        user = await auth_provider.validate_token(token)
+        
+        if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token has expired. Please refresh or re-authenticate.",
+                detail="Invalid or expired token. Please re-authenticate.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        
+        return user
 
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {e.message}",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    except TokenRevocationError:
-        logger.debug("Token has been revoked")
+    except HTTPException:
+        raise
+    except TokenRevocationError as e:
+        logger.warning(f"Token revocation detected: {e}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Token has been revoked. Please re-authenticate.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-
-    except Exception as e:
-        logger.error(f"Unexpected authentication error: {e}")
+    except AuthenticationError as e:
+        logger.warning(f"Authentication error: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication failed. Please try again.",
+            detail=f"Authentication failed: {str(e)}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error during authentication: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication failed. Please re-authenticate.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

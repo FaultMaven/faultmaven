@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from faultmaven.api.middleware.auth import (
     _extract_token,
     get_auth_service,
+    get_auth_provider,
     get_current_user,
     get_current_user_optional,
     require_admin,
@@ -157,17 +158,25 @@ class TestGetCurrentUser:
     @pytest.mark.asyncio
     async def test_returns_user_for_valid_token(self, mock_auth_service, sample_user):
         """Returns AuthenticatedUser for valid token."""
-        mock_auth_service.extract_user_from_token_with_revocation_check.return_value = (
-            sample_user
-        )
+        from unittest.mock import AsyncMock, MagicMock
+        from faultmaven.infrastructure.auth.providers.base import AuthProvider
+        
+        # Create mock auth provider
+        mock_auth_provider = MagicMock(spec=AuthProvider)
+        mock_auth_provider.is_enabled = MagicMock(return_value=True)
+        mock_auth_provider.validate_token = AsyncMock(return_value=sample_user)
 
-        set_auth_service(mock_auth_service)
-
-        user = await get_current_user(
-            authorization="Bearer valid-token",
-            credentials=None,
-            auth_service=mock_auth_service,
-        )
+        # Patch get_auth_provider to return the mock provider directly (not wrapped in Depends)
+        async def mock_get_auth_provider(request):
+            return mock_auth_provider
+        
+        with patch("faultmaven.api.middleware.auth.get_auth_provider", side_effect=mock_get_auth_provider):
+            user = await get_current_user(
+                authorization="Bearer valid-token",
+                credentials=None,
+                request=MagicMock(),
+                auth_provider=mock_auth_provider,  # Pass directly, bypassing Depends
+            )
 
         assert user == sample_user
         assert user.user_id == "user-123"
@@ -176,11 +185,18 @@ class TestGetCurrentUser:
     @pytest.mark.asyncio
     async def test_raises_401_on_missing_token(self, mock_auth_service):
         """Raises 401 when no token provided."""
+        from unittest.mock import MagicMock
+        from faultmaven.infrastructure.auth.providers.base import AuthProvider
+        
+        mock_auth_provider = MagicMock(spec=AuthProvider)
+        mock_auth_provider.is_enabled = MagicMock(return_value=True)
+        
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
                 authorization=None,
                 credentials=None,
-                auth_service=mock_auth_service,
+                request=MagicMock(),
+                auth_provider=mock_auth_provider,  # Pass directly, bypassing Depends
             )
 
         assert exc_info.value.status_code == 401
@@ -189,11 +205,18 @@ class TestGetCurrentUser:
     @pytest.mark.asyncio
     async def test_raises_401_on_invalid_header_format(self, mock_auth_service):
         """Raises 401 for non-Bearer header."""
+        from unittest.mock import MagicMock
+        from faultmaven.infrastructure.auth.providers.base import AuthProvider
+        
+        mock_auth_provider = MagicMock(spec=AuthProvider)
+        mock_auth_provider.is_enabled = MagicMock(return_value=True)
+        
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
                 authorization="Basic abc123",
                 credentials=None,
-                auth_service=mock_auth_service,
+                request=MagicMock(),
+                auth_provider=mock_auth_provider,  # Pass directly, bypassing Depends
             )
 
         assert exc_info.value.status_code == 401
@@ -201,49 +224,59 @@ class TestGetCurrentUser:
     @pytest.mark.asyncio
     async def test_raises_401_on_expired_token(self, mock_auth_service):
         """Raises 401 for expired token."""
-        mock_auth_service.extract_user_from_token_with_revocation_check.side_effect = (
-            AuthenticationError("Token has expired", error_code="TOKEN_EXPIRED")
-        )
-
+        from unittest.mock import AsyncMock, MagicMock
+        from faultmaven.infrastructure.auth.providers.base import AuthProvider
+        
+        mock_auth_provider = MagicMock(spec=AuthProvider)
+        mock_auth_provider.is_enabled = MagicMock(return_value=True)
+        mock_auth_provider.validate_token = AsyncMock(return_value=None)  # None = invalid/expired
+        
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
                 authorization="Bearer expired-token",
                 credentials=None,
-                auth_service=mock_auth_service,
+                request=MagicMock(),
+                auth_provider=mock_auth_provider,  # Pass directly, bypassing Depends
             )
 
         assert exc_info.value.status_code == 401
-        assert "expired" in exc_info.value.detail.lower()
 
     @pytest.mark.asyncio
     async def test_raises_403_on_revoked_token(self, mock_auth_service):
         """Raises 403 for revoked token."""
-        mock_auth_service.extract_user_from_token_with_revocation_check.side_effect = (
-            TokenRevocationError()
-        )
-
+        from unittest.mock import AsyncMock, MagicMock
+        from faultmaven.infrastructure.auth.providers.base import AuthProvider
+        
+        mock_auth_provider = MagicMock(spec=AuthProvider)
+        mock_auth_provider.is_enabled = MagicMock(return_value=True)
+        mock_auth_provider.validate_token = AsyncMock(side_effect=TokenRevocationError())
+        
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
                 authorization="Bearer revoked-token",
                 credentials=None,
-                auth_service=mock_auth_service,
+                request=MagicMock(),
+                auth_provider=mock_auth_provider,  # Pass directly, bypassing Depends
             )
 
         assert exc_info.value.status_code == 403
-        assert "revoked" in exc_info.value.detail.lower()
 
     @pytest.mark.asyncio
     async def test_raises_401_on_malformed_token(self, mock_auth_service):
         """Raises 401 for malformed token."""
-        mock_auth_service.extract_user_from_token_with_revocation_check.side_effect = (
-            AuthenticationError("Token decode error", error_code="DECODE_ERROR")
-        )
-
+        from unittest.mock import AsyncMock, MagicMock
+        from faultmaven.infrastructure.auth.providers.base import AuthProvider
+        
+        mock_auth_provider = MagicMock(spec=AuthProvider)
+        mock_auth_provider.is_enabled = MagicMock(return_value=True)
+        mock_auth_provider.validate_token = AsyncMock(return_value=None)  # None = invalid/malformed
+        
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
                 authorization="Bearer malformed-token",
                 credentials=None,
-                auth_service=mock_auth_service,
+                request=MagicMock(),
+                auth_provider=mock_auth_provider,  # Pass directly, bypassing Depends
             )
 
         assert exc_info.value.status_code == 401

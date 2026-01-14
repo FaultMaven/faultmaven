@@ -884,6 +884,13 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "case_store", None)
 
+    def get_auth_provider(self):
+        """Get the authentication provider (deployment-agnostic)"""
+        if not self._initialized:
+            if not getattr(self, "_initializing", False):
+                pass  # Container must be initialized via await container.initialize() at startup
+        return getattr(self, "auth_provider", None)
+
     def get_tenant_provider(self):
         """Get the tenant provider for multi-tenant isolation (TASK-023/024)"""
         if not self._initialized:

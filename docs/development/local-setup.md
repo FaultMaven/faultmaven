@@ -40,6 +40,7 @@ pip install -e ".[dev]"
 # Configure environment
 cp .env.example .env
 # Edit .env: Set your LLM API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+# Note: AUTH_PROVIDER defaults to "no-auth" for local development (no authentication required)
 
 # Start the server
 ./scripts/faultmaven-dev.sh start

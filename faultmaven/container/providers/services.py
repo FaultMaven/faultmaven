@@ -410,6 +410,37 @@ def create_user_service(
         return None
 
 
+def create_auth_provider(settings: FaultMavenSettings) -> Any | None:
+    """Create authentication provider for deployment neutrality.
+    
+    Args:
+        settings: Application settings
+        
+    Returns:
+        AuthProvider instance or None if creation fails
+    """
+    try:
+        from faultmaven.infrastructure.auth.providers.factory import (
+            create_auth_provider as factory,
+        )
+
+        provider = factory()
+        logger.info(
+            f"AuthProvider initialized (auth_provider: {settings.security.auth_provider})"
+        )
+        return provider
+    except Exception as e:
+        logger.error(f"AuthProvider initialization failed: {e}")
+        # Don't fail startup - fallback to NoAuthProvider
+        logger.warning("Falling back to NoAuthProvider")
+        try:
+            from faultmaven.infrastructure.auth.providers.no_auth import NoAuthProvider
+            return NoAuthProvider()
+        except Exception as fallback_error:
+            logger.error(f"Failed to create fallback NoAuthProvider: {fallback_error}")
+            return None
+
+
 def create_tenant_provider(
     db_session: Any | None,
     organization_repository: Any | None,
@@ -546,6 +577,12 @@ def register_services(container: BaseDIContainer) -> None:
     container.organization_service = organization_service
     if organization_service:
         container._register_service("organization_service", organization_service)
+
+    # Auth Provider (deployment-agnostic authentication)
+    auth_provider = create_auth_provider(settings)
+    container.auth_provider = auth_provider
+    if auth_provider:
+        container._register_service("auth_provider", auth_provider)
 
     # Tenant Provider
     tenant_provider = create_tenant_provider(

@@ -172,8 +172,31 @@ def client(app):
 
 
 @pytest.fixture
-def unauthed_client():
+def unauthed_client(mock_api_service, mock_org_service):
     """Create test client without auth override (for 401 tests)."""
+    from unittest.mock import AsyncMock
+    from faultmaven.infrastructure.auth.providers.auth0 import Auth0Provider
+    
+    # For 401 tests, we need auth ENABLED (not NoAuthProvider)
+    # Use Auth0Provider with mocked validate_token that raises 401 for missing tokens
+    auth_provider = Auth0Provider(domain="test.auth0.com", audience="test-audience")
+    # Mock validate_token to raise 401 for empty/missing tokens
+    async def validate_token_side_effect(token):
+        if not token or token == "":
+            from faultmaven.services.auth_service import AuthenticationError
+            raise AuthenticationError("Missing or invalid token")
+        # For any other token, return None (invalid)
+        return None
+    
+    auth_provider.validate_token = AsyncMock(side_effect=validate_token_side_effect)
+    
+    # Ensure app.state services are set (needed to prevent 503 errors)
+    # TestClient doesn't run lifespan events, so we need to set these manually
+    main_app.state.auth_provider = auth_provider
+    
+    # Set organization service to prevent 503 from get_api_organization_service
+    main_app.state.organization_service = mock_org_service
+    
     return TestClient(main_app)
 
 

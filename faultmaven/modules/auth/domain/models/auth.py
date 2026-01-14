@@ -222,8 +222,11 @@ class AuthenticatedUser:
             permission: Permission string (e.g., "cases:read")
 
         Returns:
-            True if user has the permission
+            True if user has the permission or has wildcard "*" permission
         """
+        # Wildcard "*" means all permissions
+        if "*" in self.permissions:
+            return True
         return permission in self.permissions
 
     def has_role(self, role: str) -> bool:

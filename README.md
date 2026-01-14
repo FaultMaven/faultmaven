@@ -194,10 +194,11 @@ The SaaS edition runs the Core in a distributed, production-grade configuration.
 | Feature | Open Source (Local) | Cloud (SaaS) |
 |---------|---------------------|--------------|
 | **Configuration** | Single-User / Docker | Multi-User / Managed K8s |
+| **Authentication** | No Auth (AUTH_PROVIDER=no-auth) | Third-Party (AUTH_PROVIDER=auth0\|clerk) |
 | **Knowledge Base Start State** | **Empty** (User builds it) | **Pre-Loaded** (Global KB included) |
 | **Knowledge Tiers** | Personal Only | **Global + Team + Personal** |
 | **Infrastructure** | User-Managed (SQLite) | Fully Managed (Postgres, S3) |
-| **Security** | Local Auth | SSO (SAML/OIDC), SOC 2 Ready |
+| **Security** | No Auth (Local) | SSO (Auth0/Clerk), SOC 2 Ready |
 | **Access** | `localhost` | `app.faultmaven.ai` |
 
 **Subscribe:** [https://cloud.faultmaven.ai](https://cloud.faultmaven.ai)
@@ -221,7 +222,7 @@ FaultMaven is a monolithic application with clean **Vertical Slice Architecture*
 |  |   /api/v1/agent   /api/v1/cases   /api/v1/knowledge  ...   |  |
 |  +------------------------------------------------------------+  |
 |  |                     Service Layer                          |  |
-|  |   AgentService  CaseService  KnowledgeService  AuthService |  |
+|  |   AgentService  CaseService  KnowledgeService  AuthService  AuthProvider |  |
 |  +------------------------------------------------------------+  |
 |  |                  Infrastructure Layer                      |  |
 |  |   LLM Router   Persistence   Security   Observability      |  |
@@ -240,7 +241,7 @@ FaultMaven is a monolithic application with clean **Vertical Slice Architecture*
 | Module | Description |
 |--------|-------------|
 | `agent` | Investigation orchestration, AI tools, OODA framework |
-| `auth` | Users, sessions, organizations, teams, RBAC |
+| `auth` | Users, sessions, organizations, teams, RBAC, AuthProvider abstraction |
 | `case` | Investigation cases and lifecycle management |
 | `evidence` | File uploads, metadata, storage adapters |
 | `knowledge` | Embeddings, vector search, RAG, knowledge items |
@@ -264,7 +265,7 @@ faultmaven/
 │   │   └── report/          # Reporting
 │   ├── config/              # Settings (single env-read point)
 │   ├── container/           # Dependency injection
-│   ├── infrastructure/      # Shared adapters (LLM, DB, storage)
+│   ├── infrastructure/      # Shared adapters (LLM, DB, storage, auth providers)
 │   ├── core/                # Core domain logic
 │   └── services/            # Service layer
 ├── tests/                   # Test suite
@@ -301,9 +302,38 @@ Key configuration areas:
 | Database | `DATABASE_URL` | SQLite (default) or PostgreSQL |
 | Sessions | `SESSION_STORAGE_TYPE` | `inmemory` (default) or `redis` |
 | Vectors | `VECTOR_STORAGE_TYPE` | `inmemory` (default) or `chromadb` |
-| Security | `JWT_SECRET_KEY`, `CORS_ALLOW_ORIGINS` | Auth and CORS settings |
+| Security | `AUTH_PROVIDER`, `JWT_SECRET_KEY`, `CORS_ALLOW_ORIGINS` | Authentication provider and CORS settings |
 
 See [.env.example](.env.example) for all options with detailed comments.
+
+### Authentication Provider Configuration
+
+FaultMaven uses a deployment-agnostic authentication provider abstraction that supports multiple backends:
+
+**Local Deployment (Default - No Authentication):**
+```env
+# No authentication required for local/single-user deployment
+AUTH_PROVIDER=no-auth
+```
+
+**Cloud Deployment (Auth0):**
+```env
+AUTH_PROVIDER=auth0
+AUTH0_DOMAIN=your-tenant.auth0.com
+AUTH0_AUDIENCE=your-api-audience
+AUTH0_ISSUER=https://your-tenant.auth0.com/  # Optional, defaults to https://{AUTH0_DOMAIN}/
+```
+
+**Cloud Deployment (Clerk):**
+```env
+AUTH_PROVIDER=clerk
+CLERK_SECRET_KEY=your-secret-key
+CLERK_AUDIENCE=https://clerk.faultmaven.ai  # Optional, has default
+```
+
+The authentication provider is selected at startup via the `AUTH_PROVIDER` environment variable. For local development, no authentication is required (defaults to `no-auth`). For cloud deployments, configure your chosen third-party authentication service (Auth0 or Clerk).
+
+See [Authentication Architecture](docs/architecture/authentication.md) for detailed design and implementation.
 
 ### LLM Provider Setup
 
@@ -376,7 +406,7 @@ alembic upgrade head
 | **Database** | SQLAlchemy 2.0, SQLite (local), PostgreSQL (production), Alembic |
 | **Vector DB** | ChromaDB, sentence-transformers |
 | **Cache** | Redis (optional), in-memory fallback |
-| **Auth** | JWT (PyJWT), bcrypt, RBAC |
+| **Auth** | JWT (PyJWT), AuthProvider abstraction (NoAuth/Auth0/Clerk), RBAC |
 | **Observability** | Opik tracing, Prometheus metrics, structlog |
 | **Testing** | pytest, pytest-asyncio, pytest-cov |
 

@@ -248,6 +248,7 @@ async def lifespan(app: FastAPI):
             container.get_query_classification_engine()
         )
         app.state.auth_service = container.get_auth_service()
+        app.state.auth_provider = container.get_auth_provider()
         app.state.token_manager = container.get_token_manager()
         app.state.user_store = container.get_user_store()
         app.state.user_service = container.get_user_service()

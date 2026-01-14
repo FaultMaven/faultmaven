@@ -811,6 +811,42 @@ class CaseSettings(BaseSettings):
 class SecuritySettings(BaseSettings):
     """Security and authentication configuration"""
 
+    # Authentication provider selection (deployment-agnostic)
+    auth_provider: str = Field(
+        default="no-auth",
+        env="AUTH_PROVIDER",
+        description="Authentication provider: 'no-auth' (local), 'auth0' (cloud), or 'clerk' (cloud)"
+    )
+    
+    # Auth0 configuration (required if AUTH_PROVIDER=auth0)
+    auth0_domain: Optional[str] = Field(
+        default=None,
+        env="AUTH0_DOMAIN",
+        description="Auth0 domain (e.g., 'your-tenant.auth0.com')"
+    )
+    auth0_audience: Optional[str] = Field(
+        default=None,
+        env="AUTH0_AUDIENCE",
+        description="Auth0 API audience/identifier"
+    )
+    auth0_issuer: Optional[str] = Field(
+        default=None,
+        env="AUTH0_ISSUER",
+        description="Auth0 token issuer (defaults to https://{AUTH0_DOMAIN}/)"
+    )
+    
+    # Clerk configuration (required if AUTH_PROVIDER=clerk)
+    clerk_secret_key: Optional[SecretStr] = Field(
+        default=None,
+        env="CLERK_SECRET_KEY",
+        description="Clerk secret key for JWT verification"
+    )
+    clerk_audience: Optional[str] = Field(
+        default=None,
+        env="CLERK_AUDIENCE",
+        description="Clerk token audience (defaults to https://clerk.faultmaven.ai)"
+    )
+
     # JWT configuration (RS256 for production-ready asymmetric encryption)
     # For development/testing, HS256 with jwt_secret_key is also supported
     jwt_algorithm: str = Field(default="RS256", env="JWT_ALGORITHM")
