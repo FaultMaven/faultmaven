@@ -672,7 +672,7 @@ async def delete_session(
         )
 
 
-@router.post("/cleanup", status_code=200)
+@router.post("/cleanup", status_code=200, operation_id="cleanup_expired_sessions_v1")
 async def cleanup_expired_sessions(
     session_service: AuthSessionService = Depends(get_session_service),
 ):
@@ -1004,7 +1004,7 @@ async def get_session_recovery_info(
         )
 
 
-@router.post("/cleanup")
+@router.post("/cleanup", operation_id="cleanup_expired_sessions_v2")
 async def cleanup_expired_sessions(
     session_service: AuthSessionService = Depends(get_session_service),
 ):

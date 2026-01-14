@@ -1,6 +1,6 @@
 # File: faultmaven/models/behavioral.py
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime, timedelta
 from enum import Enum
@@ -124,7 +124,8 @@ class BehaviorProfile(BaseModel):
     current_risk_level: RiskLevel = RiskLevel.LOW
     risk_factors: List[str] = Field(default_factory=list)
 
-    @validator('endpoint_preferences')
+    @field_validator('endpoint_preferences')
+    @classmethod
     def validate_preferences_sum(cls, v):
         """Ensure endpoint preferences are valid probabilities"""
         if v and abs(sum(v.values()) - 1.0) > 0.01:  # Allow small floating point errors

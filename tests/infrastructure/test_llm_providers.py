@@ -104,7 +104,7 @@ class TestLLMProviderRealBehavior:
         }):
             # Mock the actual HTTP calls to prevent real API requests
             with patch('aiohttp.ClientSession.post') as mock_post:
-                async def mock_api_response(*args, **kwargs):
+                def mock_api_response(*args, **kwargs):
                     # Simulate successful provider response
                     mock_response = AsyncMock()
                     mock_response.status = 200
