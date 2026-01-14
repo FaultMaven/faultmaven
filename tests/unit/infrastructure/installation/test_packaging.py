@@ -12,12 +12,12 @@ Design Reference: docs/FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md (Week 11)
 
 import subprocess
 import sys
+import tomllib  # Python 3.11+ built-in (read-only TOML parser)
 from pathlib import Path
 from typing import List, Set
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-import toml
 
 # ============================================================================
 # TEST FIXTURES
@@ -33,8 +33,8 @@ def pyproject_path() -> Path:
 @pytest.fixture
 def pyproject_data(pyproject_path: Path) -> dict:
     """Load pyproject.toml data."""
-    with open(pyproject_path, "r") as f:
-        return toml.load(f)
+    with open(pyproject_path, "rb") as f:  # tomllib requires binary mode
+        return tomllib.load(f)
 
 
 @pytest.fixture
