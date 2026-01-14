@@ -1,0 +1,1 @@
+"""Case module domain layer."""

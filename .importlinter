@@ -104,9 +104,10 @@ layers =
     faultmaven.modules.case.domain
     faultmaven.modules.case.infrastructure
 ignore_imports =
+    faultmaven.modules.case.infrastructure.case_repository -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.infrastructure.database_case_repository -> faultmaven.modules.case.domain.models
-    faultmaven.modules.case.infrastructure.investigation_session_repository -> faultmaven.modules.case.domain.models
+    faultmaven.modules.case.infrastructure.investigation_session_repository -> faultmaven.modules.case.domain.investigation_session
 
 # ============================================================================
 # CONTRACT 6: Auth Module Layer Boundaries
@@ -120,9 +121,16 @@ layers =
     faultmaven.modules.auth.domain
     faultmaven.modules.auth.infrastructure
 ignore_imports =
-    faultmaven.modules.auth.infrastructure.repositories.user_repository -> faultmaven.modules.auth.domain.models
-    faultmaven.modules.auth.infrastructure.repositories.session_repository -> faultmaven.modules.auth.domain.models
-    faultmaven.modules.auth.infrastructure.stores.user_store -> faultmaven.modules.auth.domain.models
+    faultmaven.modules.auth.infrastructure.repositories.team_repository -> faultmaven.modules.auth.domain.models.organization
+    faultmaven.modules.auth.infrastructure.stores.user_store -> faultmaven.modules.auth.domain.models.auth
+    faultmaven.modules.auth.infrastructure.repositories.session_repository -> faultmaven.modules.auth.domain.models.session
+    faultmaven.modules.auth.infrastructure.stores.redis_session_manager -> faultmaven.models
+    faultmaven.modules.auth.infrastructure.stores.redis_session_store -> faultmaven.models
+    faultmaven.modules.auth.infrastructure.stores.redis_session_manager -> faultmaven.utils.serialization
+    faultmaven.modules.auth.infrastructure.stores.redis_session_store -> faultmaven.utils.serialization
+    faultmaven.modules.auth.infrastructure.stores.redis_session_manager -> faultmaven.models.common
+    faultmaven.modules.auth.infrastructure.stores.redis_session_store -> faultmaven.models.common
+    faultmaven.modules.auth.infrastructure.repositories.organization_repository -> faultmaven.modules.auth.domain.models.organization
 
 # ============================================================================
 # CONTRACT 7: Agent Module Layer Boundaries
@@ -136,7 +144,11 @@ layers =
     faultmaven.modules.agent.domain
     faultmaven.modules.agent.tools
 ignore_imports =
-    faultmaven.modules.agent.tools -> faultmaven.modules.agent.domain.models
+    faultmaven.modules.agent.tools.knowledge_base -> faultmaven.core.knowledge.ingestion
+    faultmaven.modules.agent.tools.case_evidence_qa -> faultmaven.infrastructure.llm.router
+    faultmaven.modules.agent.tools.document_qa_tool -> faultmaven.infrastructure.llm.router
+    faultmaven.modules.agent.tools.global_kb_qa -> faultmaven.infrastructure.llm.router
+    faultmaven.modules.agent.tools.user_kb_qa -> faultmaven.infrastructure.llm.router
 
 # ============================================================================
 # CONTRACT 8: Evidence Module Layer Boundaries
