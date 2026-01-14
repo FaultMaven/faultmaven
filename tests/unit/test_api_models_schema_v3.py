@@ -1,4 +1,8 @@
-"""Test module for v3.1.0 API models validation."""
+"""Test module for API response schema v3.1.0 validation.
+
+Note: This tests the response schema version (3.1.0), not API version 3.
+The API endpoints are still at /api/v1/, but the response models use schema_version="3.1.0".
+"""
 
 import pytest
 from pydantic import ValidationError
@@ -814,7 +818,7 @@ class TestModelSerialization:
         )
         
         # Test serialization
-        json_data = response.dict()
+        json_data = response.model_dump()
         
         assert json_data["schema_version"] == "3.1.0"
         assert json_data["content"] == "Test response content"
@@ -839,7 +843,7 @@ class TestModelSerialization:
         )
         
         # Test serialization
-        json_data = request.dict()
+        json_data = request.model_dump()
         
         assert json_data["session_id"] == "session_123"
         assert json_data["query"] == "Test query"
@@ -859,7 +863,7 @@ class TestModelSerialization:
         )
         
         # Test serialization
-        json_data = error_response.dict()
+        json_data = error_response.model_dump()
         
         assert json_data["schema_version"] == "3.1.0"
         assert json_data["error"]["code"] == "TEST_ERROR"
@@ -881,7 +885,7 @@ class TestModelSerialization:
         )
         
         # Test serialization
-        json_data = error_response.dict()
+        json_data = error_response.model_dump()
         
         assert json_data["detail"] == "Test error message"
         assert json_data["error_type"] == "TEST_ERROR"
