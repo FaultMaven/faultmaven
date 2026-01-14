@@ -8,7 +8,7 @@ on:
     paths:
       - 'faultmaven/api/**'
       - 'faultmaven/models/**'
-      - 'docs/api/openapi.yaml'
+      - 'docs/reference/api/openapi.locked.yaml'
       - 'tests/api/test_contract_compliance_focused.py'
 
 jobs:
@@ -45,9 +45,9 @@ jobs:
         python -c "
         import yaml
         import sys
-        
+
         # Load and validate OpenAPI spec
-        with open('docs/api/openapi.yaml') as f:
+        with open('docs/reference/api/openapi.locked.yaml') as f:
             spec = yaml.safe_load(f)
         
         print(f'✅ OpenAPI {spec[\"openapi\"]} spec loaded successfully')
