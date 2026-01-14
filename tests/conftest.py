@@ -1,5 +1,202 @@
 import sys
 from types import SimpleNamespace, ModuleType
+from unittest.mock import Mock
+
+
+# NOTE: sqlite3 mock removed - Python 3.11.9 now compiled with libsqlite3-dev support
+# If you see "ModuleNotFoundError: No module named '_sqlite3'", rebuild Python with:
+#   sudo apt-get install -y libsqlite3-dev
+#   pyenv uninstall 3.11.9 && pyenv install 3.11.9
+
+
+# Mock _ctypes module for Python 3.11 compatibility when libffi is not available
+# This is needed for protobuf/chromadb imports that depend on ctypes
+if "_ctypes" not in sys.modules:
+    _mock_ctypes = ModuleType("_ctypes")
+
+    # Create base types that ctypes expects
+    class _MockPointer:
+        pass
+
+    class _MockCData:
+        pass
+
+    class _MockCFuncPtr:
+        """Mock CFuncPtr base class for function pointers"""
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, *args, **kwargs):
+            return Mock()
+
+    # Set all required attributes
+    _mock_ctypes.Union = type("Union", (_MockCData,), {})
+    _mock_ctypes.Structure = type("Structure", (_MockCData,), {})
+    _mock_ctypes.Array = type("Array", (_MockCData,), {})
+    _mock_ctypes.CFuncPtr = _MockCFuncPtr
+    _mock_ctypes._Pointer = _MockPointer
+    _mock_ctypes._CData = _MockCData
+
+    # POINTER needs to return a class (not instance) with settable from_param
+    # The ctypes module will assign to POINTER(c_type).from_param as a class attribute
+    _pointer_cache = {}
+
+    def _mock_POINTER(ctype):
+        """Mock POINTER function that returns a pointer type class"""
+        # Cache pointer types like real ctypes does
+        if ctype not in _pointer_cache:
+            # Create a new class that allows from_param to be set as a regular attribute
+            # (not a classmethod) since ctypes assigns to it directly
+            pointer_class = type(
+                f"LP_{ctype.__name__ if hasattr(ctype, '__name__') else 'unknown'}",
+                (_MockPointer,),
+                {"_type_": ctype}
+            )
+            _pointer_cache[ctype] = pointer_class
+
+        return _pointer_cache[ctype]
+
+    _mock_ctypes.POINTER = _mock_POINTER
+    _mock_ctypes.pointer = Mock()
+
+    # Create type classes with proper __name__ for sizeof and from_param for parameter conversion
+    def _make_ctype(name):
+        """Factory to create mock ctypes with from_param classmethod"""
+        def _from_param(cls, obj):
+            return obj
+        return type(name, (_MockCData,), {"from_param": classmethod(_from_param)})
+
+    _mock_ctypes.c_int = _make_ctype("c_int")
+    _mock_ctypes.c_char_p = _make_ctype("c_char_p")
+    _mock_ctypes.c_void_p = _make_ctype("c_void_p")
+    _mock_ctypes.c_size_t = _make_ctype("c_size_t")
+    _mock_ctypes.c_wchar_p = _make_ctype("c_wchar_p")
+    _mock_ctypes.c_wchar = _make_ctype("c_wchar")
+    _mock_ctypes.c_char = _make_ctype("c_char")
+    _mock_ctypes.c_byte = _make_ctype("c_byte")
+    _mock_ctypes.c_ubyte = _make_ctype("c_ubyte")
+    _mock_ctypes.c_short = _make_ctype("c_short")
+    _mock_ctypes.c_ushort = _make_ctype("c_ushort")
+    _mock_ctypes.c_uint = _make_ctype("c_uint")
+    _mock_ctypes.c_long = _make_ctype("c_long")
+    _mock_ctypes.c_ulong = _make_ctype("c_ulong")
+    _mock_ctypes.c_longlong = _make_ctype("c_longlong")
+    _mock_ctypes.c_ulonglong = _make_ctype("c_ulonglong")
+    _mock_ctypes.c_float = _make_ctype("c_float")
+    _mock_ctypes.c_double = _make_ctype("c_double")
+    _mock_ctypes.c_longdouble = _make_ctype("c_longdouble")
+    _mock_ctypes.c_bool = _make_ctype("c_bool")
+    _mock_ctypes.c_int8 = _make_ctype("c_int8")
+    _mock_ctypes.c_int16 = _make_ctype("c_int16")
+    _mock_ctypes.c_int32 = _make_ctype("c_int32")
+    _mock_ctypes.c_int64 = _make_ctype("c_int64")
+    _mock_ctypes.c_uint8 = _make_ctype("c_uint8")
+    _mock_ctypes.c_uint16 = _make_ctype("c_uint16")
+    _mock_ctypes.c_uint32 = _make_ctype("c_uint32")
+    _mock_ctypes.c_uint64 = _make_ctype("c_uint64")
+    _mock_ctypes.pythonapi = Mock()
+    _mock_ctypes.PyDLL = Mock()
+    _mock_ctypes.CDLL = Mock()
+    _mock_ctypes.LoadLibrary = Mock()
+
+    # CFUNCTYPE and PYFUNCTYPE are function factories that create function prototypes
+    # The returned object must be callable and accept an address
+    class _MockCFunctionType:
+        def __init__(self, restype, *argtypes, **kwargs):
+            self.restype = restype
+            self.argtypes = argtypes
+
+        def __call__(self, address):
+            """Called with function address to create actual function"""
+            return Mock()
+
+    def _mock_cfunctype(restype, *argtypes, **kwargs):
+        """Mock CFUNCTYPE that returns a callable prototype"""
+        return _MockCFunctionType(restype, *argtypes, **kwargs)
+
+    def _mock_pyfunctype(restype, *argtypes, **kwargs):
+        """Mock PYFUNCTYPE that returns a callable prototype"""
+        return _MockCFunctionType(restype, *argtypes, **kwargs)
+
+    _mock_ctypes.CFUNCTYPE = _mock_cfunctype
+    _mock_ctypes.PYFUNCTYPE = _mock_pyfunctype
+
+    # Create proper sizeof that returns correct sizes for different types
+    def _mock_sizeof(obj):
+        """Mock sizeof that returns correct sizes for ctypes"""
+        type_sizes = {
+            "c_char": 1,
+            "c_byte": 1,
+            "c_ubyte": 1,
+            "c_bool": 1,
+            "c_short": 2,
+            "c_ushort": 2,
+            "c_int": 4,
+            "c_uint": 4,
+            "c_long": 8,
+            "c_ulong": 8,
+            "c_longlong": 8,
+            "c_ulonglong": 8,
+            "c_float": 4,
+            "c_double": 8,
+            "c_void_p": 8,
+            "c_char_p": 8,
+            "c_wchar_p": 8,
+            "c_size_t": 8,
+        }
+        # Try to get size from type name
+        if hasattr(obj, "__name__"):
+            return type_sizes.get(obj.__name__, 8)
+        # Default to pointer size
+        return 8
+
+    _mock_ctypes.sizeof = _mock_sizeof
+    _mock_ctypes.addressof = Mock(return_value=0)
+    _mock_ctypes.byref = Mock()
+    _mock_ctypes.create_string_buffer = Mock()
+    _mock_ctypes.create_unicode_buffer = Mock()
+    _mock_ctypes.cast = Mock()
+    _mock_ctypes.get_errno = Mock(return_value=0)
+    _mock_ctypes.set_errno = Mock()
+
+    # Additional _ctypes attributes
+    _mock_ctypes.ArgumentError = Exception
+    _mock_ctypes.CTYPES_MAX_ARGCOUNT = 1024
+    _mock_ctypes.FUNCFLAG_CDECL = 1
+    _mock_ctypes.FUNCFLAG_PYTHONAPI = 2
+    _mock_ctypes.FUNCFLAG_USE_ERRNO = 4
+    _mock_ctypes.FUNCFLAG_USE_LASTERROR = 8
+    _mock_ctypes.PyObj_FromPtr = Mock()
+    _mock_ctypes.Py_DECREF = Mock()
+    _mock_ctypes.Py_INCREF = Mock()
+    _mock_ctypes.RTLD_GLOBAL = 256
+    _mock_ctypes.RTLD_LOCAL = 0
+    _mock_ctypes.SIZEOF_TIME_T = 8
+    _mock_ctypes.alignment = Mock(return_value=8)
+    _mock_ctypes.buffer_info = Mock()
+    _mock_ctypes.call_cdeclfunction = Mock()
+    _mock_ctypes.call_function = Mock()
+    _mock_ctypes.dlclose = Mock()
+    _mock_ctypes.dlopen = Mock()
+    _mock_ctypes.dlsym = Mock()
+    _mock_ctypes.resize = Mock()
+    _mock_ctypes.__version__ = "1.1.0"
+
+    # _SimpleCData is the base class for simple C data types
+    # It needs from_param as a classmethod
+    def _simple_from_param(cls, obj):
+        return obj
+
+    _mock_ctypes._SimpleCData = type("_SimpleCData", (_MockCData,), {
+        "from_param": classmethod(_simple_from_param)
+    })
+    _mock_ctypes._pointer_type_cache = {}
+    _mock_ctypes._memmove_addr = Mock()
+    _mock_ctypes._memset_addr = Mock()
+    _mock_ctypes._string_at_addr = Mock()
+    _mock_ctypes._cast_addr = Mock()
+
+    sys.modules["_ctypes"] = _mock_ctypes
 
 
 class _DummyAPMIntegration:

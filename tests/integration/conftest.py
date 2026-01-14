@@ -7,6 +7,15 @@ integration testing capabilities including memory, planning, reasoning,
 knowledge, and orchestration system testing.
 """
 
+# IMPORTANT: Import mocks FIRST before any other imports that might need them
+# This ensures _ctypes and _sqlite3 mocks are loaded before chromadb/protobuf imports
+import sys
+import os
+# Add parent directory to path to import root conftest mocks
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+# This will load the _ctypes and _sqlite3 mocks
+import conftest as root_conftest  # noqa: F401
+
 import asyncio
 import io
 import os
