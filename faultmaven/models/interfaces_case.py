@@ -7,9 +7,11 @@ following FaultMaven's interface-based dependency injection pattern.
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from faultmaven.modules.case.domain.models import Case, ParticipantRole
+# Import domain models only for type checking to avoid circular dependencies
+if TYPE_CHECKING:
+    from faultmaven.modules.case.domain.models import Case, ParticipantRole
 
 from .api import CaseMessagesResponse
 from .api_models import (
@@ -29,7 +31,7 @@ class ICaseStore(ABC):
     """
 
     @abstractmethod
-    async def create_case(self, case: Case) -> bool:
+    async def create_case(self, case: "Case") -> bool:
         """Create a new case in the store.
 
         Args:
@@ -41,7 +43,7 @@ class ICaseStore(ABC):
         pass
 
     @abstractmethod
-    async def get_case(self, case_id: str) -> Optional[Case]:
+    async def get_case(self, case_id: str) -> Optional["Case"]:
         """Retrieve a case by ID.
 
         Args:
@@ -175,7 +177,7 @@ class ICaseStore(ABC):
         self,
         case_id: str,
         user_id: str,
-        role: ParticipantRole,
+        role: "ParticipantRole",
         added_by: Optional[str] = None,
     ) -> bool:
         """Add a participant to a case.
@@ -259,7 +261,7 @@ class ICaseService(ABC):
         owner_id: Optional[str] = None,
         session_id: Optional[str] = None,
         initial_message: Optional[str] = None,
-    ) -> Case:
+    ) -> "Case":
         """Create a new troubleshooting case.
 
         Args:
@@ -277,7 +279,7 @@ class ICaseService(ABC):
     @abstractmethod
     async def get_case(
         self, case_id: str, user_id: Optional[str] = None
-    ) -> Optional[Case]:
+    ) -> Optional["Case"]:
         """Get a case with optional access control.
 
         Args:
@@ -499,7 +501,7 @@ class ICaseNotificationService(ABC):
         case_id: str,
         target_user_id: str,
         sharer_user_id: str,
-        role: ParticipantRole,
+        role: "ParticipantRole",
     ) -> bool:
         """Notify user about case being shared with them.
 
