@@ -1,0 +1,425 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/faultmaven/faultmaven
+  SERVICE_NAME: faultmaven
+
+jobs:
+  # ==========================================================================
+  # STAGE 1: BUILD
+  # Build Docker image once, export as artifact (no push)
+  # Ensures artifact immutability - same image used in all subsequent stages
+  # ==========================================================================
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (no push yet)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=docker,dest=/tmp/image.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp/image.tar
+          retention-days: 1
+
+  # ==========================================================================
+  # STAGE 2: TEST
+  # Run all test suites in parallel with build
+  # Tests: community, enterprise, architecture-lint, packaging
+  # ==========================================================================
+  test-community:
+    name: Test Community Edition
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Community Edition
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -e .[test]
+
+      - name: Verify Community Dependencies
+        run: |
+          # Verify enterprise packages are NOT installed
+          ! pip show opik 2>/dev/null || (echo "ERROR: opik should not be installed in community mode" && exit 1)
+          ! pip show presidio-analyzer 2>/dev/null || (echo "ERROR: presidio-analyzer should not be installed in community mode" && exit 1)
+          ! pip show boto3 2>/dev/null || (echo "ERROR: boto3 should not be installed in community mode" && exit 1)
+          echo "✓ Community dependencies verified"
+
+      - name: Run Code Quality Checks
+        run: |
+          black --check faultmaven/ tests/
+          isort --check-only faultmaven/ tests/
+          flake8 faultmaven/ --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run Tests (Community Mode)
+        run: |
+          pytest tests/ \
+            --cov=faultmaven \
+            --cov-report=xml \
+            --cov-report=html \
+            --cov-report=term-missing \
+            -m "not enterprise" \
+            -v
+        env:
+          # Community configuration - all enterprise features disabled
+          OPIK_ENABLED: "false"
+          PROMETHEUS_ENABLED: "false"
+          TRACING_ENABLED: "false"
+          METRICS_ENABLED: "false"
+          PROTECTION_ENABLED: "false"
+          SANITIZE_PII: "false"
+          USER_STORAGE_TYPE: "inmemory"
+          CASE_STORAGE_TYPE: "inmemory"
+          SESSION_STORAGE_TYPE: "inmemory"
+          VECTOR_STORAGE_TYPE: "inmemory"
+
+      - name: Upload Community Coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          flags: community
+          name: community-coverage
+
+  test-enterprise:
+    name: Test Enterprise Edition
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Enterprise Edition
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[enterprise,test]
+
+      - name: Verify Enterprise Dependencies
+        run: |
+          # Verify enterprise packages ARE installed
+          pip show opik || (echo "ERROR: opik should be installed in enterprise mode" && exit 1)
+          pip show presidio-analyzer || (echo "ERROR: presidio-analyzer should be installed in enterprise mode" && exit 1)
+          pip show boto3 || (echo "ERROR: boto3 should be installed in enterprise mode" && exit 1)
+          pip show redis || (echo "ERROR: redis should be installed in enterprise mode" && exit 1)
+          echo "✓ Enterprise dependencies verified"
+
+      - name: Run Code Quality Checks
+        run: |
+          black --check faultmaven/ tests/
+          isort --check-only faultmaven/ tests/
+          flake8 faultmaven/ --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run Tests (Enterprise Mode)
+        run: |
+          pytest tests/ \
+            --cov=faultmaven \
+            --cov-report=xml \
+            --cov-report=html \
+            --cov-report=term-missing \
+            -v
+        env:
+          # Enterprise configuration - features can be enabled (but external services mocked)
+          OPIK_ENABLED: "true"
+          OPIK_TRACK_DISABLE: "false"
+          PROMETHEUS_ENABLED: "true"
+          TRACING_ENABLED: "true"
+          METRICS_ENABLED: "true"
+          PROTECTION_ENABLED: "true"
+          SANITIZE_PII: "true"
+          # Still use in-memory for CI (no external services)
+          USER_STORAGE_TYPE: "inmemory"
+          CASE_STORAGE_TYPE: "inmemory"
+          SESSION_STORAGE_TYPE: "inmemory"
+          VECTOR_STORAGE_TYPE: "inmemory"
+
+      - name: Upload Enterprise Coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          flags: enterprise
+          name: enterprise-coverage
+
+  architecture-lint:
+    name: Architecture Boundary Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Run Import Linter
+        run: |
+          lint-imports --config .importlinter
+
+      - name: Check for New Violations
+        run: |
+          python scripts/check_import_violations.py
+
+  test-packaging:
+    name: Test Packaging Configuration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install toml parser
+        run: pip install toml
+
+      - name: Run Packaging Tests
+        run: |
+          pip install -e .[test]
+          pytest tests/installation/ -v
+
+  # ==========================================================================
+  # STAGE 3: SMOKE
+  # Boot container with built artifact and test /health endpoint
+  # Uses the exact Docker image from build stage (artifact immutability)
+  # ==========================================================================
+  smoke:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    needs: [build, test-community, test-enterprise, architecture-lint, test-packaging]
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: |
+          docker load --input /tmp/image.tar
+
+      - name: Create Docker network
+        run: |
+          docker network create smoke-net-${{ github.sha }}
+
+      - name: Start service container
+        run: |
+          docker run -d \
+            --name smoke-service-${{ github.sha }} \
+            --network smoke-net-${{ github.sha }} \
+            -p 8000:8000 \
+            -e DATABASE_URL=sqlite+aiosqlite:////tmp/faultmaven.db \
+            -e ENVIRONMENT=development \
+            -e LOG_LEVEL=INFO \
+            -e OPIK_ENABLED=false \
+            -e PROMETHEUS_ENABLED=false \
+            -e TRACING_ENABLED=false \
+            -e PROTECTION_ENABLED=false \
+            -e USER_STORAGE_TYPE=inmemory \
+            -e CASE_STORAGE_TYPE=inmemory \
+            -e SESSION_STORAGE_TYPE=inmemory \
+            -e VECTOR_STORAGE_TYPE=inmemory \
+            ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+
+      - name: Wait for service health
+        run: |
+          max_attempts=30
+          attempt=0
+          while [ $attempt -lt $max_attempts ]; do
+            if curl -f http://localhost:8000/health; then
+              echo "Service is healthy"
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts failed, retrying..."
+            sleep 2
+          done
+          echo "Service failed to become healthy"
+          docker logs smoke-service-${{ github.sha }}
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop smoke-service-${{ github.sha }} || true
+          docker rm smoke-service-${{ github.sha }} || true
+          docker network rm smoke-net-${{ github.sha }} || true
+
+  # ==========================================================================
+  # STAGE 4: PUSH
+  # Push tested artifact to GHCR and update queue
+  # Only runs on main/develop branches (not on PRs)
+  # ==========================================================================
+  push:
+    name: Push Image to Registry
+    needs: smoke
+    if: |
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load image
+        run: docker load --input /tmp/image.tar
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine tags
+        id: tags
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+            echo "tag_suffix=latest" >> $GITHUB_OUTPUT
+          else
+            echo "environment=development" >> $GITHUB_OUTPUT
+            echo "tag_suffix=develop" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push image
+        run: |
+          docker push ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          docker tag ${{ env.IMAGE_NAME }}:sha-${{ github.sha }} ${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.tag_suffix }}
+          docker push ${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.tag_suffix }}
+
+      - name: Update queue file
+        run: |
+          # Checkout enterprise-infra repo
+          git clone https://github.com/FaultMaven/faultmaven-enterprise-infra.git /tmp/infra
+          cd /tmp/infra
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Update queue file
+          cat > available-images/staging/${{ env.SERVICE_NAME }}.yaml <<EOF
+          # Available image for ${{ env.SERVICE_NAME }}
+          # Updated by CI workflow in source service repo
+          # Promoted to overlays/staging by promote-images workflow
+          service: ${{ env.SERVICE_NAME }}
+          image: ${{ env.IMAGE_NAME }}
+          tag: sha-${{ github.sha }}
+          EOF
+
+          # Commit and push
+          git add available-images/staging/${{ env.SERVICE_NAME }}.yaml
+          git commit -m "ci: update ${{ env.SERVICE_NAME }} to sha-${{ github.sha }}"
+          git push origin develop
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push summary
+        run: |
+          echo "### ✅ Image Pushed to Registry" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image**: \`${{ env.IMAGE_NAME }}:sha-${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Also tagged**: \`${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.tag_suffix }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Registry**: ghcr.io" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment**: ${{ steps.tags.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "Next: Promote image via enterprise-infra (no direct deploy from this repo)." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Development image ready for testing." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ==========================================================================
+  # PIPELINE SUMMARY
+  # Displays overall pipeline status
+  # ==========================================================================
+  summary:
+    name: Pipeline Summary
+    needs: [build, test-community, test-enterprise, architecture-lint, test-packaging, smoke, push]
+    if: always() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Pipeline summary
+        run: |
+          echo "### 📊 CI Pipeline Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.build.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Test (Community) | ${{ needs.test-community.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Test (Enterprise) | ${{ needs.test-enterprise.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Architecture Lint | ${{ needs.architecture-lint.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Packaging Tests | ${{ needs.test-packaging.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Smoke | ${{ needs.smoke.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Push | ${{ needs.push.result == 'success' && '✅ Passed' || needs.push.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
