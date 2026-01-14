@@ -22,19 +22,20 @@ Implementation Notes:
 """
 
 import asyncio
-import logging
-import json
-from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
-from threading import RLock
-import pickle
 import hashlib
+import json
+import logging
+import pickle
+from datetime import datetime, timedelta, timezone
+from threading import RLock
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 
 # Machine learning imports with fallbacks
 try:
-    from sklearn.linear_model import LogisticRegression
     from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import brier_score_loss, log_loss
     from sklearn.model_selection import cross_val_score
 
@@ -44,14 +45,14 @@ except ImportError:
     LogisticRegression = None
     CalibratedClassifierCV = None
 
-from faultmaven.models.interfaces import IGlobalConfidenceService
+from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.contracts.core_contracts import (
+    ConfidenceBand,
     ConfidenceRequest,
     ConfidenceResponse,
-    ConfidenceBand,
 )
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.models.interfaces import IGlobalConfidenceService
 
 
 class GlobalConfidenceService(IGlobalConfidenceService):

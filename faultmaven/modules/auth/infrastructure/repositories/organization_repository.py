@@ -3,11 +3,12 @@
 Implements IOrganizationRepository for organization and member management.
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-import logging
 
 from faultmaven.modules.auth.domain.models.organization import (
     IOrganizationRepository,

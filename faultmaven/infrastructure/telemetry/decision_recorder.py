@@ -23,16 +23,16 @@ Implementation Notes:
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+import time
+from datetime import datetime, timedelta, timezone
+from threading import RLock
 from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
-from threading import RLock
-import time
 
+from faultmaven.exceptions import ServiceException
+from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.contracts.core_contracts import DecisionRecord, TurnContext
 from faultmaven.models.interfaces import ITracer
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import ServiceException
 
 
 class DecisionRecorder:

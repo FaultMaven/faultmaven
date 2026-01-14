@@ -9,7 +9,8 @@ Enhanced for Task 2: Includes response-type-specific and intent-aware examples
 that integrate with the intelligent prompt system.
 """
 
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+
 from faultmaven.models.api import ResponseType
 from faultmaven.modules.agent.domain.models.agentic import QueryIntent
 

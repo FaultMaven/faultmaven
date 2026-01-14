@@ -5,14 +5,15 @@ Test Coverage: 15-18 tests
 Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
-import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, Mock
 
-from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
+import pytest
+
+from faultmaven.exceptions import AuthorizationError, NotFoundError, ValidationException
 from faultmaven.models.interfaces_user import Organization, OrgPlanTier
 from faultmaven.models.user import User
-from faultmaven.exceptions import NotFoundError, AuthorizationError, ValidationException
+from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 
 
 @pytest.fixture

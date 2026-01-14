@@ -31,7 +31,7 @@ Anchoring Prevention:
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -39,8 +39,8 @@ if TYPE_CHECKING:
 
 from faultmaven.modules.agent.contracts import (
     Hypothesis,
-    HypothesisStatus,
     HypothesisGenerationMode,
+    HypothesisStatus,
     HypothesisTest,
     InvestigationPhase,
 )

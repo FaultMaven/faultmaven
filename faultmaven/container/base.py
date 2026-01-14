@@ -4,16 +4,16 @@ This module provides the core DIContainer class that uses the modular
 registry and utilities for clean dependency injection.
 """
 
-from typing import Any, Optional, List, Dict
 import logging
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-from faultmaven.container.registry import DependencyRegistry, ServiceStatus
 from faultmaven.container.errors import (
     ContainerError,
-    ServiceUnavailableError,
     InitializationError,
+    ServiceUnavailableError,
 )
+from faultmaven.container.registry import DependencyRegistry, ServiceStatus
 from faultmaven.container.utils import LazyService
 
 

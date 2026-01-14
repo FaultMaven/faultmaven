@@ -7,15 +7,16 @@ minimal mocking patterns that achieved 80%+ improvements in Phases 1-3.
 """
 
 import asyncio
-import pytest
-import time
 import json
-from aiohttp import web, ClientSession
-from aiohttp.test_utils import TestServer
-from unittest.mock import patch, AsyncMock, MagicMock
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from faultmaven.infrastructure.llm.router import LLMRouter
+import pytest
+from aiohttp import ClientSession, web
+from aiohttp.test_utils import TestServer
+
 from faultmaven.infrastructure.llm.providers import LLMResponse, reset_registry
+from faultmaven.infrastructure.llm.router import LLMRouter
 
 
 class TestLLMProviderRealBehavior:

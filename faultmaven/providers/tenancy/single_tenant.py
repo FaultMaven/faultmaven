@@ -6,17 +6,17 @@ the same organization, simplifying local development and community edition.
 Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
-from typing import Optional
 from datetime import datetime, timezone
+from typing import Optional
 
-from faultmaven.providers.tenancy.base import TenantProvider
+from faultmaven.exceptions import NotFoundError
 from faultmaven.models.interfaces_user import (
+    IOrganizationRepository,
     Organization,
     OrgPlanTier,
-    IOrganizationRepository,
 )
 from faultmaven.models.user import User
-from faultmaven.exceptions import NotFoundError
+from faultmaven.providers.tenancy.base import TenantProvider
 
 
 class SingleTenantProvider(TenantProvider):

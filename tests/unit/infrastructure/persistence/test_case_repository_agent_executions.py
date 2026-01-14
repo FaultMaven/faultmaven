@@ -19,18 +19,19 @@ Run with:
     pytest tests/unit/infrastructure/persistence/test_case_repository_agent_executions.py -v
 """
 
-import pytest
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from faultmaven.modules.case.infrastructure.case_repository import (
-    InMemoryCaseRepository,
-)
+import pytest
+
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,
     ExecutionStatus,
+)
+from faultmaven.modules.case.infrastructure.case_repository import (
+    InMemoryCaseRepository,
 )
 from tests.utils import generate_case_id
 

@@ -24,10 +24,9 @@ from typing import Any, Dict, Optional
 from faultmaven.infrastructure.storage.base import (
     IFileStorageBackend,
     PresignedUrl,
-    StoredFile,
     StorageType,
+    StoredFile,
 )
-
 
 logger = logging.getLogger(__name__)
 

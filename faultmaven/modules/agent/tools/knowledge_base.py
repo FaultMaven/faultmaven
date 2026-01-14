@@ -35,7 +35,8 @@ from langchain_core.tools import Tool
 from pydantic import PrivateAttr
 
 from faultmaven.core.knowledge.ingestion import KnowledgeIngester
-from faultmaven.models.interfaces import BaseTool as IBaseTool, ToolResult
+from faultmaven.models.interfaces import BaseTool as IBaseTool
+from faultmaven.models.interfaces import ToolResult
 
 
 class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):

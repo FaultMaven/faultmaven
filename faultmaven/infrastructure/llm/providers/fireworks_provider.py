@@ -5,11 +5,13 @@ This module implements the Fireworks AI LLM provider for high-performance
 inference with open-source models.
 """
 
-import aiohttp
 from typing import Any, Dict, List, Optional
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+import aiohttp
+
 from faultmaven.exceptions import LLMException
+
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
 
 class FireworksProvider(BaseLLMProvider):

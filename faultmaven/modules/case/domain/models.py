@@ -20,13 +20,12 @@ Architecture:
 - Repository abstraction (no direct database imports)
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-
 
 # ============================================================
 # Status & Lifecycle Models (Section 2)

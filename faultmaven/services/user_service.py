@@ -19,7 +19,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jwt
 from redis.asyncio import Redis
@@ -29,6 +29,7 @@ from faultmaven.config.settings import get_settings
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore
+
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -37,7 +38,9 @@ from faultmaven.exceptions import (
 )
 from faultmaven.infrastructure.persistence.user_repository import (
     InMemoryUserRepository,
-    User as RepositoryUser,
+)
+from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
+from faultmaven.infrastructure.persistence.user_repository import (
     UserRepository,
 )
 from faultmaven.models.auth import TokenPair

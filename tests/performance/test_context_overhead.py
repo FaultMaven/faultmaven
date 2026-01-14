@@ -5,13 +5,14 @@ This module tests the performance impact of context variables used
 for request-scoped logging coordination.
 """
 
-import pytest
 import asyncio
-import time
-from contextvars import ContextVar, copy_context
-from concurrent.futures import ThreadPoolExecutor
-from typing import List
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar, copy_context
+from typing import List
+
+import pytest
 
 from faultmaven.infrastructure.logging.coordinator import (
     LoggingCoordinator,

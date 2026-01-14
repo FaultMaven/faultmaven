@@ -10,20 +10,21 @@ Tests cover:
 - Token usage tracking
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 from typing import List
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
-from faultmaven.modules.knowledge.domain.services.embedding_service import (
-    EmbeddingService,
-)
+import pytest
+
 from faultmaven.exceptions import (
     EmbeddingGenerationError,
-    EmbeddingRateLimitError,
     EmbeddingInvalidInputError,
+    EmbeddingRateLimitError,
 )
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     EMBEDDING_DIMENSIONS,
+)
+from faultmaven.modules.knowledge.domain.services.embedding_service import (
+    EmbeddingService,
 )
 
 

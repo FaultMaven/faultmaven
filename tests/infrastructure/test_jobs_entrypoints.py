@@ -8,9 +8,9 @@ Verifies:
 """
 
 import os
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # =============================================================================
 # Fixtures
@@ -216,7 +216,7 @@ class TestAppBootWithoutScheduler:
         # Remove any existing RUN_SCHEDULER
         os.environ.pop("RUN_SCHEDULER", None)
 
-        from faultmaven.config.settings import reset_settings, get_settings
+        from faultmaven.config.settings import get_settings, reset_settings
 
         reset_settings()
 
@@ -227,7 +227,7 @@ class TestAppBootWithoutScheduler:
         """Test that RUN_SCHEDULER can be set to True."""
         os.environ["RUN_SCHEDULER"] = "true"
 
-        from faultmaven.config.settings import reset_settings, get_settings
+        from faultmaven.config.settings import get_settings, reset_settings
 
         reset_settings()
 

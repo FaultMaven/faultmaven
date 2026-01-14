@@ -9,8 +9,9 @@ Tests:
 - Error response format (error, detail, status_code fields)
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 

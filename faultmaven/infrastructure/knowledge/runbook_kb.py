@@ -12,22 +12,21 @@ Architecture Reference: docs/architecture/document-generation-and-closure-design
 Section 5.4.5: Dual-Source Runbook Architecture
 """
 
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timezone
 import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
+from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 from faultmaven.models.report import (
     CaseReport,
+    ReportStatus,
     ReportType,
+    RunbookMetadata,
     RunbookSource,
     SimilarRunbook,
-    RunbookMetadata,
-    ReportStatus,
 )
-from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
-from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.utils.serialization import to_json_compatible
-
 
 logger = logging.getLogger(__name__)
 

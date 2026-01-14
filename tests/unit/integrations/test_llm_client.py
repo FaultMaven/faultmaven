@@ -9,14 +9,16 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 import os
 from typing import Any, AsyncGenerator, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
+from faultmaven.exceptions import LLMException
 from faultmaven.integrations.llm_client import (
+    AnthropicClient,
+    BaseLLMClient,
     LLMClient,
     LLMProvider,
-    AnthropicClient,
     OpenAIClient,
-    BaseLLMClient,
     create_llm_client,
 )
 from faultmaven.modules.agent.domain.events.execution_events import (
@@ -27,8 +29,6 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     Tool,
     ToolCall,
 )
-from faultmaven.exceptions import LLMException
-
 
 # =============================================================================
 # Fixtures

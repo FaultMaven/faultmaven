@@ -10,17 +10,16 @@ Design: Design C (Stateless Sub-Agent + Proactive Phase Handlers)
 - Strategy pattern enables extension without modification
 """
 
-from typing import Optional, Dict, Any
 import logging
+from typing import Any, Dict, Optional
 
 from langchain.tools import BaseTool as LangChainBaseTool
 from pydantic import PrivateAttr
 
-from faultmaven.modules.agent.tools.kb_config import KBConfig
-from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
-from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.config.settings import get_settings
-
+from faultmaven.infrastructure.llm.router import LLMRouter
+from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
+from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 logger = logging.getLogger(__name__)
 

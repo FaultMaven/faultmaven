@@ -1,7 +1,7 @@
 """Custom exceptions for FaultMaven application."""
 
-from typing import Any, Dict, Optional
 from enum import Enum
+from typing import Any, Dict, Optional
 
 
 class ErrorSeverity(Enum):

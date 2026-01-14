@@ -32,7 +32,7 @@ from faultmaven.api.middleware.auth import (
 )
 from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
 from faultmaven.models.auth import AuthenticatedUser, TokenPair
-from faultmaven.models.rbac import get_permissions_for_roles, Role
+from faultmaven.models.rbac import Role, get_permissions_for_roles
 from faultmaven.services.auth_service import (
     AuthenticationError,
     AuthService,

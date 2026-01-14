@@ -6,13 +6,14 @@ and log correlation. Follows the proven minimal mocking patterns from successful
 """
 
 import asyncio
-import pytest
-import time
-import logging
 import json
-from typing import Dict, List, Any
-from unittest.mock import patch, MagicMock
+import logging
+import time
 from contextlib import contextmanager
+from typing import Any, Dict, List
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from faultmaven.infrastructure.observability.tracing import OpikTracer, trace
 
@@ -425,9 +426,9 @@ class TestRealMetricsCollection:
 
         # Import and test actual Prometheus metrics from tracing module
         from faultmaven.infrastructure.observability.tracing import (
-            REQUEST_COUNTER,
             LLM_REQUEST_COUNTER,
             PROMETHEUS_AVAILABLE,
+            REQUEST_COUNTER,
         )
 
         if not PROMETHEUS_AVAILABLE:
@@ -490,10 +491,10 @@ class TestRealMetricsCollection:
 
         # Import and test actual Prometheus histogram metrics from tracing module
         from faultmaven.infrastructure.observability.tracing import (
-            REQUEST_DURATION,
-            LLM_REQUEST_DURATION,
             GENERIC_FUNCTION_DURATION,
+            LLM_REQUEST_DURATION,
             PROMETHEUS_AVAILABLE,
+            REQUEST_DURATION,
         )
 
         if not PROMETHEUS_AVAILABLE:
@@ -640,10 +641,10 @@ class TestRealMetricsCollection:
 
         # Import actual Prometheus metrics from tracing module
         from faultmaven.infrastructure.observability.tracing import (
-            REQUEST_COUNTER,
-            REQUEST_DURATION,
             ACTIVE_SESSIONS,
             PROMETHEUS_AVAILABLE,
+            REQUEST_COUNTER,
+            REQUEST_DURATION,
         )
 
         if not PROMETHEUS_AVAILABLE:

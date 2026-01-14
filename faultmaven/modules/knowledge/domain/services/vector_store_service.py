@@ -24,12 +24,11 @@ from typing import Any, Dict, List, Optional
 import chromadb
 from chromadb.config import Settings
 
-from faultmaven.services.base import BaseService
 from faultmaven.exceptions import (
     VectorStoreConnectionError,
     VectorStoreOperationError,
 )
-
+from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 

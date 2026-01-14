@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, HttpUrl, field_validator
+
 from faultmaven.utils.serialization import to_json_compatible
 
 

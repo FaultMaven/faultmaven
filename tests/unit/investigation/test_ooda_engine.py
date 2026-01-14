@@ -11,26 +11,27 @@ Tests:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-import pytest
 from datetime import datetime
 
+import pytest
+
 from faultmaven.core.investigation.ooda_engine import (
-    OODAEngine,
     AdaptiveIntensityController,
+    OODAEngine,
     create_ooda_engine,
 )
 from faultmaven.modules.agent.domain.models.investigation import (
-    InvestigationState,
-    InvestigationPhase,
-    OODAStep,
-    OODAIteration,
+    EvidenceLayer,
     Hypothesis,
     HypothesisStatus,
-    InvestigationMetadata,
     InvestigationLifecycle,
-    OODAEngineState,
-    EvidenceLayer,
+    InvestigationMetadata,
+    InvestigationPhase,
+    InvestigationState,
     MemoryLayer,
+    OODAEngineState,
+    OODAIteration,
+    OODAStep,
 )
 
 

@@ -19,17 +19,17 @@ Example flow:
 4. Case closes → CaseService.close_case() → deletes `case_abc123` collection
 """
 
-from typing import List, Dict, Optional, Any
-from datetime import datetime, timezone, timedelta
+import logging
 import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
 import chromadb
 from chromadb.config import Settings
-from urllib.parse import urlparse
-import logging
 
 from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.base_client import BaseExternalClient
-
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,8 @@ at runtime, not at import time.
 """
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
+
 import structlog
 from opentelemetry import trace
 

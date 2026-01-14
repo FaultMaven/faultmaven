@@ -5,9 +5,10 @@ Purpose: Validate DI container behavior without heavy dependencies
 This tests the architectural concepts and basic container behavior.
 """
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch
 import os
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 
 def test_singleton_pattern():

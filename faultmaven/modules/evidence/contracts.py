@@ -11,7 +11,7 @@ Following the design in module-organization-design.md:
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Protocol, Optional, List, Dict, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
 from uuid import UUID
 
 if TYPE_CHECKING:
@@ -68,25 +68,22 @@ class EvidenceDTO:
 # Re-export domain enums for backward compatibility
 # ============================================================
 
+# EvidenceArtifact can be used directly or via DTOs
+# For now, re-export from domain for backward compatibility
+# Services should import from contracts.py (not domain.models) per Principle 2
 # Re-export enums from domain models for cross-module use
 # Services should import from contracts.py (not domain.models) per Principle 2
 from faultmaven.modules.evidence.domain.models import (
+    EvidenceArtifact,
     EvidenceArtifactType,
+    EvidenceListFilter,
     StorageBackend,
 )
-
 
 # ============================================================
 # Re-export domain models for backward compatibility
 # ============================================================
 
-# EvidenceArtifact can be used directly or via DTOs
-# For now, re-export from domain for backward compatibility
-# Services should import from contracts.py (not domain.models) per Principle 2
-from faultmaven.modules.evidence.domain.models import (
-    EvidenceArtifact,
-    EvidenceListFilter,
-)
 
 
 # ============================================================

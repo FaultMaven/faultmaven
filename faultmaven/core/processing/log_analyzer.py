@@ -35,24 +35,24 @@ Core Design Principles:
 import logging
 import re
 import time
+from collections import defaultdict, deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
-from collections import defaultdict, deque
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
-from faultmaven.models.common import AgentStateEnum as AgentState
+from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import DataInsightsResponse, DataType
+from faultmaven.models.common import AgentStateEnum as AgentState
 from faultmaven.models.interfaces import (
+    ConversationContext,
     ILogProcessor,
     IMemoryService,
-    ConversationContext,
 )
-from faultmaven.infrastructure.observability.tracing import trace
 
 
 @dataclass

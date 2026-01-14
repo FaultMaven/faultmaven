@@ -6,12 +6,14 @@ including Phi-3, Ollama, and other local inference servers.
 """
 
 import asyncio
-import aiohttp
 import logging
 from typing import List, Optional
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+import aiohttp
+
 from faultmaven.exceptions import LLMException
+
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
 
 class LocalProvider(BaseLLMProvider):

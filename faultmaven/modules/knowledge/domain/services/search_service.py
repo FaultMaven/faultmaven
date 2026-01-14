@@ -21,20 +21,19 @@ Usage:
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from faultmaven.services.base import BaseService
-from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
-    KnowledgeItemRepository,
+from faultmaven.exceptions import (
+    EmbeddingException,
+    KnowledgeBaseException,
+    VectorStoreException,
 )
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
 )
-from faultmaven.exceptions import (
-    KnowledgeBaseException,
-    EmbeddingException,
-    VectorStoreException,
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+    KnowledgeItemRepository,
 )
-
+from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 

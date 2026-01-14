@@ -10,20 +10,19 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
-from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
-    AgentOrchestrationService,
-    AGENT_SYSTEM_PROMPTS,
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    LLMException,
+    NotFoundError,
+    ServiceError,
+    ValidationException,
 )
+from faultmaven.models.interfaces import ToolResult
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.modules.agent.domain.models.agent_execution import (
-    AgentExecution,
-    AgentToolCall,
-    AgentType,
-    ExecutionStatus,
-)
-from faultmaven.modules.case.domain.models import Case, CaseStatus
 from faultmaven.modules.agent.domain.events.execution_events import (
     AgentContext,
     ExecutionEvent,
@@ -33,17 +32,18 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     Message,
     ToolCall,
 )
-from faultmaven.modules.agent.tools.base import AgentToolRegistry, ToolContext
-from faultmaven.models.interfaces import ToolResult
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ConflictError,
-    ValidationException,
-    ServiceError,
-    LLMException,
+from faultmaven.modules.agent.domain.models.agent_execution import (
+    AgentExecution,
+    AgentToolCall,
+    AgentType,
+    ExecutionStatus,
 )
-
+from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
+    AGENT_SYSTEM_PROMPTS,
+    AgentOrchestrationService,
+)
+from faultmaven.modules.agent.tools.base import AgentToolRegistry, ToolContext
+from faultmaven.modules.case.domain.models import Case, CaseStatus
 
 # =============================================================================
 # Fixtures

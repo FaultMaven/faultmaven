@@ -3,31 +3,32 @@
 Tests the InvestigationService which manages milestone-based troubleshooting workflow.
 """
 
-import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-from faultmaven.modules.agent.domain.services.investigation_service import (
-    InvestigationService,
-)
-from faultmaven.modules.case.domain.models import Case, CaseStatus
-from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
+import pytest
+
 from faultmaven.exceptions import (
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
 )
+from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
+from faultmaven.modules.agent.domain.services.investigation_service import (
+    InvestigationService,
+)
+from faultmaven.modules.case.domain.models import Case, CaseStatus
 
 from .conftest import (
     MockCaseRepository,
     MockMilestoneEngine,
     create_sample_case,
-    sample_case,
-    sample_user_id,
-    sample_case_query_request,
     mock_case_repository,
     mock_milestone_engine,
+    sample_case,
+    sample_case_query_request,
+    sample_user_id,
 )
 
 

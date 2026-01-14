@@ -13,21 +13,21 @@ Core Responsibilities:
 - Multi-tenancy isolation
 """
 
-from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
 import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
-from faultmaven.services.base import BaseService
+from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.auth.domain.models.organization import (
+    AuditCategory,
+    AuditEventType,
     IOrganizationRepository,
     Organization,
     OrganizationMember,
     OrgPlanTier,
-    AuditEventType,
-    AuditCategory,
 )
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.services.base import BaseService
 
 
 class OrganizationService(BaseService):

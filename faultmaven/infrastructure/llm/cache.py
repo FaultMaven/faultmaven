@@ -14,8 +14,8 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from .providers import LLMResponse
 from ..model_cache import model_cache
+from .providers import LLMResponse
 
 
 class SemanticCache:

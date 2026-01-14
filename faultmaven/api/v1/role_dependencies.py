@@ -17,14 +17,14 @@ Design Principles:
 - Reusable across all endpoints
 """
 
-import uuid
 import logging
+import uuid
 from typing import List
 
-from fastapi import HTTPException, Depends
+from fastapi import Depends, HTTPException
 
-from faultmaven.models.auth import DevUser
 from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.models.auth import DevUser
 
 # Initialize logger
 logger = logging.getLogger(__name__)

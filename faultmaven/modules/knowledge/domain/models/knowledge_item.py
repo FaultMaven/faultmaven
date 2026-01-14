@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-
 # OpenAI text-embedding-3-small produces 1536-dimensional vectors
 EMBEDDING_DIMENSIONS = 1536
 

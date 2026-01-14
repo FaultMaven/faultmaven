@@ -14,25 +14,26 @@ Run with:
     pytest tests/benchmarks/test_investigation_session_operations.py -m benchmark -v
 """
 
-import pytest
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseStatus,
-    InvestigationStrategy,
-)
-from faultmaven.models.investigation_session import (
-    InvestigationSession,
-    SessionStatus,
-)
+import pytest
+
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
+)
+from faultmaven.models.investigation_session import (
+    InvestigationSession,
+    SessionStatus,
+)
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationStrategy,
 )
 
 from .conftest import generate_case_id

@@ -15,30 +15,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import (
-    create_async_engine,
-    async_sessionmaker,
     AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
 
-from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.services.service_factory import ServiceFactory
-from faultmaven.services.case_service import APICaseService
-from faultmaven.services.investigation_session_service import (
-    APIInvestigationSessionService,
-)
-from faultmaven.services.file_storage_service import FileStorageService
-from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
+from faultmaven.infrastructure.persistence.models import Base
 
 # EvidenceArtifactRepository removed - evidence now handled by ICaseRepository (TD-001)
 # AgentExecutionRepository removed - agent executions now handled by ICaseRepository (TD-001)
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
-
+from faultmaven.services.case_service import APICaseService
+from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
+from faultmaven.services.file_storage_service import FileStorageService
+from faultmaven.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
+from faultmaven.services.service_factory import ServiceFactory
 
 # ============================================================
 # Fixtures

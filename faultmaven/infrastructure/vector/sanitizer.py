@@ -15,10 +15,9 @@ Usage:
 """
 
 import logging
-from datetime import datetime, date
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Set, Union
 from uuid import UUID
-
 
 logger = logging.getLogger(__name__)
 

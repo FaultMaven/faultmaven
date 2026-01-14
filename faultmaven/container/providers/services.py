@@ -15,8 +15,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from faultmaven.container.base import BaseDIContainer
     from faultmaven.config.settings import FaultMavenSettings
+    from faultmaven.container.base import BaseDIContainer
 
 logger = logging.getLogger(__name__)
 
@@ -140,10 +140,10 @@ def create_evidence_service(
         return None
 
     try:
-        from faultmaven.modules.evidence.domain.services import EvidenceService
         from faultmaven.modules.evidence.domain.adapters import (
             EvidenceStorageAdapter,
         )
+        from faultmaven.modules.evidence.domain.services import EvidenceService
         from faultmaven.services.file_storage_service import FileStorageService
 
         # Create file storage service
@@ -263,11 +263,11 @@ def create_organization_service(
         return None, None
 
     try:
-        from faultmaven.modules.auth.domain.services.organization_service import (
-            OrganizationService,
-        )
         from faultmaven.infrastructure.persistence.organization_repository import (
             PostgreSQLOrganizationRepository,
+        )
+        from faultmaven.modules.auth.domain.services.organization_service import (
+            OrganizationService,
         )
 
         repository = PostgreSQLOrganizationRepository(db_session)
@@ -294,10 +294,10 @@ def create_team_service(
         return None
 
     try:
-        from faultmaven.modules.auth.domain.services.team_service import TeamService
         from faultmaven.infrastructure.persistence.team_repository import (
             PostgreSQLTeamRepository,
         )
+        from faultmaven.modules.auth.domain.services.team_service import TeamService
 
         team_repository = PostgreSQLTeamRepository(db_session)
         service = TeamService(

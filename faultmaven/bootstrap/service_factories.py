@@ -21,8 +21,8 @@ Design Reference: Phase 3, Week 14-15 - DI Container Implementation
 import logging
 from typing import Optional
 
-from faultmaven.core.container import ServiceContainer
 from faultmaven.config.settings import get_settings
+from faultmaven.core.container import ServiceContainer
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +55,13 @@ def register_services(redis_client=None) -> None:
     # ============================================================
 
     # Import service classes
-    from faultmaven.services.auth_service import AuthService
     from faultmaven.modules.knowledge.domain.services.embedding_service import (
         EmbeddingService,
     )
     from faultmaven.modules.knowledge.domain.services.vector_store_service import (
         VectorStoreService,
     )
+    from faultmaven.services.auth_service import AuthService
     from faultmaven.services.file_storage_service import FileStorageService
 
     # AuthService - Used by UserService
@@ -128,16 +128,16 @@ def register_services(redis_client=None) -> None:
     # ============================================================
 
     # Import mid-level services
-    from faultmaven.services.investigation_session_service import (
-        APIInvestigationSessionService,
-    )
-    from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
     from faultmaven.infrastructure.persistence.repository_factory import (
-        get_investigation_session_repository,
+        STORAGE_TYPE_INMEMORY,
         get_agent_execution_repository,
         get_case_repository,
         get_evidence_artifact_repository,
-        STORAGE_TYPE_INMEMORY,
+        get_investigation_session_repository,
+    )
+    from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
+    from faultmaven.services.investigation_session_service import (
+        APIInvestigationSessionService,
     )
 
     # APIInvestigationSessionService - Used by AgentOrchestrationService

@@ -11,27 +11,28 @@ Tests coverage:
 - Error handling and graceful fallbacks
 """
 
+import asyncio
 import os
 import tempfile
-from unittest.mock import Mock, patch, MagicMock, AsyncMock, call
-from typing import Dict, Any, List
-import pytest
-import asyncio
+from typing import Any, Dict, List
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
+import pytest
+
+from faultmaven.config.settings import get_settings, reset_settings
+from faultmaven.infrastructure.llm.providers.base import (
+    BaseLLMProvider,
+    LLMResponse,
+    ProviderConfig,
+)
 from faultmaven.infrastructure.llm.providers.registry import (
+    PROVIDER_SCHEMA,
     ProviderRegistry,
     get_registry,
-    reset_registry,
     get_valid_provider_names,
     print_provider_options,
-    PROVIDER_SCHEMA,
+    reset_registry,
 )
-from faultmaven.infrastructure.llm.providers.base import (
-    ProviderConfig,
-    LLMResponse,
-    BaseLLMProvider,
-)
-from faultmaven.config.settings import get_settings, reset_settings
 
 
 @pytest.fixture(autouse=True)

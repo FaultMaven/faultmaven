@@ -18,14 +18,15 @@ Key Components:
 - Proper interface implementations and dependency injection
 """
 
-from typing import List, Optional, Any
 import logging
 import os
 import sys
 from datetime import datetime, timezone
+from typing import Any, List, Optional
+
 from faultmaven.config.settings import FaultMavenSettings, get_settings
 from faultmaven.container.base import BaseDIContainer
-from faultmaven.container.errors import ServiceUnavailableError, InitializationError
+from faultmaven.container.errors import InitializationError, ServiceUnavailableError
 from faultmaven.container.providers import (
     register_infrastructure,
     register_services,
@@ -35,14 +36,14 @@ from faultmaven.container.providers import (
 # Import interfaces with graceful fallback for testing environments
 try:
     from faultmaven.models.interfaces import (
-        ILLMProvider,
-        ITracer,
-        ISanitizer,
         BaseTool,
-        IVectorStore,
+        ILLMProvider,
+        ISanitizer,
         ISessionStore,
+        ITracer,
+        IVectorStore,
     )
-    from faultmaven.models.interfaces_case import ICaseStore, ICaseService
+    from faultmaven.models.interfaces_case import ICaseService, ICaseStore
 
     # TD-001: IReportStore removed - reports now stored via CaseRepository
     INTERFACES_AVAILABLE = True
@@ -60,21 +61,21 @@ except ImportError as e:
     INTERFACES_AVAILABLE = False
 # Agentic Framework Components
 try:
-    from faultmaven.services.agentic import (
-        AgentStateManager,
-        ToolSkillBroker,
-        GuardrailsPolicyLayer,
-        ResponseSynthesizer,
-        ErrorFallbackManager,
-        BusinessLogicWorkflowEngine,
-    )
     from faultmaven.modules.agent.domain.models.agentic import (
         IAgentStateManager,
-        IToolSkillBroker,
+        IBusinessLogicWorkflowEngine,
+        IErrorFallbackManager,
         IGuardrailsPolicyLayer,
         IResponseSynthesizer,
-        IErrorFallbackManager,
-        IBusinessLogicWorkflowEngine,
+        IToolSkillBroker,
+    )
+    from faultmaven.services.agentic import (
+        AgentStateManager,
+        BusinessLogicWorkflowEngine,
+        ErrorFallbackManager,
+        GuardrailsPolicyLayer,
+        ResponseSynthesizer,
+        ToolSkillBroker,
     )
 
     AGENTIC_AVAILABLE = True
@@ -206,8 +207,8 @@ class DIContainer(BaseDIContainer):
             "Service requested but container not initialized - triggering lazy initialization"
         )
 
-        import inspect
         import asyncio
+        import inspect
 
         init = getattr(self, "initialize", None)
         if init is None:
@@ -471,6 +472,7 @@ class DIContainer(BaseDIContainer):
         """Create a minimal knowledge service for testing environments"""
         import uuid
         from datetime import datetime, timezone
+
         from faultmaven.utils.serialization import to_json_compatible
 
         class MinimalKnowledgeService:
@@ -912,8 +914,8 @@ class DIContainer(BaseDIContainer):
 
     def _create_minimal_session_service(self):
         """Create a minimal session service for testing environments"""
-        from datetime import datetime
         import uuid
+        from datetime import datetime
 
         class MockSessionContext:
             def __init__(self, session_id, user_id=None, metadata=None):
@@ -1073,8 +1075,9 @@ class DIContainer(BaseDIContainer):
 
     def _create_minimal_case_service(self):
         """Create a minimal case service for testing environments"""
-        from datetime import datetime
         import uuid
+        from datetime import datetime
+
         from faultmaven.modules.case.domain.models import Case, CaseStatus
 
         class MinimalCaseService:
@@ -1531,10 +1534,11 @@ class DIContainer(BaseDIContainer):
             ):
                 """Enhanced message retrieval with debugging support."""
                 import time
+
                 from faultmaven.models.api import (
                     CaseMessagesResponse,
-                    MessageRetrievalDebugInfo,
                     Message,
+                    MessageRetrievalDebugInfo,
                 )
 
                 start_time = time.time()

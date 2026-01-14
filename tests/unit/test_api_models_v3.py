@@ -1,25 +1,26 @@
 """Test module for v3.1.0 API models validation."""
 
-import pytest
-from pydantic import ValidationError
 from typing import List
 
+import pytest
+from pydantic import ValidationError
+
 from faultmaven.models.api import (
-    ResponseType,
-    SourceType,
-    DataType,
-    ProcessingStatus,
-    Source,
-    PlanStep,
-    UploadedData,
-    ViewState,
-    QueryRequest,
     AgentResponse,
+    Case,
+    DataType,
     ErrorDetail,
     ErrorResponse,
+    PlanStep,
+    ProcessingStatus,
+    QueryRequest,
+    ResponseType,
+    Source,
+    SourceType,
     StandardErrorResponse,
+    UploadedData,
     User,
-    Case,
+    ViewState,
 )
 
 

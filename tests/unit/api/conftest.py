@@ -3,18 +3,18 @@
 Minimal test fixtures that can handle missing dependencies gracefully.
 """
 
-from unittest.mock import Mock, AsyncMock
-from typing import Optional, Any, Dict
 from datetime import datetime
+from typing import Any, Dict, Optional
+from unittest.mock import AsyncMock, Mock
 
 # Import test doubles
 try:
     from tests.test_doubles import (
+        LightweightDataClassifier,
         LightweightLLMProvider,
+        LightweightLogProcessor,
         LightweightSanitizer,
         LightweightStorageBackend,
-        LightweightDataClassifier,
-        LightweightLogProcessor,
     )
 
     TEST_DOUBLES_AVAILABLE = True
@@ -54,7 +54,7 @@ except ImportError:
 # Try FastAPI/httpx imports with fallback
 try:
     from fastapi import FastAPI
-    from httpx import AsyncClient, ASGITransport
+    from httpx import ASGITransport, AsyncClient
 
     FASTAPI_AVAILABLE = True
 except ImportError:
@@ -98,18 +98,18 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
 
         # Include the actual FaultMaven API routes with dependency overrides
         try:
-            from faultmaven.api.v1.routes import (
-                data,
-                knowledge,
-                session,
-                protection,
-                case,
-            )
             from faultmaven.api.v1.dependencies import (
                 get_agent_service,
                 get_data_service,
                 get_knowledge_service,
                 get_session_service,
+            )
+            from faultmaven.api.v1.routes import (
+                case,
+                data,
+                knowledge,
+                protection,
+                session,
             )
 
             # REMOVED: agent.router - replaced by case routes with real AgentService integration
@@ -128,15 +128,16 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
             }
 
             async def mock_agent_service():
-                from unittest.mock import Mock, AsyncMock
+                from unittest.mock import AsyncMock, Mock
+
                 from faultmaven.models import (
-                    TroubleshootingResponse,
                     AgentResponse,
-                    ViewState,
-                    UploadedData,
+                    ResponseType,
                     Source,
                     SourceType,
-                    ResponseType,
+                    TroubleshootingResponse,
+                    UploadedData,
+                    ViewState,
                 )
 
                 mock_service = Mock()
@@ -405,10 +406,11 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                 return mock_service
 
             async def mock_data_service():
-                from unittest.mock import Mock
-                from faultmaven.models import UploadedData, DataType
-                import uuid
                 import time
+                import uuid
+                from unittest.mock import Mock
+
+                from faultmaven.models import DataType, UploadedData
 
                 mock_service = Mock()
 
@@ -645,9 +647,9 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                 _persistent_knowledge_stats.clear()
 
             async def mock_knowledge_service():
-                from unittest.mock import Mock
                 import uuid
                 from datetime import datetime, timezone
+                from unittest.mock import Mock
 
                 mock_service = Mock()
 
@@ -966,10 +968,11 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                 return False
 
             async def mock_session_service():
-                from unittest.mock import Mock
-                from faultmaven.models import SessionContext
-                from datetime import datetime, timezone
                 import uuid
+                from datetime import datetime, timezone
+                from unittest.mock import Mock
+
+                from faultmaven.models import SessionContext
 
                 mock_service = Mock()
 
@@ -1226,11 +1229,13 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
             app.dependency_overrides[get_session_service] = mock_session_service
 
             # Add proper error handlers to ensure proper HTTP status codes
-            from fastapi import HTTPException, Request
-            from fastapi.responses import JSONResponse
-            from fastapi.exceptions import RequestValidationError
-            from faultmaven.exceptions import ValidationException
             import json
+
+            from fastapi import HTTPException, Request
+            from fastapi.exceptions import RequestValidationError
+            from fastapi.responses import JSONResponse
+
+            from faultmaven.exceptions import ValidationException
 
             @app.exception_handler(ValidationException)
             async def validation_exception_handler(
@@ -1362,8 +1367,8 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                 self.timings = {}
 
             def time_request(self, operation_name: str):
-                from contextlib import contextmanager
                 import time
+                from contextlib import contextmanager
 
                 @contextmanager
                 def timer():

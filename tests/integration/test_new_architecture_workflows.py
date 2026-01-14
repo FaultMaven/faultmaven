@@ -46,42 +46,42 @@ Tests coverage (original intent):
 - Real-world usage scenarios
 """
 
-import os
-import tempfile
-from unittest.mock import Mock, patch, MagicMock, AsyncMock, call
-from typing import Dict, Any, List, Optional
-import pytest
 import asyncio
 import logging
+import os
+import tempfile
 from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
+import pytest
+
+from faultmaven.config.settings import FaultMavenSettings, get_settings, reset_settings
 from faultmaven.container import BaseDIContainer
-from faultmaven.config.settings import get_settings, reset_settings, FaultMavenSettings
 from faultmaven.infrastructure.llm.providers.registry import (
     get_registry,
     reset_registry,
 )
 
-
 # Import models and interfaces with fallback
 try:
-    from faultmaven.models.interfaces import (
-        ILLMProvider,
-        ITracer,
-        ISanitizer,
-        BaseTool,
-        IVectorStore,
-        ISessionStore,
-    )
-    from faultmaven.models.interfaces_case import ICaseStore, ICaseService
     from faultmaven.models.api import (
-        QueryRequest,
         AgentResponse,
-        ViewState,
-        User,
         Case,
+        QueryRequest,
         ResponseType,
+        User,
+        ViewState,
     )
+    from faultmaven.models.interfaces import (
+        BaseTool,
+        ILLMProvider,
+        ISanitizer,
+        ISessionStore,
+        ITracer,
+        IVectorStore,
+    )
+    from faultmaven.models.interfaces_case import ICaseService, ICaseStore
 
     INTERFACES_AVAILABLE = True
 except ImportError:

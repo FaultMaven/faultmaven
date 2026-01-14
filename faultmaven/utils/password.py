@@ -21,7 +21,6 @@ import bcrypt
 
 from faultmaven.exceptions import ValidationException
 
-
 # bcrypt cost factor (2^12 = 4096 iterations)
 BCRYPT_COST_FACTOR = 12
 

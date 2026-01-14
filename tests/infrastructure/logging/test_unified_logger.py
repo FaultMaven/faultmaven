@@ -2,24 +2,25 @@
 Test module for faultmaven.infrastructure.logging.unified
 """
 
-import pytest
 import asyncio
 import time
-from unittest.mock import Mock, patch, AsyncMock
-from datetime import datetime
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
+from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+
+from faultmaven.infrastructure.logging.coordinator import (
+    ErrorContext,
+    LoggingCoordinator,
+    PerformanceTracker,
+    RequestContext,
+    request_context,
+)
 from faultmaven.infrastructure.logging.unified import (
     UnifiedLogger,
-    get_unified_logger,
     clear_logger_cache,
-)
-from faultmaven.infrastructure.logging.coordinator import (
-    LoggingCoordinator,
-    RequestContext,
-    ErrorContext,
-    PerformanceTracker,
-    request_context,
+    get_unified_logger,
 )
 
 

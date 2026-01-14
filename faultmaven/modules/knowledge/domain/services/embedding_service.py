@@ -24,23 +24,22 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from openai import (
-    AsyncOpenAI,
-    APIError,
-    RateLimitError,
     APIConnectionError,
+    APIError,
     APITimeoutError,
+    AsyncOpenAI,
+    RateLimitError,
 )
 
-from faultmaven.services.base import BaseService
 from faultmaven.exceptions import (
     EmbeddingGenerationError,
-    EmbeddingRateLimitError,
     EmbeddingInvalidInputError,
+    EmbeddingRateLimitError,
 )
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     EMBEDDING_DIMENSIONS,
 )
-
+from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 

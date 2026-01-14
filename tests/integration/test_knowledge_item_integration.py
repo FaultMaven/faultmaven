@@ -11,28 +11,27 @@ Requirements:
 """
 
 import os
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.database import reset_engine
-from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
-    DatabaseKnowledgeItemRepository,
-    InMemoryKnowledgeItemRepository,
-)
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.repository_factory import (
     reset_inmemory_knowledge_item_repository,
 )
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
     KnowledgeItem,
     KnowledgeItemType,
-    EMBEDDING_DIMENSIONS,
+)
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+    DatabaseKnowledgeItemRepository,
+    InMemoryKnowledgeItemRepository,
 )
 from tests.utils import generate_item_id, generate_org_id
-
 
 # ============================================================
 # Test Fixtures

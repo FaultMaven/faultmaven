@@ -11,24 +11,25 @@ Phase 1: Only LOGS_AND_ERRORS extractor implemented
 Phase 2-4: Additional extractors and features
 """
 
-import time
 import logging
-from typing import Optional, TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, Optional
+
+from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models.api import (
     DataType,
-    PreprocessedData,
     ExtractionMetadata,
+    PreprocessedData,
     SourceMetadata,
 )
 from faultmaven.services.preprocessing.classifier import DataClassifier
 from faultmaven.services.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
-from faultmaven.infrastructure.security.redaction import DataSanitizer
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 logger = logging.getLogger(__name__)
 

@@ -17,15 +17,15 @@ Usage:
     scheduler.shutdown()
 """
 
+import asyncio
 import logging
 from typing import Optional
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-import asyncio
 
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.models.interfaces_case import ICaseStore
-
 
 logger = logging.getLogger(__name__)
 

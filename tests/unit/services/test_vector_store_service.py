@@ -11,21 +11,22 @@ Tests cover:
 - Metadata filtering
 """
 
-import pytest
-import tempfile
 import shutil
-from typing import List, Dict, Any
+import tempfile
+from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
-from faultmaven.modules.knowledge.domain.services.vector_store_service import (
-    VectorStoreService,
-)
+import pytest
+
 from faultmaven.exceptions import (
     VectorStoreConnectionError,
     VectorStoreOperationError,
 )
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     EMBEDDING_DIMENSIONS,
+)
+from faultmaven.modules.knowledge.domain.services.vector_store_service import (
+    VectorStoreService,
 )
 
 

@@ -8,12 +8,12 @@ The endpoint creator functions exist in faultmaven.api.protection but haven't be
 added to the router. These tests are skipped until the endpoints are implemented.
 """
 
+from unittest.mock import AsyncMock, Mock, patch
+
 import pytest
-from httpx import AsyncClient, ASGITransport
-from unittest.mock import Mock, AsyncMock, patch
+from httpx import ASGITransport, AsyncClient
 
 from faultmaven.main import app
-
 
 pytestmark = pytest.mark.skip(
     reason="Protection endpoints not yet registered in main app - endpoint creator functions exist but aren't added to router"

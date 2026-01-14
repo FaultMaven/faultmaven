@@ -29,7 +29,7 @@ Core Design Principles:
 import logging
 import uuid
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from fastapi import (
     APIRouter,
@@ -38,15 +38,15 @@ from fastapi import (
     Form,
     HTTPException,
     Request,
-    UploadFile,
     Response,
+    UploadFile,
 )
 
+from faultmaven.api.v1.role_dependencies import require_admin
+from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
+from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.auth import DevUser
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
-from faultmaven.api.v1.role_dependencies import require_admin
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )

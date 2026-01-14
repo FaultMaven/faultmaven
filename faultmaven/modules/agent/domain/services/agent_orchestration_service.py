@@ -26,15 +26,6 @@ from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from faultmaven.services.base import BaseService
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.modules.case.contracts import ICaseRepository
-from faultmaven.modules.agent.domain.models.agent_execution import (
-    AgentExecution,
-    AgentToolCall,
-    AgentType,
-    ExecutionStatus,
-)
 from faultmaven.domain.events import (
     AgentContext,
     ExecutionEvent,
@@ -45,22 +36,31 @@ from faultmaven.domain.events import (
     MessageRole,
     Tool,
     ToolCall,
-    ToolResult as DomainToolResult,
+)
+from faultmaven.domain.events import ToolResult as DomainToolResult
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    LLMException,
+    NotFoundError,
+    ServiceError,
+    ValidationException,
+)
+from faultmaven.integrations.llm_client import LLMClient, LLMProvider, create_llm_client
+from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.modules.agent.domain.models.agent_execution import (
+    AgentExecution,
+    AgentToolCall,
+    AgentType,
+    ExecutionStatus,
 )
 from faultmaven.modules.agent.tools.base import (
     AgentToolRegistry,
     ToolContext,
-    tool_registry as agent_tool_registry,
 )
-from faultmaven.integrations.llm_client import LLMClient, LLMProvider, create_llm_client
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ConflictError,
-    ValidationException,
-    ServiceError,
-    LLMException,
-)
+from faultmaven.modules.agent.tools.base import tool_registry as agent_tool_registry
+from faultmaven.modules.case.contracts import ICaseRepository
+from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 

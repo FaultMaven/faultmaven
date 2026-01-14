@@ -4,15 +4,15 @@ Handles OTHER and unsupported data types with basic text processing.
 """
 
 import logging
-import uuid
 import time
+import uuid
 from typing import Optional
 
 from faultmaven.models.api import (
     DataType,
+    ExtractionMetadata,
     PreprocessedData,
     SourceMetadata,
-    ExtractionMetadata,
 )
 from faultmaven.models.interfaces import IPreprocessor
 

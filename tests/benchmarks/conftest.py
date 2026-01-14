@@ -8,14 +8,10 @@ import asyncio
 from typing import AsyncGenerator
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
-)
-from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
-    DatabaseSessionRepository,
 )
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
@@ -24,6 +20,10 @@ from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
 # AgentExecutionRepository removed - agent executions now handled by ICaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
+)
+from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
+    DatabaseSessionRepository,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,

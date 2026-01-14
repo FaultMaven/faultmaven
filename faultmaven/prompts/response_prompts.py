@@ -7,10 +7,10 @@ These prompts work alongside the base system prompts to provide specific guidanc
 for different response scenarios.
 """
 
-from typing import Dict, Any, Optional
-from faultmaven.models.api import ResponseType
-from faultmaven.config.settings import get_settings
+from typing import Any, Dict, Optional
 
+from faultmaven.config.settings import get_settings
+from faultmaven.models.api import ResponseType
 
 # Response-type-specific prompt templates
 RESPONSE_TYPE_PROMPTS = {

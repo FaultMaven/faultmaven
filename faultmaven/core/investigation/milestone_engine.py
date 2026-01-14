@@ -26,39 +26,38 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.case.contracts import (
     Case,
     CaseStatus,
+    ConfidenceLevel,
     ConsultingData,
+    DegradedMode,
+    DegradedModeType,
     Evidence,
     EvidenceCategory,
     EvidenceForm,
     EvidenceSourceType,
+    EvidenceStance,
     Hypothesis,
     HypothesisCategory,
+    HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisStatus,
-    HypothesisEvidenceLink,
-    EvidenceStance,
+    InvestigationPath,
     InvestigationProgress,
     InvestigationStage,
     PathSelection,
-    InvestigationPath,
     ProblemVerification,
+    RootCauseConclusion,
     Solution,
     SolutionType,
-    TurnProgress,
-    TurnOutcome,
     TemporalState,
+    TurnOutcome,
+    TurnProgress,
     UrgencyLevel,
     WorkingConclusion,
-    RootCauseConclusion,
-    ConfidenceLevel,
-    DegradedMode,
-    DegradedModeType,
 )
-from faultmaven.models.interfaces import ILLMProvider
-
 
 logger = logging.getLogger(__name__)
 

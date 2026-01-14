@@ -21,17 +21,17 @@ Usage:
     active_connections.dec()
 """
 
-import os
 import logging
-from typing import Optional, List, Dict, Any
+import os
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 # Feature detection
 try:
     from prometheus_client import Counter as PrometheusCounter
-    from prometheus_client import Histogram as PrometheusHistogram
     from prometheus_client import Gauge as PrometheusGauge
+    from prometheus_client import Histogram as PrometheusHistogram
     from prometheus_client import Info as PrometheusInfo
     from prometheus_client import Summary as PrometheusSummary
 

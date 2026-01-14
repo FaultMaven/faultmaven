@@ -22,11 +22,11 @@ Usage:
 
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from sqlalchemy import select, func, delete, update, or_, and_
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -35,34 +35,34 @@ from faultmaven.infrastructure.persistence.case_repository import (
     RepositoryException,
 )
 from faultmaven.infrastructure.persistence.models import (
+    CaseMessageModel,
     CaseModel,
+    CaseStatusTransitionModel,
+    CaseTagModel,
     EvidenceModel,
     HypothesisModel,
     SolutionModel,
-    CaseMessageModel,
     UploadedFileModel,
-    CaseStatusTransitionModel,
-    CaseTagModel,
 )
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
-    InvestigationProgress,
-    TurnProgress,
-    UploadedFile,
+    CaseStatusTransition,
+    ConsultingData,
+    DegradedMode,
+    DocumentationData,
+    EscalationState,
     Evidence,
     Hypothesis,
-    Solution,
-    ConsultingData,
-    ProblemVerification,
-    WorkingConclusion,
-    RootCauseConclusion,
-    DegradedMode,
-    EscalationState,
-    DocumentationData,
-    PathSelection,
-    CaseStatusTransition,
+    InvestigationProgress,
     InvestigationStrategy,
+    PathSelection,
+    ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    TurnProgress,
+    UploadedFile,
+    WorkingConclusion,
 )
 
 logger = logging.getLogger(__name__)

@@ -12,7 +12,7 @@ Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 """
 
 from enum import Enum
-from typing import List, Set, FrozenSet
+from typing import FrozenSet, List, Set
 
 
 class Role(str, Enum):

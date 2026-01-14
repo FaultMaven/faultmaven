@@ -16,23 +16,24 @@ Usage:
     python -m faultmaven.scripts.ingest_runbooks --technology kubernetes --force-reingest
 """
 
-import asyncio
 import argparse
+import asyncio
 import glob
 import hashlib
 import json
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
-from datetime import datetime, timezone
+
 from faultmaven.utils.serialization import to_json_compatible
 
 try:
     import yaml
     from rich.console import Console
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
     from rich.table import Table
 except ImportError:
     print("Error: Required packages not installed.")

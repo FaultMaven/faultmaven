@@ -9,12 +9,13 @@ This module contains foundational models used throughout the application:
 """
 
 from datetime import datetime, timezone
-from faultmaven.utils.serialization import to_json_compatible
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
+
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class AgentStateEnum(str, Enum):

@@ -15,38 +15,38 @@ Usage:
         # Use services for operations...
 """
 
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.services.case_service import APICaseService
-from faultmaven.services.investigation_session_service import (
-    APIInvestigationSessionService,
-)
-from faultmaven.services.file_storage_service import FileStorageService
-from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
-from faultmaven.infrastructure.persistence.repository_factory import (
-    get_case_repository,
-    get_investigation_session_repository,
-    get_evidence_artifact_repository,
-    get_knowledge_item_repository,
-    STORAGE_TYPE_DATABASE,
-)
+from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
+from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
+    EvidenceArtifactRepository,
+)
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
-from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
-    EvidenceArtifactRepository,
+from faultmaven.infrastructure.persistence.repository_factory import (
+    STORAGE_TYPE_DATABASE,
+    get_case_repository,
+    get_evidence_artifact_repository,
+    get_investigation_session_repository,
+    get_knowledge_item_repository,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
-from faultmaven.config.settings import get_settings
+from faultmaven.services.case_service import APICaseService
+from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
+from faultmaven.services.file_storage_service import FileStorageService
+from faultmaven.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class ServiceFactory:
@@ -201,12 +201,12 @@ class ServiceFactory:
             UserService uses InMemoryUserRepository for development.
             In production, this should use PostgreSQLUserRepository.
         """
+        from faultmaven.api.middleware.auth import get_auth_service
         from faultmaven.infrastructure.persistence.user_repository import (
             InMemoryUserRepository,
             PostgreSQLUserRepository,
         )
         from faultmaven.services.user_service import UserService
-        from faultmaven.api.middleware.auth import get_auth_service
 
         # Use PostgreSQL for production, InMemory for development
         # For now, default to InMemory

@@ -8,10 +8,10 @@ Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 
 from typing import Optional
 
-from faultmaven.providers.tenancy.base import TenantProvider
-from faultmaven.models.interfaces_user import Organization, IOrganizationRepository
+from faultmaven.exceptions import AuthorizationError, NotFoundError, ValidationException
+from faultmaven.models.interfaces_user import IOrganizationRepository, Organization
 from faultmaven.models.user import User
-from faultmaven.exceptions import NotFoundError, AuthorizationError, ValidationException
+from faultmaven.providers.tenancy.base import TenantProvider
 
 
 class MultiTenantProvider(TenantProvider):

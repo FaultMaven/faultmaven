@@ -12,35 +12,35 @@ Key Endpoints:
 - Team discovery
 """
 
-from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
 import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     HTTPException,
     Path,
     Query,
     Request,
     status,
-    Body,
 )
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from faultmaven.modules.auth.domain.models.organization import Team, TeamMember
-from faultmaven.modules.auth.domain.services.team_service import TeamService
 from faultmaven.api.v1.auth_dependencies import (
-    require_authentication,
     get_current_user_id,
+    require_authentication,
 )
 from faultmaven.exceptions import (
-    ValidationException,
-    ServiceException,
     NotFoundError,
     PermissionDeniedException,
+    ServiceException,
+    ValidationException,
 )
+from faultmaven.modules.auth.domain.models.organization import Team, TeamMember
+from faultmaven.modules.auth.domain.services.team_service import TeamService
 
 # Create router
 router = APIRouter(prefix="/teams", tags=["teams"])

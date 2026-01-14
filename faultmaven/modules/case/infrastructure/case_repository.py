@@ -8,26 +8,26 @@ import json
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
-    InvestigationProgress,
-    TurnProgress,
-    UploadedFile,
+    CaseStatusTransition,
+    ConsultingData,
+    DegradedMode,
+    DocumentationData,
+    EscalationState,
     Evidence,
     Hypothesis,
-    Solution,
-    ConsultingData,
-    ProblemVerification,
-    WorkingConclusion,
-    RootCauseConclusion,
-    DegradedMode,
-    EscalationState,
-    DocumentationData,
+    InvestigationProgress,
     PathSelection,
-    CaseStatusTransition,
+    ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    TurnProgress,
+    UploadedFile,
+    WorkingConclusion,
 )
 
 if TYPE_CHECKING:
@@ -581,9 +581,10 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def add_report(self, report: "CaseReport") -> "CaseReport":
         """Add report to memory."""
+        from datetime import timezone
+
         from faultmaven.modules.report.domain.models import CaseReport, ReportType
         from faultmaven.utils.serialization import to_json_compatible
-        from datetime import timezone
 
         # If this is marked as current, unmark other reports of the same type for this case
         if report.is_current:
@@ -639,8 +640,9 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def update_report(self, report: "CaseReport") -> "CaseReport":
         """Update report in memory."""
-        from faultmaven.utils.serialization import to_json_compatible
         from datetime import timezone
+
+        from faultmaven.utils.serialization import to_json_compatible
 
         if report.report_id not in self._reports:
             raise RepositoryException(f"Report {report.report_id} not found")
@@ -685,8 +687,9 @@ class InMemoryCaseRepository(CaseRepository):
         tags: Optional[List[str]] = None,
     ) -> Any:
         """Create standalone evidence record (in-memory implementation)."""
-        from uuid import uuid4
         from datetime import datetime, timezone
+        from uuid import uuid4
+
         from faultmaven.modules.evidence.domain.models import (
             EvidenceArtifact,
             EvidenceArtifactType,
@@ -739,8 +742,9 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def list_standalone_evidence(self, filters: Any) -> tuple[List[Any], int]:
         """List standalone evidence with filters (in-memory implementation)."""
-        from faultmaven.modules.evidence.domain.models import EvidenceListFilter
         from uuid import UUID
+
+        from faultmaven.modules.evidence.domain.models import EvidenceListFilter
 
         all_evidence = list(self._standalone_evidence.values())
         filtered = all_evidence
@@ -807,6 +811,7 @@ class InMemoryCaseRepository(CaseRepository):
     ) -> Optional[Any]:
         """Link standalone evidence to a case (in-memory implementation)."""
         from datetime import datetime, timezone
+
         from faultmaven.modules.evidence.domain.models import EvidenceArtifact
 
         evidence = self._standalone_evidence.get(evidence_id)
@@ -846,8 +851,9 @@ class InMemoryCaseRepository(CaseRepository):
 
     async def update_standalone_evidence(self, evidence: Any) -> Any:
         """Update standalone evidence record (in-memory implementation)."""
-        from faultmaven.modules.evidence.domain.models import EvidenceArtifact
         from datetime import datetime, timezone
+
+        from faultmaven.modules.evidence.domain.models import EvidenceArtifact
 
         evidence_id = getattr(evidence, "evidence_id", None)
         if not evidence_id or evidence_id not in self._standalone_evidence:
@@ -951,8 +957,8 @@ class InMemoryCaseRepository(CaseRepository):
     ) -> tuple[List[Any], int]:
         """List agent executions for a case with optional filters (in-memory implementation)."""
         from faultmaven.modules.agent.domain.models.agent_execution import (
-            ExecutionStatus,
             AgentType,
+            ExecutionStatus,
         )
 
         # Filter by case
@@ -1592,6 +1598,7 @@ class PostgreSQLCaseRepository(CaseRepository):
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """Compute analytics from PostgreSQL."""
         from sqlalchemy import text
+
         from faultmaven.utils.serialization import to_json_compatible
 
         query = text(
@@ -1653,8 +1660,9 @@ class PostgreSQLCaseRepository(CaseRepository):
         self, max_age_days: int = 90, batch_size: int = 100
     ) -> int:
         """Clean up expired cases from PostgreSQL."""
-        from sqlalchemy import text
         from datetime import timedelta, timezone
+
+        from sqlalchemy import text
 
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 

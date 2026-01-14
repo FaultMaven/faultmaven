@@ -22,12 +22,12 @@ Design Principles:
 - Easy to test and mock
 """
 
-import uuid
 import logging
+import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import HTTPException, Depends, Header, Request
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPBearer
 
 from faultmaven.models.auth import DevUser

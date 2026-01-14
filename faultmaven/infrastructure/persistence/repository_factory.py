@@ -21,10 +21,10 @@ Usage:
         repo = await get_case_repository_async(session)
 """
 
-import os
 import logging
-from typing import Optional, AsyncGenerator
+import os
 from contextlib import asynccontextmanager
+from typing import AsyncGenerator, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,30 +32,30 @@ from faultmaven.infrastructure.persistence.case_repository import (
     CaseRepository,
     InMemoryCaseRepository,
 )
+from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
-    SessionRepository,
-    DatabaseSessionRepository,
-    InMemorySessionRepository,
-)
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
-    EvidenceArtifactRepository,
     DatabaseEvidenceArtifactRepository,
+    EvidenceArtifactRepository,
     InMemoryEvidenceArtifactRepository,
 )
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
-    InvestigationSessionRepository,
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
+    InvestigationSessionRepository,
+)
+from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
+    DatabaseSessionRepository,
+    InMemorySessionRepository,
+    SessionRepository,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
-    KnowledgeItemRepository,
     DatabaseKnowledgeItemRepository,
     InMemoryKnowledgeItemRepository,
+    KnowledgeItemRepository,
 )
-from faultmaven.infrastructure.persistence.database import get_db_session
 
 logger = logging.getLogger(__name__)
 

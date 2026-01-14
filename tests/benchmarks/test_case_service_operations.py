@@ -17,26 +17,25 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import (
-    create_async_engine,
-    async_sessionmaker,
     AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
 
-from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
-)
-from faultmaven.infrastructure.persistence.investigation_session_repository import (
-    InMemoryInvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     InMemoryEvidenceArtifactRepository,
 )
+from faultmaven.infrastructure.persistence.investigation_session_repository import (
+    InMemoryInvestigationSessionRepository,
+)
+from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.modules.case.domain.models import CaseSeverity
 
 # AgentExecutionRepository removed - APICaseService now uses case_repo
 from faultmaven.services.case_service import APICaseService
-from faultmaven.modules.case.domain.models import CaseSeverity
-
 
 # ============================================================
 # Fixtures

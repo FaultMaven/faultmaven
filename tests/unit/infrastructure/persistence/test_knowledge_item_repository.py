@@ -3,13 +3,14 @@
 Tests both InMemoryKnowledgeItemRepository and the repository interface.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
-from datetime import datetime, timezone, timedelta
 
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
     KnowledgeItem,
     KnowledgeItemType,
-    EMBEDDING_DIMENSIONS,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     InMemoryKnowledgeItemRepository,

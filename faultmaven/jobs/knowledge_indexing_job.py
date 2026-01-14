@@ -24,14 +24,13 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
-    KnowledgeItemRepository,
-)
+from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem
 from faultmaven.modules.knowledge.domain.services.search_service import (
     KnowledgeSearchService,
 )
-from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem
-
+from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
+    KnowledgeItemRepository,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -6,15 +6,15 @@ variables with sensible defaults.
 """
 
 import os
-from typing import Dict, Any, Optional
 from datetime import timedelta
+from typing import Any, Dict, Optional
 
 from ..models.protection import (
+    DeduplicationConfig,
+    LimitType,
     ProtectionSettings,
     RateLimitConfig,
-    DeduplicationConfig,
     TimeoutConfig,
-    LimitType,
 )
 
 

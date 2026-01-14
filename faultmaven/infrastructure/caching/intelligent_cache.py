@@ -27,15 +27,15 @@ import hashlib
 import json
 import logging
 import pickle
-import time
-from collections import defaultdict, Counter
-from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, Optional, List, Tuple, Union, Callable, Set
-import threading
-import weakref
-from concurrent.futures import ThreadPoolExecutor
 import statistics
+import threading
+import time
+import weakref
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector

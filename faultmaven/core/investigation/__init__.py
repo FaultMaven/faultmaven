@@ -14,35 +14,30 @@ Components:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from faultmaven.core.investigation.phases import (
-    PhaseDefinition,
-    PhaseTransitionRule,
-    PhaseCompletionCriteria,
-    get_phase_definition,
-    can_transition,
-    detect_entry_phase,
-)
-
-from faultmaven.core.investigation.ooda_engine import (
-    OODAEngine,
-    AdaptiveIntensityController,
-)
-
 from faultmaven.core.investigation.engagement_modes import (
     EngagementModeManager,
     ProblemSignalDetector,
 )
-
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
     create_hypothesis_manager,
 )
-
 from faultmaven.core.investigation.memory_manager import (
     HierarchicalMemoryManager,
     MemoryCompressionEngine,
 )
-
+from faultmaven.core.investigation.ooda_engine import (
+    AdaptiveIntensityController,
+    OODAEngine,
+)
+from faultmaven.core.investigation.phases import (
+    PhaseCompletionCriteria,
+    PhaseDefinition,
+    PhaseTransitionRule,
+    can_transition,
+    detect_entry_phase,
+    get_phase_definition,
+)
 from faultmaven.core.investigation.strategy_selector import (
     InvestigationStrategySelector,
     StrategyConfig,

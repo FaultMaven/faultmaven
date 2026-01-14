@@ -5,9 +5,9 @@ This module provides strategy-specific guidance for Active Incident vs Post-Mort
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from typing import Dict, Any
-from faultmaven.modules.agent.domain.models.investigation import InvestigationStrategy
+from typing import Any, Dict
 
+from faultmaven.modules.agent.domain.models.investigation import InvestigationStrategy
 
 # =============================================================================
 # Active Incident Strategy Guidance

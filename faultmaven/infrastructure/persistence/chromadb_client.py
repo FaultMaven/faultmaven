@@ -7,9 +7,11 @@ logging, retry logic, circuit breaker patterns, and comprehensive error handling
 Configuration is read from the unified settings system (faultmaven.config.settings).
 """
 
+from typing import Any, Dict, List, Optional, Union
+
 import chromadb
 from chromadb.config import Settings
-from typing import Any, Dict, List, Optional, Union
+
 from faultmaven.infrastructure.base_client import BaseExternalClient
 
 

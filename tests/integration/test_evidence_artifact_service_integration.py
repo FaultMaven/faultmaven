@@ -13,13 +13,18 @@ Requirements:
 
 import os
 import tempfile
-import pytest
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.exceptions import (
+    AuthorizationError,
+    NotFoundError,
+    ServiceError,
+    ValidationException,
+)
 from faultmaven.infrastructure.persistence.database import reset_engine
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
@@ -27,8 +32,7 @@ from faultmaven.infrastructure.persistence.database_case_repository import (
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
 )
-from faultmaven.services.file_storage_service import FileStorageService
-from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
@@ -39,14 +43,9 @@ from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifactType,
     StorageBackend,
 )
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ValidationException,
-    ServiceError,
-)
+from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
+from faultmaven.services.file_storage_service import FileStorageService
 from tests.utils import generate_case_id, generate_evidence_id
-
 
 # ============================================================
 # Helper Functions

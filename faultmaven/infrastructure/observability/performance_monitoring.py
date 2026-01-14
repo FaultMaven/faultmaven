@@ -19,12 +19,12 @@ Performance Overhead Target: < 2ms per monitored operation
 
 import asyncio
 import functools
+import inspect
 import logging
 import time
-from contextlib import contextmanager, asynccontextmanager
-from typing import Dict, Any, Optional, Callable, List, Union, Tuple
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
-import inspect
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
 from faultmaven.models.interfaces import ITracer

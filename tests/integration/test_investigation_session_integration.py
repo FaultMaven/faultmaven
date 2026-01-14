@@ -11,15 +11,14 @@ Requirements:
 """
 
 import os
-import pytest
-from datetime import datetime, timezone, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
-import time
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.database import reset_engine
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
@@ -28,10 +27,10 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
 )
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.repository_factory import (
     reset_inmemory_investigation_session_repository,
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus, ConsultingData
 from faultmaven.models.investigation_session import (
     InvestigationSession,
     SessionStatus,
@@ -42,8 +41,8 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentType,
     ExecutionStatus,
 )
+from faultmaven.modules.case.domain.models import Case, CaseStatus, ConsultingData
 from tests.utils import generate_case_id, generate_session_id
-
 
 # ============================================================
 # Test Fixtures
@@ -343,12 +342,14 @@ async def test_four_level_cascade_delete_chain(
     Note: InvestigationSession → AgentExecution link is ON DELETE SET NULL,
     but AgentExecution → Case is CASCADE, so deleting the case cascades down.
     """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
     from faultmaven.infrastructure.persistence.models import (
         AgentExecutionModel,
         AgentToolCallV2Model,
     )
-    from sqlalchemy import select
-    from datetime import datetime, timezone
 
     # Create case
     case = Case(

@@ -18,7 +18,7 @@ which handles internal case operations and conversation management.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
 
 from faultmaven.services.base import BaseService
@@ -27,27 +27,27 @@ from faultmaven.services.base import BaseService
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore
 # Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import (
-    Case,
-    CaseStatus,
-    CaseSeverity,
-    InvestigationStrategy,
-    ICaseRepository,
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    RepositoryError,
+    ServiceError,
+    ValidationException,
 )
-from faultmaven.modules.evidence.contracts import EvidenceListFilter
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
-from faultmaven.providers.tenancy.base import TenantProvider
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ValidationException,
-    ServiceError,
-    RepositoryError,
-    ConflictError,
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseSeverity,
+    CaseStatus,
+    ICaseRepository,
+    InvestigationStrategy,
 )
+from faultmaven.modules.evidence.contracts import EvidenceListFilter
+from faultmaven.providers.tenancy.base import TenantProvider
 
 
 class APICaseService(BaseService):

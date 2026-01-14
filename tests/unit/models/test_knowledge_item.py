@@ -3,13 +3,14 @@
 Tests the KnowledgeItem dataclass, validation, and helper methods.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
-from datetime import datetime, timezone, timedelta
 
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
     KnowledgeItem,
     KnowledgeItemType,
-    EMBEDDING_DIMENSIONS,
 )
 from tests.utils import generate_item_id, generate_org_id
 

@@ -11,24 +11,24 @@ Tests verify:
 - Optional fields are properly handled
 """
 
-import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseStatus,
-    UploadedFile,
-)
 from faultmaven.infrastructure.persistence.case_repository import (
     InMemoryCaseRepository,
 )
 from faultmaven.infrastructure.persistence.postgresql_hybrid_case_repository import (
     PostgreSQLHybridCaseRepository,
 )
-
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    UploadedFile,
+)
 
 # ============================================================
 # Schema Consistency Tests
@@ -443,7 +443,7 @@ async def test_db_session():
         yield None  # Skip integration tests
         return
 
-    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from sqlalchemy.orm import sessionmaker
 
     engine = create_async_engine(db_url, echo=False)

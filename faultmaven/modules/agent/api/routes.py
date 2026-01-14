@@ -36,8 +36,8 @@ from faultmaven.exceptions import (
     ServiceError,
     ValidationException,
 )
-from faultmaven.modules.agent.domain.models.agent_execution import AgentType
 from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.modules.agent.domain.models.agent_execution import AgentType
 from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
     AgentOrchestrationService,
 )

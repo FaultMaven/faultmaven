@@ -11,9 +11,9 @@ Tests for:
 Coverage target: 90%+
 """
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
-import uuid
 
 import pytest
 
@@ -24,8 +24,8 @@ from faultmaven.exceptions import (
 )
 from faultmaven.infrastructure.persistence.user_repository import (
     InMemoryUserRepository,
-    User as RepositoryUser,
 )
+from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
 from faultmaven.services.auth_service import AuthenticationError, AuthService
 from faultmaven.services.user_service import UserService
 

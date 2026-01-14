@@ -6,18 +6,19 @@ following FaultMaven's interface-based dependency injection pattern.
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, List, Optional
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
 from faultmaven.modules.case.domain.models import Case, ParticipantRole
+
+from .api import CaseMessagesResponse
 from .api_models import (
     CaseListFilter,
     CaseMessage,
+    CaseParticipant,
     CaseSearchRequest,
     CaseSummary,
-    CaseParticipant,
 )
-from .api import CaseMessagesResponse
 
 
 class ICaseStore(ABC):

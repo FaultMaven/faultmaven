@@ -10,8 +10,8 @@ Design Reference:
 """
 
 from faultmaven.modules.agent.domain.models.investigation import (
-    InvestigationState,
     AnomalyFrame,
+    InvestigationState,
 )
 
 

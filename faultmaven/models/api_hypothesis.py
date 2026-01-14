@@ -9,8 +9,8 @@ Design: Follows TASK-024 (Report Module) API model pattern.
 from datetime import datetime
 from decimal import Decimal
 from typing import Dict, List, Optional
-from pydantic import BaseModel, Field, field_validator
 
+from pydantic import BaseModel, Field, field_validator
 
 # ============================================================
 # Hypothesis API Models

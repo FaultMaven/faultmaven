@@ -16,8 +16,8 @@ Usage:
 """
 
 import logging
-from typing import Optional
 from functools import lru_cache
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 

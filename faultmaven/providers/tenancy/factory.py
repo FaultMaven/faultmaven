@@ -8,14 +8,14 @@ Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 
 import logging
 
-from faultmaven.providers.tenancy.base import TenantProvider
-from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
-from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
-from faultmaven.models.interfaces_user import IOrganizationRepository
+from faultmaven.config.settings import TenantProvider as TenantProviderEnum
 from faultmaven.config.settings import (
     get_settings,
-    TenantProvider as TenantProviderEnum,
 )
+from faultmaven.models.interfaces_user import IOrganizationRepository
+from faultmaven.providers.tenancy.base import TenantProvider
+from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
+from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 logger = logging.getLogger(__name__)
 

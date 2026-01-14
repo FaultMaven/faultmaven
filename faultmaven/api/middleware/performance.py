@@ -5,18 +5,20 @@ Provides request-level performance tracking with minimal overhead
 and integration with the monitoring framework.
 """
 
-import time
 import logging
-from typing import Dict, Any, Optional
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
-from datetime import datetime, timezone
+
 from faultmaven.utils.serialization import to_json_compatible
 
-from ...infrastructure.monitoring.metrics_collector import metrics_collector
-from ...infrastructure.monitoring.apm_integration import apm_integration
-from ...infrastructure.monitoring.alerting import alert_manager
 from ...infrastructure.logging.coordinator import LoggingCoordinator
+from ...infrastructure.monitoring.alerting import alert_manager
+from ...infrastructure.monitoring.apm_integration import apm_integration
+from ...infrastructure.monitoring.metrics_collector import metrics_collector
 
 
 class PerformanceTrackingMiddleware(BaseHTTPMiddleware):

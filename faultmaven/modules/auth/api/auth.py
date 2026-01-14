@@ -19,29 +19,29 @@ Security Notes:
 - Structured error responses
 """
 
-import uuid
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
-from faultmaven.utils.serialization import to_json_compatible
 
-from fastapi import APIRouter, HTTPException, Depends, Header, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from fastapi.security import HTTPBearer
 from pydantic import ValidationError
 
+from faultmaven.container import container
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.modules.auth.domain.models.api_auth import (
-    DevLoginRequest,
-    AuthTokenResponse,
-    LogoutResponse,
-    UserProfile,
-    UserInfoResponse,
-    AuthError,
-    TokenValidationError,
     AuthenticationRequiredError,
+    AuthError,
+    AuthTokenResponse,
+    DevLoginRequest,
+    LogoutResponse,
+    TokenValidationError,
+    UserInfoResponse,
+    UserProfile,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser, TokenStatus
-from faultmaven.container import container
+from faultmaven.utils.serialization import to_json_compatible
 
 # Initialize router and logger
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -53,17 +53,16 @@ security = HTTPBearer(auto_error=False)
 
 # Import clean authentication dependencies
 from faultmaven.api.v1.auth_dependencies import (
+    check_auth_services_health,
+    extract_bearer_token,
     get_token_manager,
     get_user_store,
     require_authentication,
-    extract_bearer_token,
-    check_auth_services_health,
 )
 from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
-
 
 # Authentication endpoints
 

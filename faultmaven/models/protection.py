@@ -7,10 +7,12 @@ for rate limiting, request deduplication, and timeout management.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from faultmaven.utils.serialization import to_json_compatible
 from enum import Enum
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field
+
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class ProtectionType(str, Enum):

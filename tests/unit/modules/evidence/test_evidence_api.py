@@ -4,12 +4,12 @@ Tests the FastAPI endpoints with mocked services.
 """
 
 import io
-import pytest
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
@@ -20,7 +20,6 @@ from faultmaven.modules.evidence.domain.models import (
 )
 
 from .conftest import create_sample_evidence
-
 
 # =============================================================================
 # Mock Service for API Tests
@@ -115,7 +114,8 @@ def mock_user():
 @pytest.fixture
 def app_with_mocks(mock_evidence_service, mock_user):
     """Create FastAPI app with mocked dependencies."""
-    from fastapi import FastAPI, Depends
+    from fastapi import Depends, FastAPI
+
     from faultmaven.modules.evidence.api.routes import router
 
     app = FastAPI()
@@ -141,8 +141,8 @@ def app_with_mocks(mock_evidence_service, mock_user):
 @pytest.fixture
 def client(app_with_mocks, mock_evidence_service, mock_user):
     """Create test client with mocked dependencies."""
-    from faultmaven.modules.evidence.api.routes import get_evidence_service
     from faultmaven.api.dependencies import get_current_user
+    from faultmaven.modules.evidence.api.routes import get_evidence_service
 
     app_with_mocks.dependency_overrides[get_evidence_service] = (
         lambda: mock_evidence_service

@@ -3,16 +3,16 @@
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Dict, Optional
 from datetime import datetime, timezone
-from faultmaven.utils.serialization import to_json_compatible
+from typing import Any, Callable, Dict, Optional
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
-from faultmaven.models.behavioral import RiskLevel, ProtectionDecision
+from faultmaven.models.behavioral import ProtectionDecision, RiskLevel
 from faultmaven.models.interfaces import ISessionStore
+from faultmaven.utils.serialization import to_json_compatible
 
 # No direct imports from infrastructure layer - all dependencies via DI
 

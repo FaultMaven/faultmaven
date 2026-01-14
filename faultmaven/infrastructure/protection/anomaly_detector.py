@@ -1,21 +1,22 @@
 # File: faultmaven/infrastructure/protection/anomaly_detector.py
 
 import asyncio
-import logging
-import pickle
-import numpy as np
-from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime, timezone, timedelta
-from collections import deque
 import json
+import logging
 import os
+import pickle
+from collections import deque
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
 
 # ML imports with graceful fallbacks
 try:
-    from sklearn.ensemble import IsolationForest
-    from sklearn.preprocessing import StandardScaler
     from sklearn.cluster import DBSCAN
     from sklearn.decomposition import PCA
+    from sklearn.ensemble import IsolationForest
+    from sklearn.preprocessing import StandardScaler
 
     SKLEARN_AVAILABLE = True
 except ImportError:
@@ -23,10 +24,10 @@ except ImportError:
     logging.warning("scikit-learn not available, using fallback anomaly detection")
 
 from faultmaven.models.behavioral import (
-    BehaviorVector,
     AnomalyResult,
     AnomalyType,
     BehaviorProfile,
+    BehaviorVector,
     TemporalAnomaly,
 )
 

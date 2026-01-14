@@ -37,12 +37,12 @@ from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.infrastructure.persistence.models import EvidenceArtifactModel
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,
 )
-from faultmaven.infrastructure.persistence.models import EvidenceArtifactModel
 
 logger = logging.getLogger(__name__)
 

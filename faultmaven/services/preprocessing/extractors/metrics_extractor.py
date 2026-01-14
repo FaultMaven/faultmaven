@@ -5,14 +5,14 @@ Analyzes quantitative performance data (CSV, JSON time-series) and detects
 anomalies using statistical methods. No LLM calls required.
 """
 
-import re
 import json
-from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
+import re
 from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class MetricsAndPerformanceExtractor:

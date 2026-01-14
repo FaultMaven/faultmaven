@@ -18,34 +18,34 @@ Performance targets:
 - Indexing job (100 items): <60000ms p95
 """
 
-import pytest
-import time
+import shutil
 import statistics
 import tempfile
-import shutil
+import time
 from datetime import datetime, timezone
 from typing import List
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
+from faultmaven.jobs.knowledge_indexing_job import KnowledgeIndexingJob
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
+    KnowledgeItem,
+    KnowledgeItemType,
+)
 from faultmaven.modules.knowledge.domain.services.embedding_service import (
     EmbeddingService,
-)
-from faultmaven.modules.knowledge.domain.services.vector_store_service import (
-    VectorStoreService,
 )
 from faultmaven.modules.knowledge.domain.services.search_service import (
     KnowledgeSearchService,
 )
-from faultmaven.jobs.knowledge_indexing_job import KnowledgeIndexingJob
+from faultmaven.modules.knowledge.domain.services.vector_store_service import (
+    VectorStoreService,
+)
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     InMemoryKnowledgeItemRepository,
 )
-from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-    KnowledgeItem,
-    KnowledgeItemType,
-    EMBEDDING_DIMENSIONS,
-)
-
 
 # =============================================================================
 # Benchmark Utilities

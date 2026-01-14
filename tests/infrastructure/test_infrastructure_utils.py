@@ -7,14 +7,15 @@ architecture that achieved 80%+ improvements in Phases 1-3.
 """
 
 import asyncio
-import pytest
-import time
-import json
 import contextlib
-from typing import Dict, List, Any, AsyncGenerator, Optional
-from aiohttp import web, ClientSession
+import json
+import time
+from typing import Any, AsyncGenerator, Dict, List, Optional
+from unittest.mock import MagicMock, patch
+
+import pytest
+from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestServer
-from unittest.mock import patch, MagicMock
 
 
 # Test server utilities

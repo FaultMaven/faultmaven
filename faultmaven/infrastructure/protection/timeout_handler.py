@@ -6,12 +6,12 @@ and resource exhaustion.
 """
 
 import asyncio
-import time
 import logging
+import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional, Callable, TypeVar, Coroutine
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Callable, Coroutine, Dict, Optional, TypeVar
 
 from ...models.protection import TimeoutConfig, TimeoutError
 

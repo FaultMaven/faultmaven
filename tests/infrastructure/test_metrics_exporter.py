@@ -7,9 +7,9 @@ Verifies:
 """
 
 import os
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
 
 # =============================================================================
 # Fixtures
@@ -54,7 +54,7 @@ class TestMetricsExporterSettings:
         """Test that METRICS_EXPORTER defaults to 'none'."""
         os.environ.pop("METRICS_EXPORTER", None)
 
-        from faultmaven.config.settings import get_settings, MetricsExporter
+        from faultmaven.config.settings import MetricsExporter, get_settings
 
         settings = get_settings()
         assert settings.providers.metrics_exporter == MetricsExporter.NONE
@@ -63,7 +63,7 @@ class TestMetricsExporterSettings:
         """Test METRICS_EXPORTER=prometheus_http is recognized."""
         os.environ["METRICS_EXPORTER"] = "prometheus_http"
 
-        from faultmaven.config.settings import get_settings, MetricsExporter
+        from faultmaven.config.settings import MetricsExporter, get_settings
 
         settings = get_settings()
         assert settings.providers.metrics_exporter == MetricsExporter.PROMETHEUS_HTTP
@@ -150,6 +150,7 @@ class TestPrometheusExporter:
         with patch.dict("sys.modules", {"prometheus_client": None}):
             # Force reimport with mocked module
             import importlib
+
             from faultmaven.infrastructure.observability.metrics_exporters import (
                 prometheus,
             )
@@ -195,23 +196,23 @@ class TestLabelCardinality:
 
     def test_no_id_labels_in_predefined_metrics(self):
         """Test that predefined metrics don't use ID labels."""
-        from faultmaven.infrastructure.shims.metrics import (
-            request_counter,
-            request_duration,
-            active_sessions,
-            case_operations,
-            knowledge_queries,
-            llm_requests,
-            llm_latency,
-        )
-        from faultmaven.infrastructure.observability.metrics_exporters import (
-            FORBIDDEN_LABELS,
-        )
-
         # These are NoOpMetrics in test environment, but we can check their definitions
         # by checking the source file directly
         import inspect
+
+        from faultmaven.infrastructure.observability.metrics_exporters import (
+            FORBIDDEN_LABELS,
+        )
         from faultmaven.infrastructure.shims import metrics as metrics_module
+        from faultmaven.infrastructure.shims.metrics import (
+            active_sessions,
+            case_operations,
+            knowledge_queries,
+            llm_latency,
+            llm_requests,
+            request_counter,
+            request_duration,
+        )
 
         source = inspect.getsource(metrics_module)
 
@@ -259,11 +260,12 @@ class TestMetricsEndpointIntegration:
 
     def test_metrics_endpoint_returns_valid_response(self):
         """Test that /metrics endpoint returns a valid response."""
+        from fastapi import FastAPI
         from fastapi.testclient import TestClient
+
         from faultmaven.infrastructure.observability.metrics_exporters import (
             create_prometheus_metrics_endpoint,
         )
-        from fastapi import FastAPI
 
         # Create test app with metrics endpoint
         test_app = FastAPI()
@@ -280,7 +282,7 @@ class TestMetricsEndpointIntegration:
         os.environ["METRICS_EXPORTER"] = "none"
         os.environ["SKIP_SERVICE_CHECKS"] = "true"
 
-        from faultmaven.config.settings import get_settings, MetricsExporter
+        from faultmaven.config.settings import MetricsExporter, get_settings
 
         settings = get_settings()
         assert settings.providers.metrics_exporter == MetricsExporter.NONE

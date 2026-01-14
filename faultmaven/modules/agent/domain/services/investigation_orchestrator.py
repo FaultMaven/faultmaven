@@ -32,16 +32,16 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    ValidationException,
+)
 from faultmaven.infrastructure.persistence.hypothesis_repository import (
     HypothesisRepository,
 )
 from faultmaven.infrastructure.persistence.solution_repository import SolutionRepository
-from faultmaven.exceptions import (
-    ValidationException,
-    NotFoundError,
-    AuthorizationError,
-    ConflictError,
-)
 
 logger = logging.getLogger(__name__)
 

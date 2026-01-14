@@ -39,12 +39,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from faultmaven.infrastructure.persistence.models import (
+    InvestigationSessionModel,
+)
 from faultmaven.modules.case.domain.investigation_session import (
     InvestigationSession,
     SessionStatus,
-)
-from faultmaven.infrastructure.persistence.models import (
-    InvestigationSessionModel,
 )
 
 logger = logging.getLogger(__name__)

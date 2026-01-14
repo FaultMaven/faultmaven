@@ -14,8 +14,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from faultmaven.container.base import BaseDIContainer
     from faultmaven.config.settings import FaultMavenSettings
+    from faultmaven.container.base import BaseDIContainer
 
 logger = logging.getLogger(__name__)
 
@@ -66,17 +66,17 @@ def create_extractors() -> dict[str, Any]:
         Dict mapping extractor names to instances
     """
     from faultmaven.services.preprocessing.extractors import (
-        LogsAndErrorsExtractor,
-        StructuredConfigExtractor,
-        MetricsAndPerformanceExtractor,
-        UnstructuredTextExtractor,
-        SourceCodeExtractor,
-        VisualEvidenceExtractor,
-        TraceDataExtractor,
-        ProfilingDataExtractor,
-        ErrorReportExtractor,
-        DocumentationExtractor,
         CommandOutputExtractor,
+        DocumentationExtractor,
+        ErrorReportExtractor,
+        LogsAndErrorsExtractor,
+        MetricsAndPerformanceExtractor,
+        ProfilingDataExtractor,
+        SourceCodeExtractor,
+        StructuredConfigExtractor,
+        TraceDataExtractor,
+        UnstructuredTextExtractor,
+        VisualEvidenceExtractor,
     )
 
     return {

@@ -6,23 +6,23 @@ progressive penalties, and graceful degradation.
 """
 
 import asyncio
-import logging
-import time
 import json
+import logging
 import random
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, List, Tuple
+import time
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Tuple
 
 import redis.asyncio as aioredis
 from redis.exceptions import RedisError
 
 from ...models.protection import (
-    RateLimitConfig,
-    RateLimitState,
-    RateLimitResult,
     LimitType,
+    RateLimitConfig,
     RateLimitError,
+    RateLimitResult,
+    RateLimitState,
 )
 
 

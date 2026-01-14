@@ -6,11 +6,11 @@ for various LLM providers used by FaultMaven.
 """
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig
-from .registry import ProviderRegistry, get_registry, reset_registry
 from .fireworks_provider import FireworksProvider
-from .openai_provider import OpenAIProvider
 from .groq_provider import GroqProvider
 from .local_provider import LocalProvider
+from .openai_provider import OpenAIProvider
+from .registry import ProviderRegistry, get_registry, reset_registry
 
 __all__ = [
     "BaseLLMProvider",

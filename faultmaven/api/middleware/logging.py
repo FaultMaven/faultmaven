@@ -12,13 +12,13 @@ context across requests within the same session.
 import json
 import time
 from typing import Callable, Optional
+
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
-from faultmaven.infrastructure.logging.config import get_logger
 from faultmaven.container import BaseDIContainer
-
+from faultmaven.infrastructure.logging.config import get_logger
+from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
 
 logger = get_logger(__name__)
 

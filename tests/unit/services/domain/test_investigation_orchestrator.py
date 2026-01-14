@@ -16,18 +16,19 @@ Test Coverage:
 Testing Pattern: AsyncMock for repositories, verify business logic without database.
 """
 
-import pytest
+from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime, timezone
 
+import pytest
+
+from faultmaven.exceptions import (
+    ConflictError,
+    NotFoundError,
+    ValidationException,
+)
 from faultmaven.modules.agent.domain.services.investigation_orchestrator import (
     InvestigationOrchestrator,
-)
-from faultmaven.exceptions import (
-    ValidationException,
-    NotFoundError,
-    ConflictError,
 )
 
 

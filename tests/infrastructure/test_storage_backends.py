@@ -8,12 +8,12 @@ Verifies:
 """
 
 import os
-import pytest
 import tempfile
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # =============================================================================
 # Fixtures
@@ -234,6 +234,7 @@ class TestS3StorageBackend:
         with patch.dict("sys.modules", {"boto3": None}):
             # Force reimport
             import importlib
+
             from faultmaven.infrastructure.storage import s3
 
             # Check BOTO3_AVAILABLE flag
@@ -322,8 +323,8 @@ class TestS3StorageBackend:
         """Test S3 storage type."""
         with patch("boto3.client", return_value=mock_boto3_client):
             try:
-                from faultmaven.infrastructure.storage.s3 import S3StorageBackend
                 from faultmaven.infrastructure.storage.base import StorageType
+                from faultmaven.infrastructure.storage.s3 import S3StorageBackend
 
                 backend = S3StorageBackend(
                     bucket_name="test-bucket",
@@ -349,9 +350,9 @@ class TestStorageFactory:
         os.environ["STORAGE_BACKEND"] = "filesystem"
 
         from faultmaven.infrastructure.storage import (
+            StorageType,
             get_storage_backend,
             reset_storage_backend,
-            StorageType,
         )
 
         reset_storage_backend()
@@ -370,9 +371,9 @@ class TestStorageFactory:
     def test_factory_explicit_override(self, clean_env, temp_storage_dir):
         """Test factory accepts explicit storage type."""
         from faultmaven.infrastructure.storage import (
+            StorageType,
             get_storage_backend,
             reset_storage_backend,
-            StorageType,
         )
 
         reset_storage_backend()

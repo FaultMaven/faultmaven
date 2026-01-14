@@ -8,15 +8,17 @@ Tests all three parsing tiers:
 """
 
 import json
+
 import pytest
+
 from faultmaven.core.response_parser import (
     ResponseParser,
     parse_ooda_response,
 )
 from faultmaven.models.responses import (
-    OODAResponse,
     ConsultantResponse,
     LeadInvestigatorResponse,
+    OODAResponse,
     SuggestedAction,
     create_minimal_response,
 )

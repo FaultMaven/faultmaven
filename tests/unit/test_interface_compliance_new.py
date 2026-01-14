@@ -16,26 +16,27 @@ Architecture Compliance:
 - Graceful degradation testing for missing dependencies
 """
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch
-from typing import Any, Dict, List
 import logging
+from typing import Any, Dict, List
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 # Import interfaces - handle graceful fallback for test environments
 try:
     from faultmaven.models.interfaces import (
-        ILLMProvider,
-        ISanitizer,
-        ITracer,
+        BaseTool,
+        IConfiguration,
         IDataClassifier,
+        IKnowledgeIngester,
+        ILLMProvider,
         ILogProcessor,
-        IVectorStore,
+        ISanitizer,
         ISessionStore,
         IStorageBackend,
-        IKnowledgeIngester,
-        BaseTool,
+        ITracer,
+        IVectorStore,
         ToolResult,
-        IConfiguration,
     )
 
     INTERFACES_AVAILABLE = True

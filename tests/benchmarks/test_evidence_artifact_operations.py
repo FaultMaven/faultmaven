@@ -12,11 +12,18 @@ Run with:
     pytest tests/benchmarks/test_evidence_artifact_operations.py -m benchmark -v
 """
 
-import pytest
 import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
+
+from faultmaven.infrastructure.persistence.database_case_repository import (
+    DatabaseCaseRepository,
+)
+from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
+    DatabaseEvidenceArtifactRepository,
+)
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
@@ -27,15 +34,9 @@ from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifactType,
     StorageBackend,
 )
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
-)
-from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
-    DatabaseEvidenceArtifactRepository,
-)
+from tests.utils import generate_evidence_id
 
 from .conftest import generate_case_id
-from tests.utils import generate_evidence_id
 
 
 def create_sample_evidence(

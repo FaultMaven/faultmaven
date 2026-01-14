@@ -12,27 +12,26 @@ Coverage:
         --cov-report=term-missing
 """
 
-import pytest
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.infrastructure.persistence.case_repository import RepositoryException
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.infrastructure.persistence.case_repository import RepositoryException
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
-    InvestigationProgress,
     ConsultingData,
+    InvestigationProgress,
     InvestigationStrategy,
 )
-
 
 # ============================================================
 # Test Fixtures

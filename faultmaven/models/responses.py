@@ -7,10 +7,10 @@ defined in the prompt files, enabling the three-tier fallback parsing strategy.
 Design Reference: docs/architecture/RESPONSE_FORMAT_INTEGRATION_SPEC.md
 """
 
-from typing import List, Optional, Literal, Dict, Any
-from pydantic import BaseModel, Field
 from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
 
+from pydantic import BaseModel, Field
 
 # =============================================================================
 # Supporting Field Models

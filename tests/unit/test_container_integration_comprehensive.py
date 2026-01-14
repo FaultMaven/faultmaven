@@ -11,29 +11,29 @@ Tests coverage:
 - Dependency graph resolution
 """
 
-import os
-import tempfile
-from unittest.mock import Mock, patch, MagicMock, AsyncMock, call
-from typing import Dict, Any, List, Optional
-import pytest
 import asyncio
 import logging
+import os
+import tempfile
+from typing import Any, Dict, List, Optional
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
-from faultmaven.container import DIContainer
+import pytest
+
 from faultmaven.config.settings import get_settings, reset_settings
-
+from faultmaven.container import DIContainer
 
 # Import interfaces with fallback for testing
 try:
     from faultmaven.models.interfaces import (
-        ILLMProvider,
-        ITracer,
-        ISanitizer,
         BaseTool,
-        IVectorStore,
+        ILLMProvider,
+        ISanitizer,
         ISessionStore,
+        ITracer,
+        IVectorStore,
     )
-    from faultmaven.models.interfaces_case import ICaseStore, ICaseService
+    from faultmaven.models.interfaces_case import ICaseService, ICaseStore
 
     INTERFACES_AVAILABLE = True
 except ImportError:

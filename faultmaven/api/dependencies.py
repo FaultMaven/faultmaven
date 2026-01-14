@@ -28,15 +28,20 @@ from typing import AsyncGenerator
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.api.v1.dependencies import (
+    get_current_user,
+    get_session_id,
+    get_user_id,
+    require_authenticated_user,
+)
 from faultmaven.infrastructure.persistence.database import get_db_session
-from faultmaven.services.service_factory import ServiceFactory
 from faultmaven.services.case_service import APICaseService
+from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
+from faultmaven.services.file_storage_service import FileStorageService
 from faultmaven.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
-from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
-from faultmaven.services.file_storage_service import FileStorageService
-
+from faultmaven.services.service_factory import ServiceFactory
 
 # ============================================================
 # Re-exports from v1.dependencies
@@ -47,12 +52,6 @@ from faultmaven.services.file_storage_service import FileStorageService
 # NOTE: We avoid re-exporting functions that cause circular imports
 # (e.g., get_knowledge_service) - import those directly from v1.dependencies.
 
-from faultmaven.api.v1.dependencies import (
-    get_current_user,
-    require_authenticated_user,
-    get_user_id,
-    get_session_id,
-)
 
 __all__ = [
     # Service Factory Dependencies (TASK-011/012/013)

@@ -10,10 +10,11 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field as PydanticField
 
+from pydantic import BaseModel
+from pydantic import Field as PydanticField
 
 # =============================================================================
 # Enumerations

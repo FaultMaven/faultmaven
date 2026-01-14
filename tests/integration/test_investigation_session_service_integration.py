@@ -20,45 +20,44 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import (
-    create_async_engine,
-    async_sessionmaker,
     AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
 
-from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    ValidationException,
+)
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
-)
-from faultmaven.modules.case.infrastructure.case_repository import (
-    InMemoryCaseRepository,
 )
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
 )
-from faultmaven.services.investigation_session_service import (
-    APIInvestigationSessionService,
-)
-from faultmaven.services.case_service import APICaseService
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseStatus,
-    CaseSeverity,
-    InvestigationStrategy,
-)
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ConflictError,
-    ValidationException,
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseSeverity,
+    CaseStatus,
+    InvestigationStrategy,
 )
-
+from faultmaven.modules.case.infrastructure.case_repository import (
+    InMemoryCaseRepository,
+)
+from faultmaven.services.case_service import APICaseService
+from faultmaven.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
 
 # ============================================================
 # Fixtures

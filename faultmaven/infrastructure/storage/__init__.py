@@ -33,8 +33,8 @@ AWS credentials are loaded from environment or IAM role.
 from faultmaven.infrastructure.storage.base import (
     IFileStorageBackend,
     PresignedUrl,
-    StoredFile,
     StorageType,
+    StoredFile,
 )
 from faultmaven.infrastructure.storage.factory import (
     get_storage_backend,

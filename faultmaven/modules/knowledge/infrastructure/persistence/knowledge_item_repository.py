@@ -40,12 +40,12 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.infrastructure.persistence.models import (
+    KnowledgeItemModel,
+)
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItem,
     KnowledgeItemType,
-)
-from faultmaven.infrastructure.persistence.models import (
-    KnowledgeItemModel,
 )
 
 logger = logging.getLogger(__name__)

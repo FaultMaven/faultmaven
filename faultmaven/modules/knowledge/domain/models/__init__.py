@@ -7,9 +7,9 @@ This package contains domain models for knowledge management:
 """
 
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
     KnowledgeItem,
     KnowledgeItemType,
-    EMBEDDING_DIMENSIONS,
 )
 
 __all__ = [

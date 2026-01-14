@@ -8,13 +8,12 @@ comprehensive error handling.
 
 import asyncio
 import time
-from typing import Any, Callable, Dict, Optional, TypeVar, Union
 from abc import ABC
-from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
-from faultmaven.infrastructure.logging.unified import get_unified_logger, UnifiedLogger
-
+from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
 
 # Type variable for generic return types
 T = TypeVar("T")

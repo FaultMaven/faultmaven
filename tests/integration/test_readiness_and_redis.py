@@ -1,11 +1,10 @@
-import os
 import contextlib
+import os
 
 import pytest
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app
-
 
 pytestmark = pytest.mark.integration
 

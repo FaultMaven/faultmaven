@@ -11,32 +11,33 @@ Tests cover:
 - Error handling
 """
 
-import pytest
 from datetime import datetime, timezone
+from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
-from typing import List, Dict, Any
 
-from faultmaven.modules.knowledge.domain.services.search_service import (
-    KnowledgeSearchService,
+import pytest
+
+from faultmaven.exceptions import (
+    EmbeddingGenerationError,
+    KnowledgeBaseException,
+    VectorStoreOperationError,
+)
+from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+    EMBEDDING_DIMENSIONS,
+    KnowledgeItem,
+    KnowledgeItemType,
 )
 from faultmaven.modules.knowledge.domain.services.embedding_service import (
     EmbeddingService,
+)
+from faultmaven.modules.knowledge.domain.services.search_service import (
+    KnowledgeSearchService,
 )
 from faultmaven.modules.knowledge.domain.services.vector_store_service import (
     VectorStoreService,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     InMemoryKnowledgeItemRepository,
-)
-from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-    KnowledgeItem,
-    KnowledgeItemType,
-    EMBEDDING_DIMENSIONS,
-)
-from faultmaven.exceptions import (
-    EmbeddingGenerationError,
-    VectorStoreOperationError,
-    KnowledgeBaseException,
 )
 
 

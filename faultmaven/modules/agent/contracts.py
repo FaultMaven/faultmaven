@@ -12,7 +12,7 @@ Per Principle 2 (Vertical Modules with Contracts):
 - Internal domain models are re-exported for backward compatibility
 """
 
-from typing import Protocol, Optional, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional, Protocol
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -26,45 +26,44 @@ if TYPE_CHECKING:
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
-    ExecutionStatus,
     AgentType,
-)
-
-# Investigation models (used by prompts, investigation services)
-from faultmaven.modules.agent.domain.models.investigation import (
-    InvestigationPhase,
-    InvestigationStrategy,
-    InvestigationState,
-    OODAStep,
-    OODAIteration,
-    EngagementMode,
-    HypothesisStatus,
-    HypothesisGenerationMode,
-    HypothesisTest,
-    ProblemConfirmation,
-    HierarchicalMemory,
-    MemorySnapshot,
-    ConfidenceLevel,
-    InvestigationMomentum,
-    DegradedModeType,
-    AnomalyFrame,
-    TemporalFrame,
-    Hypothesis,
-    WorkingConclusion,
-    ProgressMetrics,
-    EscalationState,
-    PHASE_OODA_WEIGHTS,
-    get_confidence_cap,
+    ExecutionStatus,
 )
 
 # Agentic models (used by prompts, models/api)
 from faultmaven.modules.agent.domain.models.agentic import (
-    SuggestedAction,
-    QueryIntent,
-    QueryClassification,
     AgentResponse,
+    QueryClassification,
+    QueryIntent,
+    SuggestedAction,
 )
 
+# Investigation models (used by prompts, investigation services)
+from faultmaven.modules.agent.domain.models.investigation import (
+    PHASE_OODA_WEIGHTS,
+    AnomalyFrame,
+    ConfidenceLevel,
+    DegradedModeType,
+    EngagementMode,
+    EscalationState,
+    HierarchicalMemory,
+    Hypothesis,
+    HypothesisGenerationMode,
+    HypothesisStatus,
+    HypothesisTest,
+    InvestigationMomentum,
+    InvestigationPhase,
+    InvestigationState,
+    InvestigationStrategy,
+    MemorySnapshot,
+    OODAIteration,
+    OODAStep,
+    ProblemConfirmation,
+    ProgressMetrics,
+    TemporalFrame,
+    WorkingConclusion,
+    get_confidence_cap,
+)
 
 # ============================================================
 # Service Protocols

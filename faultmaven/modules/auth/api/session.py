@@ -27,37 +27,37 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
-from typing import Optional, List
-from datetime import datetime, timezone, timedelta
-from faultmaven.utils.serialization import to_json_compatible
+import logging
 import time
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.api.v1.dependencies import get_session_service, get_case_service
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.modules.auth.domain.services.auth_session_service import (
-    AuthSessionService,
-)
-from faultmaven.services.converters import CaseConverter
+from faultmaven.api.v1.dependencies import get_case_service, get_session_service
+from faultmaven.config.settings import get_settings
+from faultmaven.exceptions import ValidationException
+from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import utc_timestamp
 from faultmaven.models.api import (
-    SessionResponse,
-    SessionCasesResponse,
-    ErrorResponse,
     ErrorDetail,
+    ErrorResponse,
+    SessionCasesResponse,
     SessionErrorCode,
+    SessionResponse,
     SessionStatus,
 )
 from faultmaven.models.api_models import CaseListFilter
 from faultmaven.modules.auth.domain.models.auth import DevUser
-from faultmaven.exceptions import ValidationException
-from faultmaven.config.settings import get_settings
-import logging
-import uuid
+from faultmaven.modules.auth.domain.services.auth_session_service import (
+    AuthSessionService,
+)
+from faultmaven.services.converters import CaseConverter
+from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
 

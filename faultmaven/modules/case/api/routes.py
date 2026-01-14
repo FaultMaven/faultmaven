@@ -14,110 +14,112 @@ Key Endpoints:
 - Conversation history retrieval
 """
 
-from datetime import datetime, timezone
-from faultmaven.utils.serialization import to_json_compatible
-from typing import Any, Dict, List, Optional, Union
 import asyncio
+import logging
 import time
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Body,
     Depends,
+    File,
+    Form,
     HTTPException,
     Path,
     Query,
-    status,
-    Response,
-    Body,
-    UploadFile,
-    File,
-    Form,
     Request,
+    Response,
+    UploadFile,
+    status,
 )
 from fastapi.responses import JSONResponse
-import uuid
-import logging
 
-from faultmaven.modules.case.domain.models import (
-    Case as CaseEntity,
-    CaseStatus,
+from faultmaven.api.v1.auth_dependencies import (
+    get_current_user_id,
+    get_current_user_optional,
+    require_authentication,
 )
-from faultmaven.models.api_models import (
-    CaseCreateRequest,
-    CaseUpdateRequest,
-    CaseListFilter,
-    CaseMessage,
-    CaseSearchRequest,
-    CaseSummary,
-    CaseDetail,
-    CaseListResponse,
-    CaseParticipant,
-    CaseQueryRequest,
-    CaseQueryResponse,
-    UploadedFileMetadata,
-    UploadedFileDetails,
-    UploadedFilesList,
-    # Phase 2: Evidence-to-File Linkage
-    DerivedEvidenceSummary,
-    UploadedFileDetailsResponse,
-    UploadedFilesListResponse,
-    SourceFileReference,
-    RelatedHypothesis,
-    EvidenceDetailsResponse,
+from faultmaven.api.v1.dependencies import (
+    get_case_repository,  # TD-001: use case_repository for reports
 )
-from faultmaven.models.case_ui import CaseUIResponse
-from faultmaven.services.adapters.case_ui_adapter import transform_case_for_ui
-from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-
-# TD-001: IReportStore removed - reports now accessed via CaseRepository
-from faultmaven.models.api import (
-    ErrorResponse,
-    ErrorDetail,
-    CaseResponse,
-    Case,
-    Message,
-    QueryJobStatus,
-    AgentResponse,
-    ViewState,
-    User,
-    ResponseType,
-    TitleGenerateResponse,
-    TitleResponse,
-    QueryRequest,
-    CaseMessagesResponse,
-    DataUploadResponse,
-    ProcessingStatus,
+from faultmaven.api.v1.dependencies import (
+    get_investigation_service,  # V2.0 milestone-based
 )
 from faultmaven.api.v1.dependencies import (
     get_case_service,
+    get_case_vector_store,
+    get_data_service,
+    get_preprocessing_service,
     get_session_id,
     get_session_service,
-    get_preprocessing_service,
-    get_case_repository,  # TD-001: use case_repository for reports
-    get_investigation_service,  # V2.0 milestone-based
-    get_data_service,
-    get_case_vector_store,
 )
-from faultmaven.api.v1.auth_dependencies import (
-    require_authentication,
-    get_current_user_optional,
-    get_current_user_id,
+from faultmaven.exceptions import (
+    AuthorizationError,
+    NotFoundError,
+    PermissionDeniedException,
+    ServiceException,
+    ValidationException,
 )
+from faultmaven.infrastructure.observability.tracing import trace
+
+# TD-001: IReportStore removed - reports now accessed via CaseRepository
+from faultmaven.models.api import (
+    AgentResponse,
+    Case,
+    CaseMessagesResponse,
+    CaseResponse,
+    DataUploadResponse,
+    ErrorDetail,
+    ErrorResponse,
+    Message,
+    ProcessingStatus,
+    QueryJobStatus,
+    QueryRequest,
+    ResponseType,
+    TitleGenerateResponse,
+    TitleResponse,
+    User,
+    ViewState,
+)
+from faultmaven.models.api_models import (  # Phase 2: Evidence-to-File Linkage
+    CaseCreateRequest,
+    CaseDetail,
+    CaseListFilter,
+    CaseListResponse,
+    CaseMessage,
+    CaseParticipant,
+    CaseQueryRequest,
+    CaseQueryResponse,
+    CaseSearchRequest,
+    CaseSummary,
+    CaseUpdateRequest,
+    DerivedEvidenceSummary,
+    EvidenceDetailsResponse,
+    RelatedHypothesis,
+    SourceFileReference,
+    UploadedFileDetails,
+    UploadedFileDetailsResponse,
+    UploadedFileMetadata,
+    UploadedFilesList,
+    UploadedFilesListResponse,
+)
+from faultmaven.models.case_ui import CaseUIResponse
+from faultmaven.models.interfaces_case import ICaseService
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.auth.contracts import UserDTO, ISessionService
-from faultmaven.services.converters import CaseConverter
-from fastapi import Request
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import (
-    ValidationException,
-    ServiceException,
-    NotFoundError,
-    AuthorizationError,
-    PermissionDeniedException,
+from faultmaven.modules.auth.contracts import ISessionService, UserDTO
+from faultmaven.modules.case.domain.models import Case as CaseEntity
+from faultmaven.modules.case.domain.models import (
+    CaseStatus,
 )
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.services.adapters.case_ui_adapter import transform_case_for_ui
+from faultmaven.services.converters import CaseConverter
+from faultmaven.utils.serialization import to_json_compatible
 
 # Create router
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -2197,12 +2199,12 @@ async def get_report_recommendations(
     """
     # TODO: Refactor to use IReportQuery via dependency injection (Principle 2)
     # Note: Domain imports kept temporarily until DI is implemented
+    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+    from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
     from faultmaven.modules.report.domain.models import ReportRecommendation
     from faultmaven.modules.report.domain.services.report_recommendation_service import (
         ReportRecommendationService,
     )
-    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
-    from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 
     case_service = check_case_service_available(case_service)
 
@@ -2280,6 +2282,8 @@ async def generate_case_reports(
     """Generate case documentation reports."""
     # TODO: Refactor to use IReportCommand via dependency injection (Principle 2)
     # Note: Domain imports kept temporarily until DI is implemented
+    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+    from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
     from faultmaven.modules.report.domain.models import (
         ReportGenerationRequest,
         ReportType,
@@ -2287,8 +2291,6 @@ async def generate_case_reports(
     from faultmaven.modules.report.domain.services.report_generation_service import (
         ReportGenerationService,
     )
-    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
-    from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 
     case_service = check_case_service_available(case_service)
 
@@ -2494,8 +2496,8 @@ async def close_case(
         CaseClosureResponse with list of archived reports
     """
     from faultmaven.modules.report.domain.models import (
-        CaseClosureResponse,
         ArchivedReport,
+        CaseClosureResponse,
     )
 
     case_service = check_case_service_available(case_service)

@@ -20,25 +20,25 @@ Pattern:
         return request.app.state.session_service
 """
 
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import Depends, HTTPException, Request
 
 from ...models import SessionContext
-from ...models.interfaces_case import ICaseService
 
 # TD-001: IReportStore removed - reports now stored via CaseRepository
 from ...models.interfaces import IJobService
+from ...models.interfaces_case import ICaseService
+from ...providers.tenancy.base import TenantProvider
 
 # Lazy import to avoid circular dependency - DataService, SessionService, KnowledgeService imported in functions or TYPE_CHECKING
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
 from ...services.preprocessing import PreprocessingService
-from ...providers.tenancy.base import TenantProvider
 
 # Type hints for lazy imports
 if TYPE_CHECKING:
-    from ...services import DataService, SessionService
     from ...modules.knowledge.domain.services.knowledge_service import KnowledgeService
+    from ...services import DataService, SessionService
 
 
 # Service Dependencies (Composition Root pattern - access via app.state)

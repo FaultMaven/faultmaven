@@ -5,12 +5,12 @@ Wrapper for DocumentQATool configured for Case Evidence Store.
 Provides case-scoped forensic analysis of uploaded files.
 """
 
+from faultmaven.infrastructure.llm.router import LLMRouter
+from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
     CaseEvidenceConfig,
 )
-from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
-from faultmaven.infrastructure.llm.router import LLMRouter
 
 
 class AnswerFromCaseEvidence(DocumentQATool):

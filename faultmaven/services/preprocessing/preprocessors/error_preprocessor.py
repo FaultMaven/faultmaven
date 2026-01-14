@@ -16,16 +16,16 @@ Key Features:
 """
 
 import logging
-import uuid
-import time
 import re
-from typing import Optional, Dict, Any, List, Tuple
+import time
+import uuid
+from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.models.api import (
     DataType,
+    ExtractionMetadata,
     PreprocessedData,
     SourceMetadata,
-    ExtractionMetadata,
 )
 from faultmaven.models.interfaces import IPreprocessor
 

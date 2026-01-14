@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.api.services.organization_api_service import (
-    APIOrganizationService,
-    ROLE_OWNER,
     ROLE_ADMIN,
     ROLE_MEMBER,
+    ROLE_OWNER,
+    APIOrganizationService,
 )
 from faultmaven.exceptions import (
     AuthorizationError,
@@ -28,7 +28,6 @@ from faultmaven.models.interfaces_user import (
     OrganizationMember,
     OrgPlanTier,
 )
-
 
 # ============================================================
 # Test Fixtures

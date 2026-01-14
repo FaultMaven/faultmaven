@@ -3,9 +3,10 @@
 Tests the InvestigationSession dataclass and SessionStatus enum.
 """
 
-import pytest
-from datetime import datetime, timezone, timedelta
 import time
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from faultmaven.models.investigation_session import (
     InvestigationSession,

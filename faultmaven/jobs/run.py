@@ -22,7 +22,6 @@ import logging
 import sys
 from typing import Any, Dict, List, Optional
 
-
 # Available jobs registry
 AVAILABLE_JOBS: Dict[str, str] = {
     "case_cleanup": "faultmaven.jobs.case_cleanup",

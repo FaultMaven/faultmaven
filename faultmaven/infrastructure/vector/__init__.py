@@ -47,17 +47,17 @@ from faultmaven.infrastructure.vector.base import (
     VectorDocument,
     VectorSearchResult,
 )
+from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
 from faultmaven.infrastructure.vector.factory import (
     get_vector_backend,
     reset_vector_backend,
 )
 from faultmaven.infrastructure.vector.sanitizer import (
     VectorMetadataSanitizer,
-    sanitize_metadata,
     create_chroma_sanitizer,
     create_pinecone_sanitizer,
+    sanitize_metadata,
 )
-from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
 
 # Pinecone backend is optional (requires pinecone-client)
 try:

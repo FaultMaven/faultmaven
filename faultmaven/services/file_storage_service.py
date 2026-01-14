@@ -17,18 +17,19 @@ Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 import os
 import re
 import uuid
-import aiofiles
-import aiofiles.os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+import aiofiles
+import aiofiles.os
+
+from faultmaven.exceptions import ServiceError, ValidationException
 from faultmaven.services.base import BaseService
-from faultmaven.exceptions import ValidationException, ServiceError
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class FileStorageService(BaseService):

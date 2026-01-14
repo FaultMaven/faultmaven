@@ -150,8 +150,8 @@ class TestObservabilityIntegration:
 
     def test_data_processing_has_tracing(self):
         """Verify data processing methods have trace decorators."""
-        import sys
         import importlib
+        import sys
 
         # Remove the mock from sys.modules to import the real class
         if "faultmaven.core.processing.log_analyzer" in sys.modules:
@@ -187,11 +187,11 @@ class TestObservabilityIntegration:
 
     def test_api_endpoints_have_tracing(self):
         """Verify API endpoints have trace decorators."""
-        from faultmaven.modules.knowledge.api.routes import (
-            upload_document,
-            search_documents,
-        )
         from faultmaven.modules.auth.api.session import create_session
+        from faultmaven.modules.knowledge.api.routes import (
+            search_documents,
+            upload_document,
+        )
 
         # Check that key endpoints have been wrapped with @trace
         assert hasattr(upload_document, "__wrapped__")

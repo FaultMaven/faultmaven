@@ -694,6 +694,7 @@ class PostgreSQLUserRepository(UserRepository):
         Checks for email/username uniqueness before inserting.
         """
         from sqlalchemy import text
+
         from faultmaven.exceptions import ConflictError
 
         # Check for existing email
@@ -720,6 +721,7 @@ class PostgreSQLUserRepository(UserRepository):
         Checks for email/username uniqueness if changed.
         """
         from sqlalchemy import text
+
         from faultmaven.exceptions import ConflictError, NotFoundError
 
         # Check user exists

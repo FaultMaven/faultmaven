@@ -31,7 +31,6 @@ from faultmaven.models.interfaces_user import (
 )
 from faultmaven.models.rbac import get_permissions_for_roles
 
-
 # ============================================================
 # Test Fixtures
 # ============================================================

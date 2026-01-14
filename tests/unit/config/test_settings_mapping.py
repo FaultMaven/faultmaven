@@ -11,8 +11,9 @@ These tests ensure that:
 """
 
 import os
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 
 @pytest.fixture(autouse=True)
@@ -153,7 +154,7 @@ class TestDatabaseSettingsMapping:
         # Clear DATABASE_URL from environment to get true defaults
         monkeypatch.delenv("DATABASE_URL", raising=False)
 
-        from faultmaven.config.settings import reset_settings, get_settings
+        from faultmaven.config.settings import get_settings, reset_settings
 
         reset_settings()
 
@@ -356,8 +357,9 @@ class TestSettingsIntegration:
         Note: This test verifies that LoggingConfig can read from settings.
         Preset system may override LOG_LEVEL, but other settings should work.
         """
-        from faultmaven.config.settings import get_settings, reset_settings
         from unittest.mock import patch as mock_patch
+
+        from faultmaven.config.settings import get_settings, reset_settings
 
         reset_settings()
 

@@ -1,9 +1,9 @@
 """API utility functions."""
 
 from .parsing import (
-    parse_comma_separated_tags,
-    parse_comma_separated_strings,
     ensure_list_field,
+    parse_comma_separated_strings,
+    parse_comma_separated_tags,
 )
 
 __all__ = [

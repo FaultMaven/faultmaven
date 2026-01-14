@@ -68,8 +68,8 @@ def get_prometheus_response() -> Response:
     try:
         from prometheus_client import (
             CONTENT_TYPE_LATEST,
-            generate_latest,
             REGISTRY,
+            generate_latest,
         )
 
         # Generate metrics in Prometheus text exposition format

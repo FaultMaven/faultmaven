@@ -13,14 +13,15 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from faultmaven.models import DataType
-from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.security.redaction import DataSanitizer
-from faultmaven.config.settings import get_settings
-from .providers import LLMResponse, get_registry
+from faultmaven.models import DataType
+from faultmaven.models.interfaces import ILLMProvider
+
 from .cache import SemanticCache
+from .providers import LLMResponse, get_registry
 
 
 class LLMRouter(BaseExternalClient, ILLMProvider):

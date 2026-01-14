@@ -11,10 +11,11 @@ Run with:
     pytest tests/benchmarks/test_session_operations.py -m benchmark -v
 """
 
-import pytest
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+
+import pytest
 
 from faultmaven.modules.auth.domain.models.session import Session
 from faultmaven.modules.auth.infrastructure.repositories.session_repository import (

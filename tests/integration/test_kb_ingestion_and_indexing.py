@@ -1,13 +1,12 @@
-import os
-import io
 import asyncio
+import io
+import os
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app
-
 
 pytestmark = pytest.mark.integration
 

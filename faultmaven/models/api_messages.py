@@ -12,8 +12,8 @@ Design: Follows TASK-024 (Report Module) and TASK-026 (Hypothesis) API model pat
 
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, Field
 
+from pydantic import BaseModel, Field
 
 # ============================================================
 # Message API Models

@@ -40,13 +40,14 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from faultmaven.utils.serialization import to_json_compatible
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
+
+from faultmaven.utils.serialization import to_json_compatible
 
 # Configure enhanced logging system first
 from .infrastructure.logging.config import get_logger
@@ -132,6 +133,10 @@ def _check_llm_configuration(llm_provider) -> None:
         logger.warning(banner)
 
 
+from .api.middleware.logging import LoggingMiddleware
+from .api.routes.sessions import router as investigation_sessions_router
+from .infrastructure.observability.tracing import init_opik_tracing
+
 # Import API routes from modules
 # All routes now in modules following vertical slice architecture
 from .modules.agent.api.routes import router as agent_router
@@ -143,10 +148,6 @@ from .modules.case.api.routes import router as case_router
 from .modules.evidence.api.routes import router as evidence_router
 from .modules.knowledge.api.routes import router as knowledge_router
 from .modules.report.api.routes import router as report_router
-from .api.routes.sessions import router as investigation_sessions_router
-
-from .infrastructure.observability.tracing import init_opik_tracing
-from .api.middleware.logging import LoggingMiddleware
 
 # SessionManager now handled via DI container - services.session.SessionService
 
@@ -376,11 +377,11 @@ async def lifespan(app: FastAPI):
 
     # Initialize Phase 2 monitoring components
     try:
-        from .infrastructure.monitoring.apm_integration import apm_integration
         from .infrastructure.monitoring.alerting import (
             alert_manager,
             setup_default_alert_rules,
         )
+        from .infrastructure.monitoring.apm_integration import apm_integration
 
         # Start APM integration background export
         apm_integration.start_background_export()
@@ -498,6 +499,7 @@ app = FastAPI(
 def setup_middleware():
     """Setup middleware - only log when not in test mode"""
     import sys
+
     from faultmaven.config.settings import get_settings
 
     settings = get_settings()
@@ -602,8 +604,8 @@ def setup_middleware():
     try:
         if not settings.server.skip_service_checks and not _is_test_environment():
             from .api.middleware.request_id import (
-                RequestIdMiddleware,
                 RateLimitHeaderMiddleware,
+                RequestIdMiddleware,
             )
 
             # Add Request ID middleware
@@ -819,7 +821,7 @@ logger.info("✅ Team endpoints added")
 # Prometheus metrics endpoint (PR #5 - observability neutrality)
 # Only mounted when METRICS_EXPORTER=prometheus_http
 try:
-    from .config.settings import get_settings, MetricsExporter
+    from .config.settings import MetricsExporter, get_settings
 
     _metrics_settings = get_settings()
     if _metrics_settings.providers.metrics_exporter == MetricsExporter.PROMETHEUS_HTTP:
@@ -896,8 +898,8 @@ if _is_debug_enabled():
         Useful for debugging configuration issues and verifying preset application.
         """
         try:
-            from .config.settings import get_settings
             from .config.presets import get_preset_info, list_available_presets
+            from .config.settings import get_settings
 
             settings = get_settings()
 
@@ -1433,9 +1435,9 @@ async def get_performance_metrics():
     """Get comprehensive performance metrics."""
     try:
         from .api.middleware.performance import PerformanceMetricsEndpoint
-        from .infrastructure.monitoring.metrics_collector import metrics_collector
-        from .infrastructure.monitoring.apm_integration import apm_integration
         from .infrastructure.monitoring.alerting import alert_manager
+        from .infrastructure.monitoring.apm_integration import apm_integration
+        from .infrastructure.monitoring.metrics_collector import metrics_collector
 
         # Find the performance middleware instance
         performance_middleware = None
@@ -1472,8 +1474,8 @@ async def get_performance_metrics():
 async def get_realtime_metrics(time_window_minutes: int = 5):
     """Get real-time performance metrics."""
     try:
-        from .infrastructure.monitoring.metrics_collector import metrics_collector
         from .infrastructure.monitoring.alerting import alert_manager
+        from .infrastructure.monitoring.metrics_collector import metrics_collector
 
         # Validate time window
         if time_window_minutes < 1 or time_window_minutes > 60:

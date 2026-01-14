@@ -5,15 +5,16 @@ Test Coverage: 12-15 tests
 Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
-import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
-from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+import pytest
+
+from faultmaven.exceptions import NotFoundError
 from faultmaven.models.interfaces_user import Organization, OrgPlanTier
 from faultmaven.models.user import User
-from faultmaven.exceptions import NotFoundError
+from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 
 @pytest.fixture

@@ -16,13 +16,12 @@ Usage:
     download_url = await backend.generate_download_url("evidence/file.log")
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, Optional
-import logging
-
 
 logger = logging.getLogger(__name__)
 

@@ -3,15 +3,16 @@
 Tests both InMemoryInvestigationSessionRepository and the repository interface.
 """
 
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
+import pytest
+
+from faultmaven.infrastructure.persistence.investigation_session_repository import (
+    InMemoryInvestigationSessionRepository,
+)
 from faultmaven.models.investigation_session import (
     InvestigationSession,
     SessionStatus,
-)
-from faultmaven.infrastructure.persistence.investigation_session_repository import (
-    InMemoryInvestigationSessionRepository,
 )
 from tests.utils import generate_case_id, generate_session_id
 

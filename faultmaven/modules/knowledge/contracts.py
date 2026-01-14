@@ -8,8 +8,8 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
-from typing import Protocol, Optional, List, TYPE_CHECKING
 from abc import ABC
+from typing import TYPE_CHECKING, List, Optional, Protocol
 
 if TYPE_CHECKING:
     from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem

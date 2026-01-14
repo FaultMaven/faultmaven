@@ -7,8 +7,8 @@ including RAG, embeddings, and semantic search operations.
 from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import (
-    KnowledgeBaseException,
     EmbeddingException,
+    KnowledgeBaseException,
     VectorStoreException,
 )
 

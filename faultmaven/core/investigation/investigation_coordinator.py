@@ -15,14 +15,14 @@ Design Reference:
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.contracts import UrgencyLevel
     from faultmaven.modules.agent.contracts import (
         InvestigationState,
         InvestigationStrategy,
     )
+    from faultmaven.modules.case.contracts import UrgencyLevel
 
 
 class InterventionType(str, Enum):

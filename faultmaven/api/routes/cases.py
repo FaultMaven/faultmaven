@@ -38,7 +38,6 @@ from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.modules.case.contracts import CaseSeverity, CaseStatus
 from faultmaven.services.case_service import APICaseService
 
-
 router = APIRouter(prefix="/api/v1/cases", tags=["Cases"])
 
 

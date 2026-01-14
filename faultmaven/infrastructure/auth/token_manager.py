@@ -21,16 +21,17 @@ Security Considerations:
 """
 
 import hashlib
-import uuid
 import json
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional
+
 from redis import Redis
 
 from faultmaven.models.auth import (
-    DevUser,
     AuthToken,
+    DevUser,
     TokenStatus,
     TokenValidationResult,
 )

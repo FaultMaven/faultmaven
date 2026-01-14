@@ -5,6 +5,7 @@ Tests the severity-based error detection and adaptive context extraction.
 """
 
 import pytest
+
 from faultmaven.services.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )

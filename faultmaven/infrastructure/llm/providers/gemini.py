@@ -11,8 +11,9 @@ from typing import List, Optional
 
 import aiohttp
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 from faultmaven.exceptions import LLMException
+
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig
 
 
 class GeminiProvider(BaseLLMProvider):

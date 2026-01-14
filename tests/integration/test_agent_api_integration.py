@@ -22,11 +22,6 @@ import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 
-from faultmaven.main import app as main_app
-from faultmaven.modules.agent.domain.events.execution_events import (
-    ExecutionEvent,
-    ExecutionEventType,
-)
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -34,15 +29,19 @@ from faultmaven.exceptions import (
     NotFoundError,
     ServiceError,
 )
+from faultmaven.main import app as main_app
 from faultmaven.models.auth import AuthenticatedUser
+from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
+from faultmaven.modules.agent.domain.events.execution_events import (
+    ExecutionEvent,
+    ExecutionEventType,
+)
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-
 
 # ============================================================
 # Fixtures

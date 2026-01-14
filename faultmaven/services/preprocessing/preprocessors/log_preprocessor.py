@@ -13,19 +13,19 @@ Key Features:
 """
 
 import logging
-import uuid
-import time
 import re
-from typing import Optional, Dict, Any, List
+import time
+import uuid
+from typing import Any, Dict, List, Optional
 
+from faultmaven.core.processing.log_analyzer import LogProcessor
 from faultmaven.models.api import (
     DataType,
+    ExtractionMetadata,
     PreprocessedData,
     SourceMetadata,
-    ExtractionMetadata,
 )
 from faultmaven.models.interfaces import IPreprocessor
-from faultmaven.core.processing.log_analyzer import LogProcessor
 
 
 class LogPreprocessor(IPreprocessor):

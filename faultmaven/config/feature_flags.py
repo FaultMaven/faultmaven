@@ -5,7 +5,7 @@ have been removed as the refactored architecture is now the default.
 """
 
 import os
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 
 class FeatureFlagManager:

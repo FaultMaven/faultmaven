@@ -5,12 +5,13 @@ This module specifically tests the core deduplication functionality
 that prevents duplicate log entries within a single request context.
 """
 
-import pytest
 import asyncio
 import time
-from unittest.mock import Mock, patch, AsyncMock
-from datetime import datetime
 import uuid
+from datetime import datetime
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 
 from faultmaven.infrastructure.logging.coordinator import (
     LoggingCoordinator,

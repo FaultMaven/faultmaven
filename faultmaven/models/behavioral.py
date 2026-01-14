@@ -1,10 +1,11 @@
 # File: faultmaven/models/behavioral.py
 
-from pydantic import BaseModel, Field, validator
-from typing import Dict, List, Optional, Any, Union
+import uuid
 from datetime import datetime, timedelta
 from enum import Enum
-import uuid
+from typing import Any, Dict, List, Optional, Union
+
+from pydantic import BaseModel, Field, validator
 
 # --- Enumerations ---
 

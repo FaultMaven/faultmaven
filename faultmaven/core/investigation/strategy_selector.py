@@ -25,15 +25,14 @@ Transition Scenarios:
 """
 
 import logging
-from typing import Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
+from typing import Any, Dict, Optional, Tuple
 
 from faultmaven.modules.agent.contracts import (
-    InvestigationStrategy,
     InvestigationPhase,
+    InvestigationStrategy,
     ProblemConfirmation,
 )
-
 
 logger = logging.getLogger(__name__)
 

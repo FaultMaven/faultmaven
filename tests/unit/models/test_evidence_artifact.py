@@ -3,8 +3,9 @@
 Tests the EvidenceArtifact dataclass and related enums.
 """
 
-import pytest
 from datetime import datetime, timezone
+
+import pytest
 
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,

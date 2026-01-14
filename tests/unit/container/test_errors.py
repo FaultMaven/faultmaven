@@ -9,11 +9,11 @@ Tests cover:
 import pytest
 
 from faultmaven.container.errors import (
-    ContainerError,
-    ServiceUnavailableError,
-    InitializationError,
     CircularDependencyError,
     ConfigurationError,
+    ContainerError,
+    InitializationError,
+    ServiceUnavailableError,
 )
 
 

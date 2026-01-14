@@ -19,16 +19,16 @@ Example flow:
 4. User deletes old runbook → delete_document(user_id, doc_id)
 """
 
-from typing import List, Dict, Optional, Any
+import logging
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
 import chromadb
 from chromadb.config import Settings
-from urllib.parse import urlparse
-import logging
 
 from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.base_client import BaseExternalClient
-
 
 logger = logging.getLogger(__name__)
 

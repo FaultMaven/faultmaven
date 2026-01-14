@@ -9,23 +9,19 @@ Design Reference: WORKFLOW_PROGRESSION_IMPLEMENTATION_STATUS.md
 """
 
 import pytest
-from faultmaven.prompts.investigation.workflow_progression_prompts import (
-    # Start Investigation
-    get_start_investigation_prompt,
-    parse_start_investigation_response,
-    get_start_investigation_clarification,
-    # Mark Complete
-    get_mark_complete_prompt,
-    parse_mark_complete_response,
-    get_mark_complete_clarification,
-    # Suggest Escalation
-    get_suggest_escalation_prompt,
-    parse_suggest_escalation_response,
-    get_suggest_escalation_clarification,
-    # Workflow Transition
-    get_workflow_transition_confirmation,
-)
 
+from faultmaven.prompts.investigation.workflow_progression_prompts import (  # Start Investigation; Mark Complete; Suggest Escalation; Workflow Transition
+    get_mark_complete_clarification,
+    get_mark_complete_prompt,
+    get_start_investigation_clarification,
+    get_start_investigation_prompt,
+    get_suggest_escalation_clarification,
+    get_suggest_escalation_prompt,
+    get_workflow_transition_confirmation,
+    parse_mark_complete_response,
+    parse_start_investigation_response,
+    parse_suggest_escalation_response,
+)
 
 # =============================================================================
 # Start Investigation Tests

@@ -30,7 +30,6 @@ from faultmaven.infrastructure.vector.base import (
 )
 from faultmaven.infrastructure.vector.sanitizer import create_pinecone_sanitizer
 
-
 logger = logging.getLogger(__name__)
 
 

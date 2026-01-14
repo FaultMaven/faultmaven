@@ -5,13 +5,13 @@ Parses configuration files (YAML, JSON, TOML, INI, .env) and extracts
 key settings while redacting secrets. No LLM calls required.
 """
 
-import re
 import json
-from typing import Dict, Any, List, Optional, TYPE_CHECKING
+import re
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class StructuredConfigExtractor:

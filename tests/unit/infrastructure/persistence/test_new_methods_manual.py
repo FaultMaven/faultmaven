@@ -6,21 +6,21 @@ Run with: python3 tests/unit/infrastructure/persistence/test_new_methods_manual.
 
 import asyncio
 import sys
-from uuid import uuid4, UUID
+from uuid import UUID, uuid4
 
 # Add project root to path
 sys.path.insert(0, "/home/swhouse/product/faultmaven")
 
-from faultmaven.modules.case.infrastructure.case_repository import (
-    InMemoryCaseRepository,
-)
-from faultmaven.modules.evidence.domain.models import EvidenceListFilter
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentToolCall,
     AgentType,
     ExecutionStatus,
 )
+from faultmaven.modules.case.infrastructure.case_repository import (
+    InMemoryCaseRepository,
+)
+from faultmaven.modules.evidence.domain.models import EvidenceListFilter
 
 
 async def test_standalone_evidence():

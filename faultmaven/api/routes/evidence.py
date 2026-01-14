@@ -37,7 +37,6 @@ from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.modules.evidence.contracts import EvidenceArtifactType
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 
-
 router = APIRouter(prefix="/api/v1/cases/{case_id}/evidence", tags=["Evidence"])
 
 

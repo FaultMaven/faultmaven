@@ -5,25 +5,24 @@ FastAPI middleware for detecting and preventing duplicate requests
 within configured time windows using content-based hashing.
 """
 
-import time
-import logging
 import json
-from typing import Callable, Dict, Any, Optional, Tuple
-from datetime import datetime, timezone, timedelta
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, Optional, Tuple
 
+import redis.asyncio as aioredis
 from fastapi import Request, Response
+from redis.exceptions import RedisError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-import redis.asyncio as aioredis
-from redis.exceptions import RedisError
-
+from ...infrastructure.protection import RequestHasher
 from ...models.protection import (
-    ProtectionSettings,
     DuplicateRequestError,
     ProtectionErrorResponse,
+    ProtectionSettings,
 )
-from ...infrastructure.protection import RequestHasher
 from ...utils.serialization import to_json_compatible
 
 

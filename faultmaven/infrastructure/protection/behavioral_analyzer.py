@@ -1,28 +1,29 @@
 # File: faultmaven/infrastructure/protection/behavioral_analyzer.py
 
 import asyncio
+import hashlib
 import json
 import logging
 import statistics
 from collections import defaultdict, deque
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional, Any, Tuple
-import hashlib
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 
 from faultmaven.models.behavioral import (
+    AnomalyType,
+    BehaviorAnalysisResult,
     BehaviorProfile,
     BehaviorScore,
     BehaviorType,
-    RiskLevel,
-    RequestPattern,
-    TimingProfile,
-    ErrorPattern,
-    ResourceProfile,
     BehaviorVector,
-    BehaviorAnalysisResult,
+    ErrorPattern,
+    RequestPattern,
+    ResourceProfile,
+    RiskLevel,
     TemporalAnomaly,
-    AnomalyType,
+    TimingProfile,
     Trend,
 )
 from faultmaven.models.interfaces import ISessionStore

@@ -9,7 +9,8 @@ Tests the complete shim system working together:
 
 import asyncio
 import os
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 
@@ -19,13 +20,13 @@ class TestShimPackageImports:
     def test_all_exports_available(self):
         """Test that all expected exports are available from package."""
         from faultmaven.infrastructure.shims import (
-            track,
-            get_tracing_status,
-            is_tracing_active,
             OPIK_AVAILABLE,
+            PRESIDIO_AVAILABLE,
             PIIRedactor,
             get_pii_redaction_status,
-            PRESIDIO_AVAILABLE,
+            get_tracing_status,
+            is_tracing_active,
+            track,
         )
 
         # Verify all exports are callable or proper types
@@ -43,8 +44,8 @@ class TestShimPackageImports:
             os.environ, {"ENABLE_TRACING": "true", "ENABLE_PII_REDACTION": "false"}
         ):
             from faultmaven.infrastructure.shims import (
-                get_tracing_status,
                 PIIRedactor,
+                get_tracing_status,
             )
 
             tracing = get_tracing_status()
@@ -93,8 +94,8 @@ class TestEnvironmentVariableToggling:
             os.environ, {"ENABLE_TRACING": "true", "ENABLE_PII_REDACTION": "true"}
         ):
             from faultmaven.infrastructure.shims import (
-                get_tracing_status,
                 PIIRedactor,
+                get_tracing_status,
             )
 
             tracing = get_tracing_status()
@@ -109,8 +110,8 @@ class TestEnvironmentVariableToggling:
             os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
         ):
             from faultmaven.infrastructure.shims import (
-                get_tracing_status,
                 PIIRedactor,
+                get_tracing_status,
             )
 
             tracing = get_tracing_status()
@@ -131,7 +132,7 @@ class TestCombinedShimUsage:
         with patch.dict(
             os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
         ):
-            from faultmaven.infrastructure.shims import track, PIIRedactor
+            from faultmaven.infrastructure.shims import PIIRedactor, track
 
             redactor = PIIRedactor()
 
@@ -152,7 +153,7 @@ class TestCombinedShimUsage:
         with patch.dict(
             os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
         ):
-            from faultmaven.infrastructure.shims import track, PIIRedactor
+            from faultmaven.infrastructure.shims import PIIRedactor, track
 
             redactor = PIIRedactor()
 
@@ -210,7 +211,7 @@ class TestShimsWithDisabledMode:
                 with patch(
                     "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE", False
                 ):
-                    from faultmaven.infrastructure.shims import track, PIIRedactor
+                    from faultmaven.infrastructure.shims import PIIRedactor, track
 
                     redactor = PIIRedactor()
 
@@ -232,8 +233,8 @@ class TestShimStatusDiagnostics:
             os.environ, {"ENABLE_TRACING": "true", "ENABLE_PII_REDACTION": "false"}
         ):
             from faultmaven.infrastructure.shims import (
-                get_tracing_status,
                 get_pii_redaction_status,
+                get_tracing_status,
             )
 
             tracing = get_tracing_status()
@@ -260,8 +261,8 @@ class TestShimStatusDiagnostics:
         with patch.dict(os.environ, {"ENABLE_TRACING": "true"}):
             # Will still be False if Opik not available
             from faultmaven.infrastructure.shims.observability import (
-                is_tracing_active,
                 OPIK_AVAILABLE,
+                is_tracing_active,
             )
 
             result = is_tracing_active()
@@ -377,7 +378,7 @@ class TestRealWorldScenarios:
         with patch.dict(
             os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
         ):
-            from faultmaven.infrastructure.shims import track, PIIRedactor
+            from faultmaven.infrastructure.shims import PIIRedactor, track
 
             redactor = PIIRedactor()
 
@@ -406,8 +407,8 @@ class TestRealWorldScenarios:
             os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
         ):
             from faultmaven.infrastructure.shims import (
-                get_tracing_status,
                 get_pii_redaction_status,
+                get_tracing_status,
             )
 
             def health_check() -> dict:

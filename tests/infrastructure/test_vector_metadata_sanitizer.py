@@ -8,10 +8,10 @@ Property-like tests for metadata sanitization:
 - Edge cases
 """
 
-import pytest
-from datetime import datetime, date
+from datetime import date, datetime
 from uuid import UUID, uuid4
 
+import pytest
 
 # =============================================================================
 # Fixtures

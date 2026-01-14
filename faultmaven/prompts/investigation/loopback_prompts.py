@@ -9,9 +9,10 @@ Design Reference:
 """
 
 from typing import Dict, List
+
 from faultmaven.modules.agent.domain.models.investigation import (
-    InvestigationState,
     InvestigationPhase,
+    InvestigationState,
 )
 
 

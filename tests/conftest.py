@@ -89,15 +89,14 @@ sys.modules.setdefault(
     ),
 )
 
-from faultmaven.modules.agent.tools.knowledge_base import KnowledgeBaseTool
-from faultmaven.modules.agent.tools.web_search import WebSearchTool
-
 # from faultmaven.services.preprocessing.classifier import DataClassifier  # May need heavy deps
 # from faultmaven.core.processing.log_analyzer import LogProcessor
 from faultmaven.infrastructure.llm.router import LLMRouter
-from faultmaven.models.common import AgentStateEnum as AgentState
-from faultmaven.models import DataType, SessionContext
 from faultmaven.infrastructure.security.redaction import DataSanitizer
+from faultmaven.models import DataType, SessionContext
+from faultmaven.models.common import AgentStateEnum as AgentState
+from faultmaven.modules.agent.tools.knowledge_base import KnowledgeBaseTool
+from faultmaven.modules.agent.tools.web_search import WebSearchTool
 
 # SessionManager has been replaced by SessionService
 # from faultmaven.session_management import SessionManager
@@ -376,8 +375,9 @@ def sample_case():
 @pytest.fixture
 def sample_case_message():
     """Sample case message for testing."""
-    from faultmaven.models.api_models import CaseMessage
     from datetime import datetime, timezone
+
+    from faultmaven.models.api_models import CaseMessage
 
     return CaseMessage(
         message_id="test-msg-123",
@@ -394,8 +394,9 @@ def sample_case_message():
 @pytest.fixture
 def sample_case_participant():
     """Sample case participant for testing."""
-    from faultmaven.models.api_models import CaseParticipant
     from datetime import datetime, timezone
+
+    from faultmaven.models.api_models import CaseParticipant
 
     return CaseParticipant(
         user_id="test-collaborator-789",
@@ -408,9 +409,10 @@ def sample_case_participant():
 @pytest.fixture
 def sample_case_summary():
     """Sample case summary for testing list operations."""
+    from datetime import datetime, timezone
+
     from faultmaven.models.api_models import CaseSummary
     from faultmaven.modules.case.domain.models import CaseStatus
-    from datetime import datetime, timezone
 
     return CaseSummary(
         case_id="case_test12345678",
@@ -548,9 +550,10 @@ def multiple_cases():
 @pytest.fixture
 def case_with_conversation():
     """Sample case with a full conversation for testing context generation."""
-    from faultmaven.modules.case.domain.models import Case, CaseStatus
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
     from uuid import uuid4
+
+    from faultmaven.modules.case.domain.models import Case, CaseStatus
 
     now = datetime.now(timezone.utc)
     case_id = "case_conversation1"

@@ -3,9 +3,10 @@
 Tests the storage adapter with mocked FileStorageService.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
+
+import pytest
 
 from faultmaven.modules.evidence.domain.adapters.storage_adapter import (
     EvidenceStorageAdapter,

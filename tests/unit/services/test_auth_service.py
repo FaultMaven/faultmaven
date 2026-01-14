@@ -28,7 +28,6 @@ from faultmaven.services.auth_service import (
     TokenRevocationError,
 )
 
-
 # ============================================================
 # Test Fixtures
 # ============================================================

@@ -3,16 +3,17 @@
 Tests the InMemoryEvidenceArtifactRepository implementation.
 """
 
-import pytest
 from datetime import datetime, timezone
 
+import pytest
+
+from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
+    InMemoryEvidenceArtifactRepository,
+)
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
     StorageBackend,
-)
-from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
-    InMemoryEvidenceArtifactRepository,
 )
 from tests.utils import generate_case_id, generate_evidence_id
 

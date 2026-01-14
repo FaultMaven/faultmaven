@@ -2,29 +2,29 @@
 
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 from faultmaven.models.behavioral import (
+    AnomalyResult,
+    BehaviorAnalysisResult,
     BehaviorProfile,
     BehaviorScore,
-    ReputationScore,
-    ReputationEvent,
     ClientProfile,
-    RiskLevel,
-    ReputationLevel,
     ProtectionDecision,
-    BehaviorAnalysisResult,
-    AnomalyResult,
+    ReputationEvent,
+    ReputationLevel,
+    ReputationScore,
+    RiskLevel,
 )
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.models.protection import SystemMetrics
 
-from .behavioral_analyzer import BehavioralAnalyzer
 from .anomaly_detector import AnomalyDetectionSystem, ModelFeedback
+from .behavioral_analyzer import BehavioralAnalyzer
 from .reputation_engine import ReputationEngine
-from .smart_circuit_breaker import SmartCircuitBreaker, CircuitConfig, Request, Response
+from .smart_circuit_breaker import CircuitConfig, Request, Response, SmartCircuitBreaker
 
 
 @dataclass

@@ -15,34 +15,33 @@ Tests the API investigation session service layer functionality including:
 - Get session statistics
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
-from faultmaven.services.investigation_session_service import (
-    APIInvestigationSessionService,
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    ServiceError,
+    ValidationException,
 )
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseStatus,
-    InvestigationStrategy,
-)
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,
     AgentType,
     ExecutionStatus,
 )
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ValidationException,
-    ServiceError,
-    ConflictError,
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationStrategy,
 )
-
+from faultmaven.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
 
 # ============================================================
 # Fixtures

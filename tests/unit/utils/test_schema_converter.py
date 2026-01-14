@@ -4,9 +4,11 @@ Unit tests for Pydantic to OpenAI Schema Converter
 Tests conversion of Pydantic models to OpenAI function calling format.
 """
 
+from typing import List, Optional
+
 import pytest
 from pydantic import BaseModel, Field
-from typing import List, Optional
+
 from faultmaven.utils.schema_converter import (
     pydantic_to_openai_function,
     pydantic_to_openai_tools,

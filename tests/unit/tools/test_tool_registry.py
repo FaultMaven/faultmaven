@@ -8,19 +8,18 @@ Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 
 from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
+# Import Tool from the correct location used by AgentTool.to_tool()
+from faultmaven.domain.events import Tool
+from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import (
     AgentTool,
     AgentToolRegistry,
     ToolContext,
     tool_registry,
 )
-from faultmaven.models.interfaces import ToolResult
-
-# Import Tool from the correct location used by AgentTool.to_tool()
-from faultmaven.domain.events import Tool
-
 
 # =============================================================================
 # Test Fixtures

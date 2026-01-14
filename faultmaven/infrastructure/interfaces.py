@@ -1,10 +1,10 @@
 # File: faultmaven/infrastructure/interfaces.py
 from ..models.interfaces import (
-    ITracer,
-    ISanitizer,
     ILLMProvider,
-    IVectorStore,
+    ISanitizer,
     ISessionStore,
+    ITracer,
+    IVectorStore,
 )
 
 # Re-export for infrastructure layer

@@ -17,45 +17,44 @@ Authentication:
 Design Reference: docs/architecture/document-generation-and-closure-design.md
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional
-import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Path, Body
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
-from faultmaven.modules.report.domain.models import (
-    CaseReport,
-    ReportType,
-    ReportStatus,
-    ReportGenerationRequest,
-    ReportGenerationResponse,
-    ReportRecommendation,
-    CaseClosureRequest,
-    CaseClosureResponse,
+from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.api.v1.dependencies import (
+    get_case_repository,
+    get_case_service,
+    get_report_generation_service,
+    get_report_recommendation_service,
+    get_tenant_provider,
 )
+from faultmaven.exceptions import (
+    NotFoundError,
+    ServiceException,
+    ValidationException,
+)
+from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import UserDTO
-from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.api.v1.dependencies import (
-    get_case_service,
-    get_case_repository,
-    get_tenant_provider,
-    get_report_generation_service,
-    get_report_recommendation_service,
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.modules.report.domain.models import (
+    CaseClosureRequest,
+    CaseClosureResponse,
+    CaseReport,
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+    ReportRecommendation,
+    ReportStatus,
+    ReportType,
 )
 from faultmaven.providers.tenancy.base import TenantProvider
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import (
-    ValidationException,
-    ServiceException,
-    NotFoundError,
-)
 from faultmaven.utils.serialization import to_json_compatible
-
 
 # Create router
 router = APIRouter(prefix="/reports", tags=["reports"])

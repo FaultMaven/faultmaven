@@ -37,7 +37,6 @@ from faultmaven.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
 
-
 router = APIRouter(prefix="/api/v1/cases/{case_id}/sessions", tags=["Sessions"])
 
 

@@ -8,14 +8,14 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
+from abc import ABC
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, Optional, List, TYPE_CHECKING, runtime_checkable
-from abc import ABC
+from typing import TYPE_CHECKING, List, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from faultmaven.modules.auth.domain.models.user import User
     from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser, TokenPair
+    from faultmaven.modules.auth.domain.models.user import User
 
 
 # ============================================================

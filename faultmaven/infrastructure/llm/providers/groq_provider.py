@@ -8,12 +8,14 @@ Groq uses an OpenAI-compatible API, so this provider extends the
 OpenAI implementation with Groq-specific configurations.
 """
 
-import aiohttp
 import json
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
+
+import aiohttp
+
+from faultmaven.exceptions import LLMException
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
-from faultmaven.exceptions import LLMException
 
 
 class GroqProvider(BaseLLMProvider):

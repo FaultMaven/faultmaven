@@ -9,7 +9,8 @@ Verifies that the shim works correctly:
 """
 
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 
@@ -498,13 +499,13 @@ class TestShimExports:
     def test_predefined_metrics_exported_from_shims_package(self):
         """Test pre-defined metrics are exported from shims package."""
         from faultmaven.infrastructure.shims import (
-            request_counter,
-            request_duration,
             active_sessions,
             case_operations,
             knowledge_queries,
-            llm_requests,
             llm_latency,
+            llm_requests,
+            request_counter,
+            request_duration,
         )
 
         # All should be accessible

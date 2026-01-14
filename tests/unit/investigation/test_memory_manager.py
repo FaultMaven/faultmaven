@@ -10,9 +10,10 @@ Tests:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-import pytest
 from datetime import datetime
 from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 from faultmaven.core.investigation.memory_manager import (
     HierarchicalMemoryManager,
@@ -22,9 +23,9 @@ from faultmaven.core.investigation.memory_manager import (
 )
 from faultmaven.modules.agent.domain.models.investigation import (
     HierarchicalMemory,
+    InvestigationPhase,
     MemorySnapshot,
     OODAIteration,
-    InvestigationPhase,
     OODAStep,
 )
 

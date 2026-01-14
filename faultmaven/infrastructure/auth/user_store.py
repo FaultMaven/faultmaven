@@ -19,12 +19,13 @@ Storage Schema:
 - user:email:{email} -> {user_id}
 """
 
-import uuid
 import json
-import re
 import logging
+import re
+import uuid
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import List, Optional
+
 from redis import Redis
 
 from faultmaven.models.auth import DevUser

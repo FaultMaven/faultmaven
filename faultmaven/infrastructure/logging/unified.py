@@ -8,20 +8,21 @@ layers with performance tracking and error cascade prevention.
 
 import asyncio
 import time
-from contextlib import asynccontextmanager, contextmanager
-from typing import Any, AsyncIterator, Dict, Iterator, Optional, Union
-from datetime import datetime, timezone
-import structlog
 import uuid
+from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator, Dict, Iterator, Optional, Union
 
+import structlog
+
+from faultmaven.infrastructure.logging.config import get_logger
 from faultmaven.infrastructure.logging.coordinator import (
-    LoggingCoordinator,
-    RequestContext,
     ErrorContext,
+    LoggingCoordinator,
     PerformanceTracker,
+    RequestContext,
     request_context,
 )
-from faultmaven.infrastructure.logging.config import get_logger
 
 
 class UnifiedLogger:

@@ -27,7 +27,6 @@ from faultmaven.modules.agent.domain.models.agent_execution import (
     ExecutionStatus,
 )
 
-
 # ============================================================
 # AgentExecutionRequest Tests
 # ============================================================

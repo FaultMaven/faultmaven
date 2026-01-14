@@ -12,7 +12,7 @@ enabling rapid identification of contract violations in production.
 import json
 import time
 import uuid
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware

@@ -11,13 +11,13 @@ Three scenarios:
 3. Suggest Escalation (INVESTIGATING → CLOSED)
 """
 
-from typing import Optional, Dict, List, Any
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from faultmaven.modules.agent.contracts import (
-    InvestigationState,
-    InvestigationPhase,
     DegradedModeType,
+    InvestigationPhase,
+    InvestigationState,
 )
 
 

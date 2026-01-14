@@ -5,12 +5,12 @@ Tracks and reports Service Level Agreement metrics for FaultMaven components
 with configurable thresholds and alerting capabilities.
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime, timezone, timedelta
-from enum import Enum
 import logging
 import statistics
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class SLAStatus(Enum):

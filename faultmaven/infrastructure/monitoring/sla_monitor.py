@@ -26,21 +26,21 @@ import asyncio
 import json
 import logging
 import smtplib
+import statistics
+import threading
 import time
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Dict, Any, List, Optional, Tuple, Callable, Set
-import threading
-from concurrent.futures import ThreadPoolExecutor
-import statistics
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
-from faultmaven.services.analytics.dashboard_service import AnalyticsDashboardService
 from faultmaven.models.interfaces import ITracer
+from faultmaven.services.analytics.dashboard_service import AnalyticsDashboardService
 
 
 @dataclass

@@ -24,11 +24,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import status
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 from faultmaven.main import app as main_app
-from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.models.api_models import CaseSummary
+from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseStatus
 
 
@@ -134,11 +134,11 @@ def app(mock_case_service, mock_session_service, mock_user):
 
     # Import the actual dependencies used by case routes
     # Note: Case routes use wrapper functions, so we override those
+    from faultmaven.api.v1.auth_dependencies import require_authentication
     from faultmaven.modules.case.api.routes import (
         _di_get_case_service_dependency,
         _di_get_session_service_dependency,
     )
-    from faultmaven.api.v1.auth_dependencies import require_authentication
 
     app.dependency_overrides[_di_get_case_service_dependency] = get_mock_case_service
     app.dependency_overrides[_di_get_session_service_dependency] = (
@@ -275,8 +275,9 @@ class TestCreateCase:
         """Test case creation without JWT authentication returns 401."""
         # Create app WITH service mocks but WITHOUT auth override
         # This allows dependencies to resolve but auth to fail naturally
+        from httpx import ASGITransport, AsyncClient
+
         from faultmaven.main import app as main_app
-        from httpx import AsyncClient, ASGITransport
         from faultmaven.modules.case.api.routes import (
             _di_get_case_service_dependency,
             _di_get_session_service_dependency,
@@ -381,8 +382,9 @@ class TestGetCase:
     async def test_get_case_missing_authentication(self):
         """Test get case without JWT authentication returns 401."""
         # Create app without auth override to test unauthenticated request
-        from faultmaven.main import app as main_app
         from fastapi.testclient import TestClient
+
+        from faultmaven.main import app as main_app
 
         app = main_app
         unauthenticated_client = TestClient(app)

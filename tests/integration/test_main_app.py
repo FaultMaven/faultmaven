@@ -3,9 +3,10 @@
 Purpose: Tests for the main FastAPI application lifecycle
 """
 
-import pytest
 import os
-from unittest.mock import patch, Mock
+from unittest.mock import Mock, patch
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

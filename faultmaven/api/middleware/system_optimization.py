@@ -8,21 +8,20 @@ This middleware provides comprehensive system-wide performance enhancements:
 - Request/response optimization with adaptive strategies
 """
 
-import logging
 import asyncio
-import time
+import gc
 import gzip
 import json
-import gc
-from typing import Callable, Dict, Any, Optional, List
-from datetime import datetime, timedelta
+import logging
+import time
 from collections import defaultdict, deque
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import Request, Response
+from starlette.background import BackgroundTasks
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import StreamingResponse
-from starlette.background import BackgroundTasks
-
 
 logger = logging.getLogger(__name__)
 

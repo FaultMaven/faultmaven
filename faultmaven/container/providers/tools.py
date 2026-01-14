@@ -12,8 +12,8 @@ import logging
 from typing import TYPE_CHECKING, Any, List
 
 if TYPE_CHECKING:
-    from faultmaven.container.base import BaseDIContainer
     from faultmaven.config.settings import FaultMavenSettings
+    from faultmaven.container.base import BaseDIContainer
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,8 @@ def create_registry_tools(
     if ingester is not None:
         try:
             from faultmaven.modules.agent.tools.knowledge_base import (
-                KnowledgeBaseTool,
                 KnowledgeBaseFilteredTool,
+                KnowledgeBaseTool,
             )
 
             tools.append(KnowledgeBaseTool(knowledge_ingester=ingester))
@@ -106,8 +106,8 @@ def create_document_qa_tools(
         from faultmaven.modules.agent.tools.case_evidence_qa import (
             AnswerFromCaseEvidence,
         )
-        from faultmaven.modules.agent.tools.user_kb_qa import AnswerFromUserKB
         from faultmaven.modules.agent.tools.global_kb_qa import AnswerFromGlobalKB
+        from faultmaven.modules.agent.tools.user_kb_qa import AnswerFromUserKB
 
         # Tool 1: Case Evidence (case-scoped forensic analysis)
         result["case_evidence_qa_tool"] = AnswerFromCaseEvidence(

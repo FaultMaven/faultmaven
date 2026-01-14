@@ -19,7 +19,6 @@ from faultmaven.modules.case.domain.models import (
     InvestigationStage,
 )
 
-
 # ============================================================
 # Supporting Models for Phase-Adaptive Responses
 # ============================================================

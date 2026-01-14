@@ -26,7 +26,6 @@ from faultmaven.infrastructure.persistence.user_repository import User as Reposi
 from faultmaven.models.rbac import Role
 from faultmaven.services.user_service import UserService
 
-
 # ============================================================
 # Test Fixtures
 # ============================================================

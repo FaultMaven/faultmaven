@@ -5,8 +5,10 @@ doesn't regress. See docs/bugfixes/response-json-regression-root-cause-analysis.
 for full context.
 """
 
-import pytest
 import json
+
+import pytest
+
 from faultmaven.core.response_parser import ResponseParser
 from faultmaven.models.responses import ConsultantResponse, LeadInvestigatorResponse
 

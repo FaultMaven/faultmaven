@@ -11,13 +11,12 @@ Requirements:
 """
 
 import os
-import pytest
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.database import reset_engine
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
@@ -26,17 +25,18 @@ from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
     InMemoryEvidenceArtifactRepository,
 )
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.repository_factory import (
+    STORAGE_TYPE_DATABASE,
+    STORAGE_TYPE_INMEMORY,
     get_evidence_artifact_repository_async,
     reset_inmemory_evidence_artifact_repository,
-    STORAGE_TYPE_INMEMORY,
-    STORAGE_TYPE_DATABASE,
 )
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
-    InvestigationStrategy,
     ConsultingData,
+    InvestigationStrategy,
 )
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
@@ -44,7 +44,6 @@ from faultmaven.modules.evidence.domain.models import (
     StorageBackend,
 )
 from tests.utils import generate_case_id, generate_evidence_id
-
 
 # ============================================================
 # Test Fixtures

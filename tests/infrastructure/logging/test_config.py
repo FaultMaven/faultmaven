@@ -2,11 +2,12 @@
 Test module for faultmaven.infrastructure.logging.config
 """
 
-import pytest
-from unittest.mock import Mock, patch, MagicMock
 import logging
+from typing import Any, Dict
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 import structlog
-from typing import Dict, Any
 
 from faultmaven.infrastructure.logging.config import FaultMavenLogger, get_logger
 

@@ -11,13 +11,13 @@ ARCHITECTURAL PRINCIPLES:
 - Frontend compatibility validation built-in
 """
 
-from pydantic import Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings
-from typing import Optional, Literal, List, Dict, Any, Union
-from pathlib import Path
 import logging
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional, Union
 
+from pydantic import Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings
 
 # =============================================================================
 # ENVIRONMENT AND LOGGING ENUMS
@@ -2050,8 +2050,9 @@ def get_settings() -> FaultMavenSettings:
     if _settings_instance is None:
         try:
             # Ensure .env file is loaded before creating settings
-            from dotenv import load_dotenv
             import os
+
+            from dotenv import load_dotenv
 
             # Load .env without overriding existing environment variables.
             # This preserves the standard precedence order: OS env > .env.
@@ -2062,8 +2063,8 @@ def get_settings() -> FaultMavenSettings:
             # This allows env vars to override preset values
             from .presets import (
                 ensure_preset_applied,
-                validate_preset_requirements,
                 get_current_preset_name,
+                validate_preset_requirements,
             )
 
             ensure_preset_applied()

@@ -15,17 +15,17 @@ Key Features:
 
 import logging
 import time
-from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
-from faultmaven.models.interfaces import (
-    IVectorStore,
-    IMemoryService,
-    ConversationContext,
-)
-from faultmaven.models import SearchResult
 from faultmaven.exceptions import KnowledgeBaseException
+from faultmaven.models import SearchResult
+from faultmaven.models.interfaces import (
+    ConversationContext,
+    IMemoryService,
+    IVectorStore,
+)
 
 
 @dataclass

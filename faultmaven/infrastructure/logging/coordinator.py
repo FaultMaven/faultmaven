@@ -5,13 +5,13 @@ Provides request-scoped logging coordination with deduplication, error cascade
 prevention, and performance tracking across application layers.
 """
 
-from contextvars import ContextVar
-from typing import Dict, Any, Optional, Set, List, Tuple
-from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
-import uuid
 import logging
 import os
+import uuid
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Import enhanced error handling components
 from ...exceptions import ErrorSeverity, RecoveryResult

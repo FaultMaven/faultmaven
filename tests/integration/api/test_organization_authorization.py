@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from faultmaven.exceptions import AuthorizationError, ConflictError, NotFoundError
 from faultmaven.main import app as main_app
-from faultmaven.exceptions import AuthorizationError, NotFoundError, ConflictError
 from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.models.interfaces_user import (
     Organization,
@@ -24,7 +24,6 @@ from faultmaven.models.interfaces_user import (
     OrgPlanTier,
 )
 from faultmaven.models.rbac import get_permissions_for_roles
-
 
 # ============================================================
 # Test Fixtures

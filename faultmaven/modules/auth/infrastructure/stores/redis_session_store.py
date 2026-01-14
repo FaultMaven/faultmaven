@@ -5,14 +5,15 @@ This module provides a Redis-based session store that implements
 the ISessionStore interface for consistent session management.
 """
 
-from typing import Dict, Optional, List, Any, Union
 import json
 import uuid
 from datetime import datetime, timezone
-from faultmaven.models import parse_utc_timestamp
-from faultmaven.models.interfaces import ISessionStore
-from faultmaven.models.common import SessionContext
+from typing import Any, Dict, List, Optional, Union
+
 from faultmaven.infrastructure.redis_client import create_redis_client
+from faultmaven.models import parse_utc_timestamp
+from faultmaven.models.common import SessionContext
+from faultmaven.models.interfaces import ISessionStore
 from faultmaven.utils.serialization import to_json_compatible
 
 

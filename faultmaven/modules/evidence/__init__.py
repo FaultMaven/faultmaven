@@ -20,10 +20,10 @@ Structure:
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
-    StorageBackend,
-    EvidenceUploadRequest,
     EvidenceLinkRequest,
     EvidenceListFilter,
+    EvidenceUploadRequest,
+    StorageBackend,
 )
 
 # Domain services

@@ -8,11 +8,11 @@ with normalization and security features.
 import hashlib
 import hmac
 import json
+import logging
 import re
 import time
-from typing import Dict, Any, Optional, List, Set
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import parse_qs, urlencode
-import logging
 
 from ...models.protection import DeduplicationConfig
 

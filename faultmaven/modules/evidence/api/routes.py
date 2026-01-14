@@ -26,12 +26,12 @@ from fastapi import (
 )
 from fastapi.responses import RedirectResponse
 
-from faultmaven.models.auth import DevUser
 from faultmaven.api.v1.dependencies import get_current_user
+from faultmaven.models.auth import DevUser
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
-    EvidenceListFilter,
     EvidenceLinkRequest,
+    EvidenceListFilter,
 )
 from faultmaven.modules.evidence.domain.services import EvidenceService
 

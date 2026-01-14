@@ -15,7 +15,6 @@ from typing import Any, Dict, Optional
 
 from faultmaven.config.settings import FaultMavenSettings
 
-
 logger = logging.getLogger(__name__)
 
 

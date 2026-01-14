@@ -4,18 +4,19 @@ Implements IKBDocumentRepository for KB document metadata and sharing.
 Works in conjunction with UserKBVectorStore for vector embeddings.
 """
 
+import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-import logging
 
 from faultmaven.models.interfaces_kb import (
     IKBDocumentRepository,
     KBDocument,
     KBDocumentType,
-    KBVisibility,
     KBSharePermission,
+    KBVisibility,
 )
 
 logger = logging.getLogger(__name__)

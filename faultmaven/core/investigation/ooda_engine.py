@@ -23,20 +23,19 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from faultmaven.core.investigation.phases import (
+    get_ooda_steps_for_phase,
+    get_phase_definition,
+)
 from faultmaven.modules.agent.contracts import (
-    InvestigationPhase,
-    OODAStep,
-    OODAIteration,
-    InvestigationState,
     Hypothesis,
     HypothesisStatus,
     HypothesisTest,
+    InvestigationPhase,
+    InvestigationState,
+    OODAIteration,
+    OODAStep,
 )
-from faultmaven.core.investigation.phases import (
-    get_phase_definition,
-    get_ooda_steps_for_phase,
-)
-
 
 logger = logging.getLogger(__name__)
 

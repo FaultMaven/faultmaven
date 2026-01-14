@@ -11,16 +11,17 @@ Tests:
 4. Integration: full upsert/search cycle works with sanitized metadata
 """
 
-import pytest
+import sys
 from datetime import datetime
-from typing import Dict, Any, List
-from unittest.mock import MagicMock, patch, AsyncMock
+from typing import Any, Dict, List
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 # =============================================================================
 # Remove chromadb stub from conftest.py to allow real chromadb import
 # =============================================================================
 
-import sys
 
 # conftest.py stubs out chromadb to avoid heavy dependencies, but we need the real module
 if "chromadb" in sys.modules and not hasattr(sys.modules["chromadb"], "__version__"):
@@ -36,15 +37,15 @@ if "chromadb" in sys.modules and not hasattr(sys.modules["chromadb"], "__version
 # =============================================================================
 
 try:
-    from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
-    from faultmaven.infrastructure.vector.base import VectorDocument, VectorBackendType
-    from faultmaven.infrastructure.vector.sanitizer import (
-        create_chroma_sanitizer,
-        sanitize_metadata,
-    )
     from faultmaven.infrastructure.vector import (
         get_vector_backend,
         reset_vector_backend,
+    )
+    from faultmaven.infrastructure.vector.base import VectorBackendType, VectorDocument
+    from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
+    from faultmaven.infrastructure.vector.sanitizer import (
+        create_chroma_sanitizer,
+        sanitize_metadata,
     )
 
     CHROMA_AVAILABLE = True
@@ -307,10 +308,10 @@ class TestBackendContract:
         with patch.dict("sys.modules", {"pinecone": MagicMock()}):
             with patch("pinecone.Pinecone", return_value=mock_pc):
                 try:
+                    from faultmaven.infrastructure.vector.base import VectorDocument
                     from faultmaven.infrastructure.vector.pinecone import (
                         PineconeVectorBackend,
                     )
-                    from faultmaven.infrastructure.vector.base import VectorDocument
 
                     backend = PineconeVectorBackend(
                         api_key="test-key",
@@ -508,10 +509,10 @@ class TestBackendTypeConsistency:
         with patch.dict("sys.modules", {"pinecone": MagicMock()}):
             with patch("pinecone.Pinecone", return_value=mock_pc):
                 try:
+                    from faultmaven.infrastructure.vector.base import VectorBackendType
                     from faultmaven.infrastructure.vector.pinecone import (
                         PineconeVectorBackend,
                     )
-                    from faultmaven.infrastructure.vector.base import VectorBackendType
 
                     backend = PineconeVectorBackend(
                         api_key="test-key",

@@ -26,14 +26,16 @@ Core Design Principles:
 • Observability: Add tracing spans for key operations
 """
 
+import json
 import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
+
 import requests
-import json
-from faultmaven.models.interfaces import ISanitizer
+
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.models.interfaces import ISanitizer
 
 
 class DataSanitizer(BaseExternalClient, ISanitizer):

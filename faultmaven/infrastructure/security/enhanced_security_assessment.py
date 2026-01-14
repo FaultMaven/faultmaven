@@ -25,23 +25,23 @@ Key Enhancements:
 - Security pattern sharing across sessions
 """
 
+import hashlib
 import logging
 import re
 import time
-import hashlib
-from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import dataclass
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
-from faultmaven.infrastructure.security.redaction import DataSanitizer
-from faultmaven.models.interfaces import IMemoryService, ISanitizer, ConversationContext
 from faultmaven.core.processing.pattern_learner import (
+    Pattern,
     PatternLearner,
     PatternType,
-    Pattern,
 )
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.infrastructure.security.redaction import DataSanitizer
+from faultmaven.models.interfaces import ConversationContext, IMemoryService, ISanitizer
 
 
 class SecurityRiskLevel(Enum):

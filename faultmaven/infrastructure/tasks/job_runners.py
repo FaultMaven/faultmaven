@@ -48,8 +48,8 @@ logger = logging.getLogger(__name__)
 # Check if APScheduler is available
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
-    from apscheduler.triggers.interval import IntervalTrigger
     from apscheduler.triggers.date import DateTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
 
     APSCHEDULER_AVAILABLE = True
 except ImportError:

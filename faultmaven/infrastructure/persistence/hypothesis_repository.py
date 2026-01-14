@@ -41,8 +41,8 @@ from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.modules.case.domain.models import Hypothesis, HypothesisStatus
 from faultmaven.infrastructure.persistence.models import HypothesisModel
+from faultmaven.modules.case.domain.models import Hypothesis, HypothesisStatus
 
 logger = logging.getLogger(__name__)
 

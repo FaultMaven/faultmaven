@@ -7,10 +7,11 @@ Tests cover:
 - Thread safety
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
 import threading
 import time
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 @pytest.fixture(autouse=True)
@@ -161,6 +162,7 @@ class TestLazyLoadingConfiguration:
     def test_lazy_load_setting_can_be_disabled(self):
         """Test that lazy loading can be disabled via env var."""
         import os
+
         from faultmaven.config.settings import EmbeddingSettings
 
         with patch.dict(os.environ, {"LAZY_LOAD_ML_MODELS": "false"}):
@@ -181,8 +183,9 @@ class TestModelLoadInfo:
 
     def test_model_load_info_creation(self):
         """Test ModelLoadInfo can be created with required fields."""
-        from faultmaven.infrastructure.model_cache import ModelLoadInfo
         from datetime import datetime, timezone
+
+        from faultmaven.infrastructure.model_cache import ModelLoadInfo
 
         info = ModelLoadInfo(
             model_name="BAAI/bge-m3",
@@ -198,8 +201,9 @@ class TestModelLoadInfo:
 
     def test_model_load_info_with_error(self):
         """Test ModelLoadInfo can track errors."""
-        from faultmaven.infrastructure.model_cache import ModelLoadInfo
         from datetime import datetime, timezone
+
+        from faultmaven.infrastructure.model_cache import ModelLoadInfo
 
         info = ModelLoadInfo(
             model_name="BAAI/bge-m3",

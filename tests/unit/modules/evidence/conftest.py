@@ -1,20 +1,20 @@
 """Fixtures for EvidenceArtifact Service module tests (PR #46c)."""
 
-import pytest
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
+import pytest
+
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
-    EvidenceListFilter,
     EvidenceLinkRequest,
+    EvidenceListFilter,
     EvidenceUploadRequest,
     StorageBackend,
 )
-
 
 # =============================================================================
 # Sample Data Factories

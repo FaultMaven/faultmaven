@@ -32,9 +32,10 @@ import logging
 import os
 import time
 from contextlib import contextmanager
-from typing import Callable, Optional, Any, Dict
-from faultmaven.models.interfaces import ITracer
+from typing import Any, Callable, Dict, Optional
+
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.models.interfaces import ITracer
 
 # Prometheus metrics
 try:
@@ -220,7 +221,7 @@ class OpikTracer(BaseExternalClient, ITracer):
         Returns:
             Dictionary containing health status and metrics
         """
-        from typing import Dict, Any
+        from typing import Any, Dict
 
         base_health = await super().health_check()
 

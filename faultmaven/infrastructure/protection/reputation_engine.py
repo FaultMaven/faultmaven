@@ -4,19 +4,19 @@ import asyncio
 import json
 import logging
 import math
-from datetime import datetime, timezone, timedelta
-from faultmaven.models import parse_utc_timestamp
-from typing import Dict, List, Optional, Any, Tuple
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
+from faultmaven.models import parse_utc_timestamp
 from faultmaven.models.behavioral import (
-    ReputationScore,
-    ReputationEvent,
-    Violation,
-    ReputationLevel,
-    Trend,
-    ClientProfile,
     BehaviorProfile,
+    ClientProfile,
+    ReputationEvent,
+    ReputationLevel,
+    ReputationScore,
+    Trend,
+    Violation,
 )
 from faultmaven.models.interfaces import ISessionStore
 

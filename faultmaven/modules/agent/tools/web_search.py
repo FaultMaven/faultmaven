@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional
 import httpx
 from langchain.tools import BaseTool as LangChainBaseTool
 
-from faultmaven.models.interfaces import BaseTool as IBaseTool, ToolResult
+from faultmaven.models.interfaces import BaseTool as IBaseTool
+from faultmaven.models.interfaces import ToolResult
 
 
 class WebSearchTool(LangChainBaseTool, IBaseTool):

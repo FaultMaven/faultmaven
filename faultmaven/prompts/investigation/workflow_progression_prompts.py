@@ -14,9 +14,9 @@ Design Reference:
 - 3-attempt clarification with graceful fallback
 """
 
-from typing import List, Dict, Optional, Any
-from faultmaven.modules.agent.domain.models.investigation import InvestigationState
+from typing import Any, Dict, List, Optional
 
+from faultmaven.modules.agent.domain.models.investigation import InvestigationState
 
 # =============================================================================
 # Scenario 1: Start Systematic Investigation (CONSULTING → INVESTIGATING)

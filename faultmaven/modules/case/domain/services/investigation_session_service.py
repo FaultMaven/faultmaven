@@ -21,25 +21,25 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from faultmaven.services.base import BaseService
-from faultmaven.modules.case.domain.investigation_session import (
-    InvestigationSession,
-    SessionStatus,
-)
-from faultmaven.modules.case.infrastructure.investigation_session_repository import (
-    InvestigationSessionRepository,
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    ServiceError,
+    ValidationException,
 )
 from faultmaven.infrastructure.persistence.agent_execution_repository import (
     AgentExecutionRepository,
 )
-from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ValidationException,
-    ServiceError,
-    ConflictError,
+from faultmaven.modules.case.domain.investigation_session import (
+    InvestigationSession,
+    SessionStatus,
 )
+from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.modules.case.infrastructure.investigation_session_repository import (
+    InvestigationSessionRepository,
+)
+from faultmaven.services.base import BaseService
 
 
 class APIInvestigationSessionService(BaseService):

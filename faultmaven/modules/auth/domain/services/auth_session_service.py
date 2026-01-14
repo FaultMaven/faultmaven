@@ -20,14 +20,14 @@ Version: 2.0 (Spec-Compliant Refactor - 2025-10-23)
 Reference: docs/architecture/case-and-session-concepts.md
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from faultmaven.services.base import BaseService
-from faultmaven.models import SessionContext
+from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.models import SessionContext
+from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
 
 

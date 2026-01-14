@@ -5,13 +5,14 @@ Test Coverage: 4-6 tests
 Design Reference: docs/working/TASK-023-TENANT-PROVIDER.md
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from faultmaven.providers.tenancy.factory import create_tenant_provider
-from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
-from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
+import pytest
+
 from faultmaven.config.settings import TenantProvider
+from faultmaven.providers.tenancy.factory import create_tenant_provider
+from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
+from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 
 @pytest.fixture

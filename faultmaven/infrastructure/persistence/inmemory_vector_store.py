@@ -5,9 +5,10 @@ This module provides a RAM-based vector store for development and testing.
 Uses simple cosine similarity for semantic search without external dependencies.
 """
 
-from typing import List, Dict, Optional, Any
 import asyncio
 import math
+from typing import Any, Dict, List, Optional
+
 from faultmaven.models.interfaces import IVectorStore
 
 

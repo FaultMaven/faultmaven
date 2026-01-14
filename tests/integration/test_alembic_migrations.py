@@ -12,11 +12,11 @@ Usage:
 """
 
 import os
-import subprocess
 import sqlite3
+import subprocess
 from pathlib import Path
-import pytest
 
+import pytest
 
 # Test database path
 TEST_DB = "test_migration.db"

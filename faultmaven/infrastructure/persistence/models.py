@@ -19,25 +19,25 @@ Models:
 - AgentToolCallModel: Agent tool execution tracking
 """
 
+import enum
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-import enum
 
 from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
     Column,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
     String,
     Text,
-    Integer,
-    DateTime,
-    Boolean,
-    Numeric,
-    ForeignKey,
-    Enum,
     UniqueConstraint,
-    CheckConstraint,
-    Index,
 )
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
 

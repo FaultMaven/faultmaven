@@ -6,9 +6,10 @@ function calling schemas for structured output enforcement.
 Design Reference: docs/architecture/RESPONSE_FORMAT_INTEGRATION_SPEC.md
 """
 
-from typing import Type, Dict, Any, get_args, get_origin
-from pydantic import BaseModel
 import inspect
+from typing import Any, Dict, Type, get_args, get_origin
+
+from pydantic import BaseModel
 
 
 def pydantic_to_openai_function(

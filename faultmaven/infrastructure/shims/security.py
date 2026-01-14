@@ -11,9 +11,9 @@ Usage:
     safe_text = redactor.redact("My SSN is 123-45-6789")
 """
 
-import os
 import logging
-from typing import Optional, List
+import os
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 

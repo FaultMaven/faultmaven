@@ -6,16 +6,16 @@ Run with: python3 tests/unit/modules/test_evidence_service_integration.py
 
 import asyncio
 import sys
-from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 sys.path.insert(0, "/home/swhouse/product/faultmaven")
 
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
-from faultmaven.modules.evidence.domain.services.evidence_service import EvidenceService
 from faultmaven.modules.evidence.domain.models import EvidenceListFilter
+from faultmaven.modules.evidence.domain.services.evidence_service import EvidenceService
 
 
 class MockStorage:

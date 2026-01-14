@@ -15,24 +15,35 @@ Key Endpoints:
 Design Reference: TASK-021 Organization Management API Endpoints
 """
 
-from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
 import logging
+import re
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     HTTPException,
     Path,
     Query,
     Request,
     status,
-    Body,
 )
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
-import re
 
+from faultmaven.api.middleware.auth import get_current_user
+from faultmaven.api.services.organization_api_service import APIOrganizationService
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedException,
+    ServiceException,
+    ValidationException,
+)
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.domain.models.organization import (
     Organization,
     OrganizationMember,
@@ -40,18 +51,6 @@ from faultmaven.modules.auth.domain.models.organization import (
 )
 from faultmaven.modules.auth.domain.services.organization_service import (
     OrganizationService,
-)
-from faultmaven.api.services.organization_api_service import APIOrganizationService
-from faultmaven.api.middleware.auth import get_current_user
-from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
-from faultmaven.exceptions import (
-    ValidationException,
-    ServiceException,
-    NotFoundError,
-    PermissionDeniedException,
-    NotFoundError,
-    AuthorizationError,
-    ConflictError,
 )
 
 # Create router

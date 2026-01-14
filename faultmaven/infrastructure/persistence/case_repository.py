@@ -12,23 +12,22 @@ from typing import Any, Dict, List, Optional
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
-    InvestigationProgress,
-    TurnProgress,
-    UploadedFile,
+    CaseStatusTransition,
+    ConsultingData,
+    DegradedMode,
+    DocumentationData,
+    EscalationState,
     Evidence,
     Hypothesis,
-    Solution,
-    ConsultingData,
-    ProblemVerification,
-    WorkingConclusion,
-    RootCauseConclusion,
-    DegradedMode,
-    EscalationState,
-    DocumentationData,
+    InvestigationProgress,
     PathSelection,
-    CaseStatusTransition,
+    ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    TurnProgress,
+    UploadedFile,
+    WorkingConclusion,
 )
-
 
 # ============================================================
 # Repository Interface
@@ -833,6 +832,7 @@ class PostgreSQLCaseRepository(CaseRepository):
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """Compute analytics from PostgreSQL."""
         from sqlalchemy import text
+
         from faultmaven.utils.serialization import to_json_compatible
 
         query = text(
@@ -894,8 +894,9 @@ class PostgreSQLCaseRepository(CaseRepository):
         self, max_age_days: int = 90, batch_size: int = 100
     ) -> int:
         """Clean up expired cases from PostgreSQL."""
-        from sqlalchemy import text
         from datetime import timedelta, timezone
+
+        from sqlalchemy import text
 
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 

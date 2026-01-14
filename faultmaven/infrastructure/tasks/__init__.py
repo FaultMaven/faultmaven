@@ -18,16 +18,15 @@ Usage:
 """
 
 from faultmaven.infrastructure.tasks.case_cleanup import (
+    cleanup_orphaned_collections_task,
     start_case_cleanup_scheduler,
     stop_case_cleanup_scheduler,
-    cleanup_orphaned_collections_task,
 )
-
 from faultmaven.infrastructure.tasks.job_runners import (
+    APSCHEDULER_AVAILABLE,
     APSchedulerJobRunner,
     InMemoryJobRunner,
     get_job_runner,
-    APSCHEDULER_AVAILABLE,
 )
 
 __all__ = [

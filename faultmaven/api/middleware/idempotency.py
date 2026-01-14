@@ -14,10 +14,10 @@ Architecture Integration:
 - Follows FastAPI middleware patterns
 """
 
+import hashlib
 import json
 import logging
-import hashlib
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from fastapi import Request, Response
@@ -200,6 +200,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
     def _get_timestamp(self) -> str:
         """Get ISO timestamp for caching."""
         from datetime import datetime, timezone
+
         from faultmaven.utils.serialization import to_json_compatible
 
         return to_json_compatible(datetime.now(timezone.utc))

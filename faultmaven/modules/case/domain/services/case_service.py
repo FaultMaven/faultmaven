@@ -17,26 +17,26 @@ Core Responsibilities:
 
 import asyncio
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from faultmaven.services.base import BaseService
-from faultmaven.modules.case.domain.models import Case, CaseStatus, MessageType
+from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.infrastructure.persistence.case_repository import CaseRepository
+from faultmaven.models import parse_utc_timestamp
 from faultmaven.models.api_models import (
     CaseCreateRequest,
-    CaseUpdateRequest,
-    CaseSummary,
     CaseListFilter,
-    CaseSearchRequest,
     CaseMessage,
     CaseParticipant,
+    CaseSearchRequest,
+    CaseSummary,
+    CaseUpdateRequest,
 )
-from faultmaven.models.interfaces_case import ICaseService
-from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.models.interfaces import ISessionStore
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import ValidationException, ServiceException
-from faultmaven.models import parse_utc_timestamp
+from faultmaven.models.interfaces_case import ICaseService
+from faultmaven.modules.case.domain.models import Case, CaseStatus, MessageType
+from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
 
 
@@ -1287,12 +1287,13 @@ class CaseService(BaseService, ICaseService):
             raise ValidationException("Case ID is required")
 
         # Import here to avoid circular dependencies
+        import time
+
         from faultmaven.models.api import (
             CaseMessagesResponse,
-            MessageRetrievalDebugInfo,
             Message,
+            MessageRetrievalDebugInfo,
         )
-        import time
 
         start_time = time.time()
         debug_info = None

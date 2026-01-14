@@ -6,11 +6,12 @@ real sanitization workflows, and performance validation. Follows the proven
 minimal mocking patterns from successful Phases 1-3.
 """
 
-import pytest
-import time
 import re
-from typing import Dict, List, Any
+import time
+from typing import Any, Dict, List
 from unittest.mock import patch
+
+import pytest
 
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 
@@ -523,8 +524,9 @@ class TestRealSecurityPerformanceValidation:
 
     def test_real_memory_efficiency_during_sanitization(self, data_sanitizer):
         """Test memory efficiency during sanitization operations."""
-        import psutil
         import os
+
+        import psutil
 
         process = psutil.Process(os.getpid())
         initial_memory = process.memory_info().rss / 1024 / 1024  # MB

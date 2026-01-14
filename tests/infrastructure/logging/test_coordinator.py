@@ -2,19 +2,20 @@
 Test module for faultmaven.infrastructure.logging.coordinator
 """
 
-import pytest
+import asyncio
+import logging
 import uuid
+from contextvars import copy_context
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
-import logging
-import asyncio
-from contextvars import copy_context
+
+import pytest
 
 from faultmaven.infrastructure.logging.coordinator import (
-    RequestContext,
     ErrorContext,
-    PerformanceTracker,
     LoggingCoordinator,
+    PerformanceTracker,
+    RequestContext,
     request_context,
 )
 

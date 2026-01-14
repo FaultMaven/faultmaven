@@ -10,8 +10,7 @@ Consultant Mode Characteristics:
 Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from typing import Dict, Any, Optional
-
+from typing import Any, Dict, Optional
 
 # =============================================================================
 # Consultant Mode System Prompt

@@ -10,12 +10,14 @@ Data models for the case documentation generation feature including:
 Version: 2.0 (Updated with intelligent recommendations)
 """
 
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any, Literal
-from enum import Enum
-from datetime import datetime, timezone
-from faultmaven.utils.serialization import to_json_compatible
 import uuid
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class ReportType(str, Enum):

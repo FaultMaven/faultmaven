@@ -15,15 +15,15 @@ Key Responsibilities:
 
 import asyncio
 import logging
-from typing import Dict, Any, Optional
 from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 from faultmaven.container import container
-from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
 from faultmaven.infrastructure.caching.intelligent_cache import IntelligentCache
+from faultmaven.infrastructure.monitoring.sla_monitor import SLAMonitor
+from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
 from faultmaven.services.analytics.dashboard_service import AnalyticsDashboardService
 from faultmaven.services.performance_optimization import PerformanceOptimizationService
-from faultmaven.infrastructure.monitoring.sla_monitor import SLAMonitor
 
 
 class PerformanceMonitoringStartup:

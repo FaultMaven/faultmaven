@@ -5,13 +5,13 @@ Analyzes source code files using AST parsing and pattern matching to extract
 key information (functions, classes, imports, error handling). No LLM calls.
 """
 
-import re
 import ast
-from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
+import re
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class SourceCodeExtractor:

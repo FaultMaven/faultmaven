@@ -5,9 +5,10 @@ This module tests the ChromaDBVectorStore class to ensure proper
 implementation of the IVectorStore interface with comprehensive coverage.
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, call
 from typing import Dict, List
+from unittest.mock import AsyncMock, MagicMock, call, patch
+
+import pytest
 
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 from faultmaven.models.interfaces import IVectorStore

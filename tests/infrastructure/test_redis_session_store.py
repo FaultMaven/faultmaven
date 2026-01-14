@@ -5,16 +5,17 @@ This module tests the RedisSessionStore class to ensure proper
 implementation of the ISessionStore interface with comprehensive coverage.
 """
 
-import pytest
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
-from typing import Dict, Optional
 from datetime import datetime
+from typing import Dict, Optional
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from faultmaven.models.interfaces import ISessionStore
 from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
     RedisSessionStore,
 )
-from faultmaven.models.interfaces import ISessionStore
 
 
 class TestRedisSessionStore:

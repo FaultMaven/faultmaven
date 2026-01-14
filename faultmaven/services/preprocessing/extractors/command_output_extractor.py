@@ -7,11 +7,11 @@ No LLM calls required - pure tabular parsing and threshold-based analysis.
 """
 
 import re
-from typing import List, Dict, Optional, Tuple, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class CommandOutputExtractor:

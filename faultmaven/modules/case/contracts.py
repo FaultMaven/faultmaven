@@ -8,23 +8,24 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
-from typing import Protocol, Optional, List, Dict, Any, TYPE_CHECKING
 from abc import ABC
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
+    from faultmaven.modules.agent.domain.models.agent_execution import (
+        AgentExecution,
+        AgentToolCall,
+        AgentType,
+        ExecutionStatus,
+    )
     from faultmaven.modules.case.domain.models import Case, CaseStatus
-    from faultmaven.modules.report.domain.models import CaseReport, ReportType
     from faultmaven.modules.evidence.domain.models import (
         EvidenceArtifact,
         EvidenceListFilter,
     )
-    from faultmaven.modules.agent.domain.models.agent_execution import (
-        AgentExecution,
-        AgentToolCall,
-        ExecutionStatus,
-        AgentType,
-    )
-    from uuid import UUID
+    from faultmaven.modules.report.domain.models import CaseReport, ReportType
 
 
 # ============================================================
@@ -325,40 +326,37 @@ class CaseDTO:
 # Re-export domain models for backward compatibility
 # These can be used directly until full DTO migration is complete
 # Services should import from contracts.py (not domain.models) per Principle 2
-from faultmaven.modules.case.domain.models import (
+from faultmaven.modules.case.domain.models import (  # Evidence models (Case module owns the evidence table per module-organization-design.md); Hypothesis model (Case module owns hypotheses table); Investigation tracking models (used by milestone engine)
     Case,
-    CaseStatus,
     CaseSeverity,
-    InvestigationStrategy,
-    HypothesisStatus,
-    InvestigationPath,
-    ConsultingData,
-    UrgencyLevel,
-    UploadedFile,
-    # Evidence models (Case module owns the evidence table per module-organization-design.md)
-    Evidence,
-    EvidenceCategory,
-    EvidenceSourceType,
-    EvidenceForm,
-    EvidenceStance,
-    # Hypothesis model (Case module owns hypotheses table)
-    Hypothesis,
-    HypothesisCategory,
-    HypothesisGenerationMode,
-    HypothesisEvidenceLink,
-    # Investigation tracking models (used by milestone engine)
-    InvestigationProgress,
-    InvestigationStage,
-    PathSelection,
-    ProblemVerification,
-    Solution,
-    SolutionType,
-    TurnProgress,
-    TurnOutcome,
-    TemporalState,
-    WorkingConclusion,
-    RootCauseConclusion,
+    CaseStatus,
     ConfidenceLevel,
+    ConsultingData,
     DegradedMode,
     DegradedModeType,
+    Evidence,
+    EvidenceCategory,
+    EvidenceForm,
+    EvidenceSourceType,
+    EvidenceStance,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisEvidenceLink,
+    HypothesisGenerationMode,
+    HypothesisStatus,
+    InvestigationPath,
+    InvestigationProgress,
+    InvestigationStage,
+    InvestigationStrategy,
+    PathSelection,
+    ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    SolutionType,
+    TemporalState,
+    TurnOutcome,
+    TurnProgress,
+    UploadedFile,
+    UrgencyLevel,
+    WorkingConclusion,
 )

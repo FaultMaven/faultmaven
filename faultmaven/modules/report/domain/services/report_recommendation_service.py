@@ -8,23 +8,22 @@ Architecture Reference: docs/architecture/document-generation-and-closure-design
 Section 5.4: Intelligent Report Recommendation
 """
 
-from typing import List, Dict, Any, Optional
 import logging
+from typing import Any, Dict, List, Optional
 
-from faultmaven.services.base import BaseService
-from faultmaven.modules.report.domain.models import (
-    ReportType,
-    ReportRecommendation,
-    RunbookRecommendation,
-    SimilarRunbook,
-    CaseReport,
-)
-
-# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import Case
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.observability.tracing import trace
 
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import Case
+from faultmaven.modules.report.domain.models import (
+    CaseReport,
+    ReportRecommendation,
+    ReportType,
+    RunbookRecommendation,
+    SimilarRunbook,
+)
+from faultmaven.services.base import BaseService
 
 logger = logging.getLogger(__name__)
 

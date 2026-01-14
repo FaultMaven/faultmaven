@@ -25,28 +25,27 @@ Run with:
 import os
 import tempfile
 import time
-import pytest
 from datetime import datetime, timezone
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     DatabaseEvidenceArtifactRepository,
 )
-from faultmaven.services.file_storage_service import FileStorageService
-from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationStrategy,
 )
 from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
+from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
+from faultmaven.services.file_storage_service import FileStorageService
 from tests.utils import generate_case_id
-
 
 # ============================================================
 # Helper Functions

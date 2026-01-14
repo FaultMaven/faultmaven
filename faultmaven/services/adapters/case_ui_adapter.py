@@ -16,20 +16,13 @@ Architecture:
 """
 
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore
 
 # Import from contracts.py per Principle 2 (Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import (
-    Case,
-    CaseStatus,
-    HypothesisStatus,
-    InvestigationPath,
-    ConsultingData,
-)
 from faultmaven.models.case_ui import (
     CaseUIResponse,
     CaseUIResponse_Consulting,
@@ -51,6 +44,13 @@ from faultmaven.models.case_ui import (
     UserRequestSummary,
     VerificationStatus,
     WorkingConclusionSummary,
+)
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseStatus,
+    ConsultingData,
+    HypothesisStatus,
+    InvestigationPath,
 )
 
 

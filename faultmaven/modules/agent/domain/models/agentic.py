@@ -22,15 +22,13 @@ Key Features:
 - Graceful error recovery with fallback strategies
 """
 
-from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List, Union, Callable
-from datetime import datetime, timezone
-from pydantic import BaseModel, Field
-from enum import Enum
 import uuid
+from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Union
 
-
-# Core Agentic Data Models
+from pydantic import BaseModel, Field
 
 from faultmaven.modules.agent.domain.models.investigation import (
     EngagementMode,
@@ -38,6 +36,9 @@ from faultmaven.modules.agent.domain.models.investigation import (
     InvestigationStrategy,
     OODAStep,
 )
+
+# Core Agentic Data Models
+
 
 
 class AgentRole(str, Enum):

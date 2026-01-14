@@ -9,8 +9,9 @@ CORS origins (e.g., chrome-extension://*) as they allow any browser
 extension to access the API.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestCORSWildcardValidation:

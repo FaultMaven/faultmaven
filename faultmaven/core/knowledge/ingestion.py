@@ -37,10 +37,10 @@ import pypdf
 from chromadb.config import Settings
 from docx import Document
 
-from faultmaven.models import KnowledgeBaseDocument
+from faultmaven.infrastructure.model_cache import model_cache
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.security.redaction import DataSanitizer
-from faultmaven.infrastructure.model_cache import model_cache
+from faultmaven.models import KnowledgeBaseDocument
 
 
 class KnowledgeIngester:

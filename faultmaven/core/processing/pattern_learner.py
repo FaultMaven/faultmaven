@@ -30,23 +30,23 @@ Core Design Principles:
 • Observability: Track learning effectiveness and pattern usage
 """
 
+import hashlib
+import json
 import logging
 import re
 import time
-from typing import Dict, List, Any, Optional, Tuple
-from dataclasses import dataclass, asdict
 from collections import defaultdict, deque
+from dataclasses import asdict, dataclass
 from enum import Enum
-import json
-import hashlib
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from faultmaven.models.interfaces import IMemoryService
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.models.interfaces import IMemoryService
 
 
 class PatternType(Enum):

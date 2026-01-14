@@ -99,6 +99,7 @@ def test_with_mock_using_override_dependency(client, app):
     Dependency override for auth works fine - proven in test_cases_api.py and test_sessions_api.py.
     """
     from datetime import datetime, timezone
+
     from faultmaven.api.v1.auth_dependencies import get_current_user_optional
     from faultmaven.modules.auth.domain.models.auth import DevUser
 

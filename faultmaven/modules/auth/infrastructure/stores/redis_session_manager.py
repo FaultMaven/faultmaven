@@ -8,12 +8,12 @@ and provides session lifecycle management operations expected by the SessionServ
 import logging
 import uuid
 from datetime import datetime, timezone
-from faultmaven.utils.serialization import to_json_compatible
-from faultmaven.models import parse_utc_timestamp
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
-from faultmaven.models.interfaces import ISessionStore
+from faultmaven.models import parse_utc_timestamp
 from faultmaven.models.common import SessionContext
+from faultmaven.models.interfaces import ISessionStore
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class RedisSessionManager:

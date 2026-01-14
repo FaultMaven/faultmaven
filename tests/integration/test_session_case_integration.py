@@ -15,37 +15,36 @@ Requirements:
 """
 
 import os
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.infrastructure.persistence.models import Base
+from faultmaven.config.settings import reset_settings
 from faultmaven.infrastructure.persistence.database import reset_engine
 from faultmaven.infrastructure.persistence.database_case_repository import (
     DatabaseCaseRepository,
 )
-from faultmaven.config.settings import reset_settings
-from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
-    DatabaseSessionRepository,
-    InMemorySessionRepository,
-)
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.repository_factory import (
+    STORAGE_TYPE_DATABASE,
+    STORAGE_TYPE_INMEMORY,
     get_session_repository,
     get_session_repository_async,
     reset_inmemory_session_repository,
-    STORAGE_TYPE_INMEMORY,
-    STORAGE_TYPE_DATABASE,
+)
+from faultmaven.modules.auth.domain.models.session import Session
+from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
+    DatabaseSessionRepository,
+    InMemorySessionRepository,
 )
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationStrategy,
 )
-from faultmaven.modules.auth.domain.models.session import Session
-
 
 # ============================================================
 # Test Fixtures

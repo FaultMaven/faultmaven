@@ -19,18 +19,17 @@ Compression Strategy:
 - Automatic promotion/demotion between tiers
 """
 
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
-import json
 
 from faultmaven.modules.agent.contracts import (
     HierarchicalMemory,
+    InvestigationState,
     MemorySnapshot,
     OODAIteration,
-    InvestigationState,
 )
-
 
 logger = logging.getLogger(__name__)
 

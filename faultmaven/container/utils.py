@@ -4,9 +4,9 @@ This module provides common utilities for service management,
 including lazy initialization and service factories.
 """
 
-from typing import Any, Callable, TypeVar, Generic
-from functools import wraps
 import logging
+from functools import wraps
+from typing import Any, Callable, Generic, TypeVar
 
 T = TypeVar("T")
 

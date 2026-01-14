@@ -8,33 +8,33 @@ Design: Object-oriented wrapper around functional prompt modules for better
 encapsulation and testability.
 """
 
-from typing import Dict, Any, List, Optional
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
-from faultmaven.prompts.system_prompts import (
-    get_system_prompt,
-    get_tiered_prompt,
-    MINIMAL_PROMPT,
-    BRIEF_PROMPT,
-    STANDARD_PROMPT,
+from faultmaven.prompts.few_shot_examples import (
+    format_intelligent_few_shot_prompt,
+    get_examples_by_intent,
+    get_examples_by_response_type,
+    select_intelligent_examples,
 )
 from faultmaven.prompts.phase_prompts import (
-    get_phase_prompt,
     PHASE_1_BLAST_RADIUS,
     PHASE_2_TIMELINE,
     PHASE_3_HYPOTHESIS,
     PHASE_4_VALIDATION,
     PHASE_5_SOLUTION,
-)
-from faultmaven.prompts.few_shot_examples import (
-    get_examples_by_response_type,
-    get_examples_by_intent,
-    select_intelligent_examples,
-    format_intelligent_few_shot_prompt,
+    get_phase_prompt,
 )
 from faultmaven.prompts.response_prompts import (
-    get_response_type_prompt,
     assemble_intelligent_prompt,
+    get_response_type_prompt,
+)
+from faultmaven.prompts.system_prompts import (
+    BRIEF_PROMPT,
+    MINIMAL_PROMPT,
+    STANDARD_PROMPT,
+    get_system_prompt,
+    get_tiered_prompt,
 )
 
 

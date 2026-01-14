@@ -7,14 +7,13 @@ like reading files, searching knowledge bases, and listing evidence.
 Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-import logging
 
-from faultmaven.models.interfaces import BaseTool, ToolResult
 from faultmaven.domain.events import Tool
-
+from faultmaven.models.interfaces import BaseTool, ToolResult
 
 logger = logging.getLogger(__name__)
 

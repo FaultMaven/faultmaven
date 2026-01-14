@@ -13,34 +13,34 @@ import os
 import time
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Dict
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 import pytest_asyncio
 import redis.asyncio as redis
 
-from .mock_servers import MockServerManager
-from faultmaven.models.interfaces import (
-    IMemoryService,
-    IPlanningService,
-    ILLMProvider,
-    ITracer,
-    IVectorStore,
-    ISanitizer,
-)
-
 # WorkflowContext removed - using dict instead
 from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.models.interfaces import (
+    ILLMProvider,
+    IMemoryService,
+    IPlanningService,
+    ISanitizer,
+    ITracer,
+    IVectorStore,
+)
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService as SessionService,
+)
+from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
+    RedisSessionStore,
 )
 
 # Legacy services/domain/* was removed; use extracted module path.
 from faultmaven.modules.case.domain.services.case_service import CaseService
-from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
-    RedisSessionStore,
-)
+
+from .mock_servers import MockServerManager
 
 # Configure pytest-asyncio to fix deprecation warnings
 pytest_asyncio.asyncio_default_fixture_loop_scope = "function"

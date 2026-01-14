@@ -3,11 +3,12 @@
 Implements ITeamRepository for team and member management.
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-import logging
 
 from faultmaven.models.interfaces_user import ITeamRepository, Team, TeamMember
 

@@ -10,14 +10,14 @@ Tests both community and enterprise installation modes to ensure:
 Design Reference: docs/FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md (Week 11)
 """
 
-import pytest
-import sys
 import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
 from typing import List, Set
-import toml
+from unittest.mock import MagicMock, Mock, patch
 
+import pytest
+import toml
 
 # ============================================================================
 # TEST FIXTURES

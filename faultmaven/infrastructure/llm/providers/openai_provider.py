@@ -4,12 +4,14 @@ OpenAI provider implementation.
 This module implements the OpenAI LLM provider for GPT models.
 """
 
-import aiohttp
 import json
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
+
+import aiohttp
+
+from faultmaven.exceptions import LLMException
 
 from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
-from faultmaven.exceptions import LLMException
 
 
 class OpenAIProvider(BaseLLMProvider):

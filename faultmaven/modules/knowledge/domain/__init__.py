@@ -5,16 +5,16 @@ This package contains domain logic for knowledge management:
 - models: Domain models and entities
 """
 
-from faultmaven.modules.knowledge.domain.services import (
-    KnowledgeSearchService,
-    EmbeddingService,
-    VectorStoreService,
-    KnowledgeService,
-)
 from faultmaven.modules.knowledge.domain.models import (
+    EMBEDDING_DIMENSIONS,
     KnowledgeItem,
     KnowledgeItemType,
-    EMBEDDING_DIMENSIONS,
+)
+from faultmaven.modules.knowledge.domain.services import (
+    EmbeddingService,
+    KnowledgeSearchService,
+    KnowledgeService,
+    VectorStoreService,
 )
 
 __all__ = [

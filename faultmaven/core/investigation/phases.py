@@ -17,16 +17,15 @@ Phase Overview:
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Callable, Any
 from enum import Enum
+from typing import Any, Callable, Dict, List, Optional
 
 from faultmaven.modules.agent.contracts import (
-    InvestigationPhase,
-    OODAStep,
     EngagementMode,
+    InvestigationPhase,
     InvestigationStrategy,
+    OODAStep,
 )
-
 
 logger = logging.getLogger(__name__)
 

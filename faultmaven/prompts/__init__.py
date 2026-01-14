@@ -22,50 +22,45 @@ Usage:
     >>> prompt = manager.get_system_prompt(tier=PromptTier.BRIEF)
 """
 
-from faultmaven.prompts.system_prompts import (
-    get_system_prompt,
-    get_tiered_prompt,  # Phase 2: Tiered prompt loading
-    PRIMARY_SYSTEM_PROMPT,
-    CONCISE_SYSTEM_PROMPT,
-    # Tiered prompts (Phase 2)
-    NEUTRAL_IDENTITY,
-    MINIMAL_PROMPT,
-    BRIEF_PROMPT,
-    STANDARD_PROMPT,
+from faultmaven.prompts.few_shot_examples import (  # Phase 3: Pattern-based retrieval (optimized); Task 2: Enhanced pattern selection
+    format_intelligent_few_shot_prompt,
+    format_pattern_prompt,
+    get_examples_by_intent,
+    get_examples_by_response_type,
+    get_pattern,
+    get_response_pattern,
+    select_intelligent_examples,
 )
-
 from faultmaven.prompts.phase_prompts import (
-    get_phase_prompt,
     PHASE_1_BLAST_RADIUS,
     PHASE_2_TIMELINE,
     PHASE_3_HYPOTHESIS,
     PHASE_4_VALIDATION,
     PHASE_5_SOLUTION,
+    get_phase_prompt,
 )
-
-from faultmaven.prompts.few_shot_examples import (
-    # Phase 3: Pattern-based retrieval (optimized)
-    get_pattern,
-    get_response_pattern,
-    format_pattern_prompt,
-    # Task 2: Enhanced pattern selection
-    get_examples_by_response_type,
-    get_examples_by_intent,
-    select_intelligent_examples,
-    format_intelligent_few_shot_prompt,
-)
-
-from faultmaven.prompts.response_prompts import (
-    get_response_type_prompt,
-    assemble_intelligent_prompt,
-    RESPONSE_TYPE_PROMPTS,
-)
-
 from faultmaven.prompts.prompt_manager import (
-    PromptManager,
-    get_prompt_manager,
-    PromptTier,
     Phase,
+    PromptManager,
+    PromptTier,
+    get_prompt_manager,
+)
+from faultmaven.prompts.response_prompts import (
+    RESPONSE_TYPE_PROMPTS,
+    assemble_intelligent_prompt,
+    get_response_type_prompt,
+)
+from faultmaven.prompts.system_prompts import (
+    get_tiered_prompt,  # Phase 2: Tiered prompt loading
+)
+from faultmaven.prompts.system_prompts import (  # Tiered prompts (Phase 2)
+    BRIEF_PROMPT,
+    CONCISE_SYSTEM_PROMPT,
+    MINIMAL_PROMPT,
+    NEUTRAL_IDENTITY,
+    PRIMARY_SYSTEM_PROMPT,
+    STANDARD_PROMPT,
+    get_system_prompt,
 )
 
 __all__ = [

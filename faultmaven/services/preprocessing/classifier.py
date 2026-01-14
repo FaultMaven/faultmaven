@@ -14,12 +14,13 @@ Copy&paste text is handled by /queries endpoint with separate classification.
 
 import re
 from pathlib import Path
-from typing import Optional, List, TYPE_CHECKING
-from faultmaven.models.api import DataType, ClassificationResult
+from typing import TYPE_CHECKING, List, Optional
+
+from faultmaven.models.api import ClassificationResult, DataType
 
 if TYPE_CHECKING:
     from faultmaven.models.api import SourceMetadata
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class DataClassifier:

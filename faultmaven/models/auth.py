@@ -10,13 +10,13 @@ faultmaven.models.auth. New code should import directly from the modules.
 
 # Re-export all auth models from the correct location
 from faultmaven.modules.auth.domain.models import (
-    AuthToken,
-    TokenPair,
-    TokenClaims,
-    TokenStatus,
-    DevUser,
-    TokenValidationResult,
     AuthenticatedUser,
+    AuthToken,
+    DevUser,
+    TokenClaims,
+    TokenPair,
+    TokenStatus,
+    TokenValidationResult,
 )
 
 __all__ = [

@@ -12,15 +12,16 @@ Tests cover:
 Design Reference: Phase 3, Week 14-15 - DI Container Implementation
 """
 
+from unittest.mock import MagicMock, Mock, call
+
 import pytest
-from unittest.mock import Mock, MagicMock, call
+
 from faultmaven.core.container import (
+    CircularDependencyError,
     ServiceContainer,
     ServiceContainerError,
     ServiceNotFoundError,
-    CircularDependencyError,
 )
-
 
 # ============================================================================
 # Test Fixtures

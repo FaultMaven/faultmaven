@@ -8,14 +8,15 @@ These tests enforce the clean architecture principle that only the
 settings module should access environment variables directly.
 """
 
-import pytest
 import ast
 import os
 from pathlib import Path
-from typing import List, Dict, Any, Set
+from typing import Any, Dict, List, Set
 from unittest.mock import patch
 
-from faultmaven.config.settings import get_settings, reset_settings, FaultMavenSettings
+import pytest
+
+from faultmaven.config.settings import FaultMavenSettings, get_settings, reset_settings
 from faultmaven.models.exceptions import ConfigurationError
 
 

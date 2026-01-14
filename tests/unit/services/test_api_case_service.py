@@ -14,27 +14,26 @@ Tests the API case service layer functionality including:
 - Search cases
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
-from faultmaven.services.case_service import APICaseService
+from faultmaven.exceptions import (
+    AuthorizationError,
+    ConflictError,
+    NotFoundError,
+    ServiceError,
+    ValidationException,
+)
 from faultmaven.modules.case.domain.models import (
     Case,
-    CaseStatus,
     CaseSeverity,
+    CaseStatus,
     InvestigationStrategy,
 )
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ValidationException,
-    ServiceError,
-    ConflictError,
-)
-
+from faultmaven.services.case_service import APICaseService
 
 # ============================================================
 # Fixtures

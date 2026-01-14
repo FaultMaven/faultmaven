@@ -19,7 +19,6 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     ExecutionEventType,
 )
 
-
 # ============================================================
 # ExecutionEventSSE Model Tests
 # ============================================================

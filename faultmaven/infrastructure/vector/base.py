@@ -16,13 +16,12 @@ Usage:
     results = await backend.search(query_vector, top_k=10)
 """
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
-import logging
-
 
 logger = logging.getLogger(__name__)
 

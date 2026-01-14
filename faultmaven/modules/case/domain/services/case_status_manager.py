@@ -13,9 +13,9 @@ Status Flow:
 
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+
 from faultmaven.modules.case.domain.models import CaseStatus
 from faultmaven.utils.serialization import to_json_compatible
-
 
 # Allowed user transitions (via UI)
 ALLOWED_TRANSITIONS = {

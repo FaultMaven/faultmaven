@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 
 from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStage
 
-
 # ============================================================
 # Case Creation and Updates
 # ============================================================

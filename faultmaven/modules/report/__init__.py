@@ -18,18 +18,18 @@ Structure:
 
 # Domain models
 from faultmaven.modules.report.domain.models import (
-    ReportType,
-    ReportStatus,
-    RunbookSource,
-    RunbookMetadata,
-    CaseReport,
-    SimilarRunbook,
-    RunbookRecommendation,
-    ReportRecommendation,
-    ReportGenerationRequest,
-    ReportGenerationResponse,
     CaseClosureRequest,
     CaseClosureResponse,
+    CaseReport,
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+    ReportRecommendation,
+    ReportStatus,
+    ReportType,
+    RunbookMetadata,
+    RunbookRecommendation,
+    RunbookSource,
+    SimilarRunbook,
 )
 
 # Domain services - import directly to avoid circular imports:

@@ -9,13 +9,13 @@ These endpoints provide microservices parity with fm-session-service while
 maintaining the monolith's spec-compliant architecture (sessions are auth-only).
 """
 
-import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from fastapi.testclient import TestClient
+import pytest
 from fastapi import status
+from fastapi.testclient import TestClient
 
 from faultmaven.main import app as main_app
 from faultmaven.models.auth import DevUser
@@ -69,8 +69,8 @@ def app(mock_session_service, mock_user):
     async def get_mock_user():
         return mock_user
 
-    from faultmaven.api.v1.dependencies import get_session_service
     from faultmaven.api.v1.auth_dependencies import require_authentication
+    from faultmaven.api.v1.dependencies import get_session_service
 
     app.dependency_overrides[get_session_service] = get_mock_session_service
     app.dependency_overrides[require_authentication] = get_mock_user

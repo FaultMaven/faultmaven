@@ -7,11 +7,11 @@ No LLM calls required - pure JSON parsing and graph analysis.
 
 import json
 import re
-from typing import List, Dict, Optional, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
-    from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
+    from faultmaven.models.interfaces import ISanitizer, ITracer, IVectorStore
 
 
 class TraceDataExtractor:

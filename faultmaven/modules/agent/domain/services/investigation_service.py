@@ -12,21 +12,21 @@ This service wraps the MilestoneEngine and provides:
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from faultmaven.utils.serialization import to_json_compatible
 
-from faultmaven.services.base import BaseService
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
-from faultmaven.infrastructure.persistence.case_repository import CaseRepository
-
-# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import Case, CaseStatus
-from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
 from faultmaven.exceptions import (
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
 )
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.infrastructure.persistence.case_repository import CaseRepository
+from faultmaven.models.api_models import CaseQueryRequest, CaseQueryResponse
+
+# Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
+from faultmaven.modules.case.contracts import Case, CaseStatus
+from faultmaven.services.base import BaseService
+from faultmaven.utils.serialization import to_json_compatible
 
 
 class InvestigationService(BaseService):
@@ -95,8 +95,8 @@ class InvestigationService(BaseService):
                 )
 
             # 3. Save user message to conversation history BEFORE processing
-            from uuid import uuid4
             from datetime import datetime, timezone
+            from uuid import uuid4
 
             # Per case-storage-design.md Section 4.7, use "timestamp" not "created_at"
             user_message_obj = {
@@ -133,8 +133,8 @@ class InvestigationService(BaseService):
             agent_response_text = result["agent_response"]
 
             # 6. Save agent response to conversation history
-            from uuid import uuid4
             from datetime import datetime, timezone
+            from uuid import uuid4
 
             # Per case-storage-design.md Section 4.7, use "created_at"
             agent_message = {

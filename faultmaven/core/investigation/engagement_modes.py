@@ -22,7 +22,7 @@ Problem Signal Detection:
 import logging
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.modules.agent.contracts import (
     EngagementMode,
@@ -30,7 +30,6 @@ from faultmaven.modules.agent.contracts import (
     InvestigationStrategy,
     ProblemConfirmation,
 )
-
 
 logger = logging.getLogger(__name__)
 

@@ -2,12 +2,12 @@
 
 import asyncio
 import logging
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional, Any, Callable, Awaitable
-from enum import Enum
-from dataclasses import dataclass
 import statistics
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from faultmaven.models.behavioral import ClientProfile, ReputationLevel, RiskLevel
 from faultmaven.models.protection import SystemMetrics

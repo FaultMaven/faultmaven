@@ -8,9 +8,10 @@ Tests cover:
 - Preset validation
 """
 
-import pytest
 import os
 from unittest.mock import patch
+
+import pytest
 
 
 class TestPresetDefinitions:
@@ -105,7 +106,7 @@ class TestPresetLoading:
 
     def test_get_preset_returns_correct_preset(self):
         """Test that get_preset returns the correct preset."""
-        from faultmaven.config.presets import get_preset, PresetName
+        from faultmaven.config.presets import PresetName, get_preset
 
         preset = get_preset("local")
         assert preset is not None

@@ -14,8 +14,9 @@ Key Components:
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
 from enum import Enum
+from typing import Optional
+
 from faultmaven.models import parse_utc_timestamp
 from faultmaven.utils.serialization import to_json_compatible
 

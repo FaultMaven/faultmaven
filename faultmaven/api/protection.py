@@ -10,28 +10,29 @@ This module provides a comprehensive protection system that integrates:
 
 import logging
 import os
-from typing import Optional, Dict, Any
 from datetime import datetime, timezone
-from fastapi import FastAPI, APIRouter
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, FastAPI
+
 from faultmaven.models.interfaces import ISessionStore
 
 # Basic protection imports
 from ..config.protection import (
-    load_protection_settings,
     get_development_protection_settings,
     get_production_protection_settings,
+    load_protection_settings,
     validate_protection_settings,
 )
-from ..models.protection import ProtectionSettings
 from ..infrastructure.protection import TimeoutHandler
-from .middleware import RateLimitMiddleware, DeduplicationMiddleware
-
-# Intelligent protection imports
-from .middleware.intelligent_protection import IntelligentProtectionMiddleware
 from ..infrastructure.protection.protection_coordinator import ProtectionConfig
 from ..infrastructure.protection.rate_limiter import RedisRateLimiter
 from ..infrastructure.protection.request_hasher import RequestHasher
+from ..models.protection import ProtectionSettings
+from .middleware import DeduplicationMiddleware, RateLimitMiddleware
 
+# Intelligent protection imports
+from .middleware.intelligent_protection import IntelligentProtectionMiddleware
 
 logger = logging.getLogger(__name__)
 

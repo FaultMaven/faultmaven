@@ -4,18 +4,19 @@ Unit tests for RunbookKnowledgeBase service.
 Tests dual-source runbook similarity search and indexing.
 """
 
-import pytest
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from datetime import datetime
-from typing import List, Dict
+from typing import Dict, List
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
+import pytest
 
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.report import (
     CaseReport,
-    ReportType,
     ReportStatus,
-    RunbookSource,
+    ReportType,
     RunbookMetadata,
+    RunbookSource,
     SimilarRunbook,
 )
 

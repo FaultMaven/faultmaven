@@ -9,34 +9,33 @@ Generates professional documentation for resolved troubleshooting cases:
 Architecture Reference: docs/architecture/document-generation-and-closure-design.md
 """
 
-import time
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone, timedelta
 import logging
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
-from faultmaven.services.base import BaseService
-from faultmaven.modules.report.domain.models import (
-    CaseReport,
-    ReportType,
-    ReportStatus,
-    RunbookSource,
-    RunbookMetadata,
-    ReportGenerationRequest,
-    ReportGenerationResponse,
+from faultmaven.exceptions import ValidationException
+from faultmaven.infrastructure.concurrency import (
+    LockAcquisitionError,
+    ReportLockManager,
 )
+from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+from faultmaven.infrastructure.observability.tracing import trace
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import Case, CaseStatus
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
-from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
-from faultmaven.infrastructure.concurrency import (
-    ReportLockManager,
-    LockAcquisitionError,
+from faultmaven.modules.report.domain.models import (
+    CaseReport,
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+    ReportStatus,
+    ReportType,
+    RunbookMetadata,
+    RunbookSource,
 )
-from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.exceptions import ValidationException
+from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
-
 
 logger = logging.getLogger(__name__)
 

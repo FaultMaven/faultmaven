@@ -10,9 +10,10 @@ import logging
 import os
 import subprocess
 import time
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 import aiohttp
+
 from faultmaven.infrastructure.logging.config import get_logger
 
 logger = get_logger(__name__)

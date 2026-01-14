@@ -7,11 +7,11 @@ Design Reference:
 - docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from faultmaven.modules.agent.domain.models.investigation import (
-    InvestigationPhase,
-    PHASE_OODA_WEIGHTS,
-)
 from faultmaven.core.investigation.iteration_strategy import PhaseIterationStrategy
+from faultmaven.modules.agent.domain.models.investigation import (
+    PHASE_OODA_WEIGHTS,
+    InvestigationPhase,
+)
 
 
 def get_phase_ooda_guidance(phase: InvestigationPhase) -> str:

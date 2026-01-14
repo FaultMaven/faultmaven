@@ -5,22 +5,22 @@ FastAPI middleware for multi-level rate limiting with Redis backend,
 progressive penalties, and graceful degradation.
 """
 
-import time
 import logging
-from typing import Callable, Dict, Any, Optional
+import time
 from datetime import datetime
+from typing import Any, Callable, Dict, Optional
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from ...models.protection import (
-    ProtectionSettings,
-    LimitType,
-    RateLimitError,
-    ProtectionErrorResponse,
-)
 from ...infrastructure.protection import RedisRateLimiter
+from ...models.protection import (
+    LimitType,
+    ProtectionErrorResponse,
+    ProtectionSettings,
+    RateLimitError,
+)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):

@@ -1,17 +1,18 @@
 """Test fixtures for Agent module unit tests."""
 
-import pytest
 from datetime import datetime, timezone
-from typing import Optional, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from faultmaven.modules.case.domain.models import Case, CaseStatus
+import pytest
+
 from faultmaven.exceptions import (
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
 )
+from faultmaven.modules.case.domain.models import Case, CaseStatus
 
 if TYPE_CHECKING:
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine

@@ -32,11 +32,11 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from sqlalchemy import select, delete, update, and_
+from sqlalchemy import and_, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from faultmaven.modules.auth.domain.models.session import Session
 from faultmaven.infrastructure.persistence.models import SessionModel
+from faultmaven.modules.auth.domain.models.session import Session
 
 logger = logging.getLogger(__name__)
 

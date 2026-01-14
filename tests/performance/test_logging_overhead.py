@@ -5,24 +5,25 @@ This module tests that the logging infrastructure overhead is < 1% of
 request processing time and validates performance thresholds.
 """
 
-import pytest
 import asyncio
-import time
-import statistics
 import os
+import statistics
+import time
+from contextlib import asynccontextmanager, contextmanager
+from typing import Any, Dict, List
 from unittest.mock import Mock, patch
-from contextlib import contextmanager, asynccontextmanager
-from typing import List, Dict, Any
 
+import pytest
+
+from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.logging.coordinator import (
     LoggingCoordinator,
-    RequestContext,
     PerformanceTracker,
+    RequestContext,
     request_context,
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger
 from faultmaven.services.base import BaseService
-from faultmaven.infrastructure.base_client import BaseExternalClient
 
 
 class TestLoggingPerformanceOverhead:

@@ -5,15 +5,14 @@ Provides a base class for all service layer components that includes
 unified logging, error handling, and operation management patterns.
 """
 
-from typing import Any, Callable, Dict, Optional, TypeVar, Union
 import asyncio
 from abc import ABC
 from datetime import datetime, timezone
+from typing import Any, Callable, Dict, Optional, TypeVar, Union
+
+from faultmaven.exceptions import FaultMavenException, ValidationException
+from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
 from faultmaven.utils.serialization import to_json_compatible
-
-from faultmaven.infrastructure.logging.unified import get_unified_logger, UnifiedLogger
-from faultmaven.exceptions import ValidationException, FaultMavenException
-
 
 # Type variable for generic return types
 T = TypeVar("T")

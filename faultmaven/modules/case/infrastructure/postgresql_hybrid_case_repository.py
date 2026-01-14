@@ -20,7 +20,7 @@ Architecture:
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -33,24 +33,25 @@ from faultmaven.modules.evidence.contracts import IEvidenceQuery
 
 if TYPE_CHECKING:
     from faultmaven.modules.report.domain.models import CaseReport, ReportType
+
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
-    InvestigationProgress,
-    TurnProgress,
-    UploadedFile,
+    CaseStatusTransition,
+    ConsultingData,
+    DegradedMode,
+    DocumentationData,
+    EscalationState,
     Evidence,
     Hypothesis,
-    Solution,
-    ConsultingData,
-    ProblemVerification,
-    WorkingConclusion,
-    RootCauseConclusion,
-    DegradedMode,
-    EscalationState,
-    DocumentationData,
+    InvestigationProgress,
     PathSelection,
-    CaseStatusTransition,
+    ProblemVerification,
+    RootCauseConclusion,
+    Solution,
+    TurnProgress,
+    UploadedFile,
+    WorkingConclusion,
 )
 
 
@@ -1347,13 +1348,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def add_report(self, report: "CaseReport") -> "CaseReport":
         """Add report to PostgreSQL reports table."""
+        from datetime import timezone
+
         from faultmaven.modules.report.domain.models import (
             CaseReport,
             ReportType,
             RunbookMetadata,
         )
         from faultmaven.utils.serialization import to_json_compatible
-        from datetime import timezone
 
         # If this is marked as current, unmark other reports of the same type for this case
         if report.is_current:
@@ -1446,8 +1448,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """Get report by ID from PostgreSQL."""
         from faultmaven.modules.report.domain.models import (
             CaseReport,
-            ReportType,
             ReportStatus,
+            ReportType,
             RunbookMetadata,
         )
         from faultmaven.utils.serialization import to_json_compatible
@@ -1482,8 +1484,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """Get reports for a case with optional filtering."""
         from faultmaven.modules.report.domain.models import (
             CaseReport,
-            ReportType,
             ReportStatus,
+            ReportType,
             RunbookMetadata,
         )
         from faultmaven.utils.serialization import to_json_compatible
@@ -1520,13 +1522,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def update_report(self, report: "CaseReport") -> "CaseReport":
         """Update report in PostgreSQL."""
+        from datetime import timezone
+
         from faultmaven.modules.report.domain.models import (
             CaseReport,
             ReportType,
             RunbookMetadata,
         )
         from faultmaven.utils.serialization import to_json_compatible
-        from datetime import timezone
 
         # If this is marked as current, unmark other reports of the same type for this case
         if report.is_current:
@@ -1623,8 +1626,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """Convert database row to CaseReport domain object."""
         from faultmaven.modules.report.domain.models import (
             CaseReport,
-            ReportType,
             ReportStatus,
+            ReportType,
             RunbookMetadata,
         )
         from faultmaven.utils.serialization import to_json_compatible

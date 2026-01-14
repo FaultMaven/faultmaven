@@ -20,41 +20,41 @@ Part of the Case module - handles evidence processing for case investigations.
 
 import hashlib
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
 
-from faultmaven.services.base import BaseService
-from faultmaven.models.interfaces import (
-    IDataClassifier,
-    ILogProcessor,
-    ISanitizer,
-    ITracer,
-    IStorageBackend,
-    IMemoryService,
-)
+from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models import (
     DataInsightsResponse,
     DataType,
     UploadedData,
 )
-from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.models.interfaces import (
+    IDataClassifier,
+    ILogProcessor,
+    IMemoryService,
+    ISanitizer,
+    IStorageBackend,
+    ITracer,
+)
+from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
 
 # Import enhanced components (if available)
 try:
     from faultmaven.core.processing.classifier import (
-        EnhancedDataClassifier,
         ClassificationResult,
+        EnhancedDataClassifier,
     )
     from faultmaven.core.processing.log_analyzer import (
         EnhancedLogProcessor,
         EnhancedProcessingResult,
     )
     from faultmaven.core.processing.pattern_learner import (
+        LearningResult,
         PatternLearner,
         PatternType,
-        LearningResult,
     )
 
     ENHANCED_COMPONENTS_AVAILABLE = True
@@ -968,9 +968,10 @@ class CaseDataIngestionService(BaseService):
         Returns:
             Evidence extraction report with timeline events, observations, etc.
         """
-        from faultmaven.models import DataType
         import re
         from datetime import datetime
+
+        from faultmaven.models import DataType
 
         evidence_report = {
             "summary": "",

@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
+from faultmaven.exceptions import LLMException, ServiceError
 from faultmaven.modules.agent.domain.events.execution_events import (
     AgentContext,
     LLMEvent,
@@ -22,7 +23,6 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     Tool,
     ToolCall,
 )
-from faultmaven.exceptions import LLMException, ServiceError
 
 logger = logging.getLogger(__name__)
 

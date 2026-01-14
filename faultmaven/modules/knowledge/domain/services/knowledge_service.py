@@ -21,28 +21,28 @@ Key Improvements over Original:
 - Standardized tracing and logging patterns
 """
 
-import time
-import json
 import asyncio
 import hashlib
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+import json
+import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from functools import lru_cache
+from typing import Any, Dict, List, Optional, Tuple
 
-from faultmaven.services.base import BaseService
+from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.models import KnowledgeBaseDocument, SearchResult
 from faultmaven.models.interfaces import (
     IKnowledgeIngester,
+    ILLMProvider,
+    IMemoryService,
     ISanitizer,
     ITracer,
     IVectorStore,
-    IMemoryService,
-    ILLMProvider,
 )
-from faultmaven.models import KnowledgeBaseDocument, SearchResult
 from faultmaven.models.vector_metadata import VectorMetadata
-from faultmaven.exceptions import ValidationException, ServiceException
+from faultmaven.services.base import BaseService
 from faultmaven.utils.serialization import to_json_compatible
 
 # Import enhanced components if available

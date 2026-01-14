@@ -13,15 +13,16 @@ Design Reference: docs/architecture/RESPONSE_FORMAT_INTEGRATION_SPEC.md
 """
 
 import json
-import re
 import logging
-from typing import Optional, Type, TypeVar, Dict, Any
+import re
+from typing import Any, Dict, Optional, Type, TypeVar
+
 from pydantic import BaseModel, ValidationError
 
 from faultmaven.models.responses import (
-    OODAResponse,
     ConsultantResponse,
     LeadInvestigatorResponse,
+    OODAResponse,
     create_minimal_response,
 )
 

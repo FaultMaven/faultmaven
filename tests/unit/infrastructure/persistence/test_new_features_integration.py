@@ -13,6 +13,12 @@ from uuid import uuid4
 # Add project root to path
 sys.path.insert(0, "/home/swhouse/product/faultmaven")
 
+from faultmaven.modules.agent.domain.models.agent_execution import (
+    AgentExecution,
+    AgentToolCall,
+    AgentType,
+    ExecutionStatus,
+)
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
@@ -21,12 +27,6 @@ from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifactType,
     EvidenceListFilter,
     StorageBackend,
-)
-from faultmaven.modules.agent.domain.models.agent_execution import (
-    AgentExecution,
-    AgentToolCall,
-    AgentType,
-    ExecutionStatus,
 )
 
 

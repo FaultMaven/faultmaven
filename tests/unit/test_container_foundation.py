@@ -18,15 +18,16 @@ Architecture Compliance:
 - Ensures graceful handling of missing dependencies
 """
 
-import pytest
-from unittest.mock import Mock, MagicMock, patch
+import asyncio
 import logging
 import threading
 import time
 from typing import Any, Dict
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 from faultmaven.container import DIContainer
-import asyncio
 
 
 @pytest.fixture(autouse=True)

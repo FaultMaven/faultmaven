@@ -17,35 +17,34 @@ The main DIContainer implementation is in faultmaven._container_impl
 and re-exported here for clean imports.
 """
 
-from faultmaven.container.registry import (
-    DependencyRegistry,
-    ServiceInfo,
-    ServiceStatus,
-    DependencyError,
-)
+# Import the full DIContainer implementation and singleton from the impl module
+# This ensures all code importing from faultmaven.container gets the proper DIContainer
+from faultmaven._container_impl import DIContainer, GlobalContainer, container
+from faultmaven.container.base import BaseDIContainer
 from faultmaven.container.errors import (
-    ContainerError,
-    ServiceUnavailableError,
-    InitializationError,
     CircularDependencyError,
     ConfigurationError,
+    ContainerError,
+    InitializationError,
+    ServiceUnavailableError,
 )
-from faultmaven.container.utils import (
-    LazyService,
-    service_getter,
-    check_dependencies,
-    log_service_status,
-)
-from faultmaven.container.base import BaseDIContainer
 from faultmaven.container.providers import (
     register_infrastructure,
     register_services,
     register_tools,
 )
-
-# Import the full DIContainer implementation and singleton from the impl module
-# This ensures all code importing from faultmaven.container gets the proper DIContainer
-from faultmaven._container_impl import DIContainer, GlobalContainer, container
+from faultmaven.container.registry import (
+    DependencyError,
+    DependencyRegistry,
+    ServiceInfo,
+    ServiceStatus,
+)
+from faultmaven.container.utils import (
+    LazyService,
+    check_dependencies,
+    log_service_status,
+    service_getter,
+)
 
 __all__ = [
     # Main container classes and singleton

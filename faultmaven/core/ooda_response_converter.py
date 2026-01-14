@@ -5,15 +5,16 @@ Converts structured OODAResponse from phase handlers into AgentResponse for API 
 This maintains separation between internal OODA framework and external API contracts.
 """
 
-from typing import Dict, Any
+from typing import Any, Dict
+
+from faultmaven.models.api import AgentResponse, ResponseType, Source, SourceType
+from faultmaven.models.llm_schemas import EvidenceRequestToAdd
 from faultmaven.models.responses import (
-    OODAResponse,
     ConsultantResponse,
     LeadInvestigatorResponse,
     OODAEvidenceRequest,
+    OODAResponse,
 )
-from faultmaven.models.api import AgentResponse, ResponseType, Source, SourceType
-from faultmaven.models.llm_schemas import EvidenceRequestToAdd
 
 
 def ooda_to_agent_response(

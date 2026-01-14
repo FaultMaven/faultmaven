@@ -8,18 +8,19 @@ Tests cover:
 - Initialization order
 """
 
-import pytest
 from datetime import datetime, timezone
 
-from faultmaven.container.registry import (
-    DependencyRegistry,
-    ServiceInfo,
-    ServiceStatus,
-    DependencyError,
-)
+import pytest
+
 from faultmaven.container.errors import (
     CircularDependencyError,
     ServiceUnavailableError,
+)
+from faultmaven.container.registry import (
+    DependencyError,
+    DependencyRegistry,
+    ServiceInfo,
+    ServiceStatus,
 )
 
 

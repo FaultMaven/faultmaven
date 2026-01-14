@@ -12,17 +12,18 @@ Run with:
     pytest tests/benchmarks/test_case_operations.py -m benchmark -v
 """
 
-import pytest
 import time
 from datetime import datetime, timezone
 
+import pytest
+
+from faultmaven.infrastructure.persistence.database_case_repository import (
+    DatabaseCaseRepository,
+)
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseStatus,
     InvestigationStrategy,
-)
-from faultmaven.infrastructure.persistence.database_case_repository import (
-    DatabaseCaseRepository,
 )
 
 from .conftest import generate_case_id

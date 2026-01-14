@@ -13,9 +13,10 @@ Run with:
     pytest tests/unit/infrastructure/persistence/test_case_repository_standalone_evidence.py -v
 """
 
-import pytest
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
+
+import pytest
 
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,

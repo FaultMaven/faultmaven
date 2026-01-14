@@ -23,11 +23,11 @@ Usage:
     OPENAI_API_KEY=sk-...  # Required when using openai provider
 """
 
-import os
 import logging
-from typing import Dict, Any, Optional, Set, List
-from enum import Enum
+import os
 from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 

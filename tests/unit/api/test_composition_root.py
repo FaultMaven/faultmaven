@@ -8,8 +8,9 @@ Purpose: Validate that:
 This addresses Gap P5-G1: Service Locator Anti-Pattern
 """
 
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
 import pytest
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
@@ -40,8 +41,9 @@ class TestCompositionRootPattern:
 
     def test_dependency_uses_app_state_not_container(self):
         """Test that dependencies use request.app.state, not container.get_*"""
-        from faultmaven.api.v1.dependencies import get_session_service
         import inspect
+
+        from faultmaven.api.v1.dependencies import get_session_service
 
         # Get source code of the dependency function
         source = inspect.getsource(get_session_service)
@@ -58,8 +60,9 @@ class TestCompositionRootPattern:
 
     def test_auth_dependency_uses_app_state(self):
         """Test that auth dependencies use request.app.state"""
-        from faultmaven.api.v1.auth_dependencies import get_token_manager
         import inspect
+
+        from faultmaven.api.v1.auth_dependencies import get_token_manager
 
         source = inspect.getsource(get_token_manager)
 
@@ -72,8 +75,9 @@ class TestCompositionRootPattern:
 
     def test_middleware_auth_uses_app_state(self):
         """Test that middleware auth uses app.state"""
-        from faultmaven.api.middleware.auth import get_auth_service
         import inspect
+
+        from faultmaven.api.middleware.auth import get_auth_service
 
         source = inspect.getsource(get_auth_service)
 
@@ -90,8 +94,9 @@ class TestDependencyFunctionSignatures:
 
     def test_dependencies_accept_request_parameter(self):
         """Test that key dependencies accept Request parameter"""
-        from faultmaven.api.v1 import dependencies
         import inspect
+
+        from faultmaven.api.v1 import dependencies
 
         # These functions should accept Request parameter
         dependency_functions = [
@@ -113,8 +118,9 @@ class TestDependencyFunctionSignatures:
 
     def test_auth_dependencies_accept_request_parameter(self):
         """Test that auth dependencies accept Request parameter"""
-        from faultmaven.api.v1 import auth_dependencies
         import inspect
+
+        from faultmaven.api.v1 import auth_dependencies
 
         # These functions should accept Request parameter
         auth_dependency_functions = [
@@ -138,8 +144,9 @@ class TestNoServiceLocatorInApiLayer:
 
     def test_dependencies_file_no_container_imports(self):
         """Test that dependencies.py doesn't import container for Service Locator"""
-        from faultmaven.api.v1 import dependencies
         import inspect
+
+        from faultmaven.api.v1 import dependencies
 
         source = inspect.getsource(dependencies)
 
@@ -181,8 +188,8 @@ class TestNoServiceLocatorInApiLayer:
 
     def test_module_routes_no_container_imports(self):
         """Test that module routes don't use container.get_*"""
-        import os
         import glob
+        import os
 
         module_routes = glob.glob("faultmaven/modules/*/api/routes.py") + glob.glob(
             "faultmaven/modules/*/api/*.py"

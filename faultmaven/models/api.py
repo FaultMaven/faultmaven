@@ -1,9 +1,11 @@
 # File: faultmaven/models/api.py
 
-from pydantic import BaseModel, Field, model_validator, field_validator
-from typing import List, Optional, Dict, Any, Literal, TYPE_CHECKING
-from enum import Enum
 from datetime import datetime, timezone
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
 from faultmaven.utils.serialization import to_json_compatible
 
 # Import for type annotations (avoid circular imports)
@@ -13,8 +15,8 @@ if TYPE_CHECKING:
 
 # Import evidence-centric models
 from faultmaven.models.llm_schemas import EvidenceRequestToAdd as EvidenceRequest
-from faultmaven.modules.case.domain.models import CaseStatus as EvidenceCaseStatus
 from faultmaven.modules.agent.domain.models.investigation import InvestigationStrategy
+from faultmaven.modules.case.domain.models import CaseStatus as EvidenceCaseStatus
 
 # --- Enumerations for Explicit Contracts ---
 

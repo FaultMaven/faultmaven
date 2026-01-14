@@ -3,9 +3,10 @@
 Tests the AgentExecution and AgentToolCall dataclasses and related enums.
 """
 
-import pytest
-from datetime import datetime, timezone, timedelta
 import time
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from faultmaven.modules.agent.domain.models.agent_execution import (
     AgentExecution,

@@ -10,9 +10,9 @@ Usage is controlled by METRICS_EXPORTER setting:
 """
 
 from faultmaven.infrastructure.observability.metrics_exporters.prometheus import (
+    FORBIDDEN_LABELS,
     create_prometheus_metrics_endpoint,
     get_prometheus_response,
-    FORBIDDEN_LABELS,
 )
 
 __all__ = [

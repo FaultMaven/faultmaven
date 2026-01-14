@@ -5,15 +5,17 @@ This module provides a ChromaDB-based vector store that implements
 the IVectorStore interface for consistent vector database operations.
 """
 
-from typing import List, Dict, Optional, Any
+import logging
 import os
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+
 import chromadb
 from chromadb.config import Settings
-from faultmaven.models.interfaces import IVectorStore
-from faultmaven.infrastructure.base_client import BaseExternalClient
+
 from faultmaven.config.settings import get_settings
-import logging
+from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.models.interfaces import IVectorStore
 
 
 class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
