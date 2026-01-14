@@ -518,7 +518,7 @@ class LoopCheckRequest(BaseModel):
     session_id: str = Field(description="Session identifier")
     history: List[str] = Field(
         min_items=1,
-        max_items=10,
+        max_length=10,
         description="Recent query history for analysis"
     )
     confidence_history: List[float] = Field(

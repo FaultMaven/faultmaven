@@ -310,7 +310,7 @@ class TriageResult(BaseModel):
 class ScopingResult(BaseModel):
     """Result from scoping agent analysis."""
     questions: List[str] = Field(
-        max_items=2,
+        max_length=2,
         description="Clarifying questions (max 2 per turn)"
     )
     question_rationale: List[str] = Field(

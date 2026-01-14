@@ -13,7 +13,7 @@ Key Components:
 - AuthError: Structured error responses
 """
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 import re
@@ -29,22 +29,20 @@ class DevLoginRequest(BaseModel):
         ...,
         min_length=3,
         max_length=50,
-        description="Username or email address (3-50 chars)",
-        example="developer@example.com"
+        description="Username or email address (3-50 chars)"
     )
     email: Optional[str] = Field(
         None,
-        description="Optional email address (will auto-generate if not provided)",
-        example="john.doe@faultmaven.local"
+        description="Optional email address (will auto-generate if not provided)"
     )
     display_name: Optional[str] = Field(
         None,
         max_length=100,
-        description="Optional display name (will auto-generate if not provided)",
-        example="John Doe"
+        description="Optional display name (will auto-generate if not provided)"
     )
 
-    @validator('username')
+    @field_validator('username')
+    @classmethod
     def validate_username(cls, v):
         """Validate username format (allows email addresses)"""
         # Allow email addresses OR traditional usernames
@@ -55,7 +53,8 @@ class DevLoginRequest(BaseModel):
             raise ValueError('Username must be a valid email address or contain only letters, numbers, dots, underscores, and hyphens')
         return v.lower()  # Store usernames in lowercase for consistency
 
-    @validator('email')
+    @field_validator('email')
+    @classmethod
     def validate_email(cls, v):
         """Validate email format if provided"""
         if v is not None:
@@ -64,15 +63,15 @@ class DevLoginRequest(BaseModel):
             return v.lower()  # Store emails in lowercase for consistency
         return v
 
-    class Config:
-        """Pydantic configuration"""
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "username": "john.doe",
                 "email": "john.doe@faultmaven.local",
                 "display_name": "John Doe"
             }
         }
+    )
 
 
 class UserProfile(BaseModel):
@@ -83,28 +82,23 @@ class UserProfile(BaseModel):
     """
     user_id: str = Field(
         ...,
-        description="Unique user identifier",
-        example="550e8400-e29b-41d4-a716-446655440000"
+        description="Unique user identifier"
     )
     username: str = Field(
         ...,
-        description="Username",
-        example="john.doe"
+        description="Username"
     )
     email: str = Field(
         ...,
-        description="Email address",
-        example="john.doe@faultmaven.local"
+        description="Email address"
     )
     display_name: str = Field(
         ...,
-        description="Display name",
-        example="John Doe"
+        description="Display name"
     )
     created_at: str = Field(
         ...,
-        description="Account creation timestamp (ISO format)",
-        example="2025-01-15T10:00:00Z"
+        description="Account creation timestamp (ISO format)"
     )
     is_dev_user: bool = Field(
         default=True,
@@ -112,13 +106,11 @@ class UserProfile(BaseModel):
     )
     roles: List[str] = Field(
         default=["user"],
-        description="User roles for access control (e.g., ['user'], ['user', 'admin'])",
-        example=["user", "admin"]
+        description="User roles for access control (e.g., ['user'], ['user', 'admin'])"
     )
 
-    class Config:
-        """Pydantic configuration"""
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "user_id": "550e8400-e29b-41d4-a716-446655440000",
                 "username": "john.doe",
@@ -129,6 +121,7 @@ class UserProfile(BaseModel):
                 "roles": ["user", "admin"]
             }
         }
+    )
 
 
 class AuthTokenResponse(BaseModel):
@@ -139,8 +132,7 @@ class AuthTokenResponse(BaseModel):
     """
     access_token: str = Field(
         ...,
-        description="Bearer access token",
-        example="550e8400-e29b-41d4-a716-446655440000"
+        description="Bearer access token"
     )
     token_type: str = Field(
         default="bearer",
@@ -148,22 +140,19 @@ class AuthTokenResponse(BaseModel):
     )
     expires_in: int = Field(
         ...,
-        description="Token expiration time in seconds",
-        example=86400
+        description="Token expiration time in seconds"
     )
     session_id: str = Field(
         ...,
-        description="Session identifier for multi-turn conversations",
-        example="session-550e8400-e29b-41d4-a716-446655440000"
+        description="Session identifier for multi-turn conversations"
     )
     user: UserProfile = Field(
         ...,
         description="Authenticated user profile"
     )
 
-    class Config:
-        """Pydantic configuration"""
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "access_token": "550e8400-e29b-41d4-a716-446655440000",
                 "token_type": "bearer",
@@ -180,6 +169,7 @@ class AuthTokenResponse(BaseModel):
                 }
             }
         }
+    )
 
 
 class LogoutResponse(BaseModel):
@@ -190,18 +180,17 @@ class LogoutResponse(BaseModel):
     )
     revoked_tokens: int = Field(
         ...,
-        description="Number of tokens that were revoked",
-        example=1
+        description="Number of tokens that were revoked"
     )
 
-    class Config:
-        """Pydantic configuration"""
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "message": "Logged out successfully",
                 "revoked_tokens": 1
             }
         }
+    )
 
 
 class AuthError(BaseModel):
@@ -212,28 +201,26 @@ class AuthError(BaseModel):
     """
     error: str = Field(
         ...,
-        description="Error code",
-        example="invalid_request"
+        description="Error code"
     )
     error_description: str = Field(
         ...,
-        description="Human-readable error description",
-        example="The request is missing a required parameter"
+        description="Human-readable error description"
     )
     correlation_id: Optional[str] = Field(
         None,
         description="Request correlation ID for debugging"
     )
 
-    class Config:
-        """Pydantic configuration"""
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "error": "invalid_request",
                 "error_description": "Username is required and must be between 3-50 characters",
                 "correlation_id": "550e8400-e29b-41d4-a716-446655440000"
             }
         }
+    )
 
 
 class TokenValidationError(AuthError):
@@ -264,18 +251,15 @@ class UserInfoResponse(UserProfile):
     """
     last_login: Optional[str] = Field(
         None,
-        description="Last login timestamp (ISO format)",
-        example="2025-01-15T14:30:00Z"
+        description="Last login timestamp (ISO format)"
     )
     token_count: int = Field(
         default=0,
-        description="Number of active tokens for this user",
-        example=2
+        description="Number of active tokens for this user"
     )
 
-    class Config:
-        """Pydantic configuration"""
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "user_id": "550e8400-e29b-41d4-a716-446655440000",
                 "username": "john.doe",
@@ -288,3 +272,4 @@ class UserInfoResponse(UserProfile):
                 "token_count": 2
             }
         }
+    )

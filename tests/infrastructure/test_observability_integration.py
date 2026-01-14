@@ -343,38 +343,52 @@ class TestRealMetricsCollection:
         
         collector = MockMetricsCollector()
         
-        # Mock the Prometheus metrics from the tracing module
-        with patch('faultmaven.infrastructure.observability.tracing.REQUEST_COUNTER') as mock_request_counter, \
-             patch('faultmaven.infrastructure.observability.tracing.LLM_REQUEST_COUNTER') as mock_llm_counter, \
-             patch('faultmaven.infrastructure.observability.tracing.REQUEST_DURATION') as mock_request_duration, \
-             patch('faultmaven.infrastructure.observability.tracing.LLM_REQUEST_DURATION') as mock_llm_duration, \
-             patch('faultmaven.infrastructure.observability.tracing.GENERIC_FUNCTION_DURATION') as mock_generic_duration, \
-             patch('faultmaven.infrastructure.observability.tracing.ACTIVE_SESSIONS') as mock_active_sessions:
-            
-            # Configure mock counters
-            mock_request_counter.labels.return_value.inc.side_effect = lambda value=1: collector.increment_counter(
-                "api.requests", value, {"endpoint": "mock", "method": "GET", "status": "200"}
-            )
-            mock_llm_counter.labels.return_value.inc.side_effect = lambda value=1: collector.increment_counter(
-                "llm.requests", value, {"provider": "mock", "model": "mock", "status": "200"}
+        # Check if Prometheus metrics are available before patching
+        from faultmaven.infrastructure.observability.tracing import PROMETHEUS_AVAILABLE
+        
+        # Create a context manager that conditionally patches metrics
+        if PROMETHEUS_AVAILABLE:
+            # Import metrics to ensure they exist
+            from faultmaven.infrastructure.observability.tracing import (
+                REQUEST_COUNTER, LLM_REQUEST_COUNTER, REQUEST_DURATION,
+                LLM_REQUEST_DURATION, GENERIC_FUNCTION_DURATION, ACTIVE_SESSIONS
             )
             
-            # Configure mock histograms
-            mock_request_duration.labels.return_value.observe.side_effect = lambda value: collector.record_histogram(
-                "api.response_time_ms", value, {"endpoint": "mock", "method": "GET"}
-            )
-            mock_llm_duration.labels.return_value.observe.side_effect = lambda value: collector.record_histogram(
-                "llm.response_time_ms", value, {"provider": "mock", "model": "mock"}
-            )
-            mock_generic_duration.labels.return_value.observe.side_effect = lambda value: collector.record_histogram(
-                "function.duration_ms", value, {"function_name": "mock", "status": "success"}
-            )
-            
-            # Configure mock gauges
-            mock_active_sessions.set.side_effect = lambda value: collector.set_gauge(
-                "active_sessions", value, {"service": "mock"}
-            )
-            
+            # Mock the Prometheus metrics from the tracing module
+            with patch('faultmaven.infrastructure.observability.tracing.REQUEST_COUNTER') as mock_request_counter, \
+                 patch('faultmaven.infrastructure.observability.tracing.LLM_REQUEST_COUNTER') as mock_llm_counter, \
+                 patch('faultmaven.infrastructure.observability.tracing.REQUEST_DURATION') as mock_request_duration, \
+                 patch('faultmaven.infrastructure.observability.tracing.LLM_REQUEST_DURATION') as mock_llm_duration, \
+                 patch('faultmaven.infrastructure.observability.tracing.GENERIC_FUNCTION_DURATION') as mock_generic_duration, \
+                 patch('faultmaven.infrastructure.observability.tracing.ACTIVE_SESSIONS') as mock_active_sessions:
+                
+                # Configure mock counters
+                mock_request_counter.labels.return_value.inc.side_effect = lambda value=1: collector.increment_counter(
+                    "api.requests", value, {"endpoint": "mock", "method": "GET", "status": "200"}
+                )
+                mock_llm_counter.labels.return_value.inc.side_effect = lambda value=1: collector.increment_counter(
+                    "llm.requests", value, {"provider": "mock", "model": "mock", "status": "200"}
+                )
+                
+                # Configure mock histograms
+                mock_request_duration.labels.return_value.observe.side_effect = lambda value: collector.record_histogram(
+                    "api.response_time_ms", value, {"endpoint": "mock", "method": "GET"}
+                )
+                mock_llm_duration.labels.return_value.observe.side_effect = lambda value: collector.record_histogram(
+                    "llm.response_time_ms", value, {"provider": "mock", "model": "mock"}
+                )
+                mock_generic_duration.labels.return_value.observe.side_effect = lambda value: collector.record_histogram(
+                    "function.duration_ms", value, {"function_name": "mock", "status": "success"}
+                )
+                
+                # Configure mock gauges
+                mock_active_sessions.set.side_effect = lambda value: collector.set_gauge(
+                    "active_sessions", value, {"service": "mock"}
+                )
+                
+                yield collector, metrics_collected
+        else:
+            # Prometheus not available - skip patching and yield collector without mocks
             yield collector, metrics_collected
     
     def test_real_counter_metrics_behavior(self, mock_metrics_collector):
@@ -382,12 +396,15 @@ class TestRealMetricsCollection:
         collector, metrics_data = mock_metrics_collector
         
         # Import and test actual Prometheus metrics from tracing module
-        from faultmaven.infrastructure.observability.tracing import (
-            REQUEST_COUNTER, LLM_REQUEST_COUNTER, PROMETHEUS_AVAILABLE
-        )
+        from faultmaven.infrastructure.observability.tracing import PROMETHEUS_AVAILABLE
         
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("Prometheus client not available")
+        
+        # Import metrics only if Prometheus is available
+        from faultmaven.infrastructure.observability.tracing import (
+            REQUEST_COUNTER, LLM_REQUEST_COUNTER
+        )
         
         # Test actual counter behavior by calling Prometheus metrics
         with patch.object(REQUEST_COUNTER, 'labels') as mock_req_labels:
@@ -429,12 +446,15 @@ class TestRealMetricsCollection:
         collector, metrics_data = mock_metrics_collector
         
         # Import and test actual Prometheus histogram metrics from tracing module
-        from faultmaven.infrastructure.observability.tracing import (
-            REQUEST_DURATION, LLM_REQUEST_DURATION, GENERIC_FUNCTION_DURATION, PROMETHEUS_AVAILABLE
-        )
+        from faultmaven.infrastructure.observability.tracing import PROMETHEUS_AVAILABLE
         
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("Prometheus client not available")
+        
+        # Import metrics only if Prometheus is available
+        from faultmaven.infrastructure.observability.tracing import (
+            REQUEST_DURATION, LLM_REQUEST_DURATION, GENERIC_FUNCTION_DURATION
+        )
         
         # Test API response time histograms using actual REQUEST_DURATION metric
         api_response_times = [0.045, 0.067, 0.023, 0.146, 0.089]  # Convert to seconds
@@ -495,10 +515,13 @@ class TestRealMetricsCollection:
         collector, metrics_data = mock_metrics_collector
         
         # Import and test actual Prometheus gauge metrics from tracing module
-        from faultmaven.infrastructure.observability.tracing import ACTIVE_SESSIONS, PROMETHEUS_AVAILABLE
+        from faultmaven.infrastructure.observability.tracing import PROMETHEUS_AVAILABLE
         
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("Prometheus client not available")
+        
+        # Import metrics only if Prometheus is available
+        from faultmaven.infrastructure.observability.tracing import ACTIVE_SESSIONS
         
         # Test active sessions gauge using actual ACTIVE_SESSIONS metric
         session_counts = [142, 156, 178, 134, 189]
@@ -547,12 +570,15 @@ class TestRealMetricsCollection:
         collector, metrics_data = mock_metrics_collector
         
         # Import actual Prometheus metrics from tracing module
-        from faultmaven.infrastructure.observability.tracing import (
-            REQUEST_COUNTER, REQUEST_DURATION, ACTIVE_SESSIONS, PROMETHEUS_AVAILABLE
-        )
+        from faultmaven.infrastructure.observability.tracing import PROMETHEUS_AVAILABLE
         
         if not PROMETHEUS_AVAILABLE:
             pytest.skip("Prometheus client not available")
+        
+        # Import metrics only if Prometheus is available
+        from faultmaven.infrastructure.observability.tracing import (
+            REQUEST_COUNTER, REQUEST_DURATION, ACTIVE_SESSIONS
+        )
         
         async def generate_metrics_load(operation_id):
             """Generate metrics for load testing using actual Prometheus metrics."""

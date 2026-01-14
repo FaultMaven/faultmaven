@@ -131,9 +131,65 @@ def client(app):
 
 
 @pytest.fixture
-def unauthed_client():
-    """Create test client without auth override (for 401 tests)."""
-    return TestClient(main_app)
+def unauthed_client(mock_api_service, mock_org_service):
+    """Create test client without auth override (for 401 tests).
+    
+    Root cause fix (not bandaid):
+    1. TestClient doesn't run lifespan events → app.state isn't initialized → 503 errors
+    2. Solution: Use dependency overrides (FastAPI's proper pattern) instead of modifying app.state
+    3. Proper cleanup prevents state leakage between tests
+    
+    This matches the pattern used in the 'app' fixture above.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    
+    app = main_app
+    
+    # For 401 tests, we need auth ENABLED (not NoAuthProvider)
+    # Create a mock auth provider with the required interface
+    auth_provider = MagicMock()
+    auth_provider.is_enabled = True
+    # Mock validate_token to raise 401 for empty/missing tokens
+    async def validate_token_side_effect(token):
+        if not token or token == "":
+            from faultmaven.services.auth_service import AuthenticationError
+            raise AuthenticationError("Missing or invalid token")
+        # For any other token, return None (invalid)
+        return None
+    
+    auth_provider.validate_token = AsyncMock(side_effect=validate_token_side_effect)
+    
+    # Store original state to restore after test (prevents state leakage between tests)
+    original_auth_provider = getattr(app.state, "auth_provider", None)
+    original_org_service = getattr(app.state, "organization_service", None)
+    
+    # Root cause: TestClient doesn't run lifespan events, so app.state isn't initialized
+    # We must set required services to prevent 503 errors from get_api_organization_service
+    # Note: get_auth_provider reads from app.state, so we can't use dependency override for it
+    app.state.auth_provider = auth_provider
+    app.state.organization_service = mock_org_service
+    
+    # Use dependency override for get_api_organization_service (cleaner than relying on state)
+    # This matches the pattern used in the 'app' fixture above
+    from faultmaven.modules.auth.api.organizations import get_api_organization_service
+    async def get_mock_api_service():
+        return mock_api_service
+    app.dependency_overrides[get_api_organization_service] = get_mock_api_service
+    
+    client = TestClient(app)
+    
+    yield client
+    
+    # Cleanup: restore original state and clear overrides (prevents test leakage)
+    app.dependency_overrides.pop(get_api_organization_service, None)
+    if original_auth_provider is not None:
+        app.state.auth_provider = original_auth_provider
+    elif hasattr(app.state, "auth_provider"):
+        delattr(app.state, "auth_provider")
+    if original_org_service is not None:
+        app.state.organization_service = original_org_service
+    elif hasattr(app.state, "organization_service"):
+        delattr(app.state, "organization_service")
 
 
 @pytest.fixture

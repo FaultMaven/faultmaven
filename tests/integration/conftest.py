@@ -7,9 +7,20 @@ integration testing capabilities including memory, planning, reasoning,
 knowledge, and orchestration system testing.
 """
 
+# CRITICAL: Import root conftest mocks FIRST before any other imports
+# This ensures _ctypes and _sqlite3 mocks are loaded before chromadb/protobuf imports
+# The import chain: CaseService -> persistence -> chromadb -> protobuf -> ctypes -> _ctypes
+# Must happen BEFORE any faultmaven imports that might trigger this chain
+import sys
+import os
+# Add parent directory to path to import root conftest mocks
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+# Import root conftest to load _ctypes and _sqlite3 mocks BEFORE any other imports
+import conftest as root_conftest  # noqa: F401
+
+# Now safe to import other modules
 import asyncio
 import io
-import os
 import time
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Dict
@@ -28,6 +39,8 @@ from faultmaven.models.interfaces import (
 from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
 # Legacy services/domain/* was removed; use extracted module path.
+# This import triggers: CaseService -> persistence -> chromadb -> protobuf -> ctypes
+# But _ctypes mock is already loaded from root conftest above
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.auth.infrastructure.stores.redis_session_store import RedisSessionStore
 

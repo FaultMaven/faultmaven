@@ -182,7 +182,7 @@ class ConsultingStateUpdate(BaseModel):
     initial_symptoms: List[str] = Field(
         default_factory=list,
         description="Symptoms identified from conversation",
-        max_items=10
+        max_length=10
     )
 
     proposed_problem_statement: Optional[str] = Field(
@@ -210,7 +210,7 @@ class ConsultingStateUpdate(BaseModel):
     next_clarifying_questions: List[str] = Field(
         default_factory=list,
         description="Questions agent wants answered before deciding to investigate",
-        max_items=5
+        max_length=5
     )
 
 
@@ -257,25 +257,25 @@ class InvestigationStateUpdate(BaseModel):
     evidence_to_add: List[EvidenceToAdd] = Field(
         default_factory=list,
         description="Evidence to add from this turn",
-        max_items=10
+        max_length=10
     )
 
     hypotheses_to_add: List[HypothesisToAdd] = Field(
         default_factory=list,
         description="Hypotheses to generate (optional, systematic investigation)",
-        max_items=5
+        max_length=5
     )
 
     evidence_requests: List[EvidenceRequestToAdd] = Field(
         default_factory=list,
         description="Requests for additional evidence from user",
-        max_items=5
+        max_length=5
     )
 
     mentioned_request_ids: List[str] = Field(
         default_factory=list,
         description="Evidence request IDs agent mentioned this turn (for mention_count tracking)",
-        max_items=20
+        max_length=20
     )
 
     working_conclusion: Optional[WorkingConclusionUpdate] = Field(
@@ -316,7 +316,7 @@ class InvestigationResponse(BaseModel):
     next_actions: List[str] = Field(
         default_factory=list,
         description="Suggested next steps for investigation",
-        max_items=5
+        max_length=5
     )
 
     agent_status: Optional[str] = Field(
@@ -366,19 +366,19 @@ class TerminalStateUpdate(BaseModel):
     lessons_learned: List[str] = Field(
         default_factory=list,
         description="Key takeaways from this investigation",
-        max_items=10
+        max_length=10
     )
 
     prevention_measures: List[str] = Field(
         default_factory=list,
         description="How to prevent this in the future",
-        max_items=10
+        max_length=10
     )
 
     documents_generated: List[DocumentToGenerate] = Field(
         default_factory=list,
         description="Documentation artifacts",
-        max_items=5
+        max_length=5
     )
 
 

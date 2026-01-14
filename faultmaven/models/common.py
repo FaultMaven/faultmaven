@@ -13,7 +13,7 @@ from faultmaven.utils.serialization import to_json_compatible
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing_extensions import TypedDict
 
 
@@ -76,8 +76,8 @@ class SessionContext(BaseModel):
         time_since_activity = datetime.now(timezone.utc) - self.last_activity
         return time_since_activity < inactive_threshold
 
-    class Config:
-        json_encoders = {datetime: lambda v: to_json_compatible(v)}
+    # json_encoders removed in Pydantic V2 - datetime serialization handled by default
+    model_config = ConfigDict()
 
 
 class DataInsightsResponse(BaseModel):
@@ -99,8 +99,8 @@ class DataInsightsResponse(BaseModel):
         default_factory=list, description="Initial recommendations based on insights"
     )
 
-    class Config:
-        json_encoders = {datetime: lambda v: to_json_compatible(v)}
+    # json_encoders removed in Pydantic V2 - datetime serialization handled by default
+    model_config = ConfigDict()
 
 
 class TroubleshootingResponse(BaseModel):
@@ -130,8 +130,8 @@ class TroubleshootingResponse(BaseModel):
         None, description="Case completion timestamp"
     )
 
-    class Config:
-        json_encoders = {datetime: lambda v: to_json_compatible(v)}
+    # json_encoders removed in Pydantic V2 - datetime serialization handled by default
+    model_config = ConfigDict()
 
 
 class SearchRequest(BaseModel):

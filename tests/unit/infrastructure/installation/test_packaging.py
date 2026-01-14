@@ -16,7 +16,58 @@ import subprocess
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 from typing import List, Set
-import toml
+
+# Handle optional toml dependency
+# Python 3.11+ has tomllib in stdlib (read-only), but test needs read capability
+try:
+    import toml  # Full read/write support (preferred)
+except ImportError:
+    try:
+        # Python 3.11+ has tomllib in stdlib (read-only, requires binary mode)
+        import tomllib
+        # Create wrapper to match toml.load() API (text mode)
+        class TomlWrapper:
+            @staticmethod
+            def load(f):
+                # tomllib.load() requires binary mode
+                if hasattr(f, 'read'):
+                    # File handle - check if it's binary or text
+                    if hasattr(f, 'mode') and 'b' in f.mode:
+                        return tomllib.load(f)
+                    else:
+                        # Text mode - read and decode
+                        content = f.read()
+                        if isinstance(content, str):
+                            content = content.encode('utf-8')
+                        import io
+                        return tomllib.load(io.BytesIO(content))
+                else:
+                    # Path object or string - open in binary mode
+                    with open(f, 'rb') as fp:
+                        return tomllib.load(fp)
+        toml = TomlWrapper()
+    except ImportError:
+        try:
+            import tomli as toml  # Read-only backport (also requires binary)
+            # tomli also needs binary mode, create similar wrapper
+            class TomliWrapper:
+                @staticmethod
+                def load(f):
+                    if hasattr(f, 'read'):
+                        if hasattr(f, 'mode') and 'b' in f.mode:
+                            return tomli.load(f)
+                        else:
+                            content = f.read()
+                            if isinstance(content, str):
+                                content = content.encode('utf-8')
+                            import io
+                            return tomli.load(io.BytesIO(content))
+                    else:
+                        with open(f, 'rb') as fp:
+                            return tomli.load(fp)
+            toml = TomliWrapper()
+        except ImportError:
+            pytest.skip("toml/tomli/tomllib not available", allow_module_level=True)
 
 
 # ============================================================================
