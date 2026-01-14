@@ -108,6 +108,8 @@ ignore_imports =
     faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.infrastructure.database_case_repository -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.infrastructure.investigation_session_repository -> faultmaven.modules.case.domain.investigation_session
+    faultmaven.modules.case.infrastructure.case_repository -> faultmaven.models
+    faultmaven.models -> faultmaven.modules.case.domain.models
 
 # ============================================================================
 # CONTRACT 6: Auth Module Layer Boundaries
