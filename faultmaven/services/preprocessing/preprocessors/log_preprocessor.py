@@ -18,7 +18,12 @@ import time
 import re
 from typing import Optional, Dict, Any, List
 
-from faultmaven.models.api import DataType, PreprocessedData, SourceMetadata, ExtractionMetadata
+from faultmaven.models.api import (
+    DataType,
+    PreprocessedData,
+    SourceMetadata,
+    ExtractionMetadata,
+)
 from faultmaven.models.interfaces import IPreprocessor
 from faultmaven.core.processing.log_analyzer import LogProcessor
 
@@ -38,7 +43,7 @@ class LogPreprocessor(IPreprocessor):
         self,
         content: str,
         filename: str,
-        source_metadata: Optional[SourceMetadata] = None
+        source_metadata: Optional[SourceMetadata] = None,
     ) -> PreprocessedData:
         """
         Process log file into LLM-ready summary
@@ -76,7 +81,7 @@ class LogPreprocessor(IPreprocessor):
                 error_samples=error_samples,
                 filename=filename,
                 source_metadata=source_metadata,
-                security_flags=security_flags
+                security_flags=security_flags,
             )
 
             # Step 5: Build PreprocessedData with correct structure
@@ -91,13 +96,13 @@ class LogPreprocessor(IPreprocessor):
                     llm_calls_used=0,  # LogProcessor is rule-based, no LLM calls
                     confidence=0.95,  # High confidence for rule-based log parsing
                     source="rule_based",
-                    processing_time_ms=processing_time
+                    processing_time_ms=processing_time,
                 ),
                 original_size=len(content),
                 processed_size=len(llm_ready_content),
                 security_flags=security_flags,
                 source_metadata=source_metadata,
-                insights=insights  # Preserve structured insights for advanced features
+                insights=insights,  # Preserve structured insights for advanced features
             )
 
         except Exception as e:
@@ -114,19 +119,17 @@ class LogPreprocessor(IPreprocessor):
                     llm_calls_used=0,
                     confidence=0.0,  # Zero confidence on error
                     source="error",
-                    processing_time_ms=processing_time
+                    processing_time_ms=processing_time,
                 ),
                 original_size=len(content),
                 processed_size=len(error_content),
                 security_flags=["preprocessing_error"],
                 source_metadata=source_metadata,
-                insights={"error": str(e)}
+                insights={"error": str(e)},
             )
 
     def _extract_error_samples(
-        self,
-        content: str,
-        insights: Dict[str, Any]
+        self, content: str, insights: Dict[str, Any]
     ) -> List[str]:
         """
         Extract sample error messages from raw log content
@@ -139,14 +142,14 @@ class LogPreprocessor(IPreprocessor):
             List of sample error lines (up to 10)
         """
         samples = []
-        lines = content.split('\n')
+        lines = content.split("\n")
 
         # Get error patterns from insights
-        top_errors = insights.get('top_errors', [])
+        top_errors = insights.get("top_errors", [])
 
         # Extract lines containing errors
         for line in lines:
-            if any(level in line.upper() for level in ['ERROR', 'FATAL', 'CRITICAL']):
+            if any(level in line.upper() for level in ["ERROR", "FATAL", "CRITICAL"]):
                 samples.append(line.strip())
 
                 if len(samples) >= 10:  # Limit to 10 samples
@@ -188,7 +191,7 @@ class LogPreprocessor(IPreprocessor):
         error_samples: List[str],
         filename: str,
         source_metadata: Optional[SourceMetadata],
-        security_flags: List[str]
+        security_flags: List[str],
     ) -> str:
         """
         Format insights into LLM-ready plain text summary
@@ -223,30 +226,34 @@ class LogPreprocessor(IPreprocessor):
         sections.append("OVERVIEW:")
 
         # Time range
-        time_range = insights.get('time_range')
+        time_range = insights.get("time_range")
         if time_range:
-            sections.append(f"Time range: {time_range.get('start', 'N/A')} to {time_range.get('end', 'N/A')}")
-            duration_hours = time_range.get('duration_hours', 0)
+            sections.append(
+                f"Time range: {time_range.get('start', 'N/A')} to {time_range.get('end', 'N/A')}"
+            )
+            duration_hours = time_range.get("duration_hours", 0)
             sections.append(f"Duration: {duration_hours:.1f} hours")
         else:
             sections.append("Time range: Not available")
 
         # Error summary
-        error_summary = insights.get('error_summary', {})
-        total_errors = error_summary.get('total_errors', 0)
-        error_rate = error_summary.get('error_rate', 0)
+        error_summary = insights.get("error_summary", {})
+        total_errors = error_summary.get("total_errors", 0)
+        error_rate = error_summary.get("error_rate", 0)
         sections.append(f"Error count: {total_errors:,} ({error_rate:.2%} error rate)")
 
         # Log level distribution
-        log_levels = insights.get('log_level_distribution', {})
+        log_levels = insights.get("log_level_distribution", {})
         if log_levels:
-            level_str = ", ".join(f"{level}={count}" for level, count in log_levels.items())
+            level_str = ", ".join(
+                f"{level}={count}" for level, count in log_levels.items()
+            )
             sections.append(f"Log levels: {level_str}")
 
         sections.append("")
 
         # Top error patterns
-        top_errors = insights.get('top_errors', [])
+        top_errors = insights.get("top_errors", [])
         if top_errors:
             sections.append("TOP ERROR PATTERNS:")
             for i, error_code in enumerate(top_errors[:10], 1):
@@ -254,13 +261,13 @@ class LogPreprocessor(IPreprocessor):
             sections.append("")
 
         # Anomalies
-        anomalies = insights.get('anomalies', [])
+        anomalies = insights.get("anomalies", [])
         if anomalies:
             sections.append("ANOMALIES DETECTED:")
             for anomaly in anomalies[:5]:  # Top 5 anomalies
-                anom_type = anomaly.get('type', 'unknown')
-                severity = anomaly.get('severity', 'unknown')
-                description = anomaly.get('description', 'No description')
+                anom_type = anomaly.get("type", "unknown")
+                severity = anomaly.get("severity", "unknown")
+                description = anomaly.get("description", "No description")
                 sections.append(f"• {anom_type}: {description} (severity: {severity})")
             sections.append("")
 
@@ -274,33 +281,41 @@ class LogPreprocessor(IPreprocessor):
             sections.append("")
 
         # Performance metrics
-        perf_metrics = insights.get('performance_metrics')
+        perf_metrics = insights.get("performance_metrics")
         if perf_metrics:
             sections.append("PERFORMANCE METRICS:")
-            avg_time = perf_metrics.get('avg_response_time_ms', 0)
-            p95_time = perf_metrics.get('p95_response_time_ms', 0)
-            max_time = perf_metrics.get('max_response_time_ms', 0)
+            avg_time = perf_metrics.get("avg_response_time_ms", 0)
+            p95_time = perf_metrics.get("p95_response_time_ms", 0)
+            max_time = perf_metrics.get("max_response_time_ms", 0)
             sections.append(f"Average response time: {avg_time:.2f}ms")
             sections.append(f"P95 response time: {p95_time:.2f}ms")
             sections.append(f"Max response time: {max_time:.2f}ms")
             sections.append("")
 
         # HTTP status distribution
-        http_status_dist = insights.get('http_status_distribution')
+        http_status_dist = insights.get("http_status_distribution")
         if http_status_dist:
             sections.append("HTTP STATUS DISTRIBUTION:")
-            for status_code, count in sorted(http_status_dist.items(), key=lambda x: x[1], reverse=True)[:10]:
+            for status_code, count in sorted(
+                http_status_dist.items(), key=lambda x: x[1], reverse=True
+            )[:10]:
                 sections.append(f"  {status_code}: {count} requests")
             sections.append("")
 
         # Contextual analysis (if available)
-        contextual = insights.get('contextual_analysis')
-        if contextual and contextual.get('contextual_entries', 0) > 0:
+        contextual = insights.get("contextual_analysis")
+        if contextual and contextual.get("contextual_entries", 0) > 0:
             sections.append("CONTEXTUAL ANALYSIS:")
-            sections.append(f"Context-relevant entries: {contextual['contextual_entries']}")
-            sections.append(f"Contextual percentage: {contextual.get('contextual_percentage', 0):.1f}%")
-            if contextual.get('contextual_errors'):
-                sections.append(f"Context-relevant errors: {contextual['contextual_errors']}")
+            sections.append(
+                f"Context-relevant entries: {contextual['contextual_entries']}"
+            )
+            sections.append(
+                f"Contextual percentage: {contextual.get('contextual_percentage', 0):.1f}%"
+            )
+            if contextual.get("contextual_errors"):
+                sections.append(
+                    f"Context-relevant errors: {contextual['contextual_errors']}"
+                )
             sections.append("")
 
         # Source information

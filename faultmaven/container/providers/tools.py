@@ -97,11 +97,15 @@ def create_document_qa_tools(
     }
 
     if settings.server.skip_service_checks or not case_vector_store:
-        logger.debug("Document Q&A tools skipped (no case_vector_store or SKIP_SERVICE_CHECKS=True)")
+        logger.debug(
+            "Document Q&A tools skipped (no case_vector_store or SKIP_SERVICE_CHECKS=True)"
+        )
         return result
 
     try:
-        from faultmaven.modules.agent.tools.case_evidence_qa import AnswerFromCaseEvidence
+        from faultmaven.modules.agent.tools.case_evidence_qa import (
+            AnswerFromCaseEvidence,
+        )
         from faultmaven.modules.agent.tools.user_kb_qa import AnswerFromUserKB
         from faultmaven.modules.agent.tools.global_kb_qa import AnswerFromGlobalKB
 
@@ -118,7 +122,9 @@ def create_document_qa_tools(
                 llm_router=llm_provider,
             )
         else:
-            logger.warning("User KB QA tool skipped (user_kb_vector_store not available)")
+            logger.warning(
+                "User KB QA tool skipped (user_kb_vector_store not available)"
+            )
 
         # Tool 3: Global KB (system-wide best practices)
         result["global_kb_qa_tool"] = AnswerFromGlobalKB(

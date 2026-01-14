@@ -30,11 +30,11 @@ class RedisSessionManager:
         created_at = datetime.now(timezone.utc)
 
         session_data = {
-            'session_id': session_id,
-            'user_id': user_id,
-            'created_at': to_json_compatible(created_at),
-            'last_activity': to_json_compatible(created_at),
-            'metadata': {}
+            "session_id": session_id,
+            "user_id": user_id,
+            "created_at": to_json_compatible(created_at),
+            "last_activity": to_json_compatible(created_at),
+            "metadata": {},
         }
 
         # Store in Redis
@@ -46,25 +46,27 @@ class RedisSessionManager:
             user_id=user_id,
             created_at=created_at,
             last_activity=created_at,
-            metadata={}
+            metadata={},
         )
 
-    async def get_session(self, session_id: str, validate: bool = True) -> Optional[SessionContext]:
+    async def get_session(
+        self, session_id: str, validate: bool = True
+    ) -> Optional[SessionContext]:
         """Get session by ID"""
         session_data = await self.session_store.get(session_id)
         if not session_data:
             return None
 
         # Convert ISO strings back to datetime
-        created_at = parse_utc_timestamp(session_data['created_at'])
-        last_activity = parse_utc_timestamp(session_data['last_activity'])
+        created_at = parse_utc_timestamp(session_data["created_at"])
+        last_activity = parse_utc_timestamp(session_data["last_activity"])
 
         return SessionContext(
-            session_id=session_data['session_id'],
-            user_id=session_data.get('user_id'),
+            session_id=session_data["session_id"],
+            user_id=session_data.get("user_id"),
             created_at=created_at,
             last_activity=last_activity,
-            metadata=session_data.get('metadata', {})
+            metadata=session_data.get("metadata", {}),
         )
 
     async def update_session(self, session_id: str, updates: Dict[str, Any]) -> bool:
@@ -75,7 +77,7 @@ class RedisSessionManager:
 
         # Update the session data
         session_data.update(updates)
-        session_data['last_activity'] = to_json_compatible(datetime.now(timezone.utc))
+        session_data["last_activity"] = to_json_compatible(datetime.now(timezone.utc))
 
         # Save back to Redis
         await self.session_store.set(session_id, session_data)
@@ -91,9 +93,13 @@ class RedisSessionManager:
 
     async def update_last_activity(self, session_id: str) -> bool:
         """Update last activity timestamp"""
-        return await self.update_session(session_id, {})  # This updates last_activity automatically
+        return await self.update_session(
+            session_id, {}
+        )  # This updates last_activity automatically
 
-    async def list_sessions(self, user_id: Optional[str] = None) -> List[SessionContext]:
+    async def list_sessions(
+        self, user_id: Optional[str] = None
+    ) -> List[SessionContext]:
         """List sessions, optionally filtered by user_id"""
         # Note: This is a simplified implementation. In production, you'd want
         # to maintain separate indexes for efficient querying
@@ -101,7 +107,9 @@ class RedisSessionManager:
 
         # For now, return empty list since RedisSessionStore doesn't have
         # a native way to list all sessions. This would need additional indexing.
-        self.logger.warning("list_sessions is not fully implemented - would need session indexing")
+        self.logger.warning(
+            "list_sessions is not fully implemented - would need session indexing"
+        )
         return sessions
 
     async def get_all_sessions(self) -> List[SessionContext]:
@@ -112,9 +120,9 @@ class RedisSessionManager:
         """Get session statistics"""
         # Basic stats - in production you'd maintain counters
         return {
-            'total_sessions': 0,  # Would need Redis counters or indexing
-            'active_sessions': 0,
-            'timestamp': to_json_compatible(datetime.now(timezone.utc))
+            "total_sessions": 0,  # Would need Redis counters or indexing
+            "active_sessions": 0,
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
         }
 
     async def cleanup_session_data(self, session_id: str) -> bool:

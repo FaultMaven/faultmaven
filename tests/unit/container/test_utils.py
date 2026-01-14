@@ -82,6 +82,7 @@ class TestLazyService:
 
     def test_name_from_factory(self):
         """Test that name is derived from factory function."""
+
         def my_factory():
             return "result"
 

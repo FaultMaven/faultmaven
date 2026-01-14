@@ -64,8 +64,6 @@ def mock_evidence_service():
     return service
 
 
-
-
 @pytest.fixture
 def mock_case_repo():
     """Create a mock case repository."""
@@ -172,7 +170,9 @@ class TestExecuteAgentBasicWorkflow:
         """Test that execute_agent creates an execution record."""
         # Setup
         mock_session_service.get_session.return_value = sample_session
-        mock_session_service.check_budget_exceeded.return_value = {"is_over_budget": False}
+        mock_session_service.check_budget_exceeded.return_value = {
+            "is_over_budget": False
+        }
         mock_session_service.add_execution_to_session.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.create_agent_execution.return_value = AgentExecution(
@@ -289,7 +289,9 @@ class TestExecuteAgentBasicWorkflow:
     ):
         """Test that execute_agent streams response events."""
         mock_session_service.get_session.return_value = sample_session
-        mock_session_service.check_budget_exceeded.return_value = {"is_over_budget": False}
+        mock_session_service.check_budget_exceeded.return_value = {
+            "is_over_budget": False
+        }
         mock_session_service.add_execution_to_session.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.create_agent_execution.return_value = AgentExecution(
@@ -323,7 +325,9 @@ class TestExecuteAgentBasicWorkflow:
             events.append(event)
 
         # Should have response events
-        response_events = [e for e in events if e.event_type == ExecutionEventType.RESPONSE]
+        response_events = [
+            e for e in events if e.event_type == ExecutionEventType.RESPONSE
+        ]
         assert len(response_events) >= 3
 
     @pytest.mark.asyncio
@@ -337,7 +341,9 @@ class TestExecuteAgentBasicWorkflow:
     ):
         """Test that execute_agent updates session token usage."""
         mock_session_service.get_session.return_value = sample_session
-        mock_session_service.check_budget_exceeded.return_value = {"is_over_budget": False}
+        mock_session_service.check_budget_exceeded.return_value = {
+            "is_over_budget": False
+        }
         mock_session_service.add_execution_to_session.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.create_agent_execution.return_value = AgentExecution(
@@ -432,13 +438,19 @@ class TestExecuteAgentBasicWorkflow:
     ):
         """Test that execute_agent supports different agent types."""
         mock_session_service.get_session.return_value = sample_session
-        mock_session_service.check_budget_exceeded.return_value = {"is_over_budget": False}
+        mock_session_service.check_budget_exceeded.return_value = {
+            "is_over_budget": False
+        }
         mock_session_service.add_execution_to_session.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.update_agent_execution.return_value = None
         mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
 
-        for agent_type in [AgentType.INVESTIGATOR, AgentType.DEBUGGER, AgentType.RESEARCHER]:
+        for agent_type in [
+            AgentType.INVESTIGATOR,
+            AgentType.DEBUGGER,
+            AgentType.RESEARCHER,
+        ]:
             mock_case_repo.create_agent_execution.return_value = AgentExecution(
                 execution_id=f"exec_{agent_type.value}",
                 case_id=sample_case.case_id,
@@ -487,7 +499,9 @@ class TestExecuteAgentErrorHandling:
     ):
         """Test that execute_agent handles LLM errors gracefully."""
         mock_session_service.get_session.return_value = sample_session
-        mock_session_service.check_budget_exceeded.return_value = {"is_over_budget": False}
+        mock_session_service.check_budget_exceeded.return_value = {
+            "is_over_budget": False
+        }
         mock_case_repo.get.return_value = sample_case
         mock_case_repo.create_agent_execution.return_value = AgentExecution(
             execution_id="exec_new",
@@ -530,7 +544,9 @@ class TestExecuteAgentErrorHandling:
     ):
         """Test that execute_agent marks execution as failed on error."""
         mock_session_service.get_session.return_value = sample_session
-        mock_session_service.check_budget_exceeded.return_value = {"is_over_budget": False}
+        mock_session_service.check_budget_exceeded.return_value = {
+            "is_over_budget": False
+        }
         mock_case_repo.get.return_value = sample_case
 
         created_execution = AgentExecution(
@@ -612,7 +628,10 @@ class TestBuildAgentContext:
                 response="Previous answer",
             ),
         ]
-        mock_case_repo.list_agent_executions_by_case.return_value = (previous_executions, 1)
+        mock_case_repo.list_agent_executions_by_case.return_value = (
+            previous_executions,
+            1,
+        )
 
         context = await orchestration_service._build_agent_context(
             session=sample_session,
@@ -667,8 +686,16 @@ class TestBuildAgentContext:
         from faultmaven.modules.agent.domain.events.execution_events import Tool
 
         mock_tools = [
-            Tool(name="read_file", description="Read a file", parameters={"type": "object"}),
-            Tool(name="list_evidence", description="List evidence", parameters={"type": "object"}),
+            Tool(
+                name="read_file",
+                description="Read a file",
+                parameters={"type": "object"},
+            ),
+            Tool(
+                name="list_evidence",
+                description="List evidence",
+                parameters={"type": "object"},
+            ),
         ]
         mock_tool_registry.get_all_domain_tools.return_value = mock_tools
 
@@ -822,8 +849,7 @@ class TestToolCallHandling:
 
         # Create more tools than max_parallel_tools (3)
         tool_calls = [
-            ToolCall(id=f"tc_{i}", name=f"tool_{i}", arguments={})
-            for i in range(5)
+            ToolCall(id=f"tc_{i}", name=f"tool_{i}", arguments={}) for i in range(5)
         ]
 
         tool_context = ToolContext(
@@ -862,7 +888,9 @@ class TestToolCallHandling:
         mock_case_repo.create_agent_tool_call.return_value = None
 
         tool_calls = [
-            ToolCall(id="tc_1", name="read_file", arguments={"evidence_id": "nonexistent"}),
+            ToolCall(
+                id="tc_1", name="read_file", arguments={"evidence_id": "nonexistent"}
+            ),
         ]
 
         tool_context = ToolContext(
@@ -881,7 +909,10 @@ class TestToolCallHandling:
 
         assert len(results) == 1
         assert results[0].success is False
-        assert "not found" in results[0].content.lower() or "error" in results[0].content.lower()
+        assert (
+            "not found" in results[0].content.lower()
+            or "error" in results[0].content.lower()
+        )
 
     @pytest.mark.asyncio
     async def test_handle_tool_calls_creates_tool_call_records(
@@ -933,6 +964,7 @@ class TestToolCallHandling:
         mock_case_repo,
     ):
         """Test that _handle_tool_calls enforces timeout."""
+
         async def slow_tool(tool_name, params, context):
             await asyncio.sleep(10)  # Longer than timeout (5s)
             return ToolResult(success=True, data={})
@@ -1005,7 +1037,9 @@ class TestRetryLogic:
             yield LLMEvent(event_type=LLMEventType.COMPLETION, content="Success")
 
         events = []
-        async for event in orchestration_service._execute_with_retry(rate_limited_generator):
+        async for event in orchestration_service._execute_with_retry(
+            rate_limited_generator
+        ):
             events.append(event)
 
         assert call_count[0] == 2
@@ -1026,7 +1060,9 @@ class TestRetryLogic:
             yield LLMEvent(event_type=LLMEventType.COMPLETION, content="Success")
 
         events = []
-        async for event in orchestration_service._execute_with_retry(server_error_generator):
+        async for event in orchestration_service._execute_with_retry(
+            server_error_generator
+        ):
             events.append(event)
 
         assert call_count[0] == 2
@@ -1065,7 +1101,9 @@ class TestRetryLogic:
             yield  # Makes this an async generator (never reached)
 
         with pytest.raises(LLMException):
-            async for _ in orchestration_service._execute_with_retry(bad_request_generator):
+            async for _ in orchestration_service._execute_with_retry(
+                bad_request_generator
+            ):
                 pass
 
         assert call_count[0] == 1  # Should not retry
@@ -1084,7 +1122,9 @@ class TestRetryLogic:
             yield  # Makes this an async generator (never reached)
 
         with pytest.raises(LLMException):
-            async for _ in orchestration_service._execute_with_retry(auth_error_generator):
+            async for _ in orchestration_service._execute_with_retry(
+                auth_error_generator
+            ):
                 pass
 
         assert call_count[0] == 1  # Should not retry
@@ -1103,11 +1143,16 @@ class TestRetryLogic:
             yield  # Makes this an async generator (never reached)
 
         with pytest.raises(LLMException) as exc_info:
-            async for _ in orchestration_service._execute_with_retry(always_fail_generator):
+            async for _ in orchestration_service._execute_with_retry(
+                always_fail_generator
+            ):
                 pass
 
         assert call_count[0] == 4  # 1 initial + 3 retries
-        assert "after" in str(exc_info.value).lower() and "retries" in str(exc_info.value).lower()
+        assert (
+            "after" in str(exc_info.value).lower()
+            and "retries" in str(exc_info.value).lower()
+        )
 
 
 # =============================================================================
@@ -1276,7 +1321,9 @@ class TestAgentSystemPrompts:
         for agent_type in AgentType:
             if agent_type == AgentType.CUSTOM:
                 continue  # Custom doesn't need default prompt
-            assert agent_type in AGENT_SYSTEM_PROMPTS, f"Missing prompt for {agent_type}"
+            assert (
+                agent_type in AGENT_SYSTEM_PROMPTS
+            ), f"Missing prompt for {agent_type}"
 
     def test_investigator_prompt_contains_ooda(self):
         """Test that investigator prompt mentions OODA methodology."""

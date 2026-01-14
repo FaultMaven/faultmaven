@@ -34,6 +34,7 @@ from faultmaven.modules.case.domain.models import (
 # Repository Interface
 # ============================================================
 
+
 class CaseRepository(ABC):
     """
     Abstract repository interface for Case persistence.
@@ -82,7 +83,7 @@ class CaseRepository(ABC):
         organization_id: Optional[str] = None,
         status: Optional[CaseStatus] = None,
         limit: int = 50,
-        offset: int = 0
+        offset: int = 0,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters.
@@ -124,7 +125,7 @@ class CaseRepository(ABC):
         query: str,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        limit: int = 20
+        limit: int = 20,
     ) -> tuple[List[Case], int]:
         """
         Search cases by text query.
@@ -167,10 +168,7 @@ class CaseRepository(ABC):
 
     @abstractmethod
     async def get_messages(
-        self,
-        case_id: str,
-        limit: int = 50,
-        offset: int = 0
+        self, case_id: str, limit: int = 50, offset: int = 0
     ) -> List[dict]:
         """
         Get messages for a case with pagination.
@@ -226,7 +224,9 @@ class CaseRepository(ABC):
         pass
 
     @abstractmethod
-    async def cleanup_expired(self, max_age_days: int = 90, batch_size: int = 100) -> int:
+    async def cleanup_expired(
+        self, max_age_days: int = 90, batch_size: int = 100
+    ) -> int:
         """
         Clean up expired/old cases.
 
@@ -270,6 +270,7 @@ class CaseRepository(ABC):
 # In-Memory Implementation (for Testing)
 # ============================================================
 
+
 class InMemoryCaseRepository(CaseRepository):
     """
     In-memory case repository for testing and development.
@@ -301,7 +302,7 @@ class InMemoryCaseRepository(CaseRepository):
         organization_id: Optional[str] = None,
         status: Optional[CaseStatus] = None,
         limit: int = 50,
-        offset: int = 0
+        offset: int = 0,
     ) -> tuple[List[Case], int]:
         """List cases with filters."""
         # Filter cases
@@ -322,7 +323,7 @@ class InMemoryCaseRepository(CaseRepository):
         total_count = len(filtered)
 
         # Paginate
-        paginated = filtered[offset:offset + limit]
+        paginated = filtered[offset : offset + limit]
 
         return paginated, total_count
 
@@ -338,7 +339,7 @@ class InMemoryCaseRepository(CaseRepository):
         query: str,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        limit: int = 20
+        limit: int = 20,
     ) -> tuple[List[Case], int]:
         """Search cases by text query (simple substring match)."""
         query_lower = query.lower()
@@ -347,8 +348,10 @@ class InMemoryCaseRepository(CaseRepository):
         filtered = []
         for case in self._cases.values():
             # Search in title and description
-            if (query_lower in case.title.lower() or
-                query_lower in case.description.lower()):
+            if (
+                query_lower in case.title.lower()
+                or query_lower in case.description.lower()
+            ):
 
                 # Apply user filter
                 if user_id and case.user_id != user_id:
@@ -392,17 +395,14 @@ class InMemoryCaseRepository(CaseRepository):
         return True
 
     async def get_messages(
-        self,
-        case_id: str,
-        limit: int = 50,
-        offset: int = 0
+        self, case_id: str, limit: int = 50, offset: int = 0
     ) -> List[dict]:
         """Get messages from case in memory."""
         case = self._cases.get(case_id)
         if not case:
             return []
 
-        return case.messages[offset:offset + limit]
+        return case.messages[offset : offset + limit]
 
     async def update_activity_timestamp(self, case_id: str) -> bool:
         """Update last activity timestamp in memory."""
@@ -448,7 +448,9 @@ class InMemoryCaseRepository(CaseRepository):
 
         return analytics
 
-    async def cleanup_expired(self, max_age_days: int = 90, batch_size: int = 100) -> int:
+    async def cleanup_expired(
+        self, max_age_days: int = 90, batch_size: int = 100
+    ) -> int:
         """Clean up expired cases from memory."""
         from datetime import timedelta, timezone
 
@@ -458,7 +460,11 @@ class InMemoryCaseRepository(CaseRepository):
         # Collect case IDs to delete (avoid modifying dict during iteration)
         to_delete = []
         for case_id, case in self._cases.items():
-            if case.status == CaseStatus.CLOSED and case.closed_at and case.closed_at < cutoff_date:
+            if (
+                case.status == CaseStatus.CLOSED
+                and case.closed_at
+                and case.closed_at < cutoff_date
+            ):
                 to_delete.append(case_id)
                 if len(to_delete) >= batch_size:
                     break
@@ -478,6 +484,7 @@ class InMemoryCaseRepository(CaseRepository):
 # ============================================================
 # PostgreSQL Implementation (Production)
 # ============================================================
+
 
 class PostgreSQLCaseRepository(CaseRepository):
     """
@@ -509,58 +516,76 @@ class PostgreSQLCaseRepository(CaseRepository):
 
         # Serialize complex fields to JSON
         case_data = {
-            'case_id': case.case_id,
-            'user_id': case.user_id,
-            'organization_id': case.organization_id,
-            'title': case.title,
-            'description': case.description,
-            'status': case.status.value,
-            'status_history': json.dumps([t.model_dump() for t in case.status_history]),
-            'closure_reason': case.closure_reason,
-
+            "case_id": case.case_id,
+            "user_id": case.user_id,
+            "organization_id": case.organization_id,
+            "title": case.title,
+            "description": case.description,
+            "status": case.status.value,
+            "status_history": json.dumps([t.model_dump() for t in case.status_history]),
+            "closure_reason": case.closure_reason,
             # Progress (JSONB)
-            'progress': json.dumps(case.progress.model_dump()),
-
+            "progress": json.dumps(case.progress.model_dump()),
             # Turn tracking
-            'current_turn': case.current_turn,
-            'turns_without_progress': case.turns_without_progress,
-            'turn_history': json.dumps([t.model_dump() for t in case.turn_history]),
-
+            "current_turn": case.current_turn,
+            "turns_without_progress": case.turns_without_progress,
+            "turn_history": json.dumps([t.model_dump() for t in case.turn_history]),
             # Path and strategy
-            'path_selection': json.dumps(case.path_selection.model_dump()) if case.path_selection else None,
-            'investigation_strategy': case.investigation_strategy.value,
-
+            "path_selection": (
+                json.dumps(case.path_selection.model_dump())
+                if case.path_selection
+                else None
+            ),
+            "investigation_strategy": case.investigation_strategy.value,
             # Problem context
-            'consulting': json.dumps(case.consulting.model_dump()),
-            'problem_verification': json.dumps(case.problem_verification.model_dump()) if case.problem_verification else None,
-
+            "consulting": json.dumps(case.consulting.model_dump()),
+            "problem_verification": (
+                json.dumps(case.problem_verification.model_dump())
+                if case.problem_verification
+                else None
+            ),
             # Investigation data (JSONB arrays)
-            'uploaded_files': json.dumps([f.model_dump() for f in case.uploaded_files]),
-            'evidence': json.dumps([e.model_dump() for e in case.evidence]),
-            'hypotheses': json.dumps({k: v.model_dump() for k, v in case.hypotheses.items()}),
-            'solutions': json.dumps([s.model_dump() for s in case.solutions]),
-
+            "uploaded_files": json.dumps([f.model_dump() for f in case.uploaded_files]),
+            "evidence": json.dumps([e.model_dump() for e in case.evidence]),
+            "hypotheses": json.dumps(
+                {k: v.model_dump() for k, v in case.hypotheses.items()}
+            ),
+            "solutions": json.dumps([s.model_dump() for s in case.solutions]),
             # Conclusions
-            'working_conclusion': json.dumps(case.working_conclusion.model_dump()) if case.working_conclusion else None,
-            'root_cause_conclusion': json.dumps(case.root_cause_conclusion.model_dump()) if case.root_cause_conclusion else None,
-
+            "working_conclusion": (
+                json.dumps(case.working_conclusion.model_dump())
+                if case.working_conclusion
+                else None
+            ),
+            "root_cause_conclusion": (
+                json.dumps(case.root_cause_conclusion.model_dump())
+                if case.root_cause_conclusion
+                else None
+            ),
             # Special states
-            'degraded_mode': json.dumps(case.degraded_mode.model_dump()) if case.degraded_mode else None,
-            'escalation_state': json.dumps(case.escalation_state.model_dump()) if case.escalation_state else None,
-
+            "degraded_mode": (
+                json.dumps(case.degraded_mode.model_dump())
+                if case.degraded_mode
+                else None
+            ),
+            "escalation_state": (
+                json.dumps(case.escalation_state.model_dump())
+                if case.escalation_state
+                else None
+            ),
             # Documentation
-            'documentation': json.dumps(case.documentation.model_dump()),
-
+            "documentation": json.dumps(case.documentation.model_dump()),
             # Timestamps
-            'created_at': case.created_at,
-            'updated_at': case.updated_at,
-            'last_activity_at': case.last_activity_at,
-            'resolved_at': case.resolved_at,
-            'closed_at': case.closed_at,
+            "created_at": case.created_at,
+            "updated_at": case.updated_at,
+            "last_activity_at": case.last_activity_at,
+            "resolved_at": case.resolved_at,
+            "closed_at": case.closed_at,
         }
 
         # Upsert query
-        query = text("""
+        query = text(
+            """
             INSERT INTO cases (
                 case_id, user_id, organization_id, title, description, status,
                 status_history, closure_reason, progress, current_turn,
@@ -607,7 +632,8 @@ class PostgreSQLCaseRepository(CaseRepository):
                 last_activity_at = EXCLUDED.last_activity_at,
                 resolved_at = EXCLUDED.resolved_at,
                 closed_at = EXCLUDED.closed_at
-        """)
+        """
+        )
 
         await self.db.execute(query, case_data)
         await self.db.commit()
@@ -634,7 +660,7 @@ class PostgreSQLCaseRepository(CaseRepository):
         organization_id: Optional[str] = None,
         status: Optional[CaseStatus] = None,
         limit: int = 50,
-        offset: int = 0
+        offset: int = 0,
     ) -> tuple[List[Case], int]:
         """List cases with filters."""
         from sqlalchemy import text
@@ -663,12 +689,14 @@ class PostgreSQLCaseRepository(CaseRepository):
         total_count = count_result.scalar()
 
         # Data query
-        data_query = text(f"""
+        data_query = text(
+            f"""
             SELECT * FROM cases
             WHERE {where_clause}
             ORDER BY last_activity_at DESC
             LIMIT :limit OFFSET :offset
-        """)
+        """
+        )
         result = await self.db.execute(data_query, params)
         rows = result.fetchall()
 
@@ -691,7 +719,7 @@ class PostgreSQLCaseRepository(CaseRepository):
         query: str,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        limit: int = 20
+        limit: int = 20,
     ) -> tuple[List[Case], int]:
         """Search cases using PostgreSQL full-text search."""
         from sqlalchemy import text
@@ -716,14 +744,16 @@ class PostgreSQLCaseRepository(CaseRepository):
         total_count = count_result.scalar()
 
         # Data query (order by relevance: title match > description match)
-        data_query = text(f"""
+        data_query = text(
+            f"""
             SELECT * FROM cases
             WHERE {where_clause}
             ORDER BY
                 CASE WHEN title ILIKE :query THEN 1 ELSE 2 END,
                 last_activity_at DESC
             LIMIT :limit
-        """)
+        """
+        )
         result = await self.db.execute(data_query, params)
         rows = result.fetchall()
 
@@ -736,28 +766,30 @@ class PostgreSQLCaseRepository(CaseRepository):
         from sqlalchemy import text
 
         # PostgreSQL: messages stored as JSONB array, use array_append
-        query = text("""
+        query = text(
+            """
             UPDATE cases
             SET messages = messages || :message::jsonb,
                 message_count = message_count + 1,
                 last_activity_at = :timestamp
             WHERE case_id = :case_id
-        """)
+        """
+        )
 
-        result = await self.db.execute(query, {
-            "case_id": case_id,
-            "message": json.dumps(message_dict),
-            "timestamp": datetime.now(timezone.utc)
-        })
+        result = await self.db.execute(
+            query,
+            {
+                "case_id": case_id,
+                "message": json.dumps(message_dict),
+                "timestamp": datetime.now(timezone.utc),
+            },
+        )
         await self.db.commit()
 
         return result.rowcount > 0
 
     async def get_messages(
-        self,
-        case_id: str,
-        limit: int = 50,
-        offset: int = 0
+        self, case_id: str, limit: int = 50, offset: int = 0
     ) -> List[dict]:
         """Get messages from PostgreSQL with correct pagination."""
         from sqlalchemy import text
@@ -772,25 +804,28 @@ class PostgreSQLCaseRepository(CaseRepository):
 
         # Parse messages and apply pagination in Python
         # (PostgreSQL doesn't support LIMIT/OFFSET on jsonb_array_elements directly)
-        all_messages = json.loads(row.messages) if isinstance(row.messages, str) else row.messages
+        all_messages = (
+            json.loads(row.messages) if isinstance(row.messages, str) else row.messages
+        )
 
         # Apply offset and limit
-        return all_messages[offset:offset + limit]
+        return all_messages[offset : offset + limit]
 
     async def update_activity_timestamp(self, case_id: str) -> bool:
         """Update last activity timestamp in PostgreSQL."""
         from sqlalchemy import text
 
-        query = text("""
+        query = text(
+            """
             UPDATE cases
             SET last_activity_at = :timestamp
             WHERE case_id = :case_id
-        """)
+        """
+        )
 
-        result = await self.db.execute(query, {
-            "case_id": case_id,
-            "timestamp": datetime.now(timezone.utc)
-        })
+        result = await self.db.execute(
+            query, {"case_id": case_id, "timestamp": datetime.now(timezone.utc)}
+        )
         await self.db.commit()
 
         return result.rowcount > 0
@@ -800,7 +835,8 @@ class PostgreSQLCaseRepository(CaseRepository):
         from sqlalchemy import text
         from faultmaven.utils.serialization import to_json_compatible
 
-        query = text("""
+        query = text(
+            """
             SELECT
                 case_id,
                 status,
@@ -820,7 +856,8 @@ class PostgreSQLCaseRepository(CaseRepository):
                 (escalation_state IS NOT NULL) as is_escalated
             FROM cases
             WHERE case_id = :case_id
-        """)
+        """
+        )
 
         result = await self.db.execute(query, {"case_id": case_id})
         row = result.fetchone()
@@ -853,14 +890,17 @@ class PostgreSQLCaseRepository(CaseRepository):
 
         return analytics
 
-    async def cleanup_expired(self, max_age_days: int = 90, batch_size: int = 100) -> int:
+    async def cleanup_expired(
+        self, max_age_days: int = 90, batch_size: int = 100
+    ) -> int:
         """Clean up expired cases from PostgreSQL."""
         from sqlalchemy import text
         from datetime import timedelta, timezone
 
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
-        query = text("""
+        query = text(
+            """
             DELETE FROM cases
             WHERE status = 'closed'
             AND closed_at < :cutoff_date
@@ -869,12 +909,12 @@ class PostgreSQLCaseRepository(CaseRepository):
                 WHERE status = 'closed' AND closed_at < :cutoff_date
                 LIMIT :batch_size
             )
-        """)
+        """
+        )
 
-        result = await self.db.execute(query, {
-            "cutoff_date": cutoff_date,
-            "batch_size": batch_size
-        })
+        result = await self.db.execute(
+            query, {"cutoff_date": cutoff_date, "batch_size": batch_size}
+        )
         await self.db.commit()
 
         return result.rowcount
@@ -883,7 +923,9 @@ class PostgreSQLCaseRepository(CaseRepository):
         """Convert database row to Case domain model."""
         # Parse JSON fields (required fields)
         progress = InvestigationProgress(**json.loads(row.progress))
-        status_history = [CaseStatusTransition(**t) for t in json.loads(row.status_history)]
+        status_history = [
+            CaseStatusTransition(**t) for t in json.loads(row.status_history)
+        ]
         turn_history = [TurnProgress(**t) for t in json.loads(row.turn_history)]
         uploaded_files = (
             [UploadedFile(**f) for f in json.loads(row.uploaded_files)]
@@ -911,12 +953,34 @@ class PostgreSQLCaseRepository(CaseRepository):
         )
 
         # Optional fields (explicitly nullable in model)
-        path_selection = PathSelection(**json.loads(row.path_selection)) if row.path_selection else None
-        problem_verification = ProblemVerification(**json.loads(row.problem_verification)) if row.problem_verification else None
-        working_conclusion = WorkingConclusion(**json.loads(row.working_conclusion)) if row.working_conclusion else None
-        root_cause_conclusion = RootCauseConclusion(**json.loads(row.root_cause_conclusion)) if row.root_cause_conclusion else None
-        degraded_mode = DegradedMode(**json.loads(row.degraded_mode)) if row.degraded_mode else None
-        escalation_state = EscalationState(**json.loads(row.escalation_state)) if row.escalation_state else None
+        path_selection = (
+            PathSelection(**json.loads(row.path_selection))
+            if row.path_selection
+            else None
+        )
+        problem_verification = (
+            ProblemVerification(**json.loads(row.problem_verification))
+            if row.problem_verification
+            else None
+        )
+        working_conclusion = (
+            WorkingConclusion(**json.loads(row.working_conclusion))
+            if row.working_conclusion
+            else None
+        )
+        root_cause_conclusion = (
+            RootCauseConclusion(**json.loads(row.root_cause_conclusion))
+            if row.root_cause_conclusion
+            else None
+        )
+        degraded_mode = (
+            DegradedMode(**json.loads(row.degraded_mode)) if row.degraded_mode else None
+        )
+        escalation_state = (
+            EscalationState(**json.loads(row.escalation_state))
+            if row.escalation_state
+            else None
+        )
 
         # Parse messages field (list of dicts)
         messages = json.loads(row.messages) if row.messages else []
@@ -962,6 +1026,8 @@ class PostgreSQLCaseRepository(CaseRepository):
 # Repository Exception
 # ============================================================
 
+
 class RepositoryException(Exception):
     """Base exception for repository errors."""
+
     pass

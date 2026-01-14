@@ -15,7 +15,9 @@ sys.modules.setdefault(
     "faultmaven.infrastructure.monitoring.apm_integration",
     SimpleNamespace(
         APMIntegration=_DummyAPMIntegration,
-        apm_integration=SimpleNamespace(get_export_statistics=lambda: {"enabled": False}),
+        apm_integration=SimpleNamespace(
+            get_export_statistics=lambda: {"enabled": False}
+        ),
     ),
 )
 
@@ -89,12 +91,14 @@ sys.modules.setdefault(
 
 from faultmaven.modules.agent.tools.knowledge_base import KnowledgeBaseTool
 from faultmaven.modules.agent.tools.web_search import WebSearchTool
+
 # from faultmaven.services.preprocessing.classifier import DataClassifier  # May need heavy deps
 # from faultmaven.core.processing.log_analyzer import LogProcessor
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.models.common import AgentStateEnum as AgentState
 from faultmaven.models import DataType, SessionContext
 from faultmaven.infrastructure.security.redaction import DataSanitizer
+
 # SessionManager has been replaced by SessionService
 # from faultmaven.session_management import SessionManager
 
@@ -110,7 +114,7 @@ def create_agent_state_dict(status=None, case_context=None, current_phase="initi
         "confidence_score": 0.0,
         "tools_used": [],
         "awaiting_user_input": False,
-        "user_feedback": ""
+        "user_feedback": "",
     }
 
 
@@ -119,20 +123,20 @@ def reset_container():
     """Reset the DI container before each test"""
     # Import here to avoid circular dependencies
     from faultmaven.container import container
-    
+
     # Reset container state
     container.reset()
-    
+
     # Ensure SKIP_SERVICE_CHECKS is set for tests
-    os.environ['SKIP_SERVICE_CHECKS'] = 'true'
-    
+    os.environ["SKIP_SERVICE_CHECKS"] = "true"
+
     yield container
-    
+
     # Reset again after test
     container.reset()
 
 
-@pytest.fixture(scope="function")  
+@pytest.fixture(scope="function")
 def initialized_container(reset_container):
     """Provide a properly initialized container for tests"""
     try:
@@ -141,15 +145,16 @@ def initialized_container(reset_container):
     except Exception as e:
         # If real initialization fails, create minimal mock container
         from unittest.mock import MagicMock
+
         mock_container = MagicMock()
-        
+
         # Mock key service methods
         mock_container.get_session_service.return_value = MagicMock()
         mock_container.get_agent_service.return_value = MagicMock()
         mock_container.get_case_service.return_value = MagicMock()
         mock_container.get_knowledge_service.return_value = MagicMock()
         mock_container.get_data_service.return_value = MagicMock()
-        
+
         return mock_container
 
 
@@ -382,7 +387,7 @@ def sample_case_message():
         content="This is a test message for case persistence testing",
         created_at=datetime.now(timezone.utc),
         author_id="test-user-456",
-        metadata={"test": True, "source": "pytest"}
+        metadata={"test": True, "source": "pytest"},
     )
 
 
@@ -396,7 +401,7 @@ def sample_case_participant():
         user_id="test-collaborator-789",
         role="collaborator",
         added_at=datetime.now(timezone.utc),
-        added_by="test-user-456"
+        added_by="test-user-456",
     )
 
 
@@ -428,7 +433,7 @@ def sample_case_summary():
 def mock_case_store():
     """Mock case store for testing."""
     from unittest.mock import AsyncMock, Mock
-    
+
     store = Mock()
     store.create_case = AsyncMock(return_value=True)
     store.get_case = AsyncMock(return_value=None)
@@ -451,7 +456,7 @@ def mock_case_store():
 def mock_case_service():
     """Mock case service for testing."""
     from unittest.mock import AsyncMock, Mock
-    
+
     service = Mock()
     service.create_case = AsyncMock()
     service.get_case = AsyncMock(return_value=None)
@@ -483,7 +488,7 @@ def case_create_request_data():
         "priority": "medium",
         "tags": ["api", "test"],
         "session_id": "test-session-123",
-        "initial_message": "Initial problem description for testing"
+        "initial_message": "Initial problem description for testing",
     }
 
 
@@ -495,7 +500,7 @@ def case_update_request_data():
         "description": "Updated description for testing",
         "status": "investigating",
         "priority": "high",
-        "tags": ["updated", "important"]
+        "tags": ["updated", "important"],
     }
 
 
@@ -505,7 +510,7 @@ def case_share_request_data():
     return {
         "user_id": "test-collaborator-789",
         "role": "collaborator",
-        "message": "Please help with this case"
+        "message": "Please help with this case",
     }
 
 
@@ -516,12 +521,7 @@ def case_search_request_data():
         "query": "database connection error",
         "search_in_messages": True,
         "search_in_context": True,
-        "filters": {
-            "status": "active",
-            "priority": "high",
-            "limit": 20,
-            "offset": 0
-        }
+        "filters": {"status": "active", "priority": "high", "limit": 20, "offset": 0},
     }
 
 
@@ -604,7 +604,7 @@ def case_with_conversation():
             "role": "assistant",
             "content": "The database connection pool seems to be exhausted. Try increasing the pool size from 10 to 50 connections.",
             "created_at": (now - timedelta(minutes=25)).isoformat(),
-        }
+        },
     ]
 
     return Case(

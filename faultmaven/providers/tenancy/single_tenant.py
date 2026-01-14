@@ -10,7 +10,11 @@ from typing import Optional
 from datetime import datetime, timezone
 
 from faultmaven.providers.tenancy.base import TenantProvider
-from faultmaven.models.interfaces_user import Organization, OrgPlanTier, IOrganizationRepository
+from faultmaven.models.interfaces_user import (
+    Organization,
+    OrgPlanTier,
+    IOrganizationRepository,
+)
 from faultmaven.models.user import User
 from faultmaven.exceptions import NotFoundError
 
@@ -47,9 +51,7 @@ class SingleTenantProvider(TenantProvider):
         self._default_org: Optional[Organization] = None
 
     async def get_current_organization(
-        self,
-        current_user: User,
-        organization_id: Optional[str] = None
+        self, current_user: User, organization_id: Optional[str] = None
     ) -> Organization:
         """Always returns the default organization (ignores organization_id).
 
@@ -86,8 +88,7 @@ class SingleTenantProvider(TenantProvider):
             )
             if self._default_org is None:
                 raise NotFoundError(
-                    resource_type="Organization",
-                    resource_id=self.DEFAULT_ORG_ID
+                    resource_type="Organization", resource_id=self.DEFAULT_ORG_ID
                 )
         return self._default_org
 
@@ -108,7 +109,9 @@ class SingleTenantProvider(TenantProvider):
             - Grants PRO tier features for local mode (no billing needed)
             - Idempotent: safe to call multiple times
         """
-        existing = await self.organization_repository.get_organization(self.DEFAULT_ORG_ID)
+        existing = await self.organization_repository.get_organization(
+            self.DEFAULT_ORG_ID
+        )
         if existing:
             # Update cache
             self._default_org = existing
@@ -126,10 +129,12 @@ class SingleTenantProvider(TenantProvider):
             max_cases=None,  # Unlimited cases in local mode
             settings={},
             created_at=now,
-            updated_at=now
+            updated_at=now,
         )
 
-        created_org = await self.organization_repository.create_organization(default_org)
+        created_org = await self.organization_repository.create_organization(
+            default_org
+        )
 
         # Cache the created organization
         self._default_org = created_org

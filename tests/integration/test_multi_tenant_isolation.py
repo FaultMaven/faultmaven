@@ -24,7 +24,11 @@ from faultmaven.api.services.organization_api_service import (
 )
 from faultmaven.exceptions import AuthorizationError, NotFoundError
 from faultmaven.models.auth import AuthenticatedUser
-from faultmaven.models.interfaces_user import Organization, OrganizationMember, OrgPlanTier
+from faultmaven.models.interfaces_user import (
+    Organization,
+    OrganizationMember,
+    OrgPlanTier,
+)
 from faultmaven.models.rbac import get_permissions_for_roles
 
 
@@ -120,7 +124,9 @@ class TestOrganizationDataIsolation:
         """User A cannot access User B's organization."""
         mock_org_service = MagicMock()
         mock_org_service.get_organization = AsyncMock(return_value=org_b)
-        mock_org_service.get_member_role = AsyncMock(return_value=None)  # User A not member of org B
+        mock_org_service.get_member_role = AsyncMock(
+            return_value=None
+        )  # User A not member of org B
 
         api_service = APIOrganizationService(
             organization_service=mock_org_service,
@@ -271,7 +277,9 @@ class TestOrganizationDataIsolation:
     async def test_add_member_enforces_admin_check(self, org_b):
         """add_member enforces admin/owner check."""
         mock_org_service = MagicMock()
-        mock_org_service.get_member_role = AsyncMock(return_value=ROLE_MEMBER)  # Not admin
+        mock_org_service.get_member_role = AsyncMock(
+            return_value=ROLE_MEMBER
+        )  # Not admin
 
         api_service = APIOrganizationService(
             organization_service=mock_org_service,
@@ -289,7 +297,9 @@ class TestOrganizationDataIsolation:
     async def test_remove_member_enforces_admin_check(self, org_b):
         """remove_member enforces admin/owner check."""
         mock_org_service = MagicMock()
-        mock_org_service.get_member_role = AsyncMock(return_value=ROLE_MEMBER)  # Not admin
+        mock_org_service.get_member_role = AsyncMock(
+            return_value=ROLE_MEMBER
+        )  # Not admin
 
         api_service = APIOrganizationService(
             organization_service=mock_org_service,

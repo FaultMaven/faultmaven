@@ -18,7 +18,7 @@ from faultmaven.utils.serialization import to_json_compatible
 
 class RedisSessionStore(ISessionStore):
     """Redis implementation of the ISessionStore interface"""
-    
+
     def __init__(self):
         """Initialize Redis session store"""
         self.redis_client = None
@@ -34,11 +34,12 @@ class RedisSessionStore(ISessionStore):
                 self._connection_healthy = True
             except Exception as e:
                 import logging
+
                 logger = logging.getLogger(__name__)
                 logger.error(f"Failed to initialize Redis client: {e}")
                 self.redis_client = None
                 self._connection_healthy = False
-    
+
     async def get(self, key: str) -> Optional[Dict]:
         """
         Get session data by key.
@@ -52,11 +53,11 @@ class RedisSessionStore(ISessionStore):
         await self._ensure_client()
         if not self._connection_healthy or not self.redis_client:
             raise ConnectionError("Redis connection not available")
-        
+
         try:
             full_key = f"{self.prefix}{key}"
             data = await self.redis_client.get(full_key)
-            
+
             if data:
                 try:
                     return json.loads(data)
@@ -65,12 +66,15 @@ class RedisSessionStore(ISessionStore):
             return None
         except Exception as e:
             import logging
+
             logger = logging.getLogger(__name__)
             logger.error(f"Redis get operation failed for key {key}: {e}")
             self._connection_healthy = False
             raise ConnectionError(f"Redis operation failed: {e}")
-    
-    async def set(self, key: str, value: Union[Dict, Any], ttl: Optional[int] = None) -> None:
+
+    async def set(
+        self, key: str, value: Union[Dict, Any], ttl: Optional[int] = None
+    ) -> None:
         """
         Set session data with optional TTL.
 
@@ -89,8 +93,10 @@ class RedisSessionStore(ISessionStore):
             # Handle both dict and string values for compatibility
             if isinstance(value, dict):
                 # Add timestamp if not present for session data
-                if 'last_activity' not in value:
-                    value['last_activity'] = to_json_compatible(datetime.now(timezone.utc))
+                if "last_activity" not in value:
+                    value["last_activity"] = to_json_compatible(
+                        datetime.now(timezone.utc)
+                    )
                 # Serialize any datetime objects in the dict
                 value = to_json_compatible(value)
                 serialized = json.dumps(value)
@@ -103,11 +109,12 @@ class RedisSessionStore(ISessionStore):
             await self.redis_client.set(full_key, serialized, ex=ttl)
         except Exception as e:
             import logging
+
             logger = logging.getLogger(__name__)
             logger.error(f"Redis set operation failed for key {key}: {e}")
             self._connection_healthy = False
             raise ConnectionError(f"Redis operation failed: {e}")
-    
+
     async def delete(self, key: str) -> bool:
         """
         Delete session by key.
@@ -122,7 +129,7 @@ class RedisSessionStore(ISessionStore):
         full_key = f"{self.prefix}{key}"
         result = await self.redis_client.delete(full_key)
         return result > 0
-    
+
     async def exists(self, key: str) -> bool:
         """
         Check if session exists.
@@ -136,7 +143,7 @@ class RedisSessionStore(ISessionStore):
         await self._ensure_client()
         full_key = f"{self.prefix}{key}"
         return await self.redis_client.exists(full_key) > 0
-    
+
     async def extend_ttl(self, key: str, ttl: Optional[int] = None) -> bool:
         """
         Extend session TTL.
@@ -152,8 +159,10 @@ class RedisSessionStore(ISessionStore):
         full_key = f"{self.prefix}{key}"
         ttl = ttl if ttl is not None else self.default_ttl
         return await self.redis_client.expire(full_key, ttl)
-    
-    async def find_by_user_and_client(self, user_id: str, client_id: str) -> Optional[str]:
+
+    async def find_by_user_and_client(
+        self, user_id: str, client_id: str
+    ) -> Optional[str]:
         """
         Find session ID by user_id and client_id combination.
 
@@ -167,25 +176,30 @@ class RedisSessionStore(ISessionStore):
         await self._ensure_client()
         if not self._connection_healthy or not self.redis_client:
             raise ConnectionError("Redis connection not available")
-        
+
         try:
             client_index_key = f"client_index:{user_id}:{client_id}"
             session_id = await self.redis_client.get(client_index_key)
-            
+
             if session_id:
                 # Decode bytes to string if needed
                 if isinstance(session_id, bytes):
-                    session_id = session_id.decode('utf-8')
+                    session_id = session_id.decode("utf-8")
                 return session_id
             return None
         except Exception as e:
             import logging
+
             logger = logging.getLogger(__name__)
-            logger.error(f"Redis find_by_user_and_client operation failed for user {user_id}, client {client_id}: {e}")
+            logger.error(
+                f"Redis find_by_user_and_client operation failed for user {user_id}, client {client_id}: {e}"
+            )
             self._connection_healthy = False
             raise ConnectionError(f"Redis operation failed: {e}")
-    
-    async def index_session_by_client(self, user_id: str, client_id: str, session_id: str, ttl: int) -> None:
+
+    async def index_session_by_client(
+        self, user_id: str, client_id: str, session_id: str, ttl: int
+    ) -> None:
         """
         Create or update index entry for (user_id, client_id) -> session_id mapping.
 
@@ -198,21 +212,24 @@ class RedisSessionStore(ISessionStore):
         await self._ensure_client()
         if not self._connection_healthy or not self.redis_client:
             raise ConnectionError("Redis connection not available")
-        
+
         try:
             client_index_key = f"client_index:{user_id}:{client_id}"
-            
+
             # Use Redis pipeline for atomic operation
             pipe = self.redis_client.pipeline()
             pipe.set(client_index_key, session_id, ex=ttl)
             await pipe.execute()
         except Exception as e:
             import logging
+
             logger = logging.getLogger(__name__)
-            logger.error(f"Redis index_session_by_client operation failed for user {user_id}, client {client_id}, session {session_id}: {e}")
+            logger.error(
+                f"Redis index_session_by_client operation failed for user {user_id}, client {client_id}, session {session_id}: {e}"
+            )
             self._connection_healthy = False
             raise ConnectionError(f"Redis operation failed: {e}")
-    
+
     async def remove_client_index(self, user_id: str, client_id: str) -> None:
         """
         Remove client index entry for cleanup.
@@ -230,8 +247,11 @@ class RedisSessionStore(ISessionStore):
             await self.redis_client.delete(client_index_key)
         except Exception as e:
             import logging
+
             logger = logging.getLogger(__name__)
-            logger.warning(f"Redis remove_client_index operation failed for user {user_id}, client {client_id}: {e}")
+            logger.warning(
+                f"Redis remove_client_index operation failed for user {user_id}, client {client_id}: {e}"
+            )
             # Don't mark connection as unhealthy for cleanup operations
             # Just log and continue
 
@@ -243,13 +263,13 @@ class RedisSessionStore(ISessionStore):
         created_at = datetime.now(timezone.utc)
 
         session_data = {
-            'session_id': session_id,
-            'user_id': user_id,
-            'created_at': to_json_compatible(created_at),
-            'last_activity': to_json_compatible(created_at),
-            'data_uploads': [],
-            'case_history': [],
-            'metadata': {}
+            "session_id": session_id,
+            "user_id": user_id,
+            "created_at": to_json_compatible(created_at),
+            "last_activity": to_json_compatible(created_at),
+            "data_uploads": [],
+            "case_history": [],
+            "metadata": {},
         }
 
         # Store in Redis
@@ -263,45 +283,55 @@ class RedisSessionStore(ISessionStore):
             last_activity=created_at,
             data_uploads=[],
             case_history=[],
-            metadata={}
+            metadata={},
         )
 
-    async def get_session(self, session_id: str, validate: bool = True) -> Optional[SessionContext]:
+    async def get_session(
+        self, session_id: str, validate: bool = True
+    ) -> Optional[SessionContext]:
         """Get session by ID"""
         session_data = await self.get(session_id)
         if not session_data:
             return None
 
         # Convert ISO strings back to datetime
-        created_at = parse_utc_timestamp(session_data['created_at'])
-        last_activity = parse_utc_timestamp(session_data['last_activity'])
-        updated_at = parse_utc_timestamp(session_data.get('updated_at', session_data['last_activity']))
-        expires_at = parse_utc_timestamp(session_data['expires_at']) if session_data.get('expires_at') else None
+        created_at = parse_utc_timestamp(session_data["created_at"])
+        last_activity = parse_utc_timestamp(session_data["last_activity"])
+        updated_at = parse_utc_timestamp(
+            session_data.get("updated_at", session_data["last_activity"])
+        )
+        expires_at = (
+            parse_utc_timestamp(session_data["expires_at"])
+            if session_data.get("expires_at")
+            else None
+        )
 
         return SessionContext(
-            session_id=session_data['session_id'],
-            user_id=session_data.get('user_id'),
-            client_id=session_data.get('client_id'),
-            session_resumed=session_data.get('session_resumed', False),
+            session_id=session_data["session_id"],
+            user_id=session_data.get("user_id"),
+            client_id=session_data.get("client_id"),
+            session_resumed=session_data.get("session_resumed", False),
             created_at=created_at,
             last_activity=last_activity,
             updated_at=updated_at,
             expires_at=expires_at,
-            metadata=session_data.get('metadata', {})
+            metadata=session_data.get("metadata", {}),
         )
 
     async def save(self, session: SessionContext) -> None:
         """Save session context to Redis"""
         session_data = {
-            'session_id': session.session_id,
-            'user_id': session.user_id,
-            'client_id': session.client_id,
-            'created_at': to_json_compatible(session.created_at),
-            'last_activity': to_json_compatible(session.last_activity),
-            'updated_at': to_json_compatible(session.updated_at),
-            'expires_at': to_json_compatible(session.expires_at) if session.expires_at else None,
-            'metadata': session.metadata or {},
-            'session_resumed': session.session_resumed
+            "session_id": session.session_id,
+            "user_id": session.user_id,
+            "client_id": session.client_id,
+            "created_at": to_json_compatible(session.created_at),
+            "last_activity": to_json_compatible(session.last_activity),
+            "updated_at": to_json_compatible(session.updated_at),
+            "expires_at": (
+                to_json_compatible(session.expires_at) if session.expires_at else None
+            ),
+            "metadata": session.metadata or {},
+            "session_resumed": session.session_resumed,
         }
         await self.set(session.session_id, session_data)
 
@@ -313,7 +343,7 @@ class RedisSessionStore(ISessionStore):
 
         # Update the session data
         session_data.update(updates)
-        session_data['last_activity'] = to_json_compatible(datetime.now(timezone.utc))
+        session_data["last_activity"] = to_json_compatible(datetime.now(timezone.utc))
 
         # Save back to Redis
         await self.set(session_id, session_data)
@@ -329,9 +359,13 @@ class RedisSessionStore(ISessionStore):
 
     async def update_last_activity(self, session_id: str) -> bool:
         """Update last activity timestamp"""
-        return await self.update_session(session_id, {})  # This updates last_activity automatically
+        return await self.update_session(
+            session_id, {}
+        )  # This updates last_activity automatically
 
-    async def list_sessions(self, user_id: Optional[str] = None) -> List[SessionContext]:
+    async def list_sessions(
+        self, user_id: Optional[str] = None
+    ) -> List[SessionContext]:
         """List sessions, optionally filtered by user_id"""
         # Note: This is a simplified implementation. In production, you'd want
         # to maintain separate indexes for efficient querying
@@ -340,8 +374,11 @@ class RedisSessionStore(ISessionStore):
         # For now, return empty list since RedisSessionStore doesn't have
         # a native way to list all sessions. This would need additional indexing.
         import logging
+
         logger = logging.getLogger(__name__)
-        logger.warning("list_sessions is not fully implemented - would need session indexing")
+        logger.warning(
+            "list_sessions is not fully implemented - would need session indexing"
+        )
         return sessions
 
     async def get_all_sessions(self) -> List[SessionContext]:
@@ -352,9 +389,9 @@ class RedisSessionStore(ISessionStore):
         """Get session statistics"""
         # Basic stats - in production you'd maintain counters
         return {
-            'total_sessions': 0,  # Would need Redis counters or indexing
-            'active_sessions': 0,
-            'timestamp': to_json_compatible(datetime.now(timezone.utc))
+            "total_sessions": 0,  # Would need Redis counters or indexing
+            "active_sessions": 0,
+            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
         }
 
     async def cleanup_session_data(self, session_id: str) -> bool:

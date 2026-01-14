@@ -237,7 +237,9 @@ class TestKnowledgeItemValidation:
 
     def test_wrong_dimension_embedding_fails(self):
         """Test that wrong dimension embedding raises ValueError."""
-        with pytest.raises(ValueError, match=f"must have {EMBEDDING_DIMENSIONS} dimensions"):
+        with pytest.raises(
+            ValueError, match=f"must have {EMBEDDING_DIMENSIONS} dimensions"
+        ):
             create_sample_item(embedding_vector=[0.1, 0.2, 0.3])
 
     def test_valid_embedding_dimensions(self):
@@ -319,6 +321,7 @@ class TestUsageTracking:
         original_updated = item.updated_at
 
         import time
+
         time.sleep(0.001)
 
         item.mark_retrieved()
@@ -339,6 +342,7 @@ class TestUsageTracking:
         original_updated = item.updated_at
 
         import time
+
         time.sleep(0.001)
 
         item.mark_helpful()
@@ -359,6 +363,7 @@ class TestUsageTracking:
         original_updated = item.updated_at
 
         import time
+
         time.sleep(0.001)
 
         item.mark_not_helpful()
@@ -470,6 +475,7 @@ class TestEmbedding:
         embedding = create_valid_embedding()
 
         import time
+
         time.sleep(0.001)
 
         item.set_embedding(embedding)
@@ -547,6 +553,7 @@ class TestTags:
         original_updated = item.updated_at
 
         import time
+
         time.sleep(0.001)
 
         item.add_tag("newtag")
@@ -650,6 +657,7 @@ class TestPublication:
         original_updated = item.updated_at
 
         import time
+
         time.sleep(0.001)
 
         item.publish()
@@ -671,6 +679,7 @@ class TestTouch:
         original_updated = item.updated_at
 
         import time
+
         time.sleep(0.001)
 
         item.touch()
@@ -791,7 +800,13 @@ class TestEdgeCases:
 
     def test_all_categories(self):
         """Test various category values."""
-        categories = ["networking", "database", "authentication", "api", "infrastructure"]
+        categories = [
+            "networking",
+            "database",
+            "authentication",
+            "api",
+            "infrastructure",
+        ]
 
         for category in categories:
             item = create_sample_item(category=category)

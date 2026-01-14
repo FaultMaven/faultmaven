@@ -158,21 +158,25 @@ class ListEvidenceTool(AgentTool):
         """
         formatted = []
         for evidence in evidence_list:
-            formatted.append({
-                "evidence_id": evidence.evidence_id,
-                "filename": evidence.original_filename,
-                "type": evidence.evidence_type.value if hasattr(evidence.evidence_type, "value") else str(evidence.evidence_type),
-                "mime_type": evidence.mime_type,
-                "file_size_bytes": evidence.file_size,
-                "file_size_human": self._format_file_size(evidence.file_size),
-                "description": evidence.description,
-                "is_primary": evidence.is_primary,
-                "created_at": (
-                    evidence.created_at.isoformat()
-                    if evidence.created_at
-                    else None
-                ),
-            })
+            formatted.append(
+                {
+                    "evidence_id": evidence.evidence_id,
+                    "filename": evidence.original_filename,
+                    "type": (
+                        evidence.evidence_type.value
+                        if hasattr(evidence.evidence_type, "value")
+                        else str(evidence.evidence_type)
+                    ),
+                    "mime_type": evidence.mime_type,
+                    "file_size_bytes": evidence.file_size,
+                    "file_size_human": self._format_file_size(evidence.file_size),
+                    "description": evidence.description,
+                    "is_primary": evidence.is_primary,
+                    "created_at": (
+                        evidence.created_at.isoformat() if evidence.created_at else None
+                    ),
+                }
+            )
         return formatted
 
     def _format_file_size(self, size_bytes: int) -> str:

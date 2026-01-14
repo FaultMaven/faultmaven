@@ -49,10 +49,7 @@ class DocumentQATool(LangChainBaseTool):
     _kb_config: KBConfig = PrivateAttr()  # Strategy pattern
 
     def __init__(
-        self,
-        vector_store: CaseVectorStore,
-        llm_router: LLMRouter,
-        kb_config: KBConfig
+        self, vector_store: CaseVectorStore, llm_router: LLMRouter, kb_config: KBConfig
     ):
         """
         Initialize KB-neutral document Q&A tool.
@@ -76,10 +73,7 @@ class DocumentQATool(LangChainBaseTool):
         raise NotImplementedError("Use async _arun instead")
 
     async def _arun(
-        self,
-        question: str,
-        scope_id: Optional[str] = None,
-        k: int = 5
+        self, question: str, scope_id: Optional[str] = None, k: int = 5
     ) -> str:
         """
         Answer factual question from documents (KB-neutral).
@@ -101,14 +95,11 @@ class DocumentQATool(LangChainBaseTool):
             result["answer"],
             result["sources"],
             result["chunk_count"],
-            result["confidence"]
+            result["confidence"],
         )
 
     async def answer_question(
-        self,
-        question: str,
-        scope_id: Optional[str],
-        k: int
+        self, question: str, scope_id: Optional[str], k: int
     ) -> Dict[str, Any]:
         """
         Core Q&A logic (KB-neutral).
@@ -124,9 +115,7 @@ class DocumentQATool(LangChainBaseTool):
         # Step 2: Retrieve chunks from vector store (same for all KBs)
         try:
             chunks = await self._vector_store.search(
-                collection_name=collection,
-                query=question,
-                k=k
+                collection_name=collection, query=question, k=k
             )
         except Exception as e:
             logger.error(f"Vector store search failed: {e}")
@@ -134,7 +123,7 @@ class DocumentQATool(LangChainBaseTool):
                 "answer": f"Error retrieving documents: {str(e)}",
                 "sources": [],
                 "chunk_count": 0,
-                "confidence": 0.0
+                "confidence": 0.0,
             }
 
         if not chunks:
@@ -154,7 +143,7 @@ class DocumentQATool(LangChainBaseTool):
                 ),
                 "sources": [],
                 "chunk_count": 0,
-                "confidence": 0.0
+                "confidence": 0.0,
             }
 
         logger.debug(f"Retrieved {len(chunks)} chunks")
@@ -192,21 +181,23 @@ Answer:"""
                 model=synthesis_model,
                 messages=[
                     {"role": "system", "content": self._kb_config.system_prompt},
-                    {"role": "user", "content": synthesis_prompt}
+                    {"role": "user", "content": synthesis_prompt},
                 ],
                 max_tokens=500,
-                temperature=0.3  # Low temperature for factual accuracy
+                temperature=0.3,  # Low temperature for factual accuracy
             )
 
             answer = response.get("content", "").strip()
 
             # Extract sources using config (KB-specific)
-            sources = list(set(
-                self._kb_config.extract_source_name(chunk['metadata'])
-                for chunk in chunks
-            ))
+            sources = list(
+                set(
+                    self._kb_config.extract_source_name(chunk["metadata"])
+                    for chunk in chunks
+                )
+            )
 
-            avg_score = sum(chunk['score'] for chunk in chunks) / len(chunks)
+            avg_score = sum(chunk["score"] for chunk in chunks) / len(chunks)
 
             logger.info(
                 f"Generated answer from {len(chunks)} chunks, avg score: {avg_score:.2f}"
@@ -216,7 +207,7 @@ Answer:"""
                 "answer": answer,
                 "sources": sources,
                 "chunk_count": len(chunks),
-                "confidence": avg_score
+                "confidence": avg_score,
             }
 
         except Exception as e:
@@ -225,7 +216,7 @@ Answer:"""
                 "answer": f"Error generating answer: {str(e)}",
                 "sources": [],
                 "chunk_count": len(chunks),
-                "confidence": 0.0
+                "confidence": 0.0,
             }
 
     def _build_context_from_chunks(self, chunks: list) -> str:
@@ -237,11 +228,11 @@ Answer:"""
         context_parts = []
 
         for i, chunk in enumerate(chunks, 1):
-            metadata = chunk.get('metadata', {})
-            content = chunk['content']
+            metadata = chunk.get("metadata", {})
+            content = chunk["content"]
 
             # Delegate metadata formatting to config (KB-specific)
-            meta_str = self._kb_config.format_chunk_metadata(metadata, chunk['score'])
+            meta_str = self._kb_config.format_chunk_metadata(metadata, chunk["score"])
 
             context_parts.append(f"[Chunk {i} - {meta_str}]\n{content}\n")
 

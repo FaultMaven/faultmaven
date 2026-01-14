@@ -126,7 +126,10 @@ class AdaptiveIntensityController:
 
         for category, count in category_counts.items():
             if count >= 4:
-                return True, f"Anchoring detected: {count} hypotheses in '{category}' category"
+                return (
+                    True,
+                    f"Anchoring detected: {count} hypotheses in '{category}' category",
+                )
 
         # Condition 2: No progress in 3+ iterations
         stalled_hypotheses = [
@@ -136,7 +139,10 @@ class AdaptiveIntensityController:
             and h.status == HypothesisStatus.ACTIVE
         ]
         if stalled_hypotheses:
-            return True, f"Anchoring detected: {len(stalled_hypotheses)} hypotheses without progress"
+            return (
+                True,
+                f"Anchoring detected: {len(stalled_hypotheses)} hypotheses without progress",
+            )
 
         # Condition 3: Check if top hypothesis hasn't changed in 3 iterations
         active_hypotheses = [
@@ -152,7 +158,10 @@ class AdaptiveIntensityController:
                 top_hypothesis = sorted_by_likelihood[0]
                 iterations_as_top = iteration_count - top_hypothesis.last_updated_turn
                 if iterations_as_top >= 3 and top_hypothesis.likelihood < 0.7:
-                    return True, "Anchoring detected: Top hypothesis unchanged for 3+ iterations"
+                    return (
+                        True,
+                        "Anchoring detected: Top hypothesis unchanged for 3+ iterations",
+                    )
 
         return False, None
 
@@ -243,7 +252,11 @@ class OODAEngine:
             result["information_gaps"] = ["scope", "affected_components", "severity"]
 
         elif phase == InvestigationPhase.TIMELINE:
-            result["information_gaps"] = ["start_time", "recent_changes", "deployment_history"]
+            result["information_gaps"] = [
+                "start_time",
+                "recent_changes",
+                "deployment_history",
+            ]
 
         elif phase == InvestigationPhase.HYPOTHESIS:
             result["information_gaps"] = ["configuration", "environment", "metrics"]
@@ -252,7 +265,9 @@ class OODAEngine:
             # Generate evidence requests for hypothesis testing
             for hypothesis in investigation_state.ooda_engine.hypotheses:
                 if hypothesis.status == HypothesisStatus.ACTIVE:
-                    result["information_gaps"].append(f"test_evidence_for_{hypothesis.hypothesis_id}")
+                    result["information_gaps"].append(
+                        f"test_evidence_for_{hypothesis.hypothesis_id}"
+                    )
 
         return result
 
@@ -301,7 +316,9 @@ class OODAEngine:
 
         elif phase == InvestigationPhase.HYPOTHESIS:
             # Analyze evidence to refine hypothesis confidence
-            result["hypotheses_updated"] = len(investigation_state.ooda_engine.hypotheses)
+            result["hypotheses_updated"] = len(
+                investigation_state.ooda_engine.hypotheses
+            )
 
         elif phase == InvestigationPhase.VALIDATION:
             # Update hypothesis confidence based on test evidence
@@ -348,7 +365,9 @@ class OODAEngine:
                 if h.status not in [HypothesisStatus.RETIRED, HypothesisStatus.REFUTED]
             ]
             if active_hypotheses:
-                sorted_hyp = sorted(active_hypotheses, key=lambda h: h.likelihood, reverse=True)
+                sorted_hyp = sorted(
+                    active_hypotheses, key=lambda h: h.likelihood, reverse=True
+                )
                 result["decision"] = "hypothesis_ranking_complete"
                 result["selected_hypothesis"] = sorted_hyp[0].hypothesis_id
 
@@ -442,18 +461,26 @@ class OODAEngine:
 
         # Check if new evidence collected
         if iteration.new_evidence_collected > 0:
-            progress_indicators.append(f"Collected {iteration.new_evidence_collected} evidence")
+            progress_indicators.append(
+                f"Collected {iteration.new_evidence_collected} evidence"
+            )
 
         # Check if hypotheses changed
         if iteration.hypotheses_generated > 0:
-            progress_indicators.append(f"Generated {iteration.hypotheses_generated} hypotheses")
+            progress_indicators.append(
+                f"Generated {iteration.hypotheses_generated} hypotheses"
+            )
 
         if iteration.hypotheses_tested > 0:
-            progress_indicators.append(f"Tested {iteration.hypotheses_tested} hypotheses")
+            progress_indicators.append(
+                f"Tested {iteration.hypotheses_tested} hypotheses"
+            )
 
         # Check confidence improvement
         if iteration.confidence_delta > 0:
-            progress_indicators.append(f"Confidence improved by {iteration.confidence_delta:.2f}")
+            progress_indicators.append(
+                f"Confidence improved by {iteration.confidence_delta:.2f}"
+            )
 
         # Check for anomaly refinement
         if iteration.anomaly_refined:
@@ -498,8 +525,10 @@ class OODAEngine:
             return True, f"Minimum iterations ({min_iters}) not yet reached"
 
         # Check for anchoring
-        should_trigger, reason = self.intensity_controller.should_trigger_anchoring_prevention(
-            current_iter, investigation_state.ooda_engine.hypotheses
+        should_trigger, reason = (
+            self.intensity_controller.should_trigger_anchoring_prevention(
+                current_iter, investigation_state.ooda_engine.hypotheses
+            )
         )
         if should_trigger:
             investigation_state.ooda_engine.anchoring_detected = True
@@ -509,8 +538,7 @@ class OODAEngine:
         if phase == InvestigationPhase.VALIDATION:
             # Continue until hypothesis validated
             validated = any(
-                h.status == HypothesisStatus.VALIDATED
-                and h.likelihood >= 0.7
+                h.status == HypothesisStatus.VALIDATED and h.likelihood >= 0.7
                 for h in investigation_state.ooda_engine.hypotheses
             )
             if not validated:

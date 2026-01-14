@@ -8,7 +8,10 @@ Design Reference:
 - docs/architecture/investigation-phases-and-ooda-integration.md (v3.0 Degraded Mode)
 """
 
-from faultmaven.modules.agent.domain.models.investigation import DegradedModeType, get_confidence_cap
+from faultmaven.modules.agent.domain.models.investigation import (
+    DegradedModeType,
+    get_confidence_cap,
+)
 
 
 def get_degraded_mode_prompt(
@@ -29,7 +32,9 @@ def get_degraded_mode_prompt(
         Degraded mode prompt template
     """
     confidence_cap = get_confidence_cap(degraded_mode_type)
-    base_prompt = _get_degraded_mode_base_prompt(confidence_cap, degraded_mode_explanation)
+    base_prompt = _get_degraded_mode_base_prompt(
+        confidence_cap, degraded_mode_explanation
+    )
 
     mode_specific_prompts = {
         DegradedModeType.CRITICAL_EVIDENCE_MISSING: _get_critical_evidence_missing_prompt,

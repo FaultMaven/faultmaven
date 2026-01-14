@@ -44,8 +44,8 @@ def should_suggest_start_investigation(
         indicators.append("multi_turn_conversation")
 
     # Indicator 2: Multiple symptoms detected
-    if hasattr(investigation_state, 'ooda_engine'):
-        symptoms = getattr(investigation_state.ooda_engine, 'symptoms', [])
+    if hasattr(investigation_state, "ooda_engine"):
+        symptoms = getattr(investigation_state.ooda_engine, "symptoms", [])
         if len(symptoms) >= 3:
             indicators.append("multiple_symptoms")
 
@@ -55,7 +55,7 @@ def should_suggest_start_investigation(
 
     # Indicator 4: User explicitly requested investigation
     # (This would be set by intake_handler when detecting user intent)
-    if getattr(investigation_state.lifecycle, 'user_requested_investigation', False):
+    if getattr(investigation_state.lifecycle, "user_requested_investigation", False):
         indicators.append("user_expressed_need")
 
     # Indicator 5: Problem confirmation exists but investigation not started
@@ -106,9 +106,7 @@ def should_suggest_mark_complete(
 
     # Check solution verification (this happens in Phase 5)
     solution_verified = getattr(
-        investigation_state.lifecycle,
-        'solution_verified',
-        False
+        investigation_state.lifecycle, "solution_verified", False
     )
     if not solution_verified:
         return False, None
@@ -129,13 +127,13 @@ def should_suggest_mark_complete(
         "root_cause": validated_hypothesis.statement,
         "solution_summary": getattr(
             investigation_state.lifecycle,
-            'solution_summary',
-            "Solution applied and verified"
+            "solution_summary",
+            "Solution applied and verified",
         ),
         "verification_details": getattr(
             investigation_state.lifecycle,
-            'verification_details',
-            "Solution verified successfully"
+            "verification_details",
+            "Solution verified successfully",
         ),
         "confidence_level": wc.confidence,
     }
@@ -161,12 +159,20 @@ def should_suggest_escalation(
 
     # Condition 1: Degraded mode with 0% confidence cap (hypothesis space exhausted)
     if escalation_state.operating_in_degraded_mode:
-        if escalation_state.degraded_mode_type == DegradedModeType.HYPOTHESIS_SPACE_EXHAUSTED:
+        if (
+            escalation_state.degraded_mode_type
+            == DegradedModeType.HYPOTHESIS_SPACE_EXHAUSTED
+        ):
             return True, {
                 "limitation_type": "Hypothesis Space Exhausted",
-                "limitation_explanation": escalation_state.degraded_mode_explanation or "All reasonable hypotheses have been tested without finding root cause",
+                "limitation_explanation": escalation_state.degraded_mode_explanation
+                or "All reasonable hypotheses have been tested without finding root cause",
                 "findings_summary": _get_findings_summary(investigation_state),
-                "confidence_level": investigation_state.lifecycle.working_conclusion.confidence if investigation_state.lifecycle.working_conclusion else 0.0,
+                "confidence_level": (
+                    investigation_state.lifecycle.working_conclusion.confidence
+                    if investigation_state.lifecycle.working_conclusion
+                    else 0.0
+                ),
                 "next_steps_recommendations": [
                     "Escalate to senior engineer or specialist",
                     "Request access to additional diagnostic tools",
@@ -181,10 +187,17 @@ def should_suggest_escalation(
             if turns_in_degraded >= 6:
                 return True, {
                     "limitation_type": escalation_state.degraded_mode_type.value,
-                    "limitation_explanation": escalation_state.degraded_mode_explanation or "Investigation has been operating with limitations for extended period",
+                    "limitation_explanation": escalation_state.degraded_mode_explanation
+                    or "Investigation has been operating with limitations for extended period",
                     "findings_summary": _get_findings_summary(investigation_state),
-                    "confidence_level": investigation_state.lifecycle.working_conclusion.confidence if investigation_state.lifecycle.working_conclusion else 0.0,
-                    "next_steps_recommendations": _get_escalation_recommendations(escalation_state.degraded_mode_type),
+                    "confidence_level": (
+                        investigation_state.lifecycle.working_conclusion.confidence
+                        if investigation_state.lifecycle.working_conclusion
+                        else 0.0
+                    ),
+                    "next_steps_recommendations": _get_escalation_recommendations(
+                        escalation_state.degraded_mode_type
+                    ),
                 }
 
     # Condition 3: Max loop-backs reached
@@ -193,7 +206,11 @@ def should_suggest_escalation(
             "limitation_type": "Maximum Loop-Backs Reached",
             "limitation_explanation": f"Investigation has looped back {investigation_state.lifecycle.loop_back_count} times, indicating fundamental issue with hypothesis or approach",
             "findings_summary": _get_findings_summary(investigation_state),
-            "confidence_level": investigation_state.lifecycle.working_conclusion.confidence if investigation_state.lifecycle.working_conclusion else 0.0,
+            "confidence_level": (
+                investigation_state.lifecycle.working_conclusion.confidence
+                if investigation_state.lifecycle.working_conclusion
+                else 0.0
+            ),
             "next_steps_recommendations": [
                 "Re-frame the problem from a different perspective",
                 "Escalate to get fresh eyes on the issue",
@@ -254,5 +271,5 @@ def _get_escalation_recommendations(degraded_mode_type: DegradedModeType) -> Lis
 
     return recommendations_map.get(
         degraded_mode_type,
-        ["Escalate to senior engineer", "Request additional resources"]
+        ["Escalate to senior engineer", "Request additional resources"],
     )

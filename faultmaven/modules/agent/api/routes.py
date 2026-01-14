@@ -316,7 +316,9 @@ async def _execute_non_streaming(
 
     # Execution must have completed with an ID
     if not execution_id:
-        raise ServiceError("Execution did not complete successfully - no execution ID received")
+        raise ServiceError(
+            "Execution did not complete successfully - no execution ID received"
+        )
 
     # Get the execution record from repository
     execution = await agent_service.get_execution(execution_id, organization_id)
@@ -340,7 +342,9 @@ regardless of which session initiated them.""",
 )
 async def list_executions(
     case_id: str = Path(..., description="Case ID"),
-    session_id: str = Path(..., description="Session ID (for URL consistency, not used for filtering)"),
+    session_id: str = Path(
+        ..., description="Session ID (for URL consistency, not used for filtering)"
+    ),
     current_user: AuthenticatedUser = Depends(get_current_user),
     limit: int = 50,
     offset: int = 0,
@@ -419,7 +423,9 @@ async def get_execution(
     """
     _ = session_id  # Explicitly mark as intentionally unused
 
-    execution = await agent_service.get_execution(execution_id, current_user.organization_id)
+    execution = await agent_service.get_execution(
+        execution_id, current_user.organization_id
+    )
 
     if not execution:
         raise NotFoundError("Execution", execution_id)
@@ -467,7 +473,9 @@ async def cancel_execution(
     _ = session_id  # Explicitly mark as intentionally unused
     _ = case_id  # Case ID verification done by cancel_execution
 
-    cancelled = await agent_service.cancel_execution(execution_id, current_user.organization_id)
+    cancelled = await agent_service.cancel_execution(
+        execution_id, current_user.organization_id
+    )
 
     if not cancelled:
         raise NotFoundError("Execution", execution_id)

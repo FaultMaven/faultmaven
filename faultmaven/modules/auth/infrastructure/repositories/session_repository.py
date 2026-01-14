@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 class SessionRepositoryException(Exception):
     """Exception raised when session repository operations fail."""
+
     pass
 
 
@@ -70,9 +71,7 @@ class SessionRepository(ABC):
         pass
 
     @abstractmethod
-    async def update_session_metadata(
-        self, session_id: str, metadata: Dict
-    ) -> bool:
+    async def update_session_metadata(self, session_id: str, metadata: Dict) -> bool:
         """Update session metadata."""
         pass
 
@@ -119,7 +118,9 @@ class DatabaseSessionRepository(SessionRepository):
                 created_at=session.created_at,
                 last_accessed=session.last_accessed,
                 expires_at=session.expires_at,
-                session_metadata=json.dumps(session.metadata) if session.metadata else '{}',
+                session_metadata=(
+                    json.dumps(session.metadata) if session.metadata else "{}"
+                ),
             )
             self.db.add(session_model)
             await self.db.commit()
@@ -158,7 +159,9 @@ class DatabaseSessionRepository(SessionRepository):
 
         except Exception as e:
             logger.error(f"Failed to get session {session_id}: {e}")
-            raise SessionRepositoryException(f"Failed to get session {session_id}: {e}") from e
+            raise SessionRepositoryException(
+                f"Failed to get session {session_id}: {e}"
+            ) from e
 
     async def get_sessions_by_user(self, user_id: str) -> List[Session]:
         """
@@ -219,14 +222,14 @@ class DatabaseSessionRepository(SessionRepository):
 
         except Exception as e:
             await self.db.rollback()
-            logger.error(f"Failed to update last_accessed for session {session_id}: {e}")
+            logger.error(
+                f"Failed to update last_accessed for session {session_id}: {e}"
+            )
             raise SessionRepositoryException(
                 f"Failed to update last_accessed for session {session_id}: {e}"
             ) from e
 
-    async def update_session_metadata(
-        self, session_id: str, metadata: Dict
-    ) -> bool:
+    async def update_session_metadata(self, session_id: str, metadata: Dict) -> bool:
         """
         Update session metadata.
 
@@ -246,7 +249,7 @@ class DatabaseSessionRepository(SessionRepository):
                 .where(SessionModel.session_id == session_id)
                 .values(
                     session_metadata=json.dumps(metadata),
-                    last_accessed=datetime.now(timezone.utc)
+                    last_accessed=datetime.now(timezone.utc),
                 )
             )
             result = await self.db.execute(stmt)
@@ -293,7 +296,9 @@ class DatabaseSessionRepository(SessionRepository):
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Failed to delete session {session_id}: {e}")
-            raise SessionRepositoryException(f"Failed to delete session {session_id}: {e}") from e
+            raise SessionRepositoryException(
+                f"Failed to delete session {session_id}: {e}"
+            ) from e
 
     async def cleanup_expired_sessions(self) -> int:
         """
@@ -311,10 +316,7 @@ class DatabaseSessionRepository(SessionRepository):
         try:
             now = datetime.now(timezone.utc)
             stmt = delete(SessionModel).where(
-                and_(
-                    SessionModel.expires_at.isnot(None),
-                    SessionModel.expires_at < now
-                )
+                and_(SessionModel.expires_at.isnot(None), SessionModel.expires_at < now)
             )
             result = await self.db.execute(stmt)
             await self.db.commit()
@@ -327,7 +329,9 @@ class DatabaseSessionRepository(SessionRepository):
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Failed to cleanup expired sessions: {e}")
-            raise SessionRepositoryException(f"Failed to cleanup expired sessions: {e}") from e
+            raise SessionRepositoryException(
+                f"Failed to cleanup expired sessions: {e}"
+            ) from e
 
     def _to_domain(self, model: SessionModel) -> Session:
         """Convert SQLAlchemy model to domain model."""
@@ -343,7 +347,9 @@ class DatabaseSessionRepository(SessionRepository):
             user_id=model.user_id,
             created_at=self._ensure_tz_aware(model.created_at),
             last_accessed=self._ensure_tz_aware(model.last_accessed),
-            expires_at=self._ensure_tz_aware(model.expires_at) if model.expires_at else None,
+            expires_at=(
+                self._ensure_tz_aware(model.expires_at) if model.expires_at else None
+            ),
             metadata=metadata,
         )
 
@@ -374,10 +380,7 @@ class InMemorySessionRepository(SessionRepository):
 
     async def get_sessions_by_user(self, user_id: str) -> List[Session]:
         """Retrieve all sessions for a user."""
-        return [
-            s for s in self._sessions.values()
-            if s.user_id == user_id
-        ]
+        return [s for s in self._sessions.values() if s.user_id == user_id]
 
     async def update_last_accessed(self, session_id: str) -> bool:
         """Update session last_accessed timestamp."""
@@ -387,9 +390,7 @@ class InMemorySessionRepository(SessionRepository):
             return True
         return False
 
-    async def update_session_metadata(
-        self, session_id: str, metadata: Dict
-    ) -> bool:
+    async def update_session_metadata(self, session_id: str, metadata: Dict) -> bool:
         """Update session metadata."""
         session = self._sessions.get(session_id)
         if session:
@@ -409,7 +410,8 @@ class InMemorySessionRepository(SessionRepository):
         """Delete expired sessions from memory."""
         now = datetime.now(timezone.utc)
         expired_ids = [
-            sid for sid, s in self._sessions.items()
+            sid
+            for sid, s in self._sessions.items()
             if s.expires_at and s.expires_at < now
         ]
         for sid in expired_ids:

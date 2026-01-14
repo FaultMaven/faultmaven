@@ -62,9 +62,7 @@ def check_user_has_any_role(user: DevUser, required_roles: List[str]) -> bool:
     return any(role in user.roles for role in required_roles)
 
 
-async def require_admin(
-    user: DevUser = Depends(require_authentication)
-) -> DevUser:
+async def require_admin(user: DevUser = Depends(require_authentication)) -> DevUser:
     """Require user to have 'admin' role
 
     Args:
@@ -86,7 +84,7 @@ async def require_admin(
     """
     correlation_id = str(uuid.uuid4())
 
-    if not check_user_has_role(user, 'admin'):
+    if not check_user_has_role(user, "admin"):
         logger.warning(
             f"Authorization denied: User {user.user_id} ({user.username}) "
             f"attempted admin-only operation without admin role (roles: {user.roles}, "
@@ -98,11 +96,13 @@ async def require_admin(
                 "error": "Forbidden",
                 "message": "This operation requires administrator privileges",
                 "required_role": "admin",
-                "user_roles": user.roles if user.roles else []
-            }
+                "user_roles": user.roles if user.roles else [],
+            },
         )
 
-    logger.debug(f"Admin authorization successful for user {user.user_id} (correlation: {correlation_id})")
+    logger.debug(
+        f"Admin authorization successful for user {user.user_id} (correlation: {correlation_id})"
+    )
     return user
 
 
@@ -123,6 +123,7 @@ def require_roles(roles: List[str]):
             # Users with 'editor' OR 'admin' role can reach this code
             ...
     """
+
     async def role_checker(user: DevUser = Depends(require_authentication)) -> DevUser:
         correlation_id = str(uuid.uuid4())
 
@@ -138,8 +139,8 @@ def require_roles(roles: List[str]):
                     "error": "Forbidden",
                     "message": f"This operation requires one of the following roles: {', '.join(roles)}",
                     "required_roles": roles,
-                    "user_roles": user.roles if user.roles else []
-                }
+                    "user_roles": user.roles if user.roles else [],
+                },
             )
 
         logger.debug(
@@ -152,8 +153,7 @@ def require_roles(roles: List[str]):
 
 
 async def require_admin_or_owner(
-    resource_user_id: str,
-    current_user: DevUser = Depends(require_authentication)
+    resource_user_id: str, current_user: DevUser = Depends(require_authentication)
 ) -> DevUser:
     """Require user to be either admin or the resource owner
 
@@ -181,7 +181,7 @@ async def require_admin_or_owner(
     correlation_id = str(uuid.uuid4())
 
     # Check if user is admin or owns the resource
-    is_admin = check_user_has_role(current_user, 'admin')
+    is_admin = check_user_has_role(current_user, "admin")
     is_owner = current_user.user_id == resource_user_id
 
     if not (is_admin or is_owner):
@@ -196,8 +196,8 @@ async def require_admin_or_owner(
                 "error": "Forbidden",
                 "message": "You can only access your own resources or must be an administrator",
                 "user_id": current_user.user_id,
-                "resource_user_id": resource_user_id
-            }
+                "resource_user_id": resource_user_id,
+            },
         )
 
     logger.debug(

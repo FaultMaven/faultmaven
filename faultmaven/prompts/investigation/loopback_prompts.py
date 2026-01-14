@@ -9,7 +9,10 @@ Design Reference:
 """
 
 from typing import Dict, List
-from faultmaven.modules.agent.domain.models.investigation import InvestigationState, InvestigationPhase
+from faultmaven.modules.agent.domain.models.investigation import (
+    InvestigationState,
+    InvestigationPhase,
+)
 
 
 def get_hypothesis_refutation_loopback_prompt(
@@ -36,7 +39,9 @@ def get_hypothesis_refutation_loopback_prompt(
     refuted_hypotheses = _format_refuted_hypotheses_with_confidence(investigation_state)
     discriminating_evidence = _format_discriminating_evidence(investigation_state)
     patterns_tried = _list_hypothesis_categories_tried(investigation_state)
-    highest_confidence = max(investigation_state.ooda_engine.confidence_trajectory, default=0.0)
+    highest_confidence = max(
+        investigation_state.ooda_engine.confidence_trajectory, default=0.0
+    )
     evidence_count = len(investigation_state.evidence.evidence_provided)
 
     return f"""# 🔄 LOOP-BACK: Returning to Hypothesis Generation
@@ -147,7 +152,11 @@ def get_scope_change_loopback_prompt(
     Returns:
         Prompt template for re-entering Phase 1
     """
-    initial_scope = investigation_state.ooda_engine.anomaly_frame.affected_scope if investigation_state.ooda_engine.anomaly_frame else "Unknown"
+    initial_scope = (
+        investigation_state.ooda_engine.anomaly_frame.affected_scope
+        if investigation_state.ooda_engine.anomaly_frame
+        else "Unknown"
+    )
 
     return f"""# 🔄 LOOP-BACK: Returning to Blast Radius Assessment
 
@@ -302,8 +311,14 @@ def _format_evidence_completeness(state: InvestigationState) -> str:
 
     lines = []
     for hyp in state.ooda_engine.hypotheses:
-        completeness = hyp.calculate_evidence_completeness() if hasattr(hyp, 'calculate_evidence_completeness') else 0.0
-        status_str = f"{hyp.status.value.upper()}" if hasattr(hyp, 'status') else "UNKNOWN"
+        completeness = (
+            hyp.calculate_evidence_completeness()
+            if hasattr(hyp, "calculate_evidence_completeness")
+            else 0.0
+        )
+        status_str = (
+            f"{hyp.status.value.upper()}" if hasattr(hyp, "status") else "UNKNOWN"
+        )
         lines.append(
             f"- {hyp.statement}: {len(hyp.supporting_evidence)}/{len(hyp.required_evidence)} evidence "
             f"({completeness*100:.0f}%) - {status_str}"
@@ -314,17 +329,25 @@ def _format_evidence_completeness(state: InvestigationState) -> str:
 
 def _format_refuted_hypotheses_with_confidence(state: InvestigationState) -> str:
     """Format refuted hypotheses with peak confidence"""
-    refuted = [h for h in state.ooda_engine.hypotheses if getattr(h, 'status', None) and h.status.value == 'refuted']
+    refuted = [
+        h
+        for h in state.ooda_engine.hypotheses
+        if getattr(h, "status", None) and h.status.value == "refuted"
+    ]
 
     if not refuted:
         return "No hypotheses formally refuted yet"
 
     lines = []
     for i, hyp in enumerate(refuted, 1):
-        peak_conf = getattr(hyp, 'peak_confidence', hyp.likelihood)
-        refuting = [e for e in hyp.refuting_evidence] if hasattr(hyp, 'refuting_evidence') else []
+        peak_conf = getattr(hyp, "peak_confidence", hyp.likelihood)
+        refuting = (
+            [e for e in hyp.refuting_evidence]
+            if hasattr(hyp, "refuting_evidence")
+            else []
+        )
         lines.append(
-            f"{i}. \"{hyp.statement}\" (Peak confidence: {peak_conf*100:.0f}%)\n"
+            f'{i}. "{hyp.statement}" (Peak confidence: {peak_conf*100:.0f}%)\n'
             f"   - Refuted by: {len(refuting)} evidence items"
         )
 

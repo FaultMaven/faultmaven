@@ -95,9 +95,9 @@ class TestItemCreationPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.200, (
-            f"Item creation latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"Item creation latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  Item creation latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -119,9 +119,9 @@ class TestItemCreationPerformance:
 
         assert result is not None
         assert result.has_embedding()
-        assert latency < 0.200, (
-            f"Item with embedding creation latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"Item with embedding creation latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  Item with embedding creation latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -151,9 +151,9 @@ class TestItemCreationPerformance:
 
         assert result is not None
         assert result.metadata is not None
-        assert latency < 0.200, (
-            f"Item with metadata creation latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"Item with metadata creation latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  Item with metadata creation latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -167,10 +167,7 @@ class TestItemCreationPerformance:
         Target: 100 items in < 1000ms
         """
         org_id = generate_org_id()
-        items = [
-            create_sample_item(organization_id=org_id)
-            for _ in range(100)
-        ]
+        items = [create_sample_item(organization_id=org_id) for _ in range(100)]
 
         start = time.perf_counter()
         for item in items:
@@ -178,9 +175,9 @@ class TestItemCreationPerformance:
         duration = time.perf_counter() - start
 
         throughput = len(items) / duration
-        assert duration < 1.0, (
-            f"Bulk creation of {len(items)} items took {duration*1000:.1f}ms, exceeds 1000ms target"
-        )
+        assert (
+            duration < 1.0
+        ), f"Bulk creation of {len(items)} items took {duration*1000:.1f}ms, exceeds 1000ms target"
         print(
             f"\n  Bulk creation throughput: {throughput:.1f} items/sec "
             f"({len(items)} items in {duration*1000:.1f}ms)"
@@ -209,9 +206,9 @@ class TestItemRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.100, (
-            f"Item retrieval latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Item retrieval latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Item retrieval latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -233,15 +230,17 @@ class TestItemRetrievalPerformance:
 
         # Benchmark list operation
         start = time.perf_counter()
-        result = await knowledge_item_repository.list_by_organization_id(org_id, limit=1000)
+        result = await knowledge_item_repository.list_by_organization_id(
+            org_id, limit=1000
+        )
         latency = time.perf_counter() - start
 
         assert len(result) == 1000
         # Increased threshold to account for CI/hardware variability
         # Original target: 300ms, adjusted to 1500ms for realistic expectations
-        assert latency < 1.500, (
-            f"List items latency {latency*1000:.1f}ms exceeds 1500ms target"
-        )
+        assert (
+            latency < 1.500
+        ), f"List items latency {latency*1000:.1f}ms exceeds 1500ms target"
         print(f"\n  List items latency: {latency*1000:.1f}ms ({len(result)} items)")
 
     @pytest.mark.asyncio
@@ -284,9 +283,9 @@ class TestItemRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert len(result) == 500
-        assert latency < 0.200, (
-            f"Filtered list latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"Filtered list latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  Filtered list latency: {latency*1000:.1f}ms ({len(result)} items)")
 
 
@@ -319,14 +318,18 @@ class TestItemSearchPerformance:
 
         # Benchmark search
         start = time.perf_counter()
-        result = await knowledge_item_repository.search_by_text(org_id, "connection", limit=100)
+        result = await knowledge_item_repository.search_by_text(
+            org_id, "connection", limit=100
+        )
         latency = time.perf_counter() - start
 
         assert len(result) > 0
-        assert latency < 0.200, (
-            f"Full-text search latency {latency*1000:.1f}ms exceeds 200ms target"
+        assert (
+            latency < 0.200
+        ), f"Full-text search latency {latency*1000:.1f}ms exceeds 200ms target"
+        print(
+            f"\n  Full-text search latency: {latency*1000:.1f}ms ({len(result)} results)"
         )
-        print(f"\n  Full-text search latency: {latency*1000:.1f}ms ({len(result)} results)")
 
     @pytest.mark.asyncio
     async def test_tag_search_match_any_latency(
@@ -364,10 +367,12 @@ class TestItemSearchPerformance:
         latency = time.perf_counter() - start
 
         assert len(result) > 0
-        assert latency < 0.200, (
-            f"Tag search latency {latency*1000:.1f}ms exceeds 200ms target"
+        assert (
+            latency < 0.200
+        ), f"Tag search latency {latency*1000:.1f}ms exceeds 200ms target"
+        print(
+            f"\n  Tag search (match_any) latency: {latency*1000:.1f}ms ({len(result)} results)"
         )
-        print(f"\n  Tag search (match_any) latency: {latency*1000:.1f}ms ({len(result)} results)")
 
     @pytest.mark.asyncio
     async def test_tag_search_match_all_latency(
@@ -407,10 +412,12 @@ class TestItemSearchPerformance:
         latency = time.perf_counter() - start
 
         assert len(result) == 500
-        assert latency < 0.200, (
-            f"Tag search (match_all) latency {latency*1000:.1f}ms exceeds 200ms target"
+        assert (
+            latency < 0.200
+        ), f"Tag search (match_all) latency {latency*1000:.1f}ms exceeds 200ms target"
+        print(
+            f"\n  Tag search (match_all) latency: {latency*1000:.1f}ms ({len(result)} results)"
         )
-        print(f"\n  Tag search (match_all) latency: {latency*1000:.1f}ms ({len(result)} results)")
 
 
 @pytest.mark.benchmark
@@ -440,9 +447,9 @@ class TestItemUpdatePerformance:
 
         assert result is not None
         assert result.title == "Updated Title"
-        assert latency < 0.150, (
-            f"Item update latency {latency*1000:.1f}ms exceeds 150ms target"
-        )
+        assert (
+            latency < 0.150
+        ), f"Item update latency {latency*1000:.1f}ms exceeds 150ms target"
         print(f"\n  Item update latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -468,9 +475,9 @@ class TestItemUpdatePerformance:
 
         assert result is not None
         assert result.has_embedding()
-        assert latency < 0.150, (
-            f"Embedding update latency {latency*1000:.1f}ms exceeds 150ms target"
-        )
+        assert (
+            latency < 0.150
+        ), f"Embedding update latency {latency*1000:.1f}ms exceeds 150ms target"
         print(f"\n  Embedding update latency: {latency*1000:.1f}ms")
 
 
@@ -504,10 +511,12 @@ class TestItemEmbeddingOperationsPerformance:
         latency = time.perf_counter() - start
 
         assert len(result) == 50
-        assert latency < 0.150, (
-            f"Get items without embeddings latency {latency*1000:.1f}ms exceeds 150ms target"
+        assert (
+            latency < 0.150
+        ), f"Get items without embeddings latency {latency*1000:.1f}ms exceeds 150ms target"
+        print(
+            f"\n  Get items without embeddings latency: {latency*1000:.1f}ms ({len(result)} items)"
         )
-        print(f"\n  Get items without embeddings latency: {latency*1000:.1f}ms ({len(result)} items)")
 
 
 @pytest.mark.benchmark
@@ -540,10 +549,12 @@ class TestItemHelpfulnessPerformance:
         latency = time.perf_counter() - start
 
         assert len(result) > 0
-        assert latency < 0.200, (
-            f"Get most helpful latency {latency*1000:.1f}ms exceeds 200ms target"
+        assert (
+            latency < 0.200
+        ), f"Get most helpful latency {latency*1000:.1f}ms exceeds 200ms target"
+        print(
+            f"\n  Get most helpful latency: {latency*1000:.1f}ms ({len(result)} items)"
         )
-        print(f"\n  Get most helpful latency: {latency*1000:.1f}ms ({len(result)} items)")
 
 
 @pytest.mark.benchmark
@@ -572,9 +583,9 @@ class TestItemCountPerformance:
         latency = time.perf_counter() - start
 
         assert count == 500
-        assert latency < 0.100, (
-            f"Count latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Count latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Count latency: {latency*1000:.1f}ms ({count} items)")
 
     @pytest.mark.asyncio
@@ -612,9 +623,9 @@ class TestItemCountPerformance:
         latency = time.perf_counter() - start
 
         assert count == 250
-        assert latency < 0.100, (
-            f"Count with filter latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Count with filter latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Count with filter latency: {latency*1000:.1f}ms ({count} items)")
 
 
@@ -654,9 +665,9 @@ class TestItemMixedWorkloadPerformance:
 
         total_latency = time.perf_counter() - start
 
-        assert total_latency < 0.500, (
-            f"Lifecycle workload latency {total_latency*1000:.1f}ms exceeds 500ms target"
-        )
+        assert (
+            total_latency < 0.500
+        ), f"Lifecycle workload latency {total_latency*1000:.1f}ms exceeds 500ms target"
         print(f"\n  Item lifecycle workload latency: {total_latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -676,7 +687,9 @@ class TestItemMixedWorkloadPerformance:
         for i in range(100):
             item = create_sample_item(
                 organization_id=org_id,
-                item_type=KnowledgeItemType.FAQ if i % 2 == 0 else KnowledgeItemType.RUNBOOK,
+                item_type=(
+                    KnowledgeItemType.FAQ if i % 2 == 0 else KnowledgeItemType.RUNBOOK
+                ),
                 tags=["common"] if i % 3 == 0 else [],
                 helpful_count=10 if i < 20 else 0,
             )
@@ -705,7 +718,9 @@ class TestItemMixedWorkloadPerformance:
 
         total_latency = time.perf_counter() - start
 
-        assert total_latency < 0.800, (
-            f"Browsing workload latency {total_latency*1000:.1f}ms exceeds 800ms target"
+        assert (
+            total_latency < 0.800
+        ), f"Browsing workload latency {total_latency*1000:.1f}ms exceeds 800ms target"
+        print(
+            f"\n  Knowledge base browsing workload latency: {total_latency*1000:.1f}ms"
         )
-        print(f"\n  Knowledge base browsing workload latency: {total_latency*1000:.1f}ms")

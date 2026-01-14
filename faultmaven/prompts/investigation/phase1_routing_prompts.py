@@ -9,7 +9,10 @@ Design Reference:
 - docs/architecture/investigation-phases-and-ooda-integration.md (v3.0 Phase 1)
 """
 
-from faultmaven.modules.agent.domain.models.investigation import InvestigationState, AnomalyFrame
+from faultmaven.modules.agent.domain.models.investigation import (
+    InvestigationState,
+    AnomalyFrame,
+)
 
 
 def get_routing_confirmation_prompt(
@@ -151,14 +154,30 @@ def parse_user_routing_response(user_response: str) -> tuple[str, bool]:
 
     # Fast recovery keywords
     fast_keywords = [
-        "fast recovery", "skip to solution", "skip", "mitigation", "quick fix",
-        "immediate", "urgent", "asap", "now", "fast", "quick"
+        "fast recovery",
+        "skip to solution",
+        "skip",
+        "mitigation",
+        "quick fix",
+        "immediate",
+        "urgent",
+        "asap",
+        "now",
+        "fast",
+        "quick",
     ]
 
     # Full investigation keywords
     full_keywords = [
-        "full investigation", "find root cause", "root cause", "rca",
-        "systematic", "thorough", "investigate", "timeline", "hypothesis"
+        "full investigation",
+        "find root cause",
+        "root cause",
+        "rca",
+        "systematic",
+        "thorough",
+        "investigate",
+        "timeline",
+        "hypothesis",
     ]
 
     # Check for fast recovery indicators
@@ -196,7 +215,9 @@ Or just tell me in your own words what you'd prefer. For example:
 """
 
 
-def get_routing_decision_confirmation(routing_decision: str, anomaly_frame: AnomalyFrame) -> str:
+def get_routing_decision_confirmation(
+    routing_decision: str, anomaly_frame: AnomalyFrame
+) -> str:
     """Get confirmation message after routing decision made
 
     Args:

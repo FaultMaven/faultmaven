@@ -19,7 +19,7 @@ from typing_extensions import TypedDict
 
 class AgentStateEnum(str, Enum):
     """Enumeration of agent states for testing and status tracking"""
-    
+
     IDLE = "idle"
     RUNNING = "running"
     PENDING = "pending"
@@ -47,31 +47,45 @@ class SessionContext(BaseModel):
 
     # Core session fields (spec-compliant: authentication only)
     session_id: str = Field(..., description="Unique session identifier")
-    user_id: str = Field(..., description="User identifier - REQUIRED for authorization")
+    user_id: str = Field(
+        ..., description="User identifier - REQUIRED for authorization"
+    )
 
     # Multi-device support fields (spec lines 263-269)
-    client_id: Optional[str] = Field(None, description="Client/device identifier for session resumption")
-    session_resumed: bool = Field(False, description="Whether this session was resumed from existing")
+    client_id: Optional[str] = Field(
+        None, description="Client/device identifier for session resumption"
+    )
+    session_resumed: bool = Field(
+        False, description="Whether this session was resumed from existing"
+    )
 
     # Timestamps
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc), description="Session creation timestamp"
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Session creation timestamp",
     )
     last_activity: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc), description="Last activity timestamp"
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Last activity timestamp",
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc), description="Last update timestamp"
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Last update timestamp",
     )
-    expires_at: Optional[datetime] = Field(None, description="Session expiration time (TTL-based)")
+    expires_at: Optional[datetime] = Field(
+        None, description="Session expiration time (TTL-based)"
+    )
 
     # Session metadata (authentication context only)
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional session metadata")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Additional session metadata"
+    )
 
     @property
     def active(self) -> bool:
         """Check if session is considered active based on last activity (24 hours default)"""
         from datetime import timedelta, timezone
+
         inactive_threshold = timedelta(hours=24)
         time_since_activity = datetime.now(timezone.utc) - self.last_activity
         return time_since_activity < inactive_threshold
@@ -84,7 +98,9 @@ class DataInsightsResponse(BaseModel):
     """Response model for data insights"""
 
     data_id: str = Field(..., description="Identifier of the processed data")
-    data_type: str = Field(..., description="Type of the processed data")  # Changed from DataType enum to string
+    data_type: str = Field(
+        ..., description="Type of the processed data"
+    )  # Changed from DataType enum to string
     insights: Dict[str, Any] = Field(
         ..., description="Extracted insights from the data"
     )
@@ -124,7 +140,8 @@ class TroubleshootingResponse(BaseModel):
         default_factory=list, description="Recommended next steps"
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc), description="Case creation timestamp"
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Case creation timestamp",
     )
     completed_at: Optional[datetime] = Field(
         None, description="Case completion timestamp"
@@ -141,10 +158,18 @@ class SearchRequest(BaseModel):
     document_type: Optional[str] = Field(None, description="Filter by document type")
     category: Optional[str] = Field(None, description="Filter by document category")
     tags: Optional[str] = Field(None, description="Filter by tags (comma-separated)")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Advanced filters for search")
-    similarity_threshold: Optional[float] = Field(None, description="Minimum similarity score threshold (0.0-1.0)", ge=0.0, le=1.0)
-    rank_by: Optional[str] = Field(None, description="Field to rank results by (e.g., priority)")
-    limit: int = Field(default=10, description="Maximum number of results", gt=0, le=100)
+    filters: Optional[Dict[str, Any]] = Field(
+        None, description="Advanced filters for search"
+    )
+    similarity_threshold: Optional[float] = Field(
+        None, description="Minimum similarity score threshold (0.0-1.0)", ge=0.0, le=1.0
+    )
+    rank_by: Optional[str] = Field(
+        None, description="Field to rank results by (e.g., priority)"
+    )
+    limit: int = Field(
+        default=10, description="Maximum number of results", gt=0, le=100
+    )
 
 
 class SearchResult(BaseModel):
@@ -161,7 +186,7 @@ class SearchResult(BaseModel):
 # Utility functions for timestamp formatting
 def utc_timestamp() -> str:
     """Generate UTC timestamp with 'Z' suffix format required by API specification.
-    
+
     Returns:
         str: UTC timestamp in ISO format with 'Z' suffix (e.g. "2024-01-15T14:30:00.123Z")
     """
@@ -190,7 +215,7 @@ def parse_utc_timestamp(timestamp_str: str) -> datetime:
     """
     from datetime import timezone
 
-    if timestamp_str.endswith('Z'):
+    if timestamp_str.endswith("Z"):
         # Remove 'Z' suffix and parse
         # This also handles corrupted '+00:00Z' format by stripping Z, leaving valid '+00:00'
         dt = datetime.fromisoformat(timestamp_str[:-1])

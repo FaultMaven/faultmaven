@@ -385,7 +385,10 @@ class APIInvestigationSessionService(BaseService):
             raise
         except Exception as e:
             self.log_error(
-                "update_session", e, session_id=session_id, organization_id=organization_id
+                "update_session",
+                e,
+                session_id=session_id,
+                organization_id=organization_id,
             )
             raise ServiceError(f"Failed to update session: {e}")
 
@@ -448,7 +451,10 @@ class APIInvestigationSessionService(BaseService):
             raise
         except Exception as e:
             self.log_error(
-                "pause_session", e, session_id=session_id, organization_id=organization_id
+                "pause_session",
+                e,
+                session_id=session_id,
+                organization_id=organization_id,
             )
             raise ServiceError(f"Failed to pause session: {e}")
 
@@ -507,7 +513,10 @@ class APIInvestigationSessionService(BaseService):
             raise
         except Exception as e:
             self.log_error(
-                "resume_session", e, session_id=session_id, organization_id=organization_id
+                "resume_session",
+                e,
+                session_id=session_id,
+                organization_id=organization_id,
             )
             raise ServiceError(f"Failed to resume session: {e}")
 
@@ -814,9 +823,7 @@ class APIInvestigationSessionService(BaseService):
                                 )
                             )
             except Exception as e:
-                self.log_error(
-                    "get_session_executions", e, session_id=session_id
-                )
+                self.log_error("get_session_executions", e, session_id=session_id)
                 result["executions"] = []
 
             return result

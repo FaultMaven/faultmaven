@@ -63,6 +63,7 @@ def get_vector_backend(
 
     # Get settings
     from faultmaven.config.settings import get_settings
+
     settings = get_settings()
 
     # Determine backend type

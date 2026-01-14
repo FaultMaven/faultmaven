@@ -60,28 +60,30 @@ def to_json_compatible(obj: Any) -> Any:
     if isinstance(obj, datetime):
         if obj.tzinfo is not None:
             # Timezone-aware: use 'Z' for UTC, otherwise include offset
-            if obj.tzinfo == timezone.utc or obj.utcoffset() == timezone.utc.utcoffset(None):
+            if obj.tzinfo == timezone.utc or obj.utcoffset() == timezone.utc.utcoffset(
+                None
+            ):
                 # UTC timezone: use 'Z' suffix for clean ISO 8601 format
-                return obj.replace(tzinfo=None).isoformat() + 'Z'
+                return obj.replace(tzinfo=None).isoformat() + "Z"
             else:
                 # Non-UTC timezone: include offset (e.g., +05:00)
                 return obj.isoformat()
         else:
             # Timezone-naive: assume UTC, add 'Z' suffix
-            return obj.isoformat() + 'Z'
+            return obj.isoformat() + "Z"
 
     # Handle UUID
     if isinstance(obj, UUID):
         return str(obj)
 
     # Handle Pydantic models (check for model_dump first - Pydantic v2)
-    if hasattr(obj, 'model_dump'):
+    if hasattr(obj, "model_dump"):
         # Pydantic v2: use model_dump() with mode='json' for automatic serialization
-        model_dict = obj.model_dump(mode='json')
+        model_dict = obj.model_dump(mode="json")
         # Note: mode='json' already handles datetime, but we still process
         # to ensure consistency with our format
         return to_json_compatible(model_dict)
-    elif hasattr(obj, 'dict'):
+    elif hasattr(obj, "dict"):
         # Pydantic v1: use dict()
         model_dict = obj.dict()
         return to_json_compatible(model_dict)
@@ -154,7 +156,9 @@ def prepare_for_pydantic(data: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in data.items():
         if isinstance(value, str):
             # Try to parse as datetime if it looks like ISO format
-            if 'T' in value and (value.endswith('Z') or '+' in value or '-' in value[-6:]):
+            if "T" in value and (
+                value.endswith("Z") or "+" in value or "-" in value[-6:]
+            ):
                 try:
                     result[key] = parse_utc_timestamp(value)
                     continue

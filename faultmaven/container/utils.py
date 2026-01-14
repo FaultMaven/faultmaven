@@ -33,7 +33,9 @@ class LazyService(Generic[T]):
         self._factory = factory
         self._instance: T | None = None
         self._initialized = False
-        self._name = name or factory.__name__ if hasattr(factory, "__name__") else "unknown"
+        self._name = (
+            name or factory.__name__ if hasattr(factory, "__name__") else "unknown"
+        )
         self._logger = logging.getLogger(__name__)
 
     def get(self) -> T:
@@ -84,6 +86,7 @@ def service_getter(
             def get_llm_provider(self):
                 pass
     """
+
     def decorator(method: Callable) -> Callable:
         @wraps(method)
         def wrapper(self) -> Any:
@@ -101,14 +104,16 @@ def service_getter(
 
             if required:
                 from faultmaven.container.errors import ServiceUnavailableError
+
                 raise ServiceUnavailableError(
                     attr_name.lstrip("_"),
-                    reason="Service not initialized and no fallback available"
+                    reason="Service not initialized and no fallback available",
                 )
 
             return None
 
         return wrapper
+
     return decorator
 
 
@@ -129,6 +134,7 @@ def check_dependencies(*deps: str) -> Callable:
         def _create_vector_store(self):
             ...
     """
+
     def decorator(method: Callable) -> Callable:
         @wraps(method)
         def wrapper(self, *args, **kwargs) -> Any:
@@ -148,6 +154,7 @@ def check_dependencies(*deps: str) -> Callable:
             return method(self, *args, **kwargs)
 
         return wrapper
+
     return decorator
 
 
@@ -166,6 +173,7 @@ def log_service_status(
     Returns:
         Decorator function
     """
+
     def decorator(method: Callable) -> Callable:
         @wraps(method)
         def wrapper(self, *args, **kwargs) -> Any:
@@ -182,4 +190,5 @@ def log_service_status(
                 raise
 
         return wrapper
+
     return decorator

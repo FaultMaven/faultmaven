@@ -20,8 +20,10 @@ from pydantic import BaseModel, Field
 # Enums
 # ============================================================================
 
+
 class KBVisibility(str, Enum):
     """Document visibility scope."""
+
     PRIVATE = "private"
     SHARED = "shared"
     TEAM = "team"
@@ -30,6 +32,7 @@ class KBVisibility(str, Enum):
 
 class KBDocumentType(str, Enum):
     """Knowledge base document categories."""
+
     RUNBOOK = "runbook"
     PROCEDURE = "procedure"
     DOCUMENTATION = "documentation"
@@ -42,6 +45,7 @@ class KBDocumentType(str, Enum):
 
 class KBSharePermission(str, Enum):
     """Permission level for shared documents."""
+
     READ = "read"
     WRITE = "write"
 
@@ -50,8 +54,10 @@ class KBSharePermission(str, Enum):
 # Models
 # ============================================================================
 
+
 class KBDocument(BaseModel):
     """Knowledge base document metadata."""
+
     doc_id: str
     owner_user_id: str
     org_id: Optional[str] = None
@@ -80,6 +86,7 @@ class KBDocument(BaseModel):
 
 class KBDocumentShare(BaseModel):
     """Individual user sharing for KB document."""
+
     doc_id: str
     shared_with_user_id: str
     permission: KBSharePermission = KBSharePermission.READ
@@ -91,6 +98,7 @@ class KBDocumentShare(BaseModel):
 
 class KBDocumentTeamShare(BaseModel):
     """Team-based sharing for KB document."""
+
     doc_id: str
     team_id: str
     permission: KBSharePermission = KBSharePermission.READ
@@ -101,6 +109,7 @@ class KBDocumentTeamShare(BaseModel):
 
 class KBDocumentOrgShare(BaseModel):
     """Organization-wide sharing for KB document."""
+
     doc_id: str
     org_id: str
     permission: KBSharePermission = KBSharePermission.READ
@@ -112,6 +121,7 @@ class KBDocumentOrgShare(BaseModel):
 # ============================================================================
 # Repository Interface
 # ============================================================================
+
 
 class IKBDocumentRepository(ABC):
     """Interface for KB document metadata and sharing persistence operations."""
@@ -166,9 +176,7 @@ class IKBDocumentRepository(ABC):
 
     @abstractmethod
     async def list_user_documents(
-        self,
-        user_id: str,
-        include_shared: bool = False
+        self, user_id: str, include_shared: bool = False
     ) -> List[KBDocument]:
         """List KB documents owned by user.
 
@@ -200,7 +208,7 @@ class IKBDocumentRepository(ABC):
         user_id: Optional[str] = None,
         document_type: Optional[KBDocumentType] = None,
         tags: Optional[List[str]] = None,
-        limit: int = 20
+        limit: int = 20,
     ) -> List[KBDocument]:
         """Search KB documents by text.
 
@@ -224,7 +232,7 @@ class IKBDocumentRepository(ABC):
         doc_id: str,
         shared_with_user_id: str,
         permission: KBSharePermission,
-        shared_by: str
+        shared_by: str,
     ) -> bool:
         """Share document with specific user.
 
@@ -241,10 +249,7 @@ class IKBDocumentRepository(ABC):
 
     @abstractmethod
     async def unshare_with_user(
-        self,
-        doc_id: str,
-        user_id: str,
-        unshared_by: str
+        self, doc_id: str, user_id: str, unshared_by: str
     ) -> bool:
         """Unshare document from user.
 
@@ -260,11 +265,7 @@ class IKBDocumentRepository(ABC):
 
     @abstractmethod
     async def share_with_team(
-        self,
-        doc_id: str,
-        team_id: str,
-        permission: KBSharePermission,
-        shared_by: str
+        self, doc_id: str, team_id: str, permission: KBSharePermission, shared_by: str
     ) -> bool:
         """Share document with team.
 
@@ -281,10 +282,7 @@ class IKBDocumentRepository(ABC):
 
     @abstractmethod
     async def unshare_with_team(
-        self,
-        doc_id: str,
-        team_id: str,
-        unshared_by: str
+        self, doc_id: str, team_id: str, unshared_by: str
     ) -> bool:
         """Unshare document from team.
 
@@ -300,11 +298,7 @@ class IKBDocumentRepository(ABC):
 
     @abstractmethod
     async def share_with_organization(
-        self,
-        doc_id: str,
-        org_id: str,
-        permission: KBSharePermission,
-        shared_by: str
+        self, doc_id: str, org_id: str, permission: KBSharePermission, shared_by: str
     ) -> bool:
         """Share document with entire organization.
 
@@ -321,10 +315,7 @@ class IKBDocumentRepository(ABC):
 
     @abstractmethod
     async def unshare_with_organization(
-        self,
-        doc_id: str,
-        org_id: str,
-        unshared_by: str
+        self, doc_id: str, org_id: str, unshared_by: str
     ) -> bool:
         """Unshare document from organization.
 
@@ -354,11 +345,7 @@ class IKBDocumentRepository(ABC):
         pass
 
     @abstractmethod
-    async def user_can_access_document(
-        self,
-        user_id: str,
-        doc_id: str
-    ) -> bool:
+    async def user_can_access_document(self, user_id: str, doc_id: str) -> bool:
         """Check if user has access to document.
 
         Args:
@@ -372,9 +359,7 @@ class IKBDocumentRepository(ABC):
 
     @abstractmethod
     async def get_user_document_permission(
-        self,
-        user_id: str,
-        doc_id: str
+        self, user_id: str, doc_id: str
     ) -> Optional[KBSharePermission]:
         """Get user's permission level for document.
 

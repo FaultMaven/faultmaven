@@ -21,8 +21,10 @@ from pydantic import BaseModel, Field
 # Enums
 # ============================================================================
 
+
 class OrgPlanTier(str, Enum):
     """Organization subscription plan levels."""
+
     FREE = "free"
     PRO = "pro"
     ENTERPRISE = "enterprise"
@@ -30,6 +32,7 @@ class OrgPlanTier(str, Enum):
 
 class AuditEventType(str, Enum):
     """User audit event types."""
+
     LOGIN = "login"
     LOGOUT = "logout"
     LOGIN_FAILED = "login_failed"
@@ -43,6 +46,7 @@ class AuditEventType(str, Enum):
 
 class AuditCategory(str, Enum):
     """Audit event categories."""
+
     AUTHENTICATION = "authentication"
     AUTHORIZATION = "authorization"
     DATA_ACCESS = "data_access"
@@ -54,8 +58,10 @@ class AuditCategory(str, Enum):
 # Models
 # ============================================================================
 
+
 class Organization(BaseModel):
     """Organization (workspace/tenant) model."""
+
     org_id: str
     name: str
     slug: str
@@ -71,6 +77,7 @@ class Organization(BaseModel):
 
 class OrganizationMember(BaseModel):
     """User membership in organization."""
+
     user_id: str
     org_id: str
     role_id: str  # References roles.role_id
@@ -80,6 +87,7 @@ class OrganizationMember(BaseModel):
 
 class Team(BaseModel):
     """Team (sub-organization group) model."""
+
     team_id: str
     org_id: str
     name: str
@@ -92,6 +100,7 @@ class Team(BaseModel):
 
 class TeamMember(BaseModel):
     """User membership in team."""
+
     user_id: str
     team_id: str
     team_role: Optional[str] = None  # 'lead', 'member', or custom
@@ -100,6 +109,7 @@ class TeamMember(BaseModel):
 
 class Role(BaseModel):
     """RBAC role definition."""
+
     role_id: str
     name: str
     description: Optional[str] = None
@@ -110,6 +120,7 @@ class Role(BaseModel):
 
 class Permission(BaseModel):
     """RBAC permission definition."""
+
     permission_id: str
     resource: str  # 'cases', 'knowledge_base', 'teams', etc.
     action: str  # 'read', 'write', 'delete', 'manage'
@@ -118,6 +129,7 @@ class Permission(BaseModel):
 
 class UserAuditLog(BaseModel):
     """User audit log entry."""
+
     audit_id: int
     user_id: str
     event_type: AuditEventType
@@ -136,6 +148,7 @@ class UserAuditLog(BaseModel):
 # ============================================================================
 # Repository Interfaces
 # ============================================================================
+
 
 class IOrganizationRepository(ABC):
     """Interface for organization data persistence operations."""
@@ -280,10 +293,7 @@ class IOrganizationRepository(ABC):
 
     @abstractmethod
     async def user_has_permission(
-        self,
-        user_id: str,
-        org_id: str,
-        permission: str
+        self, user_id: str, org_id: str, permission: str
     ) -> bool:
         """Check if user has permission in organization.
 
@@ -376,10 +386,7 @@ class ITeamRepository(ABC):
 
     @abstractmethod
     async def add_member(
-        self,
-        team_id: str,
-        user_id: str,
-        team_role: Optional[str] = None
+        self, team_id: str, user_id: str, team_role: Optional[str] = None
     ) -> bool:
         """Add user to team.
 
@@ -448,7 +455,7 @@ class IAuditRepository(ABC):
         user_agent: Optional[str] = None,
         session_id: Optional[str] = None,
         org_id: Optional[str] = None,
-        success: bool = True
+        success: bool = True,
     ) -> bool:
         """Log an audit event.
 
@@ -472,10 +479,7 @@ class IAuditRepository(ABC):
 
     @abstractmethod
     async def get_user_audit_log(
-        self,
-        user_id: str,
-        limit: int = 100,
-        offset: int = 0
+        self, user_id: str, limit: int = 100, offset: int = 0
     ) -> List[UserAuditLog]:
         """Get audit log entries for a user.
 
@@ -491,10 +495,7 @@ class IAuditRepository(ABC):
 
     @abstractmethod
     async def get_organization_audit_log(
-        self,
-        org_id: str,
-        limit: int = 100,
-        offset: int = 0
+        self, org_id: str, limit: int = 100, offset: int = 0
     ) -> List[UserAuditLog]:
         """Get audit log entries for an organization.
 

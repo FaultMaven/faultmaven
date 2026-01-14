@@ -23,7 +23,10 @@ from fastapi import status
 from fastapi.testclient import TestClient
 
 from faultmaven.main import app as main_app
-from faultmaven.modules.agent.domain.events.execution_events import ExecutionEvent, ExecutionEventType
+from faultmaven.modules.agent.domain.events.execution_events import (
+    ExecutionEvent,
+    ExecutionEventType,
+)
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -88,10 +91,16 @@ def mock_execution():
     execution.started_at = datetime.now(timezone.utc)
     execution.completed_at = datetime.now(timezone.utc)
     execution.created_at = datetime.now(timezone.utc)
-    execution.response = "Based on my analysis, the error is caused by a database connection timeout."
+    execution.response = (
+        "Based on my analysis, the error is caused by a database connection timeout."
+    )
     execution.prompt = "What is causing the errors?"
     execution.error_message = None
-    execution.token_usage = {"prompt_tokens": 100, "completion_tokens": 200, "total_tokens": 300}
+    execution.token_usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 200,
+        "total_tokens": 300,
+    }
     execution.tool_calls = []
     execution.get_total_tokens.return_value = 300
     return execution
@@ -167,7 +176,10 @@ class TestE2EStreamingWorkflow:
             # Simulate full execution workflow
             yield ExecutionEvent.started(
                 execution_id="exec_test123",
-                metadata={"agent_type": "investigator", "session_id": "session_test123"},
+                metadata={
+                    "agent_type": "investigator",
+                    "session_id": "session_test123",
+                },
             )
             yield ExecutionEvent.thinking(
                 content="Analyzing the problem context...",
@@ -216,9 +228,7 @@ class TestE2EStreamingWorkflow:
         assert any("response" in e for e in event_types)
         assert any("completed" in e for e in event_types)
 
-    def test_streaming_events_in_order(
-        self, client, mock_agent_service, headers
-    ):
+    def test_streaming_events_in_order(self, client, mock_agent_service, headers):
         """Test streaming events arrive in correct order."""
 
         async def mock_execute(*args, **kwargs):
@@ -266,9 +276,7 @@ class TestE2EStreamingWorkflow:
 class TestE2EToolCallStreaming:
     """End-to-end tests for tool call streaming."""
 
-    def test_streaming_with_tool_calls(
-        self, client, mock_agent_service, headers
-    ):
+    def test_streaming_with_tool_calls(self, client, mock_agent_service, headers):
         """Test streaming includes tool call and result events."""
 
         async def mock_execute(*args, **kwargs):
@@ -381,9 +389,7 @@ class TestE2EToolCallStreaming:
         assert content.count("event: tool_call") == 2
         assert content.count("event: tool_result") == 2
 
-    def test_streaming_tool_call_failure(
-        self, client, mock_agent_service, headers
-    ):
+    def test_streaming_tool_call_failure(self, client, mock_agent_service, headers):
         """Test streaming when a tool call fails."""
 
         async def mock_execute(*args, **kwargs):
@@ -524,9 +530,7 @@ class TestE2ENonStreamingMode:
 class TestE2EErrorHandling:
     """End-to-end tests for error handling."""
 
-    def test_session_not_found_streaming(
-        self, client, mock_agent_service, headers
-    ):
+    def test_session_not_found_streaming(self, client, mock_agent_service, headers):
         """Test streaming error for session not found."""
 
         async def mock_execute(*args, **kwargs):
@@ -545,9 +549,7 @@ class TestE2EErrorHandling:
         assert "event: error" in content
         assert "not_found" in content
 
-    def test_authorization_error_streaming(
-        self, client, mock_agent_service, headers
-    ):
+    def test_authorization_error_streaming(self, client, mock_agent_service, headers):
         """Test streaming error for authorization failure."""
 
         async def mock_execute(*args, **kwargs):
@@ -566,9 +568,7 @@ class TestE2EErrorHandling:
         assert "event: error" in content
         assert "forbidden" in content
 
-    def test_session_not_active_streaming(
-        self, client, mock_agent_service, headers
-    ):
+    def test_session_not_active_streaming(self, client, mock_agent_service, headers):
         """Test streaming error for inactive session."""
 
         async def mock_execute(*args, **kwargs):
@@ -592,9 +592,7 @@ class TestE2EErrorHandling:
         assert "event: error" in content
         assert "conflict" in content
 
-    def test_budget_exceeded_streaming(
-        self, client, mock_agent_service, headers
-    ):
+    def test_budget_exceeded_streaming(self, client, mock_agent_service, headers):
         """Test streaming error for budget exceeded."""
 
         async def mock_execute(*args, **kwargs):
@@ -618,9 +616,7 @@ class TestE2EErrorHandling:
         assert "event: error" in content
         assert "conflict" in content
 
-    def test_llm_error_streaming(
-        self, client, mock_agent_service, headers
-    ):
+    def test_llm_error_streaming(self, client, mock_agent_service, headers):
         """Test streaming error for LLM failure."""
 
         async def mock_execute(*args, **kwargs):
@@ -639,9 +635,7 @@ class TestE2EErrorHandling:
         assert "event: error" in content
         assert "llm_error" in content
 
-    def test_unexpected_error_streaming(
-        self, client, mock_agent_service, headers
-    ):
+    def test_unexpected_error_streaming(self, client, mock_agent_service, headers):
         """Test streaming error for unexpected exception."""
 
         async def mock_execute(*args, **kwargs):
@@ -670,13 +664,16 @@ class TestE2EErrorHandling:
 class TestE2EAgentTypes:
     """End-to-end tests for different agent types."""
 
-    @pytest.mark.parametrize("agent_type,expected_type", [
-        ("investigator", AgentType.INVESTIGATOR),
-        ("debugger", AgentType.DEBUGGER),
-        ("researcher", AgentType.RESEARCHER),
-        ("validator", AgentType.VALIDATOR),
-        ("reporter", AgentType.REPORTER),
-    ])
+    @pytest.mark.parametrize(
+        "agent_type,expected_type",
+        [
+            ("investigator", AgentType.INVESTIGATOR),
+            ("debugger", AgentType.DEBUGGER),
+            ("researcher", AgentType.RESEARCHER),
+            ("validator", AgentType.VALIDATOR),
+            ("reporter", AgentType.REPORTER),
+        ],
+    )
     def test_agent_type_passed_correctly(
         self, client, mock_agent_service, headers, agent_type, expected_type
     ):
@@ -738,9 +735,7 @@ class TestE2EExecutionManagement:
         assert get_response.status_code == status.HTTP_200_OK
         assert get_response.json()["execution_id"] == "exec_test123"
 
-    def test_cancel_running_execution(
-        self, client, mock_agent_service, headers
-    ):
+    def test_cancel_running_execution(self, client, mock_agent_service, headers):
         """Test cancelling a running execution."""
         mock_agent_service.cancel_execution.return_value = True
 
@@ -761,9 +756,7 @@ class TestE2EExecutionManagement:
 class TestE2EResponseFormat:
     """End-to-end tests for response format validation."""
 
-    def test_sse_event_json_validity(
-        self, client, mock_agent_service, headers
-    ):
+    def test_sse_event_json_validity(self, client, mock_agent_service, headers):
         """Test all SSE events contain valid JSON data."""
 
         async def mock_execute(*args, **kwargs):

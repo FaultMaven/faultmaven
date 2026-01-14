@@ -71,41 +71,47 @@ class Permission(str, Enum):
 # Role-Permission mapping
 # Each role grants a set of permissions
 ROLE_PERMISSIONS: dict[Role, FrozenSet[Permission]] = {
-    Role.ADMIN: frozenset([
-        # All permissions
-        Permission.CASES_READ,
-        Permission.CASES_WRITE,
-        Permission.CASES_DELETE,
-        Permission.CASES_ASSIGN,
-        Permission.CASES_CLOSE,
-        Permission.SESSIONS_READ,
-        Permission.SESSIONS_CREATE,
-        Permission.SESSIONS_EXECUTE,
-        Permission.SESSIONS_MANAGE,
-        Permission.EVIDENCE_READ,
-        Permission.EVIDENCE_UPLOAD,
-        Permission.EVIDENCE_DELETE,
-        Permission.ORG_MANAGE_USERS,
-        Permission.ORG_MANAGE_SETTINGS,
-    ]),
-    Role.MEMBER: frozenset([
-        # Standard investigator permissions
-        Permission.CASES_READ,
-        Permission.CASES_WRITE,
-        Permission.CASES_ASSIGN,
-        Permission.SESSIONS_READ,
-        Permission.SESSIONS_CREATE,
-        Permission.SESSIONS_EXECUTE,
-        Permission.SESSIONS_MANAGE,
-        Permission.EVIDENCE_READ,
-        Permission.EVIDENCE_UPLOAD,
-    ]),
-    Role.VIEWER: frozenset([
-        # Read-only permissions
-        Permission.CASES_READ,
-        Permission.SESSIONS_READ,
-        Permission.EVIDENCE_READ,
-    ]),
+    Role.ADMIN: frozenset(
+        [
+            # All permissions
+            Permission.CASES_READ,
+            Permission.CASES_WRITE,
+            Permission.CASES_DELETE,
+            Permission.CASES_ASSIGN,
+            Permission.CASES_CLOSE,
+            Permission.SESSIONS_READ,
+            Permission.SESSIONS_CREATE,
+            Permission.SESSIONS_EXECUTE,
+            Permission.SESSIONS_MANAGE,
+            Permission.EVIDENCE_READ,
+            Permission.EVIDENCE_UPLOAD,
+            Permission.EVIDENCE_DELETE,
+            Permission.ORG_MANAGE_USERS,
+            Permission.ORG_MANAGE_SETTINGS,
+        ]
+    ),
+    Role.MEMBER: frozenset(
+        [
+            # Standard investigator permissions
+            Permission.CASES_READ,
+            Permission.CASES_WRITE,
+            Permission.CASES_ASSIGN,
+            Permission.SESSIONS_READ,
+            Permission.SESSIONS_CREATE,
+            Permission.SESSIONS_EXECUTE,
+            Permission.SESSIONS_MANAGE,
+            Permission.EVIDENCE_READ,
+            Permission.EVIDENCE_UPLOAD,
+        ]
+    ),
+    Role.VIEWER: frozenset(
+        [
+            # Read-only permissions
+            Permission.CASES_READ,
+            Permission.SESSIONS_READ,
+            Permission.EVIDENCE_READ,
+        ]
+    ),
 }
 
 
@@ -157,7 +163,9 @@ def has_permission(user_permissions: List[str], required_permission: str) -> boo
     return required_permission in user_permissions
 
 
-def has_any_permission(user_permissions: List[str], required_permissions: List[str]) -> bool:
+def has_any_permission(
+    user_permissions: List[str], required_permissions: List[str]
+) -> bool:
     """Check if user has any of the specified permissions.
 
     Args:
@@ -170,7 +178,9 @@ def has_any_permission(user_permissions: List[str], required_permissions: List[s
     return any(perm in user_permissions for perm in required_permissions)
 
 
-def has_all_permissions(user_permissions: List[str], required_permissions: List[str]) -> bool:
+def has_all_permissions(
+    user_permissions: List[str], required_permissions: List[str]
+) -> bool:
     """Check if user has all of the specified permissions.
 
     Args:

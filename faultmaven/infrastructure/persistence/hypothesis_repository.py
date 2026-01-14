@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 class HypothesisRepositoryException(Exception):
     """Exception raised when hypothesis repository operations fail."""
+
     pass
 
 
@@ -254,7 +255,9 @@ class DatabaseHypothesisRepository(HypothesisRepository):
         except IntegrityError as e:
             await self.session.rollback()
             logger.error(f"Failed to create hypothesis: {e}")
-            raise ValueError(f"Case {case_id} not found or integrity constraint violated")
+            raise ValueError(
+                f"Case {case_id} not found or integrity constraint violated"
+            )
         except Exception as e:
             await self.session.rollback()
             logger.error(f"Unexpected error creating hypothesis: {e}")
@@ -305,7 +308,11 @@ class DatabaseHypothesisRepository(HypothesisRepository):
                 conditions.append(HypothesisModel.status == status)
 
             # Count total
-            count_stmt = select(func.count()).select_from(HypothesisModel).where(and_(*conditions))
+            count_stmt = (
+                select(func.count())
+                .select_from(HypothesisModel)
+                .where(and_(*conditions))
+            )
             count_result = await self.session.execute(count_stmt)
             total_count = count_result.scalar()
 
@@ -371,7 +378,9 @@ class DatabaseHypothesisRepository(HypothesisRepository):
                 hypothesis_model.confidence_score = confidence_score
 
             if supporting_evidence_ids is not None:
-                hypothesis_model.supporting_evidence_ids = json.dumps(supporting_evidence_ids)
+                hypothesis_model.supporting_evidence_ids = json.dumps(
+                    supporting_evidence_ids
+                )
 
             if validation_result is not None:
                 hypothesis_model.validation_result = validation_result
@@ -433,7 +442,11 @@ class DatabaseHypothesisRepository(HypothesisRepository):
             if status:
                 conditions.append(HypothesisModel.status == status)
 
-            stmt = select(func.count()).select_from(HypothesisModel).where(and_(*conditions))
+            stmt = (
+                select(func.count())
+                .select_from(HypothesisModel)
+                .where(and_(*conditions))
+            )
 
             result = await self.session.execute(stmt)
             return result.scalar()
@@ -470,7 +483,11 @@ class DatabaseHypothesisRepository(HypothesisRepository):
             "case_id": hypothesis_model.case_id,
             "description": hypothesis_model.description,
             "status": hypothesis_model.status,
-            "confidence_score": float(hypothesis_model.confidence_score) if hypothesis_model.confidence_score else None,
+            "confidence_score": (
+                float(hypothesis_model.confidence_score)
+                if hypothesis_model.confidence_score
+                else None
+            ),
             "supporting_evidence_ids": supporting_evidence_ids,
             "validation_result": hypothesis_model.validation_result,
             "validation_timestamp": hypothesis_model.validation_timestamp,
@@ -553,7 +570,8 @@ class InMemoryHypothesisRepository(HypothesisRepository):
         """List hypotheses for a case."""
         # Filter by case and organization
         filtered = [
-            h for h in self._hypotheses.values()
+            h
+            for h in self._hypotheses.values()
             if h["case_id"] == case_id and h["organization_id"] == organization_id
         ]
 
@@ -565,13 +583,13 @@ class InMemoryHypothesisRepository(HypothesisRepository):
         filtered.sort(
             key=lambda h: (
                 -(h["confidence_score"] if h["confidence_score"] is not None else -1),
-                -h["proposed_at"].timestamp()
+                -h["proposed_at"].timestamp(),
             )
         )
 
         # Paginate
         total_count = len(filtered)
-        paginated = filtered[offset:offset + limit]
+        paginated = filtered[offset : offset + limit]
 
         return ([deepcopy(h) for h in paginated], total_count)
 
@@ -640,7 +658,8 @@ class InMemoryHypothesisRepository(HypothesisRepository):
     ) -> int:
         """Count hypotheses for a case."""
         filtered = [
-            h for h in self._hypotheses.values()
+            h
+            for h in self._hypotheses.values()
             if h["case_id"] == case_id and h["organization_id"] == organization_id
         ]
 

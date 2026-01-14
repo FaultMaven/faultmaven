@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, Optional, Type, TypeVar
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class ServiceContainer:
@@ -199,6 +199,7 @@ class ServiceContainer:
 
 class ServiceContainerError(Exception):
     """Exception raised for service container errors."""
+
     pass
 
 
@@ -219,6 +220,4 @@ class CircularDependencyError(ServiceContainerError):
     def __init__(self, service_chain: list):
         self.service_chain = service_chain
         chain_str = " -> ".join([s.__name__ for s in service_chain])
-        super().__init__(
-            f"Circular dependency detected: {chain_str}"
-        )
+        super().__init__(f"Circular dependency detected: {chain_str}")

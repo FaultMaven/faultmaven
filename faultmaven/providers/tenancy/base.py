@@ -30,9 +30,7 @@ class TenantProvider(ABC):
 
     @abstractmethod
     async def get_current_organization(
-        self,
-        current_user: User,
-        organization_id: Optional[str] = None
+        self, current_user: User, organization_id: Optional[str] = None
     ) -> Organization:
         """Resolve the current organization context.
 

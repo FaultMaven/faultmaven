@@ -17,6 +17,7 @@ import time
 def clean_model_cache():
     """Ensure clean model cache for each test to avoid singleton state leakage."""
     from faultmaven.infrastructure.model_cache import ModelCache
+
     cache = ModelCache()
     cache.clear_cache()
     yield
@@ -53,13 +54,18 @@ class TestModelCacheLazyLoading:
         # Note: cache is already cleared by fixture
 
         # Mock the SentenceTransformer to avoid actual loading
-        with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
+        with patch(
+            "faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE",
+            False,
+        ):
             cache.get_bge_m3_model(triggered_by="startup")
 
             load_info = cache.get_model_load_info("BAAI/bge-m3")
             assert load_info is not None
             assert load_info.load_triggered_by == "startup"
-            assert load_info.error is not None  # Should have error since ST not available
+            assert (
+                load_info.error is not None
+            )  # Should have error since ST not available
 
     def test_load_info_tracks_lazy_trigger(self):
         """Test that lazy loading is tracked correctly."""
@@ -68,7 +74,10 @@ class TestModelCacheLazyLoading:
         cache = ModelCache()
         # Note: cache is already cleared by fixture
 
-        with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
+        with patch(
+            "faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE",
+            False,
+        ):
             cache.get_bge_m3_model(triggered_by="lazy")
 
             load_info = cache.get_model_load_info("BAAI/bge-m3")
@@ -82,7 +91,10 @@ class TestModelCacheLazyLoading:
         cache = ModelCache()
         # Note: cache is already cleared by fixture
 
-        with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
+        with patch(
+            "faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE",
+            False,
+        ):
             cache.get_bge_m3_model(triggered_by="startup")
 
         info = cache.get_cache_info()
@@ -116,12 +128,17 @@ class TestModelCacheLazyLoading:
         cache = ModelCache()
         # Note: cache is already cleared by fixture
 
-        with patch('faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE', False):
+        with patch(
+            "faultmaven.infrastructure.model_cache.SENTENCE_TRANSFORMERS_AVAILABLE",
+            False,
+        ):
             cache.get_bge_m3_model()
 
         # Verify load info was recorded
         load_info = cache.get_model_load_info("BAAI/bge-m3")
-        assert load_info is not None, "Load info should be recorded even when model unavailable"
+        assert (
+            load_info is not None
+        ), "Load info should be recorded even when model unavailable"
 
         cache.clear_cache()
 
@@ -171,7 +188,7 @@ class TestModelLoadInfo:
             model_name="BAAI/bge-m3",
             loaded_at=datetime.now(timezone.utc),
             load_time_seconds=2.5,
-            load_triggered_by="startup"
+            load_triggered_by="startup",
         )
 
         assert info.model_name == "BAAI/bge-m3"
@@ -189,7 +206,7 @@ class TestModelLoadInfo:
             loaded_at=datetime.now(timezone.utc),
             load_time_seconds=0.1,
             load_triggered_by="lazy",
-            error="Model not found"
+            error="Model not found",
         )
 
         assert info.error == "Model not found"

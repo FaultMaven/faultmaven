@@ -22,9 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def extract_ooda_step_from_response(
-    response: str,
-    phase: "InvestigationPhase",
-    metrics_tracker=None
+    response: str, phase: "InvestigationPhase", metrics_tracker=None
 ) -> tuple["OODAStep", bool]:
     """Extract OODA step from LLM response with graceful fallback (Refinement A)
 
@@ -57,9 +55,9 @@ def extract_ooda_step_from_response(
     """
     # Try to extract explicit declaration
     match = re.search(
-        r'<ooda_step>\s*(observe|orient|decide|act)\s*</ooda_step>',
+        r"<ooda_step>\s*(observe|orient|decide|act)\s*</ooda_step>",
         response,
-        re.IGNORECASE
+        re.IGNORECASE,
     )
 
     if match:
@@ -73,7 +71,7 @@ def extract_ooda_step_from_response(
         extra={
             "phase": phase.name,
             "response_preview": response[:200],
-        }
+        },
     )
 
     # Get primary step from phase weights
@@ -84,7 +82,7 @@ def extract_ooda_step_from_response(
         # Phase has no primary steps (shouldn't happen)
         logger.error(
             f"Phase {phase.name} has no primary steps. Defaulting to OBSERVE.",
-            extra={"phase": phase.name}
+            extra={"phase": phase.name},
         )
         fallback_step = OODAStep.OBSERVE
     else:
@@ -94,16 +92,14 @@ def extract_ooda_step_from_response(
     if metrics_tracker:
         metrics_tracker.increment(
             "ooda_declaration_missing",
-            tags={"phase": phase.name, "fallback_step": fallback_step.value}
+            tags={"phase": phase.name, "fallback_step": fallback_step.value},
         )
 
     return (fallback_step, False)  # was_explicit=False
 
 
 def validate_and_handle_step(
-    phase: "InvestigationPhase",
-    declared_step: "OODAStep",
-    was_explicit: bool
+    phase: "InvestigationPhase", declared_step: "OODAStep", was_explicit: bool
 ) -> tuple["OODAStep", str | None]:
     """Validate declared OODA step and handle validation failures (Refinement B)
 
@@ -161,7 +157,7 @@ def validate_and_handle_step(
             "phase": phase.name,
             "invalid_step": declared_step.value,
             "was_explicit": was_explicit,
-        }
+        },
     )
 
     # Get primary step
@@ -178,9 +174,7 @@ def validate_and_handle_step(
 
 
 def extract_and_validate_ooda_step(
-    response: str,
-    phase: "InvestigationPhase",
-    metrics_tracker=None
+    response: str, phase: "InvestigationPhase", metrics_tracker=None
 ) -> tuple["OODAStep", bool, str | None]:
     """Extract and validate OODA step from LLM response (combined)
 
@@ -210,8 +204,6 @@ def extract_and_validate_ooda_step(
     )
 
     # Validate and handle failures
-    final_step, warning = validate_and_handle_step(
-        phase, declared_step, was_explicit
-    )
+    final_step, warning = validate_and_handle_step(phase, declared_step, was_explicit)
 
     return (final_step, was_explicit, warning)

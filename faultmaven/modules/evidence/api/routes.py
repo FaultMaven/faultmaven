@@ -46,7 +46,7 @@ async def get_evidence_service(request: Request) -> Optional[EvidenceService]:
     Returns:
         EvidenceService if available, None if service not attached
     """
-    return getattr(request.app.state, 'evidence_service', None)
+    return getattr(request.app.state, "evidence_service", None)
 
 
 @router.post("", response_model=EvidenceArtifact, status_code=status.HTTP_201_CREATED)
@@ -271,6 +271,4 @@ async def link_evidence_to_case(
     try:
         return await service.link_to_case(evidence_id, link_request.case_id)
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))

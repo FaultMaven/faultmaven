@@ -31,14 +31,25 @@ import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    Response,
+)
 
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.auth import DevUser
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
 from faultmaven.api.v1.role_dependencies import require_admin
-from faultmaven.modules.knowledge.domain.services.knowledge_service import KnowledgeService
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    KnowledgeService,
+)
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
 
@@ -50,8 +61,10 @@ async def get_knowledge_service(request: Request) -> KnowledgeService:
     """Get KnowledgeService instance from app.state (Composition Root)"""
     return request.app.state.knowledge_service
 
+
 # Canonical document types (authoritative)
 ALLOWED_DOCUMENT_TYPES = {"playbook", "troubleshooting_guide", "reference", "how_to"}
+
 
 # (No legacy router paths)
 @router.post("/documents", status_code=201)
@@ -66,7 +79,7 @@ async def upload_document(
     description: Optional[str] = Form(None),
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
     response: Response = Response(),
-    current_user: DevUser = Depends(require_admin)
+    current_user: DevUser = Depends(require_admin),
 ) -> dict:
     """
     Upload a document to the knowledge base
@@ -87,16 +100,20 @@ async def upload_document(
     try:
         # Validate file type
         allowed_types = {
-            "text/plain", "text/markdown", "text/csv", "application/json",
-            "application/pdf", "application/msword", 
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "text/plain",
+            "text/markdown",
+            "text/csv",
+            "application/json",
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         }
-        
+
         if file.content_type not in allowed_types:
             logger.warning(f"Invalid file type: {file.content_type}")
             raise HTTPException(
                 status_code=415,
-                detail=f"Unsupported file type: {file.content_type}. Allowed types: {', '.join(allowed_types)}"
+                detail=f"Unsupported file type: {file.content_type}. Allowed types: {', '.join(allowed_types)}",
             )
 
         # Validate document type
@@ -105,28 +122,32 @@ async def upload_document(
                 status_code=422,
                 detail={
                     "message": "Invalid document_type",
-                    "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES))
-                }
+                    "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES)),
+                },
             )
 
         # Read file content
         content = await file.read()
-        
+
         # Additional validation for binary files that might not be text-processable
-        if file.content_type in ["image/png", "image/jpeg", "image/gif", "application/octet-stream"]:
+        if file.content_type in [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "application/octet-stream",
+        ]:
             logger.warning(f"Binary file type detected: {file.content_type}")
             raise HTTPException(
                 status_code=422,
-                detail=f"Cannot process binary file type: {file.content_type}"
+                detail=f"Cannot process binary file type: {file.content_type}",
             )
-        
+
         try:
             content_str = content.decode("utf-8", errors="strict")
         except UnicodeDecodeError:
             logger.warning(f"File contains non-UTF-8 content")
             raise HTTPException(
-                status_code=422,
-                detail="File must contain valid UTF-8 text content"
+                status_code=422, detail="File must contain valid UTF-8 text content"
             )
 
         # Parse tags
@@ -140,11 +161,11 @@ async def upload_document(
             category=category,
             tags=tag_list,
             source_url=source_url,
-            description=description
+            description=description,
         )
 
         # Set Location header for REST compliance
-        document_id = result.get('document_id', result.get('id', 'unknown'))
+        document_id = result.get("document_id", result.get("id", "unknown"))
         response.headers["Location"] = f"/api/v1/knowledge/documents/{document_id}"
 
         logger.info(f"Successfully queued document {document_id} for ingestion")
@@ -187,8 +208,8 @@ async def list_documents(
                 status_code=422,
                 detail={
                     "message": "Invalid document_type filter",
-                    "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES))
-                }
+                    "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES)),
+                },
             )
 
         # Parse tags filter
@@ -196,10 +217,7 @@ async def list_documents(
 
         # Delegate to service layer
         return await knowledge_service.list_documents(
-            document_type=document_type,
-            tags=tag_list,
-            limit=limit,
-            offset=offset
+            document_type=document_type, tags=tag_list, limit=limit, offset=offset
         )
 
     except Exception as e:
@@ -211,7 +229,8 @@ async def list_documents(
 
 @router.get("/documents/{document_id}")
 async def get_document(
-    document_id: str, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    document_id: str,
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
 ) -> KnowledgeBaseDocument:
     """
     Get a specific knowledge base document
@@ -244,7 +263,7 @@ async def get_document(
 async def delete_document(
     document_id: str,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: DevUser = Depends(require_admin)
+    current_user: DevUser = Depends(require_admin),
 ):
     """
     Delete a knowledge base document
@@ -310,7 +329,8 @@ async def get_job_status(
 @router.post("/search")
 @trace("api_search_documents")
 async def search_documents(
-    request: SearchRequest, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    request: SearchRequest,
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
     """
     Search knowledge base documents
@@ -327,7 +347,9 @@ async def search_documents(
         # Additional validation beyond Pydantic (Pydantic handles empty query via min_length=1)
         if len(request.query.strip()) > 1000:
             logger.warning("Search query too long")
-            raise HTTPException(status_code=422, detail="Query cannot exceed 1000 characters")
+            raise HTTPException(
+                status_code=422, detail="Query cannot exceed 1000 characters"
+            )
 
         # Parse tags filter
         tag_list = parse_comma_separated_tags(request.tags) or None
@@ -350,7 +372,7 @@ async def search_documents(
             tags=tag_list,
             limit=request.limit,
             similarity_threshold=request.similarity_threshold,
-            rank_by=request.rank_by
+            rank_by=request.rank_by,
         )
 
     except HTTPException:
@@ -363,7 +385,8 @@ async def search_documents(
 @router.post("/documents/search")
 @trace("api_fulltext_search_documents")
 async def fulltext_search_documents(
-    request: SearchRequest, knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    request: SearchRequest,
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
     """
     Full-text search for knowledge base documents (Microservices Parity)
@@ -422,7 +445,9 @@ async def fulltext_search_documents(
         # Validate query length
         if len(request.query.strip()) > 1000:
             logger.warning("Full-text search query too long")
-            raise HTTPException(status_code=422, detail="Query cannot exceed 1000 characters")
+            raise HTTPException(
+                status_code=422, detail="Query cannot exceed 1000 characters"
+            )
 
         # Parse tags filter
         tag_list = parse_comma_separated_tags(request.tags) or None
@@ -444,7 +469,7 @@ async def fulltext_search_documents(
             tags=tag_list,
             limit=request.limit,
             similarity_threshold=request.similarity_threshold,
-            rank_by=request.rank_by
+            rank_by=request.rank_by,
         )
 
         logger.info(
@@ -457,7 +482,9 @@ async def fulltext_search_documents(
         raise
     except Exception as e:
         logger.error(f"Full-text search failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Full-text search failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Full-text search failed: {str(e)}"
+        )
 
 
 @router.put("/documents/{document_id}")
@@ -465,11 +492,11 @@ async def update_document(
     document_id: str,
     update_data: dict,
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: DevUser = Depends(require_admin)
+    current_user: DevUser = Depends(require_admin),
 ) -> dict:
     """Update document metadata and content."""
     logger = logging.getLogger(__name__)
-    
+
     try:
         # Validate document_type if provided
         if "document_type" in update_data and update_data["document_type"] is not None:
@@ -478,8 +505,8 @@ async def update_document(
                     status_code=422,
                     detail={
                         "message": "Invalid document_type",
-                        "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES))
-                    }
+                        "allowed_values": sorted(list(ALLOWED_DOCUMENT_TYPES)),
+                    },
                 )
 
         # Parse tags if provided using standardized utility
@@ -487,23 +514,21 @@ async def update_document(
             update_data["tags"] = parse_comma_separated_tags(update_data["tags"])
 
         result = await knowledge_service.update_document_metadata(
-            document_id=document_id,
-            **update_data
+            document_id=document_id, **update_data
         )
-        
+
         if not result:
             raise HTTPException(status_code=404, detail="Document not found")
-            
+
         logger.info(f"Successfully updated document {document_id}")
         return result
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to update document {document_id}: {e}")
         raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to update document: {str(e)}"
+            status_code=500, detail=f"Failed to update document: {str(e)}"
         )
 
 
@@ -511,105 +536,96 @@ async def update_document(
 async def bulk_update_documents(
     request: Dict[str, Any],
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: DevUser = Depends(require_admin)
+    current_user: DevUser = Depends(require_admin),
 ) -> dict:
     """Bulk update document metadata."""
     logger = logging.getLogger(__name__)
-    
+
     try:
         document_ids = request.get("document_ids", [])
         updates = request.get("updates", {})
-        
+
         if not document_ids:
             raise HTTPException(status_code=400, detail="Document IDs are required")
-            
+
         # Parse tags in updates if provided using standardized utility
         if "tags" in updates:
             updates["tags"] = parse_comma_separated_tags(updates["tags"])
-            
+
         result = await knowledge_service.bulk_update_documents(
-            document_ids=document_ids,
-            updates=updates
+            document_ids=document_ids, updates=updates
         )
-        
+
         logger.info(f"Bulk updated {result['updated_count']} documents")
         return result
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Bulk update failed: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Bulk update failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Bulk update failed: {str(e)}")
 
 
 @router.post("/documents/bulk-delete")
 async def bulk_delete_documents(
     request: Dict[str, List[str]],
     knowledge_service: KnowledgeService = Depends(get_knowledge_service),
-    current_user: DevUser = Depends(require_admin)
+    current_user: DevUser = Depends(require_admin),
 ) -> dict:
     """Bulk delete documents."""
     logger = logging.getLogger(__name__)
-    
+
     try:
         document_ids = request.get("document_ids", [])
-        
+
         if not document_ids:
             raise HTTPException(status_code=400, detail="Document IDs are required")
-            
+
         result = await knowledge_service.bulk_delete_documents(document_ids)
-        
+
         logger.info(f"Bulk deleted {result['deleted_count']} documents")
         return result
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Bulk delete failed: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Bulk delete failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Bulk delete failed: {str(e)}")
 
 
 @router.get("/stats")
 async def get_knowledge_stats(
-    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
     """Get knowledge base statistics."""
     logger = logging.getLogger(__name__)
-    
+
     try:
         stats = await knowledge_service.get_knowledge_stats()
         logger.info("Retrieved knowledge base statistics")
         return stats
-        
+
     except Exception as e:
         logger.error(f"Failed to get knowledge stats: {e}")
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get statistics: {str(e)}"
+            status_code=500, detail=f"Failed to get statistics: {str(e)}"
         )
 
 
 @router.get("/analytics/search")
 async def get_search_analytics(
-    knowledge_service: KnowledgeService = Depends(get_knowledge_service)
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
     """Get search analytics and insights."""
     logger = logging.getLogger(__name__)
-    
+
     try:
         analytics = await knowledge_service.get_search_analytics()
         logger.info("Retrieved search analytics")
         return analytics
-        
+
     except Exception as e:
         logger.error(f"Failed to get search analytics: {e}")
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get analytics: {str(e)}"
+            status_code=500, detail=f"Failed to get analytics: {str(e)}"
         )

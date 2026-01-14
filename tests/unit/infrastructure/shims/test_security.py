@@ -49,8 +49,7 @@ class TestPIIRedactorInitialization:
         """Test PIIRedactor when enabled but Presidio not available."""
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
             with patch(
-                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE", False
             ):
                 from faultmaven.infrastructure.shims import security
 
@@ -79,8 +78,7 @@ class TestPIIRedactorRedaction:
         """Test redact returns original text when Presidio not available."""
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
             with patch(
-                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE", False
             ):
                 from faultmaven.infrastructure.shims import security
 
@@ -137,8 +135,7 @@ class TestPIIRedactorStatus:
         """Test get_status when enabled but Presidio not available."""
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
             with patch(
-                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE", False
             ):
                 from faultmaven.infrastructure.shims import security
 
@@ -166,12 +163,11 @@ class TestPIIRedactorErrorHandling:
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
             # Mock Presidio as available but make initialization fail
             with patch(
-                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE",
-                True
+                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE", True
             ):
                 with patch(
                     "faultmaven.infrastructure.shims.security.AnalyzerEngine",
-                    side_effect=Exception("Init error")
+                    side_effect=Exception("Init error"),
                 ):
                     from faultmaven.infrastructure.shims import security
 
@@ -205,7 +201,9 @@ class TestModuleLevelFunctions:
     def test_get_pii_redaction_status_disabled(self):
         """Test get_pii_redaction_status when disabled."""
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "false"}):
-            from faultmaven.infrastructure.shims.security import get_pii_redaction_status
+            from faultmaven.infrastructure.shims.security import (
+                get_pii_redaction_status,
+            )
 
             status = get_pii_redaction_status()
 
@@ -219,8 +217,7 @@ class TestModuleLevelFunctions:
         """Test get_pii_redaction_status when enabled but Presidio unavailable."""
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
             with patch(
-                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE", False
             ):
                 from faultmaven.infrastructure.shims import security
 
@@ -240,25 +237,32 @@ class TestModuleLevelFunctions:
 class TestEnvironmentVariableHandling:
     """Tests for environment variable edge cases."""
 
-    @pytest.mark.parametrize("value,expected", [
-        ("true", True),
-        ("True", True),
-        ("TRUE", True),
-        ("false", False),
-        ("False", False),
-        ("FALSE", False),
-        ("0", False),
-        ("1", False),  # Only "true" (case-insensitive) enables
-        ("yes", False),  # Only "true" (case-insensitive) enables
-        ("", False),
-    ])
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("true", True),
+            ("True", True),
+            ("TRUE", True),
+            ("false", False),
+            ("False", False),
+            ("FALSE", False),
+            ("0", False),
+            ("1", False),  # Only "true" (case-insensitive) enables
+            ("yes", False),  # Only "true" (case-insensitive) enables
+            ("", False),
+        ],
+    )
     def test_enable_pii_redaction_values(self, value: str, expected: bool):
         """Test various ENABLE_PII_REDACTION values."""
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": value}):
-            from faultmaven.infrastructure.shims.security import _is_pii_redaction_enabled
+            from faultmaven.infrastructure.shims.security import (
+                _is_pii_redaction_enabled,
+            )
 
             result = _is_pii_redaction_enabled()
-            assert result is expected, f"ENABLE_PII_REDACTION={value} should be {expected}"
+            assert (
+                result is expected
+            ), f"ENABLE_PII_REDACTION={value} should be {expected}"
 
 
 class TestIntegrationWithPresidio:

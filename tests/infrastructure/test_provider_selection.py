@@ -19,6 +19,7 @@ import inspect
 # Test Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def clean_env():
     """Fixture to ensure clean environment for each test."""
@@ -50,6 +51,7 @@ def clean_env():
 def reset_settings_cache():
     """Reset the settings singleton cache between tests."""
     from faultmaven.config.settings import reset_settings
+
     reset_settings()
     yield
     reset_settings()
@@ -58,6 +60,7 @@ def reset_settings_cache():
 # =============================================================================
 # Tenant Provider Selection Tests
 # =============================================================================
+
 
 class TestTenantProviderSelection:
     """Tests for TENANT_PROVIDER selector."""
@@ -92,6 +95,7 @@ class TestTenantProviderSelection:
 # Database Backend Selection Tests
 # =============================================================================
 
+
 class TestDbBackendSelection:
     """Tests for DB_BACKEND selector."""
 
@@ -124,6 +128,7 @@ class TestDbBackendSelection:
 # =============================================================================
 # Cache Backend Selection Tests
 # =============================================================================
+
 
 class TestCacheBackendSelection:
     """Tests for CACHE_BACKEND selector."""
@@ -158,6 +163,7 @@ class TestCacheBackendSelection:
 # Vector Backend Selection Tests
 # =============================================================================
 
+
 class TestVectorBackendSelection:
     """Tests for VECTOR_BACKEND selector."""
 
@@ -190,6 +196,7 @@ class TestVectorBackendSelection:
 # =============================================================================
 # Storage Backend Selection Tests
 # =============================================================================
+
 
 class TestStorageBackendSelection:
     """Tests for STORAGE_BACKEND selector."""
@@ -224,10 +231,13 @@ class TestStorageBackendSelection:
 # Factory Integration Tests
 # =============================================================================
 
+
 class TestTenantProviderFactory:
     """Tests for tenant provider factory integration."""
 
-    def test_factory_creates_single_tenant_by_default(self, clean_env, reset_settings_cache):
+    def test_factory_creates_single_tenant_by_default(
+        self, clean_env, reset_settings_cache
+    ):
         """Test factory creates SingleTenantProvider by default."""
         from faultmaven.providers.tenancy.factory import create_tenant_provider
         from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
@@ -237,7 +247,9 @@ class TestTenantProviderFactory:
 
         assert isinstance(provider, SingleTenantProvider)
 
-    def test_factory_creates_multi_tenant_when_configured(self, clean_env, reset_settings_cache):
+    def test_factory_creates_multi_tenant_when_configured(
+        self, clean_env, reset_settings_cache
+    ):
         """Test factory creates MultiTenantProvider when TENANT_PROVIDER=multi."""
         os.environ["TENANT_PROVIDER"] = "multi"
 
@@ -254,10 +266,13 @@ class TestTenantProviderFactory:
 # Settings Purity Tests
 # =============================================================================
 
+
 class TestSettingsPurity:
     """Tests that only settings module reads environment variables."""
 
-    def test_tenancy_factory_uses_settings_not_env(self, clean_env, reset_settings_cache):
+    def test_tenancy_factory_uses_settings_not_env(
+        self, clean_env, reset_settings_cache
+    ):
         """Test that tenancy factory reads from settings, not os.getenv directly."""
         import faultmaven.providers.tenancy.factory as factory_module
 
@@ -268,7 +283,9 @@ class TestSettingsPurity:
         # Should use settings
         assert "get_settings" in source or "settings" in source
 
-    def test_repository_factory_uses_settings_not_env(self, clean_env, reset_settings_cache):
+    def test_repository_factory_uses_settings_not_env(
+        self, clean_env, reset_settings_cache
+    ):
         """Test that repository factory reads from settings, not os.getenv directly."""
         from faultmaven.infrastructure.persistence.repository_factory import (
             get_storage_type,

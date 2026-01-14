@@ -28,18 +28,18 @@ class TestDoubleEncodingPrevention:
         inner_response = {
             "answer": "This is the actual answer text",
             "problem_detected": True,
-            "problem_summary": "Some problem"
+            "problem_summary": "Some problem",
         }
         outer_response = {
             "answer": json.dumps(inner_response),  # Double-encoded!
-            "clarifying_questions": []
+            "clarifying_questions": [],
         }
 
         result = self.parser.parse(outer_response, ConsultantResponse)
 
         # Should extract the inner answer, not the JSON string
         assert result.answer == "This is the actual answer text"
-        assert not result.answer.startswith('{')
+        assert not result.answer.startswith("{")
 
     def test_extract_unparsed_json_string(self):
         """Layer 3: Should parse JSON string and extract answer"""
@@ -47,7 +47,7 @@ class TestDoubleEncodingPrevention:
         response_dict = {
             "answer": "This is the actual answer",
             "clarifying_questions": [],
-            "problem_detected": False
+            "problem_detected": False,
         }
         json_string = json.dumps(response_dict)
 
@@ -55,7 +55,7 @@ class TestDoubleEncodingPrevention:
 
         # Should parse the JSON and extract answer
         assert result.answer == "This is the actual answer"
-        assert not result.answer.startswith('{')
+        assert not result.answer.startswith("{")
 
     def test_extract_nested_double_encoding(self):
         """Layer 3: Should handle deeply nested double-encoding (recursive)"""
@@ -68,7 +68,7 @@ class TestDoubleEncodingPrevention:
 
         # Should recursively extract the actual answer
         assert result.answer == "Actual text"
-        assert not result.answer.startswith('{')
+        assert not result.answer.startswith("{")
 
     # =========================================================================
     # Tier 2: JSON Parsing Tests (Normal Operation)
@@ -76,12 +76,14 @@ class TestDoubleEncodingPrevention:
 
     def test_tier2_handles_clean_json(self):
         """Tier 2: Should parse clean JSON correctly"""
-        json_string = json.dumps({
-            "answer": "Clean answer text",
-            "clarifying_questions": ["Question 1"],
-            "problem_detected": True,
-            "problem_summary": "Issue detected"
-        })
+        json_string = json.dumps(
+            {
+                "answer": "Clean answer text",
+                "clarifying_questions": ["Question 1"],
+                "problem_detected": True,
+                "problem_summary": "Issue detected",
+            }
+        )
 
         result = self.parser.parse(json_string, ConsultantResponse)
 
@@ -91,10 +93,7 @@ class TestDoubleEncodingPrevention:
 
     def test_tier2_handles_markdown_wrapped_json(self):
         """Tier 2: Should extract JSON from markdown code blocks"""
-        response = {
-            "answer": "Answer text",
-            "clarifying_questions": []
-        }
+        response = {"answer": "Answer text", "clarifying_questions": []}
         markdown_wrapped = f"```json\n{json.dumps(response)}\n```"
 
         result = self.parser.parse(markdown_wrapped, ConsultantResponse)
@@ -110,21 +109,16 @@ class TestDoubleEncodingPrevention:
         # Test all possible variations that could trigger double-encoding
         test_cases = [
             # Normal dict
-            {
-                "answer": "Normal response",
-                "problem_detected": True,
-                "severity": "high"
-            },
+            {"answer": "Normal response", "problem_detected": True, "severity": "high"},
             # Dict with answer containing JSON-like text (should be preserved)
-            {
-                "answer": "Use this command: {'key': 'value'}",
-                "problem_detected": False
-            },
+            {"answer": "Use this command: {'key': 'value'}", "problem_detected": False},
             # Double-encoded (should be fixed)
             {
-                "answer": json.dumps({"answer": "Fixed text", "problem_detected": True}),
-                "clarifying_questions": []
-            }
+                "answer": json.dumps(
+                    {"answer": "Fixed text", "problem_detected": True}
+                ),
+                "clarifying_questions": [],
+            },
         ]
 
         for test_case in test_cases:
@@ -144,17 +138,14 @@ class TestDoubleEncodingPrevention:
         inner = {
             "answer": "Investigation findings",
             "phase_complete": True,
-            "evidence_request": None
+            "evidence_request": None,
         }
-        outer = {
-            "answer": json.dumps(inner),
-            "phase_complete": False
-        }
+        outer = {"answer": json.dumps(inner), "phase_complete": False}
 
         result = self.parser.parse(outer, LeadInvestigatorResponse)
 
         assert result.answer == "Investigation findings"
-        assert not result.answer.startswith('{')
+        assert not result.answer.startswith("{")
 
     # =========================================================================
     # Stats Tracking Tests
@@ -165,7 +156,7 @@ class TestDoubleEncodingPrevention:
         # Parse a double-encoded response
         double_encoded = {
             "answer": json.dumps({"answer": "Text", "problem_detected": False}),
-            "clarifying_questions": []
+            "clarifying_questions": [],
         }
 
         self.parser.parse(double_encoded, ConsultantResponse)
@@ -177,11 +168,11 @@ class TestDoubleEncodingPrevention:
 
         # Should have either succeeded via tier1, tier2, or tier3
         total_success = (
-            stats["tier1_success"] +
-            stats["tier2_direct_json"] +
-            stats["tier2_markdown_extraction"] +
-            stats["tier2_brace_extraction"] +
-            stats["tier3_success"]
+            stats["tier1_success"]
+            + stats["tier2_direct_json"]
+            + stats["tier2_markdown_extraction"]
+            + stats["tier2_brace_extraction"]
+            + stats["tier3_success"]
         )
         assert total_success > 0
 
@@ -191,10 +182,7 @@ class TestDoubleEncodingPrevention:
 
     def test_empty_answer_not_double_encoded(self):
         """Empty answer should not be treated as double-encoding"""
-        response = {
-            "answer": "",
-            "clarifying_questions": []
-        }
+        response = {"answer": "", "clarifying_questions": []}
 
         result = self.parser.parse(response, ConsultantResponse)
 
@@ -203,10 +191,7 @@ class TestDoubleEncodingPrevention:
 
     def test_json_array_in_answer_not_confused_with_double_encoding(self):
         """JSON arrays in answer should not trigger double-encoding fix"""
-        response = {
-            "answer": "Try these values: [1, 2, 3]",
-            "clarifying_questions": []
-        }
+        response = {"answer": "Try these values: [1, 2, 3]", "clarifying_questions": []}
 
         result = self.parser.parse(response, ConsultantResponse)
 
@@ -215,10 +200,7 @@ class TestDoubleEncodingPrevention:
 
     def test_malformed_json_in_answer_doesnt_crash(self):
         """Malformed JSON in answer field should not crash parser"""
-        response = {
-            "answer": "{this is not valid json}",
-            "clarifying_questions": []
-        }
+        response = {"answer": "{this is not valid json}", "clarifying_questions": []}
 
         result = self.parser.parse(response, ConsultantResponse)
 
@@ -265,7 +247,9 @@ class TestSchemaConsistency:
             field_type = field_info.get("type", "string")
             if field_type == "string":
                 if field_name == "answer":
-                    generated_example[field_name] = "Your natural language response here"
+                    generated_example[field_name] = (
+                        "Your natural language response here"
+                    )
                 else:
                     generated_example[field_name] = "appropriate value"
             elif field_type == "boolean":
@@ -276,7 +260,9 @@ class TestSchemaConsistency:
         # Verify all required fields are present
         required_fields = schema.get("required", [])
         for field in required_fields:
-            assert field in generated_example, f"Required field {field} missing from generated example"
+            assert (
+                field in generated_example
+            ), f"Required field {field} missing from generated example"
 
 
 @pytest.mark.integration

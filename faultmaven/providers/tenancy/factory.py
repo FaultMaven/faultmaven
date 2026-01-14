@@ -12,13 +12,16 @@ from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 from faultmaven.providers.tenancy.multi_tenant import MultiTenantProvider
 from faultmaven.models.interfaces_user import IOrganizationRepository
-from faultmaven.config.settings import get_settings, TenantProvider as TenantProviderEnum
+from faultmaven.config.settings import (
+    get_settings,
+    TenantProvider as TenantProviderEnum,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def create_tenant_provider(
-    organization_repository: IOrganizationRepository
+    organization_repository: IOrganizationRepository,
 ) -> TenantProvider:
     """Factory function to create appropriate TenantProvider based on settings.
 
@@ -44,13 +47,13 @@ def create_tenant_provider(
     tenant_provider = settings.providers.tenant_provider
 
     if tenant_provider == TenantProviderEnum.MULTI:
-        logger.info("Creating MultiTenantProvider (cloud/enterprise mode) [TENANT_PROVIDER=multi]")
-        return MultiTenantProvider(
-            organization_repository=organization_repository
+        logger.info(
+            "Creating MultiTenantProvider (cloud/enterprise mode) [TENANT_PROVIDER=multi]"
         )
+        return MultiTenantProvider(organization_repository=organization_repository)
     else:
         # Default to single-tenant (local, community, development)
-        logger.info("Creating SingleTenantProvider (local/community mode) [TENANT_PROVIDER=single]")
-        return SingleTenantProvider(
-            organization_repository=organization_repository
+        logger.info(
+            "Creating SingleTenantProvider (local/community mode) [TENANT_PROVIDER=single]"
         )
+        return SingleTenantProvider(organization_repository=organization_repository)

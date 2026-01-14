@@ -23,7 +23,9 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
+from faultmaven.infrastructure.persistence.database_case_repository import (
+    DatabaseCaseRepository,
+)
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
     InMemoryInvestigationSessionRepository,
@@ -36,8 +38,16 @@ from faultmaven.services.case_service import APICaseService
 from faultmaven.services.service_factory import ServiceFactory
 from faultmaven.modules.case.domain.models import Case, CaseStatus, CaseSeverity
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceArtifactType, StorageBackend
-from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
+from faultmaven.modules.evidence.domain.models import (
+    EvidenceArtifact,
+    EvidenceArtifactType,
+    StorageBackend,
+)
+from faultmaven.modules.agent.domain.models.agent_execution import (
+    AgentExecution,
+    AgentType,
+    ExecutionStatus,
+)
 from faultmaven.exceptions import (
     NotFoundError,
     AuthorizationError,
@@ -49,6 +59,7 @@ from faultmaven.exceptions import (
 # ============================================================
 # Fixtures
 # ============================================================
+
 
 @pytest.fixture(scope="function")
 async def async_engine():
@@ -132,6 +143,7 @@ def case_service_factory(session_factory, session_repo):
     Returns a function that creates independent APICaseService instances,
     each with its own database session. Required for concurrent operations.
     """
+
     async def create_service():
         async with session_factory() as session:
             case_repo = DatabaseCaseRepository(session)
@@ -140,12 +152,14 @@ def case_service_factory(session_factory, session_repo):
                 session_repo=session_repo,
             )
             return service, session
+
     return create_service
 
 
 # ============================================================
 # Test Data Helpers
 # ============================================================
+
 
 def create_test_case_id() -> str:
     """Generate unique test case ID."""
@@ -165,6 +179,7 @@ def create_test_user_id() -> str:
 # ============================================================
 # End-to-End Case Lifecycle Tests
 # ============================================================
+
 
 class TestCaseLifecycle:
     """Test complete case lifecycle."""
@@ -197,13 +212,18 @@ class TestCaseLifecycle:
         updated = await case_service.update_case(
             case.case_id,
             org_id,
-            {"title": "DB performance issue", "description": "Database queries are taking 10x longer than normal - investigating"},
+            {
+                "title": "DB performance issue",
+                "description": "Database queries are taking 10x longer than normal - investigating",
+            },
         )
 
         # Now set consulting fields required for INVESTIGATING status
         # We need to access the case directly from the repository to modify nested fields
         case_from_repo = await case_service.case_repo.get(case.case_id)
-        case_from_repo.consulting.proposed_problem_statement = "Database queries are taking 10x longer than normal"
+        case_from_repo.consulting.proposed_problem_statement = (
+            "Database queries are taking 10x longer than normal"
+        )
         case_from_repo.consulting.problem_statement_confirmed = True
         case_from_repo.consulting.decided_to_investigate = True
         await case_service.case_repo.save(case_from_repo)
@@ -309,6 +329,7 @@ class TestCaseLifecycle:
 # ============================================================
 # Authorization Enforcement Tests
 # ============================================================
+
 
 class TestAuthorizationEnforcement:
     """Test organization-level authorization."""
@@ -438,13 +459,16 @@ class TestAuthorizationEnforcement:
         retrieved = await case_service.get_case(case.case_id, org_id)
         assert retrieved is not None
 
-        updated = await case_service.update_case(case.case_id, org_id, {"title": "Updated"})
+        updated = await case_service.update_case(
+            case.case_id, org_id, {"title": "Updated"}
+        )
         assert updated.title == "Updated"
 
 
 # ============================================================
 # Organization Isolation Tests
 # ============================================================
+
 
 class TestOrganizationIsolation:
     """Test that organizations are properly isolated."""
@@ -527,6 +551,7 @@ class TestOrganizationIsolation:
 # Case State Transition Tests
 # ============================================================
 
+
 class TestCaseStateTransitions:
     """Test case status transitions."""
 
@@ -548,7 +573,9 @@ class TestCaseStateTransitions:
 
         # Set consulting fields required for INVESTIGATING status
         case_from_repo = await case_service.case_repo.get(case.case_id)
-        case_from_repo.consulting.proposed_problem_statement = "Test problem description"
+        case_from_repo.consulting.proposed_problem_statement = (
+            "Test problem description"
+        )
         case_from_repo.consulting.problem_statement_confirmed = True
         case_from_repo.consulting.decided_to_investigate = True
         await case_service.case_repo.save(case_from_repo)
@@ -577,7 +604,9 @@ class TestCaseStateTransitions:
 
         # Set consulting fields required for INVESTIGATING status
         case_from_repo = await case_service.case_repo.get(case.case_id)
-        case_from_repo.consulting.proposed_problem_statement = "Test problem description"
+        case_from_repo.consulting.proposed_problem_statement = (
+            "Test problem description"
+        )
         case_from_repo.consulting.problem_statement_confirmed = True
         case_from_repo.consulting.decided_to_investigate = True
         await case_service.case_repo.save(case_from_repo)
@@ -586,9 +615,7 @@ class TestCaseStateTransitions:
             case.case_id, org_id, {"status": CaseStatus.INVESTIGATING}
         )
 
-        closed = await case_service.close_case(
-            case.case_id, org_id, "Issue resolved"
-        )
+        closed = await case_service.close_case(case.case_id, org_id, "Issue resolved")
 
         assert closed.status == CaseStatus.RESOLVED
 
@@ -632,6 +659,7 @@ class TestCaseStateTransitions:
 # ============================================================
 # Case Details Tests
 # ============================================================
+
 
 class TestCaseDetails:
     """Test get_case_with_details functionality."""
@@ -701,6 +729,7 @@ class TestCaseDetails:
 # ============================================================
 # Edge Case Tests
 # ============================================================
+
 
 class TestEdgeCases:
     """Test edge cases and boundary conditions."""
@@ -779,6 +808,7 @@ class TestEdgeCases:
 # Concurrent Operations Tests
 # ============================================================
 
+
 class TestConcurrentOperations:
     """
     Test concurrent case operations.
@@ -814,7 +844,9 @@ class TestConcurrentOperations:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Requires session-per-operation pattern - see class docstring for architectural details")
+    @pytest.mark.skip(
+        reason="Requires session-per-operation pattern - see class docstring for architectural details"
+    )
     async def test_concurrent_case_creation(self, case_service):
         """
         Test creating multiple cases concurrently.
@@ -842,7 +874,9 @@ class TestConcurrentOperations:
         assert len(set(c.case_id for c in cases)) == 10  # All unique IDs
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="Requires session-per-operation pattern - see class docstring for architectural details")
+    @pytest.mark.skip(
+        reason="Requires session-per-operation pattern - see class docstring for architectural details"
+    )
     async def test_concurrent_updates_same_case(self, case_service):
         """
         Test concurrent updates to the same case.

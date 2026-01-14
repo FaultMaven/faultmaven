@@ -2,11 +2,14 @@
 
 Tests the storage adapter with mocked FileStorageService.
 """
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
-from faultmaven.modules.evidence.domain.adapters.storage_adapter import EvidenceStorageAdapter
+from faultmaven.modules.evidence.domain.adapters.storage_adapter import (
+    EvidenceStorageAdapter,
+)
 
 from .conftest import MockUploadFile
 
@@ -15,11 +18,13 @@ class MockFileStorageService:
     """Mock FileStorageService for testing."""
 
     def __init__(self):
-        self.store_file = AsyncMock(return_value={
-            "file_path": "evidence/standalone-abc12345/2025-01-02/uuid_test.log",
-            "stored_filename": "uuid_test.log",
-            "file_size": 1024,
-        })
+        self.store_file = AsyncMock(
+            return_value={
+                "file_path": "evidence/standalone-abc12345/2025-01-02/uuid_test.log",
+                "stored_filename": "uuid_test.log",
+                "file_size": 1024,
+            }
+        )
         self.delete_file = AsyncMock(return_value=True)
         self.retrieve_file = AsyncMock(return_value=b"file content bytes")
 
@@ -99,7 +104,9 @@ class TestStorageAdapterStoreFile:
         assert call_kwargs is not None
 
     @pytest.mark.asyncio
-    async def test_store_file_generates_unique_id(self, storage_adapter, mock_file_storage):
+    async def test_store_file_generates_unique_id(
+        self, storage_adapter, mock_file_storage
+    ):
         """Test that each upload generates a unique standalone ID."""
         upload_file = MockUploadFile()
 
@@ -126,7 +133,9 @@ class TestStorageAdapterDeleteFile:
         result = await storage_adapter.delete_file("evidence/path/to/file.log")
 
         assert result is True
-        mock_file_storage.delete_file.assert_called_once_with("evidence/path/to/file.log")
+        mock_file_storage.delete_file.assert_called_once_with(
+            "evidence/path/to/file.log"
+        )
 
     @pytest.mark.asyncio
     async def test_delete_file_not_found(self, storage_adapter, mock_file_storage):
@@ -138,7 +147,9 @@ class TestStorageAdapterDeleteFile:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_delete_file_delegates_to_storage(self, storage_adapter, mock_file_storage):
+    async def test_delete_file_delegates_to_storage(
+        self, storage_adapter, mock_file_storage
+    ):
         """Test that deletion delegates to FileStorageService."""
         path = "evidence/specific/path.log"
 
@@ -207,7 +218,9 @@ class TestStorageAdapterGetFileContent:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_file_content_error_handling(self, storage_adapter, mock_file_storage):
+    async def test_get_file_content_error_handling(
+        self, storage_adapter, mock_file_storage
+    ):
         """Test that errors are caught and None is returned."""
         mock_file_storage.retrieve_file.side_effect = IOError("Read error")
 
@@ -217,7 +230,9 @@ class TestStorageAdapterGetFileContent:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_file_content_delegates_to_storage(self, storage_adapter, mock_file_storage):
+    async def test_get_file_content_delegates_to_storage(
+        self, storage_adapter, mock_file_storage
+    ):
         """Test that retrieval delegates to FileStorageService."""
         path = "evidence/specific/path.log"
 

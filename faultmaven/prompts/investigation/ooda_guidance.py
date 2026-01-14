@@ -7,7 +7,10 @@ Design Reference:
 - docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
-from faultmaven.modules.agent.domain.models.investigation import InvestigationPhase, PHASE_OODA_WEIGHTS
+from faultmaven.modules.agent.domain.models.investigation import (
+    InvestigationPhase,
+    PHASE_OODA_WEIGHTS,
+)
 from faultmaven.core.investigation.iteration_strategy import PhaseIterationStrategy
 
 
@@ -54,12 +57,14 @@ def get_phase_ooda_guidance(phase: InvestigationPhase) -> str:
         else:
             return f"- {step.capitalize()}: Not used in this phase"
 
-    weights_display = "\n".join([
-        format_weight("observe", norm["observe"]),
-        format_weight("orient", norm["orient"]),
-        format_weight("decide", norm["decide"]),
-        format_weight("act", norm["act"]),
-    ])
+    weights_display = "\n".join(
+        [
+            format_weight("observe", norm["observe"]),
+            format_weight("orient", norm["orient"]),
+            format_weight("decide", norm["decide"]),
+            format_weight("act", norm["act"]),
+        ]
+    )
 
     # Build guidance text
     guidance_parts = [
@@ -86,10 +91,12 @@ def get_phase_ooda_guidance(phase: InvestigationPhase) -> str:
     # Add usage guidance
     if primary:
         primary_verbs = " and ".join(primary)
-        guidance_parts.extend([
-            "",
-            f"**Guidance**: Focus on **{primary_verbs}** to drive this phase forward.",
-        ])
+        guidance_parts.extend(
+            [
+                "",
+                f"**Guidance**: Focus on **{primary_verbs}** to drive this phase forward.",
+            ]
+        )
 
         if tactical or micro:
             guidance_parts.append(
@@ -149,7 +156,9 @@ def get_iteration_requirements_text(phase: InvestigationPhase) -> str:
         if requirement == "required":
             lines.append(f"- {step.capitalize()} (required - use in every iteration)")
         elif requirement == "optional":
-            lines.append(f"- {step.capitalize()} (optional - use when tactically useful)")
+            lines.append(
+                f"- {step.capitalize()} (optional - use when tactically useful)"
+            )
         elif requirement == "skip":
             lines.append(f"- {step.capitalize()} (not used in this phase)")
 

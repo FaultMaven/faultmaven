@@ -11,11 +11,7 @@ from typing import Optional
 from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.models.interfaces_user import Organization, IOrganizationRepository
 from faultmaven.models.user import User
-from faultmaven.exceptions import (
-    NotFoundError,
-    AuthorizationError,
-    ValidationException
-)
+from faultmaven.exceptions import NotFoundError, AuthorizationError, ValidationException
 
 
 class MultiTenantProvider(TenantProvider):
@@ -37,10 +33,7 @@ class MultiTenantProvider(TenantProvider):
         2. X-Organization-ID header (browser extensions)
     """
 
-    def __init__(
-        self,
-        organization_repository: IOrganizationRepository
-    ):
+    def __init__(self, organization_repository: IOrganizationRepository):
         """Initialize multi-tenant provider.
 
         Args:
@@ -49,9 +42,7 @@ class MultiTenantProvider(TenantProvider):
         self.organization_repository = organization_repository
 
     async def get_current_organization(
-        self,
-        current_user: User,
-        organization_id: Optional[str] = None
+        self, current_user: User, organization_id: Optional[str] = None
     ) -> Organization:
         """Get organization with membership validation.
 
@@ -79,22 +70,22 @@ class MultiTenantProvider(TenantProvider):
                 details={
                     "tenant_provider": "multi",
                     "user_id": current_user.user_id,
-                    "hint": "Add organization_id to request context"
-                }
+                    "hint": "Add organization_id to request context",
+                },
             )
 
         # Get organization
-        organization = await self.organization_repository.get_organization(organization_id)
+        organization = await self.organization_repository.get_organization(
+            organization_id
+        )
         if not organization:
             raise NotFoundError(
-                resource_type="Organization",
-                resource_id=organization_id
+                resource_type="Organization", resource_id=organization_id
             )
 
         # Verify user membership using repository method
         user_role = await self.organization_repository.get_member_role(
-            org_id=organization_id,
-            user_id=current_user.user_id
+            org_id=organization_id, user_id=current_user.user_id
         )
 
         if user_role is None:

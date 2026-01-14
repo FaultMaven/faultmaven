@@ -6,6 +6,7 @@ from enum import Enum
 
 class ErrorSeverity(Enum):
     """Error severity levels for intelligent escalation."""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -14,6 +15,7 @@ class ErrorSeverity(Enum):
 
 class RecoveryResult(Enum):
     """Results of recovery attempts."""
+
     SUCCESS = "success"
     PARTIAL = "partial"
     FAILED = "failed"
@@ -22,7 +24,7 @@ class RecoveryResult(Enum):
 
 class FaultMavenException(Exception):
     """Base exception for all FaultMaven errors."""
-    
+
     def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
         super().__init__(message)
         self.details = details or {}
@@ -30,56 +32,67 @@ class FaultMavenException(Exception):
 
 class ServiceException(FaultMavenException):
     """Raised when a service operation fails."""
+
     pass
 
 
 class AgentException(FaultMavenException):
     """Raised when agent processing fails."""
+
     pass
 
 
 class ValidationException(FaultMavenException):
     """Raised when input validation fails."""
+
     pass
 
 
 class PermissionDeniedException(FaultMavenException):
     """Raised when user lacks permission for an operation."""
+
     pass
 
 
 class ConfigurationException(FaultMavenException):
     """Raised when configuration is invalid."""
+
     pass
 
 
 class ExternalServiceException(FaultMavenException):
     """Raised when an external service call fails."""
+
     pass
 
 
 class SessionException(FaultMavenException):
     """Raised when session operations fail."""
+
     pass
 
 
 class SessionStoreException(SessionException):
     """Exception raised during session store operations."""
+
     pass
 
 
 class SessionCleanupException(SessionStoreException):
     """Exception raised during session cleanup operations."""
+
     pass
 
 
 class KnowledgeBaseException(FaultMavenException):
     """Raised when knowledge base operations fail."""
+
     pass
 
 
 class LLMException(FaultMavenException):
     """Raised when LLM operations fail."""
+
     pass
 
 
@@ -99,73 +112,84 @@ class ModelLoadingException(LLMException):
         self,
         message: str = "Model is loading",
         retry_after: int = 10,
-        model_name: Optional[str] = None
+        model_name: Optional[str] = None,
     ):
         self.retry_after = retry_after
         self.model_name = model_name
         super().__init__(
-            message,
-            details={"retry_after": retry_after, "model_name": model_name}
+            message, details={"retry_after": retry_after, "model_name": model_name}
         )
 
 
 class MemoryException(FaultMavenException):
     """Raised when memory operations fail."""
+
     pass
 
 
 class PlanningException(FaultMavenException):
     """Raised when planning operations fail."""
+
     pass
 
 
 class ReasoningException(FaultMavenException):
     """Raised when reasoning operations fail."""
+
     pass
 
 
 class BudgetExceededException(FaultMavenException):
     """Raised when operational budget limits are exceeded."""
+
     pass
 
 
 class ServiceUnavailableException(FaultMavenException):
     """Raised when a required service is not available."""
+
     pass
 
 
 class EmbeddingException(KnowledgeBaseException):
     """Base exception for embedding-related errors."""
+
     pass
 
 
 class EmbeddingGenerationError(EmbeddingException):
     """Raised when embedding generation fails."""
+
     pass
 
 
 class EmbeddingRateLimitError(EmbeddingException):
     """Raised when embedding API rate limit is exceeded."""
+
     pass
 
 
 class EmbeddingInvalidInputError(EmbeddingException):
     """Raised when input text is invalid for embedding generation."""
+
     pass
 
 
 class VectorStoreException(KnowledgeBaseException):
     """Base exception for vector store operations."""
+
     pass
 
 
 class VectorStoreConnectionError(VectorStoreException):
     """Raised when connection to vector store fails."""
+
     pass
 
 
 class VectorStoreOperationError(VectorStoreException):
     """Raised when a vector store operation fails."""
+
     pass
 
 
@@ -180,6 +204,7 @@ class ServiceError(FaultMavenException):
     All service-layer exceptions inherit from this class,
     providing a consistent hierarchy for error handling.
     """
+
     pass
 
 
@@ -208,7 +233,7 @@ class NotFoundError(ServiceError):
         self,
         resource_type: Optional[str] = None,
         resource_id: Optional[str] = None,
-        message: Optional[str] = None
+        message: Optional[str] = None,
     ):
         self.resource_type = resource_type
         self.resource_id = resource_id
@@ -225,7 +250,7 @@ class NotFoundError(ServiceError):
 
         super().__init__(
             error_message,
-            details={"resource_type": resource_type, "resource_id": resource_id}
+            details={"resource_type": resource_type, "resource_id": resource_id},
         )
 
 
@@ -257,7 +282,7 @@ class ConflictError(ServiceError):
         message: str,
         resource_type: Optional[str] = None,
         resource_id: Optional[str] = None,
-        conflict_reason: Optional[str] = None
+        conflict_reason: Optional[str] = None,
     ):
         self.resource_type = resource_type
         self.resource_id = resource_id
@@ -267,8 +292,8 @@ class ConflictError(ServiceError):
             details={
                 "resource_type": resource_type,
                 "resource_id": resource_id,
-                "conflict_reason": conflict_reason
-            }
+                "conflict_reason": conflict_reason,
+            },
         )
 
 
@@ -278,4 +303,5 @@ class RepositoryError(ServiceError):
     Raised when a repository operation (save, get, delete) fails
     due to database or storage issues.
     """
+
     pass

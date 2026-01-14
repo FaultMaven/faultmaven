@@ -25,9 +25,9 @@ def get_phase5_entry_mode_context(
         Entry mode context string to inject into Phase 5 prompts
     """
     mode_templates = {
-        'normal': _get_normal_entry_context,
-        'fast_recovery': _get_fast_recovery_entry_context,
-        'degraded': _get_degraded_entry_context,
+        "normal": _get_normal_entry_context,
+        "fast_recovery": _get_fast_recovery_entry_context,
+        "degraded": _get_degraded_entry_context,
     }
 
     template_fn = mode_templates.get(entry_mode, _get_normal_entry_context)
@@ -135,8 +135,14 @@ def _get_degraded_entry_context(investigation_state: InvestigationState) -> str:
     escalation_state = investigation_state.lifecycle.escalation_state
     working_conclusion = investigation_state.lifecycle.working_conclusion
 
-    degraded_type = escalation_state.degraded_mode_type.value if escalation_state.degraded_mode_type else "unknown"
-    degraded_explanation = escalation_state.degraded_mode_explanation or "Unknown limitation"
+    degraded_type = (
+        escalation_state.degraded_mode_type.value
+        if escalation_state.degraded_mode_type
+        else "unknown"
+    )
+    degraded_explanation = (
+        escalation_state.degraded_mode_explanation or "Unknown limitation"
+    )
     confidence_cap = escalation_state.get_confidence_cap()
     current_confidence = working_conclusion.confidence if working_conclusion else 0.0
     statement = working_conclusion.statement if working_conclusion else "Unknown"
@@ -240,7 +246,7 @@ def should_display_entry_mode_banner(entry_mode: str) -> bool:
     Returns:
         True if should display banner (fast_recovery or degraded)
     """
-    return entry_mode in ['fast_recovery', 'degraded']
+    return entry_mode in ["fast_recovery", "degraded"]
 
 
 def get_entry_mode_banner(entry_mode: str) -> str:
@@ -253,13 +259,13 @@ def get_entry_mode_banner(entry_mode: str) -> str:
         Banner string for user-facing output
     """
     banners = {
-        'fast_recovery': """
+        "fast_recovery": """
 ╔═══════════════════════════════════════════════════════════╗
 ║  ⚡ FAST RECOVERY MODE - Root Cause Not Validated ⚡     ║
 ║  Proposing mitigation based on blast radius analysis      ║
 ╚═══════════════════════════════════════════════════════════╝
 """,
-        'degraded': """
+        "degraded": """
 ╔═══════════════════════════════════════════════════════════╗
 ║  ⚠️  DEGRADED INVESTIGATION MODE - Limited Confidence ⚠️ ║
 ║  Proceeding with best-effort solution and caveats         ║

@@ -2,6 +2,7 @@
 
 Tests the FastAPI endpoints with mocked services.
 """
+
 import io
 import pytest
 from datetime import datetime, timezone
@@ -13,7 +14,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
-from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceListFilter
+from faultmaven.modules.evidence.domain.models import (
+    EvidenceArtifact,
+    EvidenceListFilter,
+)
 
 from .conftest import create_sample_evidence
 
@@ -21,6 +25,7 @@ from .conftest import create_sample_evidence
 # =============================================================================
 # Mock Service for API Tests
 # =============================================================================
+
 
 class MockEvidenceServiceForAPI:
     """Mock EvidenceService for API testing."""
@@ -34,7 +39,9 @@ class MockEvidenceServiceForAPI:
         self.link_to_case = AsyncMock(side_effect=self._link)
         self.get_file_url = AsyncMock(side_effect=self._get_url)
 
-    async def _upload(self, file, uploaded_by, description=None, tags=None, case_id=None):
+    async def _upload(
+        self, file, uploaded_by, description=None, tags=None, case_id=None
+    ):
         evidence = create_sample_evidence(
             original_filename=file.filename,
             user_id=str(uploaded_by),
@@ -48,9 +55,11 @@ class MockEvidenceServiceForAPI:
     async def _get(self, evidence_id: UUID) -> Optional[EvidenceArtifact]:
         return self._storage.get(str(evidence_id))
 
-    async def _list(self, filters: EvidenceListFilter) -> Tuple[List[EvidenceArtifact], int]:
+    async def _list(
+        self, filters: EvidenceListFilter
+    ) -> Tuple[List[EvidenceArtifact], int]:
         results = list(self._storage.values())
-        return results[filters.offset:filters.offset + filters.limit], len(results)
+        return results[filters.offset : filters.offset + filters.limit], len(results)
 
     async def _delete(self, evidence_id: UUID) -> bool:
         key = str(evidence_id)
@@ -82,6 +91,7 @@ class MockEvidenceServiceForAPI:
 # Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def mock_evidence_service():
     """Create mock evidence service."""
@@ -91,12 +101,14 @@ def mock_evidence_service():
 @pytest.fixture
 def mock_user():
     """Create a mock authenticated user."""
+
     class DevUser:
         def __init__(self):
             self.id = uuid4()
             self.user_id = self.id  # Some code uses user_id
             self.email = "test@example.com"
             self.organization_id = uuid4()
+
     return DevUser()
 
 
@@ -132,7 +144,9 @@ def client(app_with_mocks, mock_evidence_service, mock_user):
     from faultmaven.modules.evidence.api.routes import get_evidence_service
     from faultmaven.api.dependencies import get_current_user
 
-    app_with_mocks.dependency_overrides[get_evidence_service] = lambda: mock_evidence_service
+    app_with_mocks.dependency_overrides[get_evidence_service] = (
+        lambda: mock_evidence_service
+    )
     app_with_mocks.dependency_overrides[get_current_user] = lambda: mock_user
 
     return TestClient(app_with_mocks)
@@ -141,6 +155,7 @@ def client(app_with_mocks, mock_evidence_service, mock_user):
 # =============================================================================
 # Test Classes
 # =============================================================================
+
 
 class TestUploadEvidenceEndpoint:
     """Tests for POST /api/v1/evidence endpoint."""
@@ -379,7 +394,9 @@ class TestDownloadEvidenceEndpoint:
 class TestRouteOrdering:
     """Tests for route ordering (case/{case_id} before {evidence_id})."""
 
-    def test_case_route_not_confused_with_evidence_id(self, client, mock_evidence_service):
+    def test_case_route_not_confused_with_evidence_id(
+        self, client, mock_evidence_service
+    ):
         """Test that /case/{case_id} is not confused with /{evidence_id}."""
         case_id = uuid4()
 

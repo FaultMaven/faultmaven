@@ -6,7 +6,7 @@ distributed deployment modes with consistent schema validation.
 
 Core Contracts:
 - TurnContext: Router input with query, budget, and context
-- DecisionRecord: Orchestrator decision records for observability  
+- DecisionRecord: Orchestrator decision records for observability
 - RetrievalRequest/Response: Unified retrieval service contracts
 - ConfidenceRequest/Response: Global confidence service contracts
 - PolicyEvaluation: Policy/safety service evaluation results
@@ -21,7 +21,7 @@ Agent Contracts:
 
 Design Principles:
 - Schema validation with Pydantic models
-- Backward compatibility for version migration  
+- Backward compatibility for version migration
 - Comprehensive field documentation
 - Optional fields for graceful degradation
 - Standardized error handling patterns
@@ -29,7 +29,7 @@ Design Principles:
 
 from .core_contracts import (
     TurnContext,
-    DecisionRecord, 
+    DecisionRecord,
     RetrievalRequest,
     RetrievalResponse,
     ConfidenceRequest,
@@ -39,7 +39,7 @@ from .core_contracts import (
     LoopCheckResponse,
     GatewayResult,
     Budget,
-    Evidence
+    Evidence,
 )
 
 from .agent_contracts import (
@@ -51,7 +51,7 @@ from .agent_contracts import (
     DiagnosticResult,
     ValidationResult,
     PatternResult,
-    LearningResult
+    LearningResult,
 )
 
 from .error_contracts import (
@@ -59,39 +59,37 @@ from .error_contracts import (
     BudgetExceededError,
     ValidationError,
     CircuitBreakerError,
-    TimeoutError
+    TimeoutError,
 )
 
 __all__ = [
     # Core Service Contracts
-    'TurnContext',
-    'DecisionRecord',
-    'RetrievalRequest', 
-    'RetrievalResponse',
-    'ConfidenceRequest',
-    'ConfidenceResponse',
-    'PolicyEvaluation',
-    'LoopCheckRequest',
-    'LoopCheckResponse',
-    'GatewayResult',
-    'Budget',
-    'Evidence',
-    
+    "TurnContext",
+    "DecisionRecord",
+    "RetrievalRequest",
+    "RetrievalResponse",
+    "ConfidenceRequest",
+    "ConfidenceResponse",
+    "PolicyEvaluation",
+    "LoopCheckRequest",
+    "LoopCheckResponse",
+    "GatewayResult",
+    "Budget",
+    "Evidence",
     # Agent Contracts
-    'AgentRequest',
-    'AgentResponse', 
-    'ExecutionContext',
-    'TriageResult',
-    'ScopingResult',
-    'DiagnosticResult',
-    'ValidationResult',
-    'PatternResult',
-    'LearningResult',
-    
+    "AgentRequest",
+    "AgentResponse",
+    "ExecutionContext",
+    "TriageResult",
+    "ScopingResult",
+    "DiagnosticResult",
+    "ValidationResult",
+    "PatternResult",
+    "LearningResult",
     # Error Contracts
-    'ServiceError',
-    'BudgetExceededError',
-    'ValidationError',
-    'CircuitBreakerError',
-    'TimeoutError'
+    "ServiceError",
+    "BudgetExceededError",
+    "ValidationError",
+    "CircuitBreakerError",
+    "TimeoutError",
 ]

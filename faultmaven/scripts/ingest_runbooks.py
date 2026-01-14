@@ -52,8 +52,16 @@ class RunbookValidator:
     """Validates runbooks against quality standards"""
 
     REQUIRED_METADATA_FIELDS = [
-        "id", "title", "technology", "severity", "tags",
-        "difficulty", "version", "last_updated", "verified_by", "status"
+        "id",
+        "title",
+        "technology",
+        "severity",
+        "tags",
+        "difficulty",
+        "version",
+        "last_updated",
+        "verified_by",
+        "status",
     ]
 
     REQUIRED_SECTIONS = [
@@ -61,7 +69,7 @@ class RunbookValidator:
         "Diagnostic Steps",
         "Solutions",
         "Prevention",
-        "Related Issues"
+        "Related Issues",
     ]
 
     def __init__(self):
@@ -89,7 +97,9 @@ class RunbookValidator:
 
         # Check for code blocks
         if "```bash" not in content and "```" not in content:
-            self.warnings.append("No code blocks found - runbook should include commands")
+            self.warnings.append(
+                "No code blocks found - runbook should include commands"
+            )
 
         return len(self.errors) == 0
 
@@ -108,7 +118,7 @@ class RunbookIngestionPipeline:
         """Load log of previously ingested runbooks"""
         if self.ingestion_log_file.exists():
             try:
-                with open(self.ingestion_log_file, 'r') as f:
+                with open(self.ingestion_log_file, "r") as f:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"Could not load ingestion log: {e}")
@@ -117,20 +127,18 @@ class RunbookIngestionPipeline:
     def _save_ingestion_log(self):
         """Save ingestion log"""
         try:
-            with open(self.ingestion_log_file, 'w') as f:
+            with open(self.ingestion_log_file, "w") as f:
                 json.dump(self.ingestion_log, f, indent=2)
         except Exception as e:
             logger.error(f"Could not save ingestion log: {e}")
 
     def _calculate_file_hash(self, file_path: Path) -> str:
         """Calculate MD5 hash of file content for change detection"""
-        with open(file_path, 'rb') as f:
+        with open(file_path, "rb") as f:
             return hashlib.md5(f.read()).hexdigest()
 
     def discover_runbooks(
-        self,
-        technology: Optional[str] = None,
-        status_filter: Optional[str] = None
+        self, technology: Optional[str] = None, status_filter: Optional[str] = None
     ) -> List[Path]:
         """Discover all runbook markdown files"""
         pattern = "**/*.md"
@@ -140,7 +148,12 @@ class RunbookIngestionPipeline:
         runbook_files = []
         for file_path in self.runbook_dir.glob(pattern):
             # Skip special files
-            if file_path.name in ["README.md", "TEMPLATE.md", "CONTRIBUTING.md", "REVIEW_GUIDELINES.md"]:
+            if file_path.name in [
+                "README.md",
+                "TEMPLATE.md",
+                "CONTRIBUTING.md",
+                "REVIEW_GUIDELINES.md",
+            ]:
                 continue
 
             # Filter by status if requested
@@ -156,12 +169,12 @@ class RunbookIngestionPipeline:
     def _extract_metadata(self, file_path: Path) -> Dict:
         """Extract YAML frontmatter metadata from runbook"""
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
             # Parse YAML frontmatter
-            if content.startswith('---'):
-                parts = content.split('---', 2)
+            if content.startswith("---"):
+                parts = content.split("---", 2)
                 if len(parts) >= 3:
                     try:
                         metadata = yaml.safe_load(parts[1])
@@ -188,10 +201,7 @@ class RunbookIngestionPipeline:
         return current_hash != previous_hash
 
     async def ingest_runbook(
-        self,
-        file_path: Path,
-        validate: bool = True,
-        dry_run: bool = False
+        self, file_path: Path, validate: bool = True, dry_run: bool = False
     ) -> Dict[str, any]:
         """Ingest a single runbook"""
         result = {
@@ -199,12 +209,12 @@ class RunbookIngestionPipeline:
             "success": False,
             "errors": [],
             "warnings": [],
-            "document_id": None
+            "document_id": None,
         }
 
         try:
             # Read runbook content
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
             # Extract metadata
@@ -212,7 +222,9 @@ class RunbookIngestionPipeline:
 
             # Validate if requested
             if validate:
-                is_valid = self.validator.validate_runbook(str(file_path), content, metadata)
+                is_valid = self.validator.validate_runbook(
+                    str(file_path), content, metadata
+                )
                 result["errors"] = self.validator.errors
                 result["warnings"] = self.validator.warnings
 
@@ -261,18 +273,20 @@ class RunbookIngestionPipeline:
                 source_url=None,
                 document_id=document_id,
                 created_at=created_at,
-                updated_at=updated_at
+                updated_at=updated_at,
             )
 
             # Update ingestion log
             file_key = str(file_path.relative_to(self.runbook_dir))
             self.ingestion_log[file_key] = {
                 "hash": self._calculate_file_hash(file_path),
-                "ingested_at": to_json_compatible(datetime.now(timezone.utc).isoformat()),
+                "ingested_at": to_json_compatible(
+                    datetime.now(timezone.utc).isoformat()
+                ),
                 "document_id": document_id,
                 "title": title,
                 "technology": technology,
-                "status": metadata.get("status", "unknown")
+                "status": metadata.get("status", "unknown"),
             }
 
             result["success"] = True
@@ -290,7 +304,7 @@ class RunbookIngestionPipeline:
         status_filter: str = "verified",
         force: bool = False,
         validate: bool = True,
-        dry_run: bool = False
+        dry_run: bool = False,
     ):
         """Run the complete ingestion pipeline"""
         console.print("\n[bold blue]FaultMaven Runbook Ingestion Pipeline[/bold blue]")
@@ -301,17 +315,24 @@ class RunbookIngestionPipeline:
             console.print("[yellow]Initializing knowledge base connection...[/yellow]")
             try:
                 from faultmaven.config.settings import get_settings
+
                 settings = get_settings()
                 self.ingester = KnowledgeIngester(settings=settings)
                 console.print("[green]✓ Connected to knowledge base[/green]\n")
             except Exception as e:
                 console.print(f"[red]✗ Failed to connect to knowledge base: {e}[/red]")
-                console.print("[yellow]Run with --dry-run to validate without ingesting[/yellow]")
+                console.print(
+                    "[yellow]Run with --dry-run to validate without ingesting[/yellow]"
+                )
                 return
 
         # Discover runbooks
-        console.print(f"[yellow]Discovering runbooks (technology={technology or 'all'}, status={status_filter or 'all'})...[/yellow]")
-        runbooks = self.discover_runbooks(technology=technology, status_filter=status_filter)
+        console.print(
+            f"[yellow]Discovering runbooks (technology={technology or 'all'}, status={status_filter or 'all'})...[/yellow]"
+        )
+        runbooks = self.discover_runbooks(
+            technology=technology, status_filter=status_filter
+        )
         console.print(f"Found [green]{len(runbooks)}[/green] runbooks\n")
 
         if not runbooks:
@@ -320,9 +341,13 @@ class RunbookIngestionPipeline:
 
         # Filter by what needs reingestion
         if not force:
-            runbooks_to_ingest = [rb for rb in runbooks if self._needs_reingestion(rb, force)]
+            runbooks_to_ingest = [
+                rb for rb in runbooks if self._needs_reingestion(rb, force)
+            ]
             if len(runbooks_to_ingest) < len(runbooks):
-                console.print(f"[green]{len(runbooks) - len(runbooks_to_ingest)}[/green] runbooks already up-to-date")
+                console.print(
+                    f"[green]{len(runbooks) - len(runbooks_to_ingest)}[/green] runbooks already up-to-date"
+                )
         else:
             runbooks_to_ingest = runbooks
 
@@ -330,7 +355,9 @@ class RunbookIngestionPipeline:
             console.print("[green]All runbooks are up-to-date![/green]")
             return
 
-        console.print(f"[yellow]Ingesting {len(runbooks_to_ingest)} runbooks...[/yellow]\n")
+        console.print(
+            f"[yellow]Ingesting {len(runbooks_to_ingest)} runbooks...[/yellow]\n"
+        )
 
         # Ingest with progress tracking
         results = []
@@ -339,16 +366,16 @@ class RunbookIngestionPipeline:
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            console=console
+            console=console,
         ) as progress:
-            task = progress.add_task("Ingesting runbooks...", total=len(runbooks_to_ingest))
+            task = progress.add_task(
+                "Ingesting runbooks...", total=len(runbooks_to_ingest)
+            )
 
             for runbook_path in runbooks_to_ingest:
                 progress.update(task, description=f"Ingesting {runbook_path.name}...")
                 result = await self.ingest_runbook(
-                    runbook_path,
-                    validate=validate,
-                    dry_run=dry_run
+                    runbook_path, validate=validate, dry_run=dry_run
                 )
                 results.append(result)
                 progress.advance(task)
@@ -401,36 +428,33 @@ class RunbookIngestionPipeline:
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="FaultMaven Runbook Ingestion Pipeline")
-    parser.add_argument(
-        "--runbook-dir",
-        default="docs/runbooks",
-        help="Directory containing runbooks"
+    parser = argparse.ArgumentParser(
+        description="FaultMaven Runbook Ingestion Pipeline"
     )
     parser.add_argument(
-        "--technology",
-        help="Filter by technology (e.g., kubernetes, redis)"
+        "--runbook-dir", default="docs/runbooks", help="Directory containing runbooks"
+    )
+    parser.add_argument(
+        "--technology", help="Filter by technology (e.g., kubernetes, redis)"
     )
     parser.add_argument(
         "--status",
         default="verified",
         choices=["verified", "draft", "deprecated", "all"],
-        help="Filter by runbook status"
+        help="Filter by runbook status",
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Force reingest all runbooks (ignore change detection)"
+        help="Force reingest all runbooks (ignore change detection)",
     )
     parser.add_argument(
-        "--no-validate",
-        action="store_true",
-        help="Skip validation checks"
+        "--no-validate", action="store_true", help="Skip validation checks"
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate and report without actually ingesting"
+        help="Validate and report without actually ingesting",
     )
 
     args = parser.parse_args()
@@ -438,7 +462,7 @@ async def main():
     # Configure logging
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
     # Run pipeline
@@ -449,7 +473,7 @@ async def main():
         status_filter=None if args.status == "all" else args.status,
         force=args.force,
         validate=not args.no_validate,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
     )
 
 

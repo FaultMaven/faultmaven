@@ -1,13 +1,13 @@
 """Agentic Framework Core Models and Interfaces
 
-This module defines the core data models and interfaces for FaultMaven's 7-component 
+This module defines the core data models and interfaces for FaultMaven's 7-component
 agentic framework, enabling true Plan→Execute→Observe→Re-plan cycles with comprehensive
 state management and observability.
 
 The agentic framework consists of:
 1. State & Session Manager - Persistent memory and execution state
 2. Query Intake & Classification Engine - Intelligent query processing and routing
-3. Tool & Skill Broker - Dynamic orchestration of tools and skills  
+3. Tool & Skill Broker - Dynamic orchestration of tools and skills
 4. Guardrails & Policy Layer - Safety, security, and compliance enforcement
 5. Response Synthesizer & Formatter - Intelligent response generation
 6. Error Handling & Fallback Manager - Robust error recovery and graceful degradation
@@ -42,6 +42,7 @@ from faultmaven.modules.agent.domain.models.investigation import (
 
 class AgentRole(str, Enum):
     """Different agent roles in the system"""
+
     PRIMARY_AGENT = "primary_agent"
     SPECIALIST_AGENT = "specialist_agent"
     COORDINATION_AGENT = "coordination_agent"
@@ -50,6 +51,7 @@ class AgentRole(str, Enum):
 
 class AgentCapabilityType(str, Enum):
     """Types of capabilities an agent can have"""
+
     REASONING = "reasoning"
     TOOL_EXECUTION = "tool_execution"
     KNOWLEDGE_RETRIEVAL = "knowledge_retrieval"
@@ -61,6 +63,7 @@ class AgentCapabilityType(str, Enum):
 
 class ExecutionPriority(str, Enum):
     """Priority levels for agentic operations"""
+
     LOW = "low"
     NORMAL = "normal"
     HIGH = "high"
@@ -70,6 +73,7 @@ class ExecutionPriority(str, Enum):
 
 class SafetyLevel(str, Enum):
     """Safety levels for operations"""
+
     SAFE = "safe"
     REQUIRES_CONFIRMATION = "requires_confirmation"
     RESTRICTED = "restricted"
@@ -78,6 +82,7 @@ class SafetyLevel(str, Enum):
 
 class AgentExecutionState(BaseModel):
     """Represents the current execution state of an agentic workflow"""
+
     session_id: str
     agent_id: str = "faultmaven-agent"
     current_phase: InvestigationPhase = InvestigationPhase.INTAKE
@@ -90,7 +95,7 @@ class AgentExecutionState(BaseModel):
     safety_constraints: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    
+
     # Additional fields for test compatibility
     current_step: int = 1
     workflow_status: str = "planning"
@@ -100,6 +105,7 @@ class AgentExecutionState(BaseModel):
 
 class ConversationMemory(BaseModel):
     """Rich conversation memory with semantic understanding"""
+
     conversation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_profile: Dict[str, Any] = Field(default_factory=dict)
     interaction_patterns: Dict[str, Any] = Field(default_factory=dict)
@@ -108,7 +114,7 @@ class ConversationMemory(BaseModel):
     learned_preferences: Dict[str, Any] = Field(default_factory=dict)
     troubleshooting_context: Dict[str, Any] = Field(default_factory=dict)
     semantic_memory: Dict[str, Any] = Field(default_factory=dict)
-    
+
     # Additional fields for test compatibility
     session_id: str = ""
     messages: List[Dict[str, Any]] = Field(default_factory=list)
@@ -119,6 +125,7 @@ class ConversationMemory(BaseModel):
 
 class AgentCapability(BaseModel):
     """Represents a specific capability of an agent"""
+
     capability_id: str
     capability_type: AgentCapabilityType
     name: str
@@ -133,6 +140,7 @@ class AgentCapability(BaseModel):
 
 class PlanNode(BaseModel):
     """Individual node in an execution plan"""
+
     node_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
@@ -148,6 +156,7 @@ class PlanNode(BaseModel):
 
 class ExecutionPlan(BaseModel):
     """Complete execution plan for an agentic workflow"""
+
     plan_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
     query_id: Optional[str] = None
@@ -158,7 +167,7 @@ class ExecutionPlan(BaseModel):
     risk_assessment: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_by: str = "system"
-    
+
     # Additional fields for test compatibility
     query: str = ""
     steps: List[PlanNode] = Field(default_factory=list)
@@ -167,6 +176,7 @@ class ExecutionPlan(BaseModel):
 
 class ObservationData(BaseModel):
     """Data collected during execution observation"""
+
     observation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
     phase: InvestigationPhase
@@ -181,6 +191,7 @@ class ObservationData(BaseModel):
 
 class AdaptationEvent(BaseModel):
     """Represents an adaptation made to the execution plan"""
+
     adaptation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
     trigger_reason: str
@@ -193,6 +204,7 @@ class AdaptationEvent(BaseModel):
 
 class AgentMetrics(BaseModel):
     """Performance and quality metrics for agent execution"""
+
     session_id: str
     total_execution_time: float = 0.0
     plan_generation_time: float = 0.0
@@ -210,6 +222,7 @@ class AgentMetrics(BaseModel):
 
 class PolicyViolation(BaseModel):
     """Represents a policy violation detected by guardrails"""
+
     violation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     policy_rule_id: str
     violation_type: str
@@ -222,6 +235,7 @@ class PolicyViolation(BaseModel):
 
 class ComponentMessage(BaseModel):
     """Message for inter-component communication"""
+
     message_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     source_component: str
     target_component: str
@@ -234,39 +248,50 @@ class ComponentMessage(BaseModel):
 
 # Core Agentic Interfaces
 
+
 class IAgentStateManager(ABC):
     """Interface for managing agent execution state and conversation context"""
-    
+
     @abstractmethod
-    async def get_execution_state(self, session_id: str) -> Optional[AgentExecutionState]:
+    async def get_execution_state(
+        self, session_id: str
+    ) -> Optional[AgentExecutionState]:
         """Retrieve current execution state for a session"""
         pass
-    
+
     @abstractmethod
-    async def update_execution_state(self, session_id: str, state: AgentExecutionState) -> bool:
+    async def update_execution_state(
+        self, session_id: str, state: AgentExecutionState
+    ) -> bool:
         """Update execution state for a session"""
         pass
-    
+
     @abstractmethod
-    async def get_conversation_memory(self, session_id: str) -> Optional[ConversationMemory]:
+    async def get_conversation_memory(
+        self, session_id: str
+    ) -> Optional[ConversationMemory]:
         """Retrieve conversation memory for context"""
         pass
-    
+
     @abstractmethod
-    async def update_conversation_memory(self, session_id: str, memory: ConversationMemory) -> bool:
+    async def update_conversation_memory(
+        self, session_id: str, memory: ConversationMemory
+    ) -> bool:
         """Update conversation memory"""
         pass
-    
+
     @abstractmethod
-    async def create_execution_plan(self, session_id: str, query: str, context: Dict[str, Any]) -> ExecutionPlan:
+    async def create_execution_plan(
+        self, session_id: str, query: str, context: Dict[str, Any]
+    ) -> ExecutionPlan:
         """Create a new execution plan based on query and context"""
         pass
-    
+
     @abstractmethod
     async def record_observation(self, observation: ObservationData) -> bool:
         """Record an observation during execution"""
         pass
-    
+
     @abstractmethod
     async def record_adaptation(self, adaptation: AdaptationEvent) -> bool:
         """Record an adaptation to the execution plan"""
@@ -275,27 +300,31 @@ class IAgentStateManager(ABC):
 
 class IQueryClassificationEngine(ABC):
     """Interface for query intake and classification"""
-    
+
     @abstractmethod
-    async def classify_query(self, query: str, context: Optional[Dict[str, Any]] = None) -> "QueryClassification":
+    async def classify_query(
+        self, query: str, context: Optional[Dict[str, Any]] = None
+    ) -> "QueryClassification":
         """Classify a user query and determine processing strategy"""
         pass
-    
+
     @abstractmethod
     async def extract_intent(self, query: str) -> Dict[str, Any]:
         """Extract user intent from query"""
         pass
-    
+
     @abstractmethod
-    async def assess_complexity(self, query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def assess_complexity(
+        self, query: str, context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Assess query complexity to determine sync vs async processing"""
         pass
-    
+
     @abstractmethod
     async def identify_domain(self, query: str) -> Optional[str]:
         """Identify the domain/category of the query"""
         pass
-    
+
     @abstractmethod
     async def extract_entities(self, query: str) -> List[Dict[str, Any]]:
         """Extract entities from the query"""
@@ -304,27 +333,33 @@ class IQueryClassificationEngine(ABC):
 
 class IToolSkillBroker(ABC):
     """Interface for tool and skill orchestration"""
-    
+
     @abstractmethod
-    async def discover_capabilities(self, requirements: Dict[str, Any]) -> List[AgentCapability]:
+    async def discover_capabilities(
+        self, requirements: Dict[str, Any]
+    ) -> List[AgentCapability]:
         """Discover available capabilities matching requirements"""
         pass
-    
+
     @abstractmethod
     async def register_capability(self, capability: AgentCapability) -> bool:
         """Register a new capability with the broker"""
         pass
-    
+
     @abstractmethod
-    async def execute_capability(self, capability_id: str, parameters: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute_capability(
+        self, capability_id: str, parameters: Dict[str, Any], context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute a specific capability"""
         pass
-    
+
     @abstractmethod
-    async def assess_capability_safety(self, capability_id: str, parameters: Dict[str, Any]) -> SafetyLevel:
+    async def assess_capability_safety(
+        self, capability_id: str, parameters: Dict[str, Any]
+    ) -> SafetyLevel:
         """Assess the safety level of executing a capability"""
         pass
-    
+
     @abstractmethod
     async def get_capability_performance(self, capability_id: str) -> Dict[str, float]:
         """Get performance metrics for a capability"""
@@ -333,80 +368,105 @@ class IToolSkillBroker(ABC):
 
 class IGuardrailsPolicyLayer(ABC):
     """Interface for guardrails and policy enforcement"""
-    
+
     @abstractmethod
-    async def evaluate_request(self, request: Dict[str, Any], context: Dict[str, Any]) -> List[PolicyViolation]:
+    async def evaluate_request(
+        self, request: Dict[str, Any], context: Dict[str, Any]
+    ) -> List[PolicyViolation]:
         """Evaluate a request against all policies"""
         pass
-    
+
     @abstractmethod
-    async def check_safety_constraints(self, operation: str, parameters: Dict[str, Any]) -> bool:
+    async def check_safety_constraints(
+        self, operation: str, parameters: Dict[str, Any]
+    ) -> bool:
         """Check if an operation meets safety constraints"""
         pass
-    
+
     @abstractmethod
     async def enforce_user_permissions(self, user_id: str, operation: str) -> bool:
         """Check if user has permission for operation"""
         pass
-    
+
     @abstractmethod
     async def apply_data_sanitization(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply data sanitization policies"""
         pass
-    
+
     @abstractmethod
-    async def audit_operation(self, operation: str, user_id: str, parameters: Dict[str, Any]) -> bool:
+    async def audit_operation(
+        self, operation: str, user_id: str, parameters: Dict[str, Any]
+    ) -> bool:
         """Record operation for audit purposes"""
         pass
 
 
 class IResponseSynthesizer(ABC):
     """Interface for response synthesis and formatting"""
-    
+
     @abstractmethod
-    async def synthesize_response(self, data: List[Dict[str, Any]], context: Dict[str, Any], user_preferences: Dict[str, Any]) -> str:
+    async def synthesize_response(
+        self,
+        data: List[Dict[str, Any]],
+        context: Dict[str, Any],
+        user_preferences: Dict[str, Any],
+    ) -> str:
         """Synthesize a response from multiple data sources"""
         pass
-    
+
     @abstractmethod
-    async def format_response(self, content: str, format_type: str, context: Dict[str, Any]) -> str:
+    async def format_response(
+        self, content: str, format_type: str, context: Dict[str, Any]
+    ) -> str:
         """Format response according to specified type and context"""
         pass
-    
+
     @abstractmethod
-    async def personalize_response(self, content: str, user_profile: Dict[str, Any]) -> str:
+    async def personalize_response(
+        self, content: str, user_profile: Dict[str, Any]
+    ) -> str:
         """Personalize response based on user profile"""
         pass
-    
+
     @abstractmethod
-    async def assess_response_quality(self, response: str, context: Dict[str, Any]) -> float:
+    async def assess_response_quality(
+        self, response: str, context: Dict[str, Any]
+    ) -> float:
         """Assess the quality of a response"""
         pass
 
 
 class IErrorFallbackManager(ABC):
     """Interface for error handling and fallback management"""
-    
+
     @abstractmethod
-    async def handle_error(self, error: Exception, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def handle_error(
+        self, error: Exception, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Handle an error with appropriate fallback strategy"""
         pass
-    
+
     @abstractmethod
-    async def get_fallback_strategy(self, error_type: str, context: Dict[str, Any]) -> str:
+    async def get_fallback_strategy(
+        self, error_type: str, context: Dict[str, Any]
+    ) -> str:
         """Get appropriate fallback strategy for error type"""
         pass
-    
+
     @abstractmethod
-    async def execute_fallback(self, strategy: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute_fallback(
+        self, strategy: str, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute a fallback strategy"""
         pass
-    
+
     @abstractmethod
-    async def record_error_pattern(self, error: Exception, context: Dict[str, Any]) -> bool:
+    async def record_error_pattern(
+        self, error: Exception, context: Dict[str, Any]
+    ) -> bool:
         """Record error pattern for learning"""
         pass
-    
+
     @abstractmethod
     async def assess_system_health(self) -> Dict[str, Any]:
         """Assess overall system health"""
@@ -415,46 +475,58 @@ class IErrorFallbackManager(ABC):
 
 class IBusinessLogicWorkflowEngine(ABC):
     """Interface for business logic and workflow orchestration"""
-    
+
     @abstractmethod
-    async def execute_workflow(self, plan: ExecutionPlan, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute_workflow(
+        self, plan: ExecutionPlan, context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Execute a complete workflow plan"""
         pass
-    
+
     @abstractmethod
-    async def orchestrate_agents(self, agents: List[str], task: Dict[str, Any]) -> Dict[str, Any]:
+    async def orchestrate_agents(
+        self, agents: List[str], task: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Orchestrate multiple agents for a complex task"""
         pass
-    
+
     @abstractmethod
-    async def manage_workflow_state(self, session_id: str, state: Dict[str, Any]) -> bool:
+    async def manage_workflow_state(
+        self, session_id: str, state: Dict[str, Any]
+    ) -> bool:
         """Manage workflow state transitions"""
         pass
-    
+
     @abstractmethod
-    async def coordinate_tool_execution(self, tools: List[str], parameters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def coordinate_tool_execution(
+        self, tools: List[str], parameters: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Coordinate execution of multiple tools"""
         pass
-    
+
     @abstractmethod
-    async def adapt_workflow(self, session_id: str, observations: List[ObservationData]) -> ExecutionPlan:
+    async def adapt_workflow(
+        self, session_id: str, observations: List[ObservationData]
+    ) -> ExecutionPlan:
         """Adapt workflow based on observations"""
         pass
 
 
 class IComponentBus(ABC):
     """Interface for inter-component communication"""
-    
+
     @abstractmethod
     async def send_message(self, message: ComponentMessage) -> bool:
         """Send a message to another component"""
         pass
-    
+
     @abstractmethod
-    async def subscribe(self, component_name: str, message_types: List[str], handler: Callable) -> bool:
+    async def subscribe(
+        self, component_name: str, message_types: List[str], handler: Callable
+    ) -> bool:
         """Subscribe to specific message types"""
         pass
-    
+
     @abstractmethod
     async def unsubscribe(self, component_name: str, message_types: List[str]) -> bool:
         """Unsubscribe from message types"""
@@ -463,48 +535,50 @@ class IComponentBus(ABC):
 
 # Specialized Data Models for LangGraph Integration
 
+
 class AgenticLangGraphState(BaseModel):
     """Extended LangGraph state for agentic workflows"""
+
     # Core identifiers
     session_id: str
     case_id: Optional[str] = None
     workflow_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    
+
     # Agentic execution state
     current_phase: InvestigationPhase = InvestigationPhase.INTAKE
     execution_state: Optional[AgentExecutionState] = None
     conversation_memory: Optional[ConversationMemory] = None
-    
+
     # Planning and execution
     current_plan: Optional[ExecutionPlan] = None
     active_nodes: List[str] = Field(default_factory=list)
     completed_nodes: List[str] = Field(default_factory=list)
     failed_nodes: List[str] = Field(default_factory=list)
-    
+
     # Observation and adaptation
     observations: List[ObservationData] = Field(default_factory=list)
     adaptations: List[AdaptationEvent] = Field(default_factory=list)
     confidence_history: List[float] = Field(default_factory=list)
-    
+
     # Component interactions
     component_messages: List[ComponentMessage] = Field(default_factory=list)
     policy_violations: List[PolicyViolation] = Field(default_factory=list)
-    
+
     # User interaction
     user_query: Optional[str] = None
     user_context: Dict[str, Any] = Field(default_factory=dict)
     response_preferences: Dict[str, Any] = Field(default_factory=dict)
-    
+
     # Results and metrics
     final_response: Optional[str] = None
     response_sources: List[Dict[str, Any]] = Field(default_factory=list)
     execution_metrics: Optional[AgentMetrics] = None
-    
+
     # Error handling
     errors_encountered: List[Dict[str, Any]] = Field(default_factory=list)
     fallback_strategies_used: List[str] = Field(default_factory=list)
-    
+
     # Metadata
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -513,43 +587,44 @@ class AgenticLangGraphState(BaseModel):
 
 # Factory and Utility Classes
 
+
 class AgenticComponentFactory:
     """Factory for creating agentic components"""
-    
+
     def __init__(self, container):
         """Initialize with dependency injection container"""
         self.container = container
-    
+
     def create_state_manager(self) -> IAgentStateManager:
         """Create state manager component"""
         # Will be implemented in the actual component
         pass
-    
+
     def create_classification_engine(self) -> IQueryClassificationEngine:
         """Create query classification engine"""
         # Will be implemented in the actual component
         pass
-    
+
     def create_tool_broker(self) -> IToolSkillBroker:
         """Create tool and skill broker"""
         # Will be implemented in the actual component
         pass
-    
+
     def create_guardrails_layer(self) -> IGuardrailsPolicyLayer:
         """Create guardrails and policy layer"""
         # Will be implemented in the actual component
         pass
-    
+
     def create_response_synthesizer(self) -> IResponseSynthesizer:
         """Create response synthesizer"""
         # Will be implemented in the actual component
         pass
-    
+
     def create_error_manager(self) -> IErrorFallbackManager:
         """Create error handling and fallback manager"""
         # Will be implemented in the actual component
         pass
-    
+
     def create_workflow_engine(self) -> IBusinessLogicWorkflowEngine:
         """Create business logic and workflow engine"""
         # Will be implemented in the actual component
@@ -558,8 +633,10 @@ class AgenticComponentFactory:
 
 # Additional Models for Test Compatibility
 
+
 class QueryInput(BaseModel):
     """Input query from user for processing"""
+
     query_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content: str
     context: Dict[str, Any] = Field(default_factory=dict)
@@ -590,6 +667,7 @@ class QueryContext(BaseModel):
         >>> context.validate_for_classification()
         True
     """
+
     session_id: str = ""
     case_id: Optional[str] = None
     conversation_history: str = ""
@@ -619,6 +697,7 @@ class QueryIntent(str, Enum):
     16 intents designed backward from 9 ResponseType formats (1.8:1 ratio).
     Each intent maps to distinct ResponseType or shares format with semantically different intents.
     """
+
     # GROUP 1: SIMPLE ANSWER INTENTS (10) → ResponseType.ANSWER
     INFORMATION = "information"  # Merged: EXPLANATION, DOCUMENTATION into INFORMATION
     STATUS_CHECK = "status_check"  # Merged: MONITORING into STATUS_CHECK
@@ -637,7 +716,9 @@ class QueryIntent(str, Enum):
     DEPLOYMENT = "deployment"  # NEW v3.0: Deployment planning and execution
 
     # GROUP 3: VISUAL RESPONSE INTENTS (2) → Specialized ResponseTypes
-    VISUALIZATION = "visualization"  # NEW v3.0: Diagrams, flowcharts → ResponseType.VISUAL_DIAGRAM
+    VISUALIZATION = (
+        "visualization"  # NEW v3.0: Diagrams, flowcharts → ResponseType.VISUAL_DIAGRAM
+    )
     COMPARISON = "comparison"  # NEW v3.0: Feature comparisons, pros/cons → ResponseType.COMPARISON_TABLE
 
     # GROUP 4: DIAGNOSTIC INTENT (1) → Dynamic ResponseType (workflow-driven)
@@ -649,6 +730,7 @@ class QueryIntent(str, Enum):
 
 class QueryClassification(BaseModel):
     """Complete query classification result"""
+
     classification_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     query: str
     normalized_query: str
@@ -659,7 +741,9 @@ class QueryClassification(BaseModel):
     urgency: str = "medium"  # low, medium, high, critical
     entities: List[Dict[str, Any]] = Field(default_factory=list)
     context: Dict[str, Any] = Field(default_factory=dict)
-    classification_timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    classification_timestamp: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     classification_method: str = "pattern_based"
     processing_recommendations: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -667,6 +751,7 @@ class QueryClassification(BaseModel):
 
 class QueryComplexity(BaseModel):
     """Assessment of query complexity"""
+
     complexity_score: float
     factors: Dict[str, Any] = Field(default_factory=dict)
     processing_recommendation: str
@@ -675,6 +760,7 @@ class QueryComplexity(BaseModel):
 
 class QueryDomain(BaseModel):
     """Domain classification for query"""
+
     domain_id: str
     domain_name: str
     confidence: float
@@ -683,6 +769,7 @@ class QueryDomain(BaseModel):
 
 class QueryUrgency(str, Enum):
     """Urgency levels for queries - v3.0 standardized naming"""
+
     LOW = "low"
     MEDIUM = "medium"  # Renamed from NORMAL for consistency
     HIGH = "high"
@@ -691,6 +778,7 @@ class QueryUrgency(str, Enum):
 
 class ClassificationResult(BaseModel):
     """Complete classification result"""
+
     query_classification: QueryClassification
     intent: QueryIntent
     complexity: QueryComplexity
@@ -701,6 +789,7 @@ class ClassificationResult(BaseModel):
 
 class QueryClassificationResult(BaseModel):
     """Alias for ClassificationResult - used in tests"""
+
     query_classification: QueryClassification
     intent: QueryIntent
     complexity: QueryComplexity
@@ -711,6 +800,7 @@ class QueryClassificationResult(BaseModel):
 
 class SecurityBoundary(BaseModel):
     """Security boundary definition"""
+
     boundary_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
@@ -720,6 +810,7 @@ class SecurityBoundary(BaseModel):
 
 class ContentPolicy(BaseModel):
     """Content policy definition"""
+
     policy_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     rules: List[Dict[str, Any]] = Field(default_factory=list)
@@ -728,6 +819,7 @@ class ContentPolicy(BaseModel):
 
 class ComplianceResult(BaseModel):
     """Result of compliance check"""
+
     compliant: bool
     violations: List[PolicyViolation] = Field(default_factory=list)
     score: float = 1.0
@@ -735,6 +827,7 @@ class ComplianceResult(BaseModel):
 
 class PIIDetectionResult(BaseModel):
     """Result of PII detection"""
+
     entities_found: List[Dict[str, Any]] = Field(default_factory=list)
     anonymized_text: Optional[str] = None
     confidence: float = 1.0
@@ -742,6 +835,7 @@ class PIIDetectionResult(BaseModel):
 
 class ValidationRequest(BaseModel):
     """Request for validation"""
+
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content: Dict[str, Any]
     validation_type: str
@@ -750,6 +844,7 @@ class ValidationRequest(BaseModel):
 
 class ValidationResult(BaseModel):
     """Result of validation"""
+
     request_id: str
     valid: bool
     errors: List[str] = Field(default_factory=list)
@@ -758,6 +853,7 @@ class ValidationResult(BaseModel):
 
 class SecurityLevel(str, Enum):
     """Security levels"""
+
     PUBLIC = "public"
     INTERNAL = "internal"
     CONFIDENTIAL = "confidential"
@@ -766,6 +862,7 @@ class SecurityLevel(str, Enum):
 
 class GuardrailsResult(BaseModel):
     """Result from guardrails evaluation"""
+
     evaluation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     passed: bool
     violations: List[PolicyViolation] = Field(default_factory=list)
@@ -775,6 +872,7 @@ class GuardrailsResult(BaseModel):
 
 class ProcessingResult(BaseModel):
     """Generic processing result"""
+
     result_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     success: bool
     data: Dict[str, Any] = Field(default_factory=dict)
@@ -784,6 +882,7 @@ class ProcessingResult(BaseModel):
 
 class QualityMetrics(BaseModel):
     """Quality metrics for various operations"""
+
     accuracy: float = 0.0
     completeness: float = 0.0
     relevance: float = 0.0
@@ -793,6 +892,7 @@ class QualityMetrics(BaseModel):
 
 class ResponseTemplate(BaseModel):
     """Template for response formatting"""
+
     template_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     format_type: str
@@ -802,6 +902,7 @@ class ResponseTemplate(BaseModel):
 
 class ResponseSource(BaseModel):
     """Source of response information"""
+
     source_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     type: str
     content: Dict[str, Any] = Field(default_factory=dict)
@@ -811,6 +912,7 @@ class ResponseSource(BaseModel):
 
 class SynthesisRequest(BaseModel):
     """Request for response synthesis"""
+
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     sources: List[ResponseSource] = Field(default_factory=list)
     context: Dict[str, Any] = Field(default_factory=dict)
@@ -819,6 +921,7 @@ class SynthesisRequest(BaseModel):
 
 class SynthesisResult(BaseModel):
     """Result of response synthesis"""
+
     request_id: str
     synthesized_content: str
     quality_metrics: QualityMetrics
@@ -827,6 +930,7 @@ class SynthesisResult(BaseModel):
 
 class ContentFormat(str, Enum):
     """Content format types"""
+
     MARKDOWN = "markdown"
     HTML = "html"
     JSON = "json"
@@ -835,6 +939,7 @@ class ContentFormat(str, Enum):
 
 class QualityAssessment(BaseModel):
     """Assessment of content quality"""
+
     assessment_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content_id: str
     metrics: QualityMetrics
@@ -844,6 +949,7 @@ class QualityAssessment(BaseModel):
 
 class AgentCapabilities(BaseModel):
     """Extended agent capabilities"""
+
     capabilities_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     available_tools: List[str] = Field(default_factory=list)
     skill_levels: Dict[str, float] = Field(default_factory=dict)
@@ -852,6 +958,7 @@ class AgentCapabilities(BaseModel):
 
 class ToolExecutionRequest(BaseModel):
     """Request for tool execution"""
+
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     tool_name: str
     parameters: Dict[str, Any] = Field(default_factory=dict)
@@ -861,6 +968,7 @@ class ToolExecutionRequest(BaseModel):
 
 class ToolExecutionResult(BaseModel):
     """Result of tool execution"""
+
     request_id: str
     tool_name: str
     success: bool
@@ -871,6 +979,7 @@ class ToolExecutionResult(BaseModel):
 
 class SafetyAssessment(BaseModel):
     """Safety assessment for operations"""
+
     assessment_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     operation: str
     safety_level: SafetyLevel
@@ -880,6 +989,7 @@ class SafetyAssessment(BaseModel):
 
 class PerformanceMetrics(BaseModel):
     """Performance metrics tracking"""
+
     metrics_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     operation_type: str
     latency: float = 0.0
@@ -890,6 +1000,7 @@ class PerformanceMetrics(BaseModel):
 
 class CapabilityDiscovery(BaseModel):
     """Result of capability discovery"""
+
     discovery_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     discovered_capabilities: List[AgentCapability] = Field(default_factory=list)
     matching_score: float = 0.0
@@ -898,6 +1009,7 @@ class CapabilityDiscovery(BaseModel):
 
 class ExecutionStep(BaseModel):
     """Individual step in execution plan"""
+
     step_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
@@ -909,6 +1021,7 @@ class ExecutionStep(BaseModel):
 
 class SuggestedAction(BaseModel):
     """Suggested action for user (used by OODA framework)"""
+
     action_type: str
     description: str
     commands: List[str] = Field(default_factory=list)
@@ -922,6 +1035,7 @@ class StructuredLLMResponse(BaseModel):
     This is an internal format used by the OODA orchestrator to maintain
     compatibility with the legacy doctor/patient system.
     """
+
     answer: str
     reasoning: Optional[str] = None
     suggested_actions: Optional[List[SuggestedAction]] = None
@@ -932,6 +1046,7 @@ class StructuredLLMResponse(BaseModel):
 
 class AgentResponse(BaseModel):
     """Response from an agent"""
+
     response_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     agent_id: str
     content: str
@@ -943,6 +1058,7 @@ class AgentResponse(BaseModel):
 
 class ErrorContext(BaseModel):
     """Context information for errors"""
+
     context_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
     operation: str
@@ -953,6 +1069,7 @@ class ErrorContext(BaseModel):
 
 class ErrorType(str, Enum):
     """Types of errors"""
+
     SYSTEM_ERROR = "system_error"
     USER_ERROR = "user_error"
     NETWORK_ERROR = "network_error"
@@ -963,6 +1080,7 @@ class ErrorType(str, Enum):
 
 class ErrorSeverity(str, Enum):
     """Error severity levels"""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -971,6 +1089,7 @@ class ErrorSeverity(str, Enum):
 
 class RecoveryStrategy(BaseModel):
     """Strategy for error recovery"""
+
     strategy_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
@@ -981,6 +1100,7 @@ class RecoveryStrategy(BaseModel):
 
 class CircuitBreakerState(str, Enum):
     """Circuit breaker states"""
+
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
@@ -988,6 +1108,7 @@ class CircuitBreakerState(str, Enum):
 
 class HealthStatus(str, Enum):
     """System health status"""
+
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     UNHEALTHY = "unhealthy"
@@ -995,6 +1116,7 @@ class HealthStatus(str, Enum):
 
 class AlertLevel(str, Enum):
     """Alert levels"""
+
     INFO = "info"
     WARNING = "warning"
     ERROR = "error"
@@ -1003,6 +1125,7 @@ class AlertLevel(str, Enum):
 
 class ErrorClassification(BaseModel):
     """Classification of an error"""
+
     classification_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     error_type: ErrorType
     severity: ErrorSeverity
@@ -1013,6 +1136,7 @@ class ErrorClassification(BaseModel):
 
 class RecoveryResult(BaseModel):
     """Result of recovery attempt"""
+
     recovery_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     strategy_used: str
     success: bool
@@ -1022,6 +1146,7 @@ class RecoveryResult(BaseModel):
 
 class FallbackConfig(BaseModel):
     """Configuration for fallback behavior"""
+
     config_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     error_types: List[ErrorType] = Field(default_factory=list)
     fallback_strategies: List[str] = Field(default_factory=list)
@@ -1031,6 +1156,7 @@ class FallbackConfig(BaseModel):
 
 class ComplianceReport(BaseModel):
     """Comprehensive compliance evaluation report"""
+
     report_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     evaluation_id: str
     compliance_status: str
@@ -1043,6 +1169,7 @@ class ComplianceReport(BaseModel):
 
 class SafetyClassification(BaseModel):
     """Classification of content safety level"""
+
     classification_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content_id: str
     safety_level: SafetyLevel
@@ -1054,6 +1181,7 @@ class SafetyClassification(BaseModel):
 
 class ContentFilter(BaseModel):
     """Content filtering configuration and results"""
+
     filter_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     filter_type: str
     rules: List[Dict[str, Any]] = Field(default_factory=list)
@@ -1065,6 +1193,7 @@ class ContentFilter(BaseModel):
 
 class ContentBlock(BaseModel):
     """Block of content for synthesis"""
+
     block_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content_type: str
     content: str
@@ -1075,15 +1204,17 @@ class ContentBlock(BaseModel):
 
 class PresentationFormat(str, Enum):
     """Format for presenting content"""
+
     MARKDOWN = "markdown"
     HTML = "html"
-    JSON = "json" 
+    JSON = "json"
     PLAIN_TEXT = "plain_text"
     STRUCTURED = "structured"
 
 
 class SynthesisMetadata(BaseModel):
     """Metadata for synthesis operations"""
+
     metadata_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     synthesis_strategy: str
     quality_scores: Dict[str, float] = Field(default_factory=dict)
@@ -1093,6 +1224,7 @@ class SynthesisMetadata(BaseModel):
 
 class WorkflowDefinition(BaseModel):
     """Definition of a workflow"""
+
     workflow_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
@@ -1103,6 +1235,7 @@ class WorkflowDefinition(BaseModel):
 
 class WorkflowExecution(BaseModel):
     """Execution instance of a workflow"""
+
     execution_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     workflow_id: str
     status: str
@@ -1117,6 +1250,7 @@ class WorkflowExecution(BaseModel):
 
 class WorkflowStep(BaseModel):
     """Individual step in a workflow"""
+
     step_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     operation: str
@@ -1128,6 +1262,7 @@ class WorkflowStep(BaseModel):
 
 class WorkflowResult(BaseModel):
     """Result of workflow execution"""
+
     result_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     execution_id: str
     success: bool
@@ -1138,6 +1273,7 @@ class WorkflowResult(BaseModel):
 
 class PlanningResult(BaseModel):
     """Result of planning operations"""
+
     planning_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     plan: ExecutionPlan
     confidence: float = 1.0
@@ -1147,6 +1283,7 @@ class PlanningResult(BaseModel):
 
 class ObservationResult(BaseModel):
     """Result of observation operations"""
+
     observation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     observations: List[ObservationData] = Field(default_factory=list)
     summary: Dict[str, Any] = Field(default_factory=dict)
@@ -1155,6 +1292,7 @@ class ObservationResult(BaseModel):
 
 class AdaptationResult(BaseModel):
     """Result of adaptation operations"""
+
     adaptation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     adaptations: List[AdaptationEvent] = Field(default_factory=list)
     updated_plan: Optional[ExecutionPlan] = None
@@ -1164,6 +1302,7 @@ class AdaptationResult(BaseModel):
 
 class FallbackStrategy(BaseModel):
     """Strategy for handling failures"""
+
     strategy_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str
@@ -1174,6 +1313,7 @@ class FallbackStrategy(BaseModel):
 
 class SystemHealthStatus(BaseModel):
     """System health status information"""
+
     status_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     overall_health: HealthStatus
     component_health: Dict[str, HealthStatus] = Field(default_factory=dict)
@@ -1184,6 +1324,7 @@ class SystemHealthStatus(BaseModel):
 
 class ErrorMetrics(BaseModel):
     """Metrics for error tracking"""
+
     metrics_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     error_count: int = 0
     error_rate: float = 0.0
@@ -1194,28 +1335,30 @@ class ErrorMetrics(BaseModel):
 
 class AgenticUtils:
     """Utility functions for agentic framework operations"""
-    
+
     @staticmethod
     def generate_correlation_id() -> str:
         """Generate a unique correlation ID"""
         return str(uuid.uuid4())
-    
+
     @staticmethod
-    def create_component_message(source: str, target: str, message_type: str, payload: Dict[str, Any]) -> ComponentMessage:
+    def create_component_message(
+        source: str, target: str, message_type: str, payload: Dict[str, Any]
+    ) -> ComponentMessage:
         """Create a component message"""
         return ComponentMessage(
             source_component=source,
             target_component=target,
             message_type=message_type,
-            payload=payload
+            payload=payload,
         )
-    
+
     @staticmethod
     def validate_execution_state(state: AgentExecutionState) -> bool:
         """Validate execution state consistency"""
         # Implement validation logic
         return True
-    
+
     @staticmethod
     def merge_observations(observations: List[ObservationData]) -> Dict[str, Any]:
         """Merge multiple observations into consolidated data"""

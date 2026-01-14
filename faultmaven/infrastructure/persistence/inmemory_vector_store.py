@@ -16,7 +16,9 @@ class InMemoryVectorStore(IVectorStore):
 
     def __init__(self):
         """Initialize in-memory vector store"""
-        self._documents: Dict[str, Dict] = {}  # document_id -> {content, metadata, embedding}
+        self._documents: Dict[str, Dict] = (
+            {}
+        )  # document_id -> {content, metadata, embedding}
         self._lock = asyncio.Lock()
 
     async def add_documents(self, documents: List[Dict]) -> None:
@@ -32,22 +34,22 @@ class InMemoryVectorStore(IVectorStore):
         """
         async with self._lock:
             for doc in documents:
-                doc_id = doc.get('id')
+                doc_id = doc.get("id")
                 if not doc_id:
                     continue
 
                 # Store document with simple word-based "embedding" (word frequency vector)
-                content = doc.get('content', '')
-                metadata = doc.get('metadata', {})
+                content = doc.get("content", "")
+                metadata = doc.get("metadata", {})
 
                 # Create simple word frequency vector for cosine similarity
                 embedding = self._create_simple_embedding(content)
 
                 self._documents[doc_id] = {
-                    'id': doc_id,
-                    'content': content,
-                    'metadata': metadata,
-                    'embedding': embedding
+                    "id": doc_id,
+                    "content": content,
+                    "metadata": metadata,
+                    "embedding": embedding,
                 }
 
     async def search(self, query: str, k: int = 5) -> List[Dict]:
@@ -75,18 +77,20 @@ class InMemoryVectorStore(IVectorStore):
             # Calculate similarity scores for all documents
             scored_docs = []
             for doc_id, doc_data in self._documents.items():
-                doc_embedding = doc_data['embedding']
+                doc_embedding = doc_data["embedding"]
                 similarity = self._cosine_similarity(query_embedding, doc_embedding)
 
-                scored_docs.append({
-                    'id': doc_data['id'],
-                    'content': doc_data['content'],
-                    'metadata': doc_data.get('metadata', {}),
-                    'score': similarity
-                })
+                scored_docs.append(
+                    {
+                        "id": doc_data["id"],
+                        "content": doc_data["content"],
+                        "metadata": doc_data.get("metadata", {}),
+                        "score": similarity,
+                    }
+                )
 
             # Sort by score (highest first) and return top k
-            scored_docs.sort(key=lambda x: x['score'], reverse=True)
+            scored_docs.sort(key=lambda x: x["score"], reverse=True)
             return scored_docs[:k]
 
     async def delete_documents(self, ids: List[str]) -> None:
@@ -124,7 +128,7 @@ class InMemoryVectorStore(IVectorStore):
         word_freq: Dict[str, float] = {}
         for word in words:
             # Remove punctuation
-            word = ''.join(c for c in word if c.isalnum())
+            word = "".join(c for c in word if c.isalnum())
             if word:
                 word_freq[word] = word_freq.get(word, 0.0) + 1.0
 
@@ -135,7 +139,9 @@ class InMemoryVectorStore(IVectorStore):
 
         return word_freq
 
-    def _cosine_similarity(self, vec1: Dict[str, float], vec2: Dict[str, float]) -> float:
+    def _cosine_similarity(
+        self, vec1: Dict[str, float], vec2: Dict[str, float]
+    ) -> float:
         """
         Calculate cosine similarity between two word frequency vectors.
 
@@ -176,8 +182,8 @@ class InMemoryVectorStore(IVectorStore):
         """
         async with self._lock:
             return {
-                'name': 'inmemory_collection',
-                'document_count': len(self._documents),
-                'type': 'in-memory',
-                'embedding_type': 'simple_word_frequency'
+                "name": "inmemory_collection",
+                "document_count": len(self._documents),
+                "type": "in-memory",
+                "embedding_type": "simple_word_frequency",
             }

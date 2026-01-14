@@ -82,7 +82,9 @@ def create_investigation_service(
         return None
 
     try:
-        from faultmaven.modules.agent.domain.services.investigation_service import InvestigationService
+        from faultmaven.modules.agent.domain.services.investigation_service import (
+            InvestigationService,
+        )
 
         service = InvestigationService(
             milestone_engine=milestone_engine,
@@ -105,7 +107,9 @@ def create_investigation_orchestrator(
         return None
 
     try:
-        from faultmaven.modules.agent.domain.services.investigation_orchestrator import InvestigationOrchestrator
+        from faultmaven.modules.agent.domain.services.investigation_orchestrator import (
+            InvestigationOrchestrator,
+        )
 
         orchestrator = InvestigationOrchestrator(
             hypothesis_repo=hypothesis_repository,
@@ -178,7 +182,9 @@ def create_session_service(
         return minimal_factory()
 
     try:
-        from faultmaven.modules.auth.domain.services.auth_session_service import AuthSessionService as SessionService
+        from faultmaven.modules.auth.domain.services.auth_session_service import (
+            AuthSessionService as SessionService,
+        )
 
         service = SessionService(
             session_store=session_store,
@@ -200,7 +206,10 @@ def create_data_service(
     settings: FaultMavenSettings,
 ) -> Any:
     """Create data service for data processing and analysis."""
-    from faultmaven.modules.case.domain.services.case_data_ingestion_service import CaseDataIngestionService, SimpleStorageBackend
+    from faultmaven.modules.case.domain.services.case_data_ingestion_service import (
+        CaseDataIngestionService,
+        SimpleStorageBackend,
+    )
 
     storage_backend = SimpleStorageBackend(settings=settings)
 
@@ -225,7 +234,9 @@ def create_knowledge_service(
     settings: FaultMavenSettings,
 ) -> Any:
     """Create knowledge service for knowledge base operations."""
-    from faultmaven.modules.knowledge.domain.services.knowledge_service import KnowledgeService
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
+    )
 
     return KnowledgeService(
         knowledge_ingester=knowledge_ingester,
@@ -252,8 +263,12 @@ def create_organization_service(
         return None, None
 
     try:
-        from faultmaven.modules.auth.domain.services.organization_service import OrganizationService
-        from faultmaven.infrastructure.persistence.organization_repository import PostgreSQLOrganizationRepository
+        from faultmaven.modules.auth.domain.services.organization_service import (
+            OrganizationService,
+        )
+        from faultmaven.infrastructure.persistence.organization_repository import (
+            PostgreSQLOrganizationRepository,
+        )
 
         repository = PostgreSQLOrganizationRepository(db_session)
         service = OrganizationService(
@@ -280,7 +295,9 @@ def create_team_service(
 
     try:
         from faultmaven.modules.auth.domain.services.team_service import TeamService
-        from faultmaven.infrastructure.persistence.team_repository import PostgreSQLTeamRepository
+        from faultmaven.infrastructure.persistence.team_repository import (
+            PostgreSQLTeamRepository,
+        )
 
         team_repository = PostgreSQLTeamRepository(db_session)
         service = TeamService(
@@ -326,14 +343,19 @@ def create_auth_service(
             public_key=public_key,
         )
         if redis_client:
-            logger.info("✅ AuthService initialized with Redis (token revocation enabled)")
+            logger.info(
+                "✅ AuthService initialized with Redis (token revocation enabled)"
+            )
         else:
-            logger.info("✅ AuthService initialized without Redis (token revocation disabled)")
+            logger.info(
+                "✅ AuthService initialized without Redis (token revocation disabled)"
+            )
         return service
     except Exception as e:
         logger.warning(f"AuthService initialization failed: {e}")
         # Return a minimal AuthService without Redis
         from faultmaven.services.auth_service import AuthService
+
         return AuthService()
 
 
@@ -399,10 +421,14 @@ def create_tenant_provider(
         return None
 
     try:
-        from faultmaven.providers.tenancy.factory import create_tenant_provider as factory
+        from faultmaven.providers.tenancy.factory import (
+            create_tenant_provider as factory,
+        )
 
         provider = factory(organization_repository=organization_repository)
-        logger.debug(f"TenantProvider initialized (tenant_provider: {settings.providers.tenant_provider})")
+        logger.debug(
+            f"TenantProvider initialized (tenant_provider: {settings.providers.tenant_provider})"
+        )
         return provider
     except Exception as e:
         logger.warning(f"TenantProvider initialization failed: {e}")
@@ -422,7 +448,9 @@ def create_report_generation_service(
         return None
 
     try:
-        from faultmaven.modules.report.domain.services.report_generation_service import ReportGenerationService
+        from faultmaven.modules.report.domain.services.report_generation_service import (
+            ReportGenerationService,
+        )
 
         service = ReportGenerationService(
             llm_router=llm_router,
@@ -488,7 +516,9 @@ def register_services(container: BaseDIContainer) -> None:
         container._register_service("milestone_engine", milestone_engine)
 
     # Investigation Service
-    investigation_service = create_investigation_service(milestone_engine, case_repository)
+    investigation_service = create_investigation_service(
+        milestone_engine, case_repository
+    )
     container.investigation_service = investigation_service
     if investigation_service:
         container._register_service("investigation_service", investigation_service)
@@ -499,7 +529,9 @@ def register_services(container: BaseDIContainer) -> None:
     )
     container.investigation_orchestrator = investigation_orchestrator
     if investigation_orchestrator:
-        container._register_service("investigation_orchestrator", investigation_orchestrator)
+        container._register_service(
+            "investigation_orchestrator", investigation_orchestrator
+        )
 
     # Evidence Service (migrated to use Case repository)
     evidence_service = create_evidence_service(case_repository, settings)
@@ -508,13 +540,17 @@ def register_services(container: BaseDIContainer) -> None:
         container._register_service("evidence_service", evidence_service)
 
     # Organization Service
-    organization_service, organization_repository = create_organization_service(db_session, settings)
+    organization_service, organization_repository = create_organization_service(
+        db_session, settings
+    )
     container.organization_service = organization_service
     if organization_service:
         container._register_service("organization_service", organization_service)
 
     # Tenant Provider
-    tenant_provider = create_tenant_provider(db_session, organization_repository, settings)
+    tenant_provider = create_tenant_provider(
+        db_session, organization_repository, settings
+    )
     container.tenant_provider = tenant_provider
     if tenant_provider:
         container._register_service("tenant_provider", tenant_provider)
@@ -537,7 +573,9 @@ def register_services(container: BaseDIContainer) -> None:
     # Backward-compatible alias: expose InvestigationService as agent_service.
     # If the investigation service can't be constructed (missing deps), still provide a
     # minimal non-null placeholder so callers/tests don't explode during init.
-    agent_service = investigation_service if investigation_service is not None else object()
+    agent_service = (
+        investigation_service if investigation_service is not None else object()
+    )
     container.agent_service = agent_service
     container._register_service("agent_service", agent_service)
 
@@ -578,7 +616,9 @@ def register_services(container: BaseDIContainer) -> None:
     )
     container.report_generation_service = report_generation_service
     if report_generation_service:
-        container._register_service("report_generation_service", report_generation_service)
+        container._register_service(
+            "report_generation_service", report_generation_service
+        )
 
     # Report Recommendation Service (optional - may not be implemented yet)
     # TODO: Implement create_report_recommendation_service if needed

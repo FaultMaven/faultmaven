@@ -67,8 +67,12 @@ STORAGE_TYPE_DATABASE = "database"
 # Singleton in-memory repositories (for consistency across calls)
 _inmemory_repository: Optional[InMemoryCaseRepository] = None
 _inmemory_session_repository: Optional[InMemorySessionRepository] = None
-_inmemory_evidence_artifact_repository: Optional[InMemoryEvidenceArtifactRepository] = None
-_inmemory_investigation_session_repository: Optional[InMemoryInvestigationSessionRepository] = None
+_inmemory_evidence_artifact_repository: Optional[InMemoryEvidenceArtifactRepository] = (
+    None
+)
+_inmemory_investigation_session_repository: Optional[
+    InMemoryInvestigationSessionRepository
+] = None
 _inmemory_knowledge_item_repository: Optional[InMemoryKnowledgeItemRepository] = None
 
 
@@ -83,6 +87,7 @@ def get_storage_type() -> str:
         Storage type string ("inmemory" or "database")
     """
     from faultmaven.config.settings import get_settings
+
     try:
         settings = get_settings()
         return settings.database.case_storage_type
@@ -102,6 +107,7 @@ def get_session_storage_type() -> str:
         Storage type string ("inmemory" or "database")
     """
     from faultmaven.config.settings import get_settings
+
     try:
         settings = get_settings()
         return settings.database.session_storage_type
@@ -239,9 +245,7 @@ def create_case_repository(
 
     elif storage_type == STORAGE_TYPE_DATABASE:
         if session is None:
-            raise RuntimeError(
-                "Database session is required for database storage type"
-            )
+            raise RuntimeError("Database session is required for database storage type")
         return DatabaseCaseRepository(session)
 
     else:
@@ -440,12 +444,16 @@ def get_evidence_artifact_repository(
     global _inmemory_evidence_artifact_repository
 
     effective_type = storage_type or get_evidence_artifact_storage_type()
-    logger.debug(f"Creating evidence artifact repository with storage type: {effective_type}")
+    logger.debug(
+        f"Creating evidence artifact repository with storage type: {effective_type}"
+    )
 
     if effective_type == STORAGE_TYPE_INMEMORY:
         # Return singleton in-memory repository
         if _inmemory_evidence_artifact_repository is None:
-            _inmemory_evidence_artifact_repository = InMemoryEvidenceArtifactRepository()
+            _inmemory_evidence_artifact_repository = (
+                InMemoryEvidenceArtifactRepository()
+            )
             logger.info("Created InMemoryEvidenceArtifactRepository (singleton)")
         return _inmemory_evidence_artifact_repository
 
@@ -493,7 +501,9 @@ async def get_evidence_artifact_repository_async(
     if effective_type == STORAGE_TYPE_INMEMORY:
         # Return singleton in-memory repository
         if _inmemory_evidence_artifact_repository is None:
-            _inmemory_evidence_artifact_repository = InMemoryEvidenceArtifactRepository()
+            _inmemory_evidence_artifact_repository = (
+                InMemoryEvidenceArtifactRepository()
+            )
             logger.info("Created InMemoryEvidenceArtifactRepository (singleton)")
         yield _inmemory_evidence_artifact_repository
 
@@ -560,7 +570,9 @@ async def get_repository_dependency() -> AsyncGenerator[CaseRepository, None]:
         yield repo
 
 
-async def get_session_repository_dependency() -> AsyncGenerator[SessionRepository, None]:
+async def get_session_repository_dependency() -> (
+    AsyncGenerator[SessionRepository, None]
+):
     """
     FastAPI dependency for obtaining a session repository.
 
@@ -580,7 +592,9 @@ async def get_session_repository_dependency() -> AsyncGenerator[SessionRepositor
         yield repo
 
 
-async def get_evidence_artifact_repository_dependency() -> AsyncGenerator[EvidenceArtifactRepository, None]:
+async def get_evidence_artifact_repository_dependency() -> (
+    AsyncGenerator[EvidenceArtifactRepository, None]
+):
     """
     FastAPI dependency for obtaining an evidence artifact repository.
 
@@ -641,12 +655,16 @@ def get_investigation_session_repository(
     global _inmemory_investigation_session_repository
 
     effective_type = storage_type or get_investigation_session_storage_type()
-    logger.debug(f"Creating investigation session repository with storage type: {effective_type}")
+    logger.debug(
+        f"Creating investigation session repository with storage type: {effective_type}"
+    )
 
     if effective_type == STORAGE_TYPE_INMEMORY:
         # Return singleton in-memory repository
         if _inmemory_investigation_session_repository is None:
-            _inmemory_investigation_session_repository = InMemoryInvestigationSessionRepository()
+            _inmemory_investigation_session_repository = (
+                InMemoryInvestigationSessionRepository()
+            )
             logger.info("Created InMemoryInvestigationSessionRepository (singleton)")
         return _inmemory_investigation_session_repository
 
@@ -694,7 +712,9 @@ async def get_investigation_session_repository_async(
     if effective_type == STORAGE_TYPE_INMEMORY:
         # Return singleton in-memory repository
         if _inmemory_investigation_session_repository is None:
-            _inmemory_investigation_session_repository = InMemoryInvestigationSessionRepository()
+            _inmemory_investigation_session_repository = (
+                InMemoryInvestigationSessionRepository()
+            )
             logger.info("Created InMemoryInvestigationSessionRepository (singleton)")
         yield _inmemory_investigation_session_repository
 
@@ -721,7 +741,9 @@ def reset_inmemory_investigation_session_repository() -> None:
         logger.debug("Reset in-memory investigation session repository singleton")
 
 
-def get_inmemory_investigation_session_repository() -> InMemoryInvestigationSessionRepository:
+def get_inmemory_investigation_session_repository() -> (
+    InMemoryInvestigationSessionRepository
+):
     """
     Get or create the singleton in-memory investigation session repository.
 
@@ -732,11 +754,15 @@ def get_inmemory_investigation_session_repository() -> InMemoryInvestigationSess
     """
     global _inmemory_investigation_session_repository
     if _inmemory_investigation_session_repository is None:
-        _inmemory_investigation_session_repository = InMemoryInvestigationSessionRepository()
+        _inmemory_investigation_session_repository = (
+            InMemoryInvestigationSessionRepository()
+        )
     return _inmemory_investigation_session_repository
 
 
-async def get_investigation_session_repository_dependency() -> AsyncGenerator[InvestigationSessionRepository, None]:
+async def get_investigation_session_repository_dependency() -> (
+    AsyncGenerator[InvestigationSessionRepository, None]
+):
     """
     FastAPI dependency for obtaining an investigation session repository.
 
@@ -797,7 +823,9 @@ def get_knowledge_item_repository(
     global _inmemory_knowledge_item_repository
 
     effective_type = storage_type or get_knowledge_item_storage_type()
-    logger.debug(f"Creating knowledge item repository with storage type: {effective_type}")
+    logger.debug(
+        f"Creating knowledge item repository with storage type: {effective_type}"
+    )
 
     if effective_type == STORAGE_TYPE_INMEMORY:
         # Return singleton in-memory repository
@@ -892,7 +920,9 @@ def get_inmemory_knowledge_item_repository() -> InMemoryKnowledgeItemRepository:
     return _inmemory_knowledge_item_repository
 
 
-async def get_knowledge_item_repository_dependency() -> AsyncGenerator[KnowledgeItemRepository, None]:
+async def get_knowledge_item_repository_dependency() -> (
+    AsyncGenerator[KnowledgeItemRepository, None]
+):
     """
     FastAPI dependency for obtaining a knowledge item repository.
 

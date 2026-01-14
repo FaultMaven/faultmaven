@@ -82,7 +82,7 @@ from .interfaces_case import (
     ICaseStore,
     ICaseService,
     ICaseNotificationService,
-    ICaseIntegrationService
+    ICaseIntegrationService,
 )
 
 # Import report generation models from the new module location
@@ -98,7 +98,7 @@ from faultmaven.modules.report.domain.models import (
     ReportGenerationRequest,
     ReportGenerationResponse,
     CaseClosureRequest,
-    CaseClosureResponse
+    CaseClosureResponse,
 )
 
 # Import agentic models from the new module location

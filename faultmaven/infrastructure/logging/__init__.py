@@ -21,22 +21,27 @@ Phase 2 Components:
 - Factory functions for creating appropriate logger instances per layer
 """
 
-from .coordinator import LoggingCoordinator, RequestContext, request_context, ErrorContext, PerformanceTracker
+from .coordinator import (
+    LoggingCoordinator,
+    RequestContext,
+    request_context,
+    ErrorContext,
+    PerformanceTracker,
+)
 from .config import get_logger, FaultMavenLogger
 from .unified import UnifiedLogger, get_unified_logger, clear_logger_cache
 
 __all__ = [
     # Phase 1 - Core Infrastructure
-    'LoggingCoordinator',
-    'RequestContext', 
-    'ErrorContext',
-    'PerformanceTracker',
-    'request_context',
-    'get_logger',
-    'FaultMavenLogger',
-    
+    "LoggingCoordinator",
+    "RequestContext",
+    "ErrorContext",
+    "PerformanceTracker",
+    "request_context",
+    "get_logger",
+    "FaultMavenLogger",
     # Phase 2 - Unified Patterns
-    'UnifiedLogger',
-    'get_unified_logger',
-    'clear_logger_cache',
+    "UnifiedLogger",
+    "get_unified_logger",
+    "clear_logger_cache",
 ]

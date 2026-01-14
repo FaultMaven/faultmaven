@@ -50,16 +50,13 @@ class StrategyConfig:
         "name": "Active Incident",
         "description": "Speed-optimized investigation for live issues",
         "primary_goal": "Rapid mitigation and service restoration",
-
         # Confidence thresholds
         "min_hypothesis_confidence": 0.60,  # Lower bar for mitigation
         "solution_confidence_threshold": 0.70,  # Proceed with 70% confidence
-
         # Phase behavior
         "allow_phase_skipping": True,
         "urgency_skip_threshold": "high",  # Skip phases at high/critical urgency
         "min_phases_required": 3,  # Can skip to Phase 0→1→4→5 minimum
-
         # OODA intensity
         "max_iterations_per_phase": {
             InvestigationPhase.BLAST_RADIUS: 2,
@@ -69,16 +66,13 @@ class StrategyConfig:
             InvestigationPhase.SOLUTION: 3,
             InvestigationPhase.DOCUMENT: 1,
         },
-
         # Evidence requirements
         "evidence_sufficiency": "practical",  # Sufficient for decision
         "critical_evidence_required": True,
         "allow_inference": True,  # Can infer from partial evidence
-
         # Documentation
         "require_documentation": False,
         "offer_post_mortem": True,  # Offer to do thorough RCA after mitigation
-
         # Time constraints
         "phase_timeout_minutes": 10,  # Move on after 10 min per phase
         "total_timeout_minutes": 60,  # 1 hour max for incident
@@ -88,16 +82,13 @@ class StrategyConfig:
         "name": "Post-Mortem",
         "description": "Depth-optimized investigation for thorough RCA",
         "primary_goal": "Complete root cause analysis and prevention",
-
         # Confidence thresholds
         "min_hypothesis_confidence": 0.85,  # High bar for conclusion
         "solution_confidence_threshold": 0.85,  # Must be confident
-
         # Phase behavior
         "allow_phase_skipping": False,
         "urgency_skip_threshold": None,  # Never skip phases
         "min_phases_required": 7,  # All phases 0-6 required
-
         # OODA intensity
         "max_iterations_per_phase": {
             InvestigationPhase.BLAST_RADIUS: 3,
@@ -107,16 +98,13 @@ class StrategyConfig:
             InvestigationPhase.SOLUTION: 4,
             InvestigationPhase.DOCUMENT: 2,
         },
-
         # Evidence requirements
         "evidence_sufficiency": "comprehensive",  # Need thorough evidence
         "critical_evidence_required": True,
         "allow_inference": False,  # Must have concrete evidence
-
         # Documentation
         "require_documentation": True,
         "offer_post_mortem": False,  # Already doing post-mortem
-
         # Time constraints
         "phase_timeout_minutes": None,  # No timeout - take time needed
         "total_timeout_minutes": None,  # No overall timeout
@@ -188,27 +176,32 @@ class InvestigationStrategySelector:
             if user_preference.lower() in ["post_mortem", "postmortem", "rca"]:
                 return (
                     InvestigationStrategy.POST_MORTEM,
-                    "User explicitly requested thorough post-mortem analysis"
+                    "User explicitly requested thorough post-mortem analysis",
                 )
             elif user_preference.lower() in ["active", "incident", "urgent"]:
                 return (
                     InvestigationStrategy.ACTIVE_INCIDENT,
-                    "User requested rapid incident response"
+                    "User requested rapid incident response",
                 )
 
         # Critical/High urgency → Active Incident
         if urgency_level in ["critical", "high"]:
-            self.logger.info(f"Selecting ACTIVE_INCIDENT strategy due to {urgency_level} urgency")
+            self.logger.info(
+                f"Selecting ACTIVE_INCIDENT strategy due to {urgency_level} urgency"
+            )
             return (
                 InvestigationStrategy.ACTIVE_INCIDENT,
-                f"High urgency ({urgency_level}) requires rapid mitigation"
+                f"High urgency ({urgency_level}) requires rapid mitigation",
             )
 
         # Check severity from problem confirmation
-        if problem_confirmation and problem_confirmation.severity in ["critical", "high"]:
+        if problem_confirmation and problem_confirmation.severity in [
+            "critical",
+            "high",
+        ]:
             return (
                 InvestigationStrategy.ACTIVE_INCIDENT,
-                f"High severity ({problem_confirmation.severity}) incident requires speed"
+                f"High severity ({problem_confirmation.severity}) incident requires speed",
             )
 
         # Historical analysis (>24 hours ago) → Post-Mortem
@@ -216,13 +209,13 @@ class InvestigationStrategySelector:
             self.logger.info("Selecting POST_MORTEM strategy for historical analysis")
             return (
                 InvestigationStrategy.POST_MORTEM,
-                "Problem occurred >24h ago, performing thorough root cause analysis"
+                "Problem occurred >24h ago, performing thorough root cause analysis",
             )
 
         # Default: Active Incident (most common real-world case)
         return (
             InvestigationStrategy.ACTIVE_INCIDENT,
-            "Default strategy for active troubleshooting"
+            "Default strategy for active troubleshooting",
         )
 
     def should_transition_strategy(
@@ -254,7 +247,7 @@ class InvestigationStrategySelector:
                     return (
                         True,
                         InvestigationStrategy.POST_MORTEM,
-                        "Problem resolved, recommend thorough post-mortem for prevention"
+                        "Problem resolved, recommend thorough post-mortem for prevention",
                     )
 
         # Scenario 2: Post-Mortem → Active if new critical issue found
@@ -265,7 +258,7 @@ class InvestigationStrategySelector:
                 return (
                     True,
                     InvestigationStrategy.ACTIVE_INCIDENT,
-                    "Urgency escalated to critical, switching to rapid mitigation"
+                    "Urgency escalated to critical, switching to rapid mitigation",
                 )
 
         return False, None, "No strategy transition needed"
@@ -313,15 +306,24 @@ class InvestigationStrategySelector:
             # Check urgency threshold
             skip_threshold = config["urgency_skip_threshold"]
             if urgency_level not in ["high", "critical"]:
-                return False, f"Urgency level {urgency_level} below threshold for skipping"
+                return (
+                    False,
+                    f"Urgency level {urgency_level} below threshold for skipping",
+                )
 
             # Validate phase progression
             # Can skip: Hypothesis (3) → Solution (5)
             # Can skip: Timeline (2) → Solution (5) for critical
-            if current_phase == InvestigationPhase.HYPOTHESIS and target_phase == InvestigationPhase.SOLUTION:
+            if (
+                current_phase == InvestigationPhase.HYPOTHESIS
+                and target_phase == InvestigationPhase.SOLUTION
+            ):
                 return True, "High urgency allows skipping validation for mitigation"
 
-            if current_phase == InvestigationPhase.TIMELINE and target_phase == InvestigationPhase.SOLUTION:
+            if (
+                current_phase == InvestigationPhase.TIMELINE
+                and target_phase == InvestigationPhase.SOLUTION
+            ):
                 if urgency_level == "critical":
                     return True, "Critical urgency allows direct path to solution"
 

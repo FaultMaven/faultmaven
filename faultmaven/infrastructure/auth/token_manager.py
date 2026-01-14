@@ -28,7 +28,12 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from redis import Redis
 
-from faultmaven.models.auth import DevUser, AuthToken, TokenStatus, TokenValidationResult
+from faultmaven.models.auth import (
+    DevUser,
+    AuthToken,
+    TokenStatus,
+    TokenValidationResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +84,15 @@ class DevTokenManager:
             token_hash = self._hash_token(token)
 
             # Create token metadata
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.token_expiry_seconds)
+            expires_at = datetime.now(timezone.utc) + timedelta(
+                seconds=self.token_expiry_seconds
+            )
             auth_token = AuthToken(
                 token_id=token_id,
                 user_id=user.user_id,
                 token_hash=token_hash,
                 expires_at=expires_at,
-                created_at=datetime.now(timezone.utc)
+                created_at=datetime.now(timezone.utc),
             )
 
             # Store in Redis with expiration
@@ -97,7 +104,9 @@ class DevTokenManager:
             await self._redis_set(token_key, user.user_id, self.token_expiry_seconds)
 
             # Store token metadata
-            await self._redis_set(meta_key, json.dumps(auth_token.to_dict()), self.token_expiry_seconds)
+            await self._redis_set(
+                meta_key, json.dumps(auth_token.to_dict()), self.token_expiry_seconds
+            )
 
             # Add to user's token list
             await self._redis_sadd(user_tokens_key, token_id)
@@ -122,8 +131,7 @@ class DevTokenManager:
         try:
             if not token:
                 return TokenValidationResult(
-                    status=TokenStatus.INVALID,
-                    error_message="Token is empty"
+                    status=TokenStatus.INVALID, error_message="Token is empty"
                 )
 
             token_hash = self._hash_token(token)
@@ -134,7 +142,7 @@ class DevTokenManager:
             if not user_id:
                 return TokenValidationResult(
                     status=TokenStatus.INVALID,
-                    error_message="Token not found or expired"
+                    error_message="Token not found or expired",
                 )
 
             # Get token metadata to check detailed status
@@ -154,47 +162,41 @@ class DevTokenManager:
 
             if not token_meta:
                 return TokenValidationResult(
-                    status=TokenStatus.INVALID,
-                    error_message="Token metadata not found"
+                    status=TokenStatus.INVALID, error_message="Token metadata not found"
                 )
 
             # Check token status
             if token_meta.is_revoked:
                 return TokenValidationResult(
-                    status=TokenStatus.REVOKED,
-                    error_message="Token has been revoked"
+                    status=TokenStatus.REVOKED, error_message="Token has been revoked"
                 )
 
             if token_meta.is_expired:
                 return TokenValidationResult(
-                    status=TokenStatus.EXPIRED,
-                    error_message="Token has expired"
+                    status=TokenStatus.EXPIRED, error_message="Token has expired"
                 )
 
             # Get user information (assuming user store integration)
             from faultmaven.container import container
+
             user_store = container.get_user_store()
             user = await user_store.get_user(user_id)
 
             if not user or not user.is_active:
                 return TokenValidationResult(
                     status=TokenStatus.INVALID,
-                    error_message="Associated user not found or inactive"
+                    error_message="Associated user not found or inactive",
                 )
 
             # Update last used timestamp
             await self._update_token_usage(token_meta.token_id)
 
-            return TokenValidationResult(
-                status=TokenStatus.VALID,
-                user=user
-            )
+            return TokenValidationResult(status=TokenStatus.VALID, user=user)
 
         except Exception as e:
             logger.error(f"Token validation error: {e}")
             return TokenValidationResult(
-                status=TokenStatus.INVALID,
-                error_message=f"Validation error: {str(e)}"
+                status=TokenStatus.INVALID, error_message=f"Validation error: {str(e)}"
             )
 
     async def revoke_token(self, token: str) -> bool:
@@ -227,7 +229,9 @@ class DevTokenManager:
                     if meta_dict.get("token_hash") == token_hash:
                         # Mark as revoked
                         meta_dict["is_revoked"] = True
-                        await self._redis_set(meta_key, json.dumps(meta_dict), self.token_expiry_seconds)
+                        await self._redis_set(
+                            meta_key, json.dumps(meta_dict), self.token_expiry_seconds
+                        )
                         break
 
             # Remove from active tokens
@@ -262,7 +266,9 @@ class DevTokenManager:
 
                     # Mark as revoked
                     meta_dict["is_revoked"] = True
-                    await self._redis_set(meta_key, json.dumps(meta_dict), self.token_expiry_seconds)
+                    await self._redis_set(
+                        meta_key, json.dumps(meta_dict), self.token_expiry_seconds
+                    )
 
                     # Remove active token mapping
                     token_hash = meta_dict.get("token_hash")
@@ -339,7 +345,9 @@ class DevTokenManager:
             if meta_data:
                 meta_dict = json.loads(meta_data)
                 meta_dict["last_used_at"] = datetime.now(timezone.utc).isoformat()
-                await self._redis_set(meta_key, json.dumps(meta_dict), self.token_expiry_seconds)
+                await self._redis_set(
+                    meta_key, json.dumps(meta_dict), self.token_expiry_seconds
+                )
         except Exception as e:
             logger.warning(f"Failed to update token usage: {e}")
 

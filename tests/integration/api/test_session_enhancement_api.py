@@ -46,8 +46,8 @@ def sample_session():
         metadata={
             "session_type": "troubleshooting",
             "timeout_minutes": 180,
-            "status": "active"
-        }
+            "status": "active",
+        },
     )
 
 
@@ -88,6 +88,7 @@ def client(app):
 # PUT /api/v1/sessions/{session_id} - Update Session
 # =============================================================================
 
+
 def test_update_session_success(client, mock_session_service, sample_session):
     """Test successful session update."""
     # Setup
@@ -103,15 +104,15 @@ def test_update_session_success(client, mock_session_service, sample_session):
         metadata={
             "session_type": "troubleshooting",
             "timeout_minutes": 240,  # Updated
-            "status": "active"
-        }
+            "status": "active",
+        },
     )
     mock_session_service.get_session.side_effect = [sample_session, updated_session]
 
     # Execute
     response = client.put(
         f"/api/v1/sessions/{sample_session.session_id}",
-        json={"metadata": {"timeout_minutes": 240}}
+        json={"metadata": {"timeout_minutes": 240}},
     )
 
     # Assert
@@ -131,14 +132,16 @@ def test_update_session_not_found(client, mock_session_service):
     # Execute
     response = client.put(
         "/api/v1/sessions/nonexistent_session",
-        json={"metadata": {"timeout_minutes": 240}}
+        json={"metadata": {"timeout_minutes": 240}},
     )
 
     # Assert
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
-def test_update_session_unauthorized(client, mock_session_service, sample_session, mock_user):
+def test_update_session_unauthorized(
+    client, mock_session_service, sample_session, mock_user
+):
     """Test update session when user doesn't own the session."""
     # Setup - session belongs to different user
     other_user_session = SessionContext(
@@ -147,14 +150,14 @@ def test_update_session_unauthorized(client, mock_session_service, sample_sessio
         client_id="client_xyz",
         created_at=datetime.now(timezone.utc),
         last_activity=datetime.now(timezone.utc),
-        metadata={"status": "active"}
+        metadata={"status": "active"},
     )
     mock_session_service.get_session.return_value = other_user_session
 
     # Execute
     response = client.put(
         f"/api/v1/sessions/{other_user_session.session_id}",
-        json={"metadata": {"timeout_minutes": 240}}
+        json={"metadata": {"timeout_minutes": 240}},
     )
 
     # Assert
@@ -164,6 +167,7 @@ def test_update_session_unauthorized(client, mock_session_service, sample_sessio
 # =============================================================================
 # POST /api/v1/sessions/search - Search Sessions
 # =============================================================================
+
 
 def test_search_sessions_success(client, mock_session_service, sample_session):
     """Test successful session search."""
@@ -176,15 +180,14 @@ def test_search_sessions_success(client, mock_session_service, sample_session):
             client_id="client_abc",
             created_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
-            metadata={"status": "active", "session_type": "troubleshooting"}
-        )
+            metadata={"status": "active", "session_type": "troubleshooting"},
+        ),
     ]
     mock_session_service.search_sessions.return_value = sessions
 
     # Execute
     response = client.post(
-        "/api/v1/sessions/search",
-        json={"status": "active", "limit": 50}
+        "/api/v1/sessions/search", json={"status": "active", "limit": 50}
     )
 
     # Assert
@@ -204,8 +207,7 @@ def test_search_sessions_with_query(client, mock_session_service, sample_session
 
     # Execute
     response = client.post(
-        "/api/v1/sessions/search",
-        json={"query": "troubleshooting", "limit": 50}
+        "/api/v1/sessions/search", json={"query": "troubleshooting", "limit": 50}
     )
 
     # Assert
@@ -224,8 +226,7 @@ def test_search_sessions_empty_results(client, mock_session_service):
 
     # Execute
     response = client.post(
-        "/api/v1/sessions/search",
-        json={"status": "archived", "limit": 50}
+        "/api/v1/sessions/search", json={"status": "archived", "limit": 50}
     )
 
     # Assert
@@ -238,6 +239,7 @@ def test_search_sessions_empty_results(client, mock_session_service):
 # =============================================================================
 # POST /api/v1/sessions/{session_id}/archive - Archive Session
 # =============================================================================
+
 
 def test_archive_session_success(client, mock_session_service, sample_session):
     """Test successful session archiving."""
@@ -254,7 +256,9 @@ def test_archive_session_success(client, mock_session_service, sample_session):
     assert data["session_id"] == sample_session.session_id
     assert data["status"] == "archived"
     assert data["message"] == "Session archived successfully"
-    mock_session_service.archive_session.assert_called_once_with(sample_session.session_id)
+    mock_session_service.archive_session.assert_called_once_with(
+        sample_session.session_id
+    )
 
 
 def test_archive_session_not_found(client, mock_session_service):
@@ -278,7 +282,7 @@ def test_archive_session_unauthorized(client, mock_session_service, mock_user):
         client_id="client_xyz",
         created_at=datetime.now(timezone.utc),
         last_activity=datetime.now(timezone.utc),
-        metadata={"status": "active"}
+        metadata={"status": "active"},
     )
     mock_session_service.get_session.return_value = other_user_session
 

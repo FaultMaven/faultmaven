@@ -132,6 +132,7 @@ def main(args: Optional[List[str]] = None) -> int:
     """
     # Load environment variables at function level, not module level
     from dotenv import load_dotenv
+
     load_dotenv()
 
     parser = argparse.ArgumentParser(
@@ -156,7 +157,8 @@ Examples:
         help="List available jobs",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Enable verbose logging",
     )

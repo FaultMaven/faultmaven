@@ -6,7 +6,7 @@ This test suite validates that the clean architecture maintains proper separatio
 of concerns, follows dependency injection patterns, and enforces interface boundaries.
 
 Key Validations:
-- API layer doesn't import from Core or Infrastructure directly  
+- API layer doesn't import from Core or Infrastructure directly
 - Core layer doesn't depend on concrete implementations
 - Service layer properly uses interfaces
 - Circular dependencies are prevented
@@ -28,27 +28,29 @@ class TestArchitectureBoundaries:
         """Ensure API routes don't violate architectural boundaries"""
         api_files = list(Path("faultmaven/api").rglob("*.py"))
         violations = []
-        
+
         for file in api_files:
-            if file.name.startswith('__'):
+            if file.name.startswith("__"):
                 continue
-            
+
             # Only check main routes for boundary compliance
             # Skip init and dependencies files
-            if file.name.startswith('__') or file.name == 'dependencies.py':
+            if file.name.startswith("__") or file.name == "dependencies.py":
                 continue
-                
+
             content = file.read_text()
             tree = ast.parse(content)
-            
+
             for node in ast.walk(tree):
                 if isinstance(node, (ast.ImportFrom, ast.Import)):
                     if isinstance(node, ast.ImportFrom) and node.module:
                         module = node.module
-                        
+
                         # Check for direct imports from core, infrastructure, or tools
                         if module.startswith("faultmaven.core"):
-                            violations.append(f"{file}: imports from core layer ({module})")
+                            violations.append(
+                                f"{file}: imports from core layer ({module})"
+                            )
                         elif module.startswith("faultmaven.infrastructure"):
                             # Allow tracing imports for @trace decorator
                             if module.endswith("observability.tracing"):
@@ -57,10 +59,14 @@ class TestArchitectureBoundaries:
                             elif "middleware" in str(file) and "logging" in module:
                                 pass  # Middleware can use logging infrastructure
                             else:
-                                violations.append(f"{file}: imports from infrastructure layer ({module})")
+                                violations.append(
+                                    f"{file}: imports from infrastructure layer ({module})"
+                                )
                         elif module.startswith("faultmaven.tools"):
-                            violations.append(f"{file}: imports from tools layer ({module})")
-        
+                            violations.append(
+                                f"{file}: imports from tools layer ({module})"
+                            )
+
         if violations:
             violation_msg = "\n".join(violations)
             pytest.fail(f"API layer boundary violations found:\n{violation_msg}")
@@ -69,51 +75,57 @@ class TestArchitectureBoundaries:
         """Ensure Core layer follows clean architecture principles"""
         core_files = list(Path("faultmaven/core").rglob("*.py"))
         violations = []
-        
+
         for file in core_files:
-            if file.name.startswith('__'):
+            if file.name.startswith("__"):
                 continue
-                
+
             content = file.read_text()
             tree = ast.parse(content)
-            
+
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.module:
                     module = node.module
-                    
+
                     # Allow observability imports as they're cross-cutting concerns
                     if "observability" in module:
                         continue
-                    
+
                     # Critical violations only - service dependencies are strictly prohibited
                     if module.startswith("faultmaven.services"):
-                        violations.append(f"{file}: has service layer dependency ({module})")
-                    
+                        violations.append(
+                            f"{file}: has service layer dependency ({module})"
+                        )
+
                     # For now, allow existing infrastructure and tool dependencies
                     # This represents the current state while we transition to interface-based design
                     # Future work: replace with interface dependencies
-        
+
         if violations:
             violation_msg = "\n".join(violations)
             pytest.fail(f"Critical core layer violations found:\n{violation_msg}")
-        
+
         # Note: Infrastructure and tool dependencies in core are being transitioned
         # to interface-based dependencies via the service layer pattern
 
     def test_service_layer_structure(self):
         """Ensure service layer properly uses dependency injection"""
         service_files = list(Path("faultmaven/services").rglob("*.py"))
-        service_files = [f for f in service_files if not f.name.startswith('__')]
+        service_files = [f for f in service_files if not f.name.startswith("__")]
         violations = []
-        
+
         for file in service_files:
             # Skip test files, example files, and base classes
-            if "test_" in file.name or "example_" in file.name or file.name == "base.py":
+            if (
+                "test_" in file.name
+                or "example_" in file.name
+                or file.name == "base.py"
+            ):
                 continue
-                
+
             content = file.read_text()
             tree = ast.parse(content)
-            
+
             # Check that services import from interfaces
             has_interface_import = False
             for node in ast.walk(tree):
@@ -121,10 +133,10 @@ class TestArchitectureBoundaries:
                     if "interfaces" in node.module:
                         has_interface_import = True
                         break
-            
+
             if not has_interface_import:
                 violations.append(f"{file}: doesn't import from interfaces")
-        
+
         if violations:
             violation_msg = "\n".join(violations)
             pytest.fail(f"Service layer structure violations found:\n{violation_msg}")
@@ -136,48 +148,50 @@ class TestDependencyInjection:
     def test_container_interface_compliance(self):
         """Test that DI container properly provides interfaces"""
         from faultmaven.container import BaseDIContainer
-        
+
         container = BaseDIContainer()
         container.initialize()
-        
+
         # Test that getter methods return objects with required interfaces
         llm_provider = container.get_llm_provider()
-        assert hasattr(llm_provider, 'generate_response') or hasattr(llm_provider, 'generate')
-        
+        assert hasattr(llm_provider, "generate_response") or hasattr(
+            llm_provider, "generate"
+        )
+
         sanitizer = container.get_sanitizer()
-        assert hasattr(sanitizer, 'sanitize')
-        
+        assert hasattr(sanitizer, "sanitize")
+
         tracer = container.get_tracer()
-        assert hasattr(tracer, 'trace')
-        
+        assert hasattr(tracer, "trace")
+
         tools = container.get_tools()
         assert isinstance(tools, list)
 
     def test_service_dependency_injection(self):
         """Test that services receive proper dependencies"""
         from faultmaven.container import BaseDIContainer
-        
+
         container = BaseDIContainer()
         agent_service = container.get_agent_service()
-        
+
         # Verify agent service has injected dependencies
-        assert hasattr(agent_service, '_llm')
-        assert hasattr(agent_service, '_tools')  
-        assert hasattr(agent_service, '_tracer')
-        assert hasattr(agent_service, '_sanitizer')
+        assert hasattr(agent_service, "_llm")
+        assert hasattr(agent_service, "_tools")
+        assert hasattr(agent_service, "_tracer")
+        assert hasattr(agent_service, "_sanitizer")
 
     def test_container_health_reporting(self):
         """Test container health check provides meaningful status"""
         from faultmaven.container import BaseDIContainer
-        
+
         container = BaseDIContainer()
         health = container.health_check()
-        
+
         # Health check should return proper structure
-        assert 'status' in health
-        assert health['status'] in ['healthy', 'degraded', 'not_initialized']
-        assert 'components' in health
-        assert isinstance(health['components'], dict)
+        assert "status" in health
+        assert health["status"] in ["healthy", "degraded", "not_initialized"]
+        assert "components" in health
+        assert isinstance(health["components"], dict)
 
 
 class TestInterfaceCompliance:
@@ -186,23 +200,25 @@ class TestInterfaceCompliance:
     def test_llm_provider_interface(self):
         """Test LLM provider implements required interface"""
         from faultmaven.container import BaseDIContainer
-        
+
         container = BaseDIContainer()
         llm_provider = container.get_llm_provider()
-        
+
         # Should have generate method (real or mock)
-        assert hasattr(llm_provider, 'generate') or hasattr(llm_provider, 'generate_response')
+        assert hasattr(llm_provider, "generate") or hasattr(
+            llm_provider, "generate_response"
+        )
 
     def test_sanitizer_interface(self):
         """Test sanitizer implements required interface"""
         from faultmaven.container import BaseDIContainer
-        
+
         container = BaseDIContainer()
         sanitizer = container.get_sanitizer()
-        
+
         # Should have sanitize method
-        assert hasattr(sanitizer, 'sanitize')
-        
+        assert hasattr(sanitizer, "sanitize")
+
         # Test basic sanitize functionality (should not crash)
         try:
             result = sanitizer.sanitize("test data")
@@ -214,20 +230,24 @@ class TestInterfaceCompliance:
     def test_tracer_interface(self):
         """Test tracer implements required interface"""
         from faultmaven.container import BaseDIContainer
-        
+
         container = BaseDIContainer()
         tracer = container.get_tracer()
-        
+
         # Should have trace method
-        assert hasattr(tracer, 'trace')
-        
+        assert hasattr(tracer, "trace")
+
         # Test basic trace functionality (should not crash)
         try:
             with tracer.trace("test_operation"):
                 pass
         except Exception as e:
             # In mock environment, may not work but should not crash the test
-            assert "not implemented" in str(e).lower() or "mock" in str(type(e)).lower() or True
+            assert (
+                "not implemented" in str(e).lower()
+                or "mock" in str(type(e)).lower()
+                or True
+            )
 
 
 class TestCircularDependencies:
@@ -239,14 +259,14 @@ class TestCircularDependencies:
             content = module_path.read_text()
             tree = ast.parse(content)
             imports = set()
-            
+
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and node.module:
                     imports.add(node.module)
                 elif isinstance(node, ast.Import):
                     for alias in node.names:
                         imports.add(alias.name)
-            
+
             return imports
         except Exception:
             return set()
@@ -255,21 +275,22 @@ class TestCircularDependencies:
         """Test that there are no circular import patterns"""
         # Build dependency graph
         dependency_graph: Dict[str, Set[str]] = {}
-        
+
         # Get all Python files in the faultmaven package
         for py_file in Path("faultmaven").rglob("*.py"):
-            if py_file.name.startswith('__'):
+            if py_file.name.startswith("__"):
                 continue
-                
-            module_name = str(py_file.with_suffix('').as_posix()).replace('/', '.')
+
+            module_name = str(py_file.with_suffix("").as_posix()).replace("/", ".")
             imports = self._get_module_imports(py_file)
-            
+
             # Filter for faultmaven imports only
             faultmaven_imports = {
-                imp for imp in imports 
-                if imp.startswith('faultmaven') and imp != module_name
+                imp
+                for imp in imports
+                if imp.startswith("faultmaven") and imp != module_name
             }
-            
+
             dependency_graph[module_name] = faultmaven_imports
 
         # Simple cycle detection using DFS
@@ -277,39 +298,38 @@ class TestCircularDependencies:
             visited = set()
             rec_stack = set()
             cycle_path = []
-            
+
             def dfs(node: str, path: List[str]) -> bool:
                 if node in rec_stack:
                     # Found cycle, extract it
                     cycle_start = path.index(node)
                     cycle_path.extend(path[cycle_start:] + [node])
                     return True
-                
+
                 if node in visited:
                     return False
-                
+
                 visited.add(node)
                 rec_stack.add(node)
-                
+
                 for neighbor in graph.get(node, set()):
                     if dfs(neighbor, path + [node]):
                         return True
-                
+
                 rec_stack.remove(node)
                 return False
-            
+
             for node in graph:
                 if node not in visited:
                     if dfs(node, []):
                         return cycle_path
-            
+
             return []
 
         cycle = has_cycle(dependency_graph)
         if cycle:
             cycle_msg = " -> ".join(cycle)
             pytest.fail(f"Circular import detected: {cycle_msg}")
-
 
 
 class TestDocumentationSync:
@@ -319,12 +339,12 @@ class TestDocumentationSync:
         """Test that architecture documentation exists"""
         docs_path = Path("docs/architecture")
         assert docs_path.exists(), "Architecture documentation directory should exist"
-        
+
         # Key architecture docs should exist
         key_docs = [
             "current-architecture.md",
         ]
-        
+
         for doc in key_docs:
             doc_path = docs_path / doc
             assert doc_path.exists(), f"Architecture doc {doc} should exist"
@@ -335,12 +355,18 @@ class TestDocumentationSync:
             Path("CLAUDE.md"),
             Path("FaultMaven-Refactoring-Plan.md"),
             Path("docs/migration/import-migration-guide.md"),
-            Path("docs/architecture/current-architecture.md"),  # Modern architecture docs
-            Path("docs/architecture/architecture-overview.md"),  # Comprehensive architecture overview
+            Path(
+                "docs/architecture/current-architecture.md"
+            ),  # Modern architecture docs
+            Path(
+                "docs/architecture/architecture-overview.md"
+            ),  # Comprehensive architecture overview
         ]
 
         existing_guides = [path for path in guide_paths if path.exists()]
-        assert len(existing_guides) > 0, "At least one architecture or migration guide should exist"
+        assert (
+            len(existing_guides) > 0
+        ), "At least one architecture or migration guide should exist"
 
 
 if __name__ == "__main__":

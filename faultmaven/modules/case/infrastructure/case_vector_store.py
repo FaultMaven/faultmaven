@@ -53,13 +53,17 @@ class CaseVectorStore(BaseExternalClient):
             service_name="CaseVectorStore",
             enable_circuit_breaker=True,
             circuit_breaker_threshold=5,
-            circuit_breaker_timeout=60
+            circuit_breaker_timeout=60,
         )
 
         # Get ChromaDB configuration from unified settings
         settings = get_settings()
         chromadb_url = settings.database.chromadb_url
-        chromadb_token = settings.database.chromadb_api_key.get_secret_value() if settings.database.chromadb_api_key else None
+        chromadb_token = (
+            settings.database.chromadb_api_key.get_secret_value()
+            if settings.database.chromadb_api_key
+            else None
+        )
 
         # Parse host/port from URL
         parsed = urlparse(chromadb_url)
@@ -71,11 +75,14 @@ class CaseVectorStore(BaseExternalClient):
         if chromadb_token:
             try:
                 from importlib import import_module
+
                 import_module("chromadb.auth.token")
-                settings_kwargs.update({
-                    "chroma_client_auth_provider": "chromadb.auth.token.TokenAuthClientProvider",
-                    "chroma_client_auth_credentials": chromadb_token,
-                })
+                settings_kwargs.update(
+                    {
+                        "chroma_client_auth_provider": "chromadb.auth.token.TokenAuthClientProvider",
+                        "chroma_client_auth_credentials": chromadb_token,
+                    }
+                )
             except Exception:
                 pass
 
@@ -83,7 +90,7 @@ class CaseVectorStore(BaseExternalClient):
             self.client = chromadb.HttpClient(
                 host=host,
                 port=port,
-                settings=Settings(**settings_kwargs) if settings_kwargs else Settings()
+                settings=Settings(**settings_kwargs) if settings_kwargs else Settings(),
             )
             self.logger.info("CaseVectorStore initialized (lifecycle-based cleanup)")
         except Exception as e:
@@ -109,13 +116,12 @@ class CaseVectorStore(BaseExternalClient):
         # Store case metadata (no TTL - lifecycle-based cleanup)
         metadata = {
             "case_id": case_id,
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
         try:
             collection = self.client.get_or_create_collection(
-                name=collection_name,
-                metadata=metadata
+                name=collection_name, metadata=metadata
             )
             self.logger.debug(f"Collection ready: {collection_name}")
             return collection
@@ -124,9 +130,7 @@ class CaseVectorStore(BaseExternalClient):
             raise
 
     async def add_documents(
-        self,
-        case_id: str,
-        documents: List[Dict[str, Any]]
+        self, case_id: str, documents: List[Dict[str, Any]]
     ) -> None:
         """
         Add documents to case-specific collection.
@@ -138,12 +142,13 @@ class CaseVectorStore(BaseExternalClient):
                 - content: Document text (required)
                 - metadata: Optional metadata dict
         """
+
         async def _add_wrapper():
             collection = self._get_or_create_collection(case_id)
 
-            ids = [doc['id'] for doc in documents]
-            contents = [doc['content'] for doc in documents]
-            metadatas = [doc.get('metadata', {}) for doc in documents]
+            ids = [doc["id"] for doc in documents]
+            contents = [doc["content"] for doc in documents]
+            metadatas = [doc.get("metadata", {}) for doc in documents]
 
             # Sanitize metadata (ChromaDB requires simple types)
             sanitized_metadatas = []
@@ -158,15 +163,11 @@ class CaseVectorStore(BaseExternalClient):
                         sanitized[k] = str(v)
                 sanitized_metadatas.append(sanitized)
 
-            collection.add(
-                ids=ids,
-                documents=contents,
-                metadatas=sanitized_metadatas
-            )
+            collection.add(ids=ids, documents=contents, metadatas=sanitized_metadatas)
 
             self.logger.info(
                 f"Added {len(documents)} documents to case {case_id}",
-                extra={"case_id": case_id, "doc_count": len(documents)}
+                extra={"case_id": case_id, "doc_count": len(documents)},
             )
 
         await self.call_external(
@@ -174,7 +175,7 @@ class CaseVectorStore(BaseExternalClient):
             call_func=_add_wrapper,
             timeout=30.0,
             retries=2,
-            retry_delay=2.0
+            retry_delay=2.0,
         )
 
     async def search(
@@ -182,7 +183,7 @@ class CaseVectorStore(BaseExternalClient):
         case_id: str,
         query: str,
         k: int = 5,
-        where: Optional[Dict[str, Any]] = None
+        where: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search for similar documents in case-specific collection.
@@ -200,13 +201,14 @@ class CaseVectorStore(BaseExternalClient):
                 - metadata: Metadata dict
                 - score: Similarity score (0.0-1.0)
         """
+
         async def _search_wrapper():
             collection = self._get_or_create_collection(case_id)
 
             query_params = {
                 "query_texts": [query],
                 "n_results": k,
-                "include": ["documents", "metadatas", "distances"]
+                "include": ["documents", "metadatas", "distances"],
             }
 
             if where:
@@ -216,18 +218,31 @@ class CaseVectorStore(BaseExternalClient):
 
             # Format results
             formatted_results = []
-            if results['ids'] and results['ids'][0]:
-                for i in range(len(results['ids'][0])):
-                    formatted_results.append({
-                        'id': results['ids'][0][i],
-                        'content': results['documents'][0][i],
-                        'metadata': results['metadatas'][0][i] if results['metadatas'][0] else {},
-                        'score': 1.0 - results['distances'][0][i]  # Convert distance to similarity
-                    })
+            if results["ids"] and results["ids"][0]:
+                for i in range(len(results["ids"][0])):
+                    formatted_results.append(
+                        {
+                            "id": results["ids"][0][i],
+                            "content": results["documents"][0][i],
+                            "metadata": (
+                                results["metadatas"][0][i]
+                                if results["metadatas"][0]
+                                else {}
+                            ),
+                            "score": 1.0
+                            - results["distances"][0][
+                                i
+                            ],  # Convert distance to similarity
+                        }
+                    )
 
             self.logger.debug(
                 f"Case {case_id} search returned {len(formatted_results)} results",
-                extra={"case_id": case_id, "query_len": len(query), "results": len(formatted_results)}
+                extra={
+                    "case_id": case_id,
+                    "query_len": len(query),
+                    "results": len(formatted_results),
+                },
             )
 
             return formatted_results
@@ -237,7 +252,7 @@ class CaseVectorStore(BaseExternalClient):
             call_func=_search_wrapper,
             timeout=10.0,
             retries=2,
-            retry_delay=1.0
+            retry_delay=1.0,
         )
 
     async def delete_case_collection(self, case_id: str) -> None:
@@ -250,6 +265,7 @@ class CaseVectorStore(BaseExternalClient):
         Args:
             case_id: Case identifier
         """
+
         async def _delete_wrapper():
             collection_name = self._get_collection_name(case_id)
 
@@ -257,18 +273,20 @@ class CaseVectorStore(BaseExternalClient):
                 self.client.delete_collection(name=collection_name)
                 self.logger.info(
                     f"Deleted case collection: {collection_name}",
-                    extra={"case_id": case_id, "collection": collection_name}
+                    extra={"case_id": case_id, "collection": collection_name},
                 )
             except Exception as e:
                 # Collection might not exist - that's OK
-                self.logger.debug(f"Collection {collection_name} not found or already deleted: {e}")
+                self.logger.debug(
+                    f"Collection {collection_name} not found or already deleted: {e}"
+                )
 
         await self.call_external(
             operation_name="delete_case_collection",
             call_func=_delete_wrapper,
             timeout=10.0,
             retries=1,
-            retry_delay=1.0
+            retry_delay=1.0,
         )
 
     async def cleanup_orphaned_collections(self, active_case_ids: List[str]) -> int:
@@ -284,6 +302,7 @@ class CaseVectorStore(BaseExternalClient):
         Returns:
             Number of orphaned collections deleted
         """
+
         async def _cleanup_wrapper():
             deleted_count = 0
 
@@ -293,8 +312,7 @@ class CaseVectorStore(BaseExternalClient):
 
                 # Create set of expected collection names for active cases
                 expected_collections = {
-                    self._get_collection_name(case_id)
-                    for case_id in active_case_ids
+                    self._get_collection_name(case_id) for case_id in active_case_ids
                 }
 
                 for collection in collections:
@@ -309,15 +327,15 @@ class CaseVectorStore(BaseExternalClient):
                             deleted_count += 1
 
                             # Extract case_id from collection name
-                            case_id = collection.name[len(self.COLLECTION_PREFIX):]
+                            case_id = collection.name[len(self.COLLECTION_PREFIX) :]
 
                             self.logger.info(
                                 f"Cleaned up orphaned case collection: {collection.name}",
                                 extra={
                                     "collection": collection.name,
                                     "case_id": case_id,
-                                    "reason": "no_active_case"
-                                }
+                                    "reason": "no_active_case",
+                                },
                             )
                         except Exception as e:
                             self.logger.warning(
@@ -343,7 +361,7 @@ class CaseVectorStore(BaseExternalClient):
             call_func=_cleanup_wrapper,
             timeout=60.0,
             retries=1,
-            retry_delay=5.0
+            retry_delay=5.0,
         )
 
     async def get_case_document_count(self, case_id: str) -> int:
@@ -356,6 +374,7 @@ class CaseVectorStore(BaseExternalClient):
         Returns:
             Number of documents in collection
         """
+
         async def _count_wrapper():
             collection_name = self._get_collection_name(case_id)
 
@@ -373,5 +392,5 @@ class CaseVectorStore(BaseExternalClient):
             call_func=_count_wrapper,
             timeout=5.0,
             retries=1,
-            retry_delay=1.0
+            retry_delay=1.0,
         )

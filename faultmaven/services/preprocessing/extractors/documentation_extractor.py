@@ -8,6 +8,7 @@ No LLM calls required - pure markdown/text parsing.
 
 import re
 from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
+
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
@@ -54,31 +55,35 @@ class DocumentationExtractor:
             code_blocks,
             troubleshooting_sections,
             procedure_sections,
-            config_sections
+            config_sections,
         )
 
     def _is_markdown(self, content: str) -> bool:
         """Detect if content is Markdown format"""
         markdown_indicators = [
-            r'^#{1,6}\s+\w+',  # Headers
-            r'```[\w]*\n',  # Code blocks
-            r'^\*\*\w+\*\*',  # Bold
-            r'^\[.+\]\(.+\)',  # Links
+            r"^#{1,6}\s+\w+",  # Headers
+            r"```[\w]*\n",  # Code blocks
+            r"^\*\*\w+\*\*",  # Bold
+            r"^\[.+\]\(.+\)",  # Links
         ]
 
-        return sum(
-            1 for pattern in markdown_indicators
-            if re.search(pattern, content, re.MULTILINE)
-        ) >= 2
+        return (
+            sum(
+                1
+                for pattern in markdown_indicators
+                if re.search(pattern, content, re.MULTILINE)
+            )
+            >= 2
+        )
 
     def _extract_title(self, content: str, is_markdown: bool) -> str:
         """Extract document title"""
-        lines = content.split('\n')
+        lines = content.split("\n")
 
         if is_markdown:
             # Look for # Title (H1)
             for line in lines[:10]:  # Check first 10 lines
-                if line.startswith('# '):
+                if line.startswith("# "):
                     return line[2:].strip()
 
         # Fallback: first non-empty line
@@ -94,9 +99,9 @@ class DocumentationExtractor:
 
         if is_markdown:
             # Match Markdown headers: # H1, ## H2, ### H3, etc.
-            header_pattern = r'^(#{1,6})\s+(.+)$'
+            header_pattern = r"^(#{1,6})\s+(.+)$"
 
-            lines = content.split('\n')
+            lines = content.split("\n")
             current_section = None
             section_content = []
 
@@ -106,7 +111,7 @@ class DocumentationExtractor:
                 if match:
                     # Save previous section
                     if current_section:
-                        current_section['content'] = '\n'.join(section_content).strip()
+                        current_section["content"] = "\n".join(section_content).strip()
                         sections.append(current_section)
 
                     # Start new section
@@ -114,10 +119,10 @@ class DocumentationExtractor:
                     title = match.group(2).strip()
 
                     current_section = {
-                        'level': level,
-                        'title': title,
-                        'line_num': i + 1,
-                        'content': ''
+                        "level": level,
+                        "title": title,
+                        "line_num": i + 1,
+                        "content": "",
                     }
                     section_content = []
                 elif current_section:
@@ -125,21 +130,23 @@ class DocumentationExtractor:
 
             # Save last section
             if current_section:
-                current_section['content'] = '\n'.join(section_content).strip()
+                current_section["content"] = "\n".join(section_content).strip()
                 sections.append(current_section)
 
         else:
             # Plain text: look for underlined headers
-            lines = content.split('\n')
+            lines = content.split("\n")
             for i in range(len(lines) - 1):
                 # Check if next line is all ==== or ----
-                if re.match(r'^[=\-]{3,}$', lines[i + 1].strip()):
-                    sections.append({
-                        'level': 1 if '=' in lines[i + 1] else 2,
-                        'title': lines[i].strip(),
-                        'line_num': i + 1,
-                        'content': ''
-                    })
+                if re.match(r"^[=\-]{3,}$", lines[i + 1].strip()):
+                    sections.append(
+                        {
+                            "level": 1 if "=" in lines[i + 1] else 2,
+                            "title": lines[i].strip(),
+                            "line_num": i + 1,
+                            "content": "",
+                        }
+                    )
 
         return sections
 
@@ -149,68 +156,112 @@ class DocumentationExtractor:
 
         if is_markdown:
             # Extract fenced code blocks: ```language\ncode\n```
-            pattern = r'```([\w]*)\n([\s\S]*?)```'
+            pattern = r"```([\w]*)\n([\s\S]*?)```"
 
             for match in re.finditer(pattern, content):
-                language = match.group(1) or 'text'
+                language = match.group(1) or "text"
                 code = match.group(2).strip()
 
-                code_blocks.append({
-                    'language': language,
-                    'code': code,
-                    'type': 'fenced'
-                })
+                code_blocks.append(
+                    {"language": language, "code": code, "type": "fenced"}
+                )
 
         # Extract inline code commands (backtick-wrapped or indented)
-        inline_pattern = r'`([^`]+)`'
+        inline_pattern = r"`([^`]+)`"
         for match in re.finditer(inline_pattern, content):
             command = match.group(1).strip()
 
             # Only include if it looks like a command
             if self._looks_like_command(command):
-                code_blocks.append({
-                    'language': 'shell',
-                    'code': command,
-                    'type': 'inline'
-                })
+                code_blocks.append(
+                    {"language": "shell", "code": command, "type": "inline"}
+                )
 
         return code_blocks
 
     def _looks_like_command(self, text: str) -> bool:
         """Check if text looks like a shell command"""
         command_indicators = [
-            'kubectl', 'docker', 'systemctl', 'journalctl', 'tail', 'grep', 'curl', 'wget',
-            'ssh', 'scp', 'ps', 'top', 'netstat', 'ifconfig', 'ping', 'traceroute',
-            'git', 'npm', 'pip', 'mvn', 'gradle', 'cargo', 'go'
+            "kubectl",
+            "docker",
+            "systemctl",
+            "journalctl",
+            "tail",
+            "grep",
+            "curl",
+            "wget",
+            "ssh",
+            "scp",
+            "ps",
+            "top",
+            "netstat",
+            "ifconfig",
+            "ping",
+            "traceroute",
+            "git",
+            "npm",
+            "pip",
+            "mvn",
+            "gradle",
+            "cargo",
+            "go",
         ]
 
         return any(text.lower().startswith(cmd) for cmd in command_indicators)
 
     def _find_troubleshooting_sections(self, sections: List[Dict]) -> List[Dict]:
         """Identify sections related to troubleshooting"""
-        keywords = ['troubleshoot', 'debug', 'error', 'problem', 'issue', 'diagnos', 'fix', 'resolve']
+        keywords = [
+            "troubleshoot",
+            "debug",
+            "error",
+            "problem",
+            "issue",
+            "diagnos",
+            "fix",
+            "resolve",
+        ]
 
         return [
-            section for section in sections
-            if any(keyword in section['title'].lower() for keyword in keywords)
+            section
+            for section in sections
+            if any(keyword in section["title"].lower() for keyword in keywords)
         ]
 
     def _find_procedure_sections(self, sections: List[Dict]) -> List[Dict]:
         """Identify sections containing procedures"""
-        keywords = ['how to', 'procedure', 'step', 'install', 'setup', 'configure', 'deploy', 'guide']
+        keywords = [
+            "how to",
+            "procedure",
+            "step",
+            "install",
+            "setup",
+            "configure",
+            "deploy",
+            "guide",
+        ]
 
         return [
-            section for section in sections
-            if any(keyword in section['title'].lower() for keyword in keywords)
+            section
+            for section in sections
+            if any(keyword in section["title"].lower() for keyword in keywords)
         ]
 
     def _find_config_sections(self, sections: List[Dict]) -> List[Dict]:
         """Identify sections related to configuration"""
-        keywords = ['config', 'setting', 'parameter', 'environment', 'variable', 'option']
+        keywords = [
+            "config",
+            "setting",
+            "parameter",
+            "environment",
+            "variable",
+            "option",
+        ]
 
         return [
-            section for section in sections
-            if any(keyword in section['title'].lower() for keyword in keywords)
+            section
+            for section in sections
+            if any(keyword in section["title"].lower() for keyword in keywords)
         ]
 
     def _generate_summary(
@@ -220,7 +271,7 @@ class DocumentationExtractor:
         code_blocks: List[Dict],
         troubleshooting_sections: List[Dict],
         procedure_sections: List[Dict],
-        config_sections: List[Dict]
+        config_sections: List[Dict],
     ) -> str:
         """Generate structured documentation summary"""
         lines = [
@@ -229,7 +280,7 @@ class DocumentationExtractor:
             f"📄 Document Overview:",
             f"  - Total sections: {len(sections)}",
             f"  - Code blocks: {len(code_blocks)}",
-            ""
+            "",
         ]
 
         # Troubleshooting sections
@@ -255,14 +306,18 @@ class DocumentationExtractor:
 
         # Code blocks / Commands
         if code_blocks:
-            shell_commands = [cb for cb in code_blocks if cb['language'] in ['shell', 'bash', 'sh', 'text']]
+            shell_commands = [
+                cb
+                for cb in code_blocks
+                if cb["language"] in ["shell", "bash", "sh", "text"]
+            ]
             if shell_commands:
                 lines.append("💻 Key Commands:")
                 for cmd_block in shell_commands[:10]:  # First 10 commands
-                    code = cmd_block['code']
+                    code = cmd_block["code"]
                     # Truncate long commands
                     if len(code) > 80:
-                        code = code[:77] + '...'
+                        code = code[:77] + "..."
                     lines.append(f"  $ {code}")
                 lines.append("")
 
@@ -270,7 +325,7 @@ class DocumentationExtractor:
         if sections:
             lines.append("📑 Table of Contents:")
             for section in sections:
-                indent = "  " * (section['level'] - 1)
+                indent = "  " * (section["level"] - 1)
                 lines.append(f"{indent}- {section['title']}")
 
         return "\n".join(lines)

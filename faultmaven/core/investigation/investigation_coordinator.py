@@ -19,11 +19,15 @@ from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import UrgencyLevel
-    from faultmaven.modules.agent.contracts import InvestigationState, InvestigationStrategy
+    from faultmaven.modules.agent.contracts import (
+        InvestigationState,
+        InvestigationStrategy,
+    )
 
 
 class InterventionType(str, Enum):
     """Types of interventions"""
+
     ANCHORING_PREVENTION = "anchoring_prevention"
     PHASE_COMPLETION = "phase_completion"
     CONFIDENCE_DECAY = "confidence_decay"
@@ -32,6 +36,7 @@ class InterventionType(str, Enum):
 @dataclass
 class InterventionPlan:
     """Coordinated intervention plan"""
+
     intervention_type: InterventionType
     force_alternatives: bool = False
     advance_phase: bool = False
@@ -56,8 +61,7 @@ class InvestigationCoordinator:
         pass
 
     def check_interventions(
-        self,
-        state: "InvestigationState"
+        self, state: "InvestigationState"
     ) -> Optional[InterventionPlan]:
         """Check all intervention systems and coordinate response (v3.0)
 
@@ -82,7 +86,7 @@ class InvestigationCoordinator:
                 intervention_type=InterventionType.PHASE_COMPLETION,
                 advance_phase=True,
                 reason="Phase objectives completed",
-                priority=70
+                priority=70,
             )
 
         # Priority 2: Anchoring → force alternatives
@@ -91,7 +95,7 @@ class InvestigationCoordinator:
                 intervention_type=InterventionType.ANCHORING_PREVENTION,
                 force_alternatives=True,
                 reason=f"Anchoring detected: {anchoring}",
-                priority=60
+                priority=60,
             )
 
         return None  # No intervention needed
@@ -164,7 +168,9 @@ class InvestigationCoordinator:
         elif current_phase == InvestigationPhase.VALIDATION:
             # Phase 4 complete if high-confidence root cause found
             if state.ooda_engine.hypotheses:
-                max_confidence = max([h.likelihood for h in state.ooda_engine.hypotheses])
+                max_confidence = max(
+                    [h.likelihood for h in state.ooda_engine.hypotheses]
+                )
                 return max_confidence >= 0.7
 
         # For other phases, rely on explicit completion signal

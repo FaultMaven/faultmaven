@@ -8,7 +8,12 @@ import uuid
 import time
 from typing import Optional
 
-from faultmaven.models.api import DataType, PreprocessedData, SourceMetadata, ExtractionMetadata
+from faultmaven.models.api import (
+    DataType,
+    PreprocessedData,
+    SourceMetadata,
+    ExtractionMetadata,
+)
 from faultmaven.models.interfaces import IPreprocessor
 
 
@@ -27,7 +32,7 @@ class GenericPreprocessor(IPreprocessor):
         self,
         content: str,
         filename: str,
-        source_metadata: Optional[SourceMetadata] = None
+        source_metadata: Optional[SourceMetadata] = None,
     ) -> PreprocessedData:
         """
         Generic preprocessing: truncate and format plainly
@@ -56,19 +61,16 @@ class GenericPreprocessor(IPreprocessor):
                 llm_calls_used=0,
                 confidence=0.6,  # Medium confidence for generic processing
                 source="fallback",
-                processing_time_ms=processing_time
+                processing_time_ms=processing_time,
             ),
             original_size=len(content),
             processed_size=len(llm_ready_content),
             security_flags=[],
-            source_metadata=source_metadata
+            source_metadata=source_metadata,
         )
 
     def _format_generic_summary(
-        self,
-        content: str,
-        filename: str,
-        source_metadata: Optional[SourceMetadata]
+        self, content: str, filename: str, source_metadata: Optional[SourceMetadata]
     ) -> str:
         """Format generic summary"""
         sections = []

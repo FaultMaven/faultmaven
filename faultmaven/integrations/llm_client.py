@@ -412,7 +412,9 @@ class OpenAIClient(BaseLLMClient):
                                 if tc.function.name:
                                     tool_calls[tc_index]["name"] = tc.function.name
                                 if tc.function.arguments:
-                                    tool_calls[tc_index]["arguments"] += tc.function.arguments
+                                    tool_calls[tc_index][
+                                        "arguments"
+                                    ] += tc.function.arguments
 
                 # Check for usage stats (final chunk)
                 if chunk.usage:
@@ -444,7 +446,11 @@ class OpenAIClient(BaseLLMClient):
                         metadata={
                             "input_tokens": chunk.usage.prompt_tokens,
                             "output_tokens": chunk.usage.completion_tokens,
-                            "stop_reason": chunk.choices[0].finish_reason if chunk.choices else None,
+                            "stop_reason": (
+                                chunk.choices[0].finish_reason
+                                if chunk.choices
+                                else None
+                            ),
                         },
                         index=index,
                     )

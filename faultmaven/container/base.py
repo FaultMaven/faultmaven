@@ -222,7 +222,7 @@ class BaseDIContainer:
         if it hasn't happened yet. Base implementation just calls initialize().
         Subclasses can override with async-aware logic.
         """
-        if not self._initialized and not getattr(self, '_initializing', False):
+        if not self._initialized and not getattr(self, "_initializing", False):
             self.initialize()
 
     def get_agent_service(self) -> Any:

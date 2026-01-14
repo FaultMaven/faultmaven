@@ -212,6 +212,7 @@ class TestInMemoryRepositoryUpdate:
         original_updated = item.updated_at
 
         import time
+
         time.sleep(0.001)
 
         item.title = "New Title"
@@ -359,8 +360,12 @@ class TestInMemoryRepositoryListByOrganization:
         org_id = generate_org_id()
         base_time = datetime.now(timezone.utc)
 
-        i1 = create_sample_item(organization_id=org_id, created_at=base_time - timedelta(hours=2))
-        i2 = create_sample_item(organization_id=org_id, created_at=base_time - timedelta(hours=1))
+        i1 = create_sample_item(
+            organization_id=org_id, created_at=base_time - timedelta(hours=2)
+        )
+        i2 = create_sample_item(
+            organization_id=org_id, created_at=base_time - timedelta(hours=1)
+        )
         i3 = create_sample_item(organization_id=org_id, created_at=base_time)
 
         await repository.create(i1)
@@ -378,18 +383,24 @@ class TestInMemoryRepositoryListByOrganization:
         """Test filtering by item_type."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            item_type=KnowledgeItemType.FAQ,
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            item_type=KnowledgeItemType.RUNBOOK,
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            item_type=KnowledgeItemType.FAQ,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                item_type=KnowledgeItemType.FAQ,
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                item_type=KnowledgeItemType.RUNBOOK,
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                item_type=KnowledgeItemType.FAQ,
+            )
+        )
 
         result = await repository.list_by_organization_id(
             org_id,
@@ -404,9 +415,15 @@ class TestInMemoryRepositoryListByOrganization:
         """Test filtering by category."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(organization_id=org_id, category="networking"))
-        await repository.create(create_sample_item(organization_id=org_id, category="database"))
-        await repository.create(create_sample_item(organization_id=org_id, category="networking"))
+        await repository.create(
+            create_sample_item(organization_id=org_id, category="networking")
+        )
+        await repository.create(
+            create_sample_item(organization_id=org_id, category="database")
+        )
+        await repository.create(
+            create_sample_item(organization_id=org_id, category="networking")
+        )
 
         result = await repository.list_by_organization_id(org_id, category="networking")
 
@@ -418,16 +435,24 @@ class TestInMemoryRepositoryListByOrganization:
         """Test that is_published filter is respected."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(organization_id=org_id, is_published=True))
-        await repository.create(create_sample_item(organization_id=org_id, is_published=False))
-        await repository.create(create_sample_item(organization_id=org_id, is_published=True))
+        await repository.create(
+            create_sample_item(organization_id=org_id, is_published=True)
+        )
+        await repository.create(
+            create_sample_item(organization_id=org_id, is_published=False)
+        )
+        await repository.create(
+            create_sample_item(organization_id=org_id, is_published=True)
+        )
 
         # Default is is_published=True
         result = await repository.list_by_organization_id(org_id)
         assert len(result) == 2
 
         # Explicitly query unpublished
-        result_unpublished = await repository.list_by_organization_id(org_id, is_published=False)
+        result_unpublished = await repository.list_by_organization_id(
+            org_id, is_published=False
+        )
         assert len(result_unpublished) == 1
 
     @pytest.mark.asyncio
@@ -467,14 +492,18 @@ class TestInMemoryRepositoryTextSearch:
         """Test searching finds matches in title."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            title="How to fix connection timeout",
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            title="Database optimization guide",
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                title="How to fix connection timeout",
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                title="Database optimization guide",
+            )
+        )
 
         result = await repository.search_by_text(org_id, "connection")
 
@@ -486,16 +515,20 @@ class TestInMemoryRepositoryTextSearch:
         """Test searching finds matches in content."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            title="Network Guide",
-            content="Check the firewall settings first.",
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            title="Another Guide",
-            content="Restart the server.",
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                title="Network Guide",
+                content="Check the firewall settings first.",
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                title="Another Guide",
+                content="Restart the server.",
+            )
+        )
 
         result = await repository.search_by_text(org_id, "firewall")
 
@@ -507,10 +540,12 @@ class TestInMemoryRepositoryTextSearch:
         """Test search is case insensitive."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            title="NETWORK Troubleshooting",
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                title="NETWORK Troubleshooting",
+            )
+        )
 
         result = await repository.search_by_text(org_id, "network")
 
@@ -532,16 +567,20 @@ class TestInMemoryRepositoryTextSearch:
         """Test search with item_type filter."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            title="Error handling in API",
-            item_type=KnowledgeItemType.API_DOCUMENTATION,
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            title="Error handling best practice",
-            item_type=KnowledgeItemType.BEST_PRACTICE,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                title="Error handling in API",
+                item_type=KnowledgeItemType.API_DOCUMENTATION,
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                title="Error handling best practice",
+                item_type=KnowledgeItemType.BEST_PRACTICE,
+            )
+        )
 
         result = await repository.search_by_text(
             org_id,
@@ -557,16 +596,20 @@ class TestInMemoryRepositoryTextSearch:
         """Test search only returns published items."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            title="Published error guide",
-            is_published=True,
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            title="Unpublished error guide",
-            is_published=False,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                title="Published error guide",
+                is_published=True,
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                title="Unpublished error guide",
+                is_published=False,
+            )
+        )
 
         result = await repository.search_by_text(org_id, "error")
 
@@ -579,10 +622,12 @@ class TestInMemoryRepositoryTextSearch:
         org_id = generate_org_id()
 
         for i in range(10):
-            await repository.create(create_sample_item(
-                organization_id=org_id,
-                title=f"Error guide number {i}",
-            ))
+            await repository.create(
+                create_sample_item(
+                    organization_id=org_id,
+                    title=f"Error guide number {i}",
+                )
+            )
 
         result = await repository.search_by_text(org_id, "error", limit=5)
 
@@ -607,18 +652,24 @@ class TestInMemoryRepositoryTagSearch:
         """Test tag search with match_any (default)."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            tags=["python", "debugging"],
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            tags=["java", "networking"],
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            tags=["python", "api"],
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                tags=["python", "debugging"],
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                tags=["java", "networking"],
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                tags=["python", "api"],
+            )
+        )
 
         result = await repository.search_by_tags(org_id, ["python", "networking"])
 
@@ -629,18 +680,24 @@ class TestInMemoryRepositoryTagSearch:
         """Test tag search with match_all=True."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            tags=["python", "debugging"],
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            tags=["python", "debugging", "advanced"],
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            tags=["python"],
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                tags=["python", "debugging"],
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                tags=["python", "debugging", "advanced"],
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                tags=["python"],
+            )
+        )
 
         result = await repository.search_by_tags(
             org_id,
@@ -655,7 +712,9 @@ class TestInMemoryRepositoryTagSearch:
         """Test search with empty tags list returns empty."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(organization_id=org_id, tags=["test"]))
+        await repository.create(
+            create_sample_item(organization_id=org_id, tags=["test"])
+        )
 
         result = await repository.search_by_tags(org_id, [])
 
@@ -666,7 +725,9 @@ class TestInMemoryRepositoryTagSearch:
         """Test search returns empty when no tags match."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(organization_id=org_id, tags=["python"]))
+        await repository.create(
+            create_sample_item(organization_id=org_id, tags=["python"])
+        )
 
         result = await repository.search_by_tags(org_id, ["java", "rust"])
 
@@ -677,16 +738,20 @@ class TestInMemoryRepositoryTagSearch:
         """Test tag search only returns published items."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            tags=["python"],
-            is_published=True,
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            tags=["python"],
-            is_published=False,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                tags=["python"],
+                is_published=True,
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                tags=["python"],
+                is_published=False,
+            )
+        )
 
         result = await repository.search_by_tags(org_id, ["python"])
 
@@ -699,10 +764,12 @@ class TestInMemoryRepositoryTagSearch:
         org_id = generate_org_id()
 
         for i in range(10):
-            await repository.create(create_sample_item(
-                organization_id=org_id,
-                tags=["common"],
-            ))
+            await repository.create(
+                create_sample_item(
+                    organization_id=org_id,
+                    tags=["common"],
+                )
+            )
 
         result = await repository.search_by_tags(org_id, ["common"], limit=5)
 
@@ -728,18 +795,24 @@ class TestInMemoryRepositoryItemsWithoutEmbeddings:
         org_id = generate_org_id()
 
         embedding = create_valid_embedding()
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            embedding_vector=None,
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            embedding_vector=embedding,
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            embedding_vector=None,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                embedding_vector=None,
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                embedding_vector=embedding,
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                embedding_vector=None,
+            )
+        )
 
         result = await repository.get_items_without_embeddings(org_id)
 
@@ -751,16 +824,20 @@ class TestInMemoryRepositoryItemsWithoutEmbeddings:
         """Test only published items without embeddings are returned."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            embedding_vector=None,
-            is_published=True,
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            embedding_vector=None,
-            is_published=False,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                embedding_vector=None,
+                is_published=True,
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                embedding_vector=None,
+                is_published=False,
+            )
+        )
 
         result = await repository.get_items_without_embeddings(org_id)
 
@@ -774,8 +851,12 @@ class TestInMemoryRepositoryItemsWithoutEmbeddings:
         base_time = datetime.now(timezone.utc)
 
         i1 = create_sample_item(organization_id=org_id, created_at=base_time)
-        i2 = create_sample_item(organization_id=org_id, created_at=base_time - timedelta(hours=2))
-        i3 = create_sample_item(organization_id=org_id, created_at=base_time - timedelta(hours=1))
+        i2 = create_sample_item(
+            organization_id=org_id, created_at=base_time - timedelta(hours=2)
+        )
+        i3 = create_sample_item(
+            organization_id=org_id, created_at=base_time - timedelta(hours=1)
+        )
 
         await repository.create(i1)
         await repository.create(i2)
@@ -851,18 +932,24 @@ class TestInMemoryRepositoryCount:
         """Test counting with item_type filter."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            item_type=KnowledgeItemType.FAQ,
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            item_type=KnowledgeItemType.FAQ,
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            item_type=KnowledgeItemType.RUNBOOK,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                item_type=KnowledgeItemType.FAQ,
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                item_type=KnowledgeItemType.FAQ,
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                item_type=KnowledgeItemType.RUNBOOK,
+            )
+        )
 
         result = await repository.count_by_organization_id(
             org_id,
@@ -876,8 +963,12 @@ class TestInMemoryRepositoryCount:
         """Test count includes unpublished items."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(organization_id=org_id, is_published=True))
-        await repository.create(create_sample_item(organization_id=org_id, is_published=False))
+        await repository.create(
+            create_sample_item(organization_id=org_id, is_published=True)
+        )
+        await repository.create(
+            create_sample_item(organization_id=org_id, is_published=False)
+        )
 
         result = await repository.count_by_organization_id(org_id)
 
@@ -903,21 +994,27 @@ class TestInMemoryRepositoryMostHelpful:
         org_id = generate_org_id()
 
         # Create items with different helpfulness scores
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            helpful_count=10,
-            not_helpful_count=0,  # Score: 1.0
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            helpful_count=5,
-            not_helpful_count=5,  # Score: 0.5
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            helpful_count=8,
-            not_helpful_count=2,  # Score: 0.8
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                helpful_count=10,
+                not_helpful_count=0,  # Score: 1.0
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                helpful_count=5,
+                not_helpful_count=5,  # Score: 0.5
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                helpful_count=8,
+                not_helpful_count=2,  # Score: 0.8
+            )
+        )
 
         result = await repository.get_most_helpful(org_id)
 
@@ -932,23 +1029,29 @@ class TestInMemoryRepositoryMostHelpful:
         org_id = generate_org_id()
 
         # Below threshold (default is 3)
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            helpful_count=2,
-            not_helpful_count=0,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                helpful_count=2,
+                not_helpful_count=0,
+            )
+        )
         # At threshold
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            helpful_count=3,
-            not_helpful_count=0,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                helpful_count=3,
+                not_helpful_count=0,
+            )
+        )
         # Above threshold
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            helpful_count=10,
-            not_helpful_count=0,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                helpful_count=10,
+                not_helpful_count=0,
+            )
+        )
 
         result = await repository.get_most_helpful(org_id)
 
@@ -959,16 +1062,20 @@ class TestInMemoryRepositoryMostHelpful:
         """Test only published items are returned."""
         org_id = generate_org_id()
 
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            helpful_count=10,
-            is_published=True,
-        ))
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            helpful_count=10,
-            is_published=False,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                helpful_count=10,
+                is_published=True,
+            )
+        )
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                helpful_count=10,
+                is_published=False,
+            )
+        )
 
         result = await repository.get_most_helpful(org_id)
 
@@ -981,10 +1088,12 @@ class TestInMemoryRepositoryMostHelpful:
         org_id = generate_org_id()
 
         for i in range(10):
-            await repository.create(create_sample_item(
-                organization_id=org_id,
-                helpful_count=10,
-            ))
+            await repository.create(
+                create_sample_item(
+                    organization_id=org_id,
+                    helpful_count=10,
+                )
+            )
 
         result = await repository.get_most_helpful(org_id, limit=5)
 

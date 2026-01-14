@@ -82,11 +82,7 @@ class KBConfig(ABC):
 
     @abstractmethod
     def format_response(
-        self,
-        answer: str,
-        sources: list,
-        chunk_count: int,
-        confidence: float
+        self, answer: str, sources: list, chunk_count: int, confidence: float
     ) -> str:
         """
         Format final response for agent consumption.

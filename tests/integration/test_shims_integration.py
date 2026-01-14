@@ -39,10 +39,9 @@ class TestShimPackageImports:
 
     def test_shims_work_in_isolation(self):
         """Test that shims work without affecting each other."""
-        with patch.dict(os.environ, {
-            "ENABLE_TRACING": "true",
-            "ENABLE_PII_REDACTION": "false"
-        }):
+        with patch.dict(
+            os.environ, {"ENABLE_TRACING": "true", "ENABLE_PII_REDACTION": "false"}
+        ):
             from faultmaven.infrastructure.shims import (
                 get_tracing_status,
                 PIIRedactor,
@@ -90,10 +89,9 @@ class TestEnvironmentVariableToggling:
 
     def test_both_shims_enabled(self):
         """Test both shims enabled simultaneously."""
-        with patch.dict(os.environ, {
-            "ENABLE_TRACING": "true",
-            "ENABLE_PII_REDACTION": "true"
-        }):
+        with patch.dict(
+            os.environ, {"ENABLE_TRACING": "true", "ENABLE_PII_REDACTION": "true"}
+        ):
             from faultmaven.infrastructure.shims import (
                 get_tracing_status,
                 PIIRedactor,
@@ -107,10 +105,9 @@ class TestEnvironmentVariableToggling:
 
     def test_both_shims_disabled(self):
         """Test both shims disabled simultaneously."""
-        with patch.dict(os.environ, {
-            "ENABLE_TRACING": "false",
-            "ENABLE_PII_REDACTION": "false"
-        }):
+        with patch.dict(
+            os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
+        ):
             from faultmaven.infrastructure.shims import (
                 get_tracing_status,
                 PIIRedactor,
@@ -131,10 +128,9 @@ class TestCombinedShimUsage:
     @pytest.mark.asyncio
     async def test_tracked_function_with_pii_redaction(self):
         """Test using track decorator with PII redaction in same function."""
-        with patch.dict(os.environ, {
-            "ENABLE_TRACING": "false",
-            "ENABLE_PII_REDACTION": "false"
-        }):
+        with patch.dict(
+            os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
+        ):
             from faultmaven.infrastructure.shims import track, PIIRedactor
 
             redactor = PIIRedactor()
@@ -153,10 +149,9 @@ class TestCombinedShimUsage:
 
     def test_sync_function_with_both_shims(self):
         """Test sync function using both shims."""
-        with patch.dict(os.environ, {
-            "ENABLE_TRACING": "false",
-            "ENABLE_PII_REDACTION": "false"
-        }):
+        with patch.dict(
+            os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
+        ):
             from faultmaven.infrastructure.shims import track, PIIRedactor
 
             redactor = PIIRedactor()
@@ -179,8 +174,7 @@ class TestShimsWithDisabledMode:
         """Test application works without tracing."""
         with patch.dict(os.environ, {"ENABLE_TRACING": "false"}):
             with patch(
-                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE", False
             ):
                 from faultmaven.infrastructure.shims import track
 
@@ -195,8 +189,7 @@ class TestShimsWithDisabledMode:
         """Test application works without PII redaction."""
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "false"}):
             with patch(
-                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE", False
             ):
                 from faultmaven.infrastructure.shims import PIIRedactor
 
@@ -208,17 +201,14 @@ class TestShimsWithDisabledMode:
     @pytest.mark.asyncio
     async def test_async_application_runs_without_dependencies(self):
         """Test async application works without enterprise dependencies."""
-        with patch.dict(os.environ, {
-            "ENABLE_TRACING": "false",
-            "ENABLE_PII_REDACTION": "false"
-        }):
+        with patch.dict(
+            os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
+        ):
             with patch(
-                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE", False
             ):
                 with patch(
-                    "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE",
-                    False
+                    "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE", False
                 ):
                     from faultmaven.infrastructure.shims import track, PIIRedactor
 
@@ -238,10 +228,9 @@ class TestShimStatusDiagnostics:
 
     def test_combined_status_check(self):
         """Test checking status of all shims at once."""
-        with patch.dict(os.environ, {
-            "ENABLE_TRACING": "true",
-            "ENABLE_PII_REDACTION": "false"
-        }):
+        with patch.dict(
+            os.environ, {"ENABLE_TRACING": "true", "ENABLE_PII_REDACTION": "false"}
+        ):
             from faultmaven.infrastructure.shims import (
                 get_tracing_status,
                 get_pii_redaction_status,
@@ -338,8 +327,7 @@ class TestShimGracefulDegradation:
         """Test track decorator gracefully handles missing Opik."""
         with patch.dict(os.environ, {"ENABLE_TRACING": "true"}):
             with patch(
-                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE", False
             ):
                 from faultmaven.infrastructure.shims import observability
 
@@ -354,8 +342,7 @@ class TestShimGracefulDegradation:
         """Test PIIRedactor gracefully handles missing Presidio."""
         with patch.dict(os.environ, {"ENABLE_PII_REDACTION": "true"}):
             with patch(
-                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.security.PRESIDIO_AVAILABLE", False
             ):
                 from faultmaven.infrastructure.shims import security
 
@@ -387,10 +374,9 @@ class TestRealWorldScenarios:
     @pytest.mark.asyncio
     async def test_case_creation_workflow(self):
         """Simulate case creation workflow with shims."""
-        with patch.dict(os.environ, {
-            "ENABLE_TRACING": "false",
-            "ENABLE_PII_REDACTION": "false"
-        }):
+        with patch.dict(
+            os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
+        ):
             from faultmaven.infrastructure.shims import track, PIIRedactor
 
             redactor = PIIRedactor()
@@ -406,8 +392,7 @@ class TestRealWorldScenarios:
                 }
 
             case = await create_case(
-                title="Database Issue",
-                description="Contact admin@example.com for help"
+                title="Database Issue", description="Contact admin@example.com for help"
             )
 
             assert case["id"] == "case-123"
@@ -417,10 +402,9 @@ class TestRealWorldScenarios:
 
     def test_health_check_endpoint_simulation(self):
         """Simulate health check endpoint using shim status."""
-        with patch.dict(os.environ, {
-            "ENABLE_TRACING": "false",
-            "ENABLE_PII_REDACTION": "false"
-        }):
+        with patch.dict(
+            os.environ, {"ENABLE_TRACING": "false", "ENABLE_PII_REDACTION": "false"}
+        ):
             from faultmaven.infrastructure.shims import (
                 get_tracing_status,
                 get_pii_redaction_status,
@@ -433,7 +417,7 @@ class TestRealWorldScenarios:
                     "features": {
                         "tracing": get_tracing_status(),
                         "pii_redaction": get_pii_redaction_status(),
-                    }
+                    },
                 }
 
             health = health_check()

@@ -89,7 +89,6 @@ Available tools:
 - search_knowledge: Search the knowledge base for relevant information (coming soon)
 
 Always explain your reasoning and next steps clearly.""",
-
     AgentType.DEBUGGER: """You are a debugging specialist focused on code and log analysis.
 
 Your role is to:
@@ -107,7 +106,6 @@ When debugging:
 - Provide specific line numbers and code suggestions when possible
 
 Use the available tools to examine evidence files thoroughly.""",
-
     AgentType.RESEARCHER: """You are a research assistant focused on finding relevant information.
 
 Your role is to:
@@ -123,7 +121,6 @@ When researching:
 - Identify patterns that match known problems
 - Provide links or references when possible
 - Summarize key findings clearly""",
-
     AgentType.VALIDATOR: """You are a validation engineer focused on testing hypotheses.
 
 Your role is to:
@@ -139,7 +136,6 @@ When validating:
 - Verify the timeline of events makes sense
 - Consider alternative explanations
 - Rate confidence level of the diagnosis""",
-
     AgentType.REPORTER: """You are a technical report writer focused on clear communication.
 
 Your role is to:
@@ -223,9 +219,13 @@ class AgentOrchestrationService(BaseService):
 
         # Require explicit dependency injection
         if session_service is None:
-            raise ValueError("session_service is required for AgentOrchestrationService")
+            raise ValueError(
+                "session_service is required for AgentOrchestrationService"
+            )
         if evidence_service is None:
-            raise ValueError("evidence_service is required for AgentOrchestrationService")
+            raise ValueError(
+                "evidence_service is required for AgentOrchestrationService"
+            )
 
         self.session_service = session_service
         self.evidence_service = evidence_service
@@ -381,7 +381,9 @@ class AgentOrchestrationService(BaseService):
             await self.case_repo.update_agent_execution(execution)
 
             # Step 9: Update session token usage
-            total = total_tokens.get("input_tokens", 0) + total_tokens.get("output_tokens", 0)
+            total = total_tokens.get("input_tokens", 0) + total_tokens.get(
+                "output_tokens", 0
+            )
             await self.session_service.add_execution_to_session(
                 session_id=session_id,
                 organization_id=organization_id,
@@ -395,10 +397,14 @@ class AgentOrchestrationService(BaseService):
             )
             if budget_check.get("is_over_budget"):
                 try:
-                    await self.session_service.pause_session(session_id, organization_id)
+                    await self.session_service.pause_session(
+                        session_id, organization_id
+                    )
                     logger.info(f"Session {session_id} paused due to budget exceeded")
                 except Exception as e:
-                    logger.warning(f"Failed to pause session after budget exceeded: {e}")
+                    logger.warning(
+                        f"Failed to pause session after budget exceeded: {e}"
+                    )
 
             # Calculate duration
             duration_ms = int((time.time() - start_time) * 1000)
@@ -542,7 +548,9 @@ class AgentOrchestrationService(BaseService):
             raise NotFoundError("Case", session.case_id)
 
         # Build system prompt
-        system_prompt = AGENT_SYSTEM_PROMPTS.get(agent_type, AGENT_SYSTEM_PROMPTS[AgentType.INVESTIGATOR])
+        system_prompt = AGENT_SYSTEM_PROMPTS.get(
+            agent_type, AGENT_SYSTEM_PROMPTS[AgentType.INVESTIGATOR]
+        )
 
         # Add case context to system prompt
         case_context = f"""
@@ -603,8 +611,7 @@ class AgentOrchestrationService(BaseService):
 
             # Take most recent completed executions
             completed = [
-                e for e in executions
-                if e.status == ExecutionStatus.COMPLETED
+                e for e in executions if e.status == ExecutionStatus.COMPLETED
             ][-limit:]
 
             for execution in completed:
@@ -690,8 +697,12 @@ class AgentOrchestrationService(BaseService):
 
                     elif llm_event.event_type == LLMEventType.COMPLETION:
                         if llm_event.metadata:
-                            total_input_tokens += llm_event.metadata.get("input_tokens", 0)
-                            total_output_tokens += llm_event.metadata.get("output_tokens", 0)
+                            total_input_tokens += llm_event.metadata.get(
+                                "input_tokens", 0
+                            )
+                            total_output_tokens += llm_event.metadata.get(
+                                "output_tokens", 0
+                            )
 
                     elif llm_event.event_type == LLMEventType.ERROR:
                         yield ExecutionEvent.error(
@@ -847,6 +858,7 @@ class AgentOrchestrationService(BaseService):
                     # Format result for LLM
                     if isinstance(result.data, dict):
                         import json
+
                         content = json.dumps(result.data, indent=2)
                     else:
                         content = str(result.data)
@@ -968,7 +980,7 @@ class AgentOrchestrationService(BaseService):
                     break
 
                 # Calculate backoff delay
-                delay = initial_delay * (2 ** retries)
+                delay = initial_delay * (2**retries)
                 logger.warning(
                     f"LLM call failed (attempt {retries + 1}/{max_retries + 1}), "
                     f"retrying in {delay}s: {e}"

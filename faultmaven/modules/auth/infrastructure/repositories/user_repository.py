@@ -22,24 +22,33 @@ class User(BaseModel):
     Matches user-storage-design.md schema.
     All fields align with production PostgreSQL schema.
     """
+
     # ============================================================
     # Identity
     # ============================================================
     user_id: str = Field(..., description="Unique user identifier")
-    username: str = Field(..., min_length=1, max_length=100, description="Unique username")
+    username: str = Field(
+        ..., min_length=1, max_length=100, description="Unique username"
+    )
     email: EmailStr = Field(..., description="User email address")
 
     # ============================================================
     # Authentication
     # ============================================================
-    hashed_password: Optional[str] = Field(None, description="Bcrypt password hash (NULL for SSO-only users)")
+    hashed_password: Optional[str] = Field(
+        None, description="Bcrypt password hash (NULL for SSO-only users)"
+    )
     is_active: bool = Field(True, description="Account active status")
 
     # ============================================================
     # Profile
     # ============================================================
-    display_name: str = Field(..., min_length=1, max_length=200, description="Display name")
-    avatar_url: Optional[str] = Field(None, max_length=500, description="Profile picture URL")
+    display_name: str = Field(
+        ..., min_length=1, max_length=200, description="Display name"
+    )
+    avatar_url: Optional[str] = Field(
+        None, max_length=500, description="Profile picture URL"
+    )
     timezone: str = Field("UTC", max_length=50, description="User timezone")
     locale: str = Field("en-US", max_length=10, description="User locale (i18n)")
 
@@ -47,13 +56,19 @@ class User(BaseModel):
     # Email Verification
     # ============================================================
     is_email_verified: bool = Field(False, description="Email verification status")
-    email_verified_at: Optional[datetime] = Field(None, description="When email was verified")
+    email_verified_at: Optional[datetime] = Field(
+        None, description="When email was verified"
+    )
 
     # ============================================================
     # SSO Integration
     # ============================================================
-    sso_provider: Optional[str] = Field(None, max_length=50, description="SSO provider (google, okta, azure)")
-    sso_provider_id: Optional[str] = Field(None, max_length=255, description="External user ID from SSO provider")
+    sso_provider: Optional[str] = Field(
+        None, max_length=50, description="SSO provider (google, okta, azure)"
+    )
+    sso_provider_id: Optional[str] = Field(
+        None, max_length=255, description="External user ID from SSO provider"
+    )
 
     # ============================================================
     # Timestamps
@@ -61,12 +76,16 @@ class User(BaseModel):
     created_at: datetime = Field(..., description="Account creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
     last_login_at: Optional[datetime] = Field(None, description="Last successful login")
-    last_password_change_at: Optional[datetime] = Field(None, description="Last password change")
+    last_password_change_at: Optional[datetime] = Field(
+        None, description="Last password change"
+    )
 
     # ============================================================
     # Soft Delete
     # ============================================================
-    deleted_at: Optional[datetime] = Field(None, description="Soft delete timestamp (NULL = active)")
+    deleted_at: Optional[datetime] = Field(
+        None, description="Soft delete timestamp (NULL = active)"
+    )
 
     # ============================================================
     # Authorization (Simplified for InMemory/Redis)
@@ -74,12 +93,15 @@ class User(BaseModel):
     # NOTE: In production PostgreSQL with user-storage-design.md,
     # roles will be in separate tables (organization_members → roles).
     # For InMemory/Redis development, store as simple string list.
-    roles: List[str] = Field(default_factory=list, description="User roles (development only)")
+    roles: List[str] = Field(
+        default_factory=list, description="User roles (development only)"
+    )
 
 
 # ============================================================
 # Repository Interface
 # ============================================================
+
 
 class UserRepository(ABC):
     """
@@ -143,11 +165,7 @@ class UserRepository(ABC):
         pass
 
     @abstractmethod
-    async def list(
-        self,
-        limit: int = 50,
-        offset: int = 0
-    ) -> tuple[List[User], int]:
+    async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         """
         List users with pagination.
 
@@ -230,6 +248,7 @@ class UserRepository(ABC):
 # In-Memory Implementation (for Testing/Development)
 # ============================================================
 
+
 class InMemoryUserRepository(UserRepository):
     """
     In-memory user repository for testing and development.
@@ -275,11 +294,7 @@ class InMemoryUserRepository(UserRepository):
             return self._users.get(user_id)
         return None
 
-    async def list(
-        self,
-        limit: int = 50,
-        offset: int = 0
-    ) -> tuple[List[User], int]:
+    async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         """List users with pagination."""
         all_users = list(self._users.values())
 
@@ -287,7 +302,7 @@ class InMemoryUserRepository(UserRepository):
         all_users.sort(key=lambda u: u.created_at, reverse=True)
 
         total_count = len(all_users)
-        paginated = all_users[offset:offset + limit]
+        paginated = all_users[offset : offset + limit]
 
         return paginated, total_count
 
@@ -308,7 +323,7 @@ class InMemoryUserRepository(UserRepository):
         all_users.sort(key=lambda u: u.created_at, reverse=True)
 
         total_count = len(all_users)
-        paginated = all_users[offset:offset + limit]
+        paginated = all_users[offset : offset + limit]
 
         return paginated, total_count
 
@@ -330,6 +345,7 @@ class InMemoryUserRepository(UserRepository):
         existing = self._users.get(user.user_id)
         if not existing:
             from faultmaven.exceptions import NotFoundError
+
             raise NotFoundError("User", user.user_id)
 
         # If email changed, check for conflicts
@@ -337,6 +353,7 @@ class InMemoryUserRepository(UserRepository):
             existing_with_email = self._email_index.get(user.email.lower())
             if existing_with_email and existing_with_email != user.user_id:
                 from faultmaven.exceptions import ConflictError
+
                 raise ConflictError("Email already in use")
             # Remove old email from index
             self._email_index.pop(existing.email.lower(), None)
@@ -346,6 +363,7 @@ class InMemoryUserRepository(UserRepository):
             existing_with_username = self._username_index.get(user.username.lower())
             if existing_with_username and existing_with_username != user.user_id:
                 from faultmaven.exceptions import ConflictError
+
                 raise ConflictError("Username already taken")
             # Remove old username from index
             self._username_index.pop(existing.username.lower(), None)
@@ -370,6 +388,7 @@ class InMemoryUserRepository(UserRepository):
 # ============================================================
 # PostgreSQL Implementation (Production)
 # ============================================================
+
 
 class PostgreSQLUserRepository(UserRepository):
     """
@@ -401,29 +420,30 @@ class PostgreSQLUserRepository(UserRepository):
         user.updated_at = datetime.now(timezone.utc)
 
         user_data = {
-            'user_id': user.user_id,
-            'username': user.username,
-            'email': user.email,
-            'display_name': user.display_name,
-            'avatar_url': user.avatar_url,
-            'timezone': user.timezone,
-            'locale': user.locale,
-            'hashed_password': user.hashed_password,
-            'is_active': user.is_active,
-            'is_email_verified': user.is_email_verified,
-            'email_verified_at': user.email_verified_at,
-            'sso_provider': user.sso_provider,
-            'sso_provider_id': user.sso_provider_id,
-            'created_at': user.created_at,
-            'updated_at': user.updated_at,
-            'last_login_at': user.last_login_at,
-            'last_password_change_at': user.last_password_change_at,
-            'deleted_at': user.deleted_at,
-            'roles': ','.join(user.roles) if user.roles else ''
+            "user_id": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name,
+            "avatar_url": user.avatar_url,
+            "timezone": user.timezone,
+            "locale": user.locale,
+            "hashed_password": user.hashed_password,
+            "is_active": user.is_active,
+            "is_email_verified": user.is_email_verified,
+            "email_verified_at": user.email_verified_at,
+            "sso_provider": user.sso_provider,
+            "sso_provider_id": user.sso_provider_id,
+            "created_at": user.created_at,
+            "updated_at": user.updated_at,
+            "last_login_at": user.last_login_at,
+            "last_password_change_at": user.last_password_change_at,
+            "deleted_at": user.deleted_at,
+            "roles": ",".join(user.roles) if user.roles else "",
         }
 
         # Upsert query
-        query = text("""
+        query = text(
+            """
             INSERT INTO users (
                 user_id, username, email, display_name, avatar_url, timezone, locale,
                 hashed_password, is_active, is_email_verified, email_verified_at,
@@ -453,7 +473,8 @@ class PostgreSQLUserRepository(UserRepository):
                 last_password_change_at = EXCLUDED.last_password_change_at,
                 deleted_at = EXCLUDED.deleted_at,
                 roles = EXCLUDED.roles
-        """)
+        """
+        )
 
         await self.db.execute(query, user_data)
         await self.db.commit()
@@ -490,7 +511,7 @@ class PostgreSQLUserRepository(UserRepository):
             last_login_at=row.last_login_at,
             last_password_change_at=row.last_password_change_at,
             deleted_at=row.deleted_at,
-            roles=row.roles.split(',') if row.roles else []
+            roles=row.roles.split(",") if row.roles else [],
         )
 
     async def get_by_username(self, username: str) -> Optional[User]:
@@ -523,7 +544,7 @@ class PostgreSQLUserRepository(UserRepository):
             last_login_at=row.last_login_at,
             last_password_change_at=row.last_password_change_at,
             deleted_at=row.deleted_at,
-            roles=row.roles.split(',') if row.roles else []
+            roles=row.roles.split(",") if row.roles else [],
         )
 
     async def get_by_email(self, email: str) -> Optional[User]:
@@ -556,14 +577,10 @@ class PostgreSQLUserRepository(UserRepository):
             last_login_at=row.last_login_at,
             last_password_change_at=row.last_password_change_at,
             deleted_at=row.deleted_at,
-            roles=row.roles.split(',') if row.roles else []
+            roles=row.roles.split(",") if row.roles else [],
         )
 
-    async def list(
-        self,
-        limit: int = 50,
-        offset: int = 0
-    ) -> tuple[List[User], int]:
+    async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         """List users with pagination."""
         from sqlalchemy import text
 
@@ -573,11 +590,13 @@ class PostgreSQLUserRepository(UserRepository):
         total_count = count_result.scalar()
 
         # Get paginated results
-        query = text("""
+        query = text(
+            """
             SELECT * FROM users
             ORDER BY created_at DESC
             LIMIT :limit OFFSET :offset
-        """)
+        """
+        )
         result = await self.db.execute(query, {"limit": limit, "offset": offset})
         rows = result.fetchall()
 
@@ -601,7 +620,7 @@ class PostgreSQLUserRepository(UserRepository):
                 last_login_at=row.last_login_at,
                 last_password_change_at=row.last_password_change_at,
                 deleted_at=row.deleted_at,
-                roles=row.roles.split(',') if row.roles else []
+                roles=row.roles.split(",") if row.roles else [],
             )
             for row in rows
         ]
@@ -631,12 +650,14 @@ class PostgreSQLUserRepository(UserRepository):
         total_count = count_result.scalar()
 
         # Get paginated results
-        query = text(f"""
+        query = text(
+            f"""
             SELECT * FROM users
             {where_clause}
             ORDER BY created_at DESC
             LIMIT :limit OFFSET :offset
-        """)
+        """
+        )
         result = await self.db.execute(query, params)
         rows = result.fetchall()
 
@@ -660,7 +681,7 @@ class PostgreSQLUserRepository(UserRepository):
                 last_login_at=row.last_login_at,
                 last_password_change_at=row.last_password_change_at,
                 deleted_at=row.deleted_at,
-                roles=row.roles.split(',') if row.roles else []
+                roles=row.roles.split(",") if row.roles else [],
             )
             for row in rows
         ]
@@ -676,13 +697,17 @@ class PostgreSQLUserRepository(UserRepository):
         from faultmaven.exceptions import ConflictError
 
         # Check for existing email
-        email_check = text("SELECT user_id FROM users WHERE LOWER(email) = LOWER(:email)")
+        email_check = text(
+            "SELECT user_id FROM users WHERE LOWER(email) = LOWER(:email)"
+        )
         result = await self.db.execute(email_check, {"email": user.email})
         if result.first():
             raise ConflictError("Email already registered")
 
         # Check for existing username
-        username_check = text("SELECT user_id FROM users WHERE LOWER(username) = LOWER(:username)")
+        username_check = text(
+            "SELECT user_id FROM users WHERE LOWER(username) = LOWER(:username)"
+        )
         result = await self.db.execute(username_check, {"username": user.username})
         if result.first():
             raise ConflictError("Username already taken")
@@ -707,7 +732,9 @@ class PostgreSQLUserRepository(UserRepository):
             email_check = text(
                 "SELECT user_id FROM users WHERE LOWER(email) = LOWER(:email) AND user_id != :user_id"
             )
-            result = await self.db.execute(email_check, {"email": user.email, "user_id": user.user_id})
+            result = await self.db.execute(
+                email_check, {"email": user.email, "user_id": user.user_id}
+            )
             if result.first():
                 raise ConflictError("Email already in use")
 

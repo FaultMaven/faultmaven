@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================
 
+
 def get_database_url() -> str:
     """
     Get database URL from unified settings.
@@ -54,6 +55,7 @@ def get_database_url() -> str:
         Database URL string
     """
     from faultmaven.config.settings import get_settings
+
     return get_settings().database.database_url
 
 
@@ -92,11 +94,14 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
 
     # Get settings for database configuration
     from faultmaven.config.settings import get_settings
+
     settings = get_settings()
     db_config = settings.database
 
     url = database_url or db_config.database_url
-    logger.info(f"Creating async engine for: {url.split('@')[-1] if '@' in url else url}")
+    logger.info(
+        f"Creating async engine for: {url.split('@')[-1] if '@' in url else url}"
+    )
 
     # Configure engine based on database type
     if is_sqlite(url):
@@ -124,7 +129,9 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
     return _engine
 
 
-def get_session_factory(database_url: Optional[str] = None) -> async_sessionmaker[AsyncSession]:
+def get_session_factory(
+    database_url: Optional[str] = None,
+) -> async_sessionmaker[AsyncSession]:
     """
     Get or create the async session factory.
 
@@ -155,8 +162,11 @@ def get_session_factory(database_url: Optional[str] = None) -> async_sessionmake
 # Session Context Manager
 # ============================================================
 
+
 @asynccontextmanager
-async def get_db_session(database_url: Optional[str] = None) -> AsyncGenerator[AsyncSession, None]:
+async def get_db_session(
+    database_url: Optional[str] = None,
+) -> AsyncGenerator[AsyncSession, None]:
     """
     Get an async database session with proper lifecycle management.
 
@@ -195,6 +205,7 @@ async def get_db_session(database_url: Optional[str] = None) -> AsyncGenerator[A
 # Database Initialization
 # ============================================================
 
+
 async def init_database(database_url: Optional[str] = None) -> None:
     """
     Initialize database tables.
@@ -230,6 +241,7 @@ async def drop_database(database_url: Optional[str] = None) -> None:
 # Engine/Session Reset
 # ============================================================
 
+
 async def close_database() -> None:
     """
     Close database connections and reset engine.
@@ -260,6 +272,7 @@ def reset_engine() -> None:
 # Health Check
 # ============================================================
 
+
 async def check_database_health(database_url: Optional[str] = None) -> dict:
     """
     Check database connection health.
@@ -275,7 +288,9 @@ async def check_database_health(database_url: Optional[str] = None) -> dict:
 
         return {
             "status": "healthy",
-            "database_type": "sqlite" if is_sqlite(get_database_url()) else "postgresql",
+            "database_type": (
+                "sqlite" if is_sqlite(get_database_url()) else "postgresql"
+            ),
         }
     except Exception as e:
         return {

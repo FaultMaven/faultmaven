@@ -189,8 +189,12 @@ class HypothesisResponse(BaseModel):
     case_id: str = Field(..., description="Associated case identifier")
     description: str = Field(..., description="Hypothesis description")
     status: str = Field(..., description="Current status")
-    confidence_score: Optional[float] = Field(None, description="Confidence score (0.00-1.00)")
-    supporting_evidence_ids: List[str] = Field(..., description="Supporting evidence IDs")
+    confidence_score: Optional[float] = Field(
+        None, description="Confidence score (0.00-1.00)"
+    )
+    supporting_evidence_ids: List[str] = Field(
+        ..., description="Supporting evidence IDs"
+    )
     validation_result: Optional[str] = Field(None, description="Validation result")
     validation_timestamp: Optional[datetime] = Field(None, description="When validated")
     proposed_at: datetime = Field(..., description="When proposed")
@@ -211,7 +215,11 @@ class HypothesisResponse(BaseModel):
             case_id=data.get("case_id"),
             description=data.get("description"),
             status=data.get("status"),
-            confidence_score=float(data.get("confidence_score")) if data.get("confidence_score") is not None else None,
+            confidence_score=(
+                float(data.get("confidence_score"))
+                if data.get("confidence_score") is not None
+                else None
+            ),
             supporting_evidence_ids=data.get("supporting_evidence_ids", []),
             validation_result=data.get("validation_result"),
             validation_timestamp=data.get("validation_timestamp"),
@@ -392,14 +400,18 @@ class SolutionResponse(BaseModel):
 
     solution_id: str = Field(..., description="Unique solution identifier")
     case_id: str = Field(..., description="Associated case identifier")
-    hypothesis_id: Optional[str] = Field(None, description="Linked hypothesis identifier (if any)")
+    hypothesis_id: Optional[str] = Field(
+        None, description="Linked hypothesis identifier (if any)"
+    )
     description: str = Field(..., description="Solution description")
     status: str = Field(..., description="Current status")
     implementation_steps: List[str] = Field(..., description="Implementation steps")
     risk_level: Optional[str] = Field(None, description="Risk level")
     estimated_effort: Optional[str] = Field(None, description="Estimated effort")
     verification_result: Optional[str] = Field(None, description="Verification result")
-    verification_timestamp: Optional[datetime] = Field(None, description="When verified")
+    verification_timestamp: Optional[datetime] = Field(
+        None, description="When verified"
+    )
     proposed_at: datetime = Field(..., description="When proposed")
     implemented_at: Optional[datetime] = Field(None, description="When implemented")
     updated_at: datetime = Field(..., description="Last updated")

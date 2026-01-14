@@ -27,20 +27,34 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
+from faultmaven.infrastructure.persistence.database_case_repository import (
+    DatabaseCaseRepository,
+)
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InMemoryInvestigationSessionRepository,
 )
+
 # AgentExecutionRepository removed - APIInvestigationSessionService now uses case_repo
-from faultmaven.services.investigation_session_service import APIInvestigationSessionService
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
+from faultmaven.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationStrategy,
+)
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
+from faultmaven.modules.agent.domain.models.agent_execution import (
+    AgentExecution,
+    AgentType,
+    ExecutionStatus,
+)
 
 
 # ============================================================
 # Fixtures
 # ============================================================
+
 
 @pytest.fixture(scope="function")
 async def async_engine():
@@ -85,6 +99,7 @@ def session_repo() -> InMemoryInvestigationSessionRepository:
 
 # execution_repo fixture removed - case_repo now handles agent executions
 
+
 @pytest.fixture
 def session_service(session_repo, case_repo) -> APIInvestigationSessionService:
     """Create APIInvestigationSessionService with repositories."""
@@ -112,6 +127,7 @@ async def sample_case(case_repo) -> Case:
 # ============================================================
 # Benchmark Helpers
 # ============================================================
+
 
 def create_test_org_id() -> str:
     """Generate unique test organization ID."""
@@ -167,11 +183,14 @@ def report_benchmark(name: str, timings: List[float], target_p95_ms: float):
 # Create Session Benchmarks
 # ============================================================
 
+
 class TestCreateSessionBenchmarks:
     """Benchmark session creation operations."""
 
     @pytest.mark.asyncio
-    async def test_benchmark_create_session(self, session_service, sample_case, case_repo):
+    async def test_benchmark_create_session(
+        self, session_service, sample_case, case_repo
+    ):
         """Benchmark create_session operation - target <200ms p95."""
         iterations = 50
         timings = []
@@ -206,6 +225,7 @@ class TestCreateSessionBenchmarks:
 # Get Session Benchmarks
 # ============================================================
 
+
 class TestGetSessionBenchmarks:
     """Benchmark session retrieval operations."""
 
@@ -238,6 +258,7 @@ class TestGetSessionBenchmarks:
 # ============================================================
 # Update Session Benchmarks
 # ============================================================
+
 
 class TestUpdateSessionBenchmarks:
     """Benchmark session update operations."""
@@ -272,11 +293,14 @@ class TestUpdateSessionBenchmarks:
 # Pause/Resume Session Benchmarks
 # ============================================================
 
+
 class TestPauseResumeSessionBenchmarks:
     """Benchmark session pause/resume operations."""
 
     @pytest.mark.asyncio
-    async def test_benchmark_pause_session(self, session_service, sample_case, session_repo, case_repo):
+    async def test_benchmark_pause_session(
+        self, session_service, sample_case, session_repo, case_repo
+    ):
         """Benchmark pause_session operation - target <150ms p95."""
         iterations = 50
         timings = []
@@ -311,7 +335,9 @@ class TestPauseResumeSessionBenchmarks:
         assert passed, f"P95 exceeded 150ms target"
 
     @pytest.mark.asyncio
-    async def test_benchmark_resume_session(self, session_service, sample_case, session_repo, case_repo):
+    async def test_benchmark_resume_session(
+        self, session_service, sample_case, session_repo, case_repo
+    ):
         """Benchmark resume_session operation - target <150ms p95."""
         iterations = 50
         timings = []
@@ -333,7 +359,9 @@ class TestPauseResumeSessionBenchmarks:
                 organization_id=case.organization_id,
                 user_id=case.user_id,
             )
-            await session_service.pause_session(session.session_id, case.organization_id)
+            await session_service.pause_session(
+                session.session_id, case.organization_id
+            )
 
             duration = await time_async_operation(
                 session_service.resume_session(
@@ -351,11 +379,14 @@ class TestPauseResumeSessionBenchmarks:
 # Complete Session Benchmarks
 # ============================================================
 
+
 class TestCompleteSessionBenchmarks:
     """Benchmark session completion operations."""
 
     @pytest.mark.asyncio
-    async def test_benchmark_complete_session(self, session_service, sample_case, case_repo):
+    async def test_benchmark_complete_session(
+        self, session_service, sample_case, case_repo
+    ):
         """Benchmark complete_session operation - target <150ms p95."""
         iterations = 50
         timings = []
@@ -394,6 +425,7 @@ class TestCompleteSessionBenchmarks:
 # ============================================================
 # List Sessions Benchmarks
 # ============================================================
+
 
 class TestListSessionsBenchmarks:
     """Benchmark session listing operations."""
@@ -435,10 +467,13 @@ class TestListSessionsBenchmarks:
 # Get Session with Executions Benchmarks
 # ============================================================
 
+
 class TestGetSessionWithExecutionsBenchmarks:
     """Benchmark get session with executions operations."""
 
-    @pytest.mark.skip(reason="Agent execution methods not yet implemented in DatabaseCaseRepository after migration")
+    @pytest.mark.skip(
+        reason="Agent execution methods not yet implemented in DatabaseCaseRepository after migration"
+    )
     @pytest.mark.asyncio
     async def test_benchmark_get_session_with_executions(
         self, session_service, sample_case, case_repo
@@ -482,10 +517,13 @@ class TestGetSessionWithExecutionsBenchmarks:
 # Add Execution to Session Benchmarks
 # ============================================================
 
+
 class TestAddExecutionBenchmarks:
     """Benchmark add execution to session operations."""
 
-    @pytest.mark.skip(reason="Agent execution methods not yet implemented in DatabaseCaseRepository after migration")
+    @pytest.mark.skip(
+        reason="Agent execution methods not yet implemented in DatabaseCaseRepository after migration"
+    )
     @pytest.mark.asyncio
     async def test_benchmark_add_execution_to_session(
         self, session_service, sample_case, case_repo
@@ -528,6 +566,7 @@ class TestAddExecutionBenchmarks:
 # Check Budget Exceeded Benchmarks
 # ============================================================
 
+
 class TestCheckBudgetBenchmarks:
     """Benchmark budget check operations."""
 
@@ -561,11 +600,14 @@ class TestCheckBudgetBenchmarks:
 # Get Statistics Benchmarks
 # ============================================================
 
+
 class TestGetStatisticsBenchmarks:
     """Benchmark statistics operations."""
 
     @pytest.mark.asyncio
-    async def test_benchmark_get_statistics_100_sessions(self, session_service, sample_case):
+    async def test_benchmark_get_statistics_100_sessions(
+        self, session_service, sample_case
+    ):
         """Benchmark get_session_statistics with 100 sessions - target <500ms p95."""
         # Create 100 sessions
         for i in range(100):

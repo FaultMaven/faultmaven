@@ -45,6 +45,7 @@ from faultmaven.infrastructure.storage.filesystem import FilesystemStorageBacken
 # S3 backend is optional (requires boto3)
 try:
     from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+
     S3_AVAILABLE = True
 except ImportError:
     S3StorageBackend = None  # type: ignore

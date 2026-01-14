@@ -10,6 +10,7 @@ specifying a different LLM provider for visual processing than text chat.
 """
 
 from typing import Optional, TYPE_CHECKING
+
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
@@ -59,7 +60,7 @@ class VisualEvidenceExtractor:
         # Detect image format
         file_ext = ""
         if filename:
-            file_ext = filename.split('.')[-1].lower()
+            file_ext = filename.split(".")[-1].lower()
 
         # Phase 2: Return placeholder
         return f"""=== VISUAL EVIDENCE ANALYSIS ===

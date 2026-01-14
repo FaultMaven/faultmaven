@@ -40,7 +40,9 @@ class ToolContext:
     case_id: str
     organization_id: str
     user_id: str
-    evidence_service: Optional[Any] = None  # APIEvidenceArtifactService (avoid import violation)
+    evidence_service: Optional[Any] = (
+        None  # APIEvidenceArtifactService (avoid import violation)
+    )
     execution_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 

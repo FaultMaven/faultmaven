@@ -66,7 +66,9 @@ class CaseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     @classmethod
-    def from_domain(cls, case: Any, severity: Optional[CaseSeverity] = None) -> "CaseResponse":
+    def from_domain(
+        cls, case: Any, severity: Optional[CaseSeverity] = None
+    ) -> "CaseResponse":
         """Create CaseResponse from domain Case model.
 
         Args:
@@ -79,9 +81,11 @@ class CaseResponse(BaseModel):
         # Extract severity from problem_verification or metadata
         case_severity = severity
         if case_severity is None:
-            if hasattr(case, 'problem_verification') and case.problem_verification:
+            if hasattr(case, "problem_verification") and case.problem_verification:
                 try:
-                    case_severity = CaseSeverity.from_string(case.problem_verification.severity)
+                    case_severity = CaseSeverity.from_string(
+                        case.problem_verification.severity
+                    )
                 except (ValueError, AttributeError):
                     case_severity = CaseSeverity.MEDIUM
             else:
@@ -89,7 +93,7 @@ class CaseResponse(BaseModel):
 
         # Get resolution from closure_reason if available
         resolution = None
-        if hasattr(case, 'closure_reason') and case.closure_reason:
+        if hasattr(case, "closure_reason") and case.closure_reason:
             resolution = case.closure_reason
 
         return cls(
@@ -100,12 +104,12 @@ class CaseResponse(BaseModel):
             description=case.description,
             severity=case_severity,
             status=case.status,
-            assigned_to=getattr(case, 'assigned_to', None),
+            assigned_to=getattr(case, "assigned_to", None),
             created_at=case.created_at,
             updated_at=case.updated_at,
-            closed_at=getattr(case, 'closed_at', None),
+            closed_at=getattr(case, "closed_at", None),
             resolution=resolution,
-            metadata=getattr(case, 'metadata', None),
+            metadata=getattr(case, "metadata", None),
         )
 
 
@@ -397,14 +401,21 @@ class AgentExecutionResponse(BaseModel):
         """
         return cls(
             execution_id=execution.execution_id,
-            status=execution.status.value if hasattr(execution.status, "value") else str(execution.status),
+            status=(
+                execution.status.value
+                if hasattr(execution.status, "value")
+                else str(execution.status)
+            ),
             agent_response=execution.response or "",
-            tokens_used=execution.get_total_tokens() if hasattr(execution, "get_total_tokens") else 0,
+            tokens_used=(
+                execution.get_total_tokens()
+                if hasattr(execution, "get_total_tokens")
+                else 0
+            ),
             started_at=execution.started_at or execution.created_at,
             completed_at=execution.completed_at,
             tool_calls=[
-                ToolCallResponse.from_domain(tc)
-                for tc in (execution.tool_calls or [])
+                ToolCallResponse.from_domain(tc) for tc in (execution.tool_calls or [])
             ],
         )
 
@@ -432,6 +443,7 @@ class ExecutionEventSSE(BaseModel):
             SSE-formatted string with event and data lines
         """
         import json
+
         data_json = json.dumps(self.data)
         return f"event: {self.event}\ndata: {data_json}\n\n"
 
@@ -446,11 +458,19 @@ class ExecutionEventSSE(BaseModel):
             ExecutionEventSSE instance
         """
         return cls(
-            event=event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type),
+            event=(
+                event.event_type.value
+                if hasattr(event.event_type, "value")
+                else str(event.event_type)
+            ),
             data={
                 "content": event.content,
                 "metadata": event.metadata or {},
-                "timestamp": event.timestamp.isoformat() if hasattr(event.timestamp, "isoformat") else str(event.timestamp),
+                "timestamp": (
+                    event.timestamp.isoformat()
+                    if hasattr(event.timestamp, "isoformat")
+                    else str(event.timestamp)
+                ),
                 "execution_id": event.execution_id,
             },
         )

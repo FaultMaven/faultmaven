@@ -34,6 +34,7 @@ class Session:
         expires_at: Optional expiration timestamp for the session
         metadata: Optional dictionary for session context data
     """
+
     session_id: str
     user_id: str
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

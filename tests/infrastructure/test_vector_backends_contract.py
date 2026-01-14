@@ -46,6 +46,7 @@ try:
         get_vector_backend,
         reset_vector_backend,
     )
+
     CHROMA_AVAILABLE = True
 except ImportError:
     CHROMA_AVAILABLE = False
@@ -59,14 +60,14 @@ except ImportError:
 
 # Skip marker for tests requiring chromadb
 skip_if_no_chroma = pytest.mark.skipif(
-    not CHROMA_AVAILABLE,
-    reason="chromadb not installed (optional dependency)"
+    not CHROMA_AVAILABLE, reason="chromadb not installed (optional dependency)"
 )
 
 
 # =============================================================================
 # Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def sanitized_metadata() -> Dict[str, Any]:
@@ -126,27 +127,33 @@ def mock_chroma_client():
     # Mock collection operations
     mock_collection.add = MagicMock()
     mock_collection.upsert = MagicMock()
-    mock_collection.query = MagicMock(return_value={
-        "ids": [["doc1"]],
-        "documents": [["Test document"]],
-        "metadatas": [[{"title": "Doc 1"}]],
-        "distances": [[0.1]],
-    })
-    mock_collection.get = MagicMock(return_value={
-        "ids": ["doc1"],
-        "documents": ["Test document"],
-        "metadatas": [{"title": "Doc 1"}],
-    })
+    mock_collection.query = MagicMock(
+        return_value={
+            "ids": [["doc1"]],
+            "documents": [["Test document"]],
+            "metadatas": [[{"title": "Doc 1"}]],
+            "distances": [[0.1]],
+        }
+    )
+    mock_collection.get = MagicMock(
+        return_value={
+            "ids": ["doc1"],
+            "documents": ["Test document"],
+            "metadatas": [{"title": "Doc 1"}],
+        }
+    )
     mock_collection.count = MagicMock(return_value=10)
     mock_collection.delete = MagicMock()
 
     mock_client.get_or_create_collection = MagicMock(return_value=mock_collection)
     mock_client.create_collection = MagicMock(return_value=mock_collection)
     mock_client.delete_collection = MagicMock()
-    mock_client.list_collections = MagicMock(return_value=[
-        MagicMock(name="collection1"),
-        MagicMock(name="collection2"),
-    ])
+    mock_client.list_collections = MagicMock(
+        return_value=[
+            MagicMock(name="collection1"),
+            MagicMock(name="collection2"),
+        ]
+    )
     mock_client.heartbeat = MagicMock(return_value=1234567890)
 
     return mock_client
@@ -159,29 +166,35 @@ def mock_pinecone_index():
 
     # Mock index operations
     mock_index.upsert = MagicMock()
-    mock_index.query = MagicMock(return_value=MagicMock(
-        matches=[
-            MagicMock(
-                id="doc1",
-                score=0.95,
-                metadata={"title": "Doc 1", "_content": "Test document"},
-            ),
-        ]
-    ))
-    mock_index.fetch = MagicMock(return_value=MagicMock(
-        vectors={
-            "doc1": MagicMock(
-                id="doc1",
-                values=[0.1] * 384,
-                metadata={"title": "Doc 1", "_content": "Test document"},
-            ),
-        }
-    ))
+    mock_index.query = MagicMock(
+        return_value=MagicMock(
+            matches=[
+                MagicMock(
+                    id="doc1",
+                    score=0.95,
+                    metadata={"title": "Doc 1", "_content": "Test document"},
+                ),
+            ]
+        )
+    )
+    mock_index.fetch = MagicMock(
+        return_value=MagicMock(
+            vectors={
+                "doc1": MagicMock(
+                    id="doc1",
+                    values=[0.1] * 384,
+                    metadata={"title": "Doc 1", "_content": "Test document"},
+                ),
+            }
+        )
+    )
     mock_index.delete = MagicMock()
-    mock_index.describe_index_stats = MagicMock(return_value=MagicMock(
-        namespaces={"ns1": MagicMock(vector_count=100)},
-        total_vector_count=100,
-    ))
+    mock_index.describe_index_stats = MagicMock(
+        return_value=MagicMock(
+            namespaces={"ns1": MagicMock(vector_count=100)},
+            total_vector_count=100,
+        )
+    )
 
     return mock_index
 
@@ -189,6 +202,7 @@ def mock_pinecone_index():
 # =============================================================================
 # Sanitizer Contract Tests
 # =============================================================================
+
 
 class TestSanitizerContract:
     """Tests that sanitizer produces output acceptable to both backends."""
@@ -199,8 +213,9 @@ class TestSanitizerContract:
         result = sanitize_metadata(complex_raw_metadata)
 
         for key, value in result.items():
-            assert isinstance(value, (str, int, float, bool, list)), \
-                f"Key {key} has non-primitive type: {type(value)}"
+            assert isinstance(
+                value, (str, int, float, bool, list)
+            ), f"Key {key} has non-primitive type: {type(value)}"
 
     @skip_if_no_chroma
     def test_sanitizer_removes_none_values(self, complex_raw_metadata):
@@ -253,6 +268,7 @@ class TestSanitizerContract:
 # Backend Contract Tests
 # =============================================================================
 
+
 class TestBackendContract:
     """Tests that both backends accept same sanitized metadata."""
 
@@ -291,7 +307,9 @@ class TestBackendContract:
         with patch.dict("sys.modules", {"pinecone": MagicMock()}):
             with patch("pinecone.Pinecone", return_value=mock_pc):
                 try:
-                    from faultmaven.infrastructure.vector.pinecone import PineconeVectorBackend
+                    from faultmaven.infrastructure.vector.pinecone import (
+                        PineconeVectorBackend,
+                    )
                     from faultmaven.infrastructure.vector.base import VectorDocument
 
                     backend = PineconeVectorBackend(
@@ -337,6 +355,7 @@ class TestBackendContract:
 # Factory Tests
 # =============================================================================
 
+
 class TestVectorFactory:
     """Tests for vector backend factory."""
 
@@ -345,12 +364,8 @@ class TestVectorFactory:
         """Test factory creates ChromaDB backend by default."""
         with patch("faultmaven.config.settings.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
-                providers=MagicMock(
-                    vector_backend=MagicMock(value="chroma")
-                ),
-                evidence_storage=MagicMock(
-                    evidence_storage_root="./data"
-                ),
+                providers=MagicMock(vector_backend=MagicMock(value="chroma")),
+                evidence_storage=MagicMock(evidence_storage_root="./data"),
             )
 
             reset_vector_backend()
@@ -367,9 +382,7 @@ class TestVectorFactory:
                 providers=MagicMock(
                     vector_backend=MagicMock(value="pinecone")  # Settings say Pinecone
                 ),
-                evidence_storage=MagicMock(
-                    evidence_storage_root="./data"
-                ),
+                evidence_storage=MagicMock(evidence_storage_root="./data"),
             )
 
             reset_vector_backend()
@@ -382,13 +395,12 @@ class TestVectorFactory:
     def test_factory_pinecone_requires_api_key(self):
         """Test factory raises error if Pinecone requested without API key."""
         import os
+
         os.environ.pop("PINECONE_API_KEY", None)
 
         with patch("faultmaven.config.settings.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
-                providers=MagicMock(
-                    vector_backend=MagicMock(value="pinecone")
-                ),
+                providers=MagicMock(vector_backend=MagicMock(value="pinecone")),
             )
 
             reset_vector_backend()
@@ -400,6 +412,7 @@ class TestVectorFactory:
 # =============================================================================
 # Integration Contract Tests
 # =============================================================================
+
 
 class TestIntegrationContract:
     """Integration tests verifying full workflow with sanitized metadata."""
@@ -446,11 +459,13 @@ class TestIntegrationContract:
         """Test that sanitized metadata survives upsert/get cycle."""
         # Configure mock to return the same metadata
         mock_collection = mock_chroma_client.get_or_create_collection.return_value
-        mock_collection.get = MagicMock(return_value={
-            "ids": ["test1"],
-            "documents": ["Test content"],
-            "metadatas": [sanitized_metadata],
-        })
+        mock_collection.get = MagicMock(
+            return_value={
+                "ids": ["test1"],
+                "documents": ["Test content"],
+                "metadatas": [sanitized_metadata],
+            }
+        )
 
         backend = ChromaVectorBackend()  # Ephemeral mode
         backend._client = mock_chroma_client  # Inject mock client
@@ -474,6 +489,7 @@ class TestIntegrationContract:
 # Backend Type Consistency Tests
 # =============================================================================
 
+
 class TestBackendTypeConsistency:
     """Tests for backend type reporting consistency."""
 
@@ -492,7 +508,9 @@ class TestBackendTypeConsistency:
         with patch.dict("sys.modules", {"pinecone": MagicMock()}):
             with patch("pinecone.Pinecone", return_value=mock_pc):
                 try:
-                    from faultmaven.infrastructure.vector.pinecone import PineconeVectorBackend
+                    from faultmaven.infrastructure.vector.pinecone import (
+                        PineconeVectorBackend,
+                    )
                     from faultmaven.infrastructure.vector.base import VectorBackendType
 
                     backend = PineconeVectorBackend(

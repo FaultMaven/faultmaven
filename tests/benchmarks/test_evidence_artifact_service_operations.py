@@ -39,7 +39,11 @@ from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
 )
 from faultmaven.services.file_storage_service import FileStorageService
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationStrategy,
+)
 from faultmaven.modules.evidence.domain.models import EvidenceArtifactType
 from tests.utils import generate_case_id
 
@@ -181,9 +185,9 @@ class TestFileStoragePerformance:
 
         assert result is not None
         assert result["file_size"] == len(file_1mb)
-        assert latency < 0.300, (
-            f"Store 1MB latency {latency*1000:.1f}ms exceeds 300ms target"
-        )
+        assert (
+            latency < 0.300
+        ), f"Store 1MB latency {latency*1000:.1f}ms exceeds 300ms target"
         print(f"\n  Store 1MB file latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -209,9 +213,9 @@ class TestFileStoragePerformance:
         latency = time.perf_counter() - start
 
         assert len(data) == len(file_1mb)
-        assert latency < 0.200, (
-            f"Retrieve 1MB latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"Retrieve 1MB latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  Retrieve 1MB file latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -237,9 +241,9 @@ class TestFileStoragePerformance:
         latency = time.perf_counter() - start
 
         assert deleted is True
-        assert latency < 0.100, (
-            f"Delete file latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Delete file latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Delete file latency: {latency*1000:.1f}ms")
 
 
@@ -249,7 +253,9 @@ class TestFileStoragePerformance:
 
 
 @pytest.mark.benchmark
-@pytest.mark.skip(reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository")
+@pytest.mark.skip(
+    reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository"
+)
 class TestEvidenceUploadPerformance:
     """Benchmark evidence upload operations."""
 
@@ -279,9 +285,9 @@ class TestEvidenceUploadPerformance:
 
         assert result is not None
         assert result.file_size == len(file_1mb)
-        assert latency < 0.500, (
-            f"Upload 1MB latency {latency*1000:.1f}ms exceeds 500ms target"
-        )
+        assert (
+            latency < 0.500
+        ), f"Upload 1MB latency {latency*1000:.1f}ms exceeds 500ms target"
         print(f"\n  Upload 1MB evidence latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -310,14 +316,16 @@ class TestEvidenceUploadPerformance:
 
         assert result is not None
         assert result.file_size == len(file_10mb)
-        assert latency < 2.0, (
-            f"Upload 10MB latency {latency*1000:.1f}ms exceeds 2000ms target"
-        )
+        assert (
+            latency < 2.0
+        ), f"Upload 10MB latency {latency*1000:.1f}ms exceeds 2000ms target"
         print(f"\n  Upload 10MB evidence latency: {latency*1000:.1f}ms")
 
 
 @pytest.mark.benchmark
-@pytest.mark.skip(reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository")
+@pytest.mark.skip(
+    reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository"
+)
 class TestEvidenceRetrievalPerformance:
     """Benchmark evidence retrieval operations."""
 
@@ -352,9 +360,9 @@ class TestEvidenceRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.100, (
-            f"Get metadata latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Get metadata latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Get evidence metadata latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -388,14 +396,16 @@ class TestEvidenceRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert len(data) == len(file_1mb)
-        assert latency < 0.400, (
-            f"Download 1MB latency {latency*1000:.1f}ms exceeds 400ms target"
-        )
+        assert (
+            latency < 0.400
+        ), f"Download 1MB latency {latency*1000:.1f}ms exceeds 400ms target"
         print(f"\n  Download 1MB evidence latency: {latency*1000:.1f}ms")
 
 
 @pytest.mark.benchmark
-@pytest.mark.skip(reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository")
+@pytest.mark.skip(
+    reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository"
+)
 class TestEvidenceDeletePerformance:
     """Benchmark evidence delete operations."""
 
@@ -430,14 +440,16 @@ class TestEvidenceDeletePerformance:
         latency = time.perf_counter() - start
 
         assert deleted is True
-        assert latency < 0.200, (
-            f"Delete evidence latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"Delete evidence latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  Delete evidence latency: {latency*1000:.1f}ms")
 
 
 @pytest.mark.benchmark
-@pytest.mark.skip(reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository")
+@pytest.mark.skip(
+    reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository"
+)
 class TestEvidenceListPerformance:
     """Benchmark evidence list operations."""
 
@@ -474,14 +486,16 @@ class TestEvidenceListPerformance:
         latency = time.perf_counter() - start
 
         assert len(result) == 50
-        assert latency < 0.300, (
-            f"List 50 artifacts latency {latency*1000:.1f}ms exceeds 300ms target"
-        )
+        assert (
+            latency < 0.300
+        ), f"List 50 artifacts latency {latency*1000:.1f}ms exceeds 300ms target"
         print(f"\n  List 50 evidence artifacts latency: {latency*1000:.1f}ms")
 
 
 @pytest.mark.benchmark
-@pytest.mark.skip(reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository")
+@pytest.mark.skip(
+    reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository"
+)
 class TestPrimaryEvidencePerformance:
     """Benchmark primary evidence operations."""
 
@@ -519,14 +533,16 @@ class TestPrimaryEvidencePerformance:
         latency = time.perf_counter() - start
 
         assert result.is_primary is True
-        assert latency < 0.150, (
-            f"Set primary latency {latency*1000:.1f}ms exceeds 150ms target"
-        )
+        assert (
+            latency < 0.150
+        ), f"Set primary latency {latency*1000:.1f}ms exceeds 150ms target"
         print(f"\n  Set primary evidence latency: {latency*1000:.1f}ms")
 
 
 @pytest.mark.benchmark
-@pytest.mark.skip(reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository")
+@pytest.mark.skip(
+    reason="Evidence methods not yet implemented in DatabaseCaseRepository after migration from EvidenceArtifactRepository"
+)
 class TestEvidenceStatisticsPerformance:
     """Benchmark evidence statistics operations."""
 
@@ -546,9 +562,11 @@ class TestEvidenceStatisticsPerformance:
             evidence_type = (
                 EvidenceArtifactType.SCREENSHOT
                 if i % 3 == 0
-                else EvidenceArtifactType.LOG_FILE
-                if i % 3 == 1
-                else EvidenceArtifactType.CONFIGURATION
+                else (
+                    EvidenceArtifactType.LOG_FILE
+                    if i % 3 == 1
+                    else EvidenceArtifactType.CONFIGURATION
+                )
             )
             await evidence_service.upload_evidence(
                 case_id=benchmark_case.case_id,
@@ -569,7 +587,7 @@ class TestEvidenceStatisticsPerformance:
         latency = time.perf_counter() - start
 
         assert stats["total_artifacts"] == 100
-        assert latency < 0.400, (
-            f"Get statistics latency {latency*1000:.1f}ms exceeds 400ms target"
-        )
+        assert (
+            latency < 0.400
+        ), f"Get statistics latency {latency*1000:.1f}ms exceeds 400ms target"
         print(f"\n  Get statistics (100 artifacts) latency: {latency*1000:.1f}ms")

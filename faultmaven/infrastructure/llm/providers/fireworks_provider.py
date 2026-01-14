@@ -14,23 +14,19 @@ from faultmaven.exceptions import LLMException
 
 class FireworksProvider(BaseLLMProvider):
     """Fireworks AI LLM provider implementation"""
-    
+
     @property
     def provider_name(self) -> str:
         return "fireworks"
-    
+
     def is_available(self) -> bool:
         """Check if Fireworks provider is properly configured"""
-        return bool(
-            self.config.api_key and
-            self.config.base_url and
-            self.config.models
-        )
-    
+        return bool(self.config.api_key and self.config.base_url and self.config.models)
+
     def get_supported_models(self) -> List[str]:
         """Get list of supported models"""
         return self.config.models.copy()
-    
+
     async def generate(
         self,
         prompt: str,
@@ -39,7 +35,7 @@ class FireworksProvider(BaseLLMProvider):
         temperature: float = 0.7,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> LLMResponse:
         """Generate response using Fireworks AI with optional function calling"""
 
@@ -69,7 +65,7 @@ class FireworksProvider(BaseLLMProvider):
 
         # Add any additional kwargs
         payload.update(kwargs)
-        
+
         # Make request
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -78,13 +74,13 @@ class FireworksProvider(BaseLLMProvider):
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout),
             ) as response:
-                
+
                 if response.status != 200:
                     error_text = await response.text()
                     raise LLMException(
                         f"Fireworks API error {response.status}: {error_text}"
                     )
-                
+
                 data = await response.json()
 
                 # Extract response content
@@ -99,12 +95,9 @@ class FireworksProvider(BaseLLMProvider):
                 tool_calls = None
                 if message.get("tool_calls"):
                     from .base import ToolCall
+
                     tool_calls = [
-                        ToolCall(
-                            id=tc["id"],
-                            type=tc["type"],
-                            function=tc["function"]
-                        )
+                        ToolCall(id=tc["id"], type=tc["type"], function=tc["function"])
                         for tc in message["tool_calls"]
                     ]
 
@@ -121,5 +114,5 @@ class FireworksProvider(BaseLLMProvider):
                     model=effective_model,
                     tokens_used=tokens_used,
                     response_time_ms=response_time,
-                    tool_calls=tool_calls
+                    tool_calls=tool_calls,
                 )

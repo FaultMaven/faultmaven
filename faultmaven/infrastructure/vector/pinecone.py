@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # Feature detection for pinecone
 try:
     from pinecone import Pinecone, ServerlessSpec
+
     PINECONE_AVAILABLE = True
 except ImportError:
     PINECONE_AVAILABLE = False
@@ -143,11 +144,13 @@ class PineconeVectorBackend(IVectorBackend):
             # Add content to metadata for retrieval
             clean_metadata["_content"] = doc.content[:1000]  # Limit content length
 
-            vectors.append({
-                "id": doc.id,
-                "values": doc.embedding,
-                "metadata": clean_metadata,
-            })
+            vectors.append(
+                {
+                    "id": doc.id,
+                    "values": doc.embedding,
+                    "metadata": clean_metadata,
+                }
+            )
 
         if not vectors:
             return 0
@@ -156,7 +159,7 @@ class PineconeVectorBackend(IVectorBackend):
         batch_size = 100
         total_upserted = 0
         for i in range(0, len(vectors), batch_size):
-            batch = vectors[i:i + batch_size]
+            batch = vectors[i : i + batch_size]
             self._index.upsert(vectors=batch, namespace=namespace)
             total_upserted += len(batch)
 
@@ -203,12 +206,14 @@ class PineconeVectorBackend(IVectorBackend):
             metadata = match.get("metadata", {})
             content = metadata.pop("_content", "")
 
-            search_results.append(VectorSearchResult(
-                id=match["id"],
-                content=content,
-                score=match.get("score", 0.0),
-                metadata=metadata,
-            ))
+            search_results.append(
+                VectorSearchResult(
+                    id=match["id"],
+                    content=content,
+                    score=match.get("score", 0.0),
+                    metadata=metadata,
+                )
+            )
 
         return search_results
 
@@ -289,12 +294,14 @@ class PineconeVectorBackend(IVectorBackend):
             metadata = data.get("metadata", {})
             content = metadata.pop("_content", "")
 
-            documents.append(VectorDocument(
-                id=doc_id,
-                content=content,
-                embedding=data.get("values"),
-                metadata=metadata,
-            ))
+            documents.append(
+                VectorDocument(
+                    id=doc_id,
+                    content=content,
+                    embedding=data.get("values"),
+                    metadata=metadata,
+                )
+            )
 
         return documents
 

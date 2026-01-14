@@ -1,4 +1,5 @@
 """Fixtures for EvidenceArtifact Service module tests (PR #46c)."""
+
 import pytest
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -19,6 +20,7 @@ from faultmaven.modules.evidence.domain.models import (
 # Sample Data Factories
 # =============================================================================
 
+
 def create_sample_evidence(
     evidence_id: Optional[str] = None,
     case_id: Optional[str] = None,
@@ -35,8 +37,7 @@ def create_sample_evidence(
     metadata: Optional[dict] = None,
     tags: Optional[list] = None,
 ) -> EvidenceArtifact:
-    """Create a sample EvidenceArtifact object for testing.
-    """
+    """Create a sample EvidenceArtifact object for testing."""
     eid = evidence_id or str(uuid4())
     cid = case_id or str(uuid4())
     tag_list = tags or []
@@ -82,13 +83,18 @@ def create_sample_upload_request(
 # Mock Classes
 # =============================================================================
 
+
 class MockEvidenceStorageAdapter:
     """Mock storage adapter for testing EvidenceService."""
 
     def __init__(self):
-        self.store_file = AsyncMock(return_value="evidence/standalone-abc123/2025-01-02/uuid_test.log")
+        self.store_file = AsyncMock(
+            return_value="evidence/standalone-abc123/2025-01-02/uuid_test.log"
+        )
         self.delete_file = AsyncMock(return_value=True)
-        self.get_download_url = AsyncMock(return_value="http://localhost:8000/api/v1/evidence/file/path")
+        self.get_download_url = AsyncMock(
+            return_value="http://localhost:8000/api/v1/evidence/file/path"
+        )
         self.get_file_content = AsyncMock(return_value=b"file content")
 
 
@@ -97,12 +103,22 @@ class MockEvidenceRepository:
 
     def __init__(self):
         self._storage: dict[str, EvidenceArtifact] = {}
-        self.create_standalone_evidence = AsyncMock(side_effect=self._create_standalone_evidence)
-        self.get_standalone_evidence = AsyncMock(side_effect=self._get_standalone_evidence)
-        self.list_standalone_evidence = AsyncMock(side_effect=self._list_standalone_evidence)
-        self.delete_standalone_evidence = AsyncMock(side_effect=self._delete_standalone_evidence)
-        self.link_standalone_evidence_to_case = AsyncMock(side_effect=self._link_standalone_evidence_to_case)
-        
+        self.create_standalone_evidence = AsyncMock(
+            side_effect=self._create_standalone_evidence
+        )
+        self.get_standalone_evidence = AsyncMock(
+            side_effect=self._get_standalone_evidence
+        )
+        self.list_standalone_evidence = AsyncMock(
+            side_effect=self._list_standalone_evidence
+        )
+        self.delete_standalone_evidence = AsyncMock(
+            side_effect=self._delete_standalone_evidence
+        )
+        self.link_standalone_evidence_to_case = AsyncMock(
+            side_effect=self._link_standalone_evidence_to_case
+        )
+
         # Backward compatibility aliases
         self.create = self.create_standalone_evidence
         self.get = self.get_standalone_evidence
@@ -138,19 +154,31 @@ class MockEvidenceRepository:
         key = str(evidence_id) if not isinstance(evidence_id, str) else evidence_id
         return self._storage.get(key)
 
-    async def _list_standalone_evidence(self, filters: EvidenceListFilter) -> Tuple[List[EvidenceArtifact], int]:
+    async def _list_standalone_evidence(
+        self, filters: EvidenceListFilter
+    ) -> Tuple[List[EvidenceArtifact], int]:
         results = list(self._storage.values())
 
         # Apply filters
         if filters.uploaded_by:
             results = [e for e in results if e.user_id == str(filters.uploaded_by)]
         if filters.case_id:
-            case_id_str = str(filters.case_id) if hasattr(filters.case_id, '__str__') else filters.case_id
+            case_id_str = (
+                str(filters.case_id)
+                if hasattr(filters.case_id, "__str__")
+                else filters.case_id
+            )
             results = [e for e in results if case_id_str in e.linked_case_ids]
         if filters.tags:
-            results = [e for e in results if any(tag in e.tags for tag in (filters.tags or []))]
+            results = [
+                e for e in results if any(tag in e.tags for tag in (filters.tags or []))
+            ]
         if filters.filename_contains:
-            results = [e for e in results if filters.filename_contains.lower() in e.original_filename.lower()]
+            results = [
+                e
+                for e in results
+                if filters.filename_contains.lower() in e.original_filename.lower()
+            ]
 
         total = len(results)
         results = results[filters.offset : filters.offset + filters.limit]
@@ -164,7 +192,9 @@ class MockEvidenceRepository:
             return True
         return False
 
-    async def _link_standalone_evidence_to_case(self, evidence_id, case_id) -> Optional[EvidenceArtifact]:
+    async def _link_standalone_evidence_to_case(
+        self, evidence_id, case_id
+    ) -> Optional[EvidenceArtifact]:
         # Accept both UUID and str
         key = str(evidence_id) if not isinstance(evidence_id, str) else evidence_id
         evidence = self._storage.get(key)
@@ -202,6 +232,7 @@ class MockUploadFile:
 # =============================================================================
 # Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def sample_evidence() -> EvidenceArtifact:

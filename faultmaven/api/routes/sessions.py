@@ -33,7 +33,9 @@ from faultmaven.api.models import (
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.auth import AuthenticatedUser
 from faultmaven.models.investigation_session import SessionStatus
-from faultmaven.services.investigation_session_service import APIInvestigationSessionService
+from faultmaven.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
 
 
 router = APIRouter(prefix="/api/v1/cases/{case_id}/sessions", tags=["Sessions"])
@@ -157,7 +159,9 @@ async def get_session(
         401: Authentication required
         404: Session not found or case not found
     """
-    session = await session_service.get_session(session_id, current_user.organization_id)
+    session = await session_service.get_session(
+        session_id, current_user.organization_id
+    )
 
     if not session:
         raise NotFoundError("Session", session_id)
@@ -262,7 +266,9 @@ async def update_session(
 
     if not updates:
         # If no updates provided, just return current session
-        session = await session_service.get_session(session_id, current_user.organization_id)
+        session = await session_service.get_session(
+            session_id, current_user.organization_id
+        )
         if not session:
             raise NotFoundError("Session", session_id)
         if session.case_id != case_id:

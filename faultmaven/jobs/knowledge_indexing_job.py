@@ -27,7 +27,9 @@ from typing import Any, Dict, List, Optional
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )
-from faultmaven.modules.knowledge.domain.services.search_service import KnowledgeSearchService
+from faultmaven.modules.knowledge.domain.services.search_service import (
+    KnowledgeSearchService,
+)
 from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem
 
 
@@ -135,9 +137,11 @@ class KnowledgeIndexingJob:
 
             # Process in batches
             for i in range(0, len(items_to_index), self.batch_size):
-                batch = items_to_index[i:i + self.batch_size]
+                batch = items_to_index[i : i + self.batch_size]
                 batch_num = i // self.batch_size + 1
-                total_batches = (len(items_to_index) + self.batch_size - 1) // self.batch_size
+                total_batches = (
+                    len(items_to_index) + self.batch_size - 1
+                ) // self.batch_size
 
                 logger.info(
                     f"Processing batch {batch_num}/{total_batches} ({len(batch)} items)",

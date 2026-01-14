@@ -33,6 +33,7 @@ from faultmaven.api.models import (
 )
 from faultmaven.exceptions import NotFoundError
 from faultmaven.models.auth import AuthenticatedUser
+
 # Import from contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import CaseSeverity, CaseStatus
 from faultmaven.services.case_service import APICaseService
@@ -441,12 +442,10 @@ async def get_case_statistics(
 
     # Calculate statistics
     total_token_usage = sum(
-        getattr(session, "total_token_usage", 0)
-        for session in sessions
+        getattr(session, "total_token_usage", 0) for session in sessions
     )
     total_duration_ms = sum(
-        getattr(session, "total_duration_ms", 0) or 0
-        for session in sessions
+        getattr(session, "total_duration_ms", 0) or 0 for session in sessions
     )
 
     return {

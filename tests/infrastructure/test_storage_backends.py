@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 # Fixtures
 # =============================================================================
 
+
 @pytest.fixture
 def clean_env():
     """Ensure clean environment for each test."""
@@ -83,6 +84,7 @@ def mock_boto3_client():
 # Filesystem Backend Tests
 # =============================================================================
 
+
 class TestFilesystemStorageBackend:
     """Tests for filesystem storage backend."""
 
@@ -100,7 +102,9 @@ class TestFilesystemStorageBackend:
         assert url.headers["Content-Type"] == "text/plain"
 
     @pytest.mark.asyncio
-    async def test_generate_download_url_format(self, filesystem_backend, temp_storage_dir):
+    async def test_generate_download_url_format(
+        self, filesystem_backend, temp_storage_dir
+    ):
         """Test download URL has correct format for filesystem backend."""
         # First store a file
         key = "org123/case456/error.log"
@@ -218,9 +222,9 @@ class TestFilesystemStorageBackend:
 # S3 Backend Tests
 # =============================================================================
 
+
 @pytest.mark.skipif(
-    condition=True,  # Skip S3 tests - requires boto3
-    reason="boto3 not installed"
+    condition=True, reason="boto3 not installed"  # Skip S3 tests - requires boto3
 )
 class TestS3StorageBackend:
     """Tests for S3 storage backend (with mocked boto3)."""
@@ -336,6 +340,7 @@ class TestS3StorageBackend:
 # Factory Tests
 # =============================================================================
 
+
 class TestStorageFactory:
     """Tests for storage backend factory."""
 
@@ -353,12 +358,8 @@ class TestStorageFactory:
 
         with patch("faultmaven.config.settings.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
-                providers=MagicMock(
-                    storage_backend=MagicMock(value="filesystem")
-                ),
-                evidence_storage=MagicMock(
-                    evidence_storage_root=temp_storage_dir
-                ),
+                providers=MagicMock(storage_backend=MagicMock(value="filesystem")),
+                evidence_storage=MagicMock(evidence_storage_root=temp_storage_dir),
                 server=MagicMock(host="localhost", port=8000),
             )
 
@@ -381,9 +382,7 @@ class TestStorageFactory:
                 providers=MagicMock(
                     storage_backend=MagicMock(value="s3")  # Settings say S3
                 ),
-                evidence_storage=MagicMock(
-                    evidence_storage_root=temp_storage_dir
-                ),
+                evidence_storage=MagicMock(evidence_storage_root=temp_storage_dir),
                 server=MagicMock(host="localhost", port=8000),
             )
 
@@ -405,9 +404,7 @@ class TestStorageFactory:
 
         with patch("faultmaven.config.settings.get_settings") as mock_settings:
             mock_settings.return_value = MagicMock(
-                providers=MagicMock(
-                    storage_backend=MagicMock(value="s3")
-                ),
+                providers=MagicMock(storage_backend=MagicMock(value="s3")),
             )
 
             with pytest.raises(ValueError, match="S3_BUCKET_NAME"):
@@ -417,6 +414,7 @@ class TestStorageFactory:
 # =============================================================================
 # Integration Tests
 # =============================================================================
+
 
 class TestStorageIntegration:
     """Integration tests for storage backends."""

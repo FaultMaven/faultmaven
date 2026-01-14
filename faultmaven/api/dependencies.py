@@ -31,7 +31,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.services.service_factory import ServiceFactory
 from faultmaven.services.case_service import APICaseService
-from faultmaven.services.investigation_session_service import APIInvestigationSessionService
+from faultmaven.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.services.file_storage_service import FileStorageService
 
@@ -73,6 +75,7 @@ __all__ = [
 # Database Session Dependencies
 # ============================================================
 
+
 async def get_async_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Get database session for request.
 
@@ -97,6 +100,7 @@ async def get_async_db_session() -> AsyncGenerator[AsyncSession, None]:
 # ============================================================
 # Service Factory Dependencies
 # ============================================================
+
 
 async def get_service_factory(
     db_session: AsyncSession = Depends(get_async_db_session),
@@ -127,6 +131,7 @@ async def get_service_factory(
 # ============================================================
 # Service Dependencies
 # ============================================================
+
 
 async def get_api_case_service(
     factory: ServiceFactory = Depends(get_service_factory),
@@ -273,7 +278,10 @@ async def get_agent_orchestration_service(
             ):
                 yield event
     """
-    from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
+    from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
+        AgentOrchestrationService,
+    )
+
     return factory.create_agent_orchestration_service()
 
 

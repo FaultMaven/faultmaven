@@ -17,7 +17,11 @@ import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationStrategy,
+)
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
@@ -97,9 +101,9 @@ class TestEvidenceCreationPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.150, (
-            f"Evidence creation latency {latency*1000:.1f}ms exceeds 150ms target"
-        )
+        assert (
+            latency < 0.150
+        ), f"Evidence creation latency {latency*1000:.1f}ms exceeds 150ms target"
         print(f"\n  Evidence creation latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -125,9 +129,9 @@ class TestEvidenceCreationPerformance:
         duration = time.perf_counter() - start
 
         throughput = num_evidence / duration
-        assert throughput > 30, (
-            f"Evidence creation throughput {throughput:.1f}/sec below 30/sec target"
-        )
+        assert (
+            throughput > 30
+        ), f"Evidence creation throughput {throughput:.1f}/sec below 30/sec target"
         print(
             f"\n  Batch creation throughput: {throughput:.1f} evidence/sec "
             f"({num_evidence} items in {duration:.2f}s)"
@@ -159,9 +163,9 @@ class TestEvidenceRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.100, (
-            f"Evidence retrieval latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Evidence retrieval latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Evidence retrieval latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -190,9 +194,9 @@ class TestEvidenceRetrievalPerformance:
 
         assert len(result) == 20
         assert total == 20
-        assert latency < 0.100, (
-            f"List evidence latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"List evidence latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  List evidence latency: {latency*1000:.1f}ms ({len(result)} items)")
 
     @pytest.mark.asyncio
@@ -232,9 +236,9 @@ class TestEvidenceRetrievalPerformance:
 
         assert len(result) == 10
         assert total == 10
-        assert latency < 0.100, (
-            f"Filtered list latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Filtered list latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Filtered list latency: {latency*1000:.1f}ms ({len(result)} items)")
 
 
@@ -268,9 +272,9 @@ class TestEvidenceUpdatePerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.100, (
-            f"Evidence update latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Evidence update latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Evidence update latency: {latency*1000:.1f}ms")
 
 
@@ -299,9 +303,9 @@ class TestEvidenceDeletePerformance:
         latency = time.perf_counter() - start
 
         assert result is True
-        assert latency < 0.100, (
-            f"Evidence delete latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Evidence delete latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Evidence delete latency: {latency*1000:.1f}ms")
 
 
@@ -336,9 +340,9 @@ class TestPrimaryEvidencePerformance:
         latency = time.perf_counter() - start
 
         assert result is True
-        assert latency < 0.100, (
-            f"Set primary latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Set primary latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Set primary evidence latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -366,9 +370,9 @@ class TestPrimaryEvidencePerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.100, (
-            f"Get primary latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Get primary latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Get primary evidence latency: {latency*1000:.1f}ms")
 
 
@@ -398,7 +402,7 @@ class TestEvidenceCountPerformance:
         latency = time.perf_counter() - start
 
         assert count == 50
-        assert latency < 0.050, (
-            f"Count latency {latency*1000:.1f}ms exceeds 50ms target"
-        )
+        assert (
+            latency < 0.050
+        ), f"Count latency {latency*1000:.1f}ms exceeds 50ms target"
         print(f"\n  Count evidence latency: {latency*1000:.1f}ms ({count} items)")

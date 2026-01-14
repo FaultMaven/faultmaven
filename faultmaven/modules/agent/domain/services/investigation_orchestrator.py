@@ -32,7 +32,9 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from faultmaven.infrastructure.persistence.hypothesis_repository import HypothesisRepository
+from faultmaven.infrastructure.persistence.hypothesis_repository import (
+    HypothesisRepository,
+)
 from faultmaven.infrastructure.persistence.solution_repository import SolutionRepository
 from faultmaven.exceptions import (
     ValidationException,
@@ -109,20 +111,20 @@ class InvestigationOrchestrator:
         if len(description) < 10:
             raise ValidationException(
                 "Hypothesis description must be at least 10 characters",
-                details={"description_length": len(description), "min_length": 10}
+                details={"description_length": len(description), "min_length": 10},
             )
 
         if len(description) > 5000:
             raise ValidationException(
                 "Hypothesis description cannot exceed 5000 characters",
-                details={"description_length": len(description), "max_length": 5000}
+                details={"description_length": len(description), "max_length": 5000},
             )
 
         # Validate confidence range
         if not (0.0 <= confidence <= 1.0):
             raise ValidationException(
                 "Confidence score must be between 0.0 and 1.0",
-                details={"confidence": confidence, "valid_range": "0.0-1.0"}
+                details={"confidence": confidence, "valid_range": "0.0-1.0"},
             )
 
         logger.info(
@@ -132,7 +134,7 @@ class InvestigationOrchestrator:
                 "organization_id": organization_id,
                 "created_by": created_by,
                 "confidence": confidence,
-            }
+            },
         )
 
         # Create hypothesis via repository
@@ -149,7 +151,7 @@ class InvestigationOrchestrator:
 
         logger.info(
             f"Hypothesis created successfully: {hypothesis['hypothesis_id']}",
-            extra={"hypothesis_id": hypothesis["hypothesis_id"]}
+            extra={"hypothesis_id": hypothesis["hypothesis_id"]},
         )
 
         return hypothesis
@@ -193,20 +195,21 @@ class InvestigationOrchestrator:
         )
 
         if not hypothesis:
-            raise NotFoundError(
-                resource_type="Hypothesis",
-                resource_id=hypothesis_id
-            )
+            raise NotFoundError(resource_type="Hypothesis", resource_id=hypothesis_id)
 
         # Validate confidence if provided
         if confidence is not None and not (0.0 <= confidence <= 1.0):
             raise ValidationException(
                 "Confidence score must be between 0.0 and 1.0",
-                details={"confidence": confidence, "valid_range": "0.0-1.0"}
+                details={"confidence": confidence, "valid_range": "0.0-1.0"},
             )
 
         # Get current confidence (use provided or existing)
-        current_confidence = float(hypothesis.get("confidence_score", 0.5)) if hypothesis.get("confidence_score") else 0.5
+        current_confidence = (
+            float(hypothesis.get("confidence_score", 0.5))
+            if hypothesis.get("confidence_score")
+            else 0.5
+        )
         target_confidence = confidence if confidence is not None else current_confidence
 
         # Enforce business rules for status transitions
@@ -216,7 +219,7 @@ class InvestigationOrchestrator:
                 "Confidence must be ≥ 0.7 to validate.",
                 resource_type="Hypothesis",
                 resource_id=hypothesis_id,
-                conflict_reason=f"Low confidence ({target_confidence} < 0.7)"
+                conflict_reason=f"Low confidence ({target_confidence} < 0.7)",
             )
 
         if new_status == "refuted" and target_confidence > 0.3:
@@ -225,7 +228,7 @@ class InvestigationOrchestrator:
                 "Confidence must be ≤ 0.3 to refute.",
                 resource_type="Hypothesis",
                 resource_id=hypothesis_id,
-                conflict_reason=f"High confidence ({target_confidence} > 0.3)"
+                conflict_reason=f"High confidence ({target_confidence} > 0.3)",
             )
 
         logger.info(
@@ -235,7 +238,7 @@ class InvestigationOrchestrator:
                 "old_status": hypothesis.get("status"),
                 "new_status": new_status,
                 "confidence": target_confidence,
-            }
+            },
         )
 
         # Update hypothesis
@@ -243,12 +246,14 @@ class InvestigationOrchestrator:
             hypothesis_id=hypothesis_id,
             organization_id=organization_id,
             status=new_status,
-            confidence_score=Decimal(str(target_confidence)) if confidence is not None else None,
+            confidence_score=(
+                Decimal(str(target_confidence)) if confidence is not None else None
+            ),
         )
 
         logger.info(
             f"Hypothesis {hypothesis_id} updated successfully",
-            extra={"hypothesis_id": hypothesis_id, "new_status": new_status}
+            extra={"hypothesis_id": hypothesis_id, "new_status": new_status},
         )
 
         return updated_hypothesis
@@ -284,10 +289,7 @@ class InvestigationOrchestrator:
         )
 
         if not hypothesis:
-            raise NotFoundError(
-                resource_type="Hypothesis",
-                resource_id=hypothesis_id
-            )
+            raise NotFoundError(resource_type="Hypothesis", resource_id=hypothesis_id)
 
         if hypothesis.get("status") != "validated":
             raise ConflictError(
@@ -295,7 +297,7 @@ class InvestigationOrchestrator:
                 "Only validated hypotheses can have solutions.",
                 resource_type="Hypothesis",
                 resource_id=hypothesis_id,
-                conflict_reason=f"Hypothesis status is '{hypothesis.get('status')}', not 'validated'"
+                conflict_reason=f"Hypothesis status is '{hypothesis.get('status')}', not 'validated'",
             )
 
         # Verify solution exists
@@ -305,10 +307,7 @@ class InvestigationOrchestrator:
         )
 
         if not solution:
-            raise NotFoundError(
-                resource_type="Solution",
-                resource_id=solution_id
-            )
+            raise NotFoundError(resource_type="Solution", resource_id=solution_id)
 
         logger.info(
             f"Linking solution {solution_id} to hypothesis {hypothesis_id}",
@@ -316,7 +315,7 @@ class InvestigationOrchestrator:
                 "solution_id": solution_id,
                 "hypothesis_id": hypothesis_id,
                 "organization_id": organization_id,
-            }
+            },
         )
 
         # Link solution to hypothesis
@@ -354,7 +353,7 @@ class InvestigationOrchestrator:
         """
         logger.info(
             f"Getting investigation progress for case {case_id}",
-            extra={"case_id": case_id, "organization_id": organization_id}
+            extra={"case_id": case_id, "organization_id": organization_id},
         )
 
         # Get all hypotheses for the case
@@ -370,9 +369,11 @@ class InvestigationOrchestrator:
         active = sum(1 for h in hypotheses if h.get("status") == "active")
 
         # Calculate completion rate (validated + refuted / total)
-        completion_rate = round(
-            ((validated + refuted) / total_hypotheses * 100), 1
-        ) if total_hypotheses > 0 else 0.0
+        completion_rate = (
+            round(((validated + refuted) / total_hypotheses * 100), 1)
+            if total_hypotheses > 0
+            else 0.0
+        )
 
         # Get all solutions for the case
         solutions = await self.solution_repo.list_by_case(
@@ -385,29 +386,31 @@ class InvestigationOrchestrator:
         implemented = sum(1 for s in solutions if s.get("applied_at") is not None)
 
         # Calculate implementation rate
-        implementation_rate = round(
-            (implemented / total_solutions * 100), 1
-        ) if total_solutions > 0 else 0.0
+        implementation_rate = (
+            round((implemented / total_solutions * 100), 1)
+            if total_solutions > 0
+            else 0.0
+        )
 
         progress = {
-            'hypotheses': {
-                'total': total_hypotheses,
-                'validated': validated,
-                'refuted': refuted,
-                'active': active,
-                'completion_rate': completion_rate,
+            "hypotheses": {
+                "total": total_hypotheses,
+                "validated": validated,
+                "refuted": refuted,
+                "active": active,
+                "completion_rate": completion_rate,
             },
-            'solutions': {
-                'total': total_solutions,
-                'implemented': implemented,
-                'implementation_rate': implementation_rate,
-            }
+            "solutions": {
+                "total": total_solutions,
+                "implemented": implemented,
+                "implementation_rate": implementation_rate,
+            },
         }
 
         logger.info(
             f"Investigation progress for case {case_id}: "
             f"{validated}/{total_hypotheses} validated, {implemented}/{total_solutions} implemented",
-            extra={"case_id": case_id, "progress": progress}
+            extra={"case_id": case_id, "progress": progress},
         )
 
         return progress
@@ -436,10 +439,7 @@ class InvestigationOrchestrator:
         )
 
         if not hypothesis:
-            raise NotFoundError(
-                resource_type="Hypothesis",
-                resource_id=hypothesis_id
-            )
+            raise NotFoundError(resource_type="Hypothesis", resource_id=hypothesis_id)
 
         return hypothesis
 
@@ -472,7 +472,7 @@ class InvestigationOrchestrator:
                 "status": status,
                 "limit": limit,
                 "offset": offset,
-            }
+            },
         )
 
         hypotheses = await self.hypothesis_repo.list_hypotheses_by_case(
@@ -485,7 +485,7 @@ class InvestigationOrchestrator:
 
         logger.info(
             f"Found {len(hypotheses)} hypotheses for case {case_id}",
-            extra={"case_id": case_id, "count": len(hypotheses)}
+            extra={"case_id": case_id, "count": len(hypotheses)},
         )
 
         return hypotheses
@@ -535,33 +535,34 @@ class InvestigationOrchestrator:
         )
 
         if not hypothesis:
-            raise NotFoundError(
-                resource_type="Hypothesis",
-                resource_id=hypothesis_id
-            )
+            raise NotFoundError(resource_type="Hypothesis", resource_id=hypothesis_id)
 
         # Validate description length if provided
         if description is not None and len(description) < 10:
             raise ValidationException(
                 "Hypothesis description must be at least 10 characters",
-                details={"description_length": len(description), "min_length": 10}
+                details={"description_length": len(description), "min_length": 10},
             )
 
         if description is not None and len(description) > 5000:
             raise ValidationException(
                 "Hypothesis description cannot exceed 5000 characters",
-                details={"description_length": len(description), "max_length": 5000}
+                details={"description_length": len(description), "max_length": 5000},
             )
 
         # Validate confidence if provided
         if confidence is not None and not (0.0 <= confidence <= 1.0):
             raise ValidationException(
                 "Confidence score must be between 0.0 and 1.0",
-                details={"confidence": confidence, "valid_range": "0.0-1.0"}
+                details={"confidence": confidence, "valid_range": "0.0-1.0"},
             )
 
         # Get current confidence (use provided or existing)
-        current_confidence = float(hypothesis.get("confidence_score", 0.5)) if hypothesis.get("confidence_score") else 0.5
+        current_confidence = (
+            float(hypothesis.get("confidence_score", 0.5))
+            if hypothesis.get("confidence_score")
+            else 0.5
+        )
         target_confidence = confidence if confidence is not None else current_confidence
 
         # Enforce business rules for status transitions if status is being changed
@@ -572,7 +573,7 @@ class InvestigationOrchestrator:
                     "Confidence must be ≥ 0.7 to validate.",
                     resource_type="Hypothesis",
                     resource_id=hypothesis_id,
-                    conflict_reason=f"Low confidence ({target_confidence} < 0.7)"
+                    conflict_reason=f"Low confidence ({target_confidence} < 0.7)",
                 )
 
             if status == "refuted" and target_confidence > 0.3:
@@ -581,7 +582,7 @@ class InvestigationOrchestrator:
                     "Confidence must be ≤ 0.3 to refute.",
                     resource_type="Hypothesis",
                     resource_id=hypothesis_id,
-                    conflict_reason=f"High confidence ({target_confidence} > 0.3)"
+                    conflict_reason=f"High confidence ({target_confidence} > 0.3)",
                 )
 
         logger.info(
@@ -592,7 +593,7 @@ class InvestigationOrchestrator:
                 "updated_by": updated_by,
                 "has_status_change": status is not None,
                 "has_confidence_change": confidence is not None,
-            }
+            },
         )
 
         # Prepare metadata update
@@ -620,12 +621,12 @@ class InvestigationOrchestrator:
         updated_hypothesis = await self.hypothesis_repo.update_hypothesis(
             hypothesis_id=hypothesis_id,
             organization_id=organization_id,
-            **update_fields
+            **update_fields,
         )
 
         logger.info(
             f"Hypothesis {hypothesis_id} updated successfully",
-            extra={"hypothesis_id": hypothesis_id}
+            extra={"hypothesis_id": hypothesis_id},
         )
 
         return updated_hypothesis
@@ -652,14 +653,11 @@ class InvestigationOrchestrator:
         )
 
         if not hypothesis:
-            raise NotFoundError(
-                resource_type="Hypothesis",
-                resource_id=hypothesis_id
-            )
+            raise NotFoundError(resource_type="Hypothesis", resource_id=hypothesis_id)
 
         logger.info(
             f"Deleting hypothesis {hypothesis_id}",
-            extra={"hypothesis_id": hypothesis_id, "organization_id": organization_id}
+            extra={"hypothesis_id": hypothesis_id, "organization_id": organization_id},
         )
 
         await self.hypothesis_repo.delete_hypothesis(
@@ -669,7 +667,7 @@ class InvestigationOrchestrator:
 
         logger.info(
             f"Hypothesis {hypothesis_id} deleted successfully",
-            extra={"hypothesis_id": hypothesis_id}
+            extra={"hypothesis_id": hypothesis_id},
         )
 
     async def create_solution(
@@ -715,20 +713,23 @@ class InvestigationOrchestrator:
         if len(description) < 20:
             raise ValidationException(
                 "Solution description must be at least 20 characters",
-                details={"description_length": len(description), "min_length": 20}
+                details={"description_length": len(description), "min_length": 20},
             )
 
         if len(description) > 5000:
             raise ValidationException(
                 "Solution description cannot exceed 5000 characters",
-                details={"description_length": len(description), "max_length": 5000}
+                details={"description_length": len(description), "max_length": 5000},
             )
 
         # Validate risk level if provided
         if risk_level and risk_level not in ["low", "medium", "high", "critical"]:
             raise ValidationException(
                 "Risk level must be: low, medium, high, or critical",
-                details={"risk_level": risk_level, "valid_values": ["low", "medium", "high", "critical"]}
+                details={
+                    "risk_level": risk_level,
+                    "valid_values": ["low", "medium", "high", "critical"],
+                },
             )
 
         # If hypothesis_id provided, verify it exists and is validated
@@ -740,8 +741,7 @@ class InvestigationOrchestrator:
 
             if not hypothesis:
                 raise NotFoundError(
-                    resource_type="Hypothesis",
-                    resource_id=hypothesis_id
+                    resource_type="Hypothesis", resource_id=hypothesis_id
                 )
 
             if hypothesis.get("status") != "validated":
@@ -750,7 +750,7 @@ class InvestigationOrchestrator:
                     "Only validated hypotheses can have solutions.",
                     resource_type="Hypothesis",
                     resource_id=hypothesis_id,
-                    conflict_reason=f"Hypothesis status is '{hypothesis.get('status')}', not 'validated'"
+                    conflict_reason=f"Hypothesis status is '{hypothesis.get('status')}', not 'validated'",
                 )
 
         logger.info(
@@ -760,7 +760,7 @@ class InvestigationOrchestrator:
                 "organization_id": organization_id,
                 "created_by": created_by,
                 "hypothesis_id": hypothesis_id,
-            }
+            },
         )
 
         # Prepare metadata
@@ -785,7 +785,7 @@ class InvestigationOrchestrator:
 
         logger.info(
             f"Solution created successfully: {solution['solution_id']}",
-            extra={"solution_id": solution["solution_id"]}
+            extra={"solution_id": solution["solution_id"]},
         )
 
         return solution
@@ -814,10 +814,7 @@ class InvestigationOrchestrator:
         )
 
         if not solution:
-            raise NotFoundError(
-                resource_type="Solution",
-                resource_id=solution_id
-            )
+            raise NotFoundError(resource_type="Solution", resource_id=solution_id)
 
         return solution
 
@@ -850,7 +847,7 @@ class InvestigationOrchestrator:
                 "status": status,
                 "limit": limit,
                 "offset": offset,
-            }
+            },
         )
 
         solutions = await self.solution_repo.list_solutions_by_case(
@@ -863,7 +860,7 @@ class InvestigationOrchestrator:
 
         logger.info(
             f"Found {len(solutions)} solutions for case {case_id}",
-            extra={"case_id": case_id, "count": len(solutions)}
+            extra={"case_id": case_id, "count": len(solutions)},
         )
 
         return solutions
@@ -890,14 +887,11 @@ class InvestigationOrchestrator:
         )
 
         if not solution:
-            raise NotFoundError(
-                resource_type="Solution",
-                resource_id=solution_id
-            )
+            raise NotFoundError(resource_type="Solution", resource_id=solution_id)
 
         logger.info(
             f"Deleting solution {solution_id}",
-            extra={"solution_id": solution_id, "organization_id": organization_id}
+            extra={"solution_id": solution_id, "organization_id": organization_id},
         )
 
         await self.solution_repo.delete_solution(
@@ -907,5 +901,5 @@ class InvestigationOrchestrator:
 
         logger.info(
             f"Solution {solution_id} deleted successfully",
-            extra={"solution_id": solution_id}
+            extra={"solution_id": solution_id},
         )

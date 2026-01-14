@@ -21,10 +21,20 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.services.investigation_session_service import APIInvestigationSessionService
+from faultmaven.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
 from faultmaven.models.investigation_session import InvestigationSession, SessionStatus
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
-from faultmaven.modules.agent.domain.models.agent_execution import AgentExecution, AgentType, ExecutionStatus
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationStrategy,
+)
+from faultmaven.modules.agent.domain.models.agent_execution import (
+    AgentExecution,
+    AgentType,
+    ExecutionStatus,
+)
 from faultmaven.exceptions import (
     NotFoundError,
     AuthorizationError,
@@ -37,6 +47,7 @@ from faultmaven.exceptions import (
 # ============================================================
 # Fixtures
 # ============================================================
+
 
 @pytest.fixture
 def mock_session_repo():
@@ -108,6 +119,7 @@ def sample_execution():
 # ============================================================
 # Create Session Tests
 # ============================================================
+
 
 class TestCreateSession:
     """Test create_session method."""
@@ -222,7 +234,12 @@ class TestCreateSession:
 
     @pytest.mark.asyncio
     async def test_create_session_active_session_exists_raises_conflict(
-        self, session_service, mock_session_repo, mock_case_repo, sample_case, sample_session
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_case,
+        sample_session,
     ):
         """Test that ConflictError raised if active session exists."""
         mock_case_repo.get.return_value = sample_case
@@ -336,12 +353,18 @@ class TestCreateSession:
 # Get Session Tests
 # ============================================================
 
+
 class TestGetSession:
     """Test get_session method."""
 
     @pytest.mark.asyncio
     async def test_get_session_success(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test successful session retrieval."""
         sample_session.case_id = sample_case.case_id
@@ -370,7 +393,12 @@ class TestGetSession:
 
     @pytest.mark.asyncio
     async def test_get_session_wrong_org_returns_none(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that wrong organization returns None."""
         sample_session.case_id = sample_case.case_id
@@ -385,7 +413,12 @@ class TestGetSession:
 
     @pytest.mark.asyncio
     async def test_get_session_authorization_via_parent_case(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test authorization check via parent case."""
         sample_session.case_id = sample_case.case_id
@@ -418,12 +451,18 @@ class TestGetSession:
 # Update Session Tests
 # ============================================================
 
+
 class TestUpdateSession:
     """Test update_session method."""
 
     @pytest.mark.asyncio
     async def test_update_session_success(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test successful session update."""
         sample_session.case_id = sample_case.case_id
@@ -442,7 +481,12 @@ class TestUpdateSession:
 
     @pytest.mark.asyncio
     async def test_update_session_updates_token_budget(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test updating token budget limit."""
         sample_session.case_id = sample_case.case_id
@@ -460,7 +504,12 @@ class TestUpdateSession:
 
     @pytest.mark.asyncio
     async def test_update_session_updates_metadata(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test updating session metadata."""
         sample_session.case_id = sample_case.case_id
@@ -491,7 +540,12 @@ class TestUpdateSession:
 
     @pytest.mark.asyncio
     async def test_update_session_wrong_org_raises_authorization_error(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that wrong organization raises AuthorizationError."""
         sample_session.case_id = sample_case.case_id
@@ -515,7 +569,12 @@ class TestUpdateSession:
 
     @pytest.mark.asyncio
     async def test_update_session_negative_budget_raises_validation_error(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that negative token budget raises ValidationException."""
         sample_session.case_id = sample_case.case_id
@@ -536,12 +595,18 @@ class TestUpdateSession:
 # Pause Session Tests
 # ============================================================
 
+
 class TestPauseSession:
     """Test pause_session method."""
 
     @pytest.mark.asyncio
     async def test_pause_session_success(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test successful session pause."""
         sample_session.case_id = sample_case.case_id
@@ -559,7 +624,12 @@ class TestPauseSession:
 
     @pytest.mark.asyncio
     async def test_pause_session_not_active_raises_validation_error(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that pausing non-active session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
@@ -576,7 +646,12 @@ class TestPauseSession:
 
     @pytest.mark.asyncio
     async def test_pause_session_authorization_check(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test authorization check when pausing."""
         sample_session.case_id = sample_case.case_id
@@ -593,12 +668,18 @@ class TestPauseSession:
 # Resume Session Tests
 # ============================================================
 
+
 class TestResumeSession:
     """Test resume_session method."""
 
     @pytest.mark.asyncio
     async def test_resume_session_success(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test successful session resume."""
         sample_session.case_id = sample_case.case_id
@@ -616,7 +697,12 @@ class TestResumeSession:
 
     @pytest.mark.asyncio
     async def test_resume_session_not_paused_raises_validation_error(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that resuming non-paused session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
@@ -633,7 +719,12 @@ class TestResumeSession:
 
     @pytest.mark.asyncio
     async def test_resume_session_authorization_check(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test authorization check when resuming."""
         sample_session.case_id = sample_case.case_id
@@ -651,12 +742,18 @@ class TestResumeSession:
 # Complete Session Tests
 # ============================================================
 
+
 class TestCompleteSession:
     """Test complete_session method."""
 
     @pytest.mark.asyncio
     async def test_complete_session_success(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test successful session completion."""
         sample_session.case_id = sample_case.case_id
@@ -676,7 +773,12 @@ class TestCompleteSession:
 
     @pytest.mark.asyncio
     async def test_complete_session_sets_findings_summary(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that complete_session sets findings_summary."""
         sample_session.case_id = sample_case.case_id
@@ -695,7 +797,12 @@ class TestCompleteSession:
 
     @pytest.mark.asyncio
     async def test_complete_session_sets_ended_at(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that complete_session sets ended_at timestamp."""
         sample_session.case_id = sample_case.case_id
@@ -718,7 +825,12 @@ class TestCompleteSession:
 
     @pytest.mark.asyncio
     async def test_complete_session_calculates_duration(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that complete_session calculates total_duration_ms."""
         sample_session.case_id = sample_case.case_id
@@ -738,7 +850,12 @@ class TestCompleteSession:
 
     @pytest.mark.asyncio
     async def test_complete_session_already_completed_raises_validation_error(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that completing already-completed session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
@@ -757,7 +874,12 @@ class TestCompleteSession:
 
     @pytest.mark.asyncio
     async def test_complete_session_already_abandoned_raises_validation_error(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that completing abandoned session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
@@ -784,7 +906,12 @@ class TestCompleteSession:
 
     @pytest.mark.asyncio
     async def test_complete_session_authorization_check(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test authorization check when completing."""
         sample_session.case_id = sample_case.case_id
@@ -802,12 +929,18 @@ class TestCompleteSession:
 # Abandon Session Tests
 # ============================================================
 
+
 class TestAbandonSession:
     """Test abandon_session method."""
 
     @pytest.mark.asyncio
     async def test_abandon_session_success(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test successful session abandonment."""
         sample_session.case_id = sample_case.case_id
@@ -825,7 +958,12 @@ class TestAbandonSession:
 
     @pytest.mark.asyncio
     async def test_abandon_session_already_completed_raises_validation_error(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that abandoning completed session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
@@ -840,7 +978,12 @@ class TestAbandonSession:
 
     @pytest.mark.asyncio
     async def test_abandon_session_authorization_check(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test authorization check when abandoning."""
         sample_session.case_id = sample_case.case_id
@@ -858,12 +1001,18 @@ class TestAbandonSession:
 # Get Active Session Tests
 # ============================================================
 
+
 class TestGetActiveSession:
     """Test get_active_session method."""
 
     @pytest.mark.asyncio
     async def test_get_active_session_returns_active(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that get_active_session returns active session."""
         sample_session.case_id = sample_case.case_id
@@ -919,12 +1068,18 @@ class TestGetActiveSession:
 # List Sessions Tests
 # ============================================================
 
+
 class TestListSessions:
     """Test list_sessions method."""
 
     @pytest.mark.asyncio
     async def test_list_sessions_returns_all_for_case(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that list_sessions returns all sessions for case."""
         sample_session.case_id = sample_case.case_id
@@ -1011,9 +1166,7 @@ class TestListSessions:
         mock_case_repo.get.return_value = sample_case
 
         with pytest.raises(AuthorizationError):
-            await session_service.list_sessions(
-                sample_case.case_id, "different_org"
-            )
+            await session_service.list_sessions(sample_case.case_id, "different_org")
 
     @pytest.mark.asyncio
     async def test_list_sessions_empty_results(
@@ -1034,20 +1187,29 @@ class TestListSessions:
 # Get Session with Executions Tests
 # ============================================================
 
+
 class TestGetSessionWithExecutions:
     """Test get_session_with_executions method."""
 
     @pytest.mark.asyncio
     async def test_get_session_with_executions_includes_executions(
-        self, session_service, mock_session_repo, mock_case_repo,
-        sample_session, sample_case, sample_execution
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+        sample_execution,
     ):
         """Test that get_session_with_executions includes executions."""
         sample_session.case_id = sample_case.case_id
         sample_execution.case_id = sample_case.case_id
         mock_session_repo.get_by_id.return_value = sample_session
         mock_case_repo.get.return_value = sample_case
-        mock_case_repo.list_agent_executions_by_case.return_value = ([sample_execution], 1)
+        mock_case_repo.list_agent_executions_by_case.return_value = (
+            [sample_execution],
+            1,
+        )
 
         result = await session_service.get_session_with_executions(
             sample_session.session_id, sample_case.organization_id
@@ -1073,7 +1235,12 @@ class TestGetSessionWithExecutions:
 
     @pytest.mark.asyncio
     async def test_get_session_with_executions_authorization_check(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test authorization check."""
         sample_session.case_id = sample_case.case_id
@@ -1091,13 +1258,19 @@ class TestGetSessionWithExecutions:
 # Add Execution to Session Tests
 # ============================================================
 
+
 class TestAddExecutionToSession:
     """Test add_execution_to_session method."""
 
     @pytest.mark.asyncio
     async def test_add_execution_links_execution(
-        self, session_service, mock_session_repo, mock_case_repo,
-        sample_session, sample_case, sample_execution
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+        sample_execution,
     ):
         """Test that add_execution_to_session links execution."""
         sample_session.case_id = sample_case.case_id
@@ -1122,8 +1295,13 @@ class TestAddExecutionToSession:
 
     @pytest.mark.asyncio
     async def test_add_execution_increments_token_usage(
-        self, session_service, mock_session_repo, mock_case_repo,
-        sample_session, sample_case, sample_execution
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+        sample_execution,
     ):
         """Test that token usage is incremented."""
         sample_session.case_id = sample_case.case_id
@@ -1146,8 +1324,13 @@ class TestAddExecutionToSession:
 
     @pytest.mark.asyncio
     async def test_add_execution_increments_execution_count(
-        self, session_service, mock_session_repo, mock_case_repo,
-        sample_session, sample_case, sample_execution
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
+        sample_execution,
     ):
         """Test that execution count is incremented."""
         sample_session.case_id = sample_case.case_id
@@ -1184,8 +1367,12 @@ class TestAddExecutionToSession:
 
     @pytest.mark.asyncio
     async def test_add_execution_execution_not_found_raises_error(
-        self, session_service, mock_session_repo, mock_case_repo,
-        sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that non-existent execution raises NotFoundError."""
         sample_session.case_id = sample_case.case_id
@@ -1206,7 +1393,12 @@ class TestAddExecutionToSession:
 
     @pytest.mark.asyncio
     async def test_add_execution_session_not_active_raises_validation_error(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that adding to non-active session raises ValidationException."""
         sample_session.case_id = sample_case.case_id
@@ -1238,7 +1430,12 @@ class TestAddExecutionToSession:
 
     @pytest.mark.asyncio
     async def test_add_execution_authorization_check(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test authorization check."""
         sample_session.case_id = sample_case.case_id
@@ -1256,12 +1453,18 @@ class TestAddExecutionToSession:
 # Check Budget Exceeded Tests
 # ============================================================
 
+
 class TestCheckBudgetExceeded:
     """Test check_budget_exceeded method."""
 
     @pytest.mark.asyncio
     async def test_check_budget_exceeded_returns_correct_status(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that check_budget_exceeded returns correct status."""
         sample_session.case_id = sample_case.case_id
@@ -1281,7 +1484,12 @@ class TestCheckBudgetExceeded:
 
     @pytest.mark.asyncio
     async def test_check_budget_exceeded_when_over_budget(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test returns True when over budget."""
         sample_session.case_id = sample_case.case_id
@@ -1299,7 +1507,12 @@ class TestCheckBudgetExceeded:
 
     @pytest.mark.asyncio
     async def test_check_budget_exceeded_handles_no_budget_limit(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test handles None budget limit."""
         sample_session.case_id = sample_case.case_id
@@ -1318,7 +1531,12 @@ class TestCheckBudgetExceeded:
 
     @pytest.mark.asyncio
     async def test_check_budget_exceeded_authorization_check(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test authorization check."""
         sample_session.case_id = sample_case.case_id
@@ -1335,12 +1553,18 @@ class TestCheckBudgetExceeded:
 # Get Session Statistics Tests
 # ============================================================
 
+
 class TestGetSessionStatistics:
     """Test get_session_statistics method."""
 
     @pytest.mark.asyncio
     async def test_get_statistics_returns_total_sessions(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that statistics includes total_sessions."""
         sample_session.case_id = sample_case.case_id
@@ -1356,7 +1580,12 @@ class TestGetSessionStatistics:
 
     @pytest.mark.asyncio
     async def test_get_statistics_returns_by_status(
-        self, session_service, mock_session_repo, mock_case_repo, sample_session, sample_case
+        self,
+        session_service,
+        mock_session_repo,
+        mock_case_repo,
+        sample_session,
+        sample_case,
     ):
         """Test that statistics includes by_status breakdown."""
         sample_session.case_id = sample_case.case_id

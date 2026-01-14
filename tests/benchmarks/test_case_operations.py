@@ -16,8 +16,14 @@ import pytest
 import time
 from datetime import datetime, timezone
 
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy
-from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationStrategy,
+)
+from faultmaven.infrastructure.persistence.database_case_repository import (
+    DatabaseCaseRepository,
+)
 
 from .conftest import generate_case_id
 
@@ -51,9 +57,9 @@ class TestCaseCreationPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.200, (
-            f"Case creation latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"Case creation latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  Case creation latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -87,10 +93,12 @@ class TestCaseCreationPerformance:
         duration = time.perf_counter() - start
 
         throughput = num_cases / duration
-        assert throughput > 50, (
-            f"Case creation throughput {throughput:.1f} cases/sec below 50/sec target"
+        assert (
+            throughput > 50
+        ), f"Case creation throughput {throughput:.1f} cases/sec below 50/sec target"
+        print(
+            f"\n  Batch creation throughput: {throughput:.1f} cases/sec ({num_cases} cases in {duration:.2f}s)"
         )
-        print(f"\n  Batch creation throughput: {throughput:.1f} cases/sec ({num_cases} cases in {duration:.2f}s)")
 
 
 @pytest.mark.benchmark
@@ -126,9 +134,9 @@ class TestCaseRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.100, (
-            f"Case retrieval latency {latency*1000:.1f}ms exceeds 100ms target"
-        )
+        assert (
+            latency < 0.100
+        ), f"Case retrieval latency {latency*1000:.1f}ms exceeds 100ms target"
         print(f"\n  Case retrieval latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -164,10 +172,12 @@ class TestCaseRetrievalPerformance:
         latency = time.perf_counter() - start
 
         assert len(result) > 0
-        assert latency < 0.150, (
-            f"List cases latency {latency*1000:.1f}ms exceeds 150ms target"
+        assert (
+            latency < 0.150
+        ), f"List cases latency {latency*1000:.1f}ms exceeds 150ms target"
+        print(
+            f"\n  List cases latency: {latency*1000:.1f}ms ({len(result)} cases returned)"
         )
-        print(f"\n  List cases latency: {latency*1000:.1f}ms ({len(result)} cases returned)")
 
 
 @pytest.mark.benchmark
@@ -208,9 +218,9 @@ class TestCaseUpdatePerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.150, (
-            f"Case update latency {latency*1000:.1f}ms exceeds 150ms target"
-        )
+        assert (
+            latency < 0.150
+        ), f"Case update latency {latency*1000:.1f}ms exceeds 150ms target"
         print(f"\n  Case update latency: {latency*1000:.1f}ms")
 
 
@@ -252,7 +262,7 @@ class TestCaseSearchPerformance:
         )
         latency = time.perf_counter() - start
 
-        assert latency < 0.200, (
-            f"Search latency {latency*1000:.1f}ms exceeds 200ms target"
-        )
+        assert (
+            latency < 0.200
+        ), f"Search latency {latency*1000:.1f}ms exceeds 200ms target"
         print(f"\n  Search latency: {latency*1000:.1f}ms ({len(result)} results)")

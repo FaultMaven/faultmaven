@@ -194,9 +194,7 @@ class TestListUsers:
         mock_user_repo.list_users.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_pagination_works(
-        self, user_service, mock_user_repo, sample_users
-    ):
+    async def test_pagination_works(self, user_service, mock_user_repo, sample_users):
         """Pagination works (limit, offset)."""
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
@@ -210,9 +208,7 @@ class TestListUsers:
         assert total == 4  # Total before pagination
 
     @pytest.mark.asyncio
-    async def test_pagination_offset(
-        self, user_service, mock_user_repo, sample_users
-    ):
+    async def test_pagination_offset(self, user_service, mock_user_repo, sample_users):
         """Pagination offset works correctly."""
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
@@ -350,9 +346,7 @@ class TestListUsers:
         assert len(users) == 4  # All users have @example.com
 
     @pytest.mark.asyncio
-    async def test_combined_filters(
-        self, user_service, mock_user_repo, sample_users
-    ):
+    async def test_combined_filters(self, user_service, mock_user_repo, sample_users):
         """Combined filters (active + role + search) work."""
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
@@ -394,7 +388,9 @@ class TestListUsers:
         )
         # Service doesn't sort by created_at - it preserves repository order
         # If we want sorted results, we need to sort in the repository mock
-        sorted_users = sorted([old_user, new_user], key=lambda u: u.created_at, reverse=True)
+        sorted_users = sorted(
+            [old_user, new_user], key=lambda u: u.created_at, reverse=True
+        )
         mock_user_repo.list_users.return_value = (sorted_users, 2)
 
         users, total = await user_service.list_users(organization_id="org-123")
@@ -404,9 +400,7 @@ class TestListUsers:
         assert total == 2
 
     @pytest.mark.asyncio
-    async def test_returns_tuple(
-        self, user_service, mock_user_repo, sample_users
-    ):
+    async def test_returns_tuple(self, user_service, mock_user_repo, sample_users):
         """Returns (users, total_count) tuple."""
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
@@ -491,9 +485,7 @@ class TestGetUserWithMetadata:
         assert "cases:read" in result["permissions"]
 
     @pytest.mark.asyncio
-    async def test_includes_metadata(
-        self, user_service, mock_user_repo, admin_user
-    ):
+    async def test_includes_metadata(self, user_service, mock_user_repo, admin_user):
         """Includes metadata (login_count, failed_attempts)."""
         mock_user_repo.get_user.return_value = admin_user
 
@@ -506,15 +498,13 @@ class TestGetUserWithMetadata:
         assert "failed_login_attempts" in result["metadata"]
 
     @pytest.mark.asyncio
-    async def test_returns_none_if_user_not_found(
-        self, user_service, mock_user_repo
-    ):
+    async def test_returns_none_if_user_not_found(self, user_service, mock_user_repo):
         """Returns None if user not found."""
         mock_user_repo.get_user.return_value = None
 
         result = await user_service.get_user_with_metadata(
             user_id="nonexistent",
-                    )
+        )
 
         assert result is None
 
@@ -1089,9 +1079,7 @@ class TestListOrganizationUsers:
         assert all(u.is_active for u in users)
 
     @pytest.mark.asyncio
-    async def test_pagination_works(
-        self, user_service, mock_user_repo, sample_users
-    ):
+    async def test_pagination_works(self, user_service, mock_user_repo, sample_users):
         """Pagination works."""
         mock_user_repo.list_users.return_value = (sample_users, len(sample_users))
 
@@ -1114,9 +1102,7 @@ class TestEdgeCases:
     """Tests for edge cases."""
 
     @pytest.mark.asyncio
-    async def test_user_with_none_roles(
-        self, user_service, mock_user_repo
-    ):
+    async def test_user_with_none_roles(self, user_service, mock_user_repo):
         """Handles user with empty roles list (defaults to ['member'] in service)."""
         now = datetime.now(timezone.utc)
         # RepositoryUser requires roles to be a list (not None). Empty list [] is falsy, so service defaults to ['member'] when filtering

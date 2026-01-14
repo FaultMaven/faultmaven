@@ -48,7 +48,9 @@ class TestBaseServiceInitialization:
         service = ConcreteService("test_service")
 
         # Logger name should include the service layer prefix
-        assert "test_service" in service.logger.logger_name or service.logger is not None
+        assert (
+            "test_service" in service.logger.logger_name or service.logger is not None
+        )
 
     def test_service_name_stored_correctly(self):
         """Test that service_name attribute is stored correctly."""
@@ -83,7 +85,7 @@ class TestLogOperation:
         """Test that log_operation logs at INFO level."""
         service = ConcreteService("test_service")
 
-        with patch.object(service.logger, 'info') as mock_info:
+        with patch.object(service.logger, "info") as mock_info:
             service.log_operation("create_case", user_id="user123")
 
             mock_info.assert_called_once()
@@ -94,7 +96,7 @@ class TestLogOperation:
         """Test that log_operation includes service name in extra."""
         service = ConcreteService("my_service")
 
-        with patch.object(service.logger, 'info') as mock_info:
+        with patch.object(service.logger, "info") as mock_info:
             service.log_operation("test_op")
 
             call_kwargs = mock_info.call_args[1]
@@ -105,7 +107,7 @@ class TestLogOperation:
         """Test that log_operation includes additional kwargs in extra."""
         service = ConcreteService("test_service")
 
-        with patch.object(service.logger, 'info') as mock_info:
+        with patch.object(service.logger, "info") as mock_info:
             service.log_operation("update_case", case_id="case_123", status="active")
 
             call_kwargs = mock_info.call_args[1]
@@ -116,7 +118,7 @@ class TestLogOperation:
         """Test log_operation works with no extra arguments."""
         service = ConcreteService("test_service")
 
-        with patch.object(service.logger, 'info') as mock_info:
+        with patch.object(service.logger, "info") as mock_info:
             service.log_operation("simple_op")
 
             mock_info.assert_called_once()
@@ -129,7 +131,7 @@ class TestLogError:
         """Test that log_error logs at ERROR level."""
         service = ConcreteService("test_service")
 
-        with patch.object(service.logger, 'error') as mock_error:
+        with patch.object(service.logger, "error") as mock_error:
             exc = ValueError("Something went wrong")
             service.log_error("create_case", exc)
 
@@ -139,7 +141,7 @@ class TestLogError:
         """Test that log_error includes exception message."""
         service = ConcreteService("test_service")
 
-        with patch.object(service.logger, 'error') as mock_error:
+        with patch.object(service.logger, "error") as mock_error:
             exc = ValueError("Invalid input data")
             service.log_error("validate_input", exc)
 
@@ -151,7 +153,7 @@ class TestLogError:
         """Test that log_error includes error type in extra."""
         service = ConcreteService("test_service")
 
-        with patch.object(service.logger, 'error') as mock_error:
+        with patch.object(service.logger, "error") as mock_error:
             exc = KeyError("missing_key")
             service.log_error("get_case", exc)
 
@@ -162,7 +164,7 @@ class TestLogError:
         """Test that log_error includes exc_info=True."""
         service = ConcreteService("test_service")
 
-        with patch.object(service.logger, 'error') as mock_error:
+        with patch.object(service.logger, "error") as mock_error:
             exc = RuntimeError("Runtime failure")
             service.log_error("run_task", exc)
 
@@ -173,7 +175,7 @@ class TestLogError:
         """Test that log_error includes service name in extra."""
         service = ConcreteService("error_test_service")
 
-        with patch.object(service.logger, 'error') as mock_error:
+        with patch.object(service.logger, "error") as mock_error:
             exc = Exception("test")
             service.log_error("op", exc)
 
@@ -184,7 +186,7 @@ class TestLogError:
         """Test that log_error includes additional kwargs."""
         service = ConcreteService("test_service")
 
-        with patch.object(service.logger, 'error') as mock_error:
+        with patch.object(service.logger, "error") as mock_error:
             exc = ValueError("test")
             service.log_error("save_case", exc, case_id="case_xyz", user_id="user_abc")
 
@@ -200,7 +202,7 @@ class TestLogMetric:
         """Test that log_metric adds service name to tags."""
         service = ConcreteService("metric_service")
 
-        with patch.object(service.logger, 'log_metric') as mock_log_metric:
+        with patch.object(service.logger, "log_metric") as mock_log_metric:
             service.log_metric("case_created", 1, unit="count")
 
             mock_log_metric.assert_called_once()
@@ -211,8 +213,10 @@ class TestLogMetric:
         """Test that log_metric preserves existing tags."""
         service = ConcreteService("test_service")
 
-        with patch.object(service.logger, 'log_metric') as mock_log_metric:
-            service.log_metric("latency", 100, unit="ms", tags={"endpoint": "/api/cases"})
+        with patch.object(service.logger, "log_metric") as mock_log_metric:
+            service.log_metric(
+                "latency", 100, unit="ms", tags={"endpoint": "/api/cases"}
+            )
 
             call_kwargs = mock_log_metric.call_args[1]
             assert call_kwargs["tags"]["endpoint"] == "/api/cases"
@@ -226,7 +230,7 @@ class TestLogBusinessEvent:
         """Test that log_business_event calls log_event."""
         service = ConcreteService("event_service")
 
-        with patch.object(service.logger, 'log_event') as mock_log_event:
+        with patch.object(service.logger, "log_event") as mock_log_event:
             service.log_business_event("case_created", severity="info")
 
             mock_log_event.assert_called_once()
@@ -235,7 +239,7 @@ class TestLogBusinessEvent:
         """Test that log_business_event includes service in data."""
         service = ConcreteService("business_service")
 
-        with patch.object(service.logger, 'log_event') as mock_log_event:
+        with patch.object(service.logger, "log_event") as mock_log_event:
             service.log_business_event("case_resolved", data={"case_id": "123"})
 
             call_kwargs = mock_log_event.call_args[1]

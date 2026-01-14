@@ -272,10 +272,15 @@ class PhaseCompletionCriteria:
             else:
                 unmet_criteria.append("Problem not yet confirmed")
 
-            if investigation_state.metadata.engagement_mode == EngagementMode.LEAD_INVESTIGATOR:
+            if (
+                investigation_state.metadata.engagement_mode
+                == EngagementMode.LEAD_INVESTIGATOR
+            ):
                 met_criteria.append("User consented to investigation")
             else:
-                unmet_criteria.append("Awaiting user consent for Lead Investigator mode")
+                unmet_criteria.append(
+                    "Awaiting user consent for Lead Investigator mode"
+                )
 
         elif phase == InvestigationPhase.BLAST_RADIUS:
             # Phase 1: Scope assessment
@@ -286,7 +291,8 @@ class PhaseCompletionCriteria:
 
             # Check evidence coverage for SCOPE category
             scope_evidence_count = sum(
-                1 for req_id in investigation_state.evidence.evidence_requests
+                1
+                for req_id in investigation_state.evidence.evidence_requests
                 if "scope" in req_id.lower()  # Simplified check
             )
             if scope_evidence_count >= 2:
@@ -297,7 +303,8 @@ class PhaseCompletionCriteria:
         elif phase == InvestigationPhase.TIMELINE:
             # Phase 2: Temporal context
             timeline_evidence_count = sum(
-                1 for req_id in investigation_state.evidence.evidence_requests
+                1
+                for req_id in investigation_state.evidence.evidence_requests
                 if "timeline" in req_id.lower() or "change" in req_id.lower()
             )
             if timeline_evidence_count >= 2:
@@ -320,11 +327,15 @@ class PhaseCompletionCriteria:
             if hypothesis_count >= 2:
                 met_criteria.append(f"{hypothesis_count} hypotheses generated")
             else:
-                unmet_criteria.append(f"Need at least 2 hypotheses (have {hypothesis_count})")
+                unmet_criteria.append(
+                    f"Need at least 2 hypotheses (have {hypothesis_count})"
+                )
 
             # Check if hypotheses are ranked
             ranked_count = sum(
-                1 for h in investigation_state.ooda_engine.hypotheses if h.likelihood > 0
+                1
+                for h in investigation_state.ooda_engine.hypotheses
+                if h.likelihood > 0
             )
             if ranked_count == hypothesis_count and hypothesis_count > 0:
                 met_criteria.append("Hypotheses ranked")
@@ -344,7 +355,9 @@ class PhaseCompletionCriteria:
             else:
                 # Check if all refuted (need new hypotheses)
                 refuted_count = sum(
-                    1 for h in investigation_state.ooda_engine.hypotheses if h.status.value == "refuted"
+                    1
+                    for h in investigation_state.ooda_engine.hypotheses
+                    if h.status.value == "refuted"
                 )
                 if refuted_count == len(investigation_state.ooda_engine.hypotheses):
                     met_criteria.append("All hypotheses refuted - need new theories")
@@ -454,7 +467,9 @@ def detect_entry_phase(
     # Problem confirmed and user consented → always start at Blast Radius
     # Phase routing (Timeline vs Solution) happens after Phase 1 OODA completes
     # based on OODA-refined urgency assessment
-    logger.info("Problem confirmed: Starting investigation at Blast Radius phase for OODA assessment")
+    logger.info(
+        "Problem confirmed: Starting investigation at Blast Radius phase for OODA assessment"
+    )
     return InvestigationPhase.BLAST_RADIUS
 
 

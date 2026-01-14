@@ -23,13 +23,16 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.infrastructure.persistence.database_case_repository import DatabaseCaseRepository
+from faultmaven.infrastructure.persistence.database_case_repository import (
+    DatabaseCaseRepository,
+)
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InMemoryInvestigationSessionRepository,
 )
 from faultmaven.infrastructure.persistence.evidence_artifact_repository import (
     InMemoryEvidenceArtifactRepository,
 )
+
 # AgentExecutionRepository removed - APICaseService now uses case_repo
 from faultmaven.services.case_service import APICaseService
 from faultmaven.modules.case.domain.models import CaseSeverity
@@ -38,6 +41,7 @@ from faultmaven.modules.case.domain.models import CaseSeverity
 # ============================================================
 # Fixtures
 # ============================================================
+
 
 @pytest.fixture(scope="function")
 async def async_engine():
@@ -87,6 +91,7 @@ def case_service(case_repo) -> APICaseService:
 # Benchmark Helpers
 # ============================================================
 
+
 def create_test_org_id() -> str:
     """Generate unique test organization ID."""
     return f"org_{uuid4().hex[:8]}"
@@ -131,6 +136,7 @@ async def measure_operation(operation, iterations: int = 100) -> dict:
 # Create Case Benchmark
 # ============================================================
 
+
 @pytest.mark.benchmark
 class TestCreateCaseBenchmark:
     """Benchmark create_case operation."""
@@ -161,12 +167,15 @@ class TestCreateCaseBenchmark:
         print(f"  Target: <200ms p95")
 
         # Assert target is met
-        assert stats["p95_ms"] < 200, f"Create case P95 ({stats['p95_ms']:.2f}ms) exceeds target (200ms)"
+        assert (
+            stats["p95_ms"] < 200
+        ), f"Create case P95 ({stats['p95_ms']:.2f}ms) exceeds target (200ms)"
 
 
 # ============================================================
 # Get Case Benchmark
 # ============================================================
+
 
 @pytest.mark.benchmark
 class TestGetCaseBenchmark:
@@ -197,12 +206,15 @@ class TestGetCaseBenchmark:
         print(f"  P95: {stats['p95_ms']:.2f}ms")
         print(f"  Target: <100ms p95")
 
-        assert stats["p95_ms"] < 100, f"Get case P95 ({stats['p95_ms']:.2f}ms) exceeds target (100ms)"
+        assert (
+            stats["p95_ms"] < 100
+        ), f"Get case P95 ({stats['p95_ms']:.2f}ms) exceeds target (100ms)"
 
 
 # ============================================================
 # Update Case Benchmark
 # ============================================================
+
 
 @pytest.mark.benchmark
 class TestUpdateCaseBenchmark:
@@ -241,12 +253,15 @@ class TestUpdateCaseBenchmark:
         print(f"  P95: {stats['p95_ms']:.2f}ms")
         print(f"  Target: <150ms p95")
 
-        assert stats["p95_ms"] < 150, f"Update case P95 ({stats['p95_ms']:.2f}ms) exceeds target (150ms)"
+        assert (
+            stats["p95_ms"] < 150
+        ), f"Update case P95 ({stats['p95_ms']:.2f}ms) exceeds target (150ms)"
 
 
 # ============================================================
 # List Cases Benchmark
 # ============================================================
+
 
 @pytest.mark.benchmark
 class TestListCasesBenchmark:
@@ -278,12 +293,15 @@ class TestListCasesBenchmark:
         print(f"  P95: {stats['p95_ms']:.2f}ms")
         print(f"  Target: <300ms p95")
 
-        assert stats["p95_ms"] < 300, f"List cases P95 ({stats['p95_ms']:.2f}ms) exceeds target (300ms)"
+        assert (
+            stats["p95_ms"] < 300
+        ), f"List cases P95 ({stats['p95_ms']:.2f}ms) exceeds target (300ms)"
 
 
 # ============================================================
 # Get Case With Details Benchmark
 # ============================================================
+
 
 @pytest.mark.benchmark
 class TestGetCaseWithDetailsBenchmark:
@@ -320,12 +338,15 @@ class TestGetCaseWithDetailsBenchmark:
         print(f"  P95: {stats['p95_ms']:.2f}ms")
         print(f"  Target: <250ms p95")
 
-        assert stats["p95_ms"] < 250, f"Get case details P95 ({stats['p95_ms']:.2f}ms) exceeds target (250ms)"
+        assert (
+            stats["p95_ms"] < 250
+        ), f"Get case details P95 ({stats['p95_ms']:.2f}ms) exceeds target (250ms)"
 
 
 # ============================================================
 # Get Statistics Benchmark
 # ============================================================
+
 
 @pytest.mark.benchmark
 class TestGetStatisticsBenchmark:
@@ -338,7 +359,12 @@ class TestGetStatisticsBenchmark:
         user_id = create_test_user_id()
 
         # Create 100 cases (reduced from 1000 for faster test execution)
-        severities = [CaseSeverity.LOW, CaseSeverity.MEDIUM, CaseSeverity.HIGH, CaseSeverity.CRITICAL]
+        severities = [
+            CaseSeverity.LOW,
+            CaseSeverity.MEDIUM,
+            CaseSeverity.HIGH,
+            CaseSeverity.CRITICAL,
+        ]
         for i in range(100):
             await case_service.create_case(
                 user_id=user_id,
@@ -358,12 +384,15 @@ class TestGetStatisticsBenchmark:
         print(f"  P95: {stats['p95_ms']:.2f}ms")
         print(f"  Target: <500ms p95")
 
-        assert stats["p95_ms"] < 500, f"Get statistics P95 ({stats['p95_ms']:.2f}ms) exceeds target (500ms)"
+        assert (
+            stats["p95_ms"] < 500
+        ), f"Get statistics P95 ({stats['p95_ms']:.2f}ms) exceeds target (500ms)"
 
 
 # ============================================================
 # Close/Reopen Case Benchmark
 # ============================================================
+
 
 @pytest.mark.benchmark
 class TestCloseReopenBenchmark:
@@ -390,7 +419,9 @@ class TestCloseReopenBenchmark:
         times = []
         for case in cases:
             start = time.perf_counter()
-            await case_service.close_case(case.case_id, org_id, f"Resolution for {case.case_id}")
+            await case_service.close_case(
+                case.case_id, org_id, f"Resolution for {case.case_id}"
+            )
             elapsed = (time.perf_counter() - start) * 1000
             times.append(elapsed)
 

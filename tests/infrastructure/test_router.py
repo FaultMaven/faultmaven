@@ -32,7 +32,7 @@ class TestLLMRouter:
         assert router.registry is not None
         assert router.cache is not None
         assert router.sanitizer is not None
-        
+
         # Check that providers are initialized
         available_providers = router.registry.get_available_providers()
         assert len(available_providers) >= 2  # At least fireworks and openai
@@ -41,7 +41,7 @@ class TestLLMRouter:
         """Test that API keys are loaded from environment."""
         # Check provider status to verify keys are loaded
         status = router.get_provider_status()
-        
+
         assert "fireworks" in status
         assert "openai" in status
         assert status["fireworks"]["available"] == True
@@ -114,8 +114,12 @@ class TestLLMRouter:
             # We need to provide enough failures to force fallback to openai
             mock_post = Mock()
             mock_post.side_effect = [
-                Mock(__aenter__=fail_context, __aexit__=AsyncMock()),      # Fireworks attempt 1 fails
-                Mock(__aenter__=success_context, __aexit__=AsyncMock()),    # OpenAI attempt 1 succeeds
+                Mock(
+                    __aenter__=fail_context, __aexit__=AsyncMock()
+                ),  # Fireworks attempt 1 fails
+                Mock(
+                    __aenter__=success_context, __aexit__=AsyncMock()
+                ),  # OpenAI attempt 1 succeeds
             ]
             mock_session.post = mock_post
 
@@ -169,7 +173,9 @@ class TestLLMRouter:
 
             # Mock the post method
             mock_post = Mock()
-            mock_post.return_value = Mock(__aenter__=success_context, __aexit__=AsyncMock())
+            mock_post.return_value = Mock(
+                __aenter__=success_context, __aexit__=AsyncMock()
+            )
             mock_session.post = mock_post
 
             # First call - should hit the API
@@ -356,5 +362,5 @@ class TestLLMRouter:
             assert result.model in [
                 "accounts/fireworks/models/llama-v3p1-8b-instruct",
                 "accounts/fireworks/models/qwen3-coder-480b-a35b-instruct",
-                "custom-model"
+                "custom-model",
             ]

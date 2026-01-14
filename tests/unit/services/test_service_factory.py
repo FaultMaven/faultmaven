@@ -23,13 +23,16 @@ from sqlalchemy.ext.asyncio import (
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.services.service_factory import ServiceFactory
 from faultmaven.services.case_service import APICaseService
-from faultmaven.services.investigation_session_service import APIInvestigationSessionService
+from faultmaven.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
 from faultmaven.services.file_storage_service import FileStorageService
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     InvestigationSessionRepository,
 )
+
 # EvidenceArtifactRepository removed - evidence now handled by ICaseRepository (TD-001)
 # AgentExecutionRepository removed - agent executions now handled by ICaseRepository (TD-001)
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
@@ -40,6 +43,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 # ============================================================
 # Fixtures
 # ============================================================
+
 
 @pytest.fixture(scope="function")
 async def async_engine():
@@ -80,6 +84,7 @@ def mock_session():
 # Initialization Tests
 # ============================================================
 
+
 class TestServiceFactoryInitialization:
     """Test ServiceFactory initialization."""
 
@@ -108,7 +113,6 @@ class TestServiceFactoryInitialization:
     # of TD-001 migration. The factory no longer creates separate repositories for
     # these entities.
 
-
     def test_factory_creates_knowledge_repo(self, mock_session):
         """Test that factory creates knowledge item repository."""
         factory = ServiceFactory(mock_session)
@@ -120,6 +124,7 @@ class TestServiceFactoryInitialization:
 # ============================================================
 # Service Creation Tests
 # ============================================================
+
 
 class TestServiceCreation:
     """Test service creation methods."""
@@ -155,10 +160,10 @@ class TestServiceCreation:
     # are now handled by case_repo (ICaseRepository) as part of TD-001 migration
 
 
-
 # ============================================================
 # Investigation Session Service Creation Tests (TASK-012)
 # ============================================================
+
 
 class TestInvestigationSessionServiceCreation:
     """Test investigation session service creation methods."""
@@ -172,7 +177,9 @@ class TestInvestigationSessionServiceCreation:
         assert service is not None
         assert isinstance(service, APIInvestigationSessionService)
 
-    def test_create_investigation_session_service_injects_session_repo(self, mock_session):
+    def test_create_investigation_session_service_injects_session_repo(
+        self, mock_session
+    ):
         """Test that session service has session_repo injected."""
         factory = ServiceFactory(mock_session)
 
@@ -183,7 +190,6 @@ class TestInvestigationSessionServiceCreation:
 
     # Note: execution_repo removed - agent executions are now handled by case_repo
     # (ICaseRepository) as part of TD-001 migration
-
 
     def test_create_investigation_session_service_injects_case_repo(self, mock_session):
         """Test that session service has case_repo injected."""
@@ -220,6 +226,7 @@ class TestInvestigationSessionServiceCreation:
 # Multiple Service Creation Tests
 # ============================================================
 
+
 class TestMultipleServiceCreation:
     """Test creating multiple services."""
 
@@ -249,6 +256,7 @@ class TestMultipleServiceCreation:
 # ============================================================
 # Integration with Real Session Tests
 # ============================================================
+
 
 class TestServiceFactoryIntegration:
     """Test ServiceFactory with real database session."""
@@ -305,6 +313,7 @@ class TestServiceFactoryIntegration:
 # File Storage Service Creation Tests (TASK-013)
 # ============================================================
 
+
 class TestFileStorageServiceCreation:
     """Test file storage service creation methods."""
 
@@ -332,9 +341,7 @@ class TestFileStorageServiceCreation:
         factory = ServiceFactory(mock_session)
         custom_size = 50 * 1024 * 1024  # 50MB
 
-        service = factory.create_file_storage_service(
-            max_file_size_bytes=custom_size
-        )
+        service = factory.create_file_storage_service(max_file_size_bytes=custom_size)
 
         assert service.max_file_size_bytes == custom_size
 
@@ -343,9 +350,7 @@ class TestFileStorageServiceCreation:
         factory = ServiceFactory(mock_session)
         mime_types = ["image/png", "image/jpeg"]
 
-        service = factory.create_file_storage_service(
-            allowed_mime_types=mime_types
-        )
+        service = factory.create_file_storage_service(allowed_mime_types=mime_types)
 
         assert service.allowed_mime_types == mime_types
 
@@ -362,6 +367,7 @@ class TestFileStorageServiceCreation:
 # ============================================================
 # Evidence Artifact Service Creation Tests (TASK-013)
 # ============================================================
+
 
 class TestEvidenceArtifactServiceCreation:
     """Test evidence artifact service creation methods."""
@@ -404,9 +410,7 @@ class TestEvidenceArtifactServiceCreation:
             max_file_size_bytes=1024,
         )
 
-        service = factory.create_evidence_artifact_service(
-            file_storage=custom_storage
-        )
+        service = factory.create_evidence_artifact_service(file_storage=custom_storage)
 
         assert service.file_storage is custom_storage
 
@@ -433,6 +437,7 @@ class TestEvidenceArtifactServiceCreation:
 # ============================================================
 # Integration Tests for Evidence Service (TASK-013)
 # ============================================================
+
 
 class TestEvidenceServiceIntegration:
     """Test evidence service with real database session."""

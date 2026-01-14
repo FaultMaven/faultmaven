@@ -23,6 +23,7 @@ from enum import Enum
 # ENVIRONMENT AND LOGGING ENUMS
 # =============================================================================
 
+
 class Environment(str, Enum):
     DEVELOPMENT = "development"
     STAGING = "staging"
@@ -51,32 +52,38 @@ class LLMProvider(str, Enum):
 # PROVIDER SELECTORS (Doc-aligned - PR #3)
 # =============================================================================
 
+
 class TenantProvider(str, Enum):
     """Tenant isolation strategy selector."""
+
     SINGLE = "single"
     MULTI = "multi"
 
 
 class DbBackend(str, Enum):
     """Database backend selector."""
+
     SQLITE = "sqlite"
     POSTGRES = "postgres"
 
 
 class CacheBackend(str, Enum):
     """Cache backend selector."""
+
     MEMORY = "memory"
     REDIS = "redis"
 
 
 class VectorBackend(str, Enum):
     """Vector database backend selector."""
+
     CHROMA = "chroma"
     PINECONE = "pinecone"
 
 
 class StorageBackend(str, Enum):
     """File storage backend selector."""
+
     FILESYSTEM = "filesystem"
     S3 = "s3"
 
@@ -89,6 +96,7 @@ class MetricsExporter(str, Enum):
     - prometheus_http: Mount /metrics endpoint with Prometheus text format
     - otel: (future) OpenTelemetry exporter
     """
+
     NONE = "none"
     PROMETHEUS_HTTP = "prometheus_http"
     # OTEL = "otel"  # Future: OpenTelemetry exporter
@@ -98,18 +106,20 @@ class MetricsExporter(str, Enum):
 # NESTED CONFIGURATION SECTIONS
 # =============================================================================
 
+
 class ServerSettings(BaseSettings):
     """Core server configuration"""
+
     host: str = Field(default="0.0.0.0", env="HOST")
     port: int = Field(default=8000, env="PORT")
     reload: bool = Field(default=False, env="RELOAD")
     workers: int = Field(default=1, env="WORKERS")
-    
+
     # Environment and behavior
     environment: Environment = Field(default=Environment.DEVELOPMENT, env="ENVIRONMENT")
     debug: bool = Field(default=False, env="DEBUG")
     skip_service_checks: bool = Field(default=False, env="SKIP_SERVICE_CHECKS")
-    
+
     # Testing configuration
     pytest_current_test: Optional[str] = Field(default=None, env="PYTEST_CURRENT_TEST")
 
@@ -121,7 +131,7 @@ class ServerSettings(BaseSettings):
         default=False,
         env="RUN_SCHEDULER",
         description="Enable in-process APScheduler. Default False for operational neutrality. "
-                    "Set to True only for single-process convenience mode (not recommended for production)."
+        "Set to True only for single-process convenience mode (not recommended for production).",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
@@ -129,104 +139,215 @@ class ServerSettings(BaseSettings):
 
 class LLMSettings(BaseSettings):
     """LLM provider configuration with flexible multi-model support"""
-    
+
     # Task-specific provider selection
     provider: LLMProvider = Field(default=LLMProvider.FIREWORKS, alias="CHAT_PROVIDER")
-    multimodal_provider: Optional[LLMProvider] = Field(default=None, env="MULTIMODAL_PROVIDER")
-    synthesis_provider: Optional[LLMProvider] = Field(default=None, env="SYNTHESIS_PROVIDER")
-    classifier_provider: Optional[LLMProvider] = Field(default=None, env="CLASSIFIER_PROVIDER")
+    multimodal_provider: Optional[LLMProvider] = Field(
+        default=None, env="MULTIMODAL_PROVIDER"
+    )
+    synthesis_provider: Optional[LLMProvider] = Field(
+        default=None, env="SYNTHESIS_PROVIDER"
+    )
+    classifier_provider: Optional[LLMProvider] = Field(
+        default=None, env="CLASSIFIER_PROVIDER"
+    )
     code_provider: Optional[LLMProvider] = Field(default=None, env="CODE_PROVIDER")
 
     # API Keys (SecretStr for security)
     openai_api_key: Optional[SecretStr] = Field(default=None, env="OPENAI_API_KEY")
-    anthropic_api_key: Optional[SecretStr] = Field(default=None, env="ANTHROPIC_API_KEY")
-    fireworks_api_key: Optional[SecretStr] = Field(default=None, env="FIREWORKS_API_KEY")
+    anthropic_api_key: Optional[SecretStr] = Field(
+        default=None, env="ANTHROPIC_API_KEY"
+    )
+    fireworks_api_key: Optional[SecretStr] = Field(
+        default=None, env="FIREWORKS_API_KEY"
+    )
     cohere_api_key: Optional[SecretStr] = Field(default=None, env="COHERE_API_KEY")
     gemini_api_key: Optional[SecretStr] = Field(default=None, env="GEMINI_API_KEY")
-    huggingface_api_key: Optional[SecretStr] = Field(default=None, env="HUGGINGFACE_API_KEY")
-    openrouter_api_key: Optional[SecretStr] = Field(default=None, env="OPENROUTER_API_KEY")
+    huggingface_api_key: Optional[SecretStr] = Field(
+        default=None, env="HUGGINGFACE_API_KEY"
+    )
+    openrouter_api_key: Optional[SecretStr] = Field(
+        default=None, env="OPENROUTER_API_KEY"
+    )
     groq_api_key: Optional[SecretStr] = Field(default=None, env="GROQ_API_KEY")
-    
+
     # Flexible model configuration per provider and task
     # OpenAI models
     openai_chat_model: str = Field(default="gpt-4o", env="OPENAI_CHAT_MODEL")
-    openai_multimodal_model: str = Field(default="gpt-4o-vision", env="OPENAI_MULTIMODAL_MODEL")
-    openai_synthesis_model: str = Field(default="gpt-4o-mini", env="OPENAI_SYNTHESIS_MODEL")
-    openai_classifier_model: str = Field(default="gpt-4o-mini", env="OPENAI_CLASSIFIER_MODEL")
+    openai_multimodal_model: str = Field(
+        default="gpt-4o-vision", env="OPENAI_MULTIMODAL_MODEL"
+    )
+    openai_synthesis_model: str = Field(
+        default="gpt-4o-mini", env="OPENAI_SYNTHESIS_MODEL"
+    )
+    openai_classifier_model: str = Field(
+        default="gpt-4o-mini", env="OPENAI_CLASSIFIER_MODEL"
+    )
     openai_code_model: str = Field(default="gpt-4o", env="OPENAI_CODE_MODEL")
-    
+
     # Anthropic models
-    anthropic_chat_model: str = Field(default="claude-3-5-sonnet-20241022", env="ANTHROPIC_CHAT_MODEL")
-    anthropic_multimodal_model: str = Field(default="claude-3-5-sonnet-20241022", env="ANTHROPIC_MULTIMODAL_MODEL")
-    anthropic_synthesis_model: str = Field(default="claude-3-haiku", env="ANTHROPIC_SYNTHESIS_MODEL")
-    anthropic_classifier_model: str = Field(default="claude-3-haiku", env="ANTHROPIC_CLASSIFIER_MODEL")
-    anthropic_code_model: str = Field(default="claude-3-5-sonnet-20241022", env="ANTHROPIC_CODE_MODEL")
-    
+    anthropic_chat_model: str = Field(
+        default="claude-3-5-sonnet-20241022", env="ANTHROPIC_CHAT_MODEL"
+    )
+    anthropic_multimodal_model: str = Field(
+        default="claude-3-5-sonnet-20241022", env="ANTHROPIC_MULTIMODAL_MODEL"
+    )
+    anthropic_synthesis_model: str = Field(
+        default="claude-3-haiku", env="ANTHROPIC_SYNTHESIS_MODEL"
+    )
+    anthropic_classifier_model: str = Field(
+        default="claude-3-haiku", env="ANTHROPIC_CLASSIFIER_MODEL"
+    )
+    anthropic_code_model: str = Field(
+        default="claude-3-5-sonnet-20241022", env="ANTHROPIC_CODE_MODEL"
+    )
+
     # Fireworks models
-    fireworks_chat_model: str = Field(default="accounts/fireworks/models/llama-v3p1-405b-instruct", env="FIREWORKS_CHAT_MODEL")
-    fireworks_multimodal_model: str = Field(default="accounts/fireworks/models/llama-v3p1-405b-instruct", env="FIREWORKS_MULTIMODAL_MODEL")
-    fireworks_synthesis_model: str = Field(default="accounts/fireworks/models/llama-v3p1-405b-instruct", env="FIREWORKS_SYNTHESIS_MODEL")
-    fireworks_classifier_model: str = Field(default="accounts/fireworks/models/llama-v3p1-405b-instruct", env="FIREWORKS_CLASSIFIER_MODEL")
-    fireworks_code_model: str = Field(default="accounts/fireworks/models/qwen3-coder-480b-a35b-instruct", env="FIREWORKS_CODE_MODEL")
-    
+    fireworks_chat_model: str = Field(
+        default="accounts/fireworks/models/llama-v3p1-405b-instruct",
+        env="FIREWORKS_CHAT_MODEL",
+    )
+    fireworks_multimodal_model: str = Field(
+        default="accounts/fireworks/models/llama-v3p1-405b-instruct",
+        env="FIREWORKS_MULTIMODAL_MODEL",
+    )
+    fireworks_synthesis_model: str = Field(
+        default="accounts/fireworks/models/llama-v3p1-405b-instruct",
+        env="FIREWORKS_SYNTHESIS_MODEL",
+    )
+    fireworks_classifier_model: str = Field(
+        default="accounts/fireworks/models/llama-v3p1-405b-instruct",
+        env="FIREWORKS_CLASSIFIER_MODEL",
+    )
+    fireworks_code_model: str = Field(
+        default="accounts/fireworks/models/qwen3-coder-480b-a35b-instruct",
+        env="FIREWORKS_CODE_MODEL",
+    )
+
     # Google Gemini models
     gemini_chat_model: str = Field(default="gemini-1.5-pro", env="GEMINI_CHAT_MODEL")
-    gemini_multimodal_model: str = Field(default="gemini-1.5-pro", env="GEMINI_MULTIMODAL_MODEL")
-    gemini_synthesis_model: str = Field(default="gemini-1.5-flash", env="GEMINI_SYNTHESIS_MODEL")
-    gemini_classifier_model: str = Field(default="gemini-1.5-flash", env="GEMINI_CLASSIFIER_MODEL")
+    gemini_multimodal_model: str = Field(
+        default="gemini-1.5-pro", env="GEMINI_MULTIMODAL_MODEL"
+    )
+    gemini_synthesis_model: str = Field(
+        default="gemini-1.5-flash", env="GEMINI_SYNTHESIS_MODEL"
+    )
+    gemini_classifier_model: str = Field(
+        default="gemini-1.5-flash", env="GEMINI_CLASSIFIER_MODEL"
+    )
     gemini_code_model: str = Field(default="gemini-1.5-pro", env="GEMINI_CODE_MODEL")
-    
+
     # Cohere models
     cohere_chat_model: str = Field(default="command-r-plus", env="COHERE_CHAT_MODEL")
-    cohere_multimodal_model: str = Field(default="command-r-plus", env="COHERE_MULTIMODAL_MODEL")
-    cohere_synthesis_model: str = Field(default="command-r-plus", env="COHERE_SYNTHESIS_MODEL")
-    cohere_classifier_model: str = Field(default="command-r-plus", env="COHERE_CLASSIFIER_MODEL")
+    cohere_multimodal_model: str = Field(
+        default="command-r-plus", env="COHERE_MULTIMODAL_MODEL"
+    )
+    cohere_synthesis_model: str = Field(
+        default="command-r-plus", env="COHERE_SYNTHESIS_MODEL"
+    )
+    cohere_classifier_model: str = Field(
+        default="command-r-plus", env="COHERE_CLASSIFIER_MODEL"
+    )
     cohere_code_model: str = Field(default="command-r-plus", env="COHERE_CODE_MODEL")
-    
+
     # HuggingFace models
-    huggingface_chat_model: str = Field(default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CHAT_MODEL")
-    huggingface_multimodal_model: str = Field(default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_MULTIMODAL_MODEL")
-    huggingface_synthesis_model: str = Field(default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_SYNTHESIS_MODEL")
-    huggingface_classifier_model: str = Field(default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CLASSIFIER_MODEL")
-    huggingface_code_model: str = Field(default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CODE_MODEL")
-    
+    huggingface_chat_model: str = Field(
+        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CHAT_MODEL"
+    )
+    huggingface_multimodal_model: str = Field(
+        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_MULTIMODAL_MODEL"
+    )
+    huggingface_synthesis_model: str = Field(
+        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_SYNTHESIS_MODEL"
+    )
+    huggingface_classifier_model: str = Field(
+        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CLASSIFIER_MODEL"
+    )
+    huggingface_code_model: str = Field(
+        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_CODE_MODEL"
+    )
+
     # OpenRouter models
-    openrouter_chat_model: str = Field(default="openrouter-default", env="OPENROUTER_CHAT_MODEL")
-    openrouter_multimodal_model: str = Field(default="openrouter-default", env="OPENROUTER_MULTIMODAL_MODEL")
-    openrouter_synthesis_model: str = Field(default="openrouter-default", env="OPENROUTER_SYNTHESIS_MODEL")
-    openrouter_classifier_model: str = Field(default="openrouter-default", env="OPENROUTER_CLASSIFIER_MODEL")
-    openrouter_code_model: str = Field(default="openrouter-default", env="OPENROUTER_CODE_MODEL")
-    
+    openrouter_chat_model: str = Field(
+        default="openrouter-default", env="OPENROUTER_CHAT_MODEL"
+    )
+    openrouter_multimodal_model: str = Field(
+        default="openrouter-default", env="OPENROUTER_MULTIMODAL_MODEL"
+    )
+    openrouter_synthesis_model: str = Field(
+        default="openrouter-default", env="OPENROUTER_SYNTHESIS_MODEL"
+    )
+    openrouter_classifier_model: str = Field(
+        default="openrouter-default", env="OPENROUTER_CLASSIFIER_MODEL"
+    )
+    openrouter_code_model: str = Field(
+        default="openrouter-default", env="OPENROUTER_CODE_MODEL"
+    )
+
     # Groq models
-    groq_chat_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CHAT_MODEL")
-    groq_multimodal_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_MULTIMODAL_MODEL")
-    groq_synthesis_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_SYNTHESIS_MODEL")
-    groq_classifier_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CLASSIFIER_MODEL")
-    groq_code_model: str = Field(default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CODE_MODEL")
-    
+    groq_chat_model: str = Field(
+        default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CHAT_MODEL"
+    )
+    groq_multimodal_model: str = Field(
+        default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_MULTIMODAL_MODEL"
+    )
+    groq_synthesis_model: str = Field(
+        default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_SYNTHESIS_MODEL"
+    )
+    groq_classifier_model: str = Field(
+        default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CLASSIFIER_MODEL"
+    )
+    groq_code_model: str = Field(
+        default="meta-llama/Llama-4-Scout-17B-16E-Instruct", env="GROQ_CODE_MODEL"
+    )
+
     # Model configuration
     openai_model: str = Field(default="gpt-4o", env="OPENAI_MODEL")
-    anthropic_model: str = Field(default="claude-3-sonnet-20240229", env="ANTHROPIC_MODEL")
-    fireworks_model: str = Field(default="accounts/fireworks/models/llama-v3p1-405b-instruct", env="FIREWORKS_MODEL")
+    anthropic_model: str = Field(
+        default="claude-3-sonnet-20240229", env="ANTHROPIC_MODEL"
+    )
+    fireworks_model: str = Field(
+        default="accounts/fireworks/models/llama-v3p1-405b-instruct",
+        env="FIREWORKS_MODEL",
+    )
     cohere_model: str = Field(default="command-r-plus", env="COHERE_MODEL")
     gemini_model: str = Field(default="gemini-1.5-pro", env="GEMINI_MODEL")
-    huggingface_model: str = Field(default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_MODEL")
+    huggingface_model: str = Field(
+        default="tiiuae/falcon-7b-instruct", env="HUGGINGFACE_MODEL"
+    )
     openrouter_model: str = Field(default="openrouter-default", env="OPENROUTER_MODEL")
-    
+
     # Local provider configuration
     local_url: Optional[str] = Field(default=None, alias="LOCAL_LLM_URL")
     local_model: Optional[str] = Field(default=None, alias="LOCAL_LLM_MODEL")
-    
+
     # Base URLs for each provider
-    openai_base_url: str = Field(default="https://api.openai.com/v1", env="OPENAI_API_BASE")
-    anthropic_base_url: str = Field(default="https://api.anthropic.com/v1", env="ANTHROPIC_API_BASE")
-    fireworks_base_url: str = Field(default="https://api.fireworks.ai/inference/v1", env="FIREWORKS_API_BASE")
-    cohere_base_url: str = Field(default="https://api.cohere.ai/v1", env="COHERE_API_BASE")
-    gemini_base_url: str = Field(default="https://generativelanguage.googleapis.com/v1beta", env="GEMINI_API_BASE")
-    huggingface_base_url: str = Field(default="https://api-inference.huggingface.co/models", env="HUGGINGFACE_API_URL")
-    openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1", env="OPENROUTER_API_BASE")
-    groq_base_url: str = Field(default="https://api.groq.com/openai/v1", env="GROQ_API_BASE")
-    
+    openai_base_url: str = Field(
+        default="https://api.openai.com/v1", env="OPENAI_API_BASE"
+    )
+    anthropic_base_url: str = Field(
+        default="https://api.anthropic.com/v1", env="ANTHROPIC_API_BASE"
+    )
+    fireworks_base_url: str = Field(
+        default="https://api.fireworks.ai/inference/v1", env="FIREWORKS_API_BASE"
+    )
+    cohere_base_url: str = Field(
+        default="https://api.cohere.ai/v1", env="COHERE_API_BASE"
+    )
+    gemini_base_url: str = Field(
+        default="https://generativelanguage.googleapis.com/v1beta",
+        env="GEMINI_API_BASE",
+    )
+    huggingface_base_url: str = Field(
+        default="https://api-inference.huggingface.co/models", env="HUGGINGFACE_API_URL"
+    )
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1", env="OPENROUTER_API_BASE"
+    )
+    groq_base_url: str = Field(
+        default="https://api.groq.com/openai/v1", env="GROQ_API_BASE"
+    )
+
     # Request configuration
     request_timeout: int = Field(default=30, env="LLM_REQUEST_TIMEOUT")
     max_retries: int = Field(default=3, env="LLM_MAX_RETRIES")
@@ -236,37 +357,37 @@ class LLMSettings(BaseSettings):
     strict_provider_mode: bool = Field(
         default=False,
         env="STRICT_PROVIDER_MODE",
-        description="When enabled, only use the primary provider with no fallbacks"
+        description="When enabled, only use the primary provider with no fallbacks",
     )
 
     # Token limits
     max_tokens: int = Field(default=4096, env="LLM_MAX_TOKENS")
     context_window: int = Field(default=128000, env="LLM_CONTEXT_WINDOW")
-    
+
     # Phase/Tool response limits (separate from provider limits)
     phase_response_max_tokens: int = Field(
         default=2000,
         env="LLM_PHASE_RESPONSE_MAX_TOKENS",
         ge=500,
         le=4096,
-        description="Maximum tokens for phase handler and tool responses (OODA structure needs 400-1500 tokens)"
+        description="Maximum tokens for phase handler and tool responses (OODA structure needs 400-1500 tokens)",
     )
-    
-    @field_validator('max_tokens')
+
+    @field_validator("max_tokens")
     @classmethod
     def validate_max_tokens(cls, v, info):
         """Ensure max_tokens is reasonable and within context window"""
         if v < 100:
             raise ValueError("LLM_MAX_TOKENS must be >= 100 for useful responses")
-        
+
         values = info.data
-        context_window = values.get('context_window', 128000)
+        context_window = values.get("context_window", 128000)
         if v > context_window:
             raise ValueError(
                 f"LLM_MAX_TOKENS ({v}) cannot exceed LLM_CONTEXT_WINDOW ({context_window})"
             )
         return v
-    
+
     def get_api_key(self) -> Optional[str]:
         """Get API key for current provider"""
         key_map = {
@@ -278,10 +399,10 @@ class LLMSettings(BaseSettings):
         }
         key = key_map.get(self.provider)
         return key.get_secret_value() if key else None
-    
+
     def get_model(self, task: str = "chat") -> str:
         """Get model for current provider and specific task
-        
+
         Args:
             task: Task type ('chat', 'multimodal', 'synthesis', 'classifier', 'code')
         """
@@ -330,7 +451,7 @@ class LLMSettings(BaseSettings):
                 "code": self.local_model,
             },
         }
-        
+
         provider_models = model_map.get(provider, {})
         return provider_models.get(task, "")
 
@@ -355,34 +476,34 @@ class LLMSettings(BaseSettings):
         """Get model for multimodal provider using task-specific configuration"""
         provider = self.get_multimodal_provider()
         return self._get_model_for_provider_and_task(provider, "multimodal")
-    
+
     def get_synthesis_provider(self) -> LLMProvider:
         """Get synthesis provider for QA sub-agent (falls back to chat provider if not set)"""
         return self.synthesis_provider or self.provider
-    
+
     def get_synthesis_model(self) -> str:
         """Get model for synthesis provider using task-specific configuration"""
         provider = self.get_synthesis_provider()
         return self._get_model_for_provider_and_task(provider, "synthesis")
-    
+
     def get_classifier_provider(self) -> LLMProvider:
         """Get classifier provider (falls back to chat provider if not set)"""
         return self.classifier_provider or self.provider
-    
+
     def get_classifier_model(self) -> str:
         """Get model for classifier provider using task-specific configuration"""
         provider = self.get_classifier_provider()
         return self._get_model_for_provider_and_task(provider, "classifier")
-    
+
     def get_code_provider(self) -> LLMProvider:
         """Get code analysis provider (falls back to chat provider if not set)"""
         return self.code_provider or self.provider
-    
+
     def get_code_model(self) -> str:
         """Get model for code analysis provider using task-specific configuration"""
         provider = self.get_code_provider()
         return self._get_model_for_provider_and_task(provider, "code")
-    
+
     def _get_model_for_provider_and_task(self, provider: LLMProvider, task: str) -> str:
         """Helper method to get model for any provider and task combination"""
         model_map = {
@@ -422,13 +543,13 @@ class LLMSettings(BaseSettings):
                 "code": self.gemini_code_model,
             },
             LLMProvider.HUGGINGFACE: {
-            LLMProvider.GROQ: {
-                "chat": self.groq_chat_model,
-                "multimodal": self.groq_multimodal_model,
-                "synthesis": self.groq_synthesis_model,
-                "classifier": self.groq_classifier_model,
-                "code": self.groq_code_model,
-            },
+                LLMProvider.GROQ: {
+                    "chat": self.groq_chat_model,
+                    "multimodal": self.groq_multimodal_model,
+                    "synthesis": self.groq_synthesis_model,
+                    "classifier": self.groq_classifier_model,
+                    "code": self.groq_code_model,
+                },
                 "chat": self.huggingface_chat_model,
                 "multimodal": self.huggingface_multimodal_model,
                 "synthesis": self.huggingface_synthesis_model,
@@ -450,7 +571,7 @@ class LLMSettings(BaseSettings):
                 "code": self.local_model,
             },
         }
-        
+
         provider_models = model_map.get(provider, {})
         return provider_models.get(task, "")
 
@@ -504,7 +625,7 @@ class LLMSettings(BaseSettings):
         "env_file_encoding": "utf-8",
         "case_sensitive": False,
         "env_prefix": "",
-        "extra": "ignore"
+        "extra": "ignore",
     }
 
 
@@ -517,12 +638,10 @@ class DatabaseSettings(BaseSettings):
     database_url: str = Field(
         default="sqlite+aiosqlite:///./faultmaven.db",
         env="DATABASE_URL",
-        description="Primary database URL (SQLite for dev, PostgreSQL for prod)"
+        description="Primary database URL (SQLite for dev, PostgreSQL for prod)",
     )
     database_echo: bool = Field(
-        default=False,
-        env="DATABASE_ECHO",
-        description="Echo SQL statements to log"
+        default=False, env="DATABASE_ECHO", description="Echo SQL statements to log"
     )
     database_pool_size: int = Field(default=5, env="DATABASE_POOL_SIZE")
     database_max_overflow: int = Field(default=10, env="DATABASE_MAX_OVERFLOW")
@@ -542,7 +661,7 @@ class DatabaseSettings(BaseSettings):
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": False,
-        "extra": "ignore"
+        "extra": "ignore",
     }
 
     # ============================================
@@ -550,11 +669,15 @@ class DatabaseSettings(BaseSettings):
     # ============================================
     chromadb_host: str = Field(default="chromadb.faultmaven.local", env="CHROMADB_HOST")
     chromadb_port: int = Field(default=30080, env="CHROMADB_PORT")
-    chromadb_url: str = Field(default="http://chromadb.faultmaven.local:30080", env="CHROMADB_URL")
+    chromadb_url: str = Field(
+        default="http://chromadb.faultmaven.local:30080", env="CHROMADB_URL"
+    )
     chromadb_api_key: Optional[SecretStr] = Field(default=None, env="CHROMADB_API_KEY")
 
     # ChromaDB Extended Configuration (merged from EnhancedDatabaseSettings)
-    chromadb_auth_token: Optional[SecretStr] = Field(default=None, env="CHROMADB_AUTH_TOKEN")
+    chromadb_auth_token: Optional[SecretStr] = Field(
+        default=None, env="CHROMADB_AUTH_TOKEN"
+    )
     chromadb_collection: str = Field(default="faultmaven_kb", env="CHROMADB_COLLECTION")
     chromadb_persist_dir: str = Field(default="./chroma_db", env="CHROMADB_PERSIST_DIR")
 
@@ -583,18 +706,24 @@ class DatabaseSettings(BaseSettings):
     cases_db_port: int = Field(default=30432, env="CASES_DB_PORT")
     cases_db_name: str = Field(default="cases_db", env="CASES_DB_NAME")
     cases_db_user: str = Field(default="case_service", env="CASES_DB_USER")
-    cases_db_password: Optional[SecretStr] = Field(default=None, env="CASES_DB_PASSWORD")
+    cases_db_password: Optional[SecretStr] = Field(
+        default=None, env="CASES_DB_PASSWORD"
+    )
 
     @property
     def auth_db_url(self) -> str:
         """Build PostgreSQL auth database URL"""
-        password = self.auth_db_password.get_secret_value() if self.auth_db_password else ""
+        password = (
+            self.auth_db_password.get_secret_value() if self.auth_db_password else ""
+        )
         return f"postgresql+asyncpg://{self.auth_db_user}:{password}@{self.auth_db_host}:{self.auth_db_port}/{self.auth_db_name}"
 
     @property
     def cases_db_url(self) -> str:
         """Build PostgreSQL cases database URL"""
-        password = self.cases_db_password.get_secret_value() if self.cases_db_password else ""
+        password = (
+            self.cases_db_password.get_secret_value() if self.cases_db_password else ""
+        )
         return f"postgresql+asyncpg://{self.cases_db_user}:{password}@{self.cases_db_host}:{self.cases_db_port}/{self.cases_db_name}"
 
     # ============================================
@@ -612,34 +741,49 @@ class DatabaseSettings(BaseSettings):
 
 class SessionSettings(BaseSettings):
     """Session management configuration"""
-    timeout_minutes: int = Field(default=30, env="SESSION_TIMEOUT_MINUTES", ge=1, le=1440)
-    cleanup_interval_minutes: int = Field(default=15, env="SESSION_CLEANUP_INTERVAL_MINUTES")
+
+    timeout_minutes: int = Field(
+        default=30, env="SESSION_TIMEOUT_MINUTES", ge=1, le=1440
+    )
+    cleanup_interval_minutes: int = Field(
+        default=15, env="SESSION_CLEANUP_INTERVAL_MINUTES"
+    )
     max_memory_mb: int = Field(default=100, env="SESSION_MAX_MEMORY_MB")
-    heartbeat_interval_seconds: int = Field(default=30, env="SESSION_HEARTBEAT_INTERVAL_SECONDS")
+    heartbeat_interval_seconds: int = Field(
+        default=30, env="SESSION_HEARTBEAT_INTERVAL_SECONDS"
+    )
     max_sessions_per_user: int = Field(default=10, env="MAX_SESSIONS_PER_USER")
 
     # Session timeout bounds for validation (used by API routes)
-    min_timeout_minutes: int = Field(default=60, env="SESSION_MIN_TIMEOUT_MINUTES", ge=1)
-    max_timeout_minutes: int = Field(default=480, env="SESSION_MAX_TIMEOUT_MINUTES", le=1440)
-    default_timeout_minutes: int = Field(default=180, env="SESSION_DEFAULT_TIMEOUT_MINUTES")
-    
-    @field_validator('heartbeat_interval_seconds')
+    min_timeout_minutes: int = Field(
+        default=60, env="SESSION_MIN_TIMEOUT_MINUTES", ge=1
+    )
+    max_timeout_minutes: int = Field(
+        default=480, env="SESSION_MAX_TIMEOUT_MINUTES", le=1440
+    )
+    default_timeout_minutes: int = Field(
+        default=180, env="SESSION_DEFAULT_TIMEOUT_MINUTES"
+    )
+
+    @field_validator("heartbeat_interval_seconds")
     @classmethod
     def validate_heartbeat_vs_timeout(cls, v, info):
         """Ensure heartbeat is less than timeout for frontend compatibility"""
         values = info.data
-        timeout_seconds = values.get('timeout_minutes', 30) * 60
+        timeout_seconds = values.get("timeout_minutes", 30) * 60
         if v >= timeout_seconds:
-            raise ValueError(f"Heartbeat interval ({v}s) must be less than session timeout ({timeout_seconds}s)")
+            raise ValueError(
+                f"Heartbeat interval ({v}s) must be less than session timeout ({timeout_seconds}s)"
+            )
         return v
-    
-    @field_validator('cleanup_interval_minutes')
+
+    @field_validator("cleanup_interval_minutes")
     @classmethod
     def validate_cleanup_interval(cls, v, info):
         """Ensure cleanup interval is reasonable vs timeout"""
         values = info.data
-        timeout = values.get('timeout_minutes', 180)
-        
+        timeout = values.get("timeout_minutes", 180)
+
         if v > timeout:
             raise ValueError(
                 f"SESSION_CLEANUP_INTERVAL_MINUTES ({v}) should not exceed "
@@ -647,17 +791,18 @@ class SessionSettings(BaseSettings):
                 f"Cleanup should run at least as often as session expiration."
             )
         return v
-    
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
 class CaseSettings(BaseSettings):
     """Case management configuration"""
+
     # Title generation settings
     title_generation_use_fallback: bool = Field(
         default=True,
         env="TITLE_GENERATION_USE_FALLBACK",
-        description="Use fallback title when LLM-generated title fails validation"
+        description="Use fallback title when LLM-generated title fails validation",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
@@ -665,10 +810,13 @@ class CaseSettings(BaseSettings):
 
 class SecuritySettings(BaseSettings):
     """Security and authentication configuration"""
+
     # JWT configuration (RS256 for production-ready asymmetric encryption)
     # For development/testing, HS256 with jwt_secret_key is also supported
     jwt_algorithm: str = Field(default="RS256", env="JWT_ALGORITHM")
-    jwt_private_key_path: Optional[str] = Field(default=None, env="JWT_PRIVATE_KEY_PATH")
+    jwt_private_key_path: Optional[str] = Field(
+        default=None, env="JWT_PRIVATE_KEY_PATH"
+    )
     jwt_public_key_path: Optional[str] = Field(default=None, env="JWT_PUBLIC_KEY_PATH")
     jwt_private_key: Optional[SecretStr] = Field(default=None, env="JWT_PRIVATE_KEY")
     jwt_public_key: Optional[str] = Field(default=None, env="JWT_PUBLIC_KEY")
@@ -676,35 +824,49 @@ class SecuritySettings(BaseSettings):
     jwt_secret_key: Optional[SecretStr] = Field(
         default=None,
         env="JWT_SECRET_KEY",
-        description="Secret key for HS256 algorithm. Only used as fallback when RS256 keys are not configured."
+        description="Secret key for HS256 algorithm. Only used as fallback when RS256 keys are not configured.",
     )
-    jwt_access_token_expire_minutes: int = Field(default=15, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
-    jwt_refresh_token_expire_days: int = Field(default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS")
+    jwt_access_token_expire_minutes: int = Field(
+        default=15, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES"
+    )
+    jwt_refresh_token_expire_days: int = Field(
+        default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS"
+    )
     jwt_issuer: str = Field(default="faultmaven-api", env="JWT_ISSUER")
     jwt_audience: str = Field(default="faultmaven-app", env="JWT_AUDIENCE")
 
     # Token revocation (Redis)
-    token_revocation_prefix: str = Field(default="revoked:token:", env="TOKEN_REVOCATION_PREFIX")
+    token_revocation_prefix: str = Field(
+        default="revoked:token:", env="TOKEN_REVOCATION_PREFIX"
+    )
 
     # CORS configuration
     cors_allow_credentials: bool = Field(default=True, env="CORS_ALLOW_CREDENTIALS")
     cors_allow_origins: List[str] = Field(
         default=["http://localhost:3000", "chrome-extension://*", "moz-extension://*"],
-        env="CORS_ALLOW_ORIGINS"
+        env="CORS_ALLOW_ORIGINS",
     )
     cors_expose_headers: List[str] = Field(
         default=[
-            "Location", "X-Total-Count", "Link", "Deprecation", "Sunset",
-            "X-Request-ID", "Retry-After", "X-RateLimit-Remaining"
+            "Location",
+            "X-Total-Count",
+            "Link",
+            "Deprecation",
+            "Sunset",
+            "X-Request-ID",
+            "Retry-After",
+            "X-RateLimit-Remaining",
         ],
-        env="CORS_EXPOSE_HEADERS"
+        env="CORS_EXPOSE_HEADERS",
     )
-    
+
     # Rate limiting
     rate_limit_enabled: bool = Field(default=True, env="RATE_LIMIT_ENABLED")
-    rate_limit_requests_per_minute: int = Field(default=60, env="RATE_LIMIT_REQUESTS_PER_MINUTE")
+    rate_limit_requests_per_minute: int = Field(
+        default=60, env="RATE_LIMIT_REQUESTS_PER_MINUTE"
+    )
     rate_limit_burst_size: int = Field(default=10, env="RATE_LIMIT_BURST_SIZE")
-    
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
@@ -715,8 +877,12 @@ class ProtectionSettings(BaseSettings):
     # COMMUNITY DEFAULT: Disabled (enterprise feature - requires Presidio)
     protection_enabled: bool = Field(default=False, env="PROTECTION_ENABLED")
     fail_open: bool = Field(default=True, env="PROTECTION_FAIL_OPEN")
-    basic_protection_enabled: bool = Field(default=False, env="BASIC_PROTECTION_ENABLED")
-    intelligent_protection_enabled: bool = Field(default=False, env="INTELLIGENT_PROTECTION_ENABLED")
+    basic_protection_enabled: bool = Field(
+        default=False, env="BASIC_PROTECTION_ENABLED"
+    )
+    intelligent_protection_enabled: bool = Field(
+        default=False, env="INTELLIGENT_PROTECTION_ENABLED"
+    )
 
     # PII Sanitization Control
     # When True: Always sanitize PII before sending to LLM (safer, recommended for external LLMs)
@@ -729,62 +895,104 @@ class ProtectionSettings(BaseSettings):
     # Auto-detect: Only sanitize when using external LLM providers
     # When True: Automatically disable sanitization for LOCAL provider, enable for others
     # When False: Use sanitize_pii setting regardless of provider
-    auto_sanitize_based_on_provider: bool = Field(default=True, env="AUTO_SANITIZE_BASED_ON_PROVIDER")
-    
+    auto_sanitize_based_on_provider: bool = Field(
+        default=True, env="AUTO_SANITIZE_BASED_ON_PROVIDER"
+    )
+
     # Presidio Configuration (K8s Ingress-based to avoid port conflicts)
-    presidio_analyzer_url: str = Field(default="http://presidio-analyzer.faultmaven.local:30080", env="PRESIDIO_ANALYZER_URL")
-    presidio_anonymizer_url: str = Field(default="http://presidio-anonymizer.faultmaven.local:30080", env="PRESIDIO_ANONYMIZER_URL")
-    
+    presidio_analyzer_url: str = Field(
+        default="http://presidio-analyzer.faultmaven.local:30080",
+        env="PRESIDIO_ANALYZER_URL",
+    )
+    presidio_anonymizer_url: str = Field(
+        default="http://presidio-anonymizer.faultmaven.local:30080",
+        env="PRESIDIO_ANONYMIZER_URL",
+    )
+
     # PII Protection Settings
     min_score_threshold: float = Field(default=0.8, env="MIN_SCORE_THRESHOLD")
     supported_languages: List[str] = Field(default=["en"], env="SUPPORTED_LANGUAGES")
     entities_to_protect: List[str] = Field(
         default=[
-            "CREDIT_CARD", "CRYPTO", "DATE_TIME", "EMAIL_ADDRESS",
-            "IBAN_CODE", "IP_ADDRESS", "NRP", "LOCATION", "PERSON",
-            "PHONE_NUMBER", "MEDICAL_LICENSE", "URL", "US_BANK_NUMBER",
-            "US_DRIVER_LICENSE", "US_ITIN", "US_PASSPORT", "US_SSN"
+            "CREDIT_CARD",
+            "CRYPTO",
+            "DATE_TIME",
+            "EMAIL_ADDRESS",
+            "IBAN_CODE",
+            "IP_ADDRESS",
+            "NRP",
+            "LOCATION",
+            "PERSON",
+            "PHONE_NUMBER",
+            "MEDICAL_LICENSE",
+            "URL",
+            "US_BANK_NUMBER",
+            "US_DRIVER_LICENSE",
+            "US_ITIN",
+            "US_PASSPORT",
+            "US_SSN",
         ],
-        env="ENTITIES_TO_PROTECT"
+        env="ENTITIES_TO_PROTECT",
     )
-    
+
     # Behavioral Analysis (merged from EnhancedProtectionSettings)
-    behavioral_analysis_enabled: bool = Field(default=True, env="BEHAVIORAL_ANALYSIS_ENABLED")
+    behavioral_analysis_enabled: bool = Field(
+        default=True, env="BEHAVIORAL_ANALYSIS_ENABLED"
+    )
     behavior_analysis_window: int = Field(default=3600, env="BEHAVIOR_ANALYSIS_WINDOW")
-    behavior_pattern_threshold: float = Field(default=0.8, env="BEHAVIOR_PATTERN_THRESHOLD")
-    
+    behavior_pattern_threshold: float = Field(
+        default=0.8, env="BEHAVIOR_PATTERN_THRESHOLD"
+    )
+
     # ML Anomaly Detection (merged from EnhancedProtectionSettings)
-    ml_anomaly_detection_enabled: bool = Field(default=True, env="ML_ANOMALY_DETECTION_ENABLED")
+    ml_anomaly_detection_enabled: bool = Field(
+        default=True, env="ML_ANOMALY_DETECTION_ENABLED"
+    )
     ml_model_path: str = Field(default="/tmp/faultmaven_ml", env="ML_MODEL_PATH")
     ml_training_enabled: bool = Field(default=True, env="ML_TRAINING_ENABLED")
-    ml_online_learning_enabled: bool = Field(default=True, env="ML_ONLINE_LEARNING_ENABLED")
-    
+    ml_online_learning_enabled: bool = Field(
+        default=True, env="ML_ONLINE_LEARNING_ENABLED"
+    )
+
     # Circuit Breaker (merged from EnhancedProtectionSettings)
-    smart_circuit_breakers_enabled: bool = Field(default=True, env="SMART_CIRCUIT_BREAKERS_ENABLED")
+    smart_circuit_breakers_enabled: bool = Field(
+        default=True, env="SMART_CIRCUIT_BREAKERS_ENABLED"
+    )
     circuit_failure_threshold: int = Field(default=5, env="CIRCUIT_FAILURE_THRESHOLD")
     circuit_timeout_seconds: int = Field(default=60, env="CIRCUIT_TIMEOUT_SECONDS")
-    
+
     # Reputation System (merged from EnhancedProtectionSettings)
-    reputation_system_enabled: bool = Field(default=True, env="REPUTATION_SYSTEM_ENABLED")
+    reputation_system_enabled: bool = Field(
+        default=True, env="REPUTATION_SYSTEM_ENABLED"
+    )
     reputation_decay_rate: float = Field(default=0.05, env="REPUTATION_DECAY_RATE")
-    reputation_recovery_threshold: float = Field(default=0.1, env="REPUTATION_RECOVERY_THRESHOLD")
-    
+    reputation_recovery_threshold: float = Field(
+        default=0.1, env="REPUTATION_RECOVERY_THRESHOLD"
+    )
+
     # Monitoring Intervals (merged from EnhancedProtectionSettings)
-    protection_monitoring_interval: int = Field(default=300, env="PROTECTION_MONITORING_INTERVAL")
-    protection_cleanup_interval: int = Field(default=3600, env="PROTECTION_CLEANUP_INTERVAL")
-    
+    protection_monitoring_interval: int = Field(
+        default=300, env="PROTECTION_MONITORING_INTERVAL"
+    )
+    protection_cleanup_interval: int = Field(
+        default=3600, env="PROTECTION_CLEANUP_INTERVAL"
+    )
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
 class ObservabilitySettings(BaseSettings):
     """Unified observability and monitoring configuration"""
+
     # Core Opik configuration
     opik_project_name: str = Field(default="faultmaven", env="OPIK_PROJECT_NAME")
     opik_url_override: Optional[str] = Field(default=None, env="OPIK_URL_OVERRIDE")
     opik_use_local: bool = Field(default=False, env="OPIK_USE_LOCAL")
     opik_local_url: str = Field(default="http://localhost:3001", env="OPIK_LOCAL_URL")
-    opik_local_host: str = Field(default="opik-api.faultmaven.local", env="OPIK_LOCAL_HOST")
-    
+    opik_local_host: str = Field(
+        default="opik-api.faultmaven.local", env="OPIK_LOCAL_HOST"
+    )
+
     # Opik API and tracking controls (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
     opik_api_key: Optional[SecretStr] = Field(default=None, env="OPIK_API_KEY")
@@ -797,10 +1005,14 @@ class ObservabilitySettings(BaseSettings):
     # APM Integration (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
     prometheus_enabled: bool = Field(default=False, env="PROMETHEUS_ENABLED")
-    prometheus_pushgateway_url: str = Field(default="http://localhost:9091", env="PROMETHEUS_PUSHGATEWAY_URL")
+    prometheus_pushgateway_url: str = Field(
+        default="http://localhost:9091", env="PROMETHEUS_PUSHGATEWAY_URL"
+    )
     generic_apm_enabled: bool = Field(default=False, env="GENERIC_APM_ENABLED")
     generic_apm_url: Optional[str] = Field(default=None, env="GENERIC_APM_URL")
-    generic_apm_api_key: Optional[SecretStr] = Field(default=None, env="GENERIC_APM_API_KEY")
+    generic_apm_api_key: Optional[SecretStr] = Field(
+        default=None, env="GENERIC_APM_API_KEY"
+    )
 
     # Workspace integration (merged from WorkspaceSettings)
     comet_workspace: Optional[str] = Field(default=None, env="COMET_WORKSPACE")
@@ -808,7 +1020,9 @@ class ObservabilitySettings(BaseSettings):
 
     # Performance monitoring (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Basic monitoring only
-    enable_performance_monitoring: bool = Field(default=False, env="ENABLE_PERFORMANCE_MONITORING")
+    enable_performance_monitoring: bool = Field(
+        default=False, env="ENABLE_PERFORMANCE_MONITORING"
+    )
     enable_detailed_tracing: bool = Field(default=False, env="ENABLE_DETAILED_TRACING")
 
     # Basic tracing configuration
@@ -821,16 +1035,16 @@ class ObservabilitySettings(BaseSettings):
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
     metrics_enabled: bool = Field(default=False, env="METRICS_ENABLED")
     metrics_port: int = Field(default=9090, env="METRICS_PORT")
-    
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
 class LoggingSettings(BaseSettings):
     """Logging configuration"""
+
     level: LogLevel = Field(default=LogLevel.INFO, env="LOG_LEVEL")
     format: str = Field(
-        default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        env="LOG_FORMAT"
+        default="%(asctime)s - %(name)s - %(levelname)s - %(message)s", env="LOG_FORMAT"
     )
 
     # Structlog format type: 'json' or 'console'
@@ -849,7 +1063,9 @@ class LoggingSettings(BaseSettings):
     # File logging
     log_to_file: bool = Field(default=False, env="LOG_TO_FILE")
     log_file_path: str = Field(default="logs/faultmaven.log", env="LOG_FILE_PATH")
-    log_file_max_bytes: int = Field(default=10*1024*1024, env="LOG_FILE_MAX_BYTES")  # 10MB
+    log_file_max_bytes: int = Field(
+        default=10 * 1024 * 1024, env="LOG_FILE_MAX_BYTES"
+    )  # 10MB
     log_file_backup_count: int = Field(default=5, env="LOG_FILE_BACKUP_COUNT")
 
     # Structured logging
@@ -861,19 +1077,26 @@ class LoggingSettings(BaseSettings):
 
 class UploadSettings(BaseSettings):
     """File upload configuration"""
+
     max_upload_size_mb: int = Field(
         default=10,
         env="MAX_UPLOAD_SIZE_MB",
-        description="Maximum file size for uploads (also used as document processing limit)"
+        description="Maximum file size for uploads (also used as document processing limit)",
     )
     allowed_mime_types: List[str] = Field(
         default=[
-            "text/plain", "text/csv", "application/json",
-            "application/xml", "text/xml", "application/yaml"
+            "text/plain",
+            "text/csv",
+            "application/json",
+            "application/xml",
+            "text/xml",
+            "application/yaml",
         ],
-        env="ALLOWED_MIME_TYPES"
+        env="ALLOWED_MIME_TYPES",
     )
-    upload_timeout_seconds: int = Field(default=300, env="UPLOAD_TIMEOUT_SECONDS")  # 5 minutes
+    upload_timeout_seconds: int = Field(
+        default=300, env="UPLOAD_TIMEOUT_SECONDS"
+    )  # 5 minutes
     temp_storage_path: str = Field(default="/tmp/faultmaven", env="TEMP_STORAGE_PATH")
 
     model_config = {"env_prefix": "", "extra": "ignore"}
@@ -881,6 +1104,7 @@ class UploadSettings(BaseSettings):
 
 class KnowledgeSettings(BaseSettings):
     """Knowledge base and search configuration"""
+
     enable_web_search: bool = Field(default=True, env="ENABLE_WEB_SEARCH")
     serp_api_key: Optional[SecretStr] = Field(default=None, env="SERP_API_KEY")
     tavily_api_key: Optional[SecretStr] = Field(default=None, env="TAVILY_API_KEY")
@@ -903,12 +1127,12 @@ class EmbeddingSettings(BaseSettings):
     embedding_model: str = Field(
         default="text-embedding-3-small",
         env="EMBEDDING_MODEL",
-        description="OpenAI embedding model to use"
+        description="OpenAI embedding model to use",
     )
     embedding_dimensions: int = Field(
         default=1536,
         env="EMBEDDING_DIMENSIONS",
-        description="Embedding vector dimensions (1536 for text-embedding-3-small)"
+        description="Embedding vector dimensions (1536 for text-embedding-3-small)",
     )
 
     # Embedding API configuration
@@ -917,45 +1141,45 @@ class EmbeddingSettings(BaseSettings):
         env="EMBEDDING_MAX_RETRIES",
         ge=1,
         le=10,
-        description="Maximum retry attempts for embedding API calls"
+        description="Maximum retry attempts for embedding API calls",
     )
     embedding_retry_delay: float = Field(
         default=1.0,
         env="EMBEDDING_RETRY_DELAY",
         ge=0.1,
         le=30.0,
-        description="Base delay between retries (exponential backoff)"
+        description="Base delay between retries (exponential backoff)",
     )
     embedding_timeout: int = Field(
         default=60,
         env="EMBEDDING_TIMEOUT",
         ge=10,
         le=300,
-        description="Timeout for embedding API calls in seconds"
+        description="Timeout for embedding API calls in seconds",
     )
     embedding_batch_size: int = Field(
         default=100,
         env="EMBEDDING_BATCH_SIZE",
         ge=1,
         le=2048,
-        description="Number of texts per batch for embedding generation"
+        description="Number of texts per batch for embedding generation",
     )
     embedding_max_text_length: int = Field(
         default=8191,
         env="EMBEDDING_MAX_TEXT_LENGTH",
-        description="Maximum text length for embedding (OpenAI limit)"
+        description="Maximum text length for embedding (OpenAI limit)",
     )
 
     # ChromaDB Vector Store
     chroma_persist_directory: str = Field(
         default="./chroma_data",
         env="CHROMA_PERSIST_DIRECTORY",
-        description="Directory for ChromaDB persistence"
+        description="Directory for ChromaDB persistence",
     )
     chroma_collection_name: str = Field(
         default="knowledge_items",
         env="CHROMA_COLLECTION_NAME",
-        description="ChromaDB collection name for knowledge items"
+        description="ChromaDB collection name for knowledge items",
     )
 
     # Hybrid Search
@@ -964,14 +1188,14 @@ class EmbeddingSettings(BaseSettings):
         env="SEMANTIC_SEARCH_WEIGHT",
         ge=0.0,
         le=1.0,
-        description="Weight for semantic similarity in hybrid search"
+        description="Weight for semantic similarity in hybrid search",
     )
     text_search_weight: float = Field(
         default=0.3,
         env="TEXT_SEARCH_WEIGHT",
         ge=0.0,
         le=1.0,
-        description="Weight for text search in hybrid search"
+        description="Weight for text search in hybrid search",
     )
 
     # Indexing Job
@@ -980,15 +1204,15 @@ class EmbeddingSettings(BaseSettings):
         env="INDEXING_BATCH_SIZE",
         ge=1,
         le=500,
-        description="Batch size for background indexing job"
+        description="Batch size for background indexing job",
     )
 
-    @field_validator('text_search_weight')
+    @field_validator("text_search_weight")
     @classmethod
     def validate_weights(cls, v, info):
         """Ensure semantic + text weights don't exceed 1.0"""
         values = info.data
-        semantic_weight = values.get('semantic_search_weight', 0.7)
+        semantic_weight = values.get("semantic_search_weight", 0.7)
         if semantic_weight + v > 1.0:
             raise ValueError(
                 f"semantic_search_weight ({semantic_weight}) + text_search_weight ({v}) "
@@ -1001,14 +1225,14 @@ class EmbeddingSettings(BaseSettings):
         default=True,
         env="LAZY_LOAD_ML_MODELS",
         description="If True, ML models (BGE-M3, etc.) are loaded on first use. "
-                    "If False, models are pre-loaded at startup for warm starts. "
-                    "Lazy loading improves startup time but first request may be slower."
+        "If False, models are pre-loaded at startup for warm starts. "
+        "Lazy loading improves startup time but first request may be slower.",
     )
     preload_models: list = Field(
         default_factory=list,
         env="PRELOAD_MODELS",
         description="List of model names to pre-load at startup even with lazy_load_ml_models=True. "
-                    "Example: ['BAAI/bge-m3'] to pre-load only BGE-M3."
+        "Example: ['BAAI/bge-m3'] to pre-load only BGE-M3.",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
@@ -1027,45 +1251,45 @@ class OODASettings(BaseSettings):
     default_strategy: str = Field(
         default="active_incident",
         env="DEFAULT_INVESTIGATION_STRATEGY",
-        description="active_incident (fast, 70% confidence) or post_mortem (thorough, 85% confidence)"
+        description="active_incident (fast, 70% confidence) or post_mortem (thorough, 85% confidence)",
     )
 
     default_intensity: str = Field(
         default="medium",
         env="DEFAULT_OODA_INTENSITY",
-        description="OODA cycle intensity: light (1-2 iterations), medium (2-4), full (3-6)"
+        description="OODA cycle intensity: light (1-2 iterations), medium (2-4), full (3-6)",
     )
 
     # Memory Management (4-Tier Hierarchical System)
     hot_memory_tokens: int = Field(
         default=500,
         env="HOT_MEMORY_TOKENS",
-        description="Hot tier: last 2 iterations, full fidelity"
+        description="Hot tier: last 2 iterations, full fidelity",
     )
 
     warm_memory_tokens: int = Field(
         default=300,
         env="WARM_MEMORY_TOKENS",
-        description="Warm tier: iterations 3-5, LLM-summarized"
+        description="Warm tier: iterations 3-5, LLM-summarized",
     )
 
     cold_memory_tokens: int = Field(
         default=100,
         env="COLD_MEMORY_TOKENS",
-        description="Cold tier: older iterations, key facts only"
+        description="Cold tier: older iterations, key facts only",
     )
 
     persistent_memory_tokens: int = Field(
         default=100,
         env="PERSISTENT_MEMORY_TOKENS",
-        description="Persistent tier: always accessible insights"
+        description="Persistent tier: always accessible insights",
     )
 
     # Phase Control
     enable_phase_skip: bool = Field(
         default=True,
         env="ENABLE_PHASE_SKIP",
-        description="Allow skipping phases in active incident strategy"
+        description="Allow skipping phases in active incident strategy",
     )
 
     min_confidence_to_advance: float = Field(
@@ -1073,28 +1297,28 @@ class OODASettings(BaseSettings):
         env="MIN_CONFIDENCE_TO_ADVANCE",
         ge=0.0,
         le=1.0,
-        description="Minimum confidence required to advance to next phase"
+        description="Minimum confidence required to advance to next phase",
     )
 
     stall_detection_iterations: int = Field(
         default=3,
         env="STALL_DETECTION_ITERATIONS",
         ge=2,
-        description="Number of iterations without progress before marking as stalled"
+        description="Number of iterations without progress before marking as stalled",
     )
 
     # Consultant Mode Settings
     problem_signal_threshold: str = Field(
         default="moderate",
         env="PROBLEM_SIGNAL_THRESHOLD",
-        description="Threshold to offer investigation: weak|moderate|strong"
+        description="Threshold to offer investigation: weak|moderate|strong",
     )
 
     max_consultant_turns: int = Field(
         default=5,
         env="MAX_CONSULTANT_TURNS",
         ge=1,
-        description="Max turns in Consultant mode before suggesting Lead Investigator"
+        description="Max turns in Consultant mode before suggesting Lead Investigator",
     )
 
     # Context Management (merged from ConversationThresholds)
@@ -1107,51 +1331,55 @@ class OODASettings(BaseSettings):
     max_conversation_turns: int = Field(default=20, env="MAX_CONVERSATION_TURNS")
     max_conversation_tokens: int = Field(default=4000, env="MAX_CONVERSATION_TOKENS")
 
-    @field_validator('warm_memory_tokens')
+    @field_validator("warm_memory_tokens")
     @classmethod
     def validate_memory_hierarchy_warm(cls, v, info):
         """Ensure WARM <= HOT for memory hierarchy"""
         values = info.data
-        hot = values.get('hot_memory_tokens', 500)
-        
+        hot = values.get("hot_memory_tokens", 500)
+
         if v > hot:
             raise ValueError(
                 f"WARM_MEMORY_TOKENS ({v}) cannot exceed HOT_MEMORY_TOKENS ({hot}). "
                 f"Memory quality degrades from hot to cold."
             )
         return v
-    
-    @field_validator('cold_memory_tokens')
+
+    @field_validator("cold_memory_tokens")
     @classmethod
     def validate_memory_hierarchy_cold(cls, v, info):
         """Ensure COLD <= WARM for memory hierarchy"""
         values = info.data
-        warm = values.get('warm_memory_tokens', 300)
-        
+        warm = values.get("warm_memory_tokens", 300)
+
         if v > warm:
             raise ValueError(
                 f"COLD_MEMORY_TOKENS ({v}) cannot exceed WARM_MEMORY_TOKENS ({warm}). "
                 f"Memory quality degrades from hot to cold."
             )
-        
+
         if v <= 0:
             raise ValueError(f"COLD_MEMORY_TOKENS must be > 0, got {v}")
-        
+
         return v
-    
-    @field_validator('persistent_memory_tokens')
+
+    @field_validator("persistent_memory_tokens")
     @classmethod
     def validate_persistent_memory(cls, v, info):
         """Validate persistent memory is reasonable"""
         if v <= 0:
             raise ValueError(f"PERSISTENT_MEMORY_TOKENS must be > 0, got {v}")
         return v
-    
+
     def model_post_init(self, __context):
         """Validate total memory budget after all fields loaded"""
-        total = (self.hot_memory_tokens + self.warm_memory_tokens + 
-                 self.cold_memory_tokens + self.persistent_memory_tokens)
-        
+        total = (
+            self.hot_memory_tokens
+            + self.warm_memory_tokens
+            + self.cold_memory_tokens
+            + self.persistent_memory_tokens
+        )
+
         if total > 5000:
             raise ValueError(
                 f"Total OODA memory ({total} tokens) exceeds reasonable budget (5000 tokens). "
@@ -1163,62 +1391,49 @@ class OODASettings(BaseSettings):
 
 class FeatureSettings(BaseSettings):
     """Feature flags and toggles"""
+
     use_di_container: bool = Field(default=True, env="USE_DI_CONTAINER")
     use_refactored_services: bool = Field(default=True, env="USE_REFACTORED_SERVICES")
     use_refactored_api: bool = Field(default=True, env="USE_REFACTORED_API")
 
     # Token-Aware Context Management
-    enable_token_aware_context: bool = Field(default=True, env="ENABLE_TOKEN_AWARE_CONTEXT")
-    enable_conversation_summarization: bool = Field(default=True, env="ENABLE_CONVERSATION_SUMMARIZATION")
+    enable_token_aware_context: bool = Field(
+        default=True, env="ENABLE_TOKEN_AWARE_CONTEXT"
+    )
+    enable_conversation_summarization: bool = Field(
+        default=True, env="ENABLE_CONVERSATION_SUMMARIZATION"
+    )
     # Note: Token budgets and thresholds live under settings.ooda
 
     # DEPRECATED: Query Classification System (Replaced by OODA v3.2.0)
     # These settings are no longer used - OODA uses structured responses instead of classification
     # Will be removed in v4.0.0
     llm_classification_mode: str = Field(
-        default="enhancement",
-        env="LLM_CLASSIFICATION_MODE",
-        deprecated=True
+        default="enhancement", env="LLM_CLASSIFICATION_MODE", deprecated=True
     )
     enable_multidimensional_confidence: bool = Field(
-        default=True,
-        env="ENABLE_MULTIDIMENSIONAL_CONFIDENCE",
-        deprecated=True
+        default=True, env="ENABLE_MULTIDIMENSIONAL_CONFIDENCE", deprecated=True
     )
     pattern_weighted_scoring: bool = Field(
-        default=True,
-        env="PATTERN_WEIGHTED_SCORING",
-        deprecated=True
+        default=True, env="PATTERN_WEIGHTED_SCORING", deprecated=True
     )
     pattern_exclusion_rules: bool = Field(
-        default=True,
-        env="PATTERN_EXCLUSION_RULES",
-        deprecated=True
+        default=True, env="PATTERN_EXCLUSION_RULES", deprecated=True
     )
     enable_structure_analysis: bool = Field(
-        default=True,
-        env="ENABLE_STRUCTURE_ANALYSIS",
-        deprecated=True
+        default=True, env="ENABLE_STRUCTURE_ANALYSIS", deprecated=True
     )
     enable_linguistic_analysis: bool = Field(
-        default=True,
-        env="ENABLE_LINGUISTIC_ANALYSIS",
-        deprecated=True
+        default=True, env="ENABLE_LINGUISTIC_ANALYSIS", deprecated=True
     )
     enable_entity_analysis: bool = Field(
-        default=True,
-        env="ENABLE_ENTITY_ANALYSIS",
-        deprecated=True
+        default=True, env="ENABLE_ENTITY_ANALYSIS", deprecated=True
     )
     enable_context_analysis: bool = Field(
-        default=True,
-        env="ENABLE_CONTEXT_ANALYSIS",
-        deprecated=True
+        default=True, env="ENABLE_CONTEXT_ANALYSIS", deprecated=True
     )
     enable_disambiguation_check: bool = Field(
-        default=True,
-        env="ENABLE_DISAMBIGUATION_CHECK",
-        deprecated=True
+        default=True, env="ENABLE_DISAMBIGUATION_CHECK", deprecated=True
     )
 
     # Note: Self-correction thresholds moved to ConversationThresholds class above
@@ -1230,28 +1445,35 @@ class FeatureSettings(BaseSettings):
         default="inmemory",
         env="JOB_RUNNER_TYPE",
         description="Background job scheduler type. Options: 'apscheduler' (production), "
-                    "'inmemory' (development). APScheduler requires the apscheduler package."
+        "'inmemory' (development). APScheduler requires the apscheduler package.",
     )
 
     # Experimental features
-    enable_advanced_reasoning: bool = Field(default=False, env="ENABLE_ADVANCED_REASONING")
+    enable_advanced_reasoning: bool = Field(
+        default=False, env="ENABLE_ADVANCED_REASONING"
+    )
     enable_multi_agent: bool = Field(default=False, env="ENABLE_MULTI_AGENT")
-    enable_workflow_optimization: bool = Field(default=False, env="ENABLE_WORKFLOW_OPTIMIZATION")
+    enable_workflow_optimization: bool = Field(
+        default=False, env="ENABLE_WORKFLOW_OPTIMIZATION"
+    )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
 class ToolsSettings(BaseSettings):
     """Tools and external service configuration"""
+
     # Web search configuration
-    web_search_api_key: Optional[SecretStr] = Field(default=None, env="WEB_SEARCH_API_KEY")
+    web_search_api_key: Optional[SecretStr] = Field(
+        default=None, env="WEB_SEARCH_API_KEY"
+    )
     web_search_api_endpoint: str = Field(
-        default="https://www.googleapis.com/customsearch/v1", 
-        env="WEB_SEARCH_API_ENDPOINT"
+        default="https://www.googleapis.com/customsearch/v1",
+        env="WEB_SEARCH_API_ENDPOINT",
     )
     web_search_engine_id: str = Field(default="", env="WEB_SEARCH_ENGINE_ID")
     web_search_max_results: int = Field(default=3, env="WEB_SEARCH_MAX_RESULTS")
-    
+
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
@@ -1267,10 +1489,11 @@ class ToolsSettings(BaseSettings):
 
 class AlertingSettings(BaseSettings):
     """Email and webhook alerting configuration"""
+
     alert_from_email: Optional[str] = Field(default=None, env="ALERT_FROM_EMAIL")
     alert_to_emails: str = Field(default="", env="ALERT_TO_EMAILS")
     alert_webhook_url: Optional[str] = Field(default=None, env="ALERT_WEBHOOK_URL")
-    
+
     # SMTP Configuration
     smtp_host: str = Field(default="localhost", env="SMTP_HOST")
     smtp_port: int = Field(default=587, env="SMTP_PORT")
@@ -1280,10 +1503,13 @@ class AlertingSettings(BaseSettings):
 
 class WorkspaceSettings(BaseSettings):
     """Workspace and collaboration settings (comet_workspace moved to ObservabilitySettings)"""
+
     comet_api_key: Optional[SecretStr] = Field(default=None, env="COMET_API_KEY")
 
     # Feature toggles for experimental features
-    enable_experimental_features: bool = Field(default=False, env="ENABLE_EXPERIMENTAL_FEATURES")
+    enable_experimental_features: bool = Field(
+        default=False, env="ENABLE_EXPERIMENTAL_FEATURES"
+    )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -1295,20 +1521,20 @@ class PreprocessingSettings(BaseSettings):
     chunk_trigger_tokens: int = Field(
         default=8000,
         env="CHUNK_TRIGGER_TOKENS",
-        description="Documents >8K tokens trigger map-reduce chunking"
+        description="Documents >8K tokens trigger map-reduce chunking",
     )
 
     # Chunking parameters
     chunk_size_tokens: int = Field(
         default=4000,
         env="CHUNK_SIZE_TOKENS",
-        description="Target chunk size for map-reduce (~16KB text)"
+        description="Target chunk size for map-reduce (~16KB text)",
     )
 
     chunk_overlap_tokens: int = Field(
         default=200,
         env="CHUNK_OVERLAP_TOKENS",
-        description="Overlap between chunks for context preservation"
+        description="Overlap between chunks for context preservation",
     )
 
     map_reduce_max_parallel: int = Field(
@@ -1316,52 +1542,52 @@ class PreprocessingSettings(BaseSettings):
         env="MAP_REDUCE_MAX_PARALLEL",
         ge=1,
         le=10,
-        description="Maximum parallel LLM calls during MAP phase"
+        description="Maximum parallel LLM calls during MAP phase",
     )
 
     # Provider for chunking (defaults to synthesis provider)
     chunking_provider: str = Field(
         default="synthesis",
         env="CHUNKING_PROVIDER",
-        description="LLM provider for chunking operations (synthesis, chat, or specific provider)"
+        description="LLM provider for chunking operations (synthesis, chat, or specific provider)",
     )
 
-    @field_validator('chunk_size_tokens')
+    @field_validator("chunk_size_tokens")
     @classmethod
     def validate_chunk_size(cls, v, info):
         """Ensure chunk size is less than trigger"""
         values = info.data
-        trigger = values.get('chunk_trigger_tokens', 8000)
-        
+        trigger = values.get("chunk_trigger_tokens", 8000)
+
         if v >= trigger:
             raise ValueError(
                 f"CHUNK_SIZE_TOKENS ({v}) must be < CHUNK_TRIGGER_TOKENS ({trigger}). "
                 f"Trigger must activate before reaching chunk size."
             )
         return v
-    
-    @field_validator('chunk_overlap_tokens')
+
+    @field_validator("chunk_overlap_tokens")
     @classmethod
     def validate_chunk_overlap(cls, v, info):
         """Ensure overlap is reasonable percentage of chunk size"""
         values = info.data
-        chunk_size = values.get('chunk_size_tokens', 4000)
-        
+        chunk_size = values.get("chunk_size_tokens", 4000)
+
         if v >= chunk_size:
             raise ValueError(
                 f"CHUNK_OVERLAP_TOKENS ({v}) must be < CHUNK_SIZE_TOKENS ({chunk_size}). "
                 f"Overlap is a subset of the chunk."
             )
-        
+
         if v > chunk_size * 0.5:
             raise ValueError(
                 f"CHUNK_OVERLAP_TOKENS ({v}) should not exceed 50% of CHUNK_SIZE_TOKENS ({chunk_size}). "
                 f"Recommended: 5-10% overlap for optimal context preservation."
             )
-        
+
         if v < 0:
             raise ValueError(f"CHUNK_OVERLAP_TOKENS must be >= 0, got {v}")
-        
+
         return v
 
     model_config = {"env_prefix": "", "extra": "ignore"}
@@ -1383,13 +1609,13 @@ class AgentSettings(BaseSettings):
     agent_provider: str = Field(
         default="anthropic",
         env="AGENT_LLM_PROVIDER",
-        description="LLM provider for agent execution (anthropic, openai)"
+        description="LLM provider for agent execution (anthropic, openai)",
     )
 
     agent_model: str = Field(
         default="claude-sonnet-4-20250514",
         env="AGENT_LLM_MODEL",
-        description="Model to use for agent execution"
+        description="Model to use for agent execution",
     )
 
     # Retry configuration
@@ -1398,7 +1624,7 @@ class AgentSettings(BaseSettings):
         env="AGENT_MAX_RETRIES",
         ge=0,
         le=10,
-        description="Maximum retry attempts for LLM calls"
+        description="Maximum retry attempts for LLM calls",
     )
 
     retry_initial_delay: float = Field(
@@ -1406,7 +1632,7 @@ class AgentSettings(BaseSettings):
         env="AGENT_RETRY_INITIAL_DELAY",
         ge=0.1,
         le=30.0,
-        description="Initial delay for exponential backoff (seconds)"
+        description="Initial delay for exponential backoff (seconds)",
     )
 
     # Tool execution configuration
@@ -1415,7 +1641,7 @@ class AgentSettings(BaseSettings):
         env="AGENT_TOOL_TIMEOUT",
         ge=5,
         le=300,
-        description="Timeout for tool execution (seconds)"
+        description="Timeout for tool execution (seconds)",
     )
 
     max_parallel_tools: int = Field(
@@ -1423,7 +1649,7 @@ class AgentSettings(BaseSettings):
         env="AGENT_MAX_PARALLEL_TOOLS",
         ge=1,
         le=20,
-        description="Maximum parallel tool executions"
+        description="Maximum parallel tool executions",
     )
 
     # LLM Request configuration
@@ -1432,7 +1658,7 @@ class AgentSettings(BaseSettings):
         env="AGENT_MAX_TOKENS",
         ge=100,
         le=128000,
-        description="Maximum tokens for agent responses"
+        description="Maximum tokens for agent responses",
     )
 
     agent_temperature: float = Field(
@@ -1440,7 +1666,7 @@ class AgentSettings(BaseSettings):
         env="AGENT_TEMPERATURE",
         ge=0.0,
         le=2.0,
-        description="Temperature for agent responses"
+        description="Temperature for agent responses",
     )
 
     agent_request_timeout: int = Field(
@@ -1448,14 +1674,14 @@ class AgentSettings(BaseSettings):
         env="AGENT_REQUEST_TIMEOUT",
         ge=30,
         le=600,
-        description="Request timeout for LLM calls (seconds)"
+        description="Request timeout for LLM calls (seconds)",
     )
 
     # Token budget defaults
     default_session_token_budget: Optional[int] = Field(
         default=None,
         env="DEFAULT_SESSION_TOKEN_BUDGET",
-        description="Default token budget for new sessions (None = unlimited)"
+        description="Default token budget for new sessions (None = unlimited)",
     )
 
     # Execution limits
@@ -1464,7 +1690,7 @@ class AgentSettings(BaseSettings):
         env="MAX_TOOL_CALLS_PER_EXECUTION",
         ge=1,
         le=100,
-        description="Maximum tool calls per single execution"
+        description="Maximum tool calls per single execution",
     )
 
     max_iterations_per_execution: int = Field(
@@ -1472,7 +1698,7 @@ class AgentSettings(BaseSettings):
         env="MAX_ITERATIONS_PER_EXECUTION",
         ge=1,
         le=50,
-        description="Maximum LLM iterations (tool call loops) per execution"
+        description="Maximum LLM iterations (tool call loops) per execution",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
@@ -1493,42 +1719,42 @@ class ProviderSettings(BaseSettings):
     tenant_provider: TenantProvider = Field(
         default=TenantProvider.SINGLE,
         env="TENANT_PROVIDER",
-        description="Tenant isolation: 'single' (local/community) or 'multi' (cloud/enterprise)"
+        description="Tenant isolation: 'single' (local/community) or 'multi' (cloud/enterprise)",
     )
 
     # Database backend
     db_backend: DbBackend = Field(
         default=DbBackend.SQLITE,
         env="DB_BACKEND",
-        description="Database backend: 'sqlite' (local) or 'postgres' (production)"
+        description="Database backend: 'sqlite' (local) or 'postgres' (production)",
     )
 
     # Cache backend
     cache_backend: CacheBackend = Field(
         default=CacheBackend.MEMORY,
         env="CACHE_BACKEND",
-        description="Cache backend: 'memory' (local) or 'redis' (production)"
+        description="Cache backend: 'memory' (local) or 'redis' (production)",
     )
 
     # Vector database backend
     vector_backend: VectorBackend = Field(
         default=VectorBackend.CHROMA,
         env="VECTOR_BACKEND",
-        description="Vector DB backend: 'chroma' (local/cloud) or 'pinecone' (cloud)"
+        description="Vector DB backend: 'chroma' (local/cloud) or 'pinecone' (cloud)",
     )
 
     # File storage backend
     storage_backend: StorageBackend = Field(
         default=StorageBackend.FILESYSTEM,
         env="STORAGE_BACKEND",
-        description="File storage: 'filesystem' (local) or 's3' (cloud)"
+        description="File storage: 'filesystem' (local) or 's3' (cloud)",
     )
 
     # Metrics exporter (PR #5 - observability neutrality)
     metrics_exporter: MetricsExporter = Field(
         default=MetricsExporter.NONE,
         env="METRICS_EXPORTER",
-        description="Metrics exporter: 'none' (default, no /metrics) or 'prometheus_http' (mount /metrics)"
+        description="Metrics exporter: 'none' (default, no /metrics) or 'prometheus_http' (mount /metrics)",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}
@@ -1550,7 +1776,7 @@ class EvidenceStorageSettings(BaseSettings):
     evidence_storage_root: str = Field(
         default="./data/evidence",
         env="EVIDENCE_STORAGE_ROOT",
-        description="Root directory for evidence file storage"
+        description="Root directory for evidence file storage",
     )
 
     # Maximum file size (100MB default)
@@ -1559,14 +1785,14 @@ class EvidenceStorageSettings(BaseSettings):
         env="MAX_EVIDENCE_FILE_SIZE",
         ge=1024,  # Minimum 1KB
         le=1024 * 1024 * 1024,  # Maximum 1GB
-        description="Maximum evidence file size in bytes (default 100MB)"
+        description="Maximum evidence file size in bytes (default 100MB)",
     )
 
     # Allowed MIME types (empty list = allow all)
     allowed_evidence_mime_types: List[str] = Field(
         default=[],
         env="ALLOWED_EVIDENCE_MIME_TYPES",
-        description="Allowed MIME types for evidence files (empty = allow all)"
+        description="Allowed MIME types for evidence files (empty = allow all)",
     )
 
     # Common evidence MIME types (for reference/documentation)
@@ -1590,6 +1816,7 @@ class EvidenceStorageSettings(BaseSettings):
 # =============================================================================
 # MAIN SETTINGS CLASS
 # =============================================================================
+
 
 class FaultMavenSettings(BaseSettings):
     """
@@ -1624,7 +1851,7 @@ class FaultMavenSettings(BaseSettings):
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": False,
-        "extra": "ignore"
+        "extra": "ignore",
     }
     upload: UploadSettings = Field(default_factory=UploadSettings)
     knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
@@ -1632,16 +1859,18 @@ class FaultMavenSettings(BaseSettings):
     features: FeatureSettings = Field(default_factory=FeatureSettings)
     tools: ToolsSettings = Field(default_factory=ToolsSettings)
     preprocessing: PreprocessingSettings = Field(default_factory=PreprocessingSettings)
-    
+
     # Enhanced configuration sections merged into main sections above
-    # enhanced_protection merged into protection above  
+    # enhanced_protection merged into protection above
     # enhanced_observability merged into observability above
     # enhanced_database merged into database above
     alerting: AlertingSettings = Field(default_factory=AlertingSettings)
     workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
 
     # Evidence storage configuration (TASK-013)
-    evidence_storage: EvidenceStorageSettings = Field(default_factory=EvidenceStorageSettings)
+    evidence_storage: EvidenceStorageSettings = Field(
+        default_factory=EvidenceStorageSettings
+    )
 
     # Agent orchestration configuration (TASK-015)
     agent: AgentSettings = Field(default_factory=AgentSettings)
@@ -1668,9 +1897,9 @@ class FaultMavenSettings(BaseSettings):
         "case_sensitive": False,
         "validate_assignment": True,
         "use_enum_values": True,
-        "extra": "ignore"  # Allow extra environment variables
+        "extra": "ignore",  # Allow extra environment variables
     }
-    
+
     def get_cors_config(self) -> Dict[str, Any]:
         """
         Generate FastAPI CORS configuration.
@@ -1683,79 +1912,81 @@ class FaultMavenSettings(BaseSettings):
             "allow_headers": ["*"],
             "expose_headers": self.security.cors_expose_headers,
         }
-    
+
     def validate_frontend_compatibility(self) -> Dict[str, Any]:
         """
         Validate configuration for frontend compatibility.
-        
+
         Returns:
             Dict with compatibility status and any issues found
         """
         issues = []
         warnings = []
-        
+
         # Session timeout validation
         if self.session.timeout_minutes < 5:
             issues.append("Session timeout too short - frontend expects >= 5 minutes")
-        
+
         # Heartbeat validation
-        if self.session.heartbeat_interval_seconds >= (self.session.timeout_minutes * 60):
+        if self.session.heartbeat_interval_seconds >= (
+            self.session.timeout_minutes * 60
+        ):
             issues.append("Heartbeat interval must be less than session timeout")
-        
+
         # CORS validation
         browser_origins = [
-            "chrome-extension://*", 
+            "chrome-extension://*",
             "moz-extension://*",
-            "http://localhost:3000"
+            "http://localhost:3000",
         ]
         missing_origins = []
         for origin in browser_origins:
-            if not any(origin in allowed for allowed in self.security.cors_allow_origins):
+            if not any(
+                origin in allowed for allowed in self.security.cors_allow_origins
+            ):
                 missing_origins.append(origin)
-        
+
         if missing_origins:
             issues.append(f"Missing CORS origins: {missing_origins}")
-        
+
         # Required exposed headers for frontend
         required_headers = ["X-RateLimit-Remaining", "X-Total-Count", "Location"]
         missing_headers = []
         for header in required_headers:
             if header not in self.security.cors_expose_headers:
                 missing_headers.append(header)
-        
+
         if missing_headers:
             issues.append(f"Missing exposed headers: {missing_headers}")
-        
+
         # Rate limiting validation
         if not self.security.rate_limit_enabled:
-            warnings.append("Rate limiting disabled - frontend expects rate limit headers")
-        
+            warnings.append(
+                "Rate limiting disabled - frontend expects rate limit headers"
+            )
+
         # Upload size warnings
         if self.upload.max_upload_size_mb > 50:
             warnings.append("Upload size > 50MB may cause timeout or processing issues")
-        
-        return {
-            "compatible": len(issues) == 0,
-            "issues": issues,
-            "warnings": warnings
-        }
-    
+
+        return {"compatible": len(issues) == 0, "issues": issues, "warnings": warnings}
+
     def get_redis_url(self) -> str:
         """Build Redis connection URL"""
         if self.database.redis_url:
             return self.database.redis_url
-        
+
         auth = ""
         if self.database.redis_password:
             password = self.database.redis_password.get_secret_value()
             auth = f":{password}@"
-        
+
         return f"redis://{auth}{self.database.redis_host}:{self.database.redis_port}/{self.database.redis_db}"
-    
+
     def is_development(self) -> bool:
         """Check if running in development mode"""
         return self.server.environment == Environment.DEVELOPMENT
-    
+
     def is_production(self) -> bool:
         """Check if running in production mode"""
         return self.server.environment == Environment.PRODUCTION
@@ -1763,11 +1994,13 @@ class FaultMavenSettings(BaseSettings):
     def get_active_preset(self) -> Optional[str]:
         """Get the name of the currently active configuration preset."""
         import os
+
         return os.getenv("CONFIG_PRESET")
 
     def get_configuration_summary(self) -> Dict[str, Any]:
         """Get a summary of the current configuration for debugging/display."""
         from .presets import get_preset_info
+
         return {
             "preset": get_preset_info(),
             "environment": self.server.environment.value,
@@ -1827,34 +2060,48 @@ def get_settings() -> FaultMavenSettings:
             # Apply preset defaults for zero-config experience
             # Presets are applied AFTER .env but BEFORE settings instantiation
             # This allows env vars to override preset values
-            from .presets import ensure_preset_applied, validate_preset_requirements, get_current_preset_name
+            from .presets import (
+                ensure_preset_applied,
+                validate_preset_requirements,
+                get_current_preset_name,
+            )
+
             ensure_preset_applied()
 
             # Validate preset requirements (e.g., API keys for selected provider)
             preset_errors = validate_preset_requirements()
             if preset_errors:
                 import logging
+
                 logger = logging.getLogger(__name__)
                 for error in preset_errors:
                     logger.warning(f"Preset configuration warning: {error}")
 
             # Debug: Log what we're loading
             import logging
+
             logger = logging.getLogger(__name__)
             preset_name = get_current_preset_name()
             if preset_name:
                 logger.info(f"Settings loading with preset '{preset_name}'")
-            logger.info(f"Settings loading - CHAT_PROVIDER={os.getenv('CHAT_PROVIDER')}")
-            logger.info(f"Settings loading - LOCAL_LLM_URL={os.getenv('LOCAL_LLM_URL')}")
-            logger.info(f"Settings loading - LOCAL_LLM_MODEL={os.getenv('LOCAL_LLM_MODEL')}")
+            logger.info(
+                f"Settings loading - CHAT_PROVIDER={os.getenv('CHAT_PROVIDER')}"
+            )
+            logger.info(
+                f"Settings loading - LOCAL_LLM_URL={os.getenv('LOCAL_LLM_URL')}"
+            )
+            logger.info(
+                f"Settings loading - LOCAL_LLM_MODEL={os.getenv('LOCAL_LLM_MODEL')}"
+            )
 
             _settings_instance = FaultMavenSettings()
         except Exception as e:
             from faultmaven.models.exceptions import ConfigurationError
+
             raise ConfigurationError(
                 f"Settings initialization failed: {e}",
                 error_code="SETTINGS_INIT_ERROR",
-                context={"original_error": str(e), "error_type": type(e).__name__}
+                context={"original_error": str(e), "error_type": type(e).__name__},
             )
     return _settings_instance
 
@@ -1862,7 +2109,7 @@ def get_settings() -> FaultMavenSettings:
 def reset_settings() -> None:
     """
     Reset settings instance (primarily for testing).
-    
+
     Forces recreation of settings on next get_settings() call.
     """
     global _settings_instance
@@ -1873,21 +2120,22 @@ def reset_settings() -> None:
 # LEGACY COMPATIBILITY BRIDGE
 # =============================================================================
 
+
 class ConfigurationBridge:
     """
     Temporary bridge for legacy configuration access during migration.
-    
+
     Allows gradual migration from old config systems.
     This class should be REMOVED once migration is complete.
     """
-    
+
     def __init__(self):
         self._settings = get_settings()
-    
+
     def get(self, key: str, default: Any = None) -> Any:
         """
         Get configuration value using dot notation.
-        
+
         Examples:
             bridge.get("llm.provider") -> "fireworks"
             bridge.get("server.port") -> 8000
@@ -1895,10 +2143,10 @@ class ConfigurationBridge:
         try:
             parts = key.split(".")
             value = self._settings
-            
+
             for part in parts:
                 value = getattr(value, part)
-            
+
             return value
         except (AttributeError, TypeError):
             return default

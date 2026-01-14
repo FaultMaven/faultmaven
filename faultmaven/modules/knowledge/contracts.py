@@ -19,17 +19,18 @@ if TYPE_CHECKING:
 # Service Contracts
 # ============================================================
 
+
 class IKnowledgeService(Protocol):
     """Service interface for Knowledge business logic."""
-    
+
     async def search(self, query: str, k: int = 5) -> List[dict]:
         """Perform semantic search on knowledge base."""
         ...
-    
+
     async def add_document(self, document: dict) -> str:
         """Add a document to the knowledge base."""
         ...
-    
+
     async def delete_document(self, document_id: str) -> bool:
         """Delete a document from the knowledge base."""
         ...
@@ -37,7 +38,7 @@ class IKnowledgeService(Protocol):
 
 class IKnowledgeQuery(Protocol):
     """Read-only knowledge query interface."""
-    
+
     async def search(self, query: str, k: int = 5) -> List[dict]:
         """Perform semantic search (read-only)."""
         ...

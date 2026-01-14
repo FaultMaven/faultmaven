@@ -531,7 +531,11 @@ class TestValidationErrorResponse:
         response = ValidationErrorResponse(
             detail="Invalid input",
             errors=[
-                {"loc": ["body", "title"], "msg": "field required", "type": "value_error.missing"},
+                {
+                    "loc": ["body", "title"],
+                    "msg": "field required",
+                    "type": "value_error.missing",
+                },
             ],
         )
         assert response.error == "Validation Error"

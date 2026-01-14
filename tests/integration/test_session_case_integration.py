@@ -122,7 +122,7 @@ def inmemory_session_repository() -> InMemorySessionRepository:
 @pytest.mark.integration
 async def test_session_case_lifecycle(
     case_repository: DatabaseCaseRepository,
-    session_repository: DatabaseSessionRepository
+    session_repository: DatabaseSessionRepository,
 ):
     """Test full lifecycle: create session → create case → retrieve → cleanup."""
     # Step 1: Create session
@@ -180,7 +180,7 @@ async def test_session_case_lifecycle(
 @pytest.mark.integration
 async def test_session_cleanup_preserves_cases(
     case_repository: DatabaseCaseRepository,
-    session_repository: DatabaseSessionRepository
+    session_repository: DatabaseSessionRepository,
 ):
     """Test deleting session doesn't delete cases."""
     # Arrange - Create session with multiple cases
@@ -216,7 +216,9 @@ async def test_session_cleanup_preserves_cases(
         assert case is not None, f"Case {case_id} should still exist"
 
     # Cases should now be orphaned
-    orphans, count = await case_repository.get_orphaned_cases(user_id="cleanup-test-user")
+    orphans, count = await case_repository.get_orphaned_cases(
+        user_id="cleanup-test-user"
+    )
     assert count == 3
 
 
@@ -224,7 +226,7 @@ async def test_session_cleanup_preserves_cases(
 @pytest.mark.integration
 async def test_multiple_cases_per_session(
     case_repository: DatabaseCaseRepository,
-    session_repository: DatabaseSessionRepository
+    session_repository: DatabaseSessionRepository,
 ):
     """Test multiple cases linked to same session."""
     # Arrange
@@ -281,7 +283,7 @@ async def test_multiple_cases_per_session(
 @pytest.mark.integration
 async def test_session_expiry_workflow(
     case_repository: DatabaseCaseRepository,
-    session_repository: DatabaseSessionRepository
+    session_repository: DatabaseSessionRepository,
 ):
     """Test expired session cleanup with active cases."""
     # Arrange - Create expired session with case
@@ -447,7 +449,7 @@ async def test_repository_factory_session_invalid_type():
 @pytest.mark.integration
 async def test_session_user_cases_query(
     case_repository: DatabaseCaseRepository,
-    session_repository: DatabaseSessionRepository
+    session_repository: DatabaseSessionRepository,
 ):
     """Test querying cases by user across sessions."""
     user_id = "cross-query-user"
@@ -487,7 +489,7 @@ async def test_session_user_cases_query(
 @pytest.mark.integration
 async def test_case_status_updates_with_session(
     case_repository: DatabaseCaseRepository,
-    session_repository: DatabaseSessionRepository
+    session_repository: DatabaseSessionRepository,
 ):
     """Test case status updates maintain session linkage."""
     # Arrange
@@ -520,12 +522,14 @@ async def test_case_status_updates_with_session(
     # RESOLVED status requires resolved_at, closed_at timestamps, and closure_reason
     # Use model_copy to update all fields atomically (avoids validation ordering issues)
     now = datetime.now(timezone.utc)
-    case = case.model_copy(update={
-        "status": CaseStatus.RESOLVED,
-        "resolved_at": now,
-        "closed_at": now,
-        "closure_reason": "resolved"
-    })
+    case = case.model_copy(
+        update={
+            "status": CaseStatus.RESOLVED,
+            "resolved_at": now,
+            "closed_at": now,
+            "closure_reason": "resolved",
+        }
+    )
     await case_repository.save_with_session(case, session_id=session.session_id)
 
     # Verify still linked
@@ -536,10 +540,12 @@ async def test_case_status_updates_with_session(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-@pytest.mark.skip(reason="Requires session-per-operation pattern - same issue as test_case_service_integration.py::TestConcurrentOperations")
+@pytest.mark.skip(
+    reason="Requires session-per-operation pattern - same issue as test_case_service_integration.py::TestConcurrentOperations"
+)
 async def test_concurrent_session_operations(
     case_repository: DatabaseCaseRepository,
-    session_repository: DatabaseSessionRepository
+    session_repository: DatabaseSessionRepository,
 ):
     """
     Test concurrent session and case operations.

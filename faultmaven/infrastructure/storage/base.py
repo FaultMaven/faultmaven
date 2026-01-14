@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 class StorageType(str, Enum):
     """Storage backend type."""
+
     FILESYSTEM = "filesystem"
     S3 = "s3"
 
@@ -43,6 +44,7 @@ class PresignedUrl:
         method: HTTP method (PUT for upload, GET for download)
         headers: Optional headers required for the request
     """
+
     url: str
     expires_at: datetime
     method: str
@@ -71,6 +73,7 @@ class StoredFile:
         created_at: When the file was stored
         metadata: Additional file metadata
     """
+
     key: str
     size_bytes: int
     content_type: str

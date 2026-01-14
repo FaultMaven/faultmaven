@@ -18,27 +18,23 @@ from faultmaven.exceptions import LLMException
 
 class GroqProvider(BaseLLMProvider):
     """Groq LLM provider implementation
-    
+
     Groq provides ultra-fast inference for Llama, Mixtral, and other models
     using their custom LPU hardware. The API is OpenAI-compatible.
     """
-    
+
     @property
     def provider_name(self) -> str:
         return "groq"
-    
+
     def is_available(self) -> bool:
         """Check if Groq provider is properly configured"""
-        return bool(
-            self.config.api_key and
-            self.config.base_url and
-            self.config.models
-        )
-    
+        return bool(self.config.api_key and self.config.base_url and self.config.models)
+
     def get_supported_models(self) -> List[str]:
         """Get list of supported models"""
         return self.config.models.copy()
-    
+
     async def generate(
         self,
         prompt: str,
@@ -47,10 +43,10 @@ class GroqProvider(BaseLLMProvider):
         temperature: float = 0.7,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> LLMResponse:
         """Generate response using Groq API
-        
+
         Args:
             prompt: Input prompt
             model: Specific model to use
@@ -91,7 +87,7 @@ class GroqProvider(BaseLLMProvider):
 
         # Add any additional kwargs
         payload.update(kwargs)
-        
+
         # Make request to Groq API
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -100,13 +96,13 @@ class GroqProvider(BaseLLMProvider):
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout),
             ) as response:
-                
+
                 if response.status != 200:
                     error_text = await response.text()
                     raise LLMException(
                         f"Groq API error {response.status}: {error_text}"
                     )
-                
+
                 data = await response.json()
 
                 # Extract response content (OpenAI-compatible format)
@@ -124,11 +120,7 @@ class GroqProvider(BaseLLMProvider):
                 tool_calls = None
                 if "tool_calls" in message and message["tool_calls"]:
                     tool_calls = [
-                        ToolCall(
-                            id=tc["id"],
-                            type=tc["type"],
-                            function=tc["function"]
-                        )
+                        ToolCall(id=tc["id"], type=tc["type"], function=tc["function"])
                         for tc in message["tool_calls"]
                     ]
 
@@ -155,21 +147,3 @@ class GroqProvider(BaseLLMProvider):
                     response_time_ms=response_time,
                     tool_calls=tool_calls,
                 )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

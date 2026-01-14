@@ -31,8 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 async def cleanup_orphaned_collections_task(
-    case_vector_store: CaseVectorStore,
-    case_store: ICaseStore
+    case_vector_store: CaseVectorStore, case_store: ICaseStore
 ):
     """
     Background task to clean up orphaned case collections.
@@ -55,17 +54,23 @@ async def cleanup_orphaned_collections_task(
             logger.debug(f"Found {len(active_case_ids)} active cases in case store")
         except AttributeError:
             # If get_all_case_ids doesn't exist, skip cleanup this run
-            logger.warning("CaseStore doesn't support get_all_case_ids(), skipping cleanup")
+            logger.warning(
+                "CaseStore doesn't support get_all_case_ids(), skipping cleanup"
+            )
             return
         except Exception as e:
             logger.error(f"Failed to get active case IDs: {e}")
             return
 
         # Clean up orphaned collections
-        deleted_count = await case_vector_store.cleanup_orphaned_collections(active_case_ids)
+        deleted_count = await case_vector_store.cleanup_orphaned_collections(
+            active_case_ids
+        )
 
         if deleted_count > 0:
-            logger.info(f"Case cleanup completed: {deleted_count} orphaned collections deleted")
+            logger.info(
+                f"Case cleanup completed: {deleted_count} orphaned collections deleted"
+            )
         else:
             logger.debug("Case cleanup completed: no orphaned collections found")
 
@@ -86,9 +91,7 @@ def _sync_cleanup_wrapper(case_vector_store: CaseVectorStore, case_store: ICaseS
 
 
 def start_case_cleanup_scheduler(
-    case_vector_store: CaseVectorStore,
-    case_store: ICaseStore,
-    interval_hours: int = 6
+    case_vector_store: CaseVectorStore, case_store: ICaseStore, interval_hours: int = 6
 ) -> Optional[BackgroundScheduler]:
     """
     Start background scheduler for case collection cleanup.
@@ -108,13 +111,15 @@ def start_case_cleanup_scheduler(
         scheduler.add_job(
             func=lambda: _sync_cleanup_wrapper(case_vector_store, case_store),
             trigger=IntervalTrigger(hours=interval_hours),
-            id='case_collection_cleanup',
-            name='Clean up orphaned case collections',
-            replace_existing=True
+            id="case_collection_cleanup",
+            name="Clean up orphaned case collections",
+            replace_existing=True,
         )
 
         scheduler.start()
-        logger.info(f"Case cleanup scheduler started (interval: {interval_hours} hours, lifecycle-based)")
+        logger.info(
+            f"Case cleanup scheduler started (interval: {interval_hours} hours, lifecycle-based)"
+        )
 
         return scheduler
 

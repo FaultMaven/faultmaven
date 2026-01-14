@@ -304,7 +304,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 category=item.category,
                 tags=json.dumps(item.tags) if item.tags else "[]",
                 embedding_model=item.embedding_model,
-                embedding_vector=json.dumps(item.embedding_vector) if item.embedding_vector else None,
+                embedding_vector=(
+                    json.dumps(item.embedding_vector) if item.embedding_vector else None
+                ),
                 embedding_version=item.embedding_version,
                 source_url=item.source_url,
                 author=item.author,
@@ -373,7 +375,11 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                     category=item.category,
                     tags=json.dumps(item.tags) if item.tags else "[]",
                     embedding_model=item.embedding_model,
-                    embedding_vector=json.dumps(item.embedding_vector) if item.embedding_vector else None,
+                    embedding_vector=(
+                        json.dumps(item.embedding_vector)
+                        if item.embedding_vector
+                        else None
+                    ),
                     embedding_version=item.embedding_version,
                     source_url=item.source_url,
                     author=item.author,
@@ -384,7 +390,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                     last_retrieved_at=item.last_retrieved_at,
                     is_published=item.is_published,
                     updated_at=item.updated_at,
-                    knowledge_metadata=json.dumps(item.metadata) if item.metadata else "{}",
+                    knowledge_metadata=(
+                        json.dumps(item.metadata) if item.metadata else "{}"
+                    ),
                 )
                 .execution_options(synchronize_session=False)
             )
@@ -470,7 +478,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             return [self._to_domain(model) for model in item_models]
 
         except Exception as e:
-            logger.error(f"Failed to list items for organization {organization_id}: {e}")
+            logger.error(
+                f"Failed to list items for organization {organization_id}: {e}"
+            )
             raise KnowledgeItemRepositoryException(
                 f"Failed to list items for organization {organization_id}: {e}"
             ) from e
@@ -516,7 +526,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             return [self._to_domain(model) for model in item_models]
 
         except Exception as e:
-            logger.error(f"Failed to search items for organization {organization_id}: {e}")
+            logger.error(
+                f"Failed to search items for organization {organization_id}: {e}"
+            )
             raise KnowledgeItemRepositoryException(
                 f"Failed to search items for organization {organization_id}: {e}"
             ) from e
@@ -569,7 +581,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             return matching_items
 
         except Exception as e:
-            logger.error(f"Failed to search by tags for organization {organization_id}: {e}")
+            logger.error(
+                f"Failed to search by tags for organization {organization_id}: {e}"
+            )
             raise KnowledgeItemRepositoryException(
                 f"Failed to search by tags for organization {organization_id}: {e}"
             ) from e
@@ -625,15 +639,15 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             where_clause = and_(*conditions)
 
             stmt = (
-                select(func.count())
-                .select_from(KnowledgeItemModel)
-                .where(where_clause)
+                select(func.count()).select_from(KnowledgeItemModel).where(where_clause)
             )
             result = await self.db.execute(stmt)
             return result.scalar() or 0
 
         except Exception as e:
-            logger.error(f"Failed to count items for organization {organization_id}: {e}")
+            logger.error(
+                f"Failed to count items for organization {organization_id}: {e}"
+            )
             raise KnowledgeItemRepositoryException(
                 f"Failed to count items for organization {organization_id}: {e}"
             ) from e
@@ -649,18 +663,15 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         """
         try:
             # Fetch all published items with enough feedback
-            stmt = (
-                select(KnowledgeItemModel)
-                .where(
-                    and_(
-                        KnowledgeItemModel.organization_id == organization_id,
-                        KnowledgeItemModel.is_published == True,
-                        (
-                            KnowledgeItemModel.helpful_count
-                            + KnowledgeItemModel.not_helpful_count
-                        )
-                        >= self.MIN_FEEDBACK_THRESHOLD,
+            stmt = select(KnowledgeItemModel).where(
+                and_(
+                    KnowledgeItemModel.organization_id == organization_id,
+                    KnowledgeItemModel.is_published == True,
+                    (
+                        KnowledgeItemModel.helpful_count
+                        + KnowledgeItemModel.not_helpful_count
                     )
+                    >= self.MIN_FEEDBACK_THRESHOLD,
                 )
             )
 
@@ -806,7 +817,8 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     ) -> List[KnowledgeItem]:
         """List knowledge items with filtering and pagination."""
         items = [
-            i for i in self._items.values()
+            i
+            for i in self._items.values()
             if i.organization_id == organization_id and i.is_published == is_published
         ]
 
@@ -834,7 +846,8 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         """Full-text search for knowledge items."""
         query_lower = query.lower()
         items = [
-            i for i in self._items.values()
+            i
+            for i in self._items.values()
             if (
                 i.organization_id == organization_id
                 and i.is_published
@@ -885,7 +898,8 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     ) -> List[KnowledgeItem]:
         """Get items that need embedding generation."""
         items = [
-            i for i in self._items.values()
+            i
+            for i in self._items.values()
             if (
                 i.organization_id == organization_id
                 and i.is_published
@@ -905,8 +919,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     ) -> int:
         """Count knowledge items for an organization."""
         items = [
-            i for i in self._items.values()
-            if i.organization_id == organization_id
+            i for i in self._items.values() if i.organization_id == organization_id
         ]
 
         if item_type:
@@ -921,7 +934,8 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
     ) -> List[KnowledgeItem]:
         """Get most helpful items sorted by helpfulness score."""
         items = [
-            i for i in self._items.values()
+            i
+            for i in self._items.values()
             if (
                 i.organization_id == organization_id
                 and i.is_published

@@ -107,7 +107,9 @@ class KnowledgeItem:
         if not self.content:
             raise ValueError("content is required")
         if not isinstance(self.item_type, KnowledgeItemType):
-            raise ValueError(f"item_type must be a KnowledgeItemType, got {type(self.item_type)}")
+            raise ValueError(
+                f"item_type must be a KnowledgeItemType, got {type(self.item_type)}"
+            )
 
         # Validate counts
         if self.view_count < 0:

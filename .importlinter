@@ -104,7 +104,6 @@ layers =
     faultmaven.modules.case.domain
     faultmaven.modules.case.infrastructure
 ignore_imports =
-    faultmaven.modules.case.infrastructure.case_repository -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.infrastructure.database_case_repository -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.infrastructure.investigation_session_repository -> faultmaven.modules.case.domain.models

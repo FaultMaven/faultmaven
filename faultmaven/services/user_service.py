@@ -49,20 +49,21 @@ from faultmaven.utils.password import (
     verify_password,
 )
 
+
 # Dynamic import helper for AuthenticationError (avoid import-linter violation)
 def _get_authentication_error():
     """Lazy import of AuthenticationError to avoid import-linter violations."""
     import importlib
-    auth_service_module = importlib.import_module('faultmaven.services.auth_service')
+
+    auth_service_module = importlib.import_module("faultmaven.services.auth_service")
     return auth_service_module.AuthenticationError
+
 
 logger = logging.getLogger(__name__)
 
 
 # Email validation regex
-EMAIL_REGEX = re.compile(
-    r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
-)
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
 # Password reset token expiry (1 hour)
 PASSWORD_RESET_TOKEN_EXPIRY_HOURS = 1
@@ -583,7 +584,9 @@ class UserService(BaseService):
         updated_user = await self.user_repo.save(user)
 
         if email_changed:
-            self.logger.info(f"Email updated for user: {user_id} (verification required)")
+            self.logger.info(
+                f"Email updated for user: {user_id} (verification required)"
+            )
         else:
             self.logger.info(f"Profile updated for user: {user_id}")
 
@@ -735,7 +738,9 @@ class UserService(BaseService):
             if search is not None:
                 search_lower = search.lower()
                 email_match = search_lower in user.email.lower()
-                name_match = user.display_name and search_lower in user.display_name.lower()
+                name_match = (
+                    user.display_name and search_lower in user.display_name.lower()
+                )
                 if not (email_match or name_match):
                     continue
 
@@ -745,7 +750,7 @@ class UserService(BaseService):
         total = len(filtered_users)
 
         # Apply pagination
-        paginated_users = filtered_users[offset:offset + limit]
+        paginated_users = filtered_users[offset : offset + limit]
 
         return paginated_users, total
 
@@ -789,7 +794,9 @@ class UserService(BaseService):
             "permissions": sorted(permissions),
             "is_active": user.is_active,
             "is_verified": user.is_email_verified,
-            "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+            "last_login_at": (
+                user.last_login_at.isoformat() if user.last_login_at else None
+            ),
             "created_at": user.created_at.isoformat() if user.created_at else None,
             "updated_at": user.updated_at.isoformat() if user.updated_at else None,
             "metadata": {

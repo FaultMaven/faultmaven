@@ -51,7 +51,9 @@ def test_mock_interception_patch_get_auth_service(client, mock_user):
     with patch("faultmaven.api.middleware.auth.get_auth_service") as mock_get_auth:
         # Setup mock
         mock_auth = MagicMock()
-        mock_auth.extract_user_from_token_with_revocation_check = AsyncMock(return_value=mock_user)
+        mock_auth.extract_user_from_token_with_revocation_check = AsyncMock(
+            return_value=mock_user
+        )
         mock_get_auth.return_value = mock_auth
 
         # Make request
@@ -64,7 +66,9 @@ def test_mock_interception_patch_get_auth_service(client, mock_user):
         print(f"Status code: {response.status_code}")
         print(f"Response: {response.text}")
         print(f"Mock called: {mock_get_auth.called}")
-        print(f"Extract user called: {mock_auth.extract_user_from_token_with_revocation_check.called}")
+        print(
+            f"Extract user called: {mock_auth.extract_user_from_token_with_revocation_check.called}"
+        )
 
         # This will tell us if mocking is working
         assert response.status_code != 401, "Mocking failed - still getting 401"
@@ -82,7 +86,9 @@ def test_no_auth_returns_401(client):
     assert "Authentication required" in response.json()["detail"]
 
 
-@pytest.mark.skip(reason="TestClient doesn't initialize services - case_service is None which triggers 401. Dependency override works but service availability check fails. See test_cases_api.py for working patterns.")
+@pytest.mark.skip(
+    reason="TestClient doesn't initialize services - case_service is None which triggers 401. Dependency override works but service availability check fails. See test_cases_api.py for working patterns."
+)
 def test_with_mock_using_override_dependency(client, app):
     """Test using FastAPI dependency override (better approach).
 
@@ -105,14 +111,16 @@ def test_with_mock_using_override_dependency(client, app):
         created_at=datetime.now(timezone.utc),
         is_dev_user=True,
         is_active=True,
-        roles=["admin"]
+        roles=["admin"],
     )
 
     async def override_get_current_user_optional():
         return mock_user
 
     # Override the correct dependency (get_current_user_optional, not get_current_user)
-    app.dependency_overrides[get_current_user_optional] = override_get_current_user_optional
+    app.dependency_overrides[get_current_user_optional] = (
+        override_get_current_user_optional
+    )
 
     try:
         response = client.get("/api/v1/cases")

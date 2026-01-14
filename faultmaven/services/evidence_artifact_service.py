@@ -152,7 +152,7 @@ class APIEvidenceArtifactService(BaseService):
         evidence_type: EvidenceArtifactType,
         description: Optional[str] = None,
         is_primary: bool = False,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> EvidenceArtifact:
         """Upload evidence artifact for a case.
 
@@ -248,19 +248,27 @@ class APIEvidenceArtifactService(BaseService):
                 storage_path=evidence.file_path,
                 uploaded_by=user_id,
                 description=evidence.description,
-                tags=getattr(evidence, 'tags', []),
+                tags=getattr(evidence, "tags", []),
             )
-            
+
             # Link to case
-            saved_evidence = await self.case_repo.link_standalone_evidence_to_case(saved_evidence.evidence_id, case_id)
+            saved_evidence = await self.case_repo.link_standalone_evidence_to_case(
+                saved_evidence.evidence_id, case_id
+            )
             if not saved_evidence:
-                raise ServiceError(f"Failed to link evidence {saved_evidence.evidence_id} to case {case_id}")
+                raise ServiceError(
+                    f"Failed to link evidence {saved_evidence.evidence_id} to case {case_id}"
+                )
 
             # If is_primary, ensure it's set properly via repository
             if is_primary:
-                await self.case_repo.set_primary_evidence(case_id, saved_evidence.evidence_id)
+                await self.case_repo.set_primary_evidence(
+                    case_id, saved_evidence.evidence_id
+                )
                 # Refresh to get updated state
-                saved_evidence = await self.case_repo.get_standalone_evidence(evidence_id)
+                saved_evidence = await self.case_repo.get_standalone_evidence(
+                    evidence_id
+                )
 
             self.log_operation(
                 "upload_evidence_success",
@@ -278,9 +286,7 @@ class APIEvidenceArtifactService(BaseService):
             raise ServiceError(f"Failed to upload evidence: {e}")
 
     async def get_evidence(
-        self,
-        evidence_id: str,
-        organization_id: str
+        self, evidence_id: str, organization_id: str
     ) -> Optional[EvidenceArtifact]:
         """Get evidence artifact by ID with authorization.
 
@@ -325,9 +331,7 @@ class APIEvidenceArtifactService(BaseService):
             return None
 
     async def download_evidence(
-        self,
-        evidence_id: str,
-        organization_id: str
+        self, evidence_id: str, organization_id: str
     ) -> Tuple[bytes, str, str]:
         """Download evidence artifact file.
 
@@ -371,10 +375,7 @@ class APIEvidenceArtifactService(BaseService):
             raise ServiceError(f"Failed to download evidence: {e}")
 
     async def update_evidence(
-        self,
-        evidence_id: str,
-        organization_id: str,
-        updates: Dict[str, Any]
+        self, evidence_id: str, organization_id: str, updates: Dict[str, Any]
     ) -> EvidenceArtifact:
         """Update evidence artifact metadata.
 
@@ -413,18 +414,18 @@ class APIEvidenceArtifactService(BaseService):
             evidence = await self._verify_evidence_access(evidence_id, organization_id)
 
             # Validate and apply updates
-            allowed_fields = {'description', 'is_primary', 'metadata'}
+            allowed_fields = {"description", "is_primary", "metadata"}
             applied_updates = []
 
             for key, value in updates.items():
                 if key not in allowed_fields:
                     continue
 
-                if key == 'description':
+                if key == "description":
                     evidence.description = value.strip() if value else None
-                    applied_updates.append('description')
+                    applied_updates.append("description")
 
-                elif key == 'is_primary':
+                elif key == "is_primary":
                     if value:
                         # Use repository method to handle unsetting others
                         await self.case_repo.set_primary_evidence(
@@ -432,13 +433,13 @@ class APIEvidenceArtifactService(BaseService):
                         )
                     else:
                         evidence.is_primary = False
-                    applied_updates.append('is_primary')
+                    applied_updates.append("is_primary")
 
-                elif key == 'metadata':
+                elif key == "metadata":
                     if value is not None and not isinstance(value, dict):
                         raise ValidationException("metadata: Must be a dictionary")
                     evidence.metadata = value
-                    applied_updates.append('metadata')
+                    applied_updates.append("metadata")
 
             if not applied_updates:
                 raise ValidationException(
@@ -449,11 +450,15 @@ class APIEvidenceArtifactService(BaseService):
             evidence.updated_at = datetime.now(timezone.utc)
 
             # Save updated evidence (if not just is_primary update handled by set_primary_evidence)
-            if 'is_primary' not in applied_updates or len(applied_updates) > 1:
-                saved_evidence = await self.case_repo.update_standalone_evidence(evidence)
+            if "is_primary" not in applied_updates or len(applied_updates) > 1:
+                saved_evidence = await self.case_repo.update_standalone_evidence(
+                    evidence
+                )
             else:
                 # Refresh evidence to get updated state
-                saved_evidence = await self.case_repo.get_standalone_evidence(evidence_id)
+                saved_evidence = await self.case_repo.get_standalone_evidence(
+                    evidence_id
+                )
             self.log_operation(
                 "update_evidence_success",
                 evidence_id=evidence_id,
@@ -468,11 +473,7 @@ class APIEvidenceArtifactService(BaseService):
             self.log_error("update_evidence", e, evidence_id=evidence_id)
             raise ServiceError(f"Failed to update evidence: {e}")
 
-    async def delete_evidence(
-        self,
-        evidence_id: str,
-        organization_id: str
-    ) -> bool:
+    async def delete_evidence(self, evidence_id: str, organization_id: str) -> bool:
         """Delete evidence artifact and file.
 
         Workflow:
@@ -551,7 +552,7 @@ class APIEvidenceArtifactService(BaseService):
         organization_id: str,
         evidence_type: Optional[EvidenceArtifactType] = None,
         limit: int = 50,
-        offset: int = 0
+        offset: int = 0,
     ) -> List[EvidenceArtifact]:
         """List evidence artifacts for a case.
 
@@ -585,10 +586,16 @@ class APIEvidenceArtifactService(BaseService):
             # Get evidence from repository
             filters = EvidenceListFilter(case_id=case_id, limit=limit, offset=offset)
             # Note: evidence_type filtering not yet supported in EvidenceListFilter, all evidence returned
-            evidence_list, total = await self.case_repo.list_standalone_evidence(filters)
+            evidence_list, total = await self.case_repo.list_standalone_evidence(
+                filters
+            )
             # Filter by evidence_type if specified (client-side filter for now)
             if evidence_type:
-                evidence_list = [e for e in evidence_list if getattr(e, 'evidence_type', None) == evidence_type]
+                evidence_list = [
+                    e
+                    for e in evidence_list
+                    if getattr(e, "evidence_type", None) == evidence_type
+                ]
                 total = len(evidence_list)
 
             self.log_operation(
@@ -611,9 +618,7 @@ class APIEvidenceArtifactService(BaseService):
     # ============================================================
 
     async def set_primary_evidence(
-        self,
-        evidence_id: str,
-        organization_id: str
+        self, evidence_id: str, organization_id: str
     ) -> EvidenceArtifact:
         """Set artifact as primary evidence for case.
 
@@ -668,9 +673,7 @@ class APIEvidenceArtifactService(BaseService):
             raise ServiceError(f"Failed to set primary evidence: {e}")
 
     async def get_primary_evidence(
-        self,
-        case_id: str,
-        organization_id: str
+        self, case_id: str, organization_id: str
     ) -> Optional[EvidenceArtifact]:
         """Get primary evidence artifact for a case.
 
@@ -723,9 +726,7 @@ class APIEvidenceArtifactService(BaseService):
     # ============================================================
 
     async def get_evidence_statistics(
-        self,
-        case_id: str,
-        organization_id: str
+        self, case_id: str, organization_id: str
     ) -> Dict[str, Any]:
         """Get evidence statistics for a case.
 
@@ -748,7 +749,9 @@ class APIEvidenceArtifactService(BaseService):
 
             # Get all evidence for case (no pagination for stats)
             filters = EvidenceListFilter(case_id=case_id, limit=10000, offset=0)
-            evidence_list, total = await self.case_repo.list_standalone_evidence(filters)
+            evidence_list, total = await self.case_repo.list_standalone_evidence(
+                filters
+            )
 
             # Calculate statistics
             by_type: Dict[str, int] = {}
@@ -806,9 +809,7 @@ class APIEvidenceArtifactService(BaseService):
     # ============================================================
 
     async def delete_all_evidence_for_case(
-        self,
-        case_id: str,
-        organization_id: str
+        self, case_id: str, organization_id: str
     ) -> int:
         """Delete all evidence artifacts for a case.
 
@@ -837,7 +838,9 @@ class APIEvidenceArtifactService(BaseService):
 
             # Get all evidence for case
             filters = EvidenceListFilter(case_id=case_id, limit=10000, offset=0)
-            evidence_list, total = await self.case_repo.list_standalone_evidence(filters)
+            evidence_list, total = await self.case_repo.list_standalone_evidence(
+                filters
+            )
 
             deleted_count = 0
 
@@ -846,7 +849,9 @@ class APIEvidenceArtifactService(BaseService):
                 await self.file_storage.delete_file(evidence.file_path)
 
                 # Delete record from repository
-                if await self.case_repo.delete_standalone_evidence(evidence.evidence_id):
+                if await self.case_repo.delete_standalone_evidence(
+                    evidence.evidence_id
+                ):
                     deleted_count += 1
 
             self.log_operation(
@@ -880,7 +885,11 @@ class APIEvidenceArtifactService(BaseService):
 
             return {
                 "service": self.service_name,
-                "status": "healthy" if file_storage_health.get("status") == "healthy" else "degraded",
+                "status": (
+                    "healthy"
+                    if file_storage_health.get("status") == "healthy"
+                    else "degraded"
+                ),
                 "file_storage": file_storage_health,
             }
 

@@ -607,7 +607,7 @@ PHASE_TRANSITIONS = {
     "3_to_4": "Hypotheses are ranked. Begin systematic validation starting with most likely.",
     "4_to_5": "Root cause is confirmed. Proceed to solution implementation.",
     "5_to_6": "Solution implemented and verified. Offer documentation options.",
-    "6_complete": "Investigation complete. Documentation offered. Ready for new queries."
+    "6_complete": "Investigation complete. Documentation offered. Ready for new queries.",
 }
 
 
@@ -680,11 +680,12 @@ def get_phase_transition(from_phase: int, to_phase: int) -> str:
 
     # Handle completion (Phase 6 → complete)
     if to_phase == 7 or (from_phase == 6 and to_phase == 6):
-        return PHASE_TRANSITIONS.get("6_complete", "Investigation complete. Ready for new queries.")
+        return PHASE_TRANSITIONS.get(
+            "6_complete", "Investigation complete. Ready for new queries."
+        )
 
     return PHASE_TRANSITIONS.get(
-        transition_key,
-        f"Advancing from phase {from_phase} to phase {to_phase}"
+        transition_key, f"Advancing from phase {from_phase} to phase {to_phase}"
     )
 
 

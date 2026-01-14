@@ -62,6 +62,7 @@ from faultmaven.infrastructure.vector.chroma import ChromaVectorBackend
 # Pinecone backend is optional (requires pinecone-client)
 try:
     from faultmaven.infrastructure.vector.pinecone import PineconeVectorBackend
+
     PINECONE_AVAILABLE = True
 except ImportError:
     PineconeVectorBackend = None  # type: ignore

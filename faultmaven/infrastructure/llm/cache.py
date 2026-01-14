@@ -33,7 +33,9 @@ class SemanticCache:
         if self.encoder:
             self.logger.debug("✅ Semantic cache initialized with cached BGE-M3")
         else:
-            self.logger.warning("BGE-M3 model not available, using simple cache without semantic similarity")
+            self.logger.warning(
+                "BGE-M3 model not available, using simple cache without semantic similarity"
+            )
 
     def _get_cache_key(self, prompt: str, model: str) -> str:
         """Generate cache key for prompt and model"""

@@ -355,44 +355,32 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
     async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """
         Execute the knowledge base search tool using our interface.
-        
+
         Args:
             params: Parameters dictionary containing 'query' and optional 'context'
-            
+
         Returns:
             ToolResult with success/data/error
         """
         try:
-            query = params.get('query', '')
-            context = params.get('context')
-            
+            query = params.get("query", "")
+            context = params.get("context")
+
             if not query or not query.strip():
-                return ToolResult(
-                    success=False,
-                    data=None,
-                    error="No query provided"
-                )
-            
+                return ToolResult(success=False, data=None, error="No query provided")
+
             # Call existing LangChain method
             result = await self._arun(query, context)
-            
-            return ToolResult(
-                success=True,
-                data=result,
-                error=None
-            )
+
+            return ToolResult(success=True, data=result, error=None)
         except Exception as e:
             self._logger.error(f"Knowledge base search execution failed: {e}")
-            return ToolResult(
-                success=False,
-                data=None,
-                error=str(e)
-            )
-    
+            return ToolResult(success=False, data=None, error=str(e))
+
     def get_schema(self) -> Dict[str, Any]:
         """
         Get the tool schema for our interface compliance.
-        
+
         Returns:
             Tool schema dictionary
         """
@@ -425,7 +413,7 @@ class KnowledgeBaseTool(LangChainBaseTool, IBaseTool):
                 "required": ["query"],
             },
         }
-    
+
     def get_tool_schema(self) -> Dict[str, Any]:
         """
         Get the tool schema for LangChain integration (legacy compatibility).
@@ -510,43 +498,33 @@ class KnowledgeBaseFilteredTool(LangChainBaseTool, IBaseTool):
     async def execute(self, params: Dict[str, Any]) -> ToolResult:
         """
         Execute the filtered knowledge base search tool using our interface.
-        
+
         Args:
             params: Parameters dictionary containing 'query_json'
-            
+
         Returns:
             ToolResult with success/data/error
         """
         try:
-            query_json = params.get('query_json', '')
-            
+            query_json = params.get("query_json", "")
+
             if not query_json:
                 return ToolResult(
-                    success=False,
-                    data=None,
-                    error="No query_json provided"
+                    success=False, data=None, error="No query_json provided"
                 )
-            
+
             # Call existing LangChain method
             result = await self._arun(query_json)
-            
-            return ToolResult(
-                success=True,
-                data=result,
-                error=None
-            )
+
+            return ToolResult(success=True, data=result, error=None)
         except Exception as e:
             self._logger.error(f"Filtered knowledge base search execution failed: {e}")
-            return ToolResult(
-                success=False,
-                data=None,
-                error=str(e)
-            )
-    
+            return ToolResult(success=False, data=None, error=str(e))
+
     def get_schema(self) -> Dict[str, Any]:
         """
         Get the tool schema for our interface compliance.
-        
+
         Returns:
             Tool schema dictionary
         """

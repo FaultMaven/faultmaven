@@ -238,7 +238,7 @@ jobs:
       - name: Run Packaging Tests
         run: |
           pip install -e .[test]
-          pytest tests/installation/ -v
+          pytest tests/unit/infrastructure/installation/ -v
 
   # ==========================================================================
   # STAGE 3: SMOKE

@@ -41,7 +41,7 @@ def default_organization():
         max_cases=None,
         settings={},
         created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc)
+        updated_at=datetime.now(timezone.utc),
     )
 
 
@@ -52,7 +52,7 @@ def mock_user():
         user_id="user_123",
         email="test@example.com",
         hashed_password="hashed",
-        full_name="Test User"
+        full_name="Test User",
     )
 
 
@@ -60,12 +60,13 @@ def mock_user():
 # Test: get_current_organization() returns default organization
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_get_current_organization_returns_default_org(
     single_tenant_provider,
     mock_organization_repository,
     default_organization,
-    mock_user
+    mock_user,
 ):
     """Test get_current_organization returns default organization."""
     mock_organization_repository.get_organization.return_value = default_organization
@@ -85,20 +86,20 @@ async def test_get_current_organization_returns_default_org(
 # Test: get_current_organization() ignores organization_id parameter
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_get_current_organization_ignores_organization_id_parameter(
     single_tenant_provider,
     mock_organization_repository,
     default_organization,
-    mock_user
+    mock_user,
 ):
     """Test get_current_organization ignores provided organization_id."""
     mock_organization_repository.get_organization.return_value = default_organization
 
     # Provide a different organization_id - should be ignored
     result = await single_tenant_provider.get_current_organization(
-        current_user=mock_user,
-        organization_id="other_org_id"
+        current_user=mock_user, organization_id="other_org_id"
     )
 
     assert result.org_id == SingleTenantProvider.DEFAULT_ORG_ID
@@ -112,11 +113,10 @@ async def test_get_current_organization_ignores_organization_id_parameter(
 # Test: get_default_organization() returns cached organization
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_get_default_organization_returns_cached_org(
-    single_tenant_provider,
-    mock_organization_repository,
-    default_organization
+    single_tenant_provider, mock_organization_repository, default_organization
 ):
     """Test get_default_organization uses cache on subsequent calls."""
     mock_organization_repository.get_organization.return_value = default_organization
@@ -137,11 +137,10 @@ async def test_get_default_organization_returns_cached_org(
 # Test: get_default_organization() loads from DB if not cached
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_get_default_organization_loads_from_db_if_not_cached(
-    single_tenant_provider,
-    mock_organization_repository,
-    default_organization
+    single_tenant_provider, mock_organization_repository, default_organization
 ):
     """Test get_default_organization loads from database when cache is empty."""
     mock_organization_repository.get_organization.return_value = default_organization
@@ -163,10 +162,10 @@ async def test_get_default_organization_loads_from_db_if_not_cached(
 # Test: get_default_organization() raises if not found
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_get_default_organization_raises_if_not_found(
-    single_tenant_provider,
-    mock_organization_repository
+    single_tenant_provider, mock_organization_repository
 ):
     """Test get_default_organization raises NotFoundError if org doesn't exist."""
     mock_organization_repository.get_organization.return_value = None
@@ -182,10 +181,10 @@ async def test_get_default_organization_raises_if_not_found(
 # Test: ensure_default_organization_exists() creates if missing
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_ensure_default_organization_creates_if_missing(
-    single_tenant_provider,
-    mock_organization_repository
+    single_tenant_provider, mock_organization_repository
 ):
     """Test ensure_default_organization_exists creates org if it doesn't exist."""
     # Repository returns None (org doesn't exist)
@@ -202,7 +201,7 @@ async def test_ensure_default_organization_creates_if_missing(
         max_cases=None,
         settings={},
         created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc)
+        updated_at=datetime.now(timezone.utc),
     )
     mock_organization_repository.create_organization.return_value = created_org
 
@@ -219,11 +218,10 @@ async def test_ensure_default_organization_creates_if_missing(
 # Test: ensure_default_organization_exists() returns existing if present
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_ensure_default_organization_returns_existing_if_present(
-    single_tenant_provider,
-    mock_organization_repository,
-    default_organization
+    single_tenant_provider, mock_organization_repository, default_organization
 ):
     """Test ensure_default_organization_exists returns existing org without creating."""
     mock_organization_repository.get_organization.return_value = default_organization
@@ -239,11 +237,10 @@ async def test_ensure_default_organization_returns_existing_if_present(
 # Test: ensure_default_organization_exists() is idempotent
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_ensure_default_organization_is_idempotent(
-    single_tenant_provider,
-    mock_organization_repository,
-    default_organization
+    single_tenant_provider, mock_organization_repository, default_organization
 ):
     """Test ensure_default_organization_exists can be called multiple times safely."""
     mock_organization_repository.get_organization.return_value = default_organization
@@ -262,6 +259,7 @@ async def test_ensure_default_organization_is_idempotent(
 # Test: is_multi_tenant() returns False
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_is_multi_tenant_returns_false(single_tenant_provider):
     """Test is_multi_tenant returns False for single-tenant mode."""
@@ -273,10 +271,10 @@ async def test_is_multi_tenant_returns_false(single_tenant_provider):
 # Test: default organization has PRO plan tier
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_default_org_has_pro_plan_tier(
-    single_tenant_provider,
-    mock_organization_repository
+    single_tenant_provider, mock_organization_repository
 ):
     """Test default organization is created with PRO tier for local mode."""
     mock_organization_repository.get_organization.return_value = None
@@ -291,7 +289,7 @@ async def test_default_org_has_pro_plan_tier(
         max_cases=None,
         settings={},
         created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc)
+        updated_at=datetime.now(timezone.utc),
     )
     mock_organization_repository.create_organization.return_value = created_org
 
@@ -303,6 +301,7 @@ async def test_default_org_has_pro_plan_tier(
 # ============================================================================
 # Test: default organization has correct ID and slug
 # ============================================================================
+
 
 @pytest.mark.asyncio
 async def test_default_org_has_correct_id_and_slug(single_tenant_provider):
@@ -322,11 +321,10 @@ async def test_default_org_has_correct_id_and_slug(single_tenant_provider):
 # Test: cache is populated after ensure_default_organization_exists()
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_cache_populated_after_ensure_default_organization_exists(
-    single_tenant_provider,
-    mock_organization_repository,
-    default_organization
+    single_tenant_provider, mock_organization_repository, default_organization
 ):
     """Test cache is updated after ensure_default_organization_exists."""
     mock_organization_repository.get_organization.return_value = default_organization
@@ -344,17 +342,26 @@ async def test_cache_populated_after_ensure_default_organization_exists(
 # Test: multiple users get same default organization
 # ============================================================================
 
+
 @pytest.mark.asyncio
 async def test_multiple_users_get_same_default_organization(
-    single_tenant_provider,
-    mock_organization_repository,
-    default_organization
+    single_tenant_provider, mock_organization_repository, default_organization
 ):
     """Test all users receive the same default organization (single-tenant isolation)."""
     mock_organization_repository.get_organization.return_value = default_organization
 
-    user1 = User(user_id="user_1", email="user1@example.com", hashed_password="hashed", full_name="User One")
-    user2 = User(user_id="user_2", email="user2@example.com", hashed_password="hashed", full_name="User Two")
+    user1 = User(
+        user_id="user_1",
+        email="user1@example.com",
+        hashed_password="hashed",
+        full_name="User One",
+    )
+    user2 = User(
+        user_id="user_2",
+        email="user2@example.com",
+        hashed_password="hashed",
+        full_name="User Two",
+    )
 
     org1 = await single_tenant_provider.get_current_organization(current_user=user1)
     org2 = await single_tenant_provider.get_current_organization(current_user=user2)

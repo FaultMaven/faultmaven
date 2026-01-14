@@ -17,7 +17,9 @@ from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
 from faultmaven.modules.auth.domain.models.session import Session
-from faultmaven.modules.auth.infrastructure.repositories.session_repository import DatabaseSessionRepository
+from faultmaven.modules.auth.infrastructure.repositories.session_repository import (
+    DatabaseSessionRepository,
+)
 
 
 @pytest.mark.benchmark
@@ -48,9 +50,9 @@ class TestSessionOperationPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.050, (
-            f"Session creation latency {latency*1000:.1f}ms exceeds 50ms target"
-        )
+        assert (
+            latency < 0.050
+        ), f"Session creation latency {latency*1000:.1f}ms exceeds 50ms target"
         print(f"\n  Session creation latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -80,9 +82,9 @@ class TestSessionOperationPerformance:
         latency = time.perf_counter() - start
 
         assert result is not None
-        assert latency < 0.030, (
-            f"Session retrieval latency {latency*1000:.1f}ms exceeds 30ms target"
-        )
+        assert (
+            latency < 0.030
+        ), f"Session retrieval latency {latency*1000:.1f}ms exceeds 30ms target"
         print(f"\n  Session retrieval latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -114,10 +116,12 @@ class TestSessionOperationPerformance:
         duration = time.perf_counter() - start
 
         throughput = num_sessions / duration
-        assert throughput > 100, (
-            f"Session creation throughput {throughput:.1f} sessions/sec below 100/sec target"
+        assert (
+            throughput > 100
+        ), f"Session creation throughput {throughput:.1f} sessions/sec below 100/sec target"
+        print(
+            f"\n  Batch session creation: {throughput:.1f} sessions/sec ({num_sessions} in {duration:.2f}s)"
         )
-        print(f"\n  Batch session creation: {throughput:.1f} sessions/sec ({num_sessions} in {duration:.2f}s)")
 
     @pytest.mark.asyncio
     async def test_get_sessions_by_user_latency(
@@ -148,10 +152,12 @@ class TestSessionOperationPerformance:
         latency = time.perf_counter() - start
 
         assert len(result) == 10
-        assert latency < 0.050, (
-            f"Get sessions by user latency {latency*1000:.1f}ms exceeds 50ms target"
+        assert (
+            latency < 0.050
+        ), f"Get sessions by user latency {latency*1000:.1f}ms exceeds 50ms target"
+        print(
+            f"\n  Get sessions by user latency: {latency*1000:.1f}ms ({len(result)} sessions)"
         )
-        print(f"\n  Get sessions by user latency: {latency*1000:.1f}ms ({len(result)} sessions)")
 
     @pytest.mark.asyncio
     async def test_session_update_last_accessed_latency(
@@ -180,9 +186,9 @@ class TestSessionOperationPerformance:
         latency = time.perf_counter() - start
 
         assert result is True
-        assert latency < 0.030, (
-            f"Update last_accessed latency {latency*1000:.1f}ms exceeds 30ms target"
-        )
+        assert (
+            latency < 0.030
+        ), f"Update last_accessed latency {latency*1000:.1f}ms exceeds 30ms target"
         print(f"\n  Update last_accessed latency: {latency*1000:.1f}ms")
 
     @pytest.mark.asyncio
@@ -217,13 +223,15 @@ class TestSessionOperationPerformance:
         if duration > 0:
             throughput = deleted_count / duration
         else:
-            throughput = float('inf')
+            throughput = float("inf")
 
         assert deleted_count == num_sessions
-        assert throughput > 500, (
-            f"Session cleanup throughput {throughput:.1f} sessions/sec below 500/sec target"
+        assert (
+            throughput > 500
+        ), f"Session cleanup throughput {throughput:.1f} sessions/sec below 500/sec target"
+        print(
+            f"\n  Session cleanup throughput: {throughput:.1f} sessions/sec ({deleted_count} deleted in {duration:.3f}s)"
         )
-        print(f"\n  Session cleanup throughput: {throughput:.1f} sessions/sec ({deleted_count} deleted in {duration:.3f}s)")
 
     @pytest.mark.asyncio
     async def test_session_delete_latency(
@@ -251,7 +259,7 @@ class TestSessionOperationPerformance:
         latency = time.perf_counter() - start
 
         assert result is True
-        assert latency < 0.030, (
-            f"Session delete latency {latency*1000:.1f}ms exceeds 30ms target"
-        )
+        assert (
+            latency < 0.030
+        ), f"Session delete latency {latency*1000:.1f}ms exceeds 30ms target"
         print(f"\n  Session delete latency: {latency*1000:.1f}ms")

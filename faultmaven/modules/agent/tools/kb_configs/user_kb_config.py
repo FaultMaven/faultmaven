@@ -29,31 +29,27 @@ class UserKBConfig(KBConfig):
         """Format with procedural context: document titles, categories"""
         parts = [f"Score: {score:.2f}"]
 
-        if 'document_title' in metadata:
+        if "document_title" in metadata:
             parts.append(f"Doc: {metadata['document_title']}")
-        if 'category' in metadata:
+        if "category" in metadata:
             parts.append(f"Category: {metadata['category']}")
-        if 'tags' in metadata and metadata['tags']:
+        if "tags" in metadata and metadata["tags"]:
             # tags is a list
-            tags_str = ', '.join(metadata['tags'][:2])  # Show first 2 tags
+            tags_str = ", ".join(metadata["tags"][:2])  # Show first 2 tags
             parts.append(f"Tags: {tags_str}")
 
-        return ', '.join(parts)
+        return ", ".join(parts)
 
     def extract_source_name(self, metadata: dict) -> str:
         """Extract document title as source"""
-        return metadata.get('document_title', 'Unknown document')
+        return metadata.get("document_title", "Unknown document")
 
     def get_citation_format(self) -> str:
         """Cite with document titles and sections"""
         return "document titles and sections"
 
     def format_response(
-        self,
-        answer: str,
-        sources: list,
-        chunk_count: int,
-        confidence: float
+        self, answer: str, sources: list, chunk_count: int, confidence: float
     ) -> str:
         """Format with runbook citations"""
         response = f"{answer}\n\n"

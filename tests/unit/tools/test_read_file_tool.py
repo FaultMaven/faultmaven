@@ -10,9 +10,16 @@ from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
-from faultmaven.modules.agent.tools.read_file_tool import ReadFileTool, MAX_TEXT_SIZE, TEXT_MIME_TYPES
+from faultmaven.modules.agent.tools.read_file_tool import (
+    ReadFileTool,
+    MAX_TEXT_SIZE,
+    TEXT_MIME_TYPES,
+)
 from faultmaven.modules.agent.tools.base import ToolContext
-from faultmaven.modules.evidence.domain.models import EvidenceArtifact, EvidenceArtifactType
+from faultmaven.modules.evidence.domain.models import (
+    EvidenceArtifact,
+    EvidenceArtifactType,
+)
 
 
 # =============================================================================
@@ -375,7 +382,10 @@ class TestFileTypeHandling:
         )
 
         assert result.success is True
-        assert "base64" in result.data["content"].lower() or "binary" in result.data["content"].lower()
+        assert (
+            "base64" in result.data["content"].lower()
+            or "binary" in result.data["content"].lower()
+        )
 
 
 # =============================================================================

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 class ProtectionType(str, Enum):
     """Types of protection mechanisms"""
+
     RATE_LIMIT = "rate_limit"
     DEDUPLICATION = "deduplication"
     TIMEOUT = "timeout"
@@ -22,6 +23,7 @@ class ProtectionType(str, Enum):
 
 class LimitType(str, Enum):
     """Types of rate limits"""
+
     GLOBAL = "global"
     PER_SESSION = "per_session"
     PER_ENDPOINT = "per_endpoint"
@@ -31,6 +33,7 @@ class LimitType(str, Enum):
 
 class ProtectionResult(str, Enum):
     """Results of protection checks"""
+
     ALLOWED = "allowed"
     BLOCKED = "blocked"
     ERROR = "error"
@@ -39,6 +42,7 @@ class ProtectionResult(str, Enum):
 @dataclass
 class RateLimitConfig:
     """Configuration for a specific rate limit"""
+
     requests: int
     window: int  # seconds
     penalty_multiplier: float = 2.0
@@ -48,6 +52,7 @@ class RateLimitConfig:
 @dataclass
 class DeduplicationConfig:
     """Configuration for request deduplication"""
+
     ttl: int  # seconds
     enabled: bool = True
     cache_responses: bool = False
@@ -56,6 +61,7 @@ class DeduplicationConfig:
 @dataclass
 class TimeoutConfig:
     """Configuration for timeout management"""
+
     agent_total: int = 60  # seconds
     agent_phase: int = 45  # seconds
     llm_call: int = 30  # seconds
@@ -65,15 +71,15 @@ class TimeoutConfig:
 
 class ProtectionSettings(BaseModel):
     """Complete protection system configuration"""
-    
+
     # Master protection toggle
     enabled: bool = True
-    
+
     # Individual protection toggles
     rate_limiting_enabled: bool = True
     deduplication_enabled: bool = True
     timeout_management_enabled: bool = True
-    
+
     # Rate limiting configuration
     rate_limits: Dict[str, RateLimitConfig] = Field(
         default_factory=lambda: {
@@ -84,7 +90,7 @@ class ProtectionSettings(BaseModel):
             "agent_query": RateLimitConfig(requests=5, window=60),
         }
     )
-    
+
     # Deduplication configuration
     deduplication: Dict[str, DeduplicationConfig] = Field(
         default_factory=lambda: {
@@ -93,22 +99,22 @@ class ProtectionSettings(BaseModel):
             "agent_query": DeduplicationConfig(ttl=30),
         }
     )
-    
+
     # Timeout configuration
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)
-    
+
     # Error handling
     fail_open_on_redis_error: bool = True
     fail_open_on_timeout_error: bool = False
-    
+
     # Development/debugging
     debug_protection: bool = False
     protection_bypass_headers: List[str] = Field(default_factory=list)
-    
+
     # Redis configuration
     redis_url: str = "redis://localhost:6379/1"
     redis_key_prefix: str = "fm:protection"
-    
+
     class Config:
         # Allow enum values
         use_enum_values = True
@@ -117,6 +123,7 @@ class ProtectionSettings(BaseModel):
 @dataclass
 class RateLimitState:
     """Current state of a rate limit bucket"""
+
     key: str
     limit_type: LimitType
     current_count: int
@@ -130,6 +137,7 @@ class RateLimitState:
 @dataclass
 class RateLimitResult:
     """Result of a rate limit check"""
+
     allowed: bool
     limit_type: LimitType
     current_count: int
@@ -140,7 +148,7 @@ class RateLimitResult:
 
 class ProtectionError(Exception):
     """Base class for protection system errors"""
-    
+
     def __init__(self, message: str, error_code: str = "", correlation_id: str = ""):
         super().__init__(message)
         self.message = message
@@ -151,14 +159,14 @@ class ProtectionError(Exception):
 
 class RateLimitError(ProtectionError):
     """Rate limit exceeded error"""
-    
+
     def __init__(
         self,
         retry_after: int,
         limit_type: str,
         current_count: int,
         limit: int,
-        correlation_id: str = ""
+        correlation_id: str = "",
     ):
         message = f"Rate limit exceeded: {current_count}/{limit} requests. Retry after {retry_after} seconds."
         super().__init__(message, "RATE_LIMIT_EXCEEDED", correlation_id)
@@ -170,12 +178,9 @@ class RateLimitError(ProtectionError):
 
 class DuplicateRequestError(ProtectionError):
     """Duplicate request detected error"""
-    
+
     def __init__(
-        self,
-        original_timestamp: datetime,
-        ttl_remaining: int,
-        correlation_id: str = ""
+        self, original_timestamp: datetime, ttl_remaining: int, correlation_id: str = ""
     ):
         message = f"Duplicate request detected. Original request at {original_timestamp}. TTL: {ttl_remaining}s."
         super().__init__(message, "DUPLICATE_REQUEST", correlation_id)
@@ -185,12 +190,9 @@ class DuplicateRequestError(ProtectionError):
 
 class TimeoutError(ProtectionError):
     """Operation timeout error"""
-    
+
     def __init__(
-        self,
-        operation: str,
-        timeout_duration: float,
-        correlation_id: str = ""
+        self, operation: str, timeout_duration: float, correlation_id: str = ""
     ):
         message = f"Operation '{operation}' timed out after {timeout_duration} seconds."
         super().__init__(message, "OPERATION_TIMEOUT", correlation_id)
@@ -201,6 +203,7 @@ class TimeoutError(ProtectionError):
 @dataclass
 class ProtectionErrorResponse:
     """Standardized error response for protection violations"""
+
     error_type: str
     message: str
     retry_after: Optional[int] = None
@@ -208,7 +211,7 @@ class ProtectionErrorResponse:
     correlation_id: str = ""
     timestamp: str = ""
     suggestions: List[str] = field(default_factory=list)
-    
+
     @classmethod
     def from_rate_limit_error(cls, error: RateLimitError) -> "ProtectionErrorResponse":
         """Create response from rate limit error"""
@@ -222,12 +225,14 @@ class ProtectionErrorResponse:
             suggestions=[
                 "Wait for the specified retry period",
                 "Reduce request frequency",
-                "Contact support if this limit seems incorrect"
-            ]
+                "Contact support if this limit seems incorrect",
+            ],
         )
-    
+
     @classmethod
-    def from_duplicate_error(cls, error: DuplicateRequestError) -> "ProtectionErrorResponse":
+    def from_duplicate_error(
+        cls, error: DuplicateRequestError
+    ) -> "ProtectionErrorResponse":
         """Create response from duplicate request error"""
         return cls(
             error_type="duplicate_request",
@@ -239,10 +244,10 @@ class ProtectionErrorResponse:
             suggestions=[
                 "Avoid sending identical requests rapidly",
                 "Check for client-side loops or bugs",
-                "Wait for the duplicate detection window to expire"
-            ]
+                "Wait for the duplicate detection window to expire",
+            ],
         )
-    
+
     @classmethod
     def from_timeout_error(cls, error: TimeoutError) -> "ProtectionErrorResponse":
         """Create response from timeout error"""
@@ -255,38 +260,38 @@ class ProtectionErrorResponse:
             suggestions=[
                 "Simplify your query to reduce processing time",
                 "Try breaking complex requests into smaller parts",
-                "Contact support if timeouts persist"
-            ]
+                "Contact support if timeouts persist",
+            ],
         )
 
 
 @dataclass
 class ProtectionMetrics:
     """Metrics collected by the protection system"""
-    
+
     # Rate limiting metrics
     rate_limit_checks: int = 0
     rate_limit_blocks: int = 0
     rate_limit_errors: int = 0
-    
+
     # Deduplication metrics
     dedup_checks: int = 0
     dedup_blocks: int = 0
     dedup_errors: int = 0
-    
+
     # Timeout metrics
     timeout_checks: int = 0
     timeout_blocks: int = 0
     timeout_errors: int = 0
-    
+
     # Performance metrics
     avg_check_duration: float = 0.0
     max_check_duration: float = 0.0
-    
+
     # System metrics
     redis_errors: int = 0
     memory_usage: int = 0
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert metrics to dictionary for serialization"""
         return {
@@ -294,41 +299,42 @@ class ProtectionMetrics:
                 "checks": self.rate_limit_checks,
                 "blocks": self.rate_limit_blocks,
                 "errors": self.rate_limit_errors,
-                "block_rate": self.rate_limit_blocks / max(self.rate_limit_checks, 1)
+                "block_rate": self.rate_limit_blocks / max(self.rate_limit_checks, 1),
             },
             "deduplication": {
                 "checks": self.dedup_checks,
                 "blocks": self.dedup_blocks,
                 "errors": self.dedup_errors,
-                "block_rate": self.dedup_blocks / max(self.dedup_checks, 1)
+                "block_rate": self.dedup_blocks / max(self.dedup_checks, 1),
             },
             "timeouts": {
                 "checks": self.timeout_checks,
                 "blocks": self.timeout_blocks,
                 "errors": self.timeout_errors,
-                "block_rate": self.timeout_blocks / max(self.timeout_checks, 1)
+                "block_rate": self.timeout_blocks / max(self.timeout_checks, 1),
             },
             "performance": {
                 "avg_check_duration_ms": self.avg_check_duration * 1000,
-                "max_check_duration_ms": self.max_check_duration * 1000
+                "max_check_duration_ms": self.max_check_duration * 1000,
             },
             "system": {
                 "redis_errors": self.redis_errors,
-                "memory_usage_bytes": self.memory_usage
-            }
+                "memory_usage_bytes": self.memory_usage,
+            },
         }
 
 
 @dataclass
 class SystemMetrics:
     """System-wide metrics for adaptive protection behavior"""
+
     overall_health_score: float = 1.0  # 0.0 to 1.0
     cpu_usage: float = 0.0  # 0.0 to 100.0
     memory_usage: float = 0.0  # 0.0 to 100.0
     active_connections: int = 0
     error_rate: float = 0.0  # 0.0 to 1.0
     timestamp: datetime = None
-    
+
     def __post_init__(self):
         if self.timestamp is None:
             self.timestamp = datetime.now(timezone.utc)

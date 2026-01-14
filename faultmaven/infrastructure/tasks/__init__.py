@@ -20,7 +20,7 @@ Usage:
 from faultmaven.infrastructure.tasks.case_cleanup import (
     start_case_cleanup_scheduler,
     stop_case_cleanup_scheduler,
-    cleanup_orphaned_collections_task
+    cleanup_orphaned_collections_task,
 )
 
 from faultmaven.infrastructure.tasks.job_runners import (

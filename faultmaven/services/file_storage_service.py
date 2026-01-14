@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from faultmaven.services.base import BaseService
 from faultmaven.exceptions import ValidationException, ServiceError
+
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
@@ -48,7 +49,7 @@ class FileStorageService(BaseService):
     # Characters that are dangerous in filenames
     DANGEROUS_CHARS_PATTERN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
     # Path traversal patterns
-    PATH_TRAVERSAL_PATTERN = re.compile(r'\.\.[\\/]|[\\/]\.\.')
+    PATH_TRAVERSAL_PATTERN = re.compile(r"\.\.[\\/]|[\\/]\.\.")
 
     def __init__(
         self,
@@ -81,7 +82,7 @@ class FileStorageService(BaseService):
         original_filename: str,
         organization_id: str,
         case_id: str,
-        mime_type: str
+        mime_type: str,
     ) -> Dict[str, Any]:
         """Store file to filesystem.
 
@@ -136,7 +137,7 @@ class FileStorageService(BaseService):
             await aiofiles.os.makedirs(directory, exist_ok=True)
 
             # Write file to disk
-            async with aiofiles.open(full_path, 'wb') as f:
+            async with aiofiles.open(full_path, "wb") as f:
                 await f.write(file_data)
 
             file_size = len(file_data)
@@ -163,10 +164,7 @@ class FileStorageService(BaseService):
             self.log_error("store_file", e, original_filename=original_filename)
             raise ServiceError(f"Failed to store file: {e}")
 
-    async def retrieve_file(
-        self,
-        file_path: str
-    ) -> bytes:
+    async def retrieve_file(self, file_path: str) -> bytes:
         """Retrieve file from storage.
 
         Args:
@@ -190,10 +188,11 @@ class FileStorageService(BaseService):
             # Check if file exists
             if not await aiofiles.os.path.exists(full_path):
                 from faultmaven.exceptions import NotFoundError
+
                 raise NotFoundError("File", file_path)
 
             # Read file
-            async with aiofiles.open(full_path, 'rb') as f:
+            async with aiofiles.open(full_path, "rb") as f:
                 data = await f.read()
 
             self.log_operation(
@@ -205,15 +204,12 @@ class FileStorageService(BaseService):
             return data
 
         except Exception as e:
-            if hasattr(e, 'resource_type'):  # NotFoundError
+            if hasattr(e, "resource_type"):  # NotFoundError
                 raise
             self.log_error("retrieve_file", e, file_path=file_path)
             raise ServiceError(f"Failed to retrieve file: {e}")
 
-    async def delete_file(
-        self,
-        file_path: str
-    ) -> bool:
+    async def delete_file(self, file_path: str) -> bool:
         """Delete file from storage.
 
         Args:
@@ -246,10 +242,7 @@ class FileStorageService(BaseService):
             self.log_error("delete_file", e, file_path=file_path)
             return False
 
-    async def get_file_info(
-        self,
-        file_path: str
-    ) -> Optional[Dict[str, Any]]:
+    async def get_file_info(self, file_path: str) -> Optional[Dict[str, Any]]:
         """Get file metadata without reading content.
 
         Args:
@@ -289,10 +282,7 @@ class FileStorageService(BaseService):
             return None
 
     def validate_file(
-        self,
-        file_size: int,
-        mime_type: str,
-        original_filename: str
+        self, file_size: int, mime_type: str, original_filename: str
     ) -> None:
         """Validate file before storage.
 
@@ -308,7 +298,7 @@ class FileStorageService(BaseService):
         if file_size <= 0:
             raise ValidationException(
                 "file_size: File size must be greater than 0",
-                details={"file_size": file_size}
+                details={"file_size": file_size},
             )
 
         if file_size > self.max_file_size_bytes:
@@ -319,7 +309,7 @@ class FileStorageService(BaseService):
                 details={
                     "file_size": file_size,
                     "max_file_size_bytes": self.max_file_size_bytes,
-                }
+                },
             )
 
         # Validate MIME type (if restrictions configured)
@@ -329,35 +319,32 @@ class FileStorageService(BaseService):
                 details={
                     "mime_type": mime_type,
                     "allowed_mime_types": self.allowed_mime_types,
-                }
+                },
             )
 
         # Validate filename
         if not original_filename or not original_filename.strip():
             raise ValidationException(
                 "original_filename: Filename is required",
-                details={"original_filename": original_filename}
+                details={"original_filename": original_filename},
             )
 
         # Check for path traversal in filename
         if self.PATH_TRAVERSAL_PATTERN.search(original_filename):
             raise ValidationException(
                 "original_filename: Filename contains invalid path traversal characters",
-                details={"original_filename": original_filename}
+                details={"original_filename": original_filename},
             )
 
         # Check for dangerous characters
         if self.DANGEROUS_CHARS_PATTERN.search(original_filename):
             raise ValidationException(
                 "original_filename: Filename contains invalid characters",
-                details={"original_filename": original_filename}
+                details={"original_filename": original_filename},
             )
 
     def _generate_storage_path(
-        self,
-        organization_id: str,
-        case_id: str,
-        original_filename: str
+        self, organization_id: str, case_id: str, original_filename: str
     ) -> Tuple[str, str]:
         """Generate storage path and stored filename.
 
@@ -389,10 +376,7 @@ class FileStorageService(BaseService):
 
         # Build relative path
         file_path = os.path.join(
-            safe_org_id,
-            safe_case_id,
-            date_folder,
-            stored_filename
+            safe_org_id, safe_case_id, date_folder, stored_filename
         )
 
         return stored_filename, file_path
@@ -409,10 +393,10 @@ class FileStorageService(BaseService):
             Sanitized filename
         """
         # Remove path separators and dangerous characters
-        safe = self.DANGEROUS_CHARS_PATTERN.sub('_', filename)
+        safe = self.DANGEROUS_CHARS_PATTERN.sub("_", filename)
 
         # Remove leading/trailing dots and spaces
-        safe = safe.strip('. ')
+        safe = safe.strip(". ")
 
         # If empty after sanitization, use a default name
         if not safe:
@@ -422,10 +406,10 @@ class FileStorageService(BaseService):
         max_length = 200
         if len(safe) > max_length:
             # Try to preserve extension
-            if '.' in safe:
-                name, ext = safe.rsplit('.', 1)
+            if "." in safe:
+                name, ext = safe.rsplit(".", 1)
                 ext = ext[:20]  # Limit extension length
-                name = name[:max_length - len(ext) - 1]
+                name = name[: max_length - len(ext) - 1]
                 safe = f"{name}.{ext}"
             else:
                 safe = safe[:max_length]
@@ -442,10 +426,10 @@ class FileStorageService(BaseService):
             Sanitized component
         """
         # Remove path separators and dangerous characters
-        safe = re.sub(r'[<>:"/\\|?*\x00-\x1f./]', '_', component)
+        safe = re.sub(r'[<>:"/\\|?*\x00-\x1f./]', "_", component)
 
         # Remove leading/trailing underscores
-        safe = safe.strip('_')
+        safe = safe.strip("_")
 
         # If empty after sanitization, use a placeholder
         if not safe:
@@ -469,14 +453,14 @@ class FileStorageService(BaseService):
         if self.PATH_TRAVERSAL_PATTERN.search(file_path):
             raise ValidationException(
                 "file_path: Path contains invalid traversal sequences",
-                details={"file_path": file_path}
+                details={"file_path": file_path},
             )
 
         # Ensure path doesn't start with / (absolute path)
-        if file_path.startswith('/') or file_path.startswith('\\'):
+        if file_path.startswith("/") or file_path.startswith("\\"):
             raise ValidationException(
                 "file_path: Path must be relative, not absolute",
-                details={"file_path": file_path}
+                details={"file_path": file_path},
             )
 
     async def ensure_storage_directory(self) -> bool:
@@ -489,7 +473,9 @@ class FileStorageService(BaseService):
             await aiofiles.os.makedirs(self.storage_root, exist_ok=True)
             return True
         except Exception as e:
-            self.log_error("ensure_storage_directory", e, storage_root=self.storage_root)
+            self.log_error(
+                "ensure_storage_directory", e, storage_root=self.storage_root
+            )
             return False
 
     async def get_storage_stats(self) -> Dict[str, Any]:

@@ -56,8 +56,12 @@ def register_services(redis_client=None) -> None:
 
     # Import service classes
     from faultmaven.services.auth_service import AuthService
-    from faultmaven.modules.knowledge.domain.services.embedding_service import EmbeddingService
-    from faultmaven.modules.knowledge.domain.services.vector_store_service import VectorStoreService
+    from faultmaven.modules.knowledge.domain.services.embedding_service import (
+        EmbeddingService,
+    )
+    from faultmaven.modules.knowledge.domain.services.vector_store_service import (
+        VectorStoreService,
+    )
     from faultmaven.services.file_storage_service import FileStorageService
 
     # AuthService - Used by UserService
@@ -85,9 +89,9 @@ def register_services(redis_client=None) -> None:
         logger.debug("Creating EmbeddingService via DI container")
         # Use settings to determine which provider/model
         return EmbeddingService(
-            provider=getattr(settings, 'embedding_provider', 'openai'),
-            model=getattr(settings, 'embedding_model', 'text-embedding-3-small'),
-            api_key=getattr(settings, 'openai_api_key', None),
+            provider=getattr(settings, "embedding_provider", "openai"),
+            model=getattr(settings, "embedding_model", "text-embedding-3-small"),
+            api_key=getattr(settings, "openai_api_key", None),
         )
 
     ServiceContainer.register_factory(EmbeddingService, create_embedding_service)
@@ -96,8 +100,12 @@ def register_services(redis_client=None) -> None:
     def create_vector_store_service():
         logger.debug("Creating VectorStoreService via DI container")
         return VectorStoreService(
-            collection_name=getattr(settings, 'vector_store_collection', 'knowledge_base'),
-            chroma_persist_directory=getattr(settings, 'chroma_persist_directory', './data/chroma'),
+            collection_name=getattr(
+                settings, "vector_store_collection", "knowledge_base"
+            ),
+            chroma_persist_directory=getattr(
+                settings, "chroma_persist_directory", "./data/chroma"
+            ),
         )
 
     ServiceContainer.register_factory(VectorStoreService, create_vector_store_service)
@@ -106,9 +114,11 @@ def register_services(redis_client=None) -> None:
     def create_file_storage_service():
         logger.debug("Creating FileStorageService via DI container")
         return FileStorageService(
-            storage_root=getattr(settings, 'evidence_storage_root', './data/evidence'),
-            max_file_size_bytes=getattr(settings, 'max_evidence_file_size', 100 * 1024 * 1024),
-            allowed_mime_types=getattr(settings, 'allowed_evidence_mime_types', []),
+            storage_root=getattr(settings, "evidence_storage_root", "./data/evidence"),
+            max_file_size_bytes=getattr(
+                settings, "max_evidence_file_size", 100 * 1024 * 1024
+            ),
+            allowed_mime_types=getattr(settings, "allowed_evidence_mime_types", []),
         )
 
     ServiceContainer.register_factory(FileStorageService, create_file_storage_service)
@@ -118,7 +128,9 @@ def register_services(redis_client=None) -> None:
     # ============================================================
 
     # Import mid-level services
-    from faultmaven.services.investigation_session_service import APIInvestigationSessionService
+    from faultmaven.services.investigation_session_service import (
+        APIInvestigationSessionService,
+    )
     from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
     from faultmaven.infrastructure.persistence.repository_factory import (
         get_investigation_session_repository,
@@ -132,11 +144,17 @@ def register_services(redis_client=None) -> None:
     # Note: These are request-scoped and require DB session, so we register
     # a factory that expects repositories to be injected by ServiceFactory
     def create_investigation_session_service():
-        logger.debug("Creating APIInvestigationSessionService via DI container (in-memory)")
+        logger.debug(
+            "Creating APIInvestigationSessionService via DI container (in-memory)"
+        )
         # For DI container, use in-memory repositories as fallback
         # In production, ServiceFactory should be used with proper DB session
-        session_repo = get_investigation_session_repository(storage_type=STORAGE_TYPE_INMEMORY)
-        execution_repo = get_agent_execution_repository(storage_type=STORAGE_TYPE_INMEMORY)
+        session_repo = get_investigation_session_repository(
+            storage_type=STORAGE_TYPE_INMEMORY
+        )
+        execution_repo = get_agent_execution_repository(
+            storage_type=STORAGE_TYPE_INMEMORY
+        )
         case_repo = get_case_repository(storage_type=STORAGE_TYPE_INMEMORY)
 
         return APIInvestigationSessionService(
@@ -145,12 +163,16 @@ def register_services(redis_client=None) -> None:
             case_repo=case_repo,
         )
 
-    ServiceContainer.register_factory(APIInvestigationSessionService, create_investigation_session_service)
+    ServiceContainer.register_factory(
+        APIInvestigationSessionService, create_investigation_session_service
+    )
 
     # APIEvidenceArtifactService - Used by AgentOrchestrationService
     def create_evidence_artifact_service():
         logger.debug("Creating APIEvidenceArtifactService via DI container (in-memory)")
-        evidence_repo = get_evidence_artifact_repository(storage_type=STORAGE_TYPE_INMEMORY)
+        evidence_repo = get_evidence_artifact_repository(
+            storage_type=STORAGE_TYPE_INMEMORY
+        )
         case_repo = get_case_repository(storage_type=STORAGE_TYPE_INMEMORY)
 
         # FileStorageService will be injected via DI
@@ -160,10 +182,14 @@ def register_services(redis_client=None) -> None:
             file_storage=None,  # Will be injected via DI
         )
 
-    ServiceContainer.register_factory(APIEvidenceArtifactService, create_evidence_artifact_service)
+    ServiceContainer.register_factory(
+        APIEvidenceArtifactService, create_evidence_artifact_service
+    )
 
     logger.info(f"Registered {len(ServiceContainer._factories)} service factories")
-    logger.debug(f"Registered services: {list(ServiceContainer.get_registered_services().keys())}")
+    logger.debug(
+        f"Registered services: {list(ServiceContainer.get_registered_services().keys())}"
+    )
 
 
 def clear_service_instances() -> None:

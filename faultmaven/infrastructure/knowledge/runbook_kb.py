@@ -22,7 +22,7 @@ from faultmaven.models.report import (
     RunbookSource,
     SimilarRunbook,
     RunbookMetadata,
-    ReportStatus
+    ReportStatus,
 )
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 from faultmaven.infrastructure.base_client import BaseExternalClient
@@ -59,7 +59,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
             service_name="RunbookKB",
             enable_circuit_breaker=True,
             circuit_breaker_threshold=5,
-            circuit_breaker_timeout=30
+            circuit_breaker_timeout=30,
         )
 
         self.vector_store = vector_store
@@ -67,7 +67,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
         logger.info(
             "RunbookKnowledgeBase initialized",
-            extra={"collection": self.COLLECTION_NAME}
+            extra={"collection": self.COLLECTION_NAME},
         )
 
     async def search_runbooks(
@@ -92,6 +92,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
         Returns:
             List of SimilarRunbook objects sorted by similarity score (descending)
         """
+
         async def _search_wrapper():
             # Build ChromaDB where clause from filters
             where_clause = {"report_type": "runbook"}
@@ -104,9 +105,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
             # Query vector database
             try:
                 results = await self.vector_store.query_by_embedding(
-                    query_embedding=query_embedding,
-                    where=where_clause,
-                    top_k=top_k
+                    query_embedding=query_embedding, where=where_clause, top_k=top_k
                 )
             except Exception as e:
                 logger.error(f"ChromaDB query failed: {e}")
@@ -149,25 +148,33 @@ class RunbookKnowledgeBase(BaseExternalClient):
                         content=content,
                         format="markdown",
                         generation_status=ReportStatus.COMPLETED,
-                        generated_at=metadata.get("created_at", to_json_compatible(datetime.now(timezone.utc))),
+                        generated_at=metadata.get(
+                            "created_at", to_json_compatible(datetime.now(timezone.utc))
+                        ),
                         generation_time_ms=0,  # Not stored for indexed runbooks
                         is_current=True,
                         version=1,
                         linked_to_closure=False,
                         metadata=RunbookMetadata(
-                            source=RunbookSource(metadata.get("runbook_source", "incident_driven")),
+                            source=RunbookSource(
+                                metadata.get("runbook_source", "incident_driven")
+                            ),
                             domain=metadata.get("domain", "general"),
-                            tags=metadata.get("tags", "").split(",") if metadata.get("tags") else [],
+                            tags=(
+                                metadata.get("tags", "").split(",")
+                                if metadata.get("tags")
+                                else []
+                            ),
                             document_title=metadata.get("document_title"),
                             case_context=None,  # Not reconstructed from search
-                        )
+                        ),
                     )
 
                     similar_runbook = SimilarRunbook(
                         runbook=runbook,
                         similarity_score=similarity,
                         case_title=metadata.get("case_title", "Unknown"),
-                        case_id=metadata.get("case_id", "unknown")
+                        case_id=metadata.get("case_id", "unknown"),
                     )
 
                     similar_runbooks.append(similar_runbook)
@@ -182,9 +189,13 @@ class RunbookKnowledgeBase(BaseExternalClient):
             logger.info(
                 f"Found {len(similar_runbooks)} similar runbooks",
                 extra={
-                    "top_similarity": similar_runbooks[0].similarity_score if similar_runbooks else 0.0,
-                    "min_threshold": min_similarity
-                }
+                    "top_similarity": (
+                        similar_runbooks[0].similarity_score
+                        if similar_runbooks
+                        else 0.0
+                    ),
+                    "min_threshold": min_similarity,
+                },
             )
 
             return similar_runbooks
@@ -193,7 +204,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
             operation_name="search_runbooks",
             call_func=_search_wrapper,
             timeout=5.0,  # 5 seconds for vector search
-            retries=2
+            retries=2,
         )
 
     async def index_runbook(
@@ -221,13 +232,17 @@ class RunbookKnowledgeBase(BaseExternalClient):
             tags: Classification tags (optional, will use from runbook.metadata)
         """
         if runbook.report_type != ReportType.RUNBOOK:
-            logger.warning(f"Attempted to index non-runbook report type: {runbook.report_type}")
+            logger.warning(
+                f"Attempted to index non-runbook report type: {runbook.report_type}"
+            )
             return
 
         async def _index_wrapper():
             # Extract metadata
             metadata_obj = runbook.metadata
-            final_domain = domain or (metadata_obj.domain if metadata_obj else "general")
+            final_domain = domain or (
+                metadata_obj.domain if metadata_obj else "general"
+            )
             final_tags = tags or (metadata_obj.tags if metadata_obj else [])
             final_case_title = case_title or runbook.title
 
@@ -249,7 +264,9 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 if metadata_obj.document_title:
                     chroma_metadata["document_title"] = metadata_obj.document_title
                 if metadata_obj.original_document_id:
-                    chroma_metadata["original_document_id"] = metadata_obj.original_document_id
+                    chroma_metadata["original_document_id"] = (
+                        metadata_obj.original_document_id
+                    )
 
             # Create embedding for runbook content
             # Note: Embedding generation should use same model as knowledge base (BGE-M3)
@@ -257,11 +274,13 @@ class RunbookKnowledgeBase(BaseExternalClient):
             # In production, should use explicit BGE-M3 model
 
             # Add to vector store
-            documents = [{
-                "id": runbook.report_id,
-                "content": runbook.content,
-                "metadata": chroma_metadata
-            }]
+            documents = [
+                {
+                    "id": runbook.report_id,
+                    "content": runbook.content,
+                    "metadata": chroma_metadata,
+                }
+            ]
 
             await self.vector_store.add_documents(documents)
 
@@ -271,15 +290,15 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     "report_id": runbook.report_id,
                     "source": source.value,
                     "domain": final_domain,
-                    "tags": final_tags
-                }
+                    "tags": final_tags,
+                },
             )
 
         await self.call_external(
             operation_name="index_runbook",
             call_func=_index_wrapper,
             timeout=10.0,
-            retries=2
+            retries=2,
         )
 
     async def index_document_derived_runbook(
@@ -328,8 +347,8 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 document_title=document_title,
                 original_document_id=original_document_id,
                 domain=domain,
-                tags=tags
-            )
+                tags=tags,
+            ),
         )
 
         # Index for similarity search
@@ -338,7 +357,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
             source=RunbookSource.DOCUMENT_DRIVEN,
             case_title=document_title,
             domain=domain,
-            tags=tags
+            tags=tags,
         )
 
         logger.info(
@@ -346,8 +365,8 @@ class RunbookKnowledgeBase(BaseExternalClient):
             extra={
                 "runbook_id": runbook_id,
                 "document_title": document_title,
-                "domain": domain
-            }
+                "domain": domain,
+            },
         )
 
         return runbook_id

@@ -197,9 +197,15 @@ class TestDetermineResponseType:
         ooda_response = LeadInvestigatorResponse(
             answer="Here's the plan",
             suggested_actions=[
-                SuggestedAction(action_type="command", label="Step 1", description="Execute step 1"),
-                SuggestedAction(action_type="command", label="Step 2", description="Execute step 2"),
-                SuggestedAction(action_type="command", label="Step 3", description="Execute step 3"),
+                SuggestedAction(
+                    action_type="command", label="Step 1", description="Execute step 1"
+                ),
+                SuggestedAction(
+                    action_type="command", label="Step 2", description="Execute step 2"
+                ),
+                SuggestedAction(
+                    action_type="command", label="Step 3", description="Execute step 3"
+                ),
             ],
         )
 

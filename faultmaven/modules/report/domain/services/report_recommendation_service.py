@@ -17,8 +17,9 @@ from faultmaven.modules.report.domain.models import (
     ReportRecommendation,
     RunbookRecommendation,
     SimilarRunbook,
-    CaseReport
+    CaseReport,
 )
+
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import Case
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
@@ -45,7 +46,9 @@ class ReportRecommendationService(BaseService):
     def __init__(
         self,
         runbook_kb: RunbookKnowledgeBase,
-        embedding_service: Optional[Any] = None  # For future explicit embedding generation
+        embedding_service: Optional[
+            Any
+        ] = None,  # For future explicit embedding generation
     ):
         """
         Initialize report recommendation service.
@@ -78,8 +81,7 @@ class ReportRecommendationService(BaseService):
             ReportRecommendation with available types and runbook suggestion
         """
         logger.info(
-            f"Getting report recommendations for case",
-            extra={"case_id": case.case_id}
+            f"Getting report recommendations for case", extra={"case_id": case.case_id}
         )
 
         # Always available: incident-specific reports
@@ -101,7 +103,7 @@ class ReportRecommendationService(BaseService):
         recommendation = ReportRecommendation(
             case_id=case.case_id,
             available_for_generation=available_types,
-            runbook_recommendation=runbook_rec
+            runbook_recommendation=runbook_rec,
         )
 
         logger.info(
@@ -109,8 +111,8 @@ class ReportRecommendationService(BaseService):
             extra={
                 "case_id": case.case_id,
                 "runbook_action": runbook_rec.action,
-                "available_types": [t.value for t in available_types]
-            }
+                "available_types": [t.value for t in available_types],
+            },
         )
 
         return recommendation
@@ -140,7 +142,7 @@ class ReportRecommendationService(BaseService):
 
             # Build filters for similarity search
             filters = {}
-            if hasattr(case, 'domain') and case.domain:
+            if hasattr(case, "domain") and case.domain:
                 filters["domain"] = case.domain
 
             # Search knowledge base for similar runbooks
@@ -156,21 +158,19 @@ class ReportRecommendationService(BaseService):
                     f"Found {len(similar_runbooks)} similar runbooks",
                     extra={
                         "case_id": case.case_id,
-                        "top_similarity": similar_runbooks[0].similarity_score
-                    }
+                        "top_similarity": similar_runbooks[0].similarity_score,
+                    },
                 )
             else:
                 logger.debug(
-                    f"No similar runbooks found",
-                    extra={"case_id": case.case_id}
+                    f"No similar runbooks found", extra={"case_id": case.case_id}
                 )
 
             return similar_runbooks
 
         except Exception as e:
             logger.error(
-                f"Error finding similar runbooks: {e}",
-                extra={"case_id": case.case_id}
+                f"Error finding similar runbooks: {e}", extra={"case_id": case.case_id}
             )
             # Return empty list on error - fail gracefully
             return []
@@ -204,11 +204,11 @@ class ReportRecommendationService(BaseService):
             searchable_parts.append(case.description)
 
         # Add domain if available
-        if hasattr(case, 'domain') and case.domain:
+        if hasattr(case, "domain") and case.domain:
             searchable_parts.append(f"Domain: {case.domain}")
 
         # Add tags if available
-        if hasattr(case, 'tags') and case.tags:
+        if hasattr(case, "tags") and case.tags:
             searchable_parts.append(f"Tags: {', '.join(case.tags)}")
 
         # For now, return dummy embedding
@@ -222,7 +222,7 @@ class ReportRecommendationService(BaseService):
 
         logger.debug(
             f"Created case embedding",
-            extra={"case_id": case.case_id, "text_length": len(searchable_text)}
+            extra={"case_id": case.case_id, "text_length": len(searchable_text)},
         )
 
         # Return empty list for now - will be handled by ChromaDB
@@ -230,8 +230,7 @@ class ReportRecommendationService(BaseService):
         return []
 
     def _generate_runbook_recommendation(
-        self,
-        similar_runbooks: List[SimilarRunbook]
+        self, similar_runbooks: List[SimilarRunbook]
     ) -> RunbookRecommendation:
         """
         Generate runbook recommendation based on similarity analysis.
@@ -253,7 +252,7 @@ class ReportRecommendationService(BaseService):
                 action="generate",
                 existing_runbook=None,
                 similarity_score=None,
-                reason="No similar runbooks found. Generate new runbook."
+                reason="No similar runbooks found. Generate new runbook.",
             )
 
         # Get best match (highest similarity)
@@ -269,7 +268,7 @@ class ReportRecommendationService(BaseService):
                 reason=(
                     f"Found existing runbook with {similarity:.0%} similarity. "
                     "Recommend using existing runbook instead of generating new one."
-                )
+                ),
             )
 
         elif similarity >= self.MODERATE_SIMILARITY_THRESHOLD:
@@ -281,7 +280,7 @@ class ReportRecommendationService(BaseService):
                 reason=(
                     f"Found similar runbook ({similarity:.0%} match). "
                     "Review existing runbook or generate new one if significantly different."
-                )
+                ),
             )
 
         else:
@@ -293,5 +292,5 @@ class ReportRecommendationService(BaseService):
                 reason=(
                     f"Existing runbooks have low similarity ({similarity:.0%}). "
                     "Generate new runbook for this specific scenario."
-                )
+                ),
             )

@@ -439,6 +439,7 @@ class TestUserModel:
 # Bug Fix Tests: Email Uniqueness and Immutability (Priority 1)
 # ============================================================
 
+
 class TestEmailUniquenessEnforcement:
     """Tests for email uniqueness enforcement (BUGFIX: Priority 1).
 
@@ -644,7 +645,9 @@ class TestEmailUniquenessEnforcement:
         assert "Email already registered" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_update_detects_changes_correctly_with_immutable_storage(self, user_repo):
+    async def test_update_detects_changes_correctly_with_immutable_storage(
+        self, user_repo
+    ):
         """Update should correctly detect changes when using immutable storage.
 
         This test ensures that the immutable copy fix doesn't break the

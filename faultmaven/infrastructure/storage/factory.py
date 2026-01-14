@@ -62,6 +62,7 @@ def get_storage_backend(
 
     # Get settings
     from faultmaven.config.settings import get_settings
+
     settings = get_settings()
 
     # Determine storage type

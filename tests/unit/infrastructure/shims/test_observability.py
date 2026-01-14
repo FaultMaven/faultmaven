@@ -152,8 +152,7 @@ class TestTracingStatus:
         with patch.dict(os.environ, {"ENABLE_TRACING": "true"}):
             # Mock Opik as unavailable
             with patch(
-                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE", False
             ):
                 from faultmaven.infrastructure.shims import observability
 
@@ -175,8 +174,7 @@ class TestTracingStatus:
         """Test is_tracing_active when enabled but Opik not installed."""
         with patch.dict(os.environ, {"ENABLE_TRACING": "true"}):
             with patch(
-                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE", False
             ):
                 from faultmaven.infrastructure.shims import observability
 
@@ -198,8 +196,7 @@ class TestOpikAvailability:
         """Test track decorator when Opik is simulated as unavailable."""
         with patch.dict(os.environ, {"ENABLE_TRACING": "true"}):
             with patch(
-                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE",
-                False
+                "faultmaven.infrastructure.shims.observability.OPIK_AVAILABLE", False
             ):
                 from faultmaven.infrastructure.shims import observability
 
@@ -217,22 +214,27 @@ class TestOpikAvailability:
 class TestEnvironmentVariableHandling:
     """Tests for environment variable edge cases."""
 
-    @pytest.mark.parametrize("value,expected", [
-        ("true", True),
-        ("True", True),
-        ("TRUE", True),
-        ("false", False),
-        ("False", False),
-        ("FALSE", False),
-        ("0", False),
-        ("1", False),  # Only "true" (case-insensitive) enables
-        ("yes", False),  # Only "true" (case-insensitive) enables
-        ("", False),
-    ])
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("true", True),
+            ("True", True),
+            ("TRUE", True),
+            ("false", False),
+            ("False", False),
+            ("FALSE", False),
+            ("0", False),
+            ("1", False),  # Only "true" (case-insensitive) enables
+            ("yes", False),  # Only "true" (case-insensitive) enables
+            ("", False),
+        ],
+    )
     def test_enable_tracing_values(self, value: str, expected: bool):
         """Test various ENABLE_TRACING values."""
         with patch.dict(os.environ, {"ENABLE_TRACING": value}):
-            from faultmaven.infrastructure.shims.observability import _is_tracing_enabled
+            from faultmaven.infrastructure.shims.observability import (
+                _is_tracing_enabled,
+            )
 
             result = _is_tracing_enabled()
             assert result is expected, f"ENABLE_TRACING={value} should be {expected}"

@@ -388,6 +388,7 @@ class TestEvidenceArtifactMethods:
 
         # Wait a tiny bit to ensure timestamp difference
         import time
+
         time.sleep(0.001)
 
         sample_evidence.touch()

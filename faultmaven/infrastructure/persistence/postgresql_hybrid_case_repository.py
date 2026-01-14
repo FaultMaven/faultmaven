@@ -117,7 +117,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
                 # 6. Append status transitions (append-only)
                 if case.status_history:
-                    await self._append_status_transitions(case.case_id, case.status_history)
+                    await self._append_status_transitions(
+                        case.case_id, case.status_history
+                    )
 
                 await self.db.commit()
 
@@ -141,7 +143,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         try:
             # Main query with LEFT JOINs for normalized tables
-            query = text("""
+            query = text(
+                """
                 SELECT
                     c.*,
 
@@ -220,7 +223,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 LEFT JOIN uploaded_files f ON c.case_id = f.case_id
                 WHERE c.case_id = :case_id
                 GROUP BY c.case_id
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"case_id": case_id})
             row = result.fetchone()
@@ -240,7 +244,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         organization_id: Optional[str] = None,
         status: Optional[CaseStatus] = None,
         limit: int = 50,
-        offset: int = 0
+        offset: int = 0,
     ) -> tuple[List[Case], int]:
         """
         List cases with optional filters and pagination.
@@ -282,13 +286,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             total_count = count_result.scalar()
 
             # List query (simplified - just get case IDs, then fetch full cases)
-            list_query = text(f"""
+            list_query = text(
+                f"""
                 SELECT case_id
                 FROM cases
                 {where_sql}
                 ORDER BY updated_at DESC
                 LIMIT :limit OFFSET :offset
-            """)
+            """
+            )
 
             result = await self.db.execute(list_query, params)
             case_ids = [row[0] for row in result.fetchall()]
@@ -331,7 +337,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         case_id: str,
         target_user_id: str,
         role: str,  # ParticipantRole: owner, collaborator, viewer
-        sharer_user_id: Optional[str] = None
+        sharer_user_id: Optional[str] = None,
     ) -> bool:
         """
         Share a case with another user.
@@ -349,21 +355,26 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         try:
             # Use the upsert_case_participant function from migration 002
-            query = text("""
+            query = text(
+                """
                 SELECT upsert_case_participant(
                     :case_id,
                     :user_id,
                     :role::participant_role,
                     :added_by
                 )
-            """)
+            """
+            )
 
-            await self.db.execute(query, {
-                "case_id": case_id,
-                "user_id": target_user_id,
-                "role": role,
-                "added_by": sharer_user_id or target_user_id
-            })
+            await self.db.execute(
+                query,
+                {
+                    "case_id": case_id,
+                    "user_id": target_user_id,
+                    "role": role,
+                    "added_by": sharer_user_id or target_user_id,
+                },
+            )
             await self.db.commit()
 
             self.logger.info(
@@ -376,10 +387,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             raise RepositoryException(f"Failed to share case {case_id}: {e}") from e
 
     async def unshare_case(
-        self,
-        case_id: str,
-        user_id: str,
-        unsharer_user_id: Optional[str] = None
+        self, case_id: str, user_id: str, unsharer_user_id: Optional[str] = None
     ) -> bool:
         """
         Unshare a case from a user.
@@ -394,24 +402,27 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         try:
             # Use the remove_case_participant function from migration 002
-            query = text("""
+            query = text(
+                """
                 SELECT remove_case_participant(
                     :case_id,
                     :user_id,
                     :removed_by
                 )
-            """)
+            """
+            )
 
-            await self.db.execute(query, {
-                "case_id": case_id,
-                "user_id": user_id,
-                "removed_by": unsharer_user_id or user_id
-            })
+            await self.db.execute(
+                query,
+                {
+                    "case_id": case_id,
+                    "user_id": user_id,
+                    "removed_by": unsharer_user_id or user_id,
+                },
+            )
             await self.db.commit()
 
-            self.logger.info(
-                f"Unshared case {case_id} from user {user_id}"
-            )
+            self.logger.info(f"Unshared case {case_id} from user {user_id}")
             return True
 
         except Exception as e:
@@ -429,12 +440,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             List of participants with their roles
         """
         try:
-            query = text("""
+            query = text(
+                """
                 SELECT user_id, role, added_at, added_by, last_accessed_at
                 FROM case_participants
                 WHERE case_id = :case_id
                 ORDER BY added_at DESC
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"case_id": case_id})
             rows = result.fetchall()
@@ -445,20 +458,22 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "role": row.role,
                     "added_at": row.added_at,
                     "added_by": row.added_by,
-                    "last_accessed_at": row.last_accessed_at
+                    "last_accessed_at": row.last_accessed_at,
                 }
                 for row in rows
             ]
 
         except Exception as e:
-            raise RepositoryException(f"Failed to get participants for case {case_id}: {e}") from e
+            raise RepositoryException(
+                f"Failed to get participants for case {case_id}: {e}"
+            ) from e
 
     async def search(
         self,
         query: str,
         user_id: Optional[str] = None,
         organization_id: Optional[str] = None,
-        limit: int = 20
+        limit: int = 20,
     ) -> tuple[List[Case], int]:
         """
         Search cases using PostgreSQL full-text search.
@@ -481,7 +496,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         """
         try:
             # Build WHERE clause
-            where_clauses = ["(to_tsvector('english', c.title || ' ' || COALESCE(c.consulting->>'initial_description', '')) @@ plainto_tsquery('english', :query) OR e.preprocessed_content_fts @@ plainto_tsquery('english', :query))"]
+            where_clauses = [
+                "(to_tsvector('english', c.title || ' ' || COALESCE(c.consulting->>'initial_description', '')) @@ plainto_tsquery('english', :query) OR e.preprocessed_content_fts @@ plainto_tsquery('english', :query))"
+            ]
             params = {"query": query, "limit": limit}
 
             if user_id:
@@ -495,7 +512,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             where_sql = "WHERE " + " AND ".join(where_clauses)
 
             # Search query with relevance ranking
-            search_query = text(f"""
+            search_query = text(
+                f"""
                 SELECT DISTINCT c.case_id,
                     ts_rank(to_tsvector('english', c.title), plainto_tsquery('english', :query)) as rank
                 FROM cases c
@@ -503,7 +521,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 {where_sql}
                 ORDER BY rank DESC, c.updated_at DESC
                 LIMIT :limit
-            """)
+            """
+            )
 
             result = await self.db.execute(search_query, params)
             case_ids = [row[0] for row in result.fetchall()]
@@ -536,33 +555,37 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             True if added successfully
         """
         try:
-            message_id = message_dict.get('message_id', f"msg_{uuid4().hex[:16]}")
+            message_id = message_dict.get("message_id", f"msg_{uuid4().hex[:16]}")
 
-            query = text("""
+            query = text(
+                """
                 INSERT INTO case_messages (message_id, case_id, role, content, metadata)
                 VALUES (:message_id, :case_id, :role, :content, :metadata::jsonb)
-            """)
+            """
+            )
 
-            await self.db.execute(query, {
-                "message_id": message_id,
-                "case_id": case_id,
-                "role": message_dict.get('role', 'user'),
-                "content": message_dict.get('content', ''),
-                "metadata": json.dumps(message_dict.get('metadata', {}))
-            })
+            await self.db.execute(
+                query,
+                {
+                    "message_id": message_id,
+                    "case_id": case_id,
+                    "role": message_dict.get("role", "user"),
+                    "content": message_dict.get("content", ""),
+                    "metadata": json.dumps(message_dict.get("metadata", {})),
+                },
+            )
             await self.db.commit()
 
             return True
 
         except Exception as e:
             await self.db.rollback()
-            raise RepositoryException(f"Failed to add message to case {case_id}: {e}") from e
+            raise RepositoryException(
+                f"Failed to add message to case {case_id}: {e}"
+            ) from e
 
     async def get_messages(
-        self,
-        case_id: str,
-        limit: int = 50,
-        offset: int = 0
+        self, case_id: str, limit: int = 50, offset: int = 0
     ) -> List[dict]:
         """
         Get messages for case with pagination.
@@ -576,34 +599,38 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             List of message dictionaries
         """
         try:
-            query = text("""
+            query = text(
+                """
                 SELECT message_id, role, content, created_at, metadata
                 FROM case_messages
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC
                 LIMIT :limit OFFSET :offset
-            """)
+            """
+            )
 
-            result = await self.db.execute(query, {
-                "case_id": case_id,
-                "limit": limit,
-                "offset": offset
-            })
+            result = await self.db.execute(
+                query, {"case_id": case_id, "limit": limit, "offset": offset}
+            )
 
             messages = []
             for row in result.fetchall():
-                messages.append({
-                    'message_id': row[0],
-                    'role': row[1],
-                    'content': row[2],
-                    'created_at': row[3].isoformat() if row[3] else None,
-                    'metadata': row[4] if row[4] else {}
-                })
+                messages.append(
+                    {
+                        "message_id": row[0],
+                        "role": row[1],
+                        "content": row[2],
+                        "created_at": row[3].isoformat() if row[3] else None,
+                        "metadata": row[4] if row[4] else {},
+                    }
+                )
 
             return messages
 
         except Exception as e:
-            raise RepositoryException(f"Failed to get messages for case {case_id}: {e}") from e
+            raise RepositoryException(
+                f"Failed to get messages for case {case_id}: {e}"
+            ) from e
 
     # ========================================================================
     # Utility Operations
@@ -620,11 +647,13 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             True if updated
         """
         try:
-            query = text("""
+            query = text(
+                """
                 UPDATE cases
                 SET last_activity_at = NOW()
                 WHERE case_id = :case_id
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"case_id": case_id})
             await self.db.commit()
@@ -633,7 +662,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         except Exception as e:
             await self.db.rollback()
-            raise RepositoryException(f"Failed to update activity timestamp for case {case_id}: {e}") from e
+            raise RepositoryException(
+                f"Failed to update activity timestamp for case {case_id}: {e}"
+            ) from e
 
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """
@@ -643,7 +674,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             Dictionary with analytics data
         """
         try:
-            query = text("""
+            query = text(
+                """
                 SELECT
                     COUNT(DISTINCT e.evidence_id) as evidence_count,
                     COUNT(DISTINCT h.hypothesis_id) as hypothesis_count,
@@ -661,7 +693,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 LEFT JOIN uploaded_files f ON c.case_id = f.case_id
                 WHERE c.case_id = :case_id
                 GROUP BY c.case_id
-            """)
+            """
+            )
 
             result = await self.db.execute(query, {"case_id": case_id})
             row = result.fetchone()
@@ -670,20 +703,24 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 return {}
 
             return {
-                'evidence_count': row[0] or 0,
-                'hypothesis_count': row[1] or 0,
-                'validated_hypotheses': row[2] or 0,
-                'solution_count': row[3] or 0,
-                'implemented_solutions': row[4] or 0,
-                'message_count': row[5] or 0,
-                'file_count': row[6] or 0,
-                'total_file_size': row[7] or 0
+                "evidence_count": row[0] or 0,
+                "hypothesis_count": row[1] or 0,
+                "validated_hypotheses": row[2] or 0,
+                "solution_count": row[3] or 0,
+                "implemented_solutions": row[4] or 0,
+                "message_count": row[5] or 0,
+                "file_count": row[6] or 0,
+                "total_file_size": row[7] or 0,
             }
 
         except Exception as e:
-            raise RepositoryException(f"Failed to get analytics for case {case_id}: {e}") from e
+            raise RepositoryException(
+                f"Failed to get analytics for case {case_id}: {e}"
+            ) from e
 
-    async def cleanup_expired(self, max_age_days: int = 90, batch_size: int = 100) -> int:
+    async def cleanup_expired(
+        self, max_age_days: int = 90, batch_size: int = 100
+    ) -> int:
         """
         Clean up expired/old cases.
 
@@ -695,7 +732,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             Number of cases deleted
         """
         try:
-            query = text("""
+            query = text(
+                """
                 DELETE FROM cases
                 WHERE case_id IN (
                     SELECT case_id
@@ -704,12 +742,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     AND closed_at < NOW() - INTERVAL ':max_age_days days'
                     LIMIT :batch_size
                 )
-            """)
+            """
+            )
 
-            result = await self.db.execute(query, {
-                "max_age_days": max_age_days,
-                "batch_size": batch_size
-            })
+            result = await self.db.execute(
+                query, {"max_age_days": max_age_days, "batch_size": batch_size}
+            )
             await self.db.commit()
 
             return result.rowcount
@@ -724,7 +762,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
     async def _upsert_case_record(self, case: Case) -> None:
         """Upsert main cases table (JSONB columns for flexible data)."""
-        query = text("""
+        query = text(
+            """
             INSERT INTO cases (
                 case_id, user_id, title, status, created_at, updated_at,
                 consulting, problem_verification, working_conclusion,
@@ -751,42 +790,77 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                 documentation = EXCLUDED.documentation,
                 progress = EXCLUDED.progress,
                 metadata = EXCLUDED.metadata
-        """)
+        """
+        )
 
-        await self.db.execute(query, {
-            "case_id": case.case_id,
-            "user_id": case.user_id,
-            "title": case.title,
-            "status": case.status.value,
-            "created_at": case.created_at,
-            "updated_at": case.updated_at,
-            "consulting": json.dumps(case.consulting.model_dump()),
-            "problem_verification": json.dumps(case.problem_verification.model_dump()) if case.problem_verification else None,
-            "working_conclusion": json.dumps(case.working_conclusion.model_dump()) if case.working_conclusion else None,
-            "root_cause_conclusion": json.dumps(case.root_cause_conclusion.model_dump()) if case.root_cause_conclusion else None,
-            "path_selection": json.dumps(case.path_selection.model_dump()) if case.path_selection else None,
-            "degraded_mode": json.dumps(case.degraded_mode.model_dump()) if case.degraded_mode else None,
-            "escalation_state": json.dumps(case.escalation_state.model_dump()) if case.escalation_state else None,
-            "documentation": json.dumps(case.documentation.model_dump()),
-            "progress": json.dumps(case.progress.model_dump()),
-            "metadata": json.dumps({})  # Reserved for future use
-        })
+        await self.db.execute(
+            query,
+            {
+                "case_id": case.case_id,
+                "user_id": case.user_id,
+                "title": case.title,
+                "status": case.status.value,
+                "created_at": case.created_at,
+                "updated_at": case.updated_at,
+                "consulting": json.dumps(case.consulting.model_dump()),
+                "problem_verification": (
+                    json.dumps(case.problem_verification.model_dump())
+                    if case.problem_verification
+                    else None
+                ),
+                "working_conclusion": (
+                    json.dumps(case.working_conclusion.model_dump())
+                    if case.working_conclusion
+                    else None
+                ),
+                "root_cause_conclusion": (
+                    json.dumps(case.root_cause_conclusion.model_dump())
+                    if case.root_cause_conclusion
+                    else None
+                ),
+                "path_selection": (
+                    json.dumps(case.path_selection.model_dump())
+                    if case.path_selection
+                    else None
+                ),
+                "degraded_mode": (
+                    json.dumps(case.degraded_mode.model_dump())
+                    if case.degraded_mode
+                    else None
+                ),
+                "escalation_state": (
+                    json.dumps(case.escalation_state.model_dump())
+                    if case.escalation_state
+                    else None
+                ),
+                "documentation": json.dumps(case.documentation.model_dump()),
+                "progress": json.dumps(case.progress.model_dump()),
+                "metadata": json.dumps({}),  # Reserved for future use
+            },
+        )
 
-    async def _upsert_evidence(self, case_id: str, evidence_list: List[Evidence]) -> None:
+    async def _upsert_evidence(
+        self, case_id: str, evidence_list: List[Evidence]
+    ) -> None:
         """Upsert evidence records (normalized table)."""
         # Delete existing evidence not in current list
         current_ids = [e.evidence_id for e in evidence_list]
         if current_ids:
-            delete_query = text("""
+            delete_query = text(
+                """
                 DELETE FROM evidence
                 WHERE case_id = :case_id
                 AND evidence_id != ALL(:current_ids)
-            """)
-            await self.db.execute(delete_query, {"case_id": case_id, "current_ids": current_ids})
+            """
+            )
+            await self.db.execute(
+                delete_query, {"case_id": case_id, "current_ids": current_ids}
+            )
 
         # Upsert each evidence record
         for evidence in evidence_list:
-            query = text("""
+            query = text(
+                """
                 INSERT INTO evidence (
                     evidence_id, case_id, category, summary, preprocessed_content,
                     content_ref, file_size, filename, upload_timestamp, metadata
@@ -800,36 +874,47 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     preprocessed_content = EXCLUDED.preprocessed_content,
                     content_ref = EXCLUDED.content_ref,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
-            await self.db.execute(query, {
-                "evidence_id": evidence.evidence_id,
-                "case_id": case_id,
-                "category": evidence.data_type,  # Maps to evidence_category enum
-                "summary": evidence.summary,
-                "preprocessed_content": evidence.preprocessed_content or "",
-                "content_ref": evidence.storage_ref,
-                "file_size": evidence.file_size,
-                "filename": evidence.filename,
-                "upload_timestamp": evidence.timestamp,
-                "metadata": json.dumps({})  # Reserved
-            })
+            await self.db.execute(
+                query,
+                {
+                    "evidence_id": evidence.evidence_id,
+                    "case_id": case_id,
+                    "category": evidence.data_type,  # Maps to evidence_category enum
+                    "summary": evidence.summary,
+                    "preprocessed_content": evidence.preprocessed_content or "",
+                    "content_ref": evidence.storage_ref,
+                    "file_size": evidence.file_size,
+                    "filename": evidence.filename,
+                    "upload_timestamp": evidence.timestamp,
+                    "metadata": json.dumps({}),  # Reserved
+                },
+            )
 
-    async def _upsert_hypotheses(self, case_id: str, hypotheses_dict: Dict[str, Hypothesis]) -> None:
+    async def _upsert_hypotheses(
+        self, case_id: str, hypotheses_dict: Dict[str, Hypothesis]
+    ) -> None:
         """Upsert hypotheses records (normalized table)."""
         # Delete existing hypotheses not in current dict
         current_ids = list(hypotheses_dict.keys())
         if current_ids:
-            delete_query = text("""
+            delete_query = text(
+                """
                 DELETE FROM hypotheses
                 WHERE case_id = :case_id
                 AND hypothesis_id != ALL(:current_ids)
-            """)
-            await self.db.execute(delete_query, {"case_id": case_id, "current_ids": current_ids})
+            """
+            )
+            await self.db.execute(
+                delete_query, {"case_id": case_id, "current_ids": current_ids}
+            )
 
         # Upsert each hypothesis
         for hypothesis_id, hypothesis in hypotheses_dict.items():
-            query = text("""
+            query = text(
+                """
                 INSERT INTO hypotheses (
                     hypothesis_id, case_id, description, status, confidence_score,
                     supporting_evidence_ids, validation_result, validation_timestamp,
@@ -848,39 +933,74 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     validation_timestamp = EXCLUDED.validation_timestamp,
                     updated_at = EXCLUDED.updated_at,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
-            await self.db.execute(query, {
-                "hypothesis_id": hypothesis_id,
-                "case_id": case_id,
-                "description": hypothesis.hypothesis,
-                "status": "proposed",  # Default status
-                "confidence_score": hypothesis.confidence if hasattr(hypothesis, 'confidence') else None,
-                "supporting_evidence_ids": hypothesis.evidence if hasattr(hypothesis, 'evidence') else [],
-                "validation_result": hypothesis.validation_result if hasattr(hypothesis, 'validation_result') else None,
-                "validation_timestamp": hypothesis.validated_at if hasattr(hypothesis, 'validated_at') else None,
-                "proposed_at": hypothesis.proposed_at if hasattr(hypothesis, 'proposed_at') else datetime.now(timezone.utc),
-                "updated_at": datetime.now(timezone.utc),
-                "metadata": json.dumps({})
-            })
+            await self.db.execute(
+                query,
+                {
+                    "hypothesis_id": hypothesis_id,
+                    "case_id": case_id,
+                    "description": hypothesis.hypothesis,
+                    "status": "proposed",  # Default status
+                    "confidence_score": (
+                        hypothesis.confidence
+                        if hasattr(hypothesis, "confidence")
+                        else None
+                    ),
+                    "supporting_evidence_ids": (
+                        hypothesis.evidence if hasattr(hypothesis, "evidence") else []
+                    ),
+                    "validation_result": (
+                        hypothesis.validation_result
+                        if hasattr(hypothesis, "validation_result")
+                        else None
+                    ),
+                    "validation_timestamp": (
+                        hypothesis.validated_at
+                        if hasattr(hypothesis, "validated_at")
+                        else None
+                    ),
+                    "proposed_at": (
+                        hypothesis.proposed_at
+                        if hasattr(hypothesis, "proposed_at")
+                        else datetime.now(timezone.utc)
+                    ),
+                    "updated_at": datetime.now(timezone.utc),
+                    "metadata": json.dumps({}),
+                },
+            )
 
-    async def _upsert_solutions(self, case_id: str, solutions_list: List[Solution]) -> None:
+    async def _upsert_solutions(
+        self, case_id: str, solutions_list: List[Solution]
+    ) -> None:
         """Upsert solutions records (normalized table)."""
         # Delete existing solutions not in current list
-        current_ids = [s.solution_id for s in solutions_list if hasattr(s, 'solution_id')]
+        current_ids = [
+            s.solution_id for s in solutions_list if hasattr(s, "solution_id")
+        ]
         if current_ids:
-            delete_query = text("""
+            delete_query = text(
+                """
                 DELETE FROM solutions
                 WHERE case_id = :case_id
                 AND solution_id != ALL(:current_ids)
-            """)
-            await self.db.execute(delete_query, {"case_id": case_id, "current_ids": current_ids})
+            """
+            )
+            await self.db.execute(
+                delete_query, {"case_id": case_id, "current_ids": current_ids}
+            )
 
         # Upsert each solution
         for solution in solutions_list:
-            solution_id = solution.solution_id if hasattr(solution, 'solution_id') else f"sol_{uuid4().hex[:12]}"
+            solution_id = (
+                solution.solution_id
+                if hasattr(solution, "solution_id")
+                else f"sol_{uuid4().hex[:12]}"
+            )
 
-            query = text("""
+            query = text(
+                """
                 INSERT INTO solutions (
                     solution_id, case_id, description, status, implementation_steps,
                     risk_level, estimated_effort, verification_result, verification_timestamp,
@@ -901,39 +1021,60 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     implemented_at = EXCLUDED.implemented_at,
                     updated_at = EXCLUDED.updated_at,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
-            await self.db.execute(query, {
-                "solution_id": solution_id,
-                "case_id": case_id,
-                "description": solution.description if hasattr(solution, 'description') else str(solution),
-                "status": "proposed",  # Default status
-                "implementation_steps": solution.steps if hasattr(solution, 'steps') else [],
-                "risk_level": solution.risk_level if hasattr(solution, 'risk_level') else None,
-                "estimated_effort": solution.effort if hasattr(solution, 'effort') else None,
-                "verification_result": None,
-                "verification_timestamp": None,
-                "proposed_at": datetime.now(timezone.utc),
-                "implemented_at": None,
-                "updated_at": datetime.now(timezone.utc),
-                "metadata": json.dumps({})
-            })
+            await self.db.execute(
+                query,
+                {
+                    "solution_id": solution_id,
+                    "case_id": case_id,
+                    "description": (
+                        solution.description
+                        if hasattr(solution, "description")
+                        else str(solution)
+                    ),
+                    "status": "proposed",  # Default status
+                    "implementation_steps": (
+                        solution.steps if hasattr(solution, "steps") else []
+                    ),
+                    "risk_level": (
+                        solution.risk_level if hasattr(solution, "risk_level") else None
+                    ),
+                    "estimated_effort": (
+                        solution.effort if hasattr(solution, "effort") else None
+                    ),
+                    "verification_result": None,
+                    "verification_timestamp": None,
+                    "proposed_at": datetime.now(timezone.utc),
+                    "implemented_at": None,
+                    "updated_at": datetime.now(timezone.utc),
+                    "metadata": json.dumps({}),
+                },
+            )
 
-    async def _upsert_uploaded_files(self, case_id: str, files_list: List[UploadedFile]) -> None:
+    async def _upsert_uploaded_files(
+        self, case_id: str, files_list: List[UploadedFile]
+    ) -> None:
         """Upsert uploaded_files records (normalized table) - matches UploadedFile Pydantic model."""
         # Delete existing files not in current list
         current_ids = [f.file_id for f in files_list]
         if current_ids:
-            delete_query = text("""
+            delete_query = text(
+                """
                 DELETE FROM uploaded_files
                 WHERE case_id = :case_id
                 AND file_id != ALL(:current_ids)
-            """)
-            await self.db.execute(delete_query, {"case_id": case_id, "current_ids": current_ids})
+            """
+            )
+            await self.db.execute(
+                delete_query, {"case_id": case_id, "current_ids": current_ids}
+            )
 
         # Upsert each file (field names match Pydantic model exactly)
         for file in files_list:
-            query = text("""
+            query = text(
+                """
                 INSERT INTO uploaded_files (
                     file_id, case_id, filename, size_bytes, data_type,
                     uploaded_at_turn, uploaded_at, source_type,
@@ -952,42 +1093,57 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     content_ref = EXCLUDED.content_ref,
                     preprocessing_summary = EXCLUDED.preprocessing_summary,
                     metadata = EXCLUDED.metadata
-            """)
+            """
+            )
 
-            await self.db.execute(query, {
-                "file_id": file.file_id,
-                "case_id": case_id,
-                "filename": file.filename,
-                "size_bytes": file.size_bytes,
-                "data_type": file.data_type,
-                "uploaded_at_turn": file.uploaded_at_turn,
-                "uploaded_at": file.uploaded_at,
-                "source_type": file.source_type,
-                "content_ref": file.content_ref,
-                "preprocessing_summary": file.preprocessing_summary,
-                "metadata": json.dumps({})
-            })
+            await self.db.execute(
+                query,
+                {
+                    "file_id": file.file_id,
+                    "case_id": case_id,
+                    "filename": file.filename,
+                    "size_bytes": file.size_bytes,
+                    "data_type": file.data_type,
+                    "uploaded_at_turn": file.uploaded_at_turn,
+                    "uploaded_at": file.uploaded_at,
+                    "source_type": file.source_type,
+                    "content_ref": file.content_ref,
+                    "preprocessing_summary": file.preprocessing_summary,
+                    "metadata": json.dumps({}),
+                },
+            )
 
-    async def _append_status_transitions(self, case_id: str, transitions: List[CaseStatusTransition]) -> None:
+    async def _append_status_transitions(
+        self, case_id: str, transitions: List[CaseStatusTransition]
+    ) -> None:
         """Append status transitions (append-only audit trail)."""
         for transition in transitions:
-            query = text("""
+            query = text(
+                """
                 INSERT INTO case_status_transitions (
                     case_id, from_status, to_status, reason, transitioned_at, metadata
                 ) VALUES (
                     :case_id, :from_status, :to_status, :reason, :transitioned_at, :metadata::jsonb
                 )
                 ON CONFLICT DO NOTHING
-            """)
+            """
+            )
 
-            await self.db.execute(query, {
-                "case_id": case_id,
-                "from_status": transition.from_status.value if transition.from_status else None,
-                "to_status": transition.to_status.value,
-                "reason": transition.reason if hasattr(transition, 'reason') else None,
-                "transitioned_at": transition.timestamp,
-                "metadata": json.dumps({})
-            })
+            await self.db.execute(
+                query,
+                {
+                    "case_id": case_id,
+                    "from_status": (
+                        transition.from_status.value if transition.from_status else None
+                    ),
+                    "to_status": transition.to_status.value,
+                    "reason": (
+                        transition.reason if hasattr(transition, "reason") else None
+                    ),
+                    "transitioned_at": transition.timestamp,
+                    "metadata": json.dumps({}),
+                },
+            )
 
     async def _row_to_case(self, row) -> Case:
         """
@@ -1000,73 +1156,125 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             Case domain object
         """
         # Parse JSONB columns
-        consulting = ConsultingData(**json.loads(row.consulting)) if row.consulting else ConsultingData()
-        problem_verification = ProblemVerification(**json.loads(row.problem_verification)) if row.problem_verification else None
-        working_conclusion = WorkingConclusion(**json.loads(row.working_conclusion)) if row.working_conclusion else None
-        root_cause_conclusion = RootCauseConclusion(**json.loads(row.root_cause_conclusion)) if row.root_cause_conclusion else None
-        path_selection = PathSelection(**json.loads(row.path_selection)) if row.path_selection else None
-        degraded_mode = DegradedMode(**json.loads(row.degraded_mode)) if row.degraded_mode else None
-        escalation_state = EscalationState(**json.loads(row.escalation_state)) if row.escalation_state else None
-        documentation = DocumentationData(**json.loads(row.documentation)) if row.documentation else DocumentationData()
-        progress = InvestigationProgress(**json.loads(row.progress)) if row.progress else InvestigationProgress()
+        consulting = (
+            ConsultingData(**json.loads(row.consulting))
+            if row.consulting
+            else ConsultingData()
+        )
+        problem_verification = (
+            ProblemVerification(**json.loads(row.problem_verification))
+            if row.problem_verification
+            else None
+        )
+        working_conclusion = (
+            WorkingConclusion(**json.loads(row.working_conclusion))
+            if row.working_conclusion
+            else None
+        )
+        root_cause_conclusion = (
+            RootCauseConclusion(**json.loads(row.root_cause_conclusion))
+            if row.root_cause_conclusion
+            else None
+        )
+        path_selection = (
+            PathSelection(**json.loads(row.path_selection))
+            if row.path_selection
+            else None
+        )
+        degraded_mode = (
+            DegradedMode(**json.loads(row.degraded_mode)) if row.degraded_mode else None
+        )
+        escalation_state = (
+            EscalationState(**json.loads(row.escalation_state))
+            if row.escalation_state
+            else None
+        )
+        documentation = (
+            DocumentationData(**json.loads(row.documentation))
+            if row.documentation
+            else DocumentationData()
+        )
+        progress = (
+            InvestigationProgress(**json.loads(row.progress))
+            if row.progress
+            else InvestigationProgress()
+        )
 
         # Parse normalized table data (aggregated as JSON)
-        evidence_list = [Evidence(**e) for e in json.loads(row.evidence_data)] if row.evidence_data != '[]' else []
-        hypotheses_dict = {h['hypothesis_id']: Hypothesis(**h) for h in json.loads(row.hypotheses_data)} if row.hypotheses_data != '[]' else {}
-        solutions_list = [Solution(**s) for s in json.loads(row.solutions_data)] if row.solutions_data != '[]' else []
-        uploaded_files = [UploadedFile(**f) for f in json.loads(row.uploaded_files_data)] if row.uploaded_files_data != '[]' else []
+        evidence_list = (
+            [Evidence(**e) for e in json.loads(row.evidence_data)]
+            if row.evidence_data != "[]"
+            else []
+        )
+        hypotheses_dict = (
+            {
+                h["hypothesis_id"]: Hypothesis(**h)
+                for h in json.loads(row.hypotheses_data)
+            }
+            if row.hypotheses_data != "[]"
+            else {}
+        )
+        solutions_list = (
+            [Solution(**s) for s in json.loads(row.solutions_data)]
+            if row.solutions_data != "[]"
+            else []
+        )
+        uploaded_files = (
+            [UploadedFile(**f) for f in json.loads(row.uploaded_files_data)]
+            if row.uploaded_files_data != "[]"
+            else []
+        )
 
         # Reconstruct Case
         return Case(
             case_id=row.case_id,
             user_id=row.user_id,
-            organization_id=row.organization_id if hasattr(row, 'organization_id') else None,
+            organization_id=(
+                row.organization_id if hasattr(row, "organization_id") else None
+            ),
             title=row.title,
             description=None,  # Not stored in hybrid schema
             status=CaseStatus(row.status),
             status_history=[],  # Load separately if needed
             closure_reason=None,
-
             # Progress
             progress=progress,
             current_turn=0,  # Not stored in hybrid schema
             turns_without_progress=0,
             turn_history=[],
-
             # Path and strategy
             path_selection=path_selection,
             investigation_strategy=None,  # Not stored
-
             # Problem context
             consulting=consulting,
             problem_verification=problem_verification,
-
             # Investigation data (from normalized tables)
             uploaded_files=uploaded_files,
             evidence=evidence_list,
             hypotheses=hypotheses_dict,
             solutions=solutions_list,
-
             # Conclusions
             working_conclusion=working_conclusion,
             root_cause_conclusion=root_cause_conclusion,
-
             # Special states
             degraded_mode=degraded_mode,
             escalation_state=escalation_state,
-
             # Documentation
             documentation=documentation,
-
             # Timestamps
             created_at=row.created_at,
             updated_at=row.updated_at,
-            last_activity_at=row.last_activity_at if hasattr(row, 'last_activity_at') else row.updated_at,
-            resolved_at=row.resolved_at if hasattr(row, 'resolved_at') else None,
-            closed_at=row.closed_at if hasattr(row, 'closed_at') else None,
+            last_activity_at=(
+                row.last_activity_at
+                if hasattr(row, "last_activity_at")
+                else row.updated_at
+            ),
+            resolved_at=row.resolved_at if hasattr(row, "resolved_at") else None,
+            closed_at=row.closed_at if hasattr(row, "closed_at") else None,
         )
 
 
 class RepositoryException(Exception):
     """Exception raised for repository errors."""
+
     pass

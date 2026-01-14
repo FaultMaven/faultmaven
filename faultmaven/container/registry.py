@@ -228,7 +228,8 @@ class DependencyRegistry:
     def get_ready_services(self) -> list[str]:
         """Get names of all ready services."""
         return [
-            name for name, info in self._services.items()
+            name
+            for name, info in self._services.items()
             if info.status == ServiceStatus.READY
         ]
 

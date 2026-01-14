@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 class VectorBackendType(str, Enum):
     """Vector backend type."""
+
     CHROMA = "chroma"
     PINECONE = "pinecone"
 
@@ -43,6 +44,7 @@ class VectorDocument:
         embedding: Optional pre-computed embedding vector
         metadata: Document metadata (will be sanitized)
     """
+
     id: str
     content: str
     embedding: Optional[List[float]] = None
@@ -59,6 +61,7 @@ class VectorSearchResult:
         score: Similarity score (higher = more similar)
         metadata: Document metadata
     """
+
     id: str
     content: str
     score: float
@@ -75,6 +78,7 @@ class VectorCollectionInfo:
         dimension: Embedding dimension
         metadata: Additional collection metadata
     """
+
     name: str
     count: int
     dimension: Optional[int] = None

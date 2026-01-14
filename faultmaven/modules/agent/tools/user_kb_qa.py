@@ -44,11 +44,7 @@ Use this tool to retrieve your documented best practices, procedures, and runboo
 **Note**: This is YOUR personal knowledge base, not system-wide documentation.
 Use answer_from_global_kb for general guidance."""
 
-    def __init__(
-        self,
-        vector_store: CaseVectorStore,
-        llm_router: LLMRouter
-    ):
+    def __init__(self, vector_store: CaseVectorStore, llm_router: LLMRouter):
         """
         Initialize user KB Q&A tool.
 
@@ -59,7 +55,7 @@ Use answer_from_global_kb for general guidance."""
         super().__init__(
             vector_store=vector_store,
             llm_router=llm_router,
-            kb_config=UserKBConfig()  # Inject user KB strategy
+            kb_config=UserKBConfig(),  # Inject user KB strategy
         )
 
     async def _arun(self, user_id: str, question: str, k: int = 5) -> str:

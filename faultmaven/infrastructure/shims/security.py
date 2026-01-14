@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 try:
     from presidio_analyzer import AnalyzerEngine
     from presidio_anonymizer import AnonymizerEngine
+
     PRESIDIO_AVAILABLE = True
     logger.info("Presidio PII redaction library available")
 except ImportError:
@@ -86,10 +87,7 @@ class PIIRedactor:
             logger.debug(f"PII redaction disabled ({', '.join(reason)})")
 
     def redact(
-        self,
-        text: str,
-        entities: Optional[List[str]] = None,
-        language: str = "en"
+        self, text: str, entities: Optional[List[str]] = None, language: str = "en"
     ) -> str:
         """
         Redact PII from text.
@@ -115,9 +113,7 @@ class PIIRedactor:
         try:
             # Analyze text for PII
             analyzer_results = self._analyzer.analyze(  # type: ignore
-                text=text,
-                entities=entities,
-                language=language
+                text=text, entities=entities, language=language
             )
 
             if not analyzer_results:
@@ -126,8 +122,7 @@ class PIIRedactor:
 
             # Anonymize detected PII
             anonymized_result = self._anonymizer.anonymize(  # type: ignore
-                text=text,
-                analyzer_results=analyzer_results
+                text=text, analyzer_results=analyzer_results
             )
 
             logger.debug(f"PII redacted: {len(analyzer_results)} entities found")

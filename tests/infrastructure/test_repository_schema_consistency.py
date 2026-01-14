@@ -34,6 +34,7 @@ from faultmaven.infrastructure.persistence.postgresql_hybrid_case_repository imp
 # Schema Consistency Tests
 # ============================================================
 
+
 @pytest.mark.unit
 class TestUploadedFileSchemaConsistency:
     """Test UploadedFile schema matches across implementations"""
@@ -55,22 +56,22 @@ class TestUploadedFileSchemaConsistency:
         )
 
         # Verify fields exist and have correct names
-        assert hasattr(uploaded_file, 'file_id')
-        assert hasattr(uploaded_file, 'filename')
-        assert hasattr(uploaded_file, 'size_bytes')  # NOT file_size
-        assert hasattr(uploaded_file, 'data_type')  # NOT content_type
-        assert hasattr(uploaded_file, 'uploaded_at_turn')
-        assert hasattr(uploaded_file, 'uploaded_at')
-        assert hasattr(uploaded_file, 'source_type')
-        assert hasattr(uploaded_file, 'content_ref')  # NOT storage_path
-        assert hasattr(uploaded_file, 'preprocessing_summary')
+        assert hasattr(uploaded_file, "file_id")
+        assert hasattr(uploaded_file, "filename")
+        assert hasattr(uploaded_file, "size_bytes")  # NOT file_size
+        assert hasattr(uploaded_file, "data_type")  # NOT content_type
+        assert hasattr(uploaded_file, "uploaded_at_turn")
+        assert hasattr(uploaded_file, "uploaded_at")
+        assert hasattr(uploaded_file, "source_type")
+        assert hasattr(uploaded_file, "content_ref")  # NOT storage_path
+        assert hasattr(uploaded_file, "preprocessing_summary")
 
         # Verify old field names don't exist
-        assert not hasattr(uploaded_file, 'file_size')
-        assert not hasattr(uploaded_file, 'content_type')
-        assert not hasattr(uploaded_file, 'storage_path')
-        assert not hasattr(uploaded_file, 'processing_status')
-        assert not hasattr(uploaded_file, 'processed_at')
+        assert not hasattr(uploaded_file, "file_size")
+        assert not hasattr(uploaded_file, "content_type")
+        assert not hasattr(uploaded_file, "storage_path")
+        assert not hasattr(uploaded_file, "processing_status")
+        assert not hasattr(uploaded_file, "processed_at")
 
     def test_pydantic_content_ref_is_optional(self):
         """Verify content_ref can be None (processing pending)"""
@@ -138,6 +139,7 @@ class TestUploadedFileSchemaConsistency:
 # Message Schema Tests
 # ============================================================
 
+
 @pytest.mark.unit
 class TestMessageSchemaConsistency:
     """Test messages don't contain session_id"""
@@ -153,7 +155,7 @@ class TestMessageSchemaConsistency:
             "content": "Test message",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "author_id": "user_123",
-            "metadata": {}
+            "metadata": {},
         }
 
         # Should NOT have session_id
@@ -179,10 +181,11 @@ class TestMessageSchemaConsistency:
         # Verify the service method signature doesn't include session_id
         # (this is a structural test - actual behavior tested in service tests)
         import inspect
+
         sig = inspect.signature(service.create_case)
 
         # Should have session_id for authentication
-        assert 'session_id' in sig.parameters
+        assert "session_id" in sig.parameters
 
         # But internal message creation should NOT store session_id
         # (verified by checking the actual implementation doesn't add it)
@@ -191,6 +194,7 @@ class TestMessageSchemaConsistency:
 # ============================================================
 # Repository Architecture Tests
 # ============================================================
+
 
 @pytest.mark.unit
 class TestRepositoryArchitecture:
@@ -202,7 +206,7 @@ class TestRepositoryArchitecture:
         from faultmaven.infrastructure.persistence.case_repository import CaseRepository
 
         # find_by_session should NOT exist in abstract interface
-        assert not hasattr(CaseRepository, 'find_by_session')
+        assert not hasattr(CaseRepository, "find_by_session")
 
     @pytest.mark.asyncio
     async def test_inmemory_repository_no_find_by_session(self):
@@ -211,7 +215,7 @@ class TestRepositoryArchitecture:
         repo = InMemoryCaseRepository()
 
         # Should NOT have find_by_session method
-        assert not hasattr(repo, 'find_by_session')
+        assert not hasattr(repo, "find_by_session")
 
     @pytest.mark.asyncio
     async def test_list_method_filters_by_user_id(self):
@@ -259,6 +263,7 @@ class TestRepositoryArchitecture:
 # PostgreSQL Hybrid Repository Tests
 # ============================================================
 
+
 @pytest.mark.unit
 class TestPostgreSQLHybridSchemaConsistency:
     """Test PostgreSQL hybrid repository SQL queries use correct field names"""
@@ -284,37 +289,38 @@ class TestPostgreSQLHybridSchemaConsistency:
         # Verify these are the fields used in _upsert_uploaded_files()
         # (Read from actual implementation)
         from faultmaven.infrastructure.persistence.postgresql_hybrid_case_repository import (
-            PostgreSQLHybridCaseRepository
+            PostgreSQLHybridCaseRepository,
         )
 
         # Check method exists
-        assert hasattr(PostgreSQLHybridCaseRepository, '_upsert_uploaded_files')
+        assert hasattr(PostgreSQLHybridCaseRepository, "_upsert_uploaded_files")
 
     def test_select_query_uses_correct_field_names(self):
         """Verify SELECT query jsonb_build_object uses correct field names"""
 
         # Expected field mappings in SELECT query
         expected_mappings = {
-            'size_bytes': 'f.size_bytes',  # NOT f.file_size
-            'data_type': 'f.data_type',  # NOT f.content_type
-            'content_ref': 'f.content_ref',  # NOT f.storage_path
-            'uploaded_at_turn': 'f.uploaded_at_turn',  # Should exist
-            'source_type': 'f.source_type',  # Should exist
-            'preprocessing_summary': 'f.preprocessing_summary',  # Should exist
+            "size_bytes": "f.size_bytes",  # NOT f.file_size
+            "data_type": "f.data_type",  # NOT f.content_type
+            "content_ref": "f.content_ref",  # NOT f.storage_path
+            "uploaded_at_turn": "f.uploaded_at_turn",  # Should exist
+            "source_type": "f.source_type",  # Should exist
+            "preprocessing_summary": "f.preprocessing_summary",  # Should exist
         }
 
         # Verify get() method uses correct SQL
         from faultmaven.infrastructure.persistence.postgresql_hybrid_case_repository import (
-            PostgreSQLHybridCaseRepository
+            PostgreSQLHybridCaseRepository,
         )
 
         # Check method exists (actual SQL tested in integration tests)
-        assert hasattr(PostgreSQLHybridCaseRepository, 'get')
+        assert hasattr(PostgreSQLHybridCaseRepository, "get")
 
 
 # ============================================================
 # Integration Tests (require database)
 # ============================================================
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -370,7 +376,9 @@ class TestDatabaseSchemaIntegration:
         assert file.data_type == "log"  # NOT content_type
         assert file.uploaded_at_turn == 1
         assert file.source_type == "file_upload"
-        assert file.content_ref == "s3://test-bucket/integration.log"  # NOT storage_path
+        assert (
+            file.content_ref == "s3://test-bucket/integration.log"
+        )  # NOT storage_path
         assert file.preprocessing_summary == "Integration test file"
 
     async def test_optional_fields_handle_null(self, test_db_session):
@@ -421,13 +429,15 @@ class TestDatabaseSchemaIntegration:
 # Fixtures
 # ============================================================
 
+
 @pytest.fixture
 async def test_db_session():
     """Fixture providing test database session (if available)"""
 
     # Check if test database is configured
     import os
-    db_url = os.getenv('TEST_DATABASE_URL')
+
+    db_url = os.getenv("TEST_DATABASE_URL")
 
     if not db_url:
         yield None  # Skip integration tests

@@ -126,8 +126,7 @@ class APICaseService(BaseService):
         if self.tenant_provider and current_user:
             try:
                 organization = await self.tenant_provider.get_current_organization(
-                    current_user=current_user,
-                    organization_id=organization_id
+                    current_user=current_user, organization_id=organization_id
                 )
                 resolved_org_id = organization.org_id
             except Exception as e:
@@ -188,7 +187,9 @@ class APICaseService(BaseService):
         except ValidationException:
             raise
         except Exception as e:
-            self.log_error("create_case", e, user_id=user_id, organization_id=organization_id)
+            self.log_error(
+                "create_case", e, user_id=user_id, organization_id=organization_id
+            )
             raise ServiceError(f"Failed to create case: {e}")
 
     async def get_case(
@@ -229,7 +230,9 @@ class APICaseService(BaseService):
             return case
 
         except Exception as e:
-            self.log_error("get_case", e, case_id=case_id, organization_id=organization_id)
+            self.log_error(
+                "get_case", e, case_id=case_id, organization_id=organization_id
+            )
             return None
 
     async def update_case(
@@ -268,6 +271,7 @@ class APICaseService(BaseService):
 
         try:
             from pydantic import ValidationError as PydanticValidationError
+
             # Get current case
             case = await self.case_repo.get(case_id)
 
@@ -276,26 +280,36 @@ class APICaseService(BaseService):
 
             # Authorization check
             if case.organization_id != organization_id:
-                raise AuthorizationError(f"Case {case_id} not accessible by organization {organization_id}")
+                raise AuthorizationError(
+                    f"Case {case_id} not accessible by organization {organization_id}"
+                )
 
             # Validate and apply updates
-            allowed_fields = {'title', 'description', 'status', 'severity', 'assigned_to'}
+            allowed_fields = {
+                "title",
+                "description",
+                "status",
+                "severity",
+                "assigned_to",
+            }
 
             for key, value in updates.items():
                 if key not in allowed_fields:
                     continue
 
-                if key == 'title':
+                if key == "title":
                     if not value or not value.strip():
                         raise ValidationException("title: Title cannot be empty")
                     if len(value) > 200:
-                        raise ValidationException("title: Title cannot exceed 200 characters")
+                        raise ValidationException(
+                            "title: Title cannot exceed 200 characters"
+                        )
                     case.title = value.strip()
 
-                elif key == 'description':
+                elif key == "description":
                     case.description = value.strip() if value else ""
 
-                elif key == 'status':
+                elif key == "status":
                     if isinstance(value, str):
                         try:
                             value = CaseStatus(value)
@@ -309,11 +323,11 @@ class APICaseService(BaseService):
                     except PydanticValidationError as e:
                         raise ValidationException(str(e))
 
-                elif key == 'severity':
+                elif key == "severity":
                     # Store severity in case metadata
                     pass  # Handled via metadata
 
-                elif key == 'assigned_to':
+                elif key == "assigned_to":
                     # Store assigned_to in case - add as a field if needed
                     pass
 
@@ -334,7 +348,9 @@ class APICaseService(BaseService):
         except (NotFoundError, AuthorizationError, ValidationException):
             raise
         except Exception as e:
-            self.log_error("update_case", e, case_id=case_id, organization_id=organization_id)
+            self.log_error(
+                "update_case", e, case_id=case_id, organization_id=organization_id
+            )
             raise ServiceError(f"Failed to update case: {e}")
 
     async def delete_case(
@@ -360,7 +376,9 @@ class APICaseService(BaseService):
         Raises:
             AuthorizationError: If organization doesn't own case
         """
-        self.log_operation("delete_case", case_id=case_id, organization_id=organization_id)
+        self.log_operation(
+            "delete_case", case_id=case_id, organization_id=organization_id
+        )
 
         if not case_id or not case_id.strip():
             return False
@@ -374,7 +392,9 @@ class APICaseService(BaseService):
 
             # Authorization check
             if case.organization_id != organization_id:
-                raise AuthorizationError(f"Case {case_id} not accessible by organization {organization_id}")
+                raise AuthorizationError(
+                    f"Case {case_id} not accessible by organization {organization_id}"
+                )
 
             # Delete the case (CASCADE will handle related entities via database)
             deleted = await self.case_repo.delete(case_id)
@@ -391,7 +411,9 @@ class APICaseService(BaseService):
         except AuthorizationError:
             raise
         except Exception as e:
-            self.log_error("delete_case", e, case_id=case_id, organization_id=organization_id)
+            self.log_error(
+                "delete_case", e, case_id=case_id, organization_id=organization_id
+            )
             return False
 
     # ============================================================
@@ -433,8 +455,7 @@ class APICaseService(BaseService):
         if self.tenant_provider and current_user:
             try:
                 organization = await self.tenant_provider.get_current_organization(
-                    current_user=current_user,
-                    organization_id=organization_id
+                    current_user=current_user, organization_id=organization_id
                 )
                 resolved_org_id = organization.org_id
             except Exception as e:
@@ -471,10 +492,11 @@ class APICaseService(BaseService):
             if severity:
                 # Filter by severity stored in metadata
                 cases = [
-                    c for c in cases
-                    if hasattr(c, 'problem_verification') and
-                    c.problem_verification and
-                    c.problem_verification.severity.lower() == severity.value
+                    c
+                    for c in cases
+                    if hasattr(c, "problem_verification")
+                    and c.problem_verification
+                    and c.problem_verification.severity.lower() == severity.value
                 ]
 
             # Note: assigned_to filter would need to be handled here if stored in metadata
@@ -544,7 +566,9 @@ class APICaseService(BaseService):
                 try:
                     # EvidenceListFilter imported from contracts at module level
                     filters = EvidenceListFilter(case_id=case_id, limit=100, offset=0)
-                    evidence_list, _ = await self.case_repo.list_standalone_evidence(filters)
+                    evidence_list, _ = await self.case_repo.list_standalone_evidence(
+                        filters
+                    )
                     result["evidence"] = evidence_list
                 except Exception as e:
                     self.log_error("get_case_evidence", e, case_id=case_id)
@@ -552,7 +576,9 @@ class APICaseService(BaseService):
 
             if include_executions:
                 try:
-                    executions, _ = await self.case_repo.list_agent_executions_by_case(case_id)
+                    executions, _ = await self.case_repo.list_agent_executions_by_case(
+                        case_id
+                    )
                     result["executions"] = executions
                 except Exception as e:
                     self.log_error("get_case_executions", e, case_id=case_id)
@@ -561,7 +587,12 @@ class APICaseService(BaseService):
             return result
 
         except Exception as e:
-            self.log_error("get_case_with_details", e, case_id=case_id, organization_id=organization_id)
+            self.log_error(
+                "get_case_with_details",
+                e,
+                case_id=case_id,
+                organization_id=organization_id,
+            )
             return None
 
     # ============================================================
@@ -716,7 +747,9 @@ class APICaseService(BaseService):
             AuthorizationError: If organization doesn't own case
             ConflictError: If case not closed
         """
-        self.log_operation("reopen_case", case_id=case_id, organization_id=organization_id)
+        self.log_operation(
+            "reopen_case", case_id=case_id, organization_id=organization_id
+        )
 
         # Get case with authorization check
         case = await self.get_case(case_id, organization_id)
@@ -802,13 +835,15 @@ class APICaseService(BaseService):
                 by_status[status_key] = by_status.get(status_key, 0) + 1
 
                 # Count by severity (from problem_verification if available)
-                if hasattr(case, 'problem_verification') and case.problem_verification:
+                if hasattr(case, "problem_verification") and case.problem_verification:
                     severity_key = case.problem_verification.severity.lower()
                     by_severity[severity_key] = by_severity.get(severity_key, 0) + 1
 
                 # Calculate resolution time for resolved cases
                 if case.status == CaseStatus.RESOLVED and case.resolved_at:
-                    resolution_time = (case.resolved_at - case.created_at).total_seconds()
+                    resolution_time = (
+                        case.resolved_at - case.created_at
+                    ).total_seconds()
                     resolution_times.append(resolution_time)
 
                 # Count unassigned (cases in CONSULTING without progress)
@@ -818,14 +853,20 @@ class APICaseService(BaseService):
             # Calculate average resolution time
             avg_resolution_time_seconds = 0.0
             if resolution_times:
-                avg_resolution_time_seconds = sum(resolution_times) / len(resolution_times)
+                avg_resolution_time_seconds = sum(resolution_times) / len(
+                    resolution_times
+                )
 
             statistics = {
                 "total_cases": total,
                 "by_status": by_status,
                 "by_severity": by_severity,
                 "avg_resolution_time_seconds": avg_resolution_time_seconds,
-                "avg_resolution_time_hours": avg_resolution_time_seconds / 3600 if avg_resolution_time_seconds else 0,
+                "avg_resolution_time_hours": (
+                    avg_resolution_time_seconds / 3600
+                    if avg_resolution_time_seconds
+                    else 0
+                ),
                 "unassigned_count": unassigned_count,
                 "organization_id": organization_id,
                 "computed_at": datetime.now(timezone.utc).isoformat(),

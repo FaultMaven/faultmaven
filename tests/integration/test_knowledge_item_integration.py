@@ -180,7 +180,9 @@ async def test_full_item_lifecycle(repository: DatabaseKnowledgeItemRepository):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_item_with_embedding_lifecycle(repository: DatabaseKnowledgeItemRepository):
+async def test_item_with_embedding_lifecycle(
+    repository: DatabaseKnowledgeItemRepository,
+):
     """Test item lifecycle with embedding vector."""
     embedding = create_valid_embedding(0.5)
     item = create_sample_item(
@@ -214,21 +216,27 @@ async def test_full_text_search_relevance(repository: DatabaseKnowledgeItemRepos
     org_id = generate_org_id()
 
     # Create items with different content
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        title="How to configure SSL certificates",
-        content="This guide explains SSL/TLS certificate configuration.",
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        title="Database backup procedures",
-        content="Follow these steps to backup your database.",
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        title="SSL troubleshooting guide",
-        content="Common SSL errors and how to fix them.",
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            title="How to configure SSL certificates",
+            content="This guide explains SSL/TLS certificate configuration.",
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            title="Database backup procedures",
+            content="Follow these steps to backup your database.",
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            title="SSL troubleshooting guide",
+            content="Common SSL errors and how to fix them.",
+        )
+    )
 
     # Search for SSL
     result = await repository.search_by_text(org_id, "SSL")
@@ -239,15 +247,19 @@ async def test_full_text_search_relevance(repository: DatabaseKnowledgeItemRepos
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_full_text_search_case_insensitive(repository: DatabaseKnowledgeItemRepository):
+async def test_full_text_search_case_insensitive(
+    repository: DatabaseKnowledgeItemRepository,
+):
     """Test full-text search is case insensitive."""
     org_id = generate_org_id()
 
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        title="DATABASE Connection Issues",
-        content="Troubleshooting DATABASE connections.",
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            title="DATABASE Connection Issues",
+            content="Troubleshooting DATABASE connections.",
+        )
+    )
 
     # Search with different cases
     result_lower = await repository.search_by_text(org_id, "database")
@@ -261,22 +273,28 @@ async def test_full_text_search_case_insensitive(repository: DatabaseKnowledgeIt
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_full_text_search_with_item_type_filter(repository: DatabaseKnowledgeItemRepository):
+async def test_full_text_search_with_item_type_filter(
+    repository: DatabaseKnowledgeItemRepository,
+):
     """Test full-text search with item type filter."""
     org_id = generate_org_id()
 
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        title="Error handling in API",
-        content="How to handle errors in API calls.",
-        item_type=KnowledgeItemType.API_DOCUMENTATION,
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        title="Error handling best practices",
-        content="Best practices for error handling.",
-        item_type=KnowledgeItemType.BEST_PRACTICE,
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            title="Error handling in API",
+            content="How to handle errors in API calls.",
+            item_type=KnowledgeItemType.API_DOCUMENTATION,
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            title="Error handling best practices",
+            content="Best practices for error handling.",
+            item_type=KnowledgeItemType.BEST_PRACTICE,
+        )
+    )
 
     result = await repository.search_by_text(
         org_id,
@@ -290,20 +308,26 @@ async def test_full_text_search_with_item_type_filter(repository: DatabaseKnowle
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_full_text_search_only_published(repository: DatabaseKnowledgeItemRepository):
+async def test_full_text_search_only_published(
+    repository: DatabaseKnowledgeItemRepository,
+):
     """Test full-text search only returns published items."""
     org_id = generate_org_id()
 
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        title="Published error guide",
-        is_published=True,
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        title="Unpublished error guide",
-        is_published=False,
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            title="Published error guide",
+            is_published=True,
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            title="Unpublished error guide",
+            is_published=False,
+        )
+    )
 
     result = await repository.search_by_text(org_id, "error")
 
@@ -322,18 +346,24 @@ async def test_tag_search_match_all(repository: DatabaseKnowledgeItemRepository)
     """Test tag search with match_all=True."""
     org_id = generate_org_id()
 
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        tags=["python", "debugging"],
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        tags=["python", "debugging", "advanced"],
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        tags=["python"],
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            tags=["python", "debugging"],
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            tags=["python", "debugging", "advanced"],
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            tags=["python"],
+        )
+    )
 
     result = await repository.search_by_tags(
         org_id,
@@ -350,18 +380,24 @@ async def test_tag_search_match_any(repository: DatabaseKnowledgeItemRepository)
     """Test tag search with match_all=False (any tag matches)."""
     org_id = generate_org_id()
 
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        tags=["python"],
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        tags=["java"],
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        tags=["rust"],
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            tags=["python"],
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            tags=["java"],
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            tags=["rust"],
+        )
+    )
 
     result = await repository.search_by_tags(
         org_id,
@@ -380,11 +416,13 @@ async def test_tag_search_preserves_order(repository: DatabaseKnowledgeItemRepos
     base_time = datetime.now(timezone.utc)
 
     for i in range(5):
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            tags=["common"],
-            created_at=base_time - timedelta(hours=i),
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                tags=["common"],
+                created_at=base_time - timedelta(hours=i),
+            )
+        )
 
     result = await repository.search_by_tags(org_id, ["common"])
 
@@ -406,18 +444,24 @@ async def test_items_without_embeddings(repository: DatabaseKnowledgeItemReposit
     embedding = create_valid_embedding()
 
     # Create items with and without embeddings
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        embedding_vector=None,
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        embedding_vector=embedding,
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        embedding_vector=None,
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            embedding_vector=None,
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            embedding_vector=embedding,
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            embedding_vector=None,
+        )
+    )
 
     result = await repository.get_items_without_embeddings(org_id)
 
@@ -435,10 +479,12 @@ async def test_items_without_embeddings_ordered_oldest_first(
     base_time = datetime.now(timezone.utc)
 
     for i in range(5):
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            created_at=base_time - timedelta(hours=i),
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                created_at=base_time - timedelta(hours=i),
+            )
+        )
 
     result = await repository.get_items_without_embeddings(org_id)
 
@@ -488,27 +534,35 @@ async def test_most_helpful_ranking(repository: DatabaseKnowledgeItemRepository)
     org_id = generate_org_id()
 
     # Create items with various helpful/not_helpful ratios
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        helpful_count=10,
-        not_helpful_count=0,  # Score: 1.0
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        helpful_count=8,
-        not_helpful_count=2,  # Score: 0.8
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        helpful_count=5,
-        not_helpful_count=5,  # Score: 0.5
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            helpful_count=10,
+            not_helpful_count=0,  # Score: 1.0
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            helpful_count=8,
+            not_helpful_count=2,  # Score: 0.8
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            helpful_count=5,
+            not_helpful_count=5,  # Score: 0.5
+        )
+    )
     # Below threshold (default 3)
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        helpful_count=2,
-        not_helpful_count=0,  # Only 2 votes
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            helpful_count=2,
+            not_helpful_count=0,  # Only 2 votes
+        )
+    )
 
     result = await repository.get_most_helpful(org_id)
 
@@ -524,16 +578,20 @@ async def test_most_helpful_only_published(repository: DatabaseKnowledgeItemRepo
     """Test most helpful only returns published items."""
     org_id = generate_org_id()
 
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        helpful_count=10,
-        is_published=True,
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        helpful_count=10,
-        is_published=False,
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            helpful_count=10,
+            is_published=True,
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            helpful_count=10,
+            is_published=False,
+        )
+    )
 
     result = await repository.get_most_helpful(org_id)
 
@@ -596,25 +654,33 @@ async def test_multiple_usage_updates(repository: DatabaseKnowledgeItemRepositor
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_list_by_organization_with_filters(repository: DatabaseKnowledgeItemRepository):
+async def test_list_by_organization_with_filters(
+    repository: DatabaseKnowledgeItemRepository,
+):
     """Test listing items with multiple filters."""
     org_id = generate_org_id()
 
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        item_type=KnowledgeItemType.FAQ,
-        category="networking",
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        item_type=KnowledgeItemType.FAQ,
-        category="database",
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        item_type=KnowledgeItemType.RUNBOOK,
-        category="networking",
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            item_type=KnowledgeItemType.FAQ,
+            category="networking",
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            item_type=KnowledgeItemType.FAQ,
+            category="database",
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            item_type=KnowledgeItemType.RUNBOOK,
+            category="networking",
+        )
+    )
 
     # Filter by type
     faqs = await repository.list_by_organization_id(
@@ -657,10 +723,12 @@ async def test_list_ordering_by_created_at(repository: DatabaseKnowledgeItemRepo
     base_time = datetime.now(timezone.utc)
 
     for i in range(10):
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            created_at=base_time - timedelta(hours=i),
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                created_at=base_time - timedelta(hours=i),
+            )
+        )
 
     items = await repository.list_by_organization_id(org_id)
 
@@ -679,18 +747,24 @@ async def test_count_with_type_filter(repository: DatabaseKnowledgeItemRepositor
     """Test count with item type filter."""
     org_id = generate_org_id()
 
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        item_type=KnowledgeItemType.FAQ,
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        item_type=KnowledgeItemType.FAQ,
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        item_type=KnowledgeItemType.RUNBOOK,
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            item_type=KnowledgeItemType.FAQ,
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            item_type=KnowledgeItemType.FAQ,
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            item_type=KnowledgeItemType.RUNBOOK,
+        )
+    )
 
     faq_count = await repository.count_by_organization_id(
         org_id,
@@ -733,7 +807,9 @@ async def test_update_non_existent_fails(repository: DatabaseKnowledgeItemReposi
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_delete_non_existent_returns_false(repository: DatabaseKnowledgeItemRepository):
+async def test_delete_non_existent_returns_false(
+    repository: DatabaseKnowledgeItemRepository,
+):
     """Test deleting non-existent item returns False."""
     result = await repository.delete("ki_nonexistent_123")
     assert result is False
@@ -859,19 +935,25 @@ async def test_organization_isolation(repository: DatabaseKnowledgeItemRepositor
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_search_respects_organization(repository: DatabaseKnowledgeItemRepository):
+async def test_search_respects_organization(
+    repository: DatabaseKnowledgeItemRepository,
+):
     """Test search only returns items from specified organization."""
     org_id1 = generate_org_id()
     org_id2 = generate_org_id()
 
-    await repository.create(create_sample_item(
-        organization_id=org_id1,
-        title="Common error handling",
-    ))
-    await repository.create(create_sample_item(
-        organization_id=org_id2,
-        title="Common error patterns",
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id1,
+            title="Common error handling",
+        )
+    )
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id2,
+            title="Common error patterns",
+        )
+    )
 
     result = await repository.search_by_text(org_id1, "error")
 
@@ -962,15 +1044,19 @@ async def test_unicode_content(repository: DatabaseKnowledgeItemRepository):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_special_characters_in_search(repository: DatabaseKnowledgeItemRepository):
+async def test_special_characters_in_search(
+    repository: DatabaseKnowledgeItemRepository,
+):
     """Test search with special characters."""
     org_id = generate_org_id()
 
-    await repository.create(create_sample_item(
-        organization_id=org_id,
-        title="Error: 'NoneType' has no attribute",
-        content="Common Python error when accessing None.",
-    ))
+    await repository.create(
+        create_sample_item(
+            organization_id=org_id,
+            title="Error: 'NoneType' has no attribute",
+            content="Common Python error when accessing None.",
+        )
+    )
 
     result = await repository.search_by_text(org_id, "NoneType")
     assert len(result) == 1
@@ -983,10 +1069,12 @@ async def test_all_item_types(repository: DatabaseKnowledgeItemRepository):
     org_id = generate_org_id()
 
     for item_type in KnowledgeItemType:
-        await repository.create(create_sample_item(
-            organization_id=org_id,
-            item_type=item_type,
-        ))
+        await repository.create(
+            create_sample_item(
+                organization_id=org_id,
+                item_type=item_type,
+            )
+        )
 
     count = await repository.count_by_organization_id(org_id)
     assert count == len(KnowledgeItemType)

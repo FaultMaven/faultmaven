@@ -11,7 +11,10 @@ Design Reference: docs/architecture/investigation-phases-and-ooda-integration.md
 """
 
 from typing import Dict, Any, Optional
-from faultmaven.modules.agent.domain.models.investigation import InvestigationPhase, InvestigationStrategy
+from faultmaven.modules.agent.domain.models.investigation import (
+    InvestigationPhase,
+    InvestigationStrategy,
+)
 from faultmaven.prompts.investigation.ooda_guidance import get_complete_ooda_prompt
 
 
@@ -459,7 +462,6 @@ PHASE_PROMPTS = {
         "completion_criteria": "Scope defined with affected components and severity assessed",
         "typical_iterations": "1-2 OODA cycles",
     },
-
     InvestigationPhase.TIMELINE: {
         "objective": "Establish when problem started and what changed",
         "key_questions": [
@@ -471,7 +473,6 @@ PHASE_PROMPTS = {
         "completion_criteria": "Problem start time identified and recent changes catalogued",
         "typical_iterations": "1-2 OODA cycles",
     },
-
     InvestigationPhase.HYPOTHESIS: {
         "objective": "Generate plausible root cause hypotheses",
         "key_questions": [
@@ -483,7 +484,6 @@ PHASE_PROMPTS = {
         "completion_criteria": "2-4 ranked hypotheses with testing strategy",
         "typical_iterations": "2-3 OODA cycles",
     },
-
     InvestigationPhase.VALIDATION: {
         "objective": "Systematically test hypotheses to find root cause",
         "key_questions": [
@@ -495,7 +495,6 @@ PHASE_PROMPTS = {
         "completion_criteria": "At least one hypothesis validated with ≥70% confidence",
         "typical_iterations": "3-6 OODA cycles",
     },
-
     InvestigationPhase.SOLUTION: {
         "objective": "Implement fix and verify problem resolved",
         "key_questions": [
@@ -507,7 +506,6 @@ PHASE_PROMPTS = {
         "completion_criteria": "Solution implemented and symptoms resolved",
         "typical_iterations": "2-4 OODA cycles",
     },
-
     InvestigationPhase.DOCUMENT: {
         "objective": "Capture learnings and create artifacts",
         "key_questions": [
@@ -544,24 +542,30 @@ def get_lead_investigator_prompt(
     prompt_parts = [LEAD_INVESTIGATOR_SYSTEM_PROMPT]
 
     # Add investigation strategy guidance
-    prompt_parts.append(f"\n# Investigation Strategy: {investigation_strategy.value.replace('_', ' ').title()}")
+    prompt_parts.append(
+        f"\n# Investigation Strategy: {investigation_strategy.value.replace('_', ' ').title()}"
+    )
 
     if investigation_strategy == InvestigationStrategy.ACTIVE_INCIDENT:
-        prompt_parts.append("""
+        prompt_parts.append(
+            """
 **Active Incident Mode**: Prioritize speed and mitigation over thoroughness.
 - Accept 70% confidence for proceeding
 - Focus on practical evidence
 - Can skip phases if critical urgency
 - Offer thorough post-mortem after mitigation
-""")
+"""
+        )
     else:  # POST_MORTEM
-        prompt_parts.append("""
+        prompt_parts.append(
+            """
 **Post-Mortem Mode**: Prioritize thoroughness and complete understanding.
 - Require 85%+ confidence before concluding
 - Gather comprehensive evidence
 - Never skip phases
 - Mandatory documentation at end
-""")
+"""
+        )
 
     # Add OODA guidance for current phase (weighted step emphasis + explicit declaration)
     prompt_parts.append(f"\n{get_complete_ooda_prompt(current_phase)}")
@@ -573,7 +577,8 @@ def get_lead_investigator_prompt(
         stall_type = stall_info.get("stall_type", "unknown")
         stall_severity = stall_info.get("severity", "moderate")
 
-        prompt_parts.append(f"""
+        prompt_parts.append(
+            f"""
 # ⚠️ STALL DETECTED - TRANSPARENCY REQUIRED
 
 **Current Status**: Investigation is stalled ({iterations_stalled} iterations without progress)
@@ -596,11 +601,13 @@ To resume the investigation and find the solution, I need [X]. Until then, I can
 guidance but cannot definitively resolve this issue."
 
 **After {iterations_stalled} stalled iterations, user needs to understand investigation is blocked.**
-""")
+"""
+        )
 
     # Add current phase context
     phase_info = PHASE_PROMPTS.get(current_phase, {})
-    prompt_parts.append(f"""
+    prompt_parts.append(
+        f"""
 # Current Phase: {current_phase.name.replace('_', ' ').title()} (Phase {current_phase.value})
 
 **Objective**: {phase_info.get('objective', '')}
@@ -613,15 +620,18 @@ guidance but cannot definitively resolve this issue."
 **Completion Criteria**: {phase_info.get('completion_criteria', '')}
 
 **Expected Iterations**: {phase_info.get('typical_iterations', '')}
-""")
+"""
+    )
 
     # Add investigation state summary
     if investigation_state:
-        prompt_parts.append(f"""
+        prompt_parts.append(
+            f"""
 # Investigation State
 
 {_format_investigation_state(investigation_state)}
-""")
+"""
+        )
 
     # Add conversation history
     if conversation_history:
@@ -630,7 +640,8 @@ guidance but cannot definitively resolve this issue."
     # Add current query
     prompt_parts.append(f"\n# User Input\n\n{user_query}")
 
-    prompt_parts.append("""
+    prompt_parts.append(
+        """
 # Your Response
 
 As Lead Investigator, respond with:
@@ -640,7 +651,8 @@ As Lead Investigator, respond with:
 4. **Provide** clear instructions on how to get it
 
 Keep the investigation moving forward.
-""")
+"""
+    )
 
     return "\n".join(prompt_parts)
 
@@ -667,8 +679,15 @@ def _format_investigation_state(state: Dict[str, Any]) -> str:
     if "hypotheses" in state and state["hypotheses"]:
         parts.append("\n**Active Hypotheses**:")
         for i, h in enumerate(state["hypotheses"][:3], 1):  # Top 3
-            status_emoji = {"validated": "✓", "testing": "🔬", "refuted": "✗", "pending": "⏳"}.get(h.get("status", ""), "")
-            parts.append(f"{i}. [{h.get('likelihood', 0):.0%}] {status_emoji} {h.get('statement', '')}")
+            status_emoji = {
+                "validated": "✓",
+                "testing": "🔬",
+                "refuted": "✗",
+                "pending": "⏳",
+            }.get(h.get("status", ""), "")
+            parts.append(
+                f"{i}. [{h.get('likelihood', 0):.0%}] {status_emoji} {h.get('statement', '')}"
+            )
 
     # Evidence summary
     if "evidence_coverage" in state:
@@ -702,7 +721,6 @@ Expected: [What they should see]
 
 What do you find?"
 """,
-
     "orient": """
 **OODA: Orient Phase**
 
@@ -713,7 +731,6 @@ Analyze the evidence you received. Update your understanding of:
 
 Then decide what to do next.
 """,
-
     "decide": """
 **OODA: Decide Phase**
 
@@ -724,7 +741,6 @@ Make a decision based on current evidence:
 
 Be decisive based on available information.
 """,
-
     "act": """
 **OODA: Act Phase**
 

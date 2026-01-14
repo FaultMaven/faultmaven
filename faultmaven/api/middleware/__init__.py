@@ -26,18 +26,18 @@ from .auth import (
 )
 
 __all__ = [
-    'LoggingMiddleware',
-    'RateLimitMiddleware',
-    'DeduplicationMiddleware',
+    "LoggingMiddleware",
+    "RateLimitMiddleware",
+    "DeduplicationMiddleware",
     # JWT Authentication
-    'get_current_user',
-    'get_current_user_optional',
-    'require_permission',
-    'require_any_permission',
-    'require_all_permissions',
-    'require_role',
-    'require_any_role',
-    'require_admin',
-    'get_auth_service',
-    'set_auth_service',
+    "get_current_user",
+    "get_current_user_optional",
+    "require_permission",
+    "require_any_permission",
+    "require_all_permissions",
+    "require_role",
+    "require_any_role",
+    "require_admin",
+    "get_auth_service",
+    "set_auth_service",
 ]

@@ -241,12 +241,20 @@ class TestListUserOrganizations:
 
     @pytest.mark.asyncio
     async def test_returns_organizations_user_is_member_of(
-        self, api_service, mock_organization_service, sample_organization, sample_members
+        self,
+        api_service,
+        mock_organization_service,
+        sample_organization,
+        sample_members,
     ):
         """Returns organizations user belongs to."""
-        mock_organization_service.list_user_organizations.return_value = [sample_organization]
+        mock_organization_service.list_user_organizations.return_value = [
+            sample_organization
+        ]
         mock_organization_service.get_member_role.return_value = ROLE_OWNER
-        mock_organization_service.list_organization_members.return_value = sample_members
+        mock_organization_service.list_organization_members.return_value = (
+            sample_members
+        )
 
         orgs, total = await api_service.list_user_organizations(
             user_id="user-owner",
@@ -260,13 +268,19 @@ class TestListUserOrganizations:
 
     @pytest.mark.asyncio
     async def test_pagination_works(
-        self, api_service, mock_organization_service, sample_organization, sample_members
+        self,
+        api_service,
+        mock_organization_service,
+        sample_organization,
+        sample_members,
     ):
         """Pagination works (limit, offset)."""
         orgs = [sample_organization] * 5
         mock_organization_service.list_user_organizations.return_value = orgs
         mock_organization_service.get_member_role.return_value = ROLE_MEMBER
-        mock_organization_service.list_organization_members.return_value = sample_members
+        mock_organization_service.list_organization_members.return_value = (
+            sample_members
+        )
 
         result, total = await api_service.list_user_organizations(
             user_id="user-123",
@@ -602,7 +616,9 @@ class TestAddMember:
             None,  # Target not already a member
         ]
         mock_organization_service.get_organization.return_value = sample_organization
-        mock_organization_service.list_organization_members.return_value = sample_members
+        mock_organization_service.list_organization_members.return_value = (
+            sample_members
+        )
 
         mock_user = MagicMock()
         mock_user.user_id = "user-new"
@@ -808,7 +824,9 @@ class TestUpdateMemberRole:
             ROLE_MEMBER,  # Target is member
         ]
         mock_organization_service.update_member_role.return_value = True
-        mock_organization_service.list_organization_members.return_value = sample_members
+        mock_organization_service.list_organization_members.return_value = (
+            sample_members
+        )
 
         mock_user = MagicMock()
         mock_user.user_id = "user-member"
@@ -872,7 +890,9 @@ class TestUpdateMemberRole:
             ROLE_MEMBER,  # Target is member
         ]
         mock_organization_service.update_member_role.return_value = True
-        mock_organization_service.list_organization_members.return_value = sample_members
+        mock_organization_service.list_organization_members.return_value = (
+            sample_members
+        )
 
         mock_user = MagicMock()
         mock_user.user_id = "user-member"
@@ -909,7 +929,9 @@ class TestGetOrganizationSettings:
         """Member can view settings."""
         mock_organization_service.get_member_role.return_value = ROLE_MEMBER
         mock_organization_service.get_organization.return_value = sample_organization
-        mock_organization_service.list_organization_members.return_value = sample_members
+        mock_organization_service.list_organization_members.return_value = (
+            sample_members
+        )
 
         result = await api_service.get_organization_settings(
             organization_id="org-123",
@@ -969,7 +991,9 @@ class TestUpdateOrganizationSettings:
             )
 
     @pytest.mark.asyncio
-    async def test_validates_session_timeout_range(self, api_service, mock_organization_service):
+    async def test_validates_session_timeout_range(
+        self, api_service, mock_organization_service
+    ):
         """Validates session_timeout_minutes range (15-480)."""
         mock_organization_service.get_member_role.return_value = ROLE_OWNER
 
@@ -981,7 +1005,9 @@ class TestUpdateOrganizationSettings:
             )
 
     @pytest.mark.asyncio
-    async def test_validates_default_case_priority(self, api_service, mock_organization_service):
+    async def test_validates_default_case_priority(
+        self, api_service, mock_organization_service
+    ):
         """Validates default_case_priority values."""
         mock_organization_service.get_member_role.return_value = ROLE_OWNER
 

@@ -33,8 +33,12 @@ class TestPresetDefinitions:
         for preset_name, preset in PRESETS.items():
             assert preset.name, f"Preset {preset_name} missing name"
             assert preset.description, f"Preset {preset_name} missing description"
-            assert isinstance(preset.defaults, dict), f"Preset {preset_name} defaults not a dict"
-            assert isinstance(preset.required_overrides, dict), f"Preset {preset_name} required_overrides not a dict"
+            assert isinstance(
+                preset.defaults, dict
+            ), f"Preset {preset_name} defaults not a dict"
+            assert isinstance(
+                preset.required_overrides, dict
+            ), f"Preset {preset_name} required_overrides not a dict"
 
     def test_local_preset_has_zero_config_defaults(self):
         """Test that local preset has zero-config defaults."""
@@ -167,10 +171,14 @@ class TestPresetApplication:
         """Test that apply_preset_defaults does not override existing env vars."""
         from faultmaven.config.presets import apply_preset_defaults
 
-        with patch.dict(os.environ, {
-            "CONFIG_PRESET": "local",
-            "SESSION_STORAGE_TYPE": "redis",  # User override
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "CONFIG_PRESET": "local",
+                "SESSION_STORAGE_TYPE": "redis",  # User override
+            },
+            clear=True,
+        ):
             apply_preset_defaults()
 
             # User value should be preserved
@@ -199,7 +207,12 @@ class TestZeroConfigDetection:
 
         with patch.dict(os.environ, {}, clear=True):
             # Remove any LLM keys or service configs
-            for key in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "REDIS_HOST", "CHROMADB_URL"]:
+            for key in [
+                "OPENAI_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "REDIS_HOST",
+                "CHROMADB_URL",
+            ]:
                 os.environ.pop(key, None)
 
             result = detect_zero_config_preset()
@@ -238,10 +251,14 @@ class TestPresetValidation:
         """Test that validation passes for local provider without keys."""
         from faultmaven.config.presets import validate_preset_requirements
 
-        with patch.dict(os.environ, {
-            "CONFIG_PRESET": "local",
-            "CHAT_PROVIDER": "local",
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "CONFIG_PRESET": "local",
+                "CHAT_PROVIDER": "local",
+            },
+            clear=True,
+        ):
             errors = validate_preset_requirements()
             assert len(errors) == 0
 
@@ -249,10 +266,14 @@ class TestPresetValidation:
         """Test that validation fails when required API key is missing."""
         from faultmaven.config.presets import validate_preset_requirements
 
-        with patch.dict(os.environ, {
-            "CONFIG_PRESET": "local",
-            "CHAT_PROVIDER": "openai",
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "CONFIG_PRESET": "local",
+                "CHAT_PROVIDER": "openai",
+            },
+            clear=True,
+        ):
             os.environ.pop("OPENAI_API_KEY", None)
 
             errors = validate_preset_requirements()
@@ -263,11 +284,15 @@ class TestPresetValidation:
         """Test that validation passes when API key is provided."""
         from faultmaven.config.presets import validate_preset_requirements
 
-        with patch.dict(os.environ, {
-            "CONFIG_PRESET": "local",
-            "CHAT_PROVIDER": "openai",
-            "OPENAI_API_KEY": "sk-test",
-        }, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "CONFIG_PRESET": "local",
+                "CHAT_PROVIDER": "openai",
+                "OPENAI_API_KEY": "sk-test",
+            },
+            clear=True,
+        ):
             errors = validate_preset_requirements()
             assert len(errors) == 0
 

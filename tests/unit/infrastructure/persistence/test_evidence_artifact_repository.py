@@ -170,6 +170,7 @@ class TestEvidenceUpdate:
         original_updated = evidence.updated_at
 
         import time
+
         time.sleep(0.001)
 
         evidence.description = "Changed"
@@ -258,7 +259,9 @@ class TestEvidenceListByCase:
 
         assert len(screenshots) == 3
         assert total == 3
-        assert all(e.evidence_type == EvidenceArtifactType.SCREENSHOT for e in screenshots)
+        assert all(
+            e.evidence_type == EvidenceArtifactType.SCREENSHOT for e in screenshots
+        )
 
     @pytest.mark.asyncio
     async def test_list_evidence_by_case_pagination(self, repository):

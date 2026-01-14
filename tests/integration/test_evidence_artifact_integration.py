@@ -32,7 +32,12 @@ from faultmaven.infrastructure.persistence.repository_factory import (
     STORAGE_TYPE_INMEMORY,
     STORAGE_TYPE_DATABASE,
 )
-from faultmaven.modules.case.domain.models import Case, CaseStatus, InvestigationStrategy, ConsultingData
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseStatus,
+    InvestigationStrategy,
+    ConsultingData,
+)
 from faultmaven.modules.evidence.domain.models import (
     EvidenceArtifact,
     EvidenceArtifactType,
@@ -233,9 +238,7 @@ async def test_multiple_evidence_per_case(
         await evidence_repository.create_evidence(evidence)
 
     # Verify all created
-    result, total = await evidence_repository.list_evidence_by_case(
-        sample_case.case_id
-    )
+    result, total = await evidence_repository.list_evidence_by_case(sample_case.case_id)
     assert len(result) == 5
     assert total == 5
 

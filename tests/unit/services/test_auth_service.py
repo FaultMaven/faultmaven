@@ -64,7 +64,9 @@ def mock_redis():
 @pytest.fixture
 def auth_service(mock_settings):
     """Create AuthService with mocked settings."""
-    with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+    with patch(
+        "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+    ):
         service = AuthService()
         return service
 
@@ -72,7 +74,9 @@ def auth_service(mock_settings):
 @pytest.fixture
 def auth_service_with_redis(mock_settings, mock_redis):
     """Create AuthService with mocked settings and Redis."""
-    with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+    with patch(
+        "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+    ):
         service = AuthService(redis_client=mock_redis)
         return service
 
@@ -96,7 +100,9 @@ def sample_user_data() -> Dict[str, Any]:
 class TestTokenGeneration:
     """Tests for JWT token generation."""
 
-    def test_generate_access_token_creates_valid_jwt(self, auth_service, sample_user_data):
+    def test_generate_access_token_creates_valid_jwt(
+        self, auth_service, sample_user_data
+    ):
         """Access token generation creates a valid JWT."""
         token = auth_service.generate_access_token(
             user_id=sample_user_data["user_id"],
@@ -110,7 +116,9 @@ class TestTokenGeneration:
         assert len(token) > 50  # JWTs are long
         assert token.count(".") == 2  # JWT has 3 parts
 
-    def test_access_token_contains_required_claims(self, auth_service, sample_user_data):
+    def test_access_token_contains_required_claims(
+        self, auth_service, sample_user_data
+    ):
         """Access token contains all required JWT claims."""
         token = auth_service.generate_access_token(
             user_id=sample_user_data["user_id"],
@@ -132,7 +140,9 @@ class TestTokenGeneration:
         assert "exp" in claims  # Expiration
         assert claims["token_type"] == "access"
 
-    def test_access_token_permissions_auto_derived_from_roles(self, auth_service, sample_user_data):
+    def test_access_token_permissions_auto_derived_from_roles(
+        self, auth_service, sample_user_data
+    ):
         """Permissions are auto-derived from roles when not explicitly provided."""
         token = auth_service.generate_access_token(
             user_id=sample_user_data["user_id"],
@@ -182,7 +192,9 @@ class TestTokenGeneration:
         expected_exp = now + (15 * 60)
         assert abs(exp - expected_exp) < 5  # 5 second tolerance
 
-    def test_generate_refresh_token_creates_valid_jwt(self, auth_service, sample_user_data):
+    def test_generate_refresh_token_creates_valid_jwt(
+        self, auth_service, sample_user_data
+    ):
         """Refresh token generation creates a valid JWT."""
         token = auth_service.generate_refresh_token(
             user_id=sample_user_data["user_id"],
@@ -193,7 +205,9 @@ class TestTokenGeneration:
         assert isinstance(token, str)
         assert token.count(".") == 2
 
-    def test_refresh_token_contains_minimal_claims(self, auth_service, sample_user_data):
+    def test_refresh_token_contains_minimal_claims(
+        self, auth_service, sample_user_data
+    ):
         """Refresh token contains only minimal claims for security."""
         token = auth_service.generate_refresh_token(
             user_id=sample_user_data["user_id"],
@@ -267,7 +281,9 @@ class TestTokenGeneration:
         assert claims1["jti"] != claims2["jti"]
         assert len(claims1["jti"]) == 36  # UUID format
 
-    def test_generate_token_pair_creates_both_tokens(self, auth_service, sample_user_data):
+    def test_generate_token_pair_creates_both_tokens(
+        self, auth_service, sample_user_data
+    ):
         """generate_token_pair creates both access and refresh tokens."""
         pair = auth_service.generate_token_pair(
             user_id=sample_user_data["user_id"],
@@ -363,7 +379,9 @@ class TestTokenVerification:
             "iss": "faultmaven-api",
             "aud": "faultmaven-app",
             "iat": int(datetime.now(timezone.utc).timestamp()),
-            "exp": int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()),
+            "exp": int(
+                (datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()
+            ),
             "jti": str(uuid.uuid4()),
             "token_type": "access",
         }
@@ -377,7 +395,9 @@ class TestTokenVerification:
         # Using wrong secret with HS256 raises InvalidTokenError (caught by generic handler), not DecodeError
         assert exc_info.value.error_code in ["INVALID_TOKEN", "DECODE_ERROR"]
 
-    def test_verify_raises_on_wrong_token_type_refresh_as_access(self, auth_service, sample_user_data):
+    def test_verify_raises_on_wrong_token_type_refresh_as_access(
+        self, auth_service, sample_user_data
+    ):
         """verify_token raises AuthenticationError when refresh token used as access."""
         # Generate refresh token
         token = auth_service.generate_refresh_token(
@@ -422,7 +442,9 @@ class TestTokenVerification:
             "iss": "faultmaven-api",
             "aud": "faultmaven-app",
             "iat": int(datetime.now(timezone.utc).timestamp()),
-            "exp": int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()),
+            "exp": int(
+                (datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()
+            ),
         }
 
         incomplete_token = auth_service._encode_token(incomplete_claims)
@@ -527,7 +549,11 @@ class TestTokenRefresh:
 
         # User loader returns updated roles
         async def mock_user_loader(user_id):
-            return ("test@example.com", ["member"], None)  # Changed from admin to member
+            return (
+                "test@example.com",
+                ["member"],
+                None,
+            )  # Changed from admin to member
 
         new_access, _ = await auth_service_with_redis.refresh_access_token(
             refresh_token=refresh_token,
@@ -548,7 +574,9 @@ class TestTokenRefresh:
         )
 
         # Get the jti of old token
-        old_claims = auth_service_with_redis.verify_token(refresh_token, token_type="refresh")
+        old_claims = auth_service_with_redis.verify_token(
+            refresh_token, token_type="refresh"
+        )
         old_jti = old_claims["jti"]
 
         mock_redis.get.return_value = None
@@ -782,8 +810,10 @@ class TestExtractUser:
 
         mock_redis.get.return_value = None
 
-        user = await auth_service_with_redis.extract_user_from_token_with_revocation_check(
-            token
+        user = (
+            await auth_service_with_redis.extract_user_from_token_with_revocation_check(
+                token
+            )
         )
 
         assert user.user_id == sample_user_data["user_id"]
@@ -885,17 +915,25 @@ class TestKeyLoading:
             encryption_algorithm=serialization.NoEncryption(),
         ).decode("utf-8")
 
-        public_pem = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode("utf-8")
+        public_pem = (
+            private_key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode("utf-8")
+        )
 
         # Configure mock settings to return keys from env
         mock_settings.security.jwt_private_key = MagicMock()
-        mock_settings.security.jwt_private_key.get_secret_value.return_value = private_pem
+        mock_settings.security.jwt_private_key.get_secret_value.return_value = (
+            private_pem
+        )
         mock_settings.security.jwt_public_key = public_pem
 
-        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
             service = AuthService()
 
             # Verify keys were loaded
@@ -921,10 +959,14 @@ class TestKeyLoading:
             encryption_algorithm=serialization.NoEncryption(),
         ).decode("utf-8")
 
-        public_pem = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode("utf-8")
+        public_pem = (
+            private_key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode("utf-8")
+        )
 
         # Write keys to temp files
         private_key_path = tmp_path / "private.pem"
@@ -938,14 +980,18 @@ class TestKeyLoading:
         mock_settings.security.jwt_private_key_path = str(private_key_path)
         mock_settings.security.jwt_public_key_path = str(public_key_path)
 
-        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
             service = AuthService()
 
             # Verify keys were loaded from files
             assert service._private_key == private_pem
             assert service._public_key == public_pem
 
-    def test_load_keys_generates_dev_keys_when_not_configured(self, mock_settings, caplog):
+    def test_load_keys_generates_dev_keys_when_not_configured(
+        self, mock_settings, caplog
+    ):
         """Development RSA keys are generated when no keys are configured."""
         import logging
 
@@ -955,7 +1001,9 @@ class TestKeyLoading:
         mock_settings.security.jwt_private_key_path = None
         mock_settings.security.jwt_public_key_path = None
 
-        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
             with caplog.at_level(logging.WARNING):
                 service = AuthService()
 
@@ -976,7 +1024,9 @@ class TestKeyLoading:
         mock_settings.security.jwt_private_key_path = "/nonexistent/private.pem"
         mock_settings.security.jwt_public_key_path = "/nonexistent/public.pem"
 
-        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
             with caplog.at_level(logging.WARNING):
                 service = AuthService()
 
@@ -989,7 +1039,10 @@ class TestKeyLoading:
     def test_generated_keys_are_valid_rsa_2048(self, mock_settings):
         """Generated development keys are valid 2048-bit RSA keys."""
         from cryptography.hazmat.backends import default_backend
-        from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
+        from cryptography.hazmat.primitives.serialization import (
+            load_pem_private_key,
+            load_pem_public_key,
+        )
 
         # No keys configured - will generate dev keys
         mock_settings.security.jwt_private_key = None
@@ -997,7 +1050,9 @@ class TestKeyLoading:
         mock_settings.security.jwt_private_key_path = None
         mock_settings.security.jwt_public_key_path = None
 
-        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
             service = AuthService()
 
             # Load and validate private key
@@ -1034,12 +1089,18 @@ class TestKeyLoading:
             encryption_algorithm=serialization.NoEncryption(),
         ).decode("utf-8")
 
-        provided_public = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode("utf-8")
+        provided_public = (
+            private_key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode("utf-8")
+        )
 
-        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
             service = AuthService(
                 private_key=provided_private,
                 public_key=provided_public,
@@ -1057,7 +1118,9 @@ class TestKeyLoading:
         mock_settings.security.jwt_private_key_path = None
         mock_settings.security.jwt_public_key_path = None
 
-        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
             service = AuthService()
 
             # Generate a token
@@ -1103,10 +1166,14 @@ class TestTokenVerificationEdgeCases:
             encryption_algorithm=serialization.NoEncryption(),
         ).decode("utf-8")
 
-        public_pem = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode("utf-8")
+        public_pem = (
+            private_key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode("utf-8")
+        )
 
         # Create token with wrong issuer
         now = datetime.now(timezone.utc)
@@ -1135,7 +1202,9 @@ class TestTokenVerificationEdgeCases:
         mock_settings.security.jwt_private_key = None
         mock_settings.security.jwt_public_key = public_pem
 
-        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
             service = AuthService(private_key=private_pem, public_key=public_pem)
 
             with pytest.raises(AuthenticationError) as exc_info:
@@ -1162,10 +1231,14 @@ class TestTokenVerificationEdgeCases:
             encryption_algorithm=serialization.NoEncryption(),
         ).decode("utf-8")
 
-        public_pem = private_key.public_key().public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode("utf-8")
+        public_pem = (
+            private_key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode("utf-8")
+        )
 
         # Create token with wrong audience
         now = datetime.now(timezone.utc)
@@ -1190,7 +1263,9 @@ class TestTokenVerificationEdgeCases:
             algorithm="RS256",
         )
 
-        with patch("faultmaven.services.auth_service.get_settings", return_value=mock_settings):
+        with patch(
+            "faultmaven.services.auth_service.get_settings", return_value=mock_settings
+        ):
             service = AuthService(private_key=private_pem, public_key=public_pem)
 
             with pytest.raises(AuthenticationError) as exc_info:

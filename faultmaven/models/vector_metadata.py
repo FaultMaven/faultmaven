@@ -53,7 +53,3 @@ class VectorMetadata(BaseModel):
         if self.updated_at:
             data["updated_at"] = to_json_compatible(self.updated_at)
         return data
-
-
-
-

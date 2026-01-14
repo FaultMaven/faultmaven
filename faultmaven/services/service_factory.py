@@ -20,7 +20,9 @@ from typing import Optional, TYPE_CHECKING
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.services.case_service import APICaseService
-from faultmaven.services.investigation_session_service import APIInvestigationSessionService
+from faultmaven.services.investigation_session_service import (
+    APIInvestigationSessionService,
+)
 from faultmaven.services.file_storage_service import FileStorageService
 from faultmaven.services.evidence_artifact_service import APIEvidenceArtifactService
 from faultmaven.infrastructure.persistence.repository_factory import (
@@ -41,6 +43,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
     KnowledgeItemRepository,
 )
 from faultmaven.config.settings import get_settings
+
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
@@ -83,13 +86,17 @@ class ServiceFactory:
             storage_type=STORAGE_TYPE_DATABASE,
             session=db_session,
         )
-        self.session_repo: InvestigationSessionRepository = get_investigation_session_repository(
-            storage_type=STORAGE_TYPE_DATABASE,
-            session=db_session,
+        self.session_repo: InvestigationSessionRepository = (
+            get_investigation_session_repository(
+                storage_type=STORAGE_TYPE_DATABASE,
+                session=db_session,
+            )
         )
-        self.evidence_repo: EvidenceArtifactRepository = get_evidence_artifact_repository(
-            storage_type=STORAGE_TYPE_DATABASE,
-            session=db_session,
+        self.evidence_repo: EvidenceArtifactRepository = (
+            get_evidence_artifact_repository(
+                storage_type=STORAGE_TYPE_DATABASE,
+                session=db_session,
+            )
         )
         self.knowledge_repo: KnowledgeItemRepository = get_knowledge_item_repository(
             storage_type=STORAGE_TYPE_DATABASE,
@@ -137,15 +144,12 @@ class ServiceFactory:
         settings = get_settings()
 
         return FileStorageService(
-            storage_root=storage_root or getattr(
-                settings, 'evidence_storage_root', './data/evidence'
-            ),
-            max_file_size_bytes=max_file_size_bytes or getattr(
-                settings, 'max_evidence_file_size', 100 * 1024 * 1024
-            ),
-            allowed_mime_types=allowed_mime_types or getattr(
-                settings, 'allowed_evidence_mime_types', []
-            ),
+            storage_root=storage_root
+            or getattr(settings, "evidence_storage_root", "./data/evidence"),
+            max_file_size_bytes=max_file_size_bytes
+            or getattr(settings, "max_evidence_file_size", 100 * 1024 * 1024),
+            allowed_mime_types=allowed_mime_types
+            or getattr(settings, "allowed_evidence_mime_types", []),
         )
 
     def create_evidence_artifact_service(
@@ -174,7 +178,9 @@ class ServiceFactory:
         Returns:
             AgentOrchestrationService instance with injected dependencies
         """
-        from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
+        from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
+            AgentOrchestrationService,
+        )
         from faultmaven.modules.agent.tools.agent_tools import agent_tool_registry
 
         return AgentOrchestrationService(

@@ -70,10 +70,11 @@ from faultmaven.modules.agent.domain.models.agentic import (
 # Service Protocols
 # ============================================================
 
+
 class IAgentExecutionQuery(Protocol):
     """Read-only agent execution query interface for cross-module use."""
 
-    async def get_execution(self, execution_id: 'UUID') -> Optional[AgentExecution]:
+    async def get_execution(self, execution_id: "UUID") -> Optional[AgentExecution]:
         """Get execution by ID."""
         ...
 
@@ -90,7 +91,9 @@ class IAgentExecutionQuery(Protocol):
 class IInvestigationService(Protocol):
     """Investigation service interface for cross-module use."""
 
-    async def get_investigation_state(self, case_id: str) -> Optional[InvestigationState]:
+    async def get_investigation_state(
+        self, case_id: str
+    ) -> Optional[InvestigationState]:
         """Get current investigation state for a case."""
         ...
 

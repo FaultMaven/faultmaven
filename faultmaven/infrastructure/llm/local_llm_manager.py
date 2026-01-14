@@ -21,7 +21,9 @@ logger = get_logger(__name__)
 class LocalLLMServiceManager:
     """Manages local LLM service lifecycle"""
 
-    def __init__(self, base_url: str = "http://localhost:8080", script_path: Optional[str] = None):
+    def __init__(
+        self, base_url: str = "http://localhost:8080", script_path: Optional[str] = None
+    ):
         self.base_url = base_url
         self.script_path = script_path or self._get_default_script_path()
         self.max_startup_wait = 120  # 2 minutes max wait for service to start
@@ -37,15 +39,21 @@ class LocalLLMServiceManager:
     async def is_service_running(self) -> bool:
         """Check if the local LLM service is running and responding"""
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5.0)) as session:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5.0)
+            ) as session:
                 # Try different health endpoints that llama.cpp server might have
                 health_endpoints = ["/health", "/v1/models", "/"]
 
                 for endpoint in health_endpoints:
                     try:
-                        async with session.get(f"{self.base_url}{endpoint}") as response:
+                        async with session.get(
+                            f"{self.base_url}{endpoint}"
+                        ) as response:
                             if response.status == 200:
-                                logger.debug(f"Local LLM service health check passed on {endpoint}")
+                                logger.debug(
+                                    f"Local LLM service health check passed on {endpoint}"
+                                )
                                 return True
                     except Exception as e:
                         logger.debug(f"Health check failed on {endpoint}: {e}")
@@ -57,13 +65,19 @@ class LocalLLMServiceManager:
             logger.debug(f"Service health check failed: {e}")
             return False
 
-    def _run_script_command(self, command: str, model_name: Optional[str] = None) -> subprocess.CompletedProcess:
+    def _run_script_command(
+        self, command: str, model_name: Optional[str] = None
+    ) -> subprocess.CompletedProcess:
         """Run a command using the local LLM service script"""
         if not os.path.exists(self.script_path):
-            raise FileNotFoundError(f"Local LLM service script not found: {self.script_path}")
+            raise FileNotFoundError(
+                f"Local LLM service script not found: {self.script_path}"
+            )
 
         if not os.access(self.script_path, os.X_OK):
-            raise PermissionError(f"Local LLM service script is not executable: {self.script_path}")
+            raise PermissionError(
+                f"Local LLM service script is not executable: {self.script_path}"
+            )
 
         cmd = [self.script_path, command]
         if model_name:
@@ -75,12 +89,14 @@ class LocalLLMServiceManager:
             cmd,
             capture_output=True,
             text=True,
-            timeout=120  # 120 second timeout for script commands (container startup can be slow)
+            timeout=120,  # 120 second timeout for script commands (container startup can be slow)
         )
 
         if result.returncode != 0:
             logger.error(f"Script command failed: {result.stderr}")
-            raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd, result.stdout, result.stderr
+            )
 
         return result
 
@@ -140,7 +156,7 @@ class LocalLLMServiceManager:
             return {
                 "script_available": True,
                 "script_output": result.stdout,
-                "script_path": self.script_path
+                "script_path": self.script_path,
             }
 
         except subprocess.CalledProcessError as e:
@@ -148,18 +164,15 @@ class LocalLLMServiceManager:
                 "script_available": True,
                 "script_error": e.stderr,
                 "script_path": self.script_path,
-                "exit_code": e.returncode
+                "exit_code": e.returncode,
             }
         except FileNotFoundError:
             return {
                 "script_available": False,
-                "error": f"Script not found: {self.script_path}"
+                "error": f"Script not found: {self.script_path}",
             }
         except Exception as e:
-            return {
-                "script_available": False,
-                "error": str(e)
-            }
+            return {"script_available": False, "error": str(e)}
 
     def check_and_fix_service(self) -> bool:
         """Check model consistency and restart with correct model if needed"""
@@ -207,7 +220,7 @@ class LocalLLMServiceManager:
             "service_running": False,
             "base_url": self.base_url,
             "script_path": self.script_path,
-            "timestamp": time.time()
+            "timestamp": time.time(),
         }
 
         # Check if service is running
@@ -220,7 +233,9 @@ class LocalLLMServiceManager:
         # Try to get service info if running
         if health_info["service_running"]:
             try:
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5.0)) as session:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=5.0)
+                ) as session:
                     async with session.get(f"{self.base_url}/v1/models") as response:
                         if response.status == 200:
                             models_info = await response.json()
@@ -235,7 +250,9 @@ class LocalLLMServiceManager:
 _local_llm_manager: Optional[LocalLLMServiceManager] = None
 
 
-def get_local_llm_manager(base_url: str = "http://localhost:8080") -> LocalLLMServiceManager:
+def get_local_llm_manager(
+    base_url: str = "http://localhost:8080",
+) -> LocalLLMServiceManager:
     """Get the global LocalLLMServiceManager instance"""
     global _local_llm_manager
     if _local_llm_manager is None:
@@ -244,9 +261,7 @@ def get_local_llm_manager(base_url: str = "http://localhost:8080") -> LocalLLMSe
 
 
 async def check_and_start_local_llm_service(
-    provider_name: str,
-    base_url: str,
-    model_name: str
+    provider_name: str, base_url: str, model_name: str
 ) -> bool:
     """
     Check if local LLM service is needed and start it if necessary.

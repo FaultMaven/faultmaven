@@ -51,9 +51,7 @@ class EvidenceService:
             EvidenceArtifact: Created evidence record
         """
         # Store file
-        storage_path = await self.storage.store_file(
-            file, namespace="evidence"
-        )
+        storage_path = await self.storage.store_file(file, namespace="evidence")
 
         # Create evidence record via Case repository
         evidence = await self.case_repository.create_standalone_evidence(
@@ -114,14 +112,14 @@ class EvidenceService:
         await self.storage.delete_file(evidence.file_path)
 
         # Delete database record via Case repository
-        deleted = await self.case_repository.delete_standalone_evidence(str(evidence_id))
+        deleted = await self.case_repository.delete_standalone_evidence(
+            str(evidence_id)
+        )
         if deleted:
             logger.info(f"Evidence {evidence_id} deleted")
         return deleted
 
-    async def link_to_case(
-        self, evidence_id: UUID, case_id: UUID
-    ) -> EvidenceArtifact:
+    async def link_to_case(self, evidence_id: UUID, case_id: UUID) -> EvidenceArtifact:
         """Link evidence to a case.
 
         Args:

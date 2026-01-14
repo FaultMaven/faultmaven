@@ -18,11 +18,14 @@ from faultmaven.models.api import (
     DataType,
     PreprocessedData,
     ExtractionMetadata,
-    SourceMetadata
+    SourceMetadata,
 )
 from faultmaven.services.preprocessing.classifier import DataClassifier
-from faultmaven.services.preprocessing.extractors.logs_extractor import LogsAndErrorsExtractor
+from faultmaven.services.preprocessing.extractors.logs_extractor import (
+    LogsAndErrorsExtractor,
+)
 from faultmaven.infrastructure.security.redaction import DataSanitizer
+
 # Interface imports for clean architecture compliance
 if TYPE_CHECKING:
     from faultmaven.models.interfaces import IVectorStore, ITracer, ISanitizer
@@ -38,18 +41,18 @@ class PreprocessingService:
         classifier: DataClassifier,
         sanitizer: DataSanitizer,
         logs_extractor: LogsAndErrorsExtractor,
-        config_extractor: Optional['StructuredConfigExtractor'] = None,
-        metrics_extractor: Optional['MetricsAndPerformanceExtractor'] = None,
-        text_extractor: Optional['UnstructuredTextExtractor'] = None,
-        source_code_extractor: Optional['SourceCodeExtractor'] = None,
-        visual_extractor: Optional['VisualEvidenceExtractor'] = None,
-        trace_extractor: Optional['TraceDataExtractor'] = None,
-        profiling_extractor: Optional['ProfilingDataExtractor'] = None,
-        error_report_extractor: Optional['ErrorReportExtractor'] = None,
-        documentation_extractor: Optional['DocumentationExtractor'] = None,
-        command_output_extractor: Optional['CommandOutputExtractor'] = None,
-        chunking_service: Optional['ChunkingService'] = None,
-        chunk_trigger_tokens: int = 8000
+        config_extractor: Optional["StructuredConfigExtractor"] = None,
+        metrics_extractor: Optional["MetricsAndPerformanceExtractor"] = None,
+        text_extractor: Optional["UnstructuredTextExtractor"] = None,
+        source_code_extractor: Optional["SourceCodeExtractor"] = None,
+        visual_extractor: Optional["VisualEvidenceExtractor"] = None,
+        trace_extractor: Optional["TraceDataExtractor"] = None,
+        profiling_extractor: Optional["ProfilingDataExtractor"] = None,
+        error_report_extractor: Optional["ErrorReportExtractor"] = None,
+        documentation_extractor: Optional["DocumentationExtractor"] = None,
+        command_output_extractor: Optional["CommandOutputExtractor"] = None,
+        chunking_service: Optional["ChunkingService"] = None,
+        chunk_trigger_tokens: int = 8000,
     ):
         """
         Initialize preprocessing service
@@ -119,7 +122,7 @@ class PreprocessingService:
         agent_hint: Optional[DataType] = None,
         browser_context: Optional[str] = None,
         user_override: Optional[DataType] = None,
-        source_metadata: Optional[SourceMetadata] = None
+        source_metadata: Optional[SourceMetadata] = None,
     ) -> PreprocessedData:
         """
         4-step preprocessing pipeline
@@ -152,7 +155,7 @@ class PreprocessingService:
             agent_hint,
             browser_context,
             user_override,
-            source_metadata  # Pass for URL pattern matching and file upload boost
+            source_metadata,  # Pass for URL pattern matching and file upload boost
         )
 
         logger.info(
@@ -167,7 +170,7 @@ class PreprocessingService:
                 content,
                 classification,
                 source_metadata,
-                time.time() - start_time
+                time.time() - start_time,
             )
 
         # Handle classification_failed (trigger user modal)
@@ -183,7 +186,7 @@ class PreprocessingService:
                 content,
                 classification,
                 source_metadata,
-                time.time() - start_time
+                time.time() - start_time,
             )
 
         # Step 2: Type-specific extraction
@@ -217,7 +220,7 @@ class PreprocessingService:
                 extracted = await self.chunking_service.process_long_text(
                     content=extracted,
                     data_type=classification.data_type,
-                    filename=filename
+                    filename=filename,
                 )
 
                 strategy = "map_reduce"
@@ -234,7 +237,10 @@ class PreprocessingService:
                 logger.error(f"Chunking failed: {e}. Falling back to truncation.")
                 # Fallback to truncation if chunking fails
                 if len(extracted) > 10000:
-                    extracted = extracted[:10000] + "\n\n... [Chunking failed, content truncated]"
+                    extracted = (
+                        extracted[:10000]
+                        + "\n\n... [Chunking failed, content truncated]"
+                    )
 
         elif token_count > self.chunk_trigger_tokens and not self.chunking_service:
             logger.warning(
@@ -267,12 +273,12 @@ class PreprocessingService:
                 llm_calls_used=llm_calls,
                 confidence=classification.confidence,
                 source=classification.source,
-                processing_time_ms=processing_time
+                processing_time_ms=processing_time,
             ),
             original_size=len(content),
             processed_size=len(sanitized),
             security_flags=security_flags,
-            source_metadata=source_metadata
+            source_metadata=source_metadata,
         )
 
     def _create_unanalyzable_result(
@@ -281,7 +287,7 @@ class PreprocessingService:
         content: str,
         classification,
         source_metadata: Optional[SourceMetadata],
-        elapsed_time: float
+        elapsed_time: float,
     ) -> PreprocessedData:
         """
         Create result for UNANALYZABLE files (user opted out)
@@ -296,12 +302,12 @@ class PreprocessingService:
                 llm_calls_used=0,
                 confidence=classification.confidence,
                 source=classification.source,
-                processing_time_ms=elapsed_time * 1000
+                processing_time_ms=elapsed_time * 1000,
             ),
             original_size=len(content),
             processed_size=0,
             security_flags=[],
-            source_metadata=source_metadata
+            source_metadata=source_metadata,
         )
 
     def _create_classification_failed_result(
@@ -310,7 +316,7 @@ class PreprocessingService:
         content: str,
         classification,
         source_metadata: Optional[SourceMetadata],
-        elapsed_time: float
+        elapsed_time: float,
     ) -> PreprocessedData:
         """
         Create placeholder result when classification fails
@@ -318,7 +324,9 @@ class PreprocessingService:
         Frontend will detect this and show user modal for manual selection
         """
         # Include suggested types in content for frontend
-        suggested = ", ".join(str(t.value) for t in (classification.suggested_types or []))
+        suggested = ", ".join(
+            str(t.value) for t in (classification.suggested_types or [])
+        )
 
         return PreprocessedData(
             content=(
@@ -331,12 +339,12 @@ class PreprocessingService:
                 llm_calls_used=0,
                 confidence=classification.confidence,
                 source=classification.source,
-                processing_time_ms=elapsed_time * 1000
+                processing_time_ms=elapsed_time * 1000,
             ),
             original_size=len(content),
             processed_size=0,
             security_flags=[],
-            source_metadata=source_metadata
+            source_metadata=source_metadata,
         )
 
     def _fallback_direct_extraction(self, content: str, max_chars: int = 10000) -> str:
@@ -348,7 +356,10 @@ class PreprocessingService:
         if len(content) <= max_chars:
             return content
 
-        return content[:max_chars] + f"\n\n... [Truncated {len(content) - max_chars} chars]"
+        return (
+            content[:max_chars]
+            + f"\n\n... [Truncated {len(content) - max_chars} chars]"
+        )
 
     def _estimate_tokens(self, text: str) -> int:
         """

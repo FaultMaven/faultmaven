@@ -53,17 +53,35 @@ def clean_llm_environment(monkeypatch):
     # Clear all LLM-related environment variables FIRST (including from .env)
     # This must be done BEFORE load_dotenv is called
     llm_keys = [
-        'CHAT_PROVIDER',
-        'FIREWORKS_API_KEY', 'FIREWORKS_MODEL', 'FIREWORKS_API_BASE',
-        'OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_API_BASE',
-        'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_API_BASE',
-        'GROQ_API_KEY', 'GROQ_MODEL', 'GROQ_API_BASE',
-        'GEMINI_API_KEY', 'GEMINI_MODEL', 'GEMINI_API_BASE',
-        'HUGGINGFACE_API_KEY', 'HUGGINGFACE_MODEL', 'HUGGINGFACE_API_URL',
-        'OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'OPENROUTER_API_BASE',
-        'LOCAL_LLM_URL', 'LOCAL_LLM_MODEL', 'LOCAL_LLM_BASE_URL',
-        'COHERE_API_KEY', 'COHERE_MODEL', 'COHERE_API_BASE',
-        'STRICT_PROVIDER_MODE',
+        "CHAT_PROVIDER",
+        "FIREWORKS_API_KEY",
+        "FIREWORKS_MODEL",
+        "FIREWORKS_API_BASE",
+        "OPENAI_API_KEY",
+        "OPENAI_MODEL",
+        "OPENAI_API_BASE",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_API_BASE",
+        "GROQ_API_KEY",
+        "GROQ_MODEL",
+        "GROQ_API_BASE",
+        "GEMINI_API_KEY",
+        "GEMINI_MODEL",
+        "GEMINI_API_BASE",
+        "HUGGINGFACE_API_KEY",
+        "HUGGINGFACE_MODEL",
+        "HUGGINGFACE_API_URL",
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_MODEL",
+        "OPENROUTER_API_BASE",
+        "LOCAL_LLM_URL",
+        "LOCAL_LLM_MODEL",
+        "LOCAL_LLM_BASE_URL",
+        "COHERE_API_KEY",
+        "COHERE_MODEL",
+        "COHERE_API_BASE",
+        "STRICT_PROVIDER_MODE",
     ]
 
     for key in llm_keys:
@@ -120,7 +138,7 @@ def mock_provider_classes():
                 confidence=0.85,
                 provider=provider_name,  # Use actual provider name
                 tokens_used=30,
-                response_time_ms=100
+                response_time_ms=100,
             )
         )
         providers[provider_name] = mock_provider
@@ -415,14 +433,24 @@ class TestFallbackChain:
             assert len(fallback_chain) > 0
             # The primary provider from CHAT_PROVIDER should be first
             # Note: fallback_chain may contain LLMProvider enum values or strings depending on settings implementation
-            primary = str(fallback_chain[0]).lower() if hasattr(fallback_chain[0], 'value') else fallback_chain[0]
+            primary = (
+                str(fallback_chain[0]).lower()
+                if hasattr(fallback_chain[0], "value")
+                else fallback_chain[0]
+            )
             assert primary == "fireworks" or primary.endswith("fireworks")
 
             # Check that fallback providers are present (if strict mode is disabled)
             # Convert enum values to strings for comparison
-            chain_str = [str(p).lower() if hasattr(p, 'value') else p for p in fallback_chain]
-            assert any("openai" in str(p) for p in chain_str) or "openai" in fallback_chain
-            assert any("local" in str(p) for p in chain_str) or "local" in fallback_chain
+            chain_str = [
+                str(p).lower() if hasattr(p, "value") else p for p in fallback_chain
+            ]
+            assert (
+                any("openai" in str(p) for p in chain_str) or "openai" in fallback_chain
+            )
+            assert (
+                any("local" in str(p) for p in chain_str) or "local" in fallback_chain
+            )
 
     def test_fallback_chain_setup_primary_unavailable(
         self, clean_env, mock_provider_classes
@@ -471,7 +499,9 @@ class TestFallbackChain:
         os.environ.update(sample_env_vars)
         # Use valid provider name from enum - settings validation will reject invalid_provider
         # Instead, test with a valid provider name that doesn't have credentials
-        os.environ["CHAT_PROVIDER"] = "local"  # Valid provider that will use default fallback
+        os.environ["CHAT_PROVIDER"] = (
+            "local"  # Valid provider that will use default fallback
+        )
 
         with patch.multiple(
             "faultmaven.infrastructure.llm.providers.registry",
@@ -532,7 +562,7 @@ class TestFallbackChain:
                 confidence=0.85,
                 provider="openai",
                 tokens_used=30,
-                response_time_ms=100
+                response_time_ms=100,
             )
         )
 
@@ -610,7 +640,7 @@ class TestFallbackChain:
                 confidence=0.85,
                 provider="openai",
                 tokens_used=30,
-                response_time_ms=100
+                response_time_ms=100,
             )
         )
 
@@ -774,6 +804,7 @@ class TestApiKeySecurity:
     def test_api_key_masking_in_logs(self, clean_env, caplog):
         """Test that API keys are not exposed in logs."""
         import logging
+
         caplog.set_level(logging.INFO)  # Ensure INFO level is captured
 
         os.environ.update(
@@ -1025,6 +1056,7 @@ class TestErrorHandlingAndEdgeCases:
         mock_settings.llm.fireworks_base_url = "http://test.com"
         # OpenAI has API key (will be initialized)
         from pydantic import SecretStr
+
         mock_settings.llm.openai_api_key = SecretStr("sk-test-456")
         mock_settings.llm.openai_model = "gpt-4o"
         mock_settings.llm.openai_base_url = "https://api.openai.com/v1"

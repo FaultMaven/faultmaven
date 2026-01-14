@@ -26,8 +26,10 @@ if TYPE_CHECKING:
 # DTOs (Data Transfer Objects) for Cross-Module Use
 # ============================================================
 
+
 class ReportTypeDTO(str, Enum):
     """Public report type enum for cross-module use."""
+
     RCA = "rca"  # Root Cause Analysis
     EXECUTIVE_SUMMARY = "executive_summary"
     RUNBOOK = "runbook"
@@ -36,6 +38,7 @@ class ReportTypeDTO(str, Enum):
 
 class ReportStatusDTO(str, Enum):
     """Public report status enum for cross-module use."""
+
     PENDING = "pending"
     GENERATING = "generating"
     COMPLETED = "completed"
@@ -49,6 +52,7 @@ class ReportDTO:
     This DTO exposes only the fields needed by other modules,
     hiding internal report implementation details.
     """
+
     report_id: UUID
     case_id: str
     report_type: ReportTypeDTO
@@ -87,10 +91,11 @@ from faultmaven.modules.report.domain.models import (
 # Service Protocols
 # ============================================================
 
+
 class IReportQuery(Protocol):
     """Read-only report query interface for cross-module use."""
 
-    async def get_report(self, report_id: 'UUID') -> Optional[CaseReport]:
+    async def get_report(self, report_id: "UUID") -> Optional[CaseReport]:
         """Get report by ID."""
         ...
 

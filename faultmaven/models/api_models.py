@@ -20,6 +20,7 @@ from faultmaven.modules.case.domain.models import Case, CaseStatus, Investigatio
 # Case Creation and Updates
 # ============================================================
 
+
 class CaseCreateRequest(BaseModel):
     """Request to create a new case (v2.0).
 
@@ -30,24 +31,22 @@ class CaseCreateRequest(BaseModel):
     title: Optional[str] = Field(
         default=None,
         description="Case title (optional, auto-generated if not provided)",
-        max_length=200
+        max_length=200,
     )
 
     description: Optional[str] = Field(
-        default="",
-        description="Initial problem description",
-        max_length=2000
+        default="", description="Initial problem description", max_length=2000
     )
 
     initial_message: Optional[str] = Field(
         default=None,
         description="First user message (for CONSULTING phase)",
-        max_length=4000
+        max_length=4000,
     )
 
     session_id: Optional[str] = Field(
         default=None,
-        description="Session ID for authentication and case association (restored from old implementation)"
+        description="Session ID for authentication and case association (restored from old implementation)",
     )
 
     # Note: user_id and organization_id are derived from authentication context
@@ -58,26 +57,22 @@ class CaseUpdateRequest(BaseModel):
     """Request to update an existing case."""
 
     title: Optional[str] = Field(
-        default=None,
-        description="Updated title",
-        max_length=200
+        default=None, description="Updated title", max_length=200
     )
 
     description: Optional[str] = Field(
-        default=None,
-        description="Updated description",
-        max_length=2000
+        default=None, description="Updated description", max_length=2000
     )
 
     status: Optional[CaseStatus] = Field(
-        default=None,
-        description="Updated status (admin only)"
+        default=None, description="Updated status (admin only)"
     )
 
 
 # ============================================================
 # Case Responses (for API)
 # ============================================================
+
 
 class CaseSummary(BaseModel):
     """Minimal case information for list views."""
@@ -116,7 +111,7 @@ class CaseSummary(BaseModel):
             milestones_completed=len(case.progress.completed_milestones),
             total_milestones=8,
             is_stuck=case.is_stuck,
-            is_terminal=case.is_terminal
+            is_terminal=case.is_terminal,
         )
 
 
@@ -183,8 +178,12 @@ class CaseDetail(BaseModel):
             solution_count=len(case.solutions),
             is_stuck=case.is_stuck,
             is_terminal=case.is_terminal,
-            degraded_mode_active=case.degraded_mode.is_active if case.degraded_mode else False,
-            escalated=case.escalation_state.is_active if case.escalation_state else False
+            degraded_mode_active=(
+                case.degraded_mode.is_active if case.degraded_mode else False
+            ),
+            escalated=(
+                case.escalation_state.is_active if case.escalation_state else False
+            ),
         )
 
 
@@ -192,60 +191,41 @@ class CaseDetail(BaseModel):
 # List and Filter
 # ============================================================
 
+
 class CaseListFilter(BaseModel):
     """Filter criteria for listing cases."""
 
-    user_id: Optional[str] = Field(
-        default=None,
-        description="Filter by user ID"
-    )
+    user_id: Optional[str] = Field(default=None, description="Filter by user ID")
 
     organization_id: Optional[str] = Field(
-        default=None,
-        description="Filter by organization ID"
+        default=None, description="Filter by organization ID"
     )
 
-    status: Optional[CaseStatus] = Field(
-        default=None,
-        description="Filter by status"
-    )
+    status: Optional[CaseStatus] = Field(default=None, description="Filter by status")
 
-    is_stuck: Optional[bool] = Field(
-        default=None,
-        description="Filter stuck cases"
-    )
+    is_stuck: Optional[bool] = Field(default=None, description="Filter stuck cases")
 
     created_after: Optional[datetime] = Field(
-        default=None,
-        description="Cases created after this date"
+        default=None, description="Cases created after this date"
     )
 
     created_before: Optional[datetime] = Field(
-        default=None,
-        description="Cases created before this date"
+        default=None, description="Cases created before this date"
     )
 
     limit: int = Field(
-        default=50,
-        ge=1,
-        le=200,
-        description="Maximum results to return"
+        default=50, ge=1, le=200, description="Maximum results to return"
     )
 
-    offset: int = Field(
-        default=0,
-        ge=0,
-        description="Pagination offset"
-    )
+    offset: int = Field(default=0, ge=0, description="Pagination offset")
 
     include_empty: bool = Field(
         default=True,
-        description="Include cases with no conversation (current_turn == 0)"
+        description="Include cases with no conversation (current_turn == 0)",
     )
 
     include_archived: bool = Field(
-        default=False,
-        description="Include archived/closed cases"
+        default=False, description="Include archived/closed cases"
     )
 
 
@@ -260,11 +240,7 @@ class CaseListResponse(BaseModel):
 
     @classmethod
     def from_cases(
-        cls,
-        cases: List[Case],
-        total_count: int,
-        limit: int,
-        offset: int
+        cls, cases: List[Case], total_count: int, limit: int, offset: int
     ) -> "CaseListResponse":
         """Convert list of Cases to API response."""
         return cls(
@@ -272,7 +248,7 @@ class CaseListResponse(BaseModel):
             total_count=total_count,
             limit=limit,
             offset=offset,
-            has_more=(offset + len(cases)) < total_count
+            has_more=(offset + len(cases)) < total_count,
         )
 
 
@@ -280,36 +256,21 @@ class CaseListResponse(BaseModel):
 # Search
 # ============================================================
 
+
 class CaseSearchRequest(BaseModel):
     """Request to search cases."""
 
-    query: str = Field(
-        description="Search query",
-        min_length=1,
-        max_length=500
-    )
+    query: str = Field(description="Search query", min_length=1, max_length=500)
 
-    user_id: Optional[str] = Field(
-        default=None,
-        description="Limit to user's cases"
-    )
+    user_id: Optional[str] = Field(default=None, description="Limit to user's cases")
 
     organization_id: Optional[str] = Field(
-        default=None,
-        description="Limit to organization's cases"
+        default=None, description="Limit to organization's cases"
     )
 
-    status: Optional[CaseStatus] = Field(
-        default=None,
-        description="Filter by status"
-    )
+    status: Optional[CaseStatus] = Field(default=None, description="Filter by status")
 
-    limit: int = Field(
-        default=20,
-        ge=1,
-        le=100,
-        description="Maximum results"
-    )
+    limit: int = Field(default=20, ge=1, le=100, description="Maximum results")
 
 
 class CaseSearchResponse(BaseModel):
@@ -321,16 +282,13 @@ class CaseSearchResponse(BaseModel):
 
     @classmethod
     def from_cases(
-        cls,
-        cases: List[Case],
-        total_count: int,
-        query: str
+        cls, cases: List[Case], total_count: int, query: str
     ) -> "CaseSearchResponse":
         """Convert search results to API response."""
         return cls(
             cases=[CaseSummary.from_case(case) for case in cases],
             total_count=total_count,
-            query=query
+            query=query,
         )
 
 
@@ -338,21 +296,18 @@ class CaseSearchResponse(BaseModel):
 # Case Query Submission
 # ============================================================
 
+
 class CaseQueryRequest(BaseModel):
     """Request to submit a query to a case investigation.
 
     Used by POST /cases/{case_id}/queries endpoint.
     """
 
-    message: str = Field(
-        description="User message",
-        min_length=1,
-        max_length=4000
-    )
+    message: str = Field(description="User message", min_length=1, max_length=4000)
 
     attachments: Optional[List[dict]] = Field(
         default=None,
-        description="File attachments (file_id, filename, data_type, size, summary, s3_uri)"
+        description="File attachments (file_id, filename, data_type, size, summary, s3_uri)",
     )
 
 
@@ -374,6 +329,7 @@ class CaseQueryResponse(BaseModel):
 # Messages and Conversation History
 # ============================================================
 
+
 class CaseMessage(BaseModel):
     """A single message in case conversation.
 
@@ -385,12 +341,16 @@ class CaseMessage(BaseModel):
     turn_number: int
     role: str  # "user" | "assistant" | "system"
     content: str
-    created_at: datetime = Field(description="Message creation time (matches SQL schema)")
+    created_at: datetime = Field(
+        description="Message creation time (matches SQL schema)"
+    )
 
     # Optional fields
     author_id: Optional[str] = Field(None, description="User who created the message")
     token_count: Optional[int] = Field(None, description="Number of tokens in content")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Sources, tools used, etc.")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Sources, tools used, etc."
+    )
 
     # Legacy/extension fields
     attachments: Optional[List[dict]] = None
@@ -407,6 +367,7 @@ class CaseConversationResponse(BaseModel):
 # ============================================================
 # Participants (for future collaboration features)
 # ============================================================
+
 
 class CaseParticipant(BaseModel):
     """Participant in a case (for future use)."""
@@ -427,6 +388,7 @@ class AddParticipantRequest(BaseModel):
 # ============================================================
 # Analytics and Metrics
 # ============================================================
+
 
 class CaseMetrics(BaseModel):
     """Metrics for a single case."""
@@ -455,6 +417,7 @@ class OrganizationCaseMetrics(BaseModel):
 # Uploaded Files / Evidence API Models
 # ============================================================
 
+
 class UploadedFileMetadata(BaseModel):
     """Metadata for uploaded files (evidence) - List view."""
 
@@ -464,10 +427,18 @@ class UploadedFileMetadata(BaseModel):
     size_display: str = Field(description="Human-readable size (e.g., '2.3 MB')")
     uploaded_at_turn: int = Field(description="Turn when file was uploaded", ge=0)
     uploaded_at: datetime = Field(description="Upload timestamp")
-    source_type: str = Field(description="file_upload | paste | screenshot | page_injection | agent_generated")
-    analysis_status: str = Field(description="pending | processing | completed | failed")
-    summary: Optional[str] = Field(default=None, description="AI-generated summary (1-2 sentences)")
-    source_metadata: Optional[dict] = Field(default=None, description="Additional metadata for page injections")
+    source_type: str = Field(
+        description="file_upload | paste | screenshot | page_injection | agent_generated"
+    )
+    analysis_status: str = Field(
+        description="pending | processing | completed | failed"
+    )
+    summary: Optional[str] = Field(
+        default=None, description="AI-generated summary (1-2 sentences)"
+    )
+    source_metadata: Optional[dict] = Field(
+        default=None, description="Additional metadata for page injections"
+    )
 
     @classmethod
     def from_uploaded_file(cls, uploaded_file) -> "UploadedFileMetadata":
@@ -493,7 +464,7 @@ class UploadedFileMetadata(BaseModel):
             source_type=uploaded_file.source_type,
             analysis_status="completed",  # Always completed after preprocessing
             summary=uploaded_file.preprocessing_summary,
-            source_metadata=None  # Could be added in future
+            source_metadata=None,  # Could be added in future
         )
 
     @classmethod
@@ -520,7 +491,7 @@ class UploadedFileMetadata(BaseModel):
             source_type=evidence.source_type.value,
             analysis_status="completed",  # Always completed for now
             summary=evidence.summary,
-            source_metadata=None  # Could extract from evidence if needed
+            source_metadata=None,  # Could extract from evidence if needed
         )
 
 
@@ -529,7 +500,9 @@ class HypothesisRelationship(BaseModel):
 
     hypothesis_id: str
     hypothesis_description: str
-    stance: str = Field(description="strongly_supports | supports | neutral | contradicts | strongly_contradicts | irrelevant")
+    stance: str = Field(
+        description="strongly_supports | supports | neutral | contradicts | strongly_contradicts | irrelevant"
+    )
     reasoning: str
 
 
@@ -551,10 +524,12 @@ class FileAnalysis(BaseModel):
 class UploadedFileDetails(UploadedFileMetadata):
     """Detailed file information including analysis."""
 
-    full_analysis: Optional[FileAnalysis] = Field(default=None, description="Detailed AI analysis")
+    full_analysis: Optional[FileAnalysis] = Field(
+        default=None, description="Detailed AI analysis"
+    )
     hypothesis_relationships: Optional[List[HypothesisRelationship]] = Field(
         default=None,
-        description="How this file relates to hypotheses (investigating phase only)"
+        description="How this file relates to hypotheses (investigating phase only)",
     )
 
     @classmethod
@@ -565,18 +540,24 @@ class UploadedFileDetails(UploadedFileMetadata):
 
         # Build minimal analysis (just preprocessing summary)
         full_analysis = FileAnalysis(
-            key_findings=[uploaded_file.preprocessing_summary] if uploaded_file.preprocessing_summary else [],
-            relevance=None  # No analysis yet in CONSULTING phase
+            key_findings=(
+                [uploaded_file.preprocessing_summary]
+                if uploaded_file.preprocessing_summary
+                else []
+            ),
+            relevance=None,  # No analysis yet in CONSULTING phase
         )
 
         return cls(
             **base.model_dump(),
             full_analysis=full_analysis,
-            hypothesis_relationships=None  # No hypotheses in CONSULTING phase
+            hypothesis_relationships=None,  # No hypotheses in CONSULTING phase
         )
 
     @classmethod
-    def from_evidence(cls, evidence, case_id: str, hypotheses: Optional[dict] = None) -> "UploadedFileDetails":
+    def from_evidence(
+        cls, evidence, case_id: str, hypotheses: Optional[dict] = None
+    ) -> "UploadedFileDetails":
         """Convert Evidence to UploadedFileDetails with full analysis (INVESTIGATING phase)."""
         # Start with base metadata
         base = UploadedFileMetadata.from_evidence(evidence)
@@ -584,7 +565,7 @@ class UploadedFileDetails(UploadedFileMetadata):
         # Build full analysis
         full_analysis = FileAnalysis(
             key_findings=[evidence.summary] if evidence.summary else [],
-            relevance=evidence.analysis if evidence.analysis else None
+            relevance=evidence.analysis if evidence.analysis else None,
         )
 
         # Build hypothesis relationships if hypotheses provided
@@ -593,21 +574,26 @@ class UploadedFileDetails(UploadedFileMetadata):
             # Find hypotheses related to this evidence
             relationships = []
             for hyp_id, hypothesis in hypotheses.items():
-                if hasattr(hypothesis, 'evidence_links') and evidence.evidence_id in hypothesis.evidence_links:
+                if (
+                    hasattr(hypothesis, "evidence_links")
+                    and evidence.evidence_id in hypothesis.evidence_links
+                ):
                     link = hypothesis.evidence_links[evidence.evidence_id]
-                    relationships.append(HypothesisRelationship(
-                        hypothesis_id=hyp_id,
-                        hypothesis_description=hypothesis.statement,
-                        stance=link.stance.value,
-                        reasoning=link.reasoning
-                    ))
+                    relationships.append(
+                        HypothesisRelationship(
+                            hypothesis_id=hyp_id,
+                            hypothesis_description=hypothesis.statement,
+                            stance=link.stance.value,
+                            reasoning=link.reasoning,
+                        )
+                    )
             if relationships:
                 hypothesis_relationships = relationships
 
         return cls(
             **base.model_dump(),
             full_analysis=full_analysis,
-            hypothesis_relationships=hypothesis_relationships
+            hypothesis_relationships=hypothesis_relationships,
         )
 
 
@@ -624,12 +610,15 @@ class UploadedFilesList(BaseModel):
 # Evidence-to-File Linkage API Models (Phase 2)
 # ============================================================
 
+
 class DerivedEvidenceSummary(BaseModel):
     """Summary of evidence derived from an uploaded file."""
 
     evidence_id: str
     summary: str = Field(max_length=500)
-    category: str = Field(description="SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER")
+    category: str = Field(
+        description="SYMPTOM_EVIDENCE | CAUSAL_EVIDENCE | RESOLUTION_EVIDENCE | OTHER"
+    )
     collected_at_turn: int
     related_hypothesis_ids: List[str] = Field(default_factory=list)
 
@@ -692,7 +681,7 @@ class EvidenceDetailsResponse(BaseModel):
     # Source file linkage
     source_file: Optional[SourceFileReference] = Field(
         None,
-        description="Source file this evidence was derived from (null if from user input)"
+        description="Source file this evidence was derived from (null if from user input)",
     )
 
     # Hypothesis linkage

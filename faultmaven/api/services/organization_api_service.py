@@ -29,7 +29,9 @@ from faultmaven.models.interfaces_user import (
 )
 from faultmaven.services.auth_service import AuthService
 from faultmaven.services.base import BaseService
-from faultmaven.modules.auth.domain.services.organization_service import OrganizationService
+from faultmaven.modules.auth.domain.services.organization_service import (
+    OrganizationService,
+)
 from faultmaven.services.user_service import UserService
 
 logger = logging.getLogger(__name__)
@@ -197,17 +199,23 @@ class APIOrganizationService(BaseService):
             member = next((m for m in members if m.user_id == user_id), None)
             member_since = member.joined_at if member else org.created_at
 
-            org_list.append({
-                "organization_id": org.org_id,
-                "name": org.name,
-                "slug": org.slug,
-                "plan_tier": org.plan_tier.value if isinstance(org.plan_tier, OrgPlanTier) else org.plan_tier,
-                "role": role,
-                "member_since": member_since,
-            })
+            org_list.append(
+                {
+                    "organization_id": org.org_id,
+                    "name": org.name,
+                    "slug": org.slug,
+                    "plan_tier": (
+                        org.plan_tier.value
+                        if isinstance(org.plan_tier, OrgPlanTier)
+                        else org.plan_tier
+                    ),
+                    "role": role,
+                    "member_since": member_since,
+                }
+            )
 
         # Apply pagination
-        paginated = org_list[offset:offset + limit]
+        paginated = org_list[offset : offset + limit]
 
         return paginated, total
 
@@ -345,16 +353,18 @@ class APIOrganizationService(BaseService):
         member_list = []
         for member in members:
             user_info = await self._get_user_info(member.user_id)
-            member_list.append({
-                "user_id": member.user_id,
-                "email": user_info.get("email", ""),
-                "full_name": user_info.get("full_name", ""),
-                "role": self._role_id_to_name(member.role_id),
-                "joined_at": member.joined_at,
-            })
+            member_list.append(
+                {
+                    "user_id": member.user_id,
+                    "email": user_info.get("email", ""),
+                    "full_name": user_info.get("full_name", ""),
+                    "role": self._role_id_to_name(member.role_id),
+                    "joined_at": member.joined_at,
+                }
+            )
 
         # Apply pagination
-        paginated = member_list[offset:offset + limit]
+        paginated = member_list[offset : offset + limit]
 
         return paginated, total
 
@@ -658,7 +668,11 @@ class APIOrganizationService(BaseService):
         )
 
         # Build settings response
-        plan_tier = org.plan_tier if isinstance(org.plan_tier, OrgPlanTier) else OrgPlanTier(org.plan_tier)
+        plan_tier = (
+            org.plan_tier
+            if isinstance(org.plan_tier, OrgPlanTier)
+            else OrgPlanTier(org.plan_tier)
+        )
 
         return {
             "organization_id": org.org_id,
@@ -668,7 +682,8 @@ class APIOrganizationService(BaseService):
             "max_cases_per_month": org.max_cases,
             "max_storage_gb": self._get_plan_storage(plan_tier),
             "features": self._get_plan_features(plan_tier),
-            "settings": org.settings or {
+            "settings": org.settings
+            or {
                 "allow_public_cases": False,
                 "require_2fa": False,
                 "session_timeout_minutes": 60,
@@ -786,6 +801,7 @@ class APIOrganizationService(BaseService):
     def _is_valid_slug(self, slug: str) -> bool:
         """Check if slug format is valid (lowercase, numbers, hyphens)."""
         import re
+
         return bool(re.match(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$", slug))
 
     def _role_id_to_name(self, role_id: str) -> str:

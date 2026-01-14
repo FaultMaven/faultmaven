@@ -48,9 +48,15 @@ router = APIRouter(
 @router.get("/users", response_model=AdminUserListResponse)
 async def list_users(
     current_user: AuthenticatedUser = Depends(require_admin),
-    is_active: Optional[bool] = Query(None, description="Filter by active/inactive status"),
-    role: Optional[str] = Query(None, description="Filter by role (admin, member, viewer)"),
-    search: Optional[str] = Query(None, description="Search email or full_name (case-insensitive)"),
+    is_active: Optional[bool] = Query(
+        None, description="Filter by active/inactive status"
+    ),
+    role: Optional[str] = Query(
+        None, description="Filter by role (admin, member, viewer)"
+    ),
+    search: Optional[str] = Query(
+        None, description="Search email or full_name (case-insensitive)"
+    ),
     limit: int = Query(50, le=100, ge=1, description="Max results per page"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
 ) -> AdminUserListResponse:
@@ -92,12 +98,20 @@ async def list_users(
                 organization_id=current_user.organization_id,
                 email=user.email,
                 full_name=user.display_name,
-                roles=user.roles if user.roles else ['member'],
+                roles=user.roles if user.roles else ["member"],
                 is_active=user.is_active,
-                is_verified=user.is_email_verified if hasattr(user, 'is_email_verified') else False,
-                last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
+                is_verified=(
+                    user.is_email_verified
+                    if hasattr(user, "is_email_verified")
+                    else False
+                ),
+                last_login_at=(
+                    user.last_login_at.isoformat() if user.last_login_at else None
+                ),
                 created_at=user.created_at,
-                updated_at=user.updated_at if hasattr(user, 'updated_at') else user.created_at,
+                updated_at=(
+                    user.updated_at if hasattr(user, "updated_at") else user.created_at
+                ),
             )
             for user in users
         ]
@@ -390,7 +404,7 @@ async def remove_role(
 
         return RoleAssignmentResponse(
             user_id=updated_user.user_id,
-            roles=updated_user.roles if updated_user.roles else ['viewer'],
+            roles=updated_user.roles if updated_user.roles else ["viewer"],
             updated_at=datetime.now(timezone.utc),
             message=f"Role '{role}' removed. User downgraded to 'viewer'. All JWT tokens revoked.",
         )
