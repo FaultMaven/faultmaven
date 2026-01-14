@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Generate OpenAPI specification from FastAPI application.
+"""Check for API changes by comparing current OpenAPI spec with locked version.
 
-This script generates the current OpenAPI spec and optionally compares it
-with the locked version to identify API changes.
+This script generates the current OpenAPI spec and compares it with the locked
+version to identify breaking and non-breaking API changes.
+
+Usage:
+    python scripts/check_api_changes.py              # Compare only
+    python scripts/check_api_changes.py --update-locked  # Update locked spec (with backup)
 """
 
-import json
+import argparse
+import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, Set, Tuple
+from typing import Any, Dict, Tuple
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -30,6 +35,7 @@ def save_spec(spec: Dict[str, Any], output_path: Path) -> None:
     """Save OpenAPI spec to YAML file."""
     import yaml
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, 'w') as f:
         yaml.dump(spec, f, default_flow_style=False, sort_keys=False, indent=2)
 
@@ -45,6 +51,20 @@ def load_yaml_spec(path: Path) -> Dict[str, Any]:
 
     with open(path, 'r') as f:
         return yaml.safe_load(f)
+
+
+def backup_locked_spec(locked_path: Path, backup_path: Path) -> None:
+    """Backup the locked spec file, overwriting any previous backup."""
+    if locked_path.exists():
+        shutil.copy2(locked_path, backup_path)
+        print(f"📦 Backed up locked spec to: {backup_path}")
+
+
+def update_locked_spec(current_path: Path, locked_path: Path, backup_path: Path) -> None:
+    """Update locked spec from current, with backup."""
+    backup_locked_spec(locked_path, backup_path)
+    shutil.copy2(current_path, locked_path)
+    print(f"✅ Updated locked spec: {locked_path}")
 
 
 def compare_specs(current: Dict[str, Any], locked: Dict[str, Any]) -> Tuple[bool, list]:
@@ -224,10 +244,22 @@ def compare_schemas(current: Dict, locked: Dict) -> list:
 
 def main():
     """Main function."""
+    parser = argparse.ArgumentParser(
+        description="Check for API changes by comparing current spec with locked version."
+    )
+    parser.add_argument(
+        "--update-locked",
+        action="store_true",
+        help="Update the locked spec with current spec (creates backup)"
+    )
+    args = parser.parse_args()
+
     # Paths
     project_root = Path(__file__).parent.parent
-    locked_spec_path = project_root / "docs" / "reference" / "api" / "openapi.locked.yaml"
-    current_spec_path = project_root / "docs" / "reference" / "api" / "openapi.current.yaml"
+    api_docs_dir = project_root / "docs" / "reference" / "api"
+    locked_spec_path = api_docs_dir / "openapi.locked.yaml"
+    current_spec_path = api_docs_dir / "openapi.current.yaml"
+    backup_spec_path = api_docs_dir / "openapi.locked.backup.yaml"
 
     # Generate current spec
     print("Generating current OpenAPI specification...")
@@ -235,6 +267,12 @@ def main():
 
     # Save current spec
     save_spec(current_spec, current_spec_path)
+
+    # Handle --update-locked flag
+    if args.update_locked:
+        update_locked_spec(current_spec_path, locked_spec_path, backup_spec_path)
+        print("\n✅ Locked spec updated successfully")
+        return 0
 
     # Load locked spec if it exists
     if locked_spec_path.exists():
@@ -264,8 +302,8 @@ def main():
             else:
                 print("\n✅ NON-BREAKING CHANGES")
                 print("The API changes are backward compatible.")
-                print("You can update the locked spec with:")
-                print(f"  cp {current_spec_path} {locked_spec_path}")
+                print("To update the locked spec, run:")
+                print(f"  python {Path(__file__).name} --update-locked")
                 return 0
         else:
             print("\n✅ No API changes detected")
