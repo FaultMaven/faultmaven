@@ -1,5 +1,5 @@
 import sys
-from types import SimpleNamespace
+from types import SimpleNamespace, ModuleType
 
 
 class _DummyAPMIntegration:
@@ -57,7 +57,15 @@ import pytest
 
 # Stub heavy dependencies to avoid import issues in tests
 # These stubs prevent importing sklearn, chromadb, pypdf, etc.
-sys.modules.setdefault("sklearn", SimpleNamespace())
+# Create a proper mock sklearn module with __spec__ to satisfy transformers
+_mock_sklearn = ModuleType("sklearn")
+_mock_sklearn.__spec__ = SimpleNamespace(
+    name="sklearn",
+    loader=None,
+    origin=None,
+    submodule_search_locations=None,
+)
+sys.modules.setdefault("sklearn", _mock_sklearn)
 sys.modules.setdefault("sklearn.ensemble", SimpleNamespace(IsolationForest=Mock))
 sys.modules.setdefault("sklearn.preprocessing", SimpleNamespace(StandardScaler=Mock))
 # NOTE: chromadb stub removed - tests need real ChromaDB
