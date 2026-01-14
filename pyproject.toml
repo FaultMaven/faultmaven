@@ -71,6 +71,7 @@ dependencies = [
     # Knowledge base and embeddings (ChromaDB + sentence transformers)
     "chromadb>=0.5.3",
     "sentence-transformers>=3.0.1",
+    "transformers>=4.41.2",  # Required for sklearn 1.5+ compatibility
     "pypdf>=4.2.0",
     "python-docx>=1.1.2",
 
@@ -79,7 +80,7 @@ dependencies = [
     "pandas>=1.5.0",
     "pandas-stubs>=2.0.0",
     "pylogrus>=0.1.2",
-    "scikit-learn<1.5.0",  # Pinned <1.5.0 for transformers compatibility
+    "scikit-learn>=1.4.0",  # Compatible with transformers>=4.41.2
     "pyod>=2.0.1",
     "protobuf>=3.20.0,<3.21.0",
 
