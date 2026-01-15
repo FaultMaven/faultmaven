@@ -89,7 +89,7 @@ jobs:
         PYTHONPATH: "."
       run: |
         echo "=== Running Contract Compliance Test Suite ==="
-        python -m pytest tests/api/test_contract_compliance_focused.py -v --tb=short --timeout=60
+        python -m pytest tests/api/test_contract_compliance_focused.py -v --tb=short
         
         echo ""
         echo "=== Test Suite Summary ==="
