@@ -250,7 +250,7 @@ async def get_evidence_artifact_service(
 
 async def get_agent_orchestration_service(
     factory: ServiceFactory = Depends(get_service_factory),
-) -> "AgentOrchestrationService":
+) -> "AgentOrchestrationService":  # noqa: F821
     """Get agent orchestration service for request.
 
     Creates an AgentOrchestrationService with all required dependencies

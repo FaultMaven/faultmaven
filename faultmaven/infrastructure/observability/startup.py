@@ -468,6 +468,7 @@ async def initialize_performance_monitoring_system() -> Dict[str, Any]:
     Returns:
         Initialization status and metrics
     """
+    global _startup_instance
 
     if _startup_instance is None:
         _startup_instance = PerformanceMonitoringStartup()

@@ -1212,7 +1212,7 @@ class ILogProcessor(ABC):
 
     @abstractmethod
     async def process(
-        self, content: str, data_type: Optional["DataType"] = None
+        self, content: str, data_type: Optional["DataType"] = None  # noqa: F821
     ) -> Dict[str, Any]:
         """Process log content and extract actionable insights.
 
@@ -2422,7 +2422,7 @@ class IJobService(ABC):
         pass
 
     @abstractmethod
-    async def get_job(self, job_id: str) -> Optional["JobStatus"]:
+    async def get_job(self, job_id: str) -> Optional["JobStatus"]:  # noqa: F821
         """Retrieve current job status and metadata.
 
         Args:
