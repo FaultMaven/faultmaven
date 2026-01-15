@@ -40,7 +40,7 @@ def unique_id(prefix: str) -> str:
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     os.getenv("SESSION_STORAGE_TYPE", "redis") != "redis",
-    reason="Architectural compliance tests require Redis session storage"
+    reason="Architectural compliance tests require Redis session storage",
 )
 class TestArchitecturalCompliance:
     """Integration tests for spec compliance verification

@@ -100,10 +100,14 @@ def _create_chroma_backend(settings) -> IVectorBackend:
         # Attempt to access and validate as strings
         if hasattr(settings, "embedding"):
             persist_dir = getattr(settings.embedding, "chroma_persist_directory", None)
-            persist_directory = str(persist_dir) if isinstance(persist_dir, str) else "./data/chroma"
+            persist_directory = (
+                str(persist_dir) if isinstance(persist_dir, str) else "./data/chroma"
+            )
 
             coll_name = getattr(settings.embedding, "chroma_collection_name", None)
-            collection_name = str(coll_name) if isinstance(coll_name, str) else "faultmaven_kb"
+            collection_name = (
+                str(coll_name) if isinstance(coll_name, str) else "faultmaven_kb"
+            )
         else:
             persist_directory = "./data/chroma"
             collection_name = "faultmaven_kb"
