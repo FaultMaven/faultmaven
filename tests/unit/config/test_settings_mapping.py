@@ -208,8 +208,8 @@ class TestRedisSettingsMapping:
 
         settings = get_settings()
 
-        # Defaults have changed to use .local domain names
-        assert settings.database.redis_host == "redis.faultmaven.local"
+        # Default is IP address for K8s NodePort service
+        assert settings.database.redis_host == "192.168.0.111"
         assert settings.database.redis_port == 30379
         assert settings.database.redis_db == 0
 

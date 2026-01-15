@@ -97,20 +97,17 @@ def _create_chroma_backend(settings) -> IVectorBackend:
     # Get Chroma settings
     # Check if settings has a proper embedding configuration
     try:
-        if hasattr(settings, "embedding") and hasattr(
-            settings.embedding, "chroma_persist_directory"
-        ):
-            persist_directory = settings.embedding.chroma_persist_directory
+        # Attempt to access and validate as strings
+        if hasattr(settings, "embedding"):
+            persist_dir = getattr(settings.embedding, "chroma_persist_directory", None)
+            persist_directory = str(persist_dir) if isinstance(persist_dir, str) else "./data/chroma"
+
+            coll_name = getattr(settings.embedding, "chroma_collection_name", None)
+            collection_name = str(coll_name) if isinstance(coll_name, str) else "faultmaven_kb"
         else:
             persist_directory = "./data/chroma"
-
-        if hasattr(settings, "embedding") and hasattr(
-            settings.embedding, "chroma_collection_name"
-        ):
-            collection_name = settings.embedding.chroma_collection_name
-        else:
             collection_name = "faultmaven_kb"
-    except AttributeError:
+    except (AttributeError, TypeError):
         persist_directory = "./data/chroma"
         collection_name = "faultmaven_kb"
 

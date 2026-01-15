@@ -12,6 +12,7 @@ Test Coverage:
 5. owner_id requirement in Case creation (security validation)
 """
 
+import os
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -37,8 +38,15 @@ def unique_id(prefix: str) -> str:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.getenv("SESSION_STORAGE_TYPE", "redis") != "redis",
+    reason="Architectural compliance tests require Redis session storage"
+)
 class TestArchitecturalCompliance:
-    """Integration tests for spec compliance verification"""
+    """Integration tests for spec compliance verification
+
+    NOTE: These tests require Redis and will be skipped when SESSION_STORAGE_TYPE != redis
+    """
 
     # ============================================================================
     # Test 1: Session Creation with client_id and Resumption

@@ -51,11 +51,12 @@ def run_alembic(command: str, database_url: str) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
 
-    # Use venv alembic to ensure correct version
+    # Try venv alembic first (local dev), fallback to PATH (CI)
     alembic_path = PROJECT_ROOT / ".venv" / "bin" / "alembic"
+    alembic_cmd = str(alembic_path) if alembic_path.exists() else "alembic"
 
     result = subprocess.run(
-        f"{alembic_path} {command}",
+        f"{alembic_cmd} {command}",
         shell=True,
         cwd=PROJECT_ROOT,
         env=env,
