@@ -91,11 +91,11 @@ def test_docker_compose_services():
     if REDIS_AVAILABLE:
         try:
             client = redis.Redis(
-            host="redis.faultmaven.local", port=6379, socket_connect_timeout=2
-        )
-                services_status["redis"] = client.ping()
-            except:
-                services_status["redis"] = False
+                host="redis.faultmaven.local", port=6379, socket_connect_timeout=2
+            )
+            services_status["redis"] = client.ping()
+        except:
+            services_status["redis"] = False
     else:
         services_status["redis"] = False  # Redis not available in community edition
 

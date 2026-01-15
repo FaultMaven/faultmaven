@@ -119,6 +119,42 @@ def sample_documents():
     ]
 
 
+@pytest.fixture(autouse=True)
+def reset_chromadb_singleton():
+    """Reset ChromaDB's internal singleton state between tests.
+
+    ChromaDB maintains a global singleton for ephemeral clients. When tests
+    run in certain orders (especially in CI), multiple ephemeral clients
+    with different settings can conflict. This fixture ensures clean state.
+    """
+    # Clear ChromaDB's internal singleton cache before each test
+    if CHROMA_AVAILABLE:
+        try:
+            import chromadb
+            # Clear the singleton registry if it exists
+            if hasattr(chromadb, '_client_cache'):
+                chromadb._client_cache.clear()
+            # Also try chromadb.api.client
+            if hasattr(chromadb.api, 'client') and hasattr(chromadb.api.client, '_client_cache'):
+                chromadb.api.client._client_cache.clear()
+        except (AttributeError, ImportError):
+            # If the internal API changed, just continue
+            pass
+
+    yield
+
+    # Cleanup after test as well
+    if CHROMA_AVAILABLE:
+        try:
+            import chromadb
+            if hasattr(chromadb, '_client_cache'):
+                chromadb._client_cache.clear()
+            if hasattr(chromadb.api, 'client') and hasattr(chromadb.api.client, '_client_cache'):
+                chromadb.api.client._client_cache.clear()
+        except (AttributeError, ImportError):
+            pass
+
+
 @pytest.fixture
 def mock_chroma_client():
     """Create mock ChromaDB client."""

@@ -95,10 +95,9 @@ async def http_client() -> AsyncGenerator[httpx.AsyncClient, None]:
 
 
 @pytest_asyncio.fixture(scope="function")
-@pytest.fixture
 async def redis_client() -> AsyncGenerator:
     """Create a Redis client for testing.
-    
+
     Requires enterprise edition with redis installed.
     Marked as enterprise-only fixture.
     """
