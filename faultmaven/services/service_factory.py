@@ -172,7 +172,9 @@ class ServiceFactory:
             file_storage=file_storage,
         )
 
-    def create_agent_orchestration_service(self) -> "AgentOrchestrationService":  # noqa: F821
+    def create_agent_orchestration_service(
+        self,
+    ) -> "AgentOrchestrationService":  # noqa: F821
         """Create agent orchestration service with dependencies.
 
         Returns:

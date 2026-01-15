@@ -43,15 +43,21 @@ class PreprocessingService:
         sanitizer: DataSanitizer,
         logs_extractor: LogsAndErrorsExtractor,
         config_extractor: Optional["StructuredConfigExtractor"] = None,  # noqa: F821
-        metrics_extractor: Optional["MetricsAndPerformanceExtractor"] = None,  # noqa: F821
+        metrics_extractor: Optional[
+            "MetricsAndPerformanceExtractor"
+        ] = None,  # noqa: F821
         text_extractor: Optional["UnstructuredTextExtractor"] = None,  # noqa: F821
         source_code_extractor: Optional["SourceCodeExtractor"] = None,  # noqa: F821
         visual_extractor: Optional["VisualEvidenceExtractor"] = None,  # noqa: F821
         trace_extractor: Optional["TraceDataExtractor"] = None,  # noqa: F821
         profiling_extractor: Optional["ProfilingDataExtractor"] = None,  # noqa: F821
         error_report_extractor: Optional["ErrorReportExtractor"] = None,  # noqa: F821
-        documentation_extractor: Optional["DocumentationExtractor"] = None,  # noqa: F821
-        command_output_extractor: Optional["CommandOutputExtractor"] = None,  # noqa: F821
+        documentation_extractor: Optional[
+            "DocumentationExtractor"
+        ] = None,  # noqa: F821
+        command_output_extractor: Optional[
+            "CommandOutputExtractor"
+        ] = None,  # noqa: F821
         chunking_service: Optional["ChunkingService"] = None,  # noqa: F821
         chunk_trigger_tokens: int = 8000,
     ):

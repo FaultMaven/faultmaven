@@ -16,7 +16,7 @@ def utc_timestamp() -> str:
 
     Returns:
         str: UTC timestamp in ISO format with 'Z' suffix (e.g. "2024-01-15T14:30:00.123Z")
-    
+
     Note:
         This function implements datetime serialization directly to avoid circular
         dependency with faultmaven.utils.serialization module.

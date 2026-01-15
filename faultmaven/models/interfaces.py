@@ -2480,7 +2480,7 @@ class IPreprocessor(ABC):
         self,
         content: str,
         filename: str,
-        source_metadata: Optional["SourceMetadata"]  # noqa: F821 = None,
+        source_metadata: Optional["SourceMetadata"],  # noqa: F821 = None,
     ) -> "PreprocessedData":  # noqa: F821
         """
         Process raw content into LLM-ready summary
